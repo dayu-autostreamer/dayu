@@ -9,8 +9,7 @@ from core.lib.common import Context, SystemConstant
 from core.lib.common import LOGGER, FileOps
 from core.lib.network import NodeInfo, PortInfo, http_request, get_merge_address, NetworkAPIMethod, NetworkAPIPath
 from core.lib.content import Task
-
-from .processor import Processor
+from core.lib.estimation import TimeEstimator
 
 
 class ProcessorServer:
@@ -21,6 +20,11 @@ class ProcessorServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.PROCESSOR_PROCESS]
                      ),
+            APIRoute(NetworkAPIPath.PROCESSOR_PROCESS_RETURN,
+                     self.process_return_service,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.PROCESSOR_PROCESS_RETURN]
+                     )
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -56,6 +60,20 @@ class ProcessorServer:
         LOGGER.debug(f'[Monitor Task] (Process Request Background) '
                      f'Source: {cur_task.get_source_id()} / Task: {cur_task.get_task_id()} ')
 
+    async def process_return_service(self, file: UploadFile = File(...),
+                                     data: str = Form(...)):
+        file_data = await file.read()
+        cur_task = Task.deserialize(data)
+        LOGGER.info(f'[Process Return Background] Process task: source {cur_task.get_source_id()}  / '
+                    f'task {cur_task.get_task_id()}')
+        FileOps.save_data_file(cur_task, file_data)
+
+        new_task = self.processor(cur_task)
+        LOGGER.debug(f'[Processor Return completed] content length: {len(new_task.get_content())}')
+        FileOps.remove_data_file(cur_task)
+        if new_task:
+            return Task.serialize(new_task)
+
     def loop_process(self):
         LOGGER.info('Start processing loop..')
         while True:
@@ -64,15 +82,31 @@ class ProcessorServer:
             task = self.task_queue.get()
             if not task:
                 continue
-
             LOGGER.debug(f'[Task Queue] Queue Size (loop): {self.task_queue.size()}')
 
-            LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
-            new_task = self.processor(task)
-            LOGGER.debug(f'[Monitor Task] (Process end) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
+            try:
+                new_task = self.process_task_service(task)
+            except Exception as e:
+                LOGGER.critical("[Processor Error] Processor encountered error when processing data.")
+                LOGGER.exception(e)
+                continue
+
             if new_task:
                 self.send_result_back_to_controller(new_task)
             FileOps.remove_data_file(task)
+
+    def process_task_service(self, task: Task):
+        LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
+
+        task, duration = TimeEstimator.record_pipeline_ts(task, is_end=False, sub_tag='real_execute')
+        new_task = self.processor(task)
+        new_task, duration = TimeEstimator.record_pipeline_ts(new_task, is_end=True, sub_tag='real_execute')
+        new_task.save_real_execute_time(duration)
+
+        LOGGER.debug(f'[Monitor Task] (Process end) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
+        LOGGER.info(f'[Process Task] Source: {task.get_source_id()} / Task: {task.get_task_id()} Duration: {duration} ')
+
+        return new_task
 
     def send_result_back_to_controller(self, task):
 

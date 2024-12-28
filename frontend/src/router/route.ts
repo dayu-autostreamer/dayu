@@ -107,44 +107,12 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
                     icon: 'iconfont icon-xingqiu',
                 },
             },
-
-            // {
-            // 	path: '/submit',
-            // 	name: 'submit',
-            // 	component: () => import('/@/views/submit/index.vue'),
-            // 	meta: {
-            // 		title: 'message.router.submit',
-            // 		isLink: '',
-            // 		isHide: false,
-            // 		isKeepAlive: true,
-            // 		isAffix: false,
-            // 		isIframe: false,
-            // 		roles: ['admin', 'common'],
-            // 		icon: 'iconfont icon-zidingyibuju',
-            // 	},
-            // },
-            // {
-            // 	path: '/result',
-            // 	name: 'result',
-            // 	component: () => import('/@/views/result/index.vue'),
-            // 	meta: {
-            // 		title: 'message.router.result',
-            // 		isLink: '',
-            // 		isHide: false,
-            // 		isKeepAlive: true,
-            // 		isAffix: false,
-            // 		isIframe: false,
-            // 		roles: ['admin', 'common'],
-            // 		icon: 'iconfont icon-ico_shuju',
-            // 	},
-            // }
-            // ,
             {
-                path: '/modal',
-                name: 'modal',
-                component: () => import('/@/views/modal/index.vue'),
+                path: '/result',
+                name: 'result',
+                component: () => import('/@/views/result/index.vue'),
                 meta: {
-                    title: 'message.router.modal',
+                    title: 'message.router.result',
                     isLink: '',
                     isHide: false,
                     isKeepAlive: true,

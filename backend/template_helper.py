@@ -170,7 +170,7 @@ class TemplateHelper:
                     {'name': 'SOURCE_TYPE', 'value': str(source['source_type'])},
                     {'name': 'SOURCE_ID', 'value': str(source['id'])},
                     {'name': 'SOURCE_METADATA', 'value': str(source['metadata'])},
-                    {'name': 'PIPELINE', 'value': str([{'service_name': service} for service in pipeline])},
+                    {'name': 'PIPELINE', 'value': str([{'service_name': service['service']} for service in pipeline])},
 
                 ])
 
@@ -261,7 +261,8 @@ class TemplateHelper:
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
             yaml_doc = service_dict[service_id]['service']
-            yaml_doc = self.fill_template(yaml_doc, f'processor-{service_id}')
+            service_name = service_dict[service_id]['service_name']
+            yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
             edge_nodes = service_dict[service_id]['node']
 

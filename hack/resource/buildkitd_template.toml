@@ -1,0 +1,17 @@
+# Template of buildkitd.toml for docker buildx.
+# Default buildkitd.toml is empty.
+# If you want to use http registry, please modify buildkitd.toml as the following templates.
+
+
+# use http registry
+insecure-entitlements=["114.212.87.136:5000","repo:5000"]
+
+[registry."repo:5000"]
+  http = true
+  insecure = true
+
+[registry."114.212.87.136:5000"]
+  http = true
+  insecure = true
+
+

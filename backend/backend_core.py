@@ -1,14 +1,14 @@
-import json
+import cv2
 import numpy as np
 import os
 import time
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant
+from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant, EncodeOps
 from core.lib.network import http_request, NodeInfo, PortInfo, get_merge_address, NetworkAPIPath, NetworkAPIMethod
 
 from kube_helper import KubeHelper
 from template_helper import TemplateHelper
-from utils import get_first_frame_from_video, encode_image, draw_bboxes
+from utils import get_first_frame_from_video, draw_bboxes
 
 
 class BackendCore:
@@ -44,6 +44,8 @@ class BackendCore:
         self.save_yaml_path = 'resources.yaml'
         self.log_file_path = 'log.json'
 
+        self.default_visualization_image = 'default_visualization.png'
+
         self.parse_base_info()
 
     def parse_base_info(self):
@@ -56,12 +58,19 @@ class BackendCore:
         except KeyError as e:
             LOGGER.warning(f'Parse base info failed: {str(e)}')
 
+    def get_log_file_name(self):
+        base_info = self.template_helper.load_base_info()
+        load_file_name = base_info['log-file-name']
+        if not load_file_name:
+            return None
+        return load_file_name.split('.')[0]
+
     def parse_apply_templates(self, policy, source_deploy):
         yaml_dict = {}
 
         yaml_dict.update(self.template_helper.load_policy_apply_yaml(policy))
 
-        service_dict = self.extract_service_from_source_deployment(source_deploy)
+        service_dict, source_deploy = self.extract_service_from_source_deployment(source_deploy)
         yaml_dict.update({'processor': self.template_helper.load_application_apply_yaml(service_dict)})
 
         docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy)
@@ -77,14 +86,18 @@ class BackendCore:
         for s in source_deploy:
             pipeline = s['pipeline']
             node = s['node']
+            extracted_pipeline = []
             for service_id in pipeline:
                 service = self.find_service_by_id(service_id)
+                service_name = service['service']
+                service_yaml = service['yaml']
+                extracted_pipeline.append(service)
                 if service_id in service_dict:
                     service_dict[service_id]['node'].append(node)
                 else:
-                    service_dict[service_id] = {'yaml': service['yaml'], 'node': [node]}
-
-        return service_dict
+                    service_dict[service_id] = {'service_name': service_name, 'yaml': service_yaml, 'node': [node]}
+            s['pipeline'] = extracted_pipeline
+        return service_dict, source_deploy
 
     def get_yaml_docs(self):
         if self.cur_yaml_docs:
@@ -224,9 +237,11 @@ class BackendCore:
                     image = get_first_frame_from_video(file_path)
                     image = draw_bboxes(image, content[0][0])
 
-                    base64_data = encode_image(image)
+                    base64_data = EncodeOps.encode_image(image)
                 except Exception as e:
-                    base64_data = bytes('', encoding='utf8')
+                    base64_data = EncodeOps.encode_image(
+                        cv2.imread(self.default_visualization_image)
+                    )
                     LOGGER.warning(f'Video visualization fetch failed: {str(e)}')
                 if os.path.exists(file_path):
                     os.remove(file_path)
@@ -243,7 +258,7 @@ class BackendCore:
 
     def check_datasource_config(self, config_path):
         if not YamlOps.is_yaml_file(config_path):
-            return False
+            return None
 
         config = YamlOps.read_yaml(config_path)
         try:

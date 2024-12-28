@@ -24,6 +24,12 @@ class Queue:
             items.append(self.__queue.get())
         return items
 
+    def get_all_without_drop(self) -> List[object]:
+        # This does not affect the queue state because it doesn't consume the items
+        with self.__queue.mutex:  # Lock to safely access the internal queue
+            items = list(self.__queue.queue)
+        return items
+
     def empty(self) -> bool:
         return self.__queue.empty()
 

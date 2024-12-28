@@ -30,6 +30,12 @@ class DataSource:
 
         self.request_interval = Context.get_parameter('INTERVAL', direct=False)
 
+        self.play_mode = Context.get_parameter('PLAY_MODE')
+
+        if self.play_mode not in ['cycle', 'non-cycle']:
+            raise ValueError(f'play_mode must be cycle or non-cycle, given {self.play_mode}')
+        LOGGER.info(f'Play Mode: {self.play_mode}')
+
     def open_datasource(self, modal, label, mode, source_list):
         if self.source_open:
             return
@@ -48,7 +54,7 @@ class DataSource:
             url = re.sub(r'(?<=:)\d+', str(self.inner_port), source['url'])
             url = re.sub(r'\d+\.\d+\.\d+\.\d+', '127.0.0.1', url)
             command = (f'{self.command_headers[mode].replace("modal", modal)} '
-                       f'--root {datasource_dir} --address {url}')
+                       f'--root {datasource_dir} --address {url} --play_mode {self.play_mode}')
             process = ScriptHelper.start_script(command)
             self.process_list.append(process)
 

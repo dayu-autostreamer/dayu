@@ -5,7 +5,7 @@ import time
 import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
-from core.lib.estimation import AccEstimator
+from core.lib.estimation import AccEstimator, OverheadEstimator
 from core.lib.common import VideoOps
 
 from .base_agent import BaseAgent
@@ -19,7 +19,16 @@ class HEIAgent(BaseAgent, abc.ABC):
     def __init__(self, system,
                  agent_id: int,
                  window_size: int = 10,
-                 mode: str = 'inference'):
+                 mode: str = 'inference',
+                 model_dir: str = 'model',
+                 load_model: bool = False,
+                 load_model_episode: int = 0,
+                 acc_gt_dir: str = '',
+                 relaxed_coefficient: float = 1.6,
+                 punishment_coefficient: float = 20,
+                 punishment_bound: float = -2,
+                 reward_bound: float = 0.5,
+                 reward_coefficient: float = 0.3, ):
         from .hei import SoftActorCritic, RandomBuffer, Adapter, NegativeFeedback, StateBuffer
 
         self.agent_id = agent_id
@@ -33,6 +42,12 @@ class HEIAgent(BaseAgent, abc.ABC):
         self.state_buffer = StateBuffer(self.window_size)
         self.mode = mode
 
+        self.relaxed_coefficient = relaxed_coefficient
+        self.punishment_coefficient = punishment_coefficient
+        self.punishment_bound = punishment_bound
+        self.reward_bound = reward_bound
+        self.reward_coefficient = reward_coefficient
+
         self.drl_agent = SoftActorCritic(**drl_params)
         self.replay_buffer = RandomBuffer(**drl_params)
         self.adapter = Adapter
@@ -45,16 +60,13 @@ class HEIAgent(BaseAgent, abc.ABC):
         self.state_dim = drl_params['state_dims']
         self.action_dim = drl_params['action_dim']
 
-        self.gt_file_path = Context.get_file_path('gt_file.txt')
-        self.hash_file_path = Context.get_file_path('hash_file.ann')
-        self.acc_estimator = AccEstimator(self.hash_file_path, self.gt_file_path)
+        self.acc_gt_dir = acc_gt_dir
+        self.acc_estimator = None
 
-        self.model_dir = Context.get_file_path(os.path.join(hyper_params['model_dir'], f'agent_{self.agent_id}'))
+        self.model_dir = Context.get_file_path(os.path.join('scheduler/hei', model_dir, f'agent_{self.agent_id}'))
         FileOps.create_directory(self.model_dir)
-
-        if hyper_params['load_model']:
-            self.premodel_dir = Context.get_file_path('')
-            self.drl_agent.load(self.premodel_dir, hyper_params['load_model_episode'])
+        if load_model:
+            self.drl_agent.load(self.model_dir, load_model_episode)
 
         self.total_steps = hyper_params['drl_total_steps']
         self.save_interval = hyper_params['drl_save_interval']
@@ -66,6 +78,12 @@ class HEIAgent(BaseAgent, abc.ABC):
         self.latest_policy = None
         self.latest_task_delay = None
         self.schedule_plan = None
+
+        self.reward_file = Context.get_file_path(os.path.join('scheduler/hei', 'reward.txt'))
+        FileOps.remove_file(self.reward_file)
+
+        self.macro_overhead_estimator = OverheadEstimator('HEI-Macro', 'scheduler/hei')
+        self.micro_overhead_estimator = OverheadEstimator('HEI-Micro', 'scheduler/hei')
 
     def get_drl_state_buffer(self):
         while True:
@@ -105,6 +123,11 @@ class HEIAgent(BaseAgent, abc.ABC):
 
         return state, reward, done, info
 
+    def create_acc_estimator(self, service_name: str):
+        gt_path_prefix = os.path.join(self.acc_gt_dir, service_name)
+        gt_file_path = Context.get_file_path(os.path.join(gt_path_prefix, 'gt_file.txt'))
+        self.acc_estimator = AccEstimator(gt_file_path)
+
     def calculate_drl_reward(self, evaluation_info):
         delay_bias_list = []
         acc_list = []
@@ -114,6 +137,7 @@ class HEIAgent(BaseAgent, abc.ABC):
             meta_data = task.get_metadata()
             raw_metadata = task.get_raw_metadata()
             content = task.get_content()
+            pipeline = task.get_pipeline()
 
             hash_data = task.get_hash_data()
 
@@ -123,21 +147,26 @@ class HEIAgent(BaseAgent, abc.ABC):
 
             fps_ratio = meta_data['fps'] / raw_metadata['fps']
 
+            if not self.acc_estimator:
+                self.create_acc_estimator(service_name=pipeline[0].get_service_name())
             acc = self.acc_estimator.calculate_accuracy(hash_data, content, resolution_ratio, fps_ratio)
             acc_list.append(acc)
 
             single_task_delay = delay / meta_data['buffer_size']
             single_task_constraint = 1 / meta_data['fps']
-            delay_bias_list.append(single_task_constraint * 1.6 - single_task_delay)
+            delay_bias_list.append(single_task_constraint * self.relaxed_coefficient - single_task_delay)
 
         final_delay = np.mean(delay_bias_list)
         final_acc = np.mean(acc_list)
         LOGGER.info(f'[Reward Computing] delay:{final_delay} acc:{final_acc}')
 
         if final_delay < 0:
-            reward = min(final_delay * 20, -2)
+            reward = max(final_delay * self.punishment_coefficient, self.punishment_bound)
         else:
-            reward = 1 / max(final_delay, 0.5) * 0.3 + final_acc
+            reward = 1 / max(final_delay, self.reward_bound) * self.reward_coefficient + final_acc
+
+        with open(self.reward_file, 'a') as f:
+            f.write(f'delay:{final_delay} acc:{final_acc} reward:{reward}\n')
 
         return reward
 
@@ -145,7 +174,9 @@ class HEIAgent(BaseAgent, abc.ABC):
         LOGGER.info(f'[DRL Train] (agent {self.agent_id}) Start train drl agent ..')
         state = self.reset_drl_env()
         for step in range(self.total_steps):
-            action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
+
+            with self.macro_overhead_estimator:
+                action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
 
             next_state, reward, done, info = self.step_drl_env(action)
             done = self.adapter.done_adapter(done, step)
@@ -174,7 +205,10 @@ class HEIAgent(BaseAgent, abc.ABC):
         while True:
             time.sleep(self.drl_schedule_interval)
             cur_step += 1
-            action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
+
+            with self.macro_overhead_estimator:
+                action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
+
             next_state, reward, done, info = self.step_drl_env(action)
             done = self.adapter.done_adapter(done, cur_step)
             state = next_state
@@ -188,7 +222,11 @@ class HEIAgent(BaseAgent, abc.ABC):
         while True:
             time.sleep(self.nf_schedule_interval)
 
-            self.schedule_plan = self.nf_agent(self.latest_policy, self.latest_task_delay, self.intermediate_decision)
+            with self.micro_overhead_estimator:
+                self.schedule_plan = self.nf_agent(self.latest_policy,
+                                                   self.latest_task_delay,
+                                                   self.intermediate_decision)
+
             LOGGER.debug(f'[NF Update] (agent {self.agent_id}) schedule: {self.schedule_plan}')
 
     def update_scenario(self, scenario):
@@ -201,7 +239,7 @@ class HEIAgent(BaseAgent, abc.ABC):
 
             self.state_buffer.add_scenario_buffer([object_number, object_size, task_delay])
         except Exception as e:
-            LOGGER.warning('Wrong scenario from Distributor!')
+            LOGGER.warning(f'Wrong scenario from Distributor: {str(e)}')
 
     def update_resource(self, device, resource):
         bandwidth = resource['bandwidth']

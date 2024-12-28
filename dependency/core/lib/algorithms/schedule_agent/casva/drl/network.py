@@ -29,7 +29,7 @@ class SpecificConvFeatureExtractor(nn.Module):
 
 
 class FeatureExtractor(nn.Module):
-    def __init__(self, state_num_groups, window_size, hid_channels, kernel_size, state_features, activation):
+    def __init__(self, state_num_groups, window_size, hid_channels, kernel_size, kernel_size_special, state_features, activation):
         super(FeatureExtractor, self).__init__()
         self.state_indexes = list(accumulate(state_num_groups))
         self.state_num_groups = state_num_groups
@@ -37,7 +37,7 @@ class FeatureExtractor(nn.Module):
             SpecificConvFeatureExtractor(
                 input_channels=state_num,
                 hid_channels=hid_channels,
-                kernel_size=kernel_size,
+                kernel_size=kernel_size if state_num==1 else kernel_size_special,
                 input_series_length=window_size,
                 output_features=state_features * state_num,
                 activation=activation)
@@ -55,7 +55,7 @@ class FeatureExtractor(nn.Module):
 
 class Actor(nn.Module):
     def __init__(self, state_dims, action_dim, hid_shape,
-                 conv_hid_channels, conv_kernel_size, conv_state_feature,
+                 conv_hid_channels, conv_kernel_size,conv_kernel_size_special, conv_state_feature,
                  conv_activation=nn.ReLU, h_activation=nn.ReLU, o_activation=nn.ReLU):
         super(Actor, self).__init__()
 
@@ -64,6 +64,7 @@ class Actor(nn.Module):
             window_size=state_dims[1],
             hid_channels=conv_hid_channels,
             kernel_size=conv_kernel_size,
+            kernel_size_special=conv_kernel_size_special,
             state_features=conv_state_feature,
             activation=conv_activation,
         )
@@ -78,8 +79,8 @@ class Actor(nn.Module):
     def forward(self, state, deterministic=False, with_logprob=True):
         """Network with Enforcing Action Bounds"""
 
-        state = format_input_state(state)
-        state_features = self.feature_extractor(state)
+        features = format_input_state(state)
+        state_features = self.feature_extractor(features)
 
         net_out = self.a_net(state_features)
         mu = self.mu_layer(net_out)
@@ -113,7 +114,7 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
     def __init__(self, state_dims, action_dim, hid_shape,
-                 conv_hid_channels, conv_kernel_size, conv_state_feature,
+                 conv_hid_channels, conv_kernel_size, conv_kernel_size_special, conv_state_feature,
                  conv_activation=nn.ReLU, h_activation=nn.ReLU, o_activation=nn.Identity):
         super(Critic, self).__init__()
 
@@ -122,6 +123,7 @@ class Critic(nn.Module):
             window_size=state_dims[1],
             hid_channels=conv_hid_channels,
             kernel_size=conv_kernel_size,
+            kernel_size_special = conv_kernel_size_special,
             state_features=conv_state_feature,
             activation=conv_activation
         )

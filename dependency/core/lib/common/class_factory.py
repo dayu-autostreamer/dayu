@@ -13,11 +13,13 @@ class ClassType:
 
     GENERATOR = 'generator'
     GEN_BSO = 'generator_before_schedule_operation'
+    GEN_BSTO = 'generator_before_submit_task_operation'
     GEN_ASO = 'generator_after_schedule_operation'
     GEN_COMPRESS = 'generator_frame_compress'
     GEN_FILTER = 'generator_frame_filter'
     GEN_PROCESS = 'generator_frame_process'
     GEN_GETTER = 'generator_data_getter'
+    GEN_GETTER_FILTER = 'generator_data_getter_filter'
 
     SCH_AGENT = 'scheduler_agent'
     SCH_STARTUP = 'scheduler_startup_policy'

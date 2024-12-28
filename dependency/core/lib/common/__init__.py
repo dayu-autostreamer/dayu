@@ -4,6 +4,7 @@ from .file_ops import FileOps
 from .video_ops import VideoOps
 from .yaml_ops import YamlOps
 from .hash_ops import HashOps
+from .encode_ops import EncodeOps
 from .constant import SystemConstant, FileNameConstant, NodeRoleConstant
 from .config import Context
 from .class_factory import *

@@ -1,12 +1,11 @@
 import abc
 import os.path
-import threading
 import time
 import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
 from core.lib.estimation import AccEstimator
-from core.lib.common import VideoOps
+from core.lib.common import VideoOps, FileNameConstant
 
 from .base_agent import BaseAgent
 
@@ -19,7 +18,10 @@ class HEISYNAgent(BaseAgent, abc.ABC):
     def __init__(self, system,
                  agent_id: int,
                  window_size: int = 10,
-                 mode: str = 'inference'):
+                 mode: str = 'inference',
+                 model_dir: str = 'model',
+                 load_model: bool = False,
+                 load_model_episode: int = 0):
         from .hei import SoftActorCritic, RandomBuffer, Adapter, NegativeFeedback, StateBuffer
 
         self.agent_id = agent_id
@@ -45,16 +47,12 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         self.state_dim = drl_params['state_dims']
         self.action_dim = drl_params['action_dim']
 
-        self.gt_file_path = Context.get_file_path('gt_file.txt')
-        self.hash_file_path = Context.get_file_path('hash_file.ann')
-        self.acc_estimator = AccEstimator(self.hash_file_path, self.gt_file_path)
+        self.acc_estimator = None
 
-        self.model_dir = Context.get_file_path(os.path.join(hyper_params['model_dir'], f'agent_{self.agent_id}'))
+        self.model_dir = Context.get_file_path(os.path.join('scheduler/hei', model_dir, f'agent_{self.agent_id}'))
         FileOps.create_directory(self.model_dir)
-
-        if hyper_params['load_model']:
-            self.premodel_dir = Context.get_file_path('')
-            self.drl_agent.load(self.premodel_dir, hyper_params['load_model_episode'])
+        if load_model:
+            self.drl_agent.load(self.model_dir, load_model_episode)
 
         self.total_steps = hyper_params['drl_total_steps']
         self.save_interval = hyper_params['drl_save_interval']
@@ -89,7 +87,6 @@ class HEISYNAgent(BaseAgent, abc.ABC):
 
         LOGGER.debug(f'[NF Update] (agent {self.agent_id}) schedule: {self.schedule_plan}')
 
-
     def reset_drl_env(self):
         self.intermediate_decision = [0 for _ in range(self.action_dim)]
 
@@ -110,6 +107,11 @@ class HEISYNAgent(BaseAgent, abc.ABC):
 
         return state, reward, done, info
 
+    def create_acc_estimator(self, service_name: str):
+        gt_path_prefix = os.path.join(FileNameConstant.ACC_GT_DIR.value, service_name)
+        gt_file_path = Context.get_file_path(os.path.join(gt_path_prefix, 'gt_file.txt'))
+        self.acc_estimator = AccEstimator(gt_file_path)
+
     def calculate_drl_reward(self, evaluation_info):
         delay_bias_list = []
         acc_list = []
@@ -119,6 +121,7 @@ class HEISYNAgent(BaseAgent, abc.ABC):
             meta_data = task.get_metadata()
             raw_metadata = task.get_raw_metadata()
             content = task.get_content()
+            pipeline = task.get_pipeline()
 
             hash_data = task.get_hash_data()
 
@@ -127,6 +130,9 @@ class HEISYNAgent(BaseAgent, abc.ABC):
             resolution_ratio = (resolution[0] / raw_resolution[0], resolution[1] / raw_resolution[1])
 
             fps_ratio = meta_data['fps'] / raw_metadata['fps']
+
+            if not self.acc_estimator:
+                self.create_acc_estimator(service_name=pipeline[0].get_service_name())
 
             acc = self.acc_estimator.calculate_accuracy(hash_data, content, resolution_ratio, fps_ratio)
             acc_list.append(acc)
@@ -197,7 +203,7 @@ class HEISYNAgent(BaseAgent, abc.ABC):
 
             self.state_buffer.add_scenario_buffer([object_number, object_size, task_delay])
         except Exception as e:
-            LOGGER.warning('Wrong scenario from Distributor!')
+            LOGGER.warning(f'Wrong scenario from Distributor: {str(e)}')
 
     def update_resource(self, device, resource):
         bandwidth = resource['bandwidth']

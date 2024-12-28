@@ -1,0 +1,14 @@
+source_name: "Street Dense HTTP"
+source_type: "video"
+source_mode: "http_video"
+source_list:
+  - name: "street_camera_dense"
+    url: ""
+    dir: "street_dense"
+    metadata:
+      resolution: "1080p"
+      fps: 30
+      encoding: "mp4v"
+      buffer_size: 4
+
+

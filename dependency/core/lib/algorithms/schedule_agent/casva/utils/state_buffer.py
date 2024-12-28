@@ -5,12 +5,15 @@ from core.lib.common import LOGGER
 class StateBuffer:
     def __init__(self, window_size):
         self.resources = []
-        self.scenarios = []
+        self.delay = []
+        self.buffer_size = []
+        self.segment_size = []
+        self.content_dynamics = []
         self.decisions = []
         self.tasks = []
 
         self.window_size = window_size
-        self.max_size = window_size*2
+        self.max_size = window_size * 2
 
     def add_resource_buffer(self, resource):
         self.resources.append(resource)
@@ -18,9 +21,15 @@ class StateBuffer:
             self.resources.pop(0)
 
     def add_scenario_buffer(self, scenario):
-        self.scenarios.append(scenario)
-        while len(self.scenarios) > self.max_size:
-            self.scenarios.pop(0)
+        self.delay.append(scenario['delay'])
+        self.buffer_size.append(scenario['buffer_size'])
+        self.segment_size.append(scenario['segment_size'])
+        self.content_dynamics.append(scenario['content_dynamics'])
+        while len(self.delay) > self.max_size:
+            self.delay.pop(0)
+            self.buffer_size.pop(0)
+            self.segment_size.pop(0)
+            self.content_dynamics.pop(0)
 
     def add_decision_buffer(self, decision):
         self.decisions.append(decision)
@@ -30,23 +39,15 @@ class StateBuffer:
     def add_task_buffer(self, task):
         self.tasks.append(task)
 
-    def get_resource_buffer(self):
-        return np.array(self.resources.copy())
-
-    def get_scenario_buffer(self):
-        return np.array(self.scenarios.copy())
-
-    def get_decision_buffer(self):
-        return np.array(self.decisions.copy())
-
-    def get_task_buffer(self):
-        return np.array(self.tasks.copy())
-
     def get_state_buffer(self):
 
         # TODO: normalization the state ?
         resources = self.resources.copy()
-        scenarios = self.scenarios.copy()
+
+        delay = self.delay.copy()
+        buffer_size = self.buffer_size.copy()
+        segment_size = self.segment_size.copy()
+        content_dynamics = self.content_dynamics.copy()
         decisions = self.decisions.copy()
         tasks = self.tasks.copy()
 
@@ -55,23 +56,26 @@ class StateBuffer:
         else:
             evaluation_info = tasks
 
-        if len(resources) == 0 or len(scenarios) == 0 or len(decisions) == 0:
+        if len(resources) == 0 or len(delay) == 0 or len(decisions) == 0:
             state = None
         else:
 
             LOGGER.debug(f'[Resource Buffer] length: {len(resources)}, content: {resources}')
-            LOGGER.debug(f'[Scenario Buffer] length: {len(scenarios)}, content: {scenarios}')
+            LOGGER.debug(f'[Scenario Buffer] length: {len(delay)}')
             LOGGER.debug(f'[Decision Buffer] length: {len(decisions)}, content: {decisions}')
 
             resources = np.array(self.resample_buffer(resources, self.window_size))
-            scenarios = np.array(self.resample_buffer(scenarios, self.window_size))
+            delay = np.array(self.resample_buffer(delay, self.window_size))
+            buffer_size = np.array(self.resample_buffer(buffer_size, self.window_size))
+            segment_size = np.array(self.resample_buffer(segment_size, self.window_size))
+            content_dynamics = np.array(self.resample_buffer(content_dynamics, self.window_size))
             decisions = np.array(self.resample_buffer(decisions, self.window_size))
 
             LOGGER.debug(f'[Resample Resource Buffer] length: {len(resources)}, content: {resources}')
-            LOGGER.debug(f'[Resample Scenario Buffer] length: {len(scenarios)}, content: {scenarios}')
+            LOGGER.debug(f'[Resample Scenario Buffer] length: {len(delay)}')
             LOGGER.debug(f'[Resample Decision Buffer] length: {len(decisions)}, content: {decisions}')
 
-            state = np.vstack((resources.T, scenarios.T, decisions.T))
+            state = np.vstack((resources.T, delay.T, buffer_size.T, segment_size.T, content_dynamics.T, decisions.T))
             LOGGER.debug(f'[State Buffer] content: {state}')
 
         self.clear_state_buffer()

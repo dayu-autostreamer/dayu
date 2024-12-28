@@ -9,7 +9,7 @@ __all__ = ('FixedAgent',)
 @ClassFactory.register(ClassType.SCH_AGENT, alias='fixed')
 class FixedAgent(BaseAgent, abc.ABC):
 
-    def __init__(self, system, agent_id:int, fixed_policy: dict = None):
+    def __init__(self, system, agent_id: int, fixed_policy: dict = None):
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
         self.fixed_policy = fixed_policy
@@ -43,4 +43,3 @@ class FixedAgent(BaseAgent, abc.ABC):
 
     def update_task(self, task):
         pass
-

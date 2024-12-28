@@ -1,10 +1,19 @@
 import abc
-from core.lib.common import ClassFactory, ClassType,LOGGER
+
+from core.lib.common import ClassFactory, ClassType, LOGGER
+from core.lib.estimation import OverheadEstimator
 
 from .base_agent import BaseAgent
 
-
 __all__ = ('FCAgent',)
+
+"""
+Feedback Controlling Agent Class
+
+Implementation of the Feedback Controlling
+
+Nigade V, Winder R, Bal H, et al. Better never than late: Timely edge video analytics over the air[C]//Proceedings of the 19th ACM Conference on Embedded Networked Sensor Systems. 2021: 426-432.
+"""
 
 
 @ClassFactory.register(ClassType.SCH_AGENT, alias='fc')
@@ -20,7 +29,7 @@ class FCAgent(BaseAgent, abc.ABC):
 
         self.reference_policy = reference_policy
 
-        self.resolution_list = system.resolution_list
+        self.resolution_list = system.resolution_list.copy()
 
         self.latest_resolution_index = self.resolution_list.index(reference_policy['resolution'])
 
@@ -33,7 +42,9 @@ class FCAgent(BaseAgent, abc.ABC):
         self.b = 2
 
         self.theta_high = 0
-        self.theta_low = 0 - theta/1000 * self.window_length
+        self.theta_low = 0 - theta / 1000 * self.window_length
+
+        self.overhead_estimator = OverheadEstimator('FC', 'scheduler/fc')
 
     def get_schedule_plan(self, info):
         if len(self.history_window) < self.window_length:
@@ -41,7 +52,10 @@ class FCAgent(BaseAgent, abc.ABC):
             return None
 
         policy = self.reference_policy.copy()
-        updated_resolution_index = self.feed_back_control()
+
+        with self.overhead_estimator:
+            updated_resolution_index = self.feed_back_control()
+
         policy.update({'resolution': self.resolution_list[updated_resolution_index]})
         cloud_device = self.cloud_device
         pipeline = info['pipeline']
@@ -70,7 +84,7 @@ class FCAgent(BaseAgent, abc.ABC):
             else:
                 update_resolution_index = self.latest_resolution_index
         elif avg_error >= self.theta_high:
-            update_resolution_index = self.latest_resolution_index//2
+            update_resolution_index = self.latest_resolution_index // 2
 
         else:
             update_resolution_index = self.latest_resolution_index
@@ -95,4 +109,4 @@ class FCAgent(BaseAgent, abc.ABC):
     def update_task(self, task):
         if len(self.history_window) >= self.window_length:
             self.history_window = self.history_window[1:]
-        self.history_window.append(task.calculate_total_time()/task.get_metadata()['buffer_size'])
+        self.history_window.append(task.calculate_total_time() / task.get_metadata()['buffer_size'])

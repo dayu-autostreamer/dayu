@@ -6,7 +6,7 @@ source_list:
     url: ""
     dir: "road_0/"
     metadata:
-      resolution: "1080p"
+      resolution: "540p"
       fps: 30
       encoding: "mp4v"
       buffer_size: 4

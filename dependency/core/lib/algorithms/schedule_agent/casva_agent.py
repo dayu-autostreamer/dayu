@@ -1,16 +1,26 @@
 import abc
+import math
 import os.path
-import threading
 import time
 import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
-from core.lib.estimation import AccEstimator
 from core.lib.common import VideoOps
+from core.lib.estimation import AccEstimator, OverheadEstimator
 
 from .base_agent import BaseAgent
 
 __all__ = ('CASVAAgent',)
+
+"""
+CASVA Agent Class
+
+Implementation of CASVA
+
+In this implementation , for the sake of uniformity, we also set buffer size in state as a sequence not a single value.
+
+Zhang M, Wang F, Liu J. Casva: Configuration-adaptive streaming for live video analytics[C]//IEEE INFOCOM 2022-IEEE Conference on Computer Communications. IEEE, 2022: 2168-2177.
+"""
 
 
 @ClassFactory.register(ClassType.SCH_AGENT, alias='casva')
@@ -18,15 +28,28 @@ class CASVAAgent(BaseAgent, abc.ABC):
 
     def __init__(self, system,
                  agent_id: int,
-                 window_size: int = 10,
-                 mode: str = 'inference'):
-        from .casva import SoftActorCritic, RandomBuffer, Adapter, StateBuffer
+                 window_size: int = 8,
+                 mode: str = 'inference',
+                 streaming_mode: str = 'latency_first',
+                 segment_length: int = 2,
+                 model_dir: str = 'model',
+                 load_model: bool = False,
+                 load_model_episode: int = 0,
+                 acc_gt_dir: str = ''):
+        from .casva import DualClippedPPO, RandomBuffer, Adapter, StateBuffer
+
+        assert streaming_mode in ['latency_first', 'delivery_first'], \
+            '"streaming_mode" must be "latency_first" or "delivery_first"'
 
         self.agent_id = agent_id
         self.system = system
 
+        self.cloud_device = system.cloud_device
+        self.edge_device = None
+
         self.fps_list = system.fps_list
         self.resolution_list = system.resolution_list
+        self.qp_list = system.qp_list
 
         drl_params = system.drl_params.copy()
         hyper_params = system.hyper_params.copy()
@@ -35,8 +58,10 @@ class CASVAAgent(BaseAgent, abc.ABC):
         self.window_size = window_size
         self.state_buffer = StateBuffer(self.window_size)
         self.mode = mode
+        self.streaming_mode = streaming_mode
+        self.segment_length = segment_length
 
-        self.drl_agent = SoftActorCritic(**drl_params)
+        self.drl_agent = DualClippedPPO(**drl_params)
         self.replay_buffer = RandomBuffer(**drl_params)
         self.adapter = Adapter
 
@@ -45,27 +70,29 @@ class CASVAAgent(BaseAgent, abc.ABC):
         self.state_dim = drl_params['state_dims']
         self.action_dim = drl_params['action_dim']
 
-        self.gt_file_path = Context.get_file_path('gt_file.txt')
-        self.hash_file_path = Context.get_file_path('hash_file.ann')
-        self.acc_estimator = AccEstimator(self.hash_file_path, self.gt_file_path)
-
-        self.model_dir = Context.get_file_path(os.path.join(hyper_params['model_dir'], f'agent_{self.agent_id}'))
+        self.model_dir = Context.get_file_path(os.path.join('scheduler/casva', model_dir, f'agent_{self.agent_id}'))
         FileOps.create_directory(self.model_dir)
-
-        if hyper_params['load_model']:
-            self.premodel_dir = Context.get_file_path('')
-            self.drl_agent.load(self.premodel_dir, hyper_params['load_model_episode'])
+        if load_model:
+            self.drl_agent.load(self.model_dir, load_model_episode)
 
         self.total_steps = hyper_params['drl_total_steps']
         self.save_interval = hyper_params['drl_save_interval']
         self.update_interval = hyper_params['drl_update_interval']
         self.update_after = hyper_params['drl_update_after']
 
-        self.intermediate_decision = [0 for _ in range(self.action_dim)]
-
         self.latest_policy = None
-        self.latest_task_delay = None
         self.schedule_plan = None
+
+        self.acc_gt_dir = acc_gt_dir
+        self.acc_estimator = None
+
+        self.past_buffer_size_value = 0
+        self.latest_skip_count = 0
+
+        self.overhead_estimator = OverheadEstimator('CASVA', 'scheduler/casva')
+
+        self.reward_file = Context.get_file_path(os.path.join('scheduler/casva', 'reward.txt'))
+        FileOps.remove_file(self.reward_file)
 
     def get_drl_state_buffer(self):
         while True:
@@ -84,15 +111,21 @@ class CASVAAgent(BaseAgent, abc.ABC):
             LOGGER.info(f'[CASVA Lack Latest Policy] (agent {self.agent_id}) No latest policy, none decision make ..')
             return
 
-        resolution_index = int((action[0] + 1) / 2 * len(self.resolution_list))
-        fps_index = int((action[1] + 1) / 2 * len(self.fps_list))
+        self.edge_device = self.latest_policy['edge_device']
+        resolution_index = min(int((action[0] + 1) / 2 * len(self.resolution_list)), len(self.resolution_list) - 1)
+        fps_index = min(int((action[1] + 1) / 2 * len(self.fps_list)), len(self.fps_list) - 1)
+        qp_index = min(int((action[2] + 1) / 2 * len(self.qp_list)), len(self.qp_list) - 1)
+
         self.latest_policy.update({'resolution': self.resolution_list[resolution_index],
-                                   'fps': self.fps_list[fps_index]})
+                                   'fps': self.fps_list[fps_index],
+                                   'qp': self.qp_list[qp_index],
+                                   'buffer_size': math.ceil(self.fps_list[fps_index] * self.segment_length)
+                                   })
 
         pipe_seg = 0
         pipeline = self.latest_policy['pipeline']
-        pipeline = [{**p, 'execute_device': 'edge1'} for p in pipeline[:pipe_seg]] + \
-                   [{**p, 'execute_device': 'cloud.kubeedge'} for p in pipeline[pipe_seg:]]
+        pipeline = [{**p, 'execute_device': self.edge_device} for p in pipeline[:pipe_seg]] + \
+                   [{**p, 'execute_device': self.cloud_device} for p in pipeline[pipe_seg:]]
         self.latest_policy.update({'pipeline': pipeline})
         self.schedule_plan = self.latest_policy.copy()
 
@@ -119,17 +152,27 @@ class CASVAAgent(BaseAgent, abc.ABC):
 
         return state, reward, done, info
 
+    def create_acc_estimator(self, service_name: str):
+        gt_path_prefix = os.path.join(self.acc_gt_dir, service_name)
+        gt_file_path = Context.get_file_path(os.path.join(gt_path_prefix, 'gt_file.txt'))
+        self.acc_estimator = AccEstimator(gt_file_path)
+
     def calculate_drl_reward(self, evaluation_info):
-        delay_bias_list = []
+
         acc_list = []
+        transmit_delay_list = []
+        buffer_size_list = []
 
         for task in evaluation_info:
-            delay = task.calculate_total_time()
             meta_data = task.get_metadata()
             raw_metadata = task.get_raw_metadata()
             content = task.get_content()
+            pipeline = task.get_pipeline()
 
             hash_data = task.get_hash_data()
+
+            buffer_size = meta_data['buffer_size']
+            buffer_size_list.append(buffer_size)
 
             raw_resolution = VideoOps.text2resolution(raw_metadata['resolution'])
             resolution = VideoOps.text2resolution(meta_data['resolution'])
@@ -137,40 +180,57 @@ class CASVAAgent(BaseAgent, abc.ABC):
 
             fps_ratio = meta_data['fps'] / raw_metadata['fps']
 
+            transmit_delay_list.append(task.calculate_cloud_edge_transmit_time())
+
+            if not self.acc_estimator:
+                self.create_acc_estimator(service_name=pipeline[0].get_service_name())
             acc = self.acc_estimator.calculate_accuracy(hash_data, content, resolution_ratio, fps_ratio)
             acc_list.append(acc)
 
-            single_task_delay = delay / meta_data['buffer_size']
-            single_task_constraint = 1 / meta_data['fps']
-            delay_bias_list.append(single_task_constraint * 1.6 - single_task_delay)
-
-        final_delay = np.mean(delay_bias_list)
         final_acc = np.mean(acc_list)
-        LOGGER.info(f'[Reward Computing] delay:{final_delay} acc:{final_acc}')
+        final_transmit_delay = np.mean(transmit_delay_list)
+        final_buffer_size = np.mean(buffer_size_list)
 
-        if final_delay < 0:
-            reward = min(final_delay * 20, -2)
+        if self.streaming_mode == 'latency_first':
+            reward = (5 * final_acc - 1 * max(final_transmit_delay - self.segment_length, 0) / self.segment_length
+                      - 1 * self.latest_skip_count)
+
+            LOGGER.info(f'[CASVA Reward Computing] (latency first) '
+                        f'acc:{final_acc:.4f}, delay:{final_transmit_delay:.4f} ,reward:{reward:.4f}')
+        elif self.streaming_mode == 'delivery_first':
+            reward = (2 * final_acc - 3 * max(final_transmit_delay - self.segment_length, 0) / self.segment_length
+                      + ((final_buffer_size - self.past_buffer_size_value) / self.segment_length
+                         if final_buffer_size < self.past_buffer_size_value else 0))
+
+            self.past_buffer_size_value = final_buffer_size
+
+            LOGGER.info(f'[CASVA Reward Computing] (delivery first) '
+                        f'acc:{final_acc:.4f}, delay:{final_transmit_delay:.4f} ,reward:{reward:.4f}')
         else:
-            reward = 1 / max(final_delay, 0.5) * 0.3 + final_acc
+            raise ValueError('"streaming_mode" must be "latency_first" or "delivery_first"')
+
+        with open(self.reward_file, 'a') as f:
+            f.write(f'dacc:{final_acc:.4f}, delay:{final_transmit_delay:.4f} ,reward:{reward:.4f}\n')
 
         return reward
 
     def train_drl_agent(self):
-        LOGGER.info(f'[DRL Train] (agent {self.agent_id}) Start train drl agent ..')
+        LOGGER.info(f'[CASVA DRL Train] (agent {self.agent_id}) Start train drl agent ..')
         state = self.reset_drl_env()
         for step in range(self.total_steps):
-            action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
+            with self.overhead_estimator:
+                action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
 
             next_state, reward, done, info = self.step_drl_env(action)
             done = self.adapter.done_adapter(done, step)
             self.replay_buffer.add(state, action, reward, next_state, done)
             state = next_state
 
-            LOGGER.info(f'[DRL Train Data] (agent {self.agent_id}) Step:{step}  Reward:{reward}')
+            LOGGER.info(f'[CASVA DRL Train Data] (agent {self.agent_id}) Step:{step}  Reward:{reward}')
 
             if step >= self.update_after and step % self.update_interval == 0:
                 for _ in range(self.update_interval):
-                    LOGGER.info(f'[DRL Train] (agent {self.agent_id}) Train drl agent with replay buffer')
+                    LOGGER.info(f'[CASVA DRL Train] (agent {self.agent_id}) Train drl agent with replay buffer')
                     self.drl_agent.train(self.replay_buffer)
 
             if step % self.save_interval == 0:
@@ -179,16 +239,19 @@ class CASVAAgent(BaseAgent, abc.ABC):
             if done:
                 state = self.reset_drl_env()
 
-        LOGGER.info(f'[DRL Train] (agent {self.agent_id}) End train drl agent ..')
+        LOGGER.info(f'[CASVA DRL Train] (agent {self.agent_id}) End train drl agent ..')
 
     def inference_drl_agent(self):
-        LOGGER.info(f'[DRL Inference] (agent {self.agent_id}) Start inference drl agent ..')
+        LOGGER.info(f'[CASVA DRL Inference] (agent {self.agent_id}) Start inference drl agent ..')
         state = self.reset_drl_env()
         cur_step = 0
         while True:
             time.sleep(self.drl_schedule_interval)
             cur_step += 1
-            action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
+
+            with self.overhead_estimator:
+                action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
+
             next_state, reward, done, info = self.step_drl_env(action)
             done = self.adapter.done_adapter(done, cur_step)
             state = next_state
@@ -198,15 +261,20 @@ class CASVAAgent(BaseAgent, abc.ABC):
 
     def update_scenario(self, scenario):
         try:
-            object_number = np.mean(scenario['obj_num'])
-            object_size = np.mean(scenario['obj_size'])
             task_delay = scenario['delay']
+            buffer_size = scenario["buffer_size"]
+            segment_size = scenario["segment_size"]
+            content_dynamics = scenario["content_dynamics"]
 
-            self.latest_task_delay = task_delay
+            self.state_buffer.add_scenario_buffer(
+                {'delay': task_delay,
+                 'buffer_size': buffer_size,
+                 'segment_size': segment_size,
+                 'content_dynamics': content_dynamics})
 
-            self.state_buffer.add_scenario_buffer([object_number, object_size, task_delay])
         except Exception as e:
-            LOGGER.warning('Wrong scenario from Distributor!')
+            LOGGER.warning(f'Wrong scenario from Distributor: {str(e)}')
+            raise e
 
     def update_resource(self, device, resource):
         bandwidth = resource['bandwidth']
@@ -218,12 +286,10 @@ class CASVAAgent(BaseAgent, abc.ABC):
 
         resolution_decision = self.system.resolution_list.index(policy['resolution'])
         fps_decision = self.system.fps_list.index(policy['fps'])
-        buffer_size_decision = self.system.buffer_size_list.index(policy['buffer_size'])
-        pipeline_decision = next((i for i, service in enumerate(policy['pipeline'])
-                                  if service['execute_device'] == self.system.cloud_device),
-                                 len(policy['pipeline']) - 1)
+        qp_decision = self.system.qp_list.index(policy['qp'])
+
         self.state_buffer.add_decision_buffer([resolution_decision, fps_decision,
-                                               buffer_size_decision, pipeline_decision])
+                                               qp_decision])
 
     def update_task(self, task):
         self.state_buffer.add_task_buffer(task)
@@ -232,6 +298,7 @@ class CASVAAgent(BaseAgent, abc.ABC):
         self.latest_policy = policy
 
     def get_schedule_plan(self, info):
+        self.latest_skip_count = info['skip_count']
         return self.schedule_plan
 
     def run(self):

@@ -1,25 +1,27 @@
+import torch
+import torch.nn.functional as F
+import torch.optim as optim
+import numpy as np
 import copy
 import os
 
-import numpy as np
-import torch
-import torch.nn.functional as F
-
 from .network import Actor, Critic
 
-__all__ = ('SoftActorCritic',)
+__all__ = ('DualClippedPPO',)
 
 
-class SoftActorCritic(object):
+# TODO: modify real PPO architecture (currently is soft actor-critic architecture)
+class DualClippedPPO(object):
     def __init__(
             self,
             state_dims,
             action_dim,
             gamma=0.99,
             hid_shape=(256, 256),
-            conv_kernel_size=(3, 3),
-            conv_hid_channels=(16, 64),
-            conv_state_features=64,
+            conv_kernel_size=(4, 4),
+            conv_kernel_size_special=(1, 1),
+            conv_hid_channels=(128,),
+            conv_state_features=128,
             a_lr=3e-4,
             c_lr=3e-4,
             tau=0.005,
@@ -29,16 +31,16 @@ class SoftActorCritic(object):
             device='cpu',
             **param
     ):
-
+        # Initialize Actor and Critic networks
         self.actor = Actor(state_dims, action_dim, hid_shape,
-                           conv_hid_channels, conv_kernel_size,
+                           conv_hid_channels, conv_kernel_size, conv_kernel_size_special,
                            conv_state_features).to(device)
-
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=a_lr)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=a_lr)
 
         self.q_critic = Critic(state_dims, action_dim, hid_shape,
-                               conv_hid_channels, conv_kernel_size,
+                               conv_hid_channels, conv_kernel_size, conv_kernel_size_special,
                                conv_state_features).to(device)
+
         self.q_critic_optimizer = torch.optim.Adam(self.q_critic.parameters(), lr=c_lr)
         self.q_critic_target = copy.deepcopy(self.q_critic)
         # Freeze target networks with respect to optimizers (only update via polyak averaging)
@@ -61,12 +63,12 @@ class SoftActorCritic(object):
 
         self.device = device
 
-    def select_action(self, state, deterministic, with_logprob=False):
-        # only used when interact with the env
+    def select_action(self, state, deterministic=False, with_logprob=False):
+        # Select action based on the current policy
         with torch.no_grad():
             state = torch.FloatTensor(state).to(self.device)
-            a, _ = self.actor(state, deterministic, with_logprob)
-        return a.cpu().numpy().flatten()
+            action, log_prob = self.actor(state, deterministic, with_logprob)
+        return action.cpu().numpy().flatten()
 
     def train(self, replay_buffer):
         s, a, r, s_prime, dead_mask = replay_buffer.sample(self.batch_size)
@@ -120,12 +122,10 @@ class SoftActorCritic(object):
 
     def save(self, save_dir, episode):
         assert os.path.exists(save_dir) and os.path.isdir(save_dir), f'Model saving directory "{save_dir}" error!'
-
-        torch.save(self.actor.state_dict(), os.path.join(save_dir, f"sac_actor_{episode}.pth"))
-        torch.save(self.q_critic.state_dict(), os.path.join(save_dir, f"sac_q_critic_{episode}.pth"))
+        torch.save(self.actor.state_dict(), os.path.join(save_dir, f"ppo_actor_{episode}.pth"))
+        torch.save(self.q_critic.state_dict(), os.path.join(save_dir, f"ppo_critic_{episode}.pth"))
 
     def load(self, load_dir, episode):
         assert os.path.exists(load_dir) and os.path.isdir(load_dir), f'Model loading directory "{load_dir}" error!'
-
-        self.actor.load_state_dict(torch.load(os.path.join(load_dir, f"sac_actor_{episode}.pth")))
-        self.q_critic.load_state_dict(torch.load(os.path.join(load_dir, f"sac_q_critic_{episode}.pth")))
+        self.actor.load_state_dict(torch.load(os.path.join(load_dir, f"ppo_actor_{episode}.pth")))
+        self.q_critic.load_state_dict(torch.load(os.path.join(load_dir, f"ppo_critic_{episode}.pth")))

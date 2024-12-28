@@ -3,6 +3,7 @@ class NetworkAPIPath:
     CONTROLLER_RETURN = '/process_return'
 
     PROCESSOR_PROCESS = '/predict'
+    PROCESSOR_PROCESS_RETURN = '/process_return'
 
     DISTRIBUTOR_DISTRIBUTE = '/distribute'
     DISTRIBUTOR_RESULT = '/result'
@@ -46,6 +47,7 @@ class NetworkAPIMethod:
     CONTROLLER_RETURN = 'POST'
 
     PROCESSOR_PROCESS = 'POST'
+    PROCESSOR_PROCESS_RETURN = 'POST'
 
     DISTRIBUTOR_DISTRIBUTE = 'POST'
     DISTRIBUTOR_RESULT = 'GET'

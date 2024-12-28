@@ -71,7 +71,7 @@
 
 ## 快速开始
 
-- 在设备上安装 KubeEdge 系统（[安装指南](https://box.nju.edu.cn/f/d6ba2a96a2744f0f9e0a/)）
+- 在设备上安装 KubeEdge 系统（[安装指南](https://box.nju.edu.cn/f/63e12c4ea0794718b16c/)）
 - 修改模板目录中的模板文件（'[template](template)'）
 - 根据模板中的设置将文件部署到设备上，示例部署文件在[这里](https://box.nju.edu.cn/d/0dcaabb5362c4dfc8008/)
 - 安装/卸载大禹系统
@@ -88,6 +88,22 @@ ACTION=stop TEMPLATE=template/ bash - dayu.sh
 大禹系统的组件依赖于 Docker 容器。如果需要自定义大禹系统，需构建指定的镜像。
 
 大禹系统的官方镜像托管在[dockerhub/dayuhub](https://hub.docker.com/u/dayuhub)
+
+设置构建镜像元信息
+```bash
+# 配置 buildx buildkitd (默认为空, 样例可参照 hack/resource/buildkitd_template.toml)
+vim hack/resource/buildkitd.toml
+# 配置 buildx driver-opt (默认为空, 样例可参照 hack/resource/driver_opts_template.toml)
+vim hack/resource/driver_opts.toml
+
+# 设置docker参数
+# default REG is docker.io
+# default REPO is dayuhub
+# default TAG is v1.0
+export REG=xxx
+export REPO=xxx
+export TAG=xxx
+```
 
 构建所有镜像
 ```bash

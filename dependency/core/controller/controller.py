@@ -17,7 +17,7 @@ class Controller:
 
         self.is_display = Context.get_parameter('DISPLAY', direct=False)
 
-        self.service_ports_dict = PortInfo.get_service_ports_dict(SystemConstant.PROCESSOR.value)
+        self.service_ports_dict = PortInfo.get_service_ports_dict()
         self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
         self.distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
         self.distributor_hostname = NodeInfo.get_cloud_node()

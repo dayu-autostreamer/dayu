@@ -1,0 +1,17 @@
+position: both
+pod-template:
+  image: car-detection
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: PROCESSOR_NAME
+      value: "detector_processor"
+    - name: DETECTOR_PARAMETERS
+      value: "{'weights':'yolov5s.engine', 'plugin_library':'libmyplugins.so'}"
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/car-detection/"

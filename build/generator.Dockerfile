@@ -17,6 +17,7 @@ ENV TZ=Asia/Shanghai
 # Install python3
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+      ffmpeg \
       python3 \
       python3-pip \
       python3-dev \

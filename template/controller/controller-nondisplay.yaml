@@ -1,0 +1,10 @@
+position: both
+pod-template:
+  image: controller
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: DISPLAY
+      value: "False"
+port-open:
+  pos: both
+  port: 9000

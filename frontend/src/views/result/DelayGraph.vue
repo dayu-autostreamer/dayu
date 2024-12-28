@@ -70,7 +70,7 @@ export default {
         // },
         xAxis: {
           type: 'category',
-          name: '任务序号',
+          name: 'Task Index',
           data: xAxisData,
           nameLocation: 'middle', // 使轴名称居中显示
           nameGap: 25, // 与轴的距离

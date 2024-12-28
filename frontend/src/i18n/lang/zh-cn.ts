@@ -2,15 +2,10 @@
 export default {
 	router: {
 		home: 'Home',
-		start: '服务启动',
 		install:'Application Installation',
-		info: '系统详情',
-		result: '结果查看',
-		submit:'提交任务',
 		pipeline: 'Pipeline Orchestration',
 		datasource: 'Source Configuration',
-		priority:'优先级队列',
-		modal:'Result Display'
+		result:'Result Display'
 	},
 	staticRoutes: {
 		signIn: '登录',

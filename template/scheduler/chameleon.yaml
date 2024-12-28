@@ -1,0 +1,25 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: SCH_CONFIG_NAME
+      value: chameleon
+    - name: SCH_SCENARIO_NAME
+      value: simple
+    - name: SCH_STARTUP_NAME
+      value: fixed
+    - name: SCH_POLICY_NAME
+      value: simple
+    - name: SCH_AGENT_NAME
+      value: chameleon
+    - name: SCH_AGENT_PARAMETERS
+      value: "{'fixed_policy':{'resolution': '720p','fps': 30,'encoding': 'mp4v','buffer_size': 1,'pipeline':0}, 'acc_gt_dir':'acc-gt-dense', 'threshold':0}"
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/chameleon/'
+  - pos: cloud
+    path: 'acc-gt-dense/'

@@ -5,11 +5,15 @@ pod-template:
   env:
     - name: GEN_FILTER_NAME
       value: simple
+    - name: GEN_GETTER_FILTER_NAME
+      value: simple
     - name: GEN_PROCESS_NAME
       value: simple
     - name: GEN_COMPRESS_NAME
       value: simple
     - name: GEN_BSO_NAME
+      value: simple
+    - name: GEN_BSTO_NAME
       value: simple
     - name: GEN_ASO_NAME
       value: simple

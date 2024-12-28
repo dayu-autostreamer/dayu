@@ -1,5 +1,6 @@
 namespace: dayu
 log-level: DEBUG
+log-file-name:
 pod-permission:
   service-account: worker-admin
   cluster-role-binding: worker-admin-binding
@@ -15,35 +16,118 @@ datasource:
   use-simulation: true
   node: edgex1
   data-root: "/data/datasource/"
+  play-mode: non-cycle
 scheduler-policies:
   - id: fixed
-    name: fixed policy
+    name: Fixed Policy
     yaml: fixed-policy.yaml
     dependency:
       generator: generator-base.yaml
       controller: controller-base.yaml
       distributor: distributor-base.yaml
       monitor: monitor-base.yaml
+  - id: hei
+    name: Hierarchical Embodied Intelligence
+    yaml: hei.yaml
+    dependency:
+      generator: generator-base.yaml
+      controller: controller-nondisplay.yaml
+      distributor: distributor-base.yaml
+      monitor: monitor-base.yaml
+  - id: hei-macro-only
+    name: Hierarchical Embodied Intelligence (Macro Only)
+    yaml: hei-macro-only.yaml
+    dependency:
+      generator: generator-base.yaml
+      controller: controller-nondisplay.yaml
+      distributor: distributor-base.yaml
+      monitor: monitor-base.yaml
+  - id: hei-micro-only
+    name: Hierarchical Embodied Intelligence (Micro Only)
+    yaml: hei-micro-only.yaml
+    dependency:
+      generator: generator-base.yaml
+      controller: controller-nondisplay.yaml
+      distributor: distributor-base.yaml
+      monitor: monitor-base.yaml
+  - id: hei-synchronous
+    name: Hierarchical Embodied Intelligence (Synchronous)
+    yaml: hei-synchronous.yaml
+    dependency:
+      generator: generator-base.yaml
+      controller: controller-nondisplay.yaml
+      distributor: distributor-base.yaml
+      monitor: monitor-base.yaml
+  - id: fc
+    name: Feedback Controlling
+    yaml: fc.yaml
+    dependency:
+      generator: generator-base.yaml
+      controller: controller-nondisplay.yaml
+      distributor: distributor-base.yaml
+      monitor: monitor-base.yaml
+  - id: casva
+    name: CASVA
+    yaml: casva.yaml
+    dependency:
+      generator: generator-casva.yaml
+      controller: controller-nondisplay.yaml
+      distributor: distributor-base.yaml
+      monitor: monitor-base.yaml
+  - id: cevas
+    name: CEVAS
+    yaml: cevas.yaml
+    dependency:
+      generator: generator-cevas.yaml
+      controller: controller-nondisplay.yaml
+      distributor: distributor-base.yaml
+      monitor: monitor-base.yaml
+  - id: chameleon
+    name: Chameleon
+    yaml: chameleon.yaml
+    dependency:
+      generator: generator-chameleon.yaml
+      controller: controller-nondisplay.yaml
+      distributor: distributor-base.yaml
+      monitor: monitor-base.yaml
 services:
   - id: car-detection
+    service: car-detection
     name: car detection
-    description: car detection
+    description: car detection (detection + tracking)
     input: frame
     output: bbox
     yaml: car-detection.yaml
+  - id: car-detection-pure
+    service: car-detection
+    name: car detection (only detection)
+    description: car detection pure (only detection)
+    input: frame
+    output: bbox
+    yaml: car-detection-pure.yaml
   - id: face-detection
+    service: face-detection
     name: face detection
-    description: face detection
+    description: face detection (detection + tracking)
     input: frame
     output: bbox
     yaml: face-detection.yaml
+  - id: face-detection-pure
+    service: face-detection
+    name: face detection (only detection)
+    description: face detection pure (only detection)
+    input: frame
+    output: bbox
+    yaml: face-detection-pure.yaml
   - id: gender-classification
+    service: gender-classification
     name: gender classification
     description: gender classification
     input: bbox
     output: text
     yaml: gender-classification.yaml
   - id: age-classification
+    service: age-classification
     name: age classification
     description: age classification
     input: bbox

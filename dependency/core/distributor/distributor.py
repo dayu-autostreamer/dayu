@@ -32,6 +32,7 @@ class Distributor:
         self.send_scenario_to_scheduler()
 
     def save_task_record(self):
+        self.record_total_end_ts()
         task_source_id = self.cur_task.get_source_id()
         task_task_id = self.cur_task.get_task_id()
         task_ctime = datetime.now().timestamp()
@@ -60,6 +61,11 @@ class Distributor:
                            f'has already existed in database.')
         finally:
             conn.close()
+
+    def record_total_end_ts(self):
+        self.cur_task, _ = TimeEstimator.record_task_ts(self.cur_task,
+                                                        'total_end_time',
+                                                        is_end=False)
 
     def send_scenario_to_scheduler(self):
         LOGGER.info(f'[Send Scenario] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')

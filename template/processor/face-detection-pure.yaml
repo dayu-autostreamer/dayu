@@ -1,0 +1,17 @@
+position: both
+pod-template:
+  image: face-detection
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: PROCESSOR_NAME
+      value: "detector_processor"
+    - name: DETECTOR_PARAMETERS
+      value: "{'weights':'retina_mnet.engine', 'plugin_library':'libdecodeplugin.so'}"
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/face-detection/"

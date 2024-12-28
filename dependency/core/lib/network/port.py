@@ -1,5 +1,5 @@
 import kubernetes as k8s
-from core.lib.common import Context
+from core.lib.common import Context, SystemConstant
 
 
 class PortInfo:
@@ -27,7 +27,8 @@ class PortInfo:
         return ports_dict
 
     @staticmethod
-    def get_service_ports_dict(component_name: str) -> dict:
+    def get_service_ports_dict() -> dict:
+        component_name = SystemConstant.PROCESSOR.value
         PortInfo.get_all_ports(component_name)
         ports_dict = PortInfo.get_all_ports(component_name)
         component_ports_dict = {}
@@ -37,3 +38,7 @@ class PortInfo:
             component_ports_dict[des_name] = ports_dict[svc_name]
 
         return component_ports_dict
+
+    @staticmethod
+    def get_service_port(service_name: str) -> int:
+        return PortInfo.get_service_ports_dict().get(service_name)

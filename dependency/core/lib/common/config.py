@@ -42,8 +42,8 @@ class Context:
             IndexError: If `file_path` is an integer but out of the valid volume index range.
         """
         volume_num = cls.get_parameter('VOLUME_NUM', direct=False)
-        file_prefix = cls.get_parameter('FILE_PREFIX')
-        mount_prefix = cls.parameters.get('DATA_PATH_PREFIX', '/home/data')
+        file_prefix = os.path.normpath(cls.get_parameter('FILE_PREFIX', ''))
+        mount_prefix = os.path.normpath(cls.parameters.get('DATA_PATH_PREFIX', '/home/data'))
 
         # if input file path is integer, return corresponding volume path (volume0)
         if isinstance(file_path, int):
@@ -52,17 +52,34 @@ class Context:
             else:
                 raise IndexError(f"Volume index {file_path} is out of range for {volume_num} volumes.")
 
-        file_dir, file_name = os.path.split(file_path)
+        file_path = os.path.normpath(file_path)
         if volume_num <= 0:
             raise FileNotMountedError('No file directory is mounted')
-        elif volume_num == 1 and not file_dir:
+        elif volume_num == 1:
+            raw_file_path = cls.get_parameter(f'VOLUME_0')
+            related_raw_dir = str(os.path.relpath(raw_file_path, file_prefix)) \
+                if raw_file_path.startswith(file_prefix) else ''
+            if file_path.startswith(raw_file_path):
+                file_name = os.path.relpath(file_path, raw_file_path)
+            elif file_path.startswith(related_raw_dir):
+                file_name = os.path.relpath(file_path, related_raw_dir)
+            elif not os.path.isabs(file_path):
+                file_name = file_path
+            else:
+                raise FileNotMountedError(f"File '{file_path}' is not mounted.")
             return os.path.join(mount_prefix, 'volume0', file_name)
         else:
             for index in range(volume_num):
-                des_file_path = os.path.join(file_prefix, file_path)
                 raw_file_path = cls.get_parameter(f'VOLUME_{index}')
-                if des_file_path == raw_file_path:
-                    return os.path.join(mount_prefix, f'volume{index}', file_name)
+                related_raw_dir = str(os.path.relpath(raw_file_path, file_prefix)) \
+                    if raw_file_path.startswith(file_prefix) else ''
+                if file_path.startswith(raw_file_path):
+                    file_name = os.path.relpath(file_path, raw_file_path)
+                elif file_path.startswith(related_raw_dir):
+                    file_name = os.path.relpath(file_path, related_raw_dir)
+                else:
+                    continue
+                return os.path.join(mount_prefix, f'volume{index}', file_name)
 
             raise FileNotMountedError(f"File '{file_path}' is not mounted.")
 

@@ -1,0 +1,27 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: SCH_CONFIG_NAME
+      value: casva
+    - name: SCH_CONFIG_PARAMETERS
+      value: "{'casva_drl_config':'drl_parameters_casva.yaml', 'casva_hyper_config':'hyper_parameters_casva.yaml'}"
+    - name: SCH_SCENARIO_NAME
+      value: casva
+    - name: SCH_STARTUP_NAME
+      value: fixed
+    - name: SCH_POLICY_NAME
+      value: simple
+    - name: SCH_AGENT_NAME
+      value: casva
+    - name: SCH_AGENT_PARAMETERS
+      value: "{'window_size':8, 'mode':'inference', 'streaming_mode':'delivery_first', 'segment_length':0.3,'model_dir':'model_delivery_first_1', 'load_model':True, 'load_model_episode':6000, 'acc_gt_dir':'acc-gt-dense'}"
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/casva/'
+  - pos: cloud
+    path: 'acc-gt-dense/'

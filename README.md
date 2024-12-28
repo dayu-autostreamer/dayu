@@ -75,7 +75,7 @@ Meanwhile, `processor` can be equipped with user-defined application services of
 
 
 ## Quick Start
-- Install KubeEdge system on your devices ([instruction](https://box.nju.edu.cn/f/d6ba2a96a2744f0f9e0a/)). Our dayu system is based on KubeEdge.
+- Install KubeEdge system on your devices ([instruction](https://box.nju.edu.cn/f/63e12c4ea0794718b16c/)). Our dayu system is based on KubeEdge.
 
 - Modify template files in template directory '[template](template)'
 
@@ -94,6 +94,22 @@ ACTION=stop TEMPLATE=template/ bash - dayu.sh
 Components in Dayu system are dependent on docker containers. Thus, if you need to customize dayu system you should build specified images.
 
 The official images of Dayu system is at [dockerhub/dayuhub](https://hub.docker.com/u/dayuhub).
+
+set meta information of building
+```bash
+# configure buildx buildkitd (default as empty, example at hack/resource/buildkitd_template.toml)
+vim hack/resource/buildkitd.toml
+# configure buildx driver-opt (default as empty, example at hack/resource/driver_opts_template.toml)
+vim hack/resource/driver_opts.toml
+
+# set docker meta info
+# default REG is docker.io
+# default REPO is dayuhub
+# default TAG is v1.0
+export REG=xxx
+export REPO=xxx
+export TAG=xxx
+```
 
 build all images
 ```bash

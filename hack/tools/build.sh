@@ -44,10 +44,10 @@ declare -A PLATFORMS=(
     [frontend]="linux/amd64"
     [datasource]="linux/amd64,linux/arm64"
 
-    [generator]="linux/arm64"
+    [generator]="linux/amd64,linux/arm64"
     [distributor]="linux/amd64"
-    [controller]="linux/arm64,linux/amd64"
-    [monitor]="linux/arm64,linux/amd64"
+    [controller]="linux/amd64,linux/arm64"
+    [monitor]="linux/amd64,linux/arm64"
     [scheduler]="linux/amd64"
     [car-detection]="linux/amd64,linux/arm64"
     [face-detection]="linux/amd64,linux/arm64"

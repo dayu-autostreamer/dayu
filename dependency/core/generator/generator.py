@@ -33,6 +33,7 @@ class Generator:
         self.before_schedule_operation = Context.get_algorithm('GEN_BSO')
         self.after_schedule_operation = Context.get_algorithm('GEN_ASO')
         self.data_getter = Context.get_algorithm('GEN_GETTER')
+        self.before_submit_task_operation = Context.get_algorithm('GEN_BSTO')
 
     def request_schedule_policy(self):
         params = self.before_schedule_operation(self)
@@ -53,6 +54,8 @@ class Generator:
 
     def submit_task_to_controller(self, compressed_file, hash_codes):
         assert self.current_task, 'Task is empty when submit to controller!'
+
+        self.before_submit_task_operation(self, compressed_file, hash_codes)
 
         dst_device = self.current_task.get_current_stage_device()
         controller_ip = NodeInfo.hostname2ip(dst_device)

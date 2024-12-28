@@ -736,7 +736,8 @@ model
 expr_*
 resource_data
 data_record*
-test/
+../../ResultAnalysis/pythonProject/test/
+../../ResultAnalysis/pythonProject/results/
 
 
 # End of https://www.toptal.com/developers/gitignore/api/pycharm,python,vs,macos,windows,linux,vue,vuejs

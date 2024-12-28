@@ -1,12 +1,8 @@
 import abc
-import os.path
-import threading
-import time
-import numpy as np
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
-from core.lib.estimation import AccEstimator
-from core.lib.common import VideoOps
+import time
+
+from core.lib.common import ClassFactory, ClassType, LOGGER
 
 from .base_agent import BaseAgent
 
@@ -18,8 +14,7 @@ class HEINFAgent(BaseAgent, abc.ABC):
 
     def __init__(self, system,
                  agent_id: int,
-                 window_size: int = 10,
-                 mode: str = 'inference'):
+                 window_size: int = 10):
         from .hei_nf import NegativeFeedback_Single
 
         self.agent_id = agent_id
@@ -30,7 +25,6 @@ class HEINFAgent(BaseAgent, abc.ABC):
         drl_params['state_dims'] = [drl_params['state_dims'], window_size]
 
         self.window_size = window_size
-        self.mode = mode
 
         self.nf_agent = NegativeFeedback_Single(system, agent_id)
 
@@ -39,13 +33,6 @@ class HEINFAgent(BaseAgent, abc.ABC):
 
         self.state_dim = drl_params['state_dims']
         self.action_dim = drl_params['action_dim']
-
-        self.gt_file_path = Context.get_file_path('gt_file.txt')
-        self.hash_file_path = Context.get_file_path('hash_file.ann')
-        self.acc_estimator = AccEstimator(self.hash_file_path, self.gt_file_path)
-
-        self.model_dir = Context.get_file_path(os.path.join(hyper_params['model_dir'], f'agent_{self.agent_id}'))
-        FileOps.create_directory(self.model_dir)
 
         self.latest_policy = None
         self.latest_task_delay = None
@@ -57,7 +44,7 @@ class HEINFAgent(BaseAgent, abc.ABC):
 
             self.latest_task_delay = task_delay
         except Exception as e:
-            LOGGER.warning('Wrong scenario from Distributor!')
+            LOGGER.warning(f'Wrong scenario from Distributor: str{e}')
 
     def update_resource(self, device, resource):
         pass

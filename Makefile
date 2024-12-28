@@ -5,6 +5,10 @@ REPOSITORY := $(or $(REPO),dayuhub)
 IMAGE_REPO ?= $(REGISTRY)/$(REPOSITORY)
 IMAGE_TAG ?= $(or $(TAG),v1.0)
 
+#$(info "REGISTRY = $(REGISTRY)")
+#$(info "REPOSITORY = $(REPOSITORY)")
+#$(info "IMAGE_TAG = $(IMAGE_TAG)")
+
 .EXPORT_ALL_VARIABLES:
 
 define BUILD_HELP_INFO
@@ -31,10 +35,18 @@ help:
 
 # Build images
 build:
-	bash ./hack/build.sh --files $(WHAT) --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY)
+	@echo "Running build images of $(WHAT)"
+	@echo "Current registry is: $(REGISTRY)"
+	@echo "Current repository is: $(REPOSITORY)"
+	@echo "Current image tag is: $(IMAGE_TAG)"
+	bash hack/make-rules/cross-build.sh --files $(WHAT) --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY)
 
 # Build all images
 all:
-	bash ./hack/build.sh --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY)
+	@echo "Running build images of $(WHAT)"
+	@echo "Current registry is: $(REGISTRY)"
+	@echo "Current repository is: $(REPOSITORY)"
+	@echo "Current image tag is: $(IMAGE_TAG)"
+	bash hack/make-rules/cross-build.sh --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY)
 
 

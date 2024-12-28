@@ -80,8 +80,7 @@ class NegativeFeedback:
         schedule_policy['fps'] = self.fps_list[self.fps_index]
         schedule_policy['buffer_size'] = self.buffer_size_list[self.buffer_size_index]
 
-        pipeline_index_decision = min(meta_decisions[-1] + 1, len(pipeline) - 1)
-        pipeline_index_decision = 0
+        pipeline_index_decision = min(meta_decisions[-1] + 1, len(pipeline)-1)
         schedule_policy['pipeline'] = [{**p, 'execute_device': self.edge_device} for p in
                                        pipeline[:pipeline_index_decision]] + \
                                       [{**p, 'execute_device': self.cloud_device} for p in
