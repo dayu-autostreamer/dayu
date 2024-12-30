@@ -92,8 +92,11 @@ ACTION=stop TEMPLATE=template/ bash - dayu.sh
 设置构建镜像元信息
 ```bash
 # 配置 buildx buildkitd (默认为空, 样例可参照 hack/resource/buildkitd_template.toml)
+# 如果需要使用http镜像源需要配置buildkitd.toml
 vim hack/resource/buildkitd.toml
+
 # 配置 buildx driver-opt (默认为空, 样例可参照 hack/resource/driver_opts_template.toml)
+# 如果需要使用代理来构建需要配置driver_opts.toml
 vim hack/resource/driver_opts.toml
 
 # 设置docker参数
@@ -114,4 +117,14 @@ make all
 ```bash
 # xxx/yyy 指组件名称
 make build WHAT=xxx,yyy,...
+```
+
+如果修改了配置（buildkitd.toml/driver_opts.toml），则再次构建前需要删除上一次构建生成的buildx
+```bash
+# 查看所有的buildx.
+docker buildx ls
+
+# 删除dayu-buildx，它会在下一次构建时根据最新配置自动重新生成
+docker buildx stop dayu-buildx
+docker buildx rm dayu-buildx
 ```
