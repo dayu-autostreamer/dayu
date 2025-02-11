@@ -24,7 +24,12 @@ class ProcessorServer:
                      self.process_return_service,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.PROCESSOR_PROCESS_RETURN]
-                     )
+                     ),
+            APIRoute(NetworkAPIPath.PROCESSOR_QUEUE_LENGTH,
+                     self.query_queue_length,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.PROCESSOR_QUEUE_LENGTH]
+                     ),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -73,6 +78,9 @@ class ProcessorServer:
         FileOps.remove_data_file(cur_task)
         if new_task:
             return Task.serialize(new_task)
+
+    async def query_queue_length(self):
+        return self.task_queue.size()
 
     def loop_process(self):
         LOGGER.info('Start processing loop..')
