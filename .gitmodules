@@ -1,0 +1,3 @@
+[submodule "dependency/core/applications/model_switch_detection/inference_module/yolov5"]
+	path = dependency/core/applications/model_switch_detection/inference_module/yolov5
+	url = https://github.com/ultralytics/yolov5.git
