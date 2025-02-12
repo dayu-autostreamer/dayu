@@ -10,6 +10,7 @@ from models.common import AutoShape
 from models.experimental import attempt_load
 import torch
 import warnings
+import time
 
 warnings.filterwarnings("ignore")
 
@@ -20,6 +21,17 @@ class YoloInference(BaseInference):
         '''
         # models should be a sorted list of pareto optimal models, so that the switcher can switch between them.
         self.allowed_yolo_models = ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x']
+        # official mAP values.
+        self.model_maps = {
+            'yolov5n': 28.0,
+            'yolov5s': 37.4,
+            'yolov5m': 45.4,
+            'yolov5l': 49.0,
+            'yolov5x': 50.7
+        }
+        self.model_latencies = {}
+        # ema_alpha for model latency updates
+        self.ema_alpha = 0.1
         self.models = []
         assert 'weights_dir' in kwargs, 'weights_dir not provided'
         self.weights_dir = kwargs['weights_dir']
@@ -29,6 +41,7 @@ class YoloInference(BaseInference):
         self.current_model_index = None
         self.model_switch_lock = threading.Lock()
         self._load_all_models()
+        self._measure_initial_latencies()
 
     def _load_all_models(self):
         print('Loading all YOLOv5 models...')
@@ -49,6 +62,26 @@ class YoloInference(BaseInference):
         self.current_model_index = 0
         print(f'Switched to model: {self.allowed_yolo_models[self.current_model_index]}.')
 
+    def _measure_initial_latencies(self):
+        print("Measuring initial latencies...")
+        dummy_input = np.random.randint(0, 255, (1080, 1920, 3), dtype=np.uint8)
+        
+        for idx, model in enumerate(self.models):
+            times = []
+            # 预热
+            for _ in range(5):
+                model(dummy_input)
+            
+            # 测量
+            for _ in range(10):
+                start_time = time.perf_counter()
+                with torch.no_grad():
+                    model(dummy_input)
+                times.append(time.perf_counter() - start_time)
+            
+            self.model_latencies[idx] = sum(times) / len(times)
+            print(f'Model {idx} takes time: {self.model_latencies[idx]}')
+
     def switch_model(self, index: int):
         '''
         Switch the model to the one specified in the arguments.
@@ -64,18 +97,27 @@ class YoloInference(BaseInference):
         Get the number of models.
         '''
         return len(self.models)
+    
+    def get_models_accuracy_and_latency(self):
+        pass
 
     def infer(self, image: np.ndarray):
         '''
         Do the inference on the image.
         '''
         with self.model_switch_lock:
-            if self.current_model_index is None:
-                raise ValueError('Model not loaded')
-            model = self.models[self.current_model_index]
+            start_time = time.perf_counter()
             with torch.no_grad():
+                model = self.models[self.current_model_index]
                 result = model(image)
+            # print(result)
             result_data = self.process_results(result)
+            current_latency = time.perf_counter() - start_time
+            print(f"current latency: {current_latency}")
+            self.model_latencies[self.current_model_index] = (
+                self.ema_alpha * current_latency + 
+                (1 - self.ema_alpha) * self.model_latencies[self.current_model_index]
+                )
             return result_data
         
     def process_results(self, results):

@@ -9,7 +9,6 @@ class BaseInference(ABC):
         Load all models, do all the necessary initializations.
         Notice that the models should be a sorted list of pareto optimal models, so that the switcher can switch between them.
         '''
-        pass
 
     @abstractmethod
     def switch_model(self, index: int):

@@ -9,10 +9,13 @@ import cv2
 
 class ModelSwitchDetection:
 
-    def __init__(self, type: str, *args, **kwargs):
+    def __init__(self, type: str, decision_interval: int,
+                 *args, **kwargs):
         if type == 'yolo':
             self.detector = YoloInference(*args, **kwargs)
-            self.switcher = RandomSwitch(self.detector.get_models_num(), 10, self.detector)
+            self.switcher = RandomSwitch(self.detector.get_models_num(), 
+                                         decision_interval, 
+                                         self.detector)
         elif type == 'efficientdet':
             pass
         elif type == 'ofa':
@@ -37,10 +40,12 @@ if __name__ == '__main__':
 
     # test yolo
     import time
-    detector = ModelSwitchDetection('yolo', weights_dir='yolov5_weights')
-    input_path = "test_data/img.png"
+    # these params will be specified in the field of DETECTOR_PARAMETERS of yaml file
+    detector_wrapper = ModelSwitchDetection('yolo', 
+                                    20,
+                                    weights_dir='yolov5_weights')
+    input_path = "test_data/img2.jpg"
     image = cv2.imread(input_path)
     for i in range(100):
-        result = detector([image])
+        result = detector_wrapper([image])
         print(len(result[0][0]))
-        time.sleep(0.1)

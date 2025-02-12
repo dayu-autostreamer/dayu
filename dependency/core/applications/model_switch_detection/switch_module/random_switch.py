@@ -26,10 +26,12 @@ class RandomSwitch(BaseSwitch):
                 print(f'Random switched model to {model_index}')
                 self.last_switch_time = time.time()
 
-
     def switch_model(self, index: int):
         '''
         Switch the model to the one specified in the arguments.
         '''
         self.detector_instance.switch_model(index)
+
+    def get_detector_stats(*args, **kwargs):
+        return super().get_detector_stats(**kwargs)
         
