@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import List
 import numpy as np
 
 class BaseInference(ABC):
@@ -21,6 +20,22 @@ class BaseInference(ABC):
     def get_models_num(self):
         '''
         Get the number of models.
+        '''
+        pass
+
+    @abstractmethod
+    def get_models_accuracy(self):
+        '''
+        Get the accuracy of the models.
+        Returns a list of floats.
+        '''
+        pass
+
+    @abstractmethod
+    def get_models_latency(self):
+        '''
+        Get the latency of the models.
+        Returns a list of floats.
         '''
         pass
 

@@ -1,11 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import List
-import numpy as np
-import time
 
 class BaseSwitch(ABC):
     @abstractmethod
-    def __init__(self, models_num: int, decision_interval: int, 
+    def __init__(self, decision_interval: int, 
                  detector_instance: object,
                  *args, **kwargs):
         pass

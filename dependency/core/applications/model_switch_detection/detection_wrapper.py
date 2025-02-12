@@ -5,6 +5,7 @@ from typing import List
 import numpy as np
 from inference_module.yolo_inference import YoloInference
 from switch_module.random_switch import RandomSwitch
+from switch_module.rule_based_switch import RuleBasedSwitch
 import cv2
 
 class ModelSwitchDetection:
@@ -13,9 +14,9 @@ class ModelSwitchDetection:
                  *args, **kwargs):
         if type == 'yolo':
             self.detector = YoloInference(*args, **kwargs)
-            self.switcher = RandomSwitch(self.detector.get_models_num(), 
-                                         decision_interval, 
-                                         self.detector)
+            # self.switcher = RandomSwitch(decision_interval, self.detector)
+            self.switcher = RuleBasedSwitch(decision_interval, self.detector)
+            
         elif type == 'efficientdet':
             pass
         elif type == 'ofa':
@@ -42,10 +43,10 @@ if __name__ == '__main__':
     import time
     # these params will be specified in the field of DETECTOR_PARAMETERS of yaml file
     detector_wrapper = ModelSwitchDetection('yolo', 
-                                    20,
+                                    3,
                                     weights_dir='yolov5_weights')
     input_path = "test_data/img2.jpg"
     image = cv2.imread(input_path)
-    for i in range(100):
+    while True:
         result = detector_wrapper([image])
-        print(len(result[0][0]))
+        # print(len(result[0][0]))

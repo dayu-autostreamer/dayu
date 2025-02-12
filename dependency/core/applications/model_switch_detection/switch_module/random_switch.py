@@ -5,13 +5,13 @@ import threading
 import numpy as np
 
 class RandomSwitch(BaseSwitch):
-    def __init__(self, models_num: int, decision_interval: int, 
+    def __init__(self, decision_interval: int, 
                  detector_instance: object,
                  *args, **kwargs):
         '''
         Initialize the random switcher.
         '''
-        self.models_num = models_num
+        self.models_num = detector_instance.get_models_num()
         self.decision_interval = decision_interval
         self.detector_instance = detector_instance
         self.last_switch_time = time.time()
@@ -25,6 +25,7 @@ class RandomSwitch(BaseSwitch):
                 self.switch_model(model_index)
                 print(f'Random switched model to {model_index}')
                 self.last_switch_time = time.time()
+            time.sleep(0.1)
 
     def switch_model(self, index: int):
         '''

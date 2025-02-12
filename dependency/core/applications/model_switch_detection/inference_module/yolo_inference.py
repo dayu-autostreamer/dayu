@@ -11,6 +11,9 @@ from models.experimental import attempt_load
 import torch
 import warnings
 import time
+import cv2
+
+from stats_manager import StatsManager, StatsEntry
 
 warnings.filterwarnings("ignore")
 
@@ -22,16 +25,10 @@ class YoloInference(BaseInference):
         # models should be a sorted list of pareto optimal models, so that the switcher can switch between them.
         self.allowed_yolo_models = ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x']
         # official mAP values.
-        self.model_maps = {
-            'yolov5n': 28.0,
-            'yolov5s': 37.4,
-            'yolov5m': 45.4,
-            'yolov5l': 49.0,
-            'yolov5x': 50.7
-        }
-        self.model_latencies = {}
+        self.model_accuracy =[28.0, 37.4, 45.4, 49.0, 50.7]
+        self.model_latency = []
         # ema_alpha for model latency updates
-        self.ema_alpha = 0.1
+        self.ema_alpha = 0.2
         self.models = []
         assert 'weights_dir' in kwargs, 'weights_dir not provided'
         self.weights_dir = kwargs['weights_dir']
@@ -43,6 +40,8 @@ class YoloInference(BaseInference):
         self._load_all_models()
         self._measure_initial_latencies()
 
+        self.stats_manager = StatsManager()
+
     def _load_all_models(self):
         print('Loading all YOLOv5 models...')
         for model_name in self.allowed_yolo_models:
@@ -51,6 +50,7 @@ class YoloInference(BaseInference):
                 print(f'Loading model: {model_name}...')
                 model = attempt_load(model_path)
                 model = AutoShape(model)
+                model.eval()
                 if torch.cuda.is_available():
                     model = model.cuda()
                 self.models.append(model)
@@ -78,9 +78,8 @@ class YoloInference(BaseInference):
                 with torch.no_grad():
                     model(dummy_input)
                 times.append(time.perf_counter() - start_time)
-            
-            self.model_latencies[idx] = sum(times) / len(times)
-            print(f'Model {idx} takes time: {self.model_latencies[idx]}')
+            self.model_latency.append(np.mean(times))
+            print(f'Model {idx} takes time: {self.model_latency[idx]}')
 
     def switch_model(self, index: int):
         '''
@@ -98,6 +97,20 @@ class YoloInference(BaseInference):
         '''
         return len(self.models)
     
+    def get_models_accuracy(self):
+        '''
+        Get the accuracy of the models.
+        Returns a list of floats.
+        '''
+        return self.model_accuracy
+    
+    def get_models_latency(self):
+        '''
+        Get the latency of the models.
+        Returns a list of floats.
+        '''
+        return self.model_latency
+    
     def get_models_accuracy_and_latency(self):
         pass
 
@@ -106,19 +119,43 @@ class YoloInference(BaseInference):
         Do the inference on the image.
         '''
         with self.model_switch_lock:
+            model = self.models[self.current_model_index]
             start_time = time.perf_counter()
             with torch.no_grad():
-                model = self.models[self.current_model_index]
-                result = model(image)
-            # print(result)
-            result_data = self.process_results(result)
-            current_latency = time.perf_counter() - start_time
-            print(f"current latency: {current_latency}")
-            self.model_latencies[self.current_model_index] = (
-                self.ema_alpha * current_latency + 
-                (1 - self.ema_alpha) * self.model_latencies[self.current_model_index]
-                )
-            return result_data
+                results = model(image)
+            inference_latency = time.perf_counter() - start_time
+            # use ema to update latency
+            self.model_latency[self.current_model_index] = self.ema_alpha * inference_latency + (1 - self.ema_alpha) * self.model_latency[self.current_model_index]
+            boxes, scores, labels = self.process_results(results)
+        
+        # start a new thread to update stats
+        update_stats_thread = threading.Thread(target=self.prepare_update_stats, args=(image, results, inference_latency))
+        update_stats_thread.start()
+        
+        return boxes, scores, labels
+    
+    def prepare_update_stats(self, image: np.ndarray, results, inference_latency):
+        '''
+        Prepare the stats for updating.
+        '''
+        # prepare the stats entry
+        stats_entry = StatsEntry()
+        stats_entry.timestamp = time.time()
+        # TODO: get queue length
+        import random
+        stats_entry.queue_length = random.randint(0, 50)
+        stats_entry.cur_model_index = self.current_model_index
+        stats_entry.cur_model_accuracy = self.model_accuracy[self.current_model_index]
+        stats_entry.processing_latency = inference_latency
+        stats_entry.target_nums = len(results.xyxy[0])
+        stats_entry.avg_confidence = np.mean(results.xyxy[0][:, 4].cpu().numpy())
+        stats_entry.std_confidence = np.std(results.xyxy[0][:, 4].cpu().numpy())
+        stats_entry.avg_size = np.mean(results.xyxy[0][:, 2].cpu().numpy() - results.xyxy[0][:, 0].cpu().numpy())
+        stats_entry.std_size = np.std(results.xyxy[0][:, 2].cpu().numpy() - results.xyxy[0][:, 0].cpu().numpy())
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        stats_entry.brightness = np.mean(gray_image)
+        stats_entry.contrast = np.std(gray_image)
+        self.stats_manager.update_stats(stats_entry)
         
     def process_results(self, results):
         '''
@@ -129,4 +166,3 @@ class YoloInference(BaseInference):
         labels = results.xyxy[0][:, 5].cpu().numpy().tolist()
 
         return boxes, scores, labels
-
