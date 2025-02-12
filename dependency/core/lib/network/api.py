@@ -4,6 +4,7 @@ class NetworkAPIPath:
 
     PROCESSOR_PROCESS = '/predict'
     PROCESSOR_PROCESS_RETURN = '/process_return'
+    PROCESSOR_QUEUE_LENGTH = '/queue_length'
 
     DISTRIBUTOR_DISTRIBUTE = '/distribute'
     DISTRIBUTOR_RESULT = '/result'
@@ -48,6 +49,7 @@ class NetworkAPIMethod:
 
     PROCESSOR_PROCESS = 'POST'
     PROCESSOR_PROCESS_RETURN = 'POST'
+    PROCESSOR_QUEUE_LENGTH = 'GET'
 
     DISTRIBUTOR_DISTRIBUTE = 'POST'
     DISTRIBUTOR_RESULT = 'GET'
