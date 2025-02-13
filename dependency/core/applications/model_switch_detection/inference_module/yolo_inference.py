@@ -23,9 +23,10 @@ class YoloInference(BaseInference):
         Load all models, do all the necessary initializations.
         '''
         # models should be a sorted list of pareto optimal models, so that the switcher can switch between them.
-        self.allowed_yolo_models = ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x']
+        self.allowed_yolo_models = kwargs['model_names']
         # official mAP values.
-        self.model_accuracy =[28.0, 37.4, 45.4, 49.0, 50.7]
+        self.model_accuracy =kwargs['model_accuracy']
+        assert len(self.allowed_yolo_models) == len(self.model_accuracy), 'Model names and accuracies do not match'
         self.model_latency = []
         # ema_alpha for model latency updates
         self.ema_alpha = 0.2
@@ -64,7 +65,7 @@ class YoloInference(BaseInference):
 
     def _measure_initial_latencies(self):
         print("Measuring initial latencies...")
-        dummy_input = np.random.randint(0, 255, (1080, 1920, 3), dtype=np.uint8)
+        dummy_input = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
         
         for idx, model in enumerate(self.models):
             times = []
@@ -110,9 +111,6 @@ class YoloInference(BaseInference):
         Returns a list of floats.
         '''
         return self.model_latency
-    
-    def get_models_accuracy_and_latency(self):
-        pass
 
     def infer(self, image: np.ndarray):
         '''
