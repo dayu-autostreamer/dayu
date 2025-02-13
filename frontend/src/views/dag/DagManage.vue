@@ -1,12 +1,12 @@
 <template>
   <div class="outline">
     <div>
-      <h3>Add Application Pipelines</h3>
+      <h3>Add Application Dags</h3>
     </div>
 
     <div>
-      <div class="new-dag-font-style">Pipeline Name</div>
-      <el-input v-model="newInputName" placeholder="Please fill the pipeline name"/>
+      <div class="new-dag-font-style">Dag Name</div>
+      <el-input v-model="newInputName" placeholder="Please fill the dag name"/>
       <br>
       <br>
       <div style="display: inline;">
@@ -20,6 +20,14 @@
           </el-tooltip>
 
         </div>
+      <!-- #TODO: 重新组织dag的用户编排方式（拖拽？）     -->
+      <!--        # 定义一个DAG                               -->
+      <!--        # dag = {                                  -->
+      <!--        # 'A': ['B', 'C'],  # 节点A有两条边指向B和C   -->
+      <!--        # 'B': ['D'],       # 节点B有一条边指向D      -->
+      <!--        # 'C': ['D'],       # 节点C有一条边指向D      -->
+      <!--        # 'D': []           # 节点D没有出边          -->
+      <!--        #  }                                       -->
       </div>
       <ul style="list-style-type: none" class="svc-container">
         <li
@@ -61,11 +69,11 @@
     </div>
     <br/><br/>
     <div>
-      <h3>Current Application Pipelines</h3>
+      <h3>Current Application Dags</h3>
     </div>
-
+    <!-- #TODO: 修改原来展示pipeline的位置，改成某种简单形式展示dag（如果实在复杂也可以考虑不展示？）   -->
     <el-table :data="dagList" style="width: 100%">
-      <el-table-column label="Pipeline Name" width="180">
+      <el-table-column label="Dag Name" width="180">
         <template #default="scope">
           <div style="display: flex; align-items: center">
             <!-- <el-icon><timer /></el-icon> -->
@@ -73,7 +81,7 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="Pipeline" width="540">
+      <el-table-column label="Dag" width="540">
         <template #default="scope">
           <div>{{ scope.row.dag }}</div>
         </template>
@@ -157,7 +165,7 @@ export default {
     },
     handleNewSubmit() {
       if (this.newInputName === '' || this.newInputName === null) {
-        ElMessage.error("Please fill the pipeline name")
+        ElMessage.error("Please fill the dag name")
         return;
       }
       if (this.newInputDag === '' || this.newInputDag === null) {

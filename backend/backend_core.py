@@ -22,7 +22,7 @@ class BackendCore:
         self.services = None
 
         self.source_configs = []
-        self.pipelines = []
+        self.dags = []
 
         self.time_ticket = 0
 
@@ -65,6 +65,7 @@ class BackendCore:
             return None
         return load_file_name.split('.')[0]
 
+    # TODO: dag node_list
     def parse_apply_templates(self, policy, source_deploy):
         yaml_dict = {}
 
@@ -80,23 +81,24 @@ class BackendCore:
 
         return docs_list
 
+    # dag node_list
     def extract_service_from_source_deployment(self, source_deploy):
         service_dict = {}
 
         for s in source_deploy:
-            pipeline = s['pipeline']
+            dag = s['dag']
             node = s['node']
-            extracted_pipeline = []
-            for service_id in pipeline:
+            extracted_dag = []
+            for service_id in dag:
                 service = self.find_service_by_id(service_id)
                 service_name = service['service']
                 service_yaml = service['yaml']
-                extracted_pipeline.append(service)
+                extracted_dag.append(service)
                 if service_id in service_dict:
                     service_dict[service_id]['node'].append(node)
                 else:
                     service_dict[service_id] = {'service_name': service_name, 'yaml': service_yaml, 'node': [node]}
-            s['pipeline'] = extracted_pipeline
+            s['dag'] = extracted_dag
         return service_dict, source_deploy
 
     def get_yaml_docs(self):
@@ -117,10 +119,10 @@ class BackendCore:
                 return service
         return None
 
-    def find_pipeline_by_id(self, dag_id):
-        for pipeline in self.pipelines:
-            if pipeline['dag_id'] == dag_id:
-                return pipeline['dag']
+    def find_dag_by_id(self, dag_id):
+        for dag in self.dags:
+            if dag['dag_id'] == dag_id:
+                return dag['dag']
         return None
 
     def find_scheduler_policy_by_id(self, policy_id):
@@ -171,9 +173,10 @@ class BackendCore:
     def check_simulation_datasource(self):
         return KubeHelper.check_pod_name('datasource', namespace=self.namespace)
 
-    def check_pipeline(self, pipeline, initial_form='frame'):
+    # TODO: check legal dag (目前还是pipeline的检查方式)
+    def check_dag(self, dag, initial_form='frame'):
         last_data_form = initial_form
-        for custom_service_id in pipeline:
+        for custom_service_id in dag:
             custom_service = self.find_service_by_id(custom_service_id)
             if custom_service and custom_service['input'] == last_data_form:
                 last_data_form = custom_service['output']

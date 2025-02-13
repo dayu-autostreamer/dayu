@@ -45,17 +45,18 @@
         <div>
           <h2> source {{ source.id }}: {{source.name}}</h2>
         </div>
-        <el-select style="width: 48%;margin-top: 20px" v-model="source.pipeline_selected"
-                   @change="updatePipelineSelection(index, source, source.pipeline_selected)"
-                   placeholder="Please assign pipeline">
+        <el-select style="width: 48%;margin-top: 20px" v-model="source.dag_selected"
+                   @change="updateDagSelection(index, source, source.dag_selected)"
+                   placeholder="Please assign dag">
           <el-option
-              v-for="(option,index) in pipelineOptions"
+              v-for="(option,index) in dagOptions"
               :key="index"
               :label="option.dag_name"
               :value="option.dag_id"
           ></el-option>
         </el-select>
 
+        <!-- #TODO: 将绑定节点的单选框改为多选框，返回一个节点列表（支持不选，不选为默认使用所有节点，需要有文字提示）   -->
         <el-select style="width: 48%;margin-top: 20px;margin-left: 4%" v-model="source.node_selected"
                    @change="updateNodeSelection(index, source, source.node_selected)"
                    placeholder="Please bind edge node">
@@ -98,7 +99,7 @@ export default {
   data() {
     return {
       selectedSources: [],
-      selectedPipelines: [],
+      selectedDags: [],
       selectedNodes: [],
       // imageList: [],
       selectedDatasourceIndex: null,
@@ -117,7 +118,7 @@ export default {
     const installed = ref(null);
     const policyOptions = ref(null);
     const datasourceOptions = ref(null);
-    const pipelineOptions = ref(null);
+    const dagOptions = ref(null);
     const nodeOptions = ref(null);
     const getTask = async () => {
 
@@ -143,12 +144,12 @@ export default {
       }
 
       try {
-        const response = await axios.get('/api/pipeline');
+        const response = await axios.get('/api/dag_workflow');
         if (response.data !== null) {
-          pipelineOptions.value = response.data;
+          dagOptions.value = response.data;
         }
       } catch (error) {
-        console.error('Failed to fetch pipeline options', error);
+        console.error('Failed to fetch dag options', error);
         ElMessage.error("System Error")
       }
 
@@ -188,14 +189,14 @@ export default {
       install_state,
       policyOptions,
       datasourceOptions,
-      pipelineOptions,
+      dagOptions,
       nodeOptions,
       getTask
     };
   },
   methods: {
-    async updatePipelineSelection(index, source, selected) {
-      this.selectedPipelines[index] = selected;
+    async updateDagSelection(index, source, selected) {
+      this.selectedDags[index] = selected;
       console.log(selected)
     },
     async updateNodeSelection(index, source, selected) {
@@ -205,7 +206,7 @@ export default {
     async handleDatasourceChange() {
       this.successMessage = '';
       this.selectedSources = [];
-      this.selectedPipelines = [];
+      this.selectedDags = [];
       this.selectedNodes = [];
 
       try {
@@ -216,7 +217,7 @@ export default {
           // console.log(data.length)
           for (var i = 0; i < datasource.source_list.length; i++) {
             this.selectedSources.push(datasource.source_list[i]);
-            this.selectedPipelines.push('')
+            this.selectedDags.push('')
             this.selectedNodes.push('')
           }
         } else {
@@ -227,6 +228,7 @@ export default {
       }
     },
 
+    // TODO: 提交install的js脚本检查一下需不需要改，原来是对多数据源每个数据源选择一个node，最后是一个node_list，现在应该需要node_list里面每个元素是个列表（每个数据源选择一个列表）
     submitService() {
 
       const policy_index = this.selectedPolicyIndex;
@@ -245,9 +247,9 @@ export default {
       const source_config_label = this.datasourceOptions[source_index].source_label;
       const policy_id = this.policyOptions[policy_index].policy_id
 
-      const pipeline_list = Object.values(this.selectedPipelines);
-      if (pipeline_list.includes('')) {
-        ElMessage.error('Please assign pipeline for all sources');
+      const dag_list = Object.values(this.selectedDags);
+      if (dag_list.includes('')) {
+        ElMessage.error('Please assign dags for all sources');
         return;
       }
 
@@ -262,7 +264,7 @@ export default {
       const content = {
         'source_config_label': source_config_label,
         'policy_id': policy_id,
-        'pipeline_list':pipeline_list,
+        'dag_list':dag_list,
         'node_list':node_list
       }
       let task_info = JSON.stringify(content);

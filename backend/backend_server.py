@@ -23,11 +23,6 @@ class BackendServer:
         self.server = BackendCore()
 
         self.app = FastAPI(routes=[
-            APIRoute(NetworkAPIPath.BACKEND_GET_PIPELINE,
-                     self.get_all_pipelines,
-                     response_class=JSONResponse,
-                     methods=[NetworkAPIMethod.BACKEND_GET_PIPELINE]
-                     ),
             APIRoute(NetworkAPIPath.BACKEND_GET_POLICY,
                      self.get_all_schedule_policies,
                      response_class=JSONResponse,
@@ -144,21 +139,6 @@ class BackendServer:
             allow_methods=["*"], allow_headers=["*"],
         )
 
-    async def get_all_pipelines(self):
-        """
-        :return:
-        display all pipelines
-        {
-            dag_id:id,
-            dag_name：name}
-        """
-        cur_pipelines = []
-        for pipeline in self.server.pipelines:
-            cur_pipelines.append(
-                {'dag_id': pipeline['dag_id'],
-                 'dag_name': pipeline['dag_name']})
-        return cur_pipelines
-
     async def get_all_schedule_policies(self):
         """
         :return:
@@ -192,7 +172,7 @@ class BackendServer:
 
     async def get_dag_workflows(self):
         """
-        get current dag workflows (pipelines)
+        get current dag workflows
         [
                     {
                         "dag_id":1,
@@ -214,7 +194,7 @@ class BackendServer:
         :return:
         """
 
-        return self.server.pipelines
+        return self.server.dags
 
     async def get_all_services(self):
         """
@@ -241,7 +221,7 @@ class BackendServer:
 
     async def update_dag_workflows(self, data=Body(...)):
         """
-        add new dag workflows (pipelines)
+        add new dag workflows
         body
         {
             "dag_name":"headup",
@@ -250,22 +230,22 @@ class BackendServer:
         :return:
             {'state':success/fail, 'msg':'...'}
         """
-        pipeline_name = data['dag_name']
-        pipeline = data['dag']
+        dag_name = data['dag_name']
+        dag = data['dag']
 
-        if self.server.check_pipeline(pipeline):
-            self.server.pipelines.append({
+        if self.server.check_dag(dag):
+            self.server.dags.append({
                 'dag_id': Counter().get_count('dag_id'),
-                'dag_name': pipeline_name,
-                'dag': pipeline
+                'dag_name': dag_name,
+                'dag': dag
             })
-            return {'state': 'success', 'msg': 'Add new pipeline Successfully'}
+            return {'state': 'success', 'msg': 'Add new dag Successfully'}
         else:
-            return {'state': 'fail', 'msg': 'Add new pipeline failed: illegal pipeline'}
+            return {'state': 'fail', 'msg': 'Add new dag failed: illegal dag'}
 
     async def delete_dag_workflow(self, data=Body(...)):
         """
-        delete dag workflow (pipeline)
+        delete dag workflow
         body:
         {
             "dag_id":1
@@ -276,12 +256,12 @@ class BackendServer:
 
         data = json.loads(str(data, encoding='utf-8'))
         dag_id = int(data['dag_id'])
-        for index, pipeline in enumerate(self.server.pipelines):
-            if pipeline['dag_id'] == dag_id:
-                del self.server.pipelines[index]
-                return {'state': 'success', 'msg': 'Delete pipeline successfully'}
+        for index, dag in enumerate(self.server.dags):
+            if dag['dag_id'] == dag_id:
+                del self.server.dags[index]
+                return {'state': 'success', 'msg': 'Delete dag successfully'}
 
-        return {'state': 'fail', 'msg': 'Delete pipeline failed: pipeline not exists'}
+        return {'state': 'fail', 'msg': 'Delete dag failed: dag not exists'}
 
     async def get_service_info(self, service):
         """
@@ -389,9 +369,10 @@ class BackendServer:
 
         return {'state': 'fail', 'msg': 'Delete datasource failed: datasource not exists'}
 
+    # TODO: install dag with node_list
     async def install_service(self, data=Body(...)):
         """
-        install system components to prepare for executing pipelines
+        install system components to prepare for executing dags
         body
         {
             "dag_id": (id),
@@ -415,7 +396,7 @@ class BackendServer:
 
         source_label = data['source_config_label']
         policy_id = data['policy_id']
-        pipeline_list = data['pipeline_list']
+        dag_list = data['dag_list']
         node_list = data['node_list']
 
         source_deploy = []
@@ -428,21 +409,21 @@ class BackendServer:
         if source_config is None:
             return {'state': 'fail', 'msg': 'Install services failed: datasource configuration not exists'}
 
-        if len(source_config) != len(pipeline_list) != len(node_list):
+        if len(source_config) != len(dag_list) != len(node_list):
             return {'state': 'fail', 'msg': 'Install services failed: datasource mapping failed'}
 
-        for source, pipeline_id, node in zip(source_config['source_list'], pipeline_list, node_list):
+        for source, dag_id, node in zip(source_config['source_list'], dag_list, node_list):
 
-            pipeline = self.server.find_pipeline_by_id(pipeline_id)
-            if pipeline is None:
-                return {'state': 'fail', 'msg': 'Install services failed: pipeline not exists'}
+            dag = self.server.find_dag_by_id(dag_id)
+            if dag is None:
+                return {'state': 'fail', 'msg': 'Install services failed: dag not exists'}
 
             if not self.server.check_node_exist(node):
                 return {'state': 'fail', 'msg': f'Install services failed: edge node "{node}" not exists'}
 
             source.update({'source_type': source_config['source_type'], 'source_mode': source_config['source_mode']})
 
-            source_deploy.append({'source': source, 'pipeline': pipeline, 'node': node})
+            source_deploy.append({'source': source, 'dag': dag, 'node': node})
 
         try:
             yaml = self.server.parse_apply_templates(policy, source_deploy)

@@ -148,6 +148,8 @@ class TemplateHelper:
 
         return docs_list
 
+    # TODO: 如何选择哪个节点作为数据源？
+    #       这里选择数据源的函数可以封装成一个hook函数
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
@@ -157,7 +159,7 @@ class TemplateHelper:
             new_edge_worker = copy.deepcopy(edge_worker_template)
             source = source_info['source']
             node = source_info['node']
-            pipeline = source_info['pipeline']
+            dag = source_info['dag']
 
             new_edge_worker['template']['spec']['nodeName'] = node
 
@@ -170,7 +172,7 @@ class TemplateHelper:
                     {'name': 'SOURCE_TYPE', 'value': str(source['source_type'])},
                     {'name': 'SOURCE_ID', 'value': str(source['id'])},
                     {'name': 'SOURCE_METADATA', 'value': str(source['metadata'])},
-                    {'name': 'PIPELINE', 'value': str([{'service_name': service['service']} for service in pipeline])},
+                    {'name': 'DAG', 'value': str([{'service_name': service['service']} for service in dag])},
 
                 ])
 
