@@ -149,8 +149,8 @@ class TemplateHelper:
         return docs_list
 
     # TODO: 如何选择哪个节点作为数据源？
-    #       这里选择数据源的函数可以封装成一个hook函数
-    #       只有作为数据源的节点需要部署generator
+    #       第一次迭代：随机选择数据源的节点集的一个节点作为generator的节点集
+    #       第二次迭代考虑获取scheduler对generator所在节点的选择决策
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
@@ -260,6 +260,7 @@ class TemplateHelper:
         return yaml_doc
 
     # TODO: 第一次迭代，采用默认方式，即每个数据源对应的节点上，安装此数据源对应的全部逻辑节点
+    #       下一次迭代考虑在此处获取scheduler的部署决策
     def finetune_processor_yaml(self, service_dict, cloud_node):
 
         yaml_docs = []
