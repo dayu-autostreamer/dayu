@@ -65,8 +65,12 @@ class BaseInference(ABC):
         stats_entry.cur_model_accuracy = self.get_models_accuracy()[self.current_model_index]
         stats_entry.processing_latency = inference_latency
         stats_entry.target_nums = len(boxes)
-        stats_entry.avg_confidence = np.mean(scores)
-        stats_entry.std_confidence = np.std(scores)
+        if len(boxes) > 0:
+            stats_entry.avg_confidence = np.mean(scores)
+            stats_entry.std_confidence = np.std(scores)
+        else:
+            stats_entry.avg_confidence = 0
+            stats_entry.std_confidence = 0
         # 获取图像尺寸
         image_height, image_width = image.shape[:2]
         image_area = image_height * image_width
