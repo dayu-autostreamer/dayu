@@ -22,6 +22,7 @@ class YoloInference(BaseInference):
         '''
         Load all models, do all the necessary initializations.
         '''
+        super().__init__(*args, **kwargs)
         # models should be a sorted list of pareto optimal models, so that the switcher can switch between them.
         self.allowed_yolo_models = kwargs['model_names']
         # official mAP values.
@@ -40,8 +41,6 @@ class YoloInference(BaseInference):
         self.model_switch_lock = threading.Lock()
         self._load_all_models()
         self._measure_initial_latencies()
-
-        self.stats_manager = StatsManager()
 
     def _load_all_models(self):
         print('Loading all YOLOv5 models...')
@@ -127,33 +126,17 @@ class YoloInference(BaseInference):
             boxes, scores, labels = self.process_results(results)
         
         # start a new thread to update stats
-        update_stats_thread = threading.Thread(target=self.prepare_update_stats, args=(image, results, inference_latency))
+        update_stats_thread = threading.Thread(target=self.prepare_update_stats, args=(image, boxes, scores, labels, inference_latency))
         update_stats_thread.start()
         
         return boxes, scores, labels
     
-    def prepare_update_stats(self, image: np.ndarray, results, inference_latency):
+    def prepare_update_stats(self, image: np.ndarray, boxes, scores, labels, inference_latency):
         '''
         Prepare the stats for updating.
         '''
-        # prepare the stats entry
-        stats_entry = StatsEntry()
-        stats_entry.timestamp = time.time()
-        # TODO: get queue length
-        import random
-        stats_entry.queue_length = random.randint(0, 50)
-        stats_entry.cur_model_index = self.current_model_index
-        stats_entry.cur_model_accuracy = self.model_accuracy[self.current_model_index]
-        stats_entry.processing_latency = inference_latency
-        stats_entry.target_nums = len(results.xyxy[0])
-        stats_entry.avg_confidence = np.mean(results.xyxy[0][:, 4].cpu().numpy())
-        stats_entry.std_confidence = np.std(results.xyxy[0][:, 4].cpu().numpy())
-        stats_entry.avg_size = np.mean(results.xyxy[0][:, 2].cpu().numpy() - results.xyxy[0][:, 0].cpu().numpy())
-        stats_entry.std_size = np.std(results.xyxy[0][:, 2].cpu().numpy() - results.xyxy[0][:, 0].cpu().numpy())
-        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        stats_entry.brightness = np.mean(gray_image)
-        stats_entry.contrast = np.std(gray_image)
-        self.stats_manager.update_stats(stats_entry)
+        super().prepare_update_stats(image, boxes, scores, labels, inference_latency)
+
         
     def process_results(self, results):
         '''

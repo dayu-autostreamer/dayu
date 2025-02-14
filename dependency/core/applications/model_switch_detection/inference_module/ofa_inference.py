@@ -20,6 +20,7 @@ class OfaInference(BaseInference):
         '''
         Load all models, do all the necessary initializations.
         '''
+        super().__init__(*args, **kwargs)
         assert 'ofa_det_type' in kwargs, 'ofa_det_type not provided'
         self.ofa_det_type = kwargs['ofa_det_type']
         assert self.ofa_det_type in ['mbv3_faster_rcnn', 'mbv3_fcos', 'resnet50_faster_rcnn', 'resnet50_fcos'], 'Invalid ofa_det_type'
@@ -80,6 +81,9 @@ class OfaInference(BaseInference):
         except Exception as e:
             print(f'Error loading supernet: {str(e)}!')
 
+        self.current_model_index = 0
+        print(f'Switched to model: {self.current_model_index}.')
+
     def _measure_initial_latencies(self):
         print("Measuring initial latencies...")
         dummy_input = torch.rand(1, 3, 640, 640).to(torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
@@ -125,16 +129,28 @@ class OfaInference(BaseInference):
     
     def infer(self, image: np.ndarray):
 
-        image = self.preprocess_image(image).to(torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+        processed_image = self.preprocess_image(image).to(torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+        start_time = time.perf_counter()
         with torch.no_grad():
-            prediction = self.model(image)[0]
-            # 过滤低置信度的预测结果
-            mask = prediction['scores'] > 0.3
-            boxes = prediction['boxes'][mask].cpu().numpy().tolist()
-            labels = prediction['labels'][mask].cpu().numpy().tolist()
-            scores = prediction['scores'][mask].cpu().numpy().tolist()
+            results = self.model(processed_image)[0]
+        inference_latency = time.perf_counter() - start_time
+        # 过滤低置信度的预测结果
+        mask = results['scores'] > 0.3
+        boxes = results['boxes'][mask].cpu().numpy().tolist()
+        labels = results['labels'][mask].cpu().numpy().tolist()
+        scores = results['scores'][mask].cpu().numpy().tolist()
+
+        # start a new thread to update stats
+        update_stats_thread = threading.Thread(target=self.prepare_update_stats, args=(image, boxes, scores, labels, inference_latency))
+        update_stats_thread.start()
         return boxes, scores, labels
-        
+    
+    def prepare_update_stats(self, image: np.ndarray, boxes, scores, labels, inference_latency):
+        '''
+        Prepare the stats for updating.
+        '''
+        super().prepare_update_stats(image, boxes, scores, labels, inference_latency)    
+
     def preprocess_image(self, raw_bgr_image):
 
         # BGR numpy array -> RGB PIL Image

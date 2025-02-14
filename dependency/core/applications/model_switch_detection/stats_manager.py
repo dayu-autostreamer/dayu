@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+
+@dataclass
 class StatsEntry:
     # The timestamp of the inference
     timestamp: float = 0.0
@@ -24,6 +27,20 @@ class StatsEntry:
     # The contrast of the image
     contrast: float = 0.0
 
+    def __str__(self) -> str:
+        return (
+            f"Stats Entry:\n"
+            f"  Timestamp: {self.timestamp:.2f}\n"
+            f"  Queue Length: {self.queue_length}\n"
+            f"  Model Index: {self.cur_model_index}\n"
+            f"  Model Accuracy: {self.cur_model_accuracy:.2f}\n"
+            f"  Processing Latency: {self.processing_latency:.4f}s\n"
+            f"  Targets: {self.target_nums}\n"
+            f"  Confidence: {self.avg_confidence:.2f}±{self.std_confidence:.2f}\n"
+            f"  Size: {self.avg_size:.2f}±{self.std_size:.2f}\n"
+            f"  Image Stats: brightness={self.brightness:.1f}, contrast={self.contrast:.1f}"
+        )
+    
 class StatsManager:
     def __init__(self, time_window: int = 10.0):
         # initialize a deque to store the stats
