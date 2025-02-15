@@ -112,6 +112,7 @@ class OfaInference(BaseInference):
         bn_weights_path = self.subnet_bn_paths[index]
         load_bn_statistics(self.model, bn_weights_path)
         self.model.backbone.body.set_active_subnet(**self.subnet_archs[index])
+        self.model.eval()
         # subnet_config = self.model.backbone.body.sample_active_subnet()
         # self.model.backbone.body.set_active_subnet(**subnet_config)
 
