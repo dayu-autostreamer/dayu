@@ -1,4 +1,4 @@
-from models.backbone.ofa_supernet import get_ofa_supernet_resnet50
+from ofa_models.backbone.ofa_supernet import get_ofa_supernet_resnet50
 from torch import nn
 def get_ofa_resnet50_classification(num_classes = 1000):
     model = get_ofa_supernet_resnet50()

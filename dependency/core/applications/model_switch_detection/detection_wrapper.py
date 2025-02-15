@@ -1,13 +1,27 @@
 # This file is the wrapper for the detection. 
 # It implements the detection interface and uses the model switch to switch between the models.
 
+def _import_modules():
+    """Import modules based on execution context"""
+
+    if __name__ == '__main__':
+
+        from switch_module.random_switch import RandomSwitch
+        from switch_module.rule_based_switch import RuleBasedSwitch
+        from inference_module.yolo_inference import YoloInference
+        from inference_module.ofa_inference import OfaInference
+    else:
+        from .switch_module.random_switch import RandomSwitch
+        from .switch_module.rule_based_switch import RuleBasedSwitch
+        from .inference_module.yolo_inference import YoloInference
+        from .inference_module.ofa_inference import OfaInference
+    return RandomSwitch, RuleBasedSwitch, YoloInference, OfaInference
+
 from typing import List
 import numpy as np
-# from inference_module.yolo_inference import YoloInference
-# from inference_module.ofa_inference import OfaInference
-from switch_module.random_switch import RandomSwitch
-from switch_module.rule_based_switch import RuleBasedSwitch
 import cv2
+
+RandomSwitch, RuleBasedSwitch, YoloInference, OfaInference = _import_modules()
 
 class ModelSwitchDetection:
 
@@ -16,10 +30,8 @@ class ModelSwitchDetection:
                  *args, **kwargs):
         
         if model_type == 'yolo':
-            from inference_module.yolo_inference import YoloInference
             self.detector = YoloInference(*args, **kwargs)
         elif model_type == 'ofa':
-            from inference_module.ofa_inference import OfaInference
             self.detector = OfaInference(*args, **kwargs)
 
         else:
@@ -48,19 +60,19 @@ class ModelSwitchDetection:
 if __name__ == '__main__':
 
     # ============================ test yolo ============================
-    # import time
-    # # these params will be specified in the field of DETECTOR_PARAMETERS of yaml file
-    # detector_wrapper = ModelSwitchDetection(model_type='yolo', 
-    #                                 switch_type='rule_based',
-    #                                 decision_interval=10,
-    #                                 weights_dir='yolov5_weights',
-    #                                 model_names = ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x'],
-    #                                 model_accuracy =[28.0, 37.4, 45.4, 49.0, 50.7])
-    # input_path = "test_data/img.png"
-    # image = cv2.imread(input_path)
-    # while True:
-    #     result = detector_wrapper([image])
-    #     # print(len(result[0][0]))
+    import time
+    # these params will be specified in the field of DETECTOR_PARAMETERS of yaml file
+    detector_wrapper = ModelSwitchDetection(model_type='yolo', 
+                                    switch_type='rule_based',
+                                    decision_interval=10,
+                                    weights_dir='yolov5_weights',
+                                    model_names = ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x'],
+                                    model_accuracy =[28.0, 37.4, 45.4, 49.0, 50.7])
+    input_path = "test_data/img.png"
+    image = cv2.imread(input_path)
+    while True:
+        result = detector_wrapper([image])
+        # print(len(result[0][0]))
 
     # ============================ test ofa ============================
     weights_dir = 'ofa_weights'

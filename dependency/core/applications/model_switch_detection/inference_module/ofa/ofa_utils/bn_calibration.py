@@ -1,5 +1,5 @@
-from models.ops.dynamic_batchnorm2d import DynamicBatchNorm2d
-from models.utils import AverageMeter, get_net_device
+from ofa_models.ops.dynamic_batchnorm2d import DynamicBatchNorm2d
+from ofa_models.utils import AverageMeter, get_net_device
 import copy
 import torch
 import torch.nn as nn

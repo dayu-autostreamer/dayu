@@ -13,8 +13,6 @@ import warnings
 import time
 import cv2
 
-from stats_manager import StatsManager, StatsEntry
-
 warnings.filterwarnings("ignore")
 
 class YoloInference(BaseInference):

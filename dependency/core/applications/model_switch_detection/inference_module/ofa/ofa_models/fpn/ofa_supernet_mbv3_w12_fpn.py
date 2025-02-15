@@ -1,10 +1,10 @@
 from collections import OrderedDict
 from typing import Dict
 # from torchvision.ops.feature_pyramid_network import FeaturePyramidNetwork, LastLevelMaxPool
-from models.fpn.custom_fpn import CustomFPN, CustomLastLevelMaxPool
+from ofa_models.fpn.custom_fpn import CustomFPN, CustomLastLevelMaxPool
 from torch import nn, Tensor
 
-from models.ops.dynamic_conv2d import DynamicConv2d
+from ofa_models.ops.dynamic_conv2d import DynamicConv2d
 
 # class Mbv3W12Fpn(nn.Module):
 #     def __init__(self, backbone: nn.Module) -> None:

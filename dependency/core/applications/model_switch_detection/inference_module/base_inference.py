@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import numpy as np
-from stats_manager import StatsManager, StatsEntry
+from .stats_manager import StatsManager, StatsEntry
 import cv2
 import time
 

@@ -1,4 +1,4 @@
-from models.backbone.ofa_supernet import get_ofa_supernet_mbv3_w10
+from ofa_models.backbone.ofa_supernet import get_ofa_supernet_mbv3_w10
 from torch import nn
 def get_ofa_mbv3_w10_classification(num_classes = 1000):
     model = get_ofa_supernet_mbv3_w10()
