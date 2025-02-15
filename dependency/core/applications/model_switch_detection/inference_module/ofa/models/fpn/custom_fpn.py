@@ -2,7 +2,7 @@ from torch import nn, Tensor
 from typing import Dict, List
 from collections import OrderedDict
 from torch.nn import functional as F
-from ofa_models.ops.dynamic_conv2d import DynamicConv2d
+from models.ops.dynamic_conv2d import DynamicConv2d
 
 from typing import Tuple
 

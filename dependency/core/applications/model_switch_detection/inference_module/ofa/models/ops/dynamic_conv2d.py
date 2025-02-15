@@ -1,7 +1,7 @@
 import torch.nn as nn
 from torch.nn import functional as F
 
-from ofa_models.utils import get_same_padding
+from models.utils import get_same_padding
 
 class DynamicConv2d(nn.Module):
     def __init__(

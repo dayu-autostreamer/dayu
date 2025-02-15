@@ -6,7 +6,7 @@ import os
 import sys
 cur_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(f"{cur_dir}/ofa")
-from ofa_utils.bn_calibration import load_bn_statistics
+from utils.bn_calibration import load_bn_statistics
 import torch
 import time
 import cv2
@@ -42,24 +42,24 @@ class OfaInference(BaseInference):
         assert all([os.path.exists(path) for path in self.subnet_bn_paths]), f"Subnet bn weights file not found"
 
         if self.ofa_det_type == 'mbv3_faster_rcnn':
-            from ofa_models.backbone.ofa_supernet import get_ofa_supernet_mbv3_w12
-            from ofa_models.fpn.ofa_supernet_mbv3_w12_fpn import Mbv3W12Fpn
-            from ofa_models.detection.fasterrcnn import get_faster_rcnn
+            from models.backbone.ofa_supernet import get_ofa_supernet_mbv3_w12
+            from models.fpn.ofa_supernet_mbv3_w12_fpn import Mbv3W12Fpn
+            from models.detection.fasterrcnn import get_faster_rcnn
             self.model = get_faster_rcnn(Mbv3W12Fpn(get_ofa_supernet_mbv3_w12()))
         elif self.ofa_det_type == 'mbv3_fcos':
-            from ofa_models.backbone.ofa_supernet import get_ofa_supernet_mbv3_w12
-            from ofa_models.fpn.ofa_supernet_mbv3_w12_fpn import Mbv3W12Fpn
-            from ofa_models.detection.fcos import get_fcos
+            from models.backbone.ofa_supernet import get_ofa_supernet_mbv3_w12
+            from models.fpn.ofa_supernet_mbv3_w12_fpn import Mbv3W12Fpn
+            from models.detection.fcos import get_fcos
             self.model = get_fcos(Mbv3W12Fpn(get_ofa_supernet_mbv3_w12()))
         elif self.ofa_det_type == 'resnet_faster_rcnn':
-            from ofa_models.backbone.ofa_supernet import get_ofa_supernet_resnet50
-            from ofa_models.fpn.ofa_supernet_resnet50_fpn import Resnet50Fpn
-            from ofa_models.detection.fasterrcnn import get_faster_rcnn
+            from models.backbone.ofa_supernet import get_ofa_supernet_resnet50
+            from models.fpn.ofa_supernet_resnet50_fpn import Resnet50Fpn
+            from models.detection.fasterrcnn import get_faster_rcnn
             self.model = get_faster_rcnn(Resnet50Fpn(get_ofa_supernet_resnet50()))
         elif self.ofa_det_type == 'resnet_fcos':
-            from ofa_models.backbone.ofa_supernet import get_ofa_supernet_resnet50
-            from ofa_models.fpn.ofa_supernet_resnet50_fpn import Resnet50Fpn
-            from ofa_models.detection.fcos import get_fcos
+            from models.backbone.ofa_supernet import get_ofa_supernet_resnet50
+            from models.fpn.ofa_supernet_resnet50_fpn import Resnet50Fpn
+            from models.detection.fcos import get_fcos
             self.model = get_fcos(Resnet50Fpn(get_ofa_supernet_resnet50()))
         else:
             raise ValueError('Invalid ofa_det_type')
@@ -73,7 +73,9 @@ class OfaInference(BaseInference):
         print('Loading supernet...')
         try:
             print(f'Loading supernet...')
-            self.model = torch.load(self.supernet_path, map_location=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+            self.model = torch.load(self.supernet_path, map_location=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
+                                    weights_only=False)
+            print(f"Model structure: {type(self.model)}")
             self.model.eval()
             if torch.cuda.is_available():
                 self.model = self.model.cuda()
