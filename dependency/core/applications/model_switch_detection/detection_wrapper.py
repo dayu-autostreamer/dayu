@@ -106,19 +106,19 @@ class ModelSwitchDetectionTestOfa(ModelSwitchDetection):
 if __name__ == '__main__':
 
     # ============================ test yolo ============================
-    import time
-    # these params will be specified in the field of DETECTOR_PARAMETERS of yaml file
-    detector_wrapper = ModelSwitchDetection(model_type='yolo', 
-                                    switch_type='rule_based',
-                                    decision_interval=10,
-                                    weights_dir='yolov5_weights',
-                                    model_names = ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x'],
-                                    model_accuracy =[28.0, 37.4, 45.4, 49.0, 50.7])
-    input_path = "test_data/img.png"
-    image = cv2.imread(input_path)
-    while True:
-        result = detector_wrapper([image])
-        # print(len(result[0][0]))
+    # import time
+    # # these params will be specified in the field of DETECTOR_PARAMETERS of yaml file
+    # detector_wrapper = ModelSwitchDetection(model_type='yolo', 
+    #                                 switch_type='rule_based',
+    #                                 decision_interval=10,
+    #                                 weights_dir='yolov5_weights',
+    #                                 model_names = ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x'],
+    #                                 model_accuracy =[28.0, 37.4, 45.4, 49.0, 50.7])
+    # input_path = "test_data/img.png"
+    # image = cv2.imread(input_path)
+    # while True:
+    #     result = detector_wrapper([image])
+    #     # print(len(result[0][0]))
 
     # ============================ test ofa ============================
     weights_dir = 'ofa_weights'
