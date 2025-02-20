@@ -1,2 +1,2 @@
-opencv-python-headless==4.10.0.82
+opencv-python-headless==4.9.0.80
 imagehash
