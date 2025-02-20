@@ -31,6 +31,7 @@ class ClassType:
     PRO_DETECTOR = 'processor_detector'
     PRO_CLASSIFIER = 'processor_classifier'
     PRO_QUEUE = 'processor_queue'
+    PRO_SCENARIO = 'processor_scenario_extraction'
 
     MON_PRAM = 'monitor_parameter'
 

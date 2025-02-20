@@ -7,6 +7,8 @@ pod-template:
       value: "detector_tracker_processor"
     - name: DETECTOR_PARAMETERS
       value: "{'weights':'retina_mnet.engine', 'plugin_library':'libdecodeplugin.so'}"
+    - name: SCENARIOS_EXTRACTORS
+      value: "['obj_num', 'obj_size']"
     - name: PRO_QUEUE_NAME
       value: "simple"
 port-open:
