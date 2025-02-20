@@ -1,4 +1,4 @@
-namespace: dayu
+namespace: dwy-dayu
 log-level: DEBUG
 log-file-name:
 pod-permission:
@@ -11,12 +11,12 @@ default-image-meta:
   registry: repo:5000
   repository: dayuhub
   tag: v1.0
-default-file-mount-prefix: "/data/dayu-files"
+default-file-mount-prefix: "/data/dwy-dayu-files"
 datasource:
   use-simulation: true
-  node: edgex1
+  node: edgex4
   data-root: "/data/datasource/"
-  play-mode: non-cycle
+  play-mode: cycle
 scheduler-policies:
   - id: fixed
     name: Fixed Policy
@@ -133,4 +133,12 @@ services:
     input: bbox
     output: text
     yaml: age-classification.yaml
+  - id: model-switch-detection
+    service: model-switch-detection
+    name: model switch detection
+    description: model switch detection
+    input: frame
+    output: bbox
+    yaml: model-switch-detection.yaml
+
 

@@ -1,0 +1,17 @@
+position: both
+pod-template:
+  image: model-switch-detection
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: PROCESSOR_NAME
+      value: "detector_processor"
+    - name: DETECTOR_PARAMETERS
+      value: "{'model_type':'yolo', 'switch_type':'rule_based', 'decision_interval':10, 'weights_dir':'processor/model-switch-detection/yolov5_weights', 'model_names': ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x'], 'model_accuracy': [28.0, 37.4, 45.4, 49.0, 50.7]}"
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/model-switch-detection/"

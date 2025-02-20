@@ -1,7 +1,6 @@
 ARG REG=docker.io
 # TODO: 修改镜像tag，tx2要用:latest-jetson-jetpack4
-# FROM ${REG}/ultralytics/ultralytics:latest-arm64
-FROM ${REG}/ultralytics/ultralytics:latest-jetson-jetpack4
+FROM ${REG}/ultralytics/ultralytics:latest
 
 LABEL authors="Wenyi Dai"
 
