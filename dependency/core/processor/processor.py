@@ -9,7 +9,7 @@ class Processor:
         self.scenario_extractors = []
         for scenario_extractor_text in self.scenario_extractors_text:
             self.scenario_extractors.append(
-                Context.get_algorithm('PRO_SCENARIO', scenario_extractor_text)
+                Context.get_algorithm('PRO_SCENARIO', scenario_extractor_text)()
             )
 
     def __call__(self, task: Task):
