@@ -73,3 +73,14 @@ class Service:
                           real_execute_time=data['execute_data']['real_execute_time'] if 'real_execute_time'
                                                                                          in data['execute_data'] else 0)
         return service
+
+    def __hash__(self):
+        return hash(self.__service_name)
+
+    def __eq__(self, other):
+        return isinstance(other, Service) and self.__service_name == other.__service_name
+
+    def __repr__(self):
+        return self.__service_name
+
+

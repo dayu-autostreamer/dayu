@@ -9,12 +9,13 @@ from core.lib.network import http_request
 from core.lib.estimation import TimeEstimator
 
 
+# TODO: update pipeline to dag
 class Generator:
-    def __init__(self, source_id: int, metadata: dict, task_pipeline: list, ):
+    def __init__(self, source_id: int, metadata: dict, task_dag: list, ):
         self.current_task = None
 
         self.source_id = source_id
-        self.task_pipeline = Task.extract_pipeline_from_dicts(task_pipeline)
+        self.task_dag = Task.extract_dag_from_dict(task_dag)
 
         self.raw_meta_data = metadata.copy()
         self.meta_data = metadata.copy()
@@ -22,7 +23,7 @@ class Generator:
         self.task_content = None
 
         self.local_device = NodeInfo.get_local_device()
-        self.task_pipeline = Task.set_execute_device(self.task_pipeline, self.local_device)
+        self.task_dag = Task.set_execute_device(self.task_dag, self.local_device)
 
         self.scheduler_hostname = NodeInfo.get_cloud_node()
         self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)

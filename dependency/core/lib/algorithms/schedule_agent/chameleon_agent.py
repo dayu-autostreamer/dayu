@@ -275,7 +275,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         frame_hash_code = info['hash_code']
         pipeline = info['pipeline']
 
-        self.task_pipeline = Task.extract_pipeline_from_dicts(pipeline)
+        self.task_pipeline = Task.extract_dag_from_dict(pipeline)
 
         if frame_encoded:
             self.raw_frames.put((EncodeOps.decode_image(frame_encoded), frame_hash_code))

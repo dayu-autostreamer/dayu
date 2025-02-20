@@ -7,8 +7,8 @@ from core.lib.common import ClassType, ClassFactory, Context, LOGGER
 @ClassFactory.register(ClassType.GENERATOR, alias='video')
 class VideoGenerator(Generator):
     def __init__(self, source_id: int, source_url: str,
-                 source_metadata: dict, pipeline: list):
-        super().__init__(source_id, source_metadata, pipeline)
+                 source_metadata: dict, dag: list):
+        super().__init__(source_id, source_metadata, dag)
 
         self.task_id = 0
         self.video_data_source = source_url

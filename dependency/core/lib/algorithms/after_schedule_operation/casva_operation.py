@@ -28,7 +28,7 @@ class CASVAASOperation(BaseASOperation, abc.ABC):
         else:
             scheduler_policy = scheduler_response['plan']
             pipeline = scheduler_policy['pipeline']
-            system.task_pipeline = Task.extract_pipeline_from_dicts(pipeline)
+            system.task_pipeline = Task.extract_dag_from_dict(pipeline)
             del scheduler_policy['pipeline']
             system.meta_data.update(scheduler_policy)
 
