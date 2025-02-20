@@ -3,7 +3,7 @@ SHELL=/bin/bash
 REGISTRY := $(or $(REG),docker.io)
 REPOSITORY := $(or $(REPO),dayuhub)
 IMAGE_REPO ?= $(REGISTRY)/$(REPOSITORY)
-IMAGE_TAG ?= $(or $(TAG),v1.1)
+IMAGE_TAG ?= $(or $(TAG),v1.1-dev)
 
 #$(info "REGISTRY = $(REGISTRY)")
 #$(info "REPOSITORY = $(REPOSITORY)")
