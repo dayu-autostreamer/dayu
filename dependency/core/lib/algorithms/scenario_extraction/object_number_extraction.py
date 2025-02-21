@@ -20,6 +20,4 @@ class ObjectNumberExtraction(BaseExtraction, abc.ABC):
 
             obj_num.append(boxes_num)
 
-        task.add_scenario({'obj_num': obj_num})
-
         return obj_num
