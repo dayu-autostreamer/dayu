@@ -45,8 +45,9 @@ class YoloInference(BaseInference):
     def _load_all_models(self):
         print('Loading all YOLOv5 models...')
         for model_name in self.allowed_yolo_models:
-            model_path = f"{self.weights_dir}/{model_name}.pt"
-            self.weights = Context.get_file_path(model_path)
+            # model_path = f"{self.weights_dir}/{model_name}.pt"
+            relative_model_path = f"{self.weights_dir}/{model_name}.pt"
+            model_path = Context.get_file_path(relative_model_path)
             try:
                 print(f'Loading model: {model_name}...')
                 model = attempt_load(model_path)

@@ -14,6 +14,8 @@ import torchvision.transforms.functional as F
 import torchvision.transforms as T
 from PIL import Image
 
+from core.lib.common import Context
+
 class OfaInference(BaseInference):
 # class OfaInference:
     def __init__(self, *args, **kwargs):
@@ -21,25 +23,25 @@ class OfaInference(BaseInference):
         Load all models, do all the necessary initializations.
         '''
         super().__init__(*args, **kwargs)
-        assert 'ofa_det_type' in kwargs, 'ofa_det_type not provided'
+        # assert 'ofa_det_type' in kwargs, 'ofa_det_type not provided'
         self.ofa_det_type = kwargs['ofa_det_type']
-        assert self.ofa_det_type in ['mbv3_faster_rcnn', 'mbv3_fcos', 'resnet50_faster_rcnn', 'resnet50_fcos'], 'Invalid ofa_det_type'
-        assert 'subnet_nums' in kwargs, 'subnet_nums not provided'
+        # assert self.ofa_det_type in ['mbv3_faster_rcnn', 'mbv3_fcos', 'resnet50_faster_rcnn', 'resnet50_fcos'], 'Invalid ofa_det_type'
+        # assert 'subnet_nums' in kwargs, 'subnet_nums not provided'
         self.subnet_nums = kwargs['subnet_nums']
-        assert 'subnet_archs' in kwargs, 'subnet_archs not provided'
+        # assert 'subnet_archs' in kwargs, 'subnet_archs not provided'
         self.subnet_archs = kwargs['subnet_archs']
-        assert 'subnet_accuracy' in kwargs, 'subnet_accuracy not provided'
+        # assert 'subnet_accuracy' in kwargs, 'subnet_accuracy not provided'
         self.subnet_accuracy = kwargs['subnet_accuracy']
         self.subnet_latency =[]
-        assert len(self.subnet_archs) == self.subnet_nums, 'Subnet archs and subnet nums do not match'
-        assert len(self.subnet_accuracy) == self.subnet_nums, 'Subnet accuracy and subnet nums do not match'
+        # assert len(self.subnet_archs) == self.subnet_nums, 'Subnet archs and subnet nums do not match'
+        # assert len(self.subnet_accuracy) == self.subnet_nums, 'Subnet accuracy and subnet nums do not match'
         # TODO: validate subnet_archs 
-        assert 'weights_dir' in kwargs, 'weights_dir not provided'
+        # assert 'weights_dir' in kwargs, 'weights_dir not provided'
         self.weights_dir = kwargs['weights_dir']
         self.supernet_path = f"{self.weights_dir}/supernet.pth"
-        assert os.path.exists(self.supernet_path), f"Supernet weights file not found: {self.supernet_path}"
+        # assert os.path.exists(self.supernet_path), f"Supernet weights file not found: {self.supernet_path}"
         self.subnet_bn_paths = [f"{self.weights_dir}/net{i}_bn.pth" for i in range(kwargs['subnet_nums'])]
-        assert all([os.path.exists(path) for path in self.subnet_bn_paths]), f"Subnet bn weights file not found"
+        # assert all([os.path.exists(path) for path in self.subnet_bn_paths]), f"Subnet bn weights file not found"
 
         if self.ofa_det_type == 'mbv3_faster_rcnn':
             from models.backbone.ofa_supernet import get_ofa_supernet_mbv3_w12
@@ -73,7 +75,8 @@ class OfaInference(BaseInference):
         print('Loading supernet...')
         try:
             print(f'Loading supernet...')
-            self.model = torch.load(self.supernet_path, map_location=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
+            model_path = Context.get_file_path(self.supernet_path)
+            self.model = torch.load(model_path, map_location=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
                                     weights_only=False)
             self.model.eval()
             if torch.cuda.is_available():
@@ -110,7 +113,8 @@ class OfaInference(BaseInference):
         '''
         Switch the model to the one specified in the arguments.
         '''
-        bn_weights_path = self.subnet_bn_paths[index]
+        relative_bn_weights_path = self.subnet_bn_paths[index]
+        bn_weights_path = Context.get_file_path(relative_bn_weights_path)
         load_bn_statistics(self.model, bn_weights_path)
         self.model.backbone.body.set_active_subnet(**self.subnet_archs[index])
         self.model.eval()
