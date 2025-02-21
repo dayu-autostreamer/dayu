@@ -13,6 +13,8 @@ import warnings
 import time
 import cv2
 
+from core.lib.common import Context
+
 warnings.filterwarnings("ignore")
 
 class YoloInference(BaseInference):
@@ -25,16 +27,16 @@ class YoloInference(BaseInference):
         self.allowed_yolo_models = kwargs['model_names']
         # official mAP values.
         self.model_accuracy =kwargs['model_accuracy']
-        assert len(self.allowed_yolo_models) == len(self.model_accuracy), 'Model names and accuracies do not match'
+        # assert len(self.allowed_yolo_models) == len(self.model_accuracy), 'Model names and accuracies do not match'
         self.model_latency = []
         # ema_alpha for model latency updates
         self.ema_alpha = 0.2
         self.models = []
-        assert 'weights_dir' in kwargs, 'weights_dir not provided'
+        # assert 'weights_dir' in kwargs, 'weights_dir not provided'
         self.weights_dir = kwargs['weights_dir']
-        for model_name in self.allowed_yolo_models:
-            model_path = f"{self.weights_dir}/{model_name}.pt"
-            assert os.path.exists(model_path), f"Model weights file not found: {model_path}"
+        # for model_name in self.allowed_yolo_models:
+        #     model_path = f"{self.weights_dir}/{model_name}.pt"
+        #     assert os.path.exists(model_path), f"Model weights file not found: {model_path}"
         self.current_model_index = None
         self.model_switch_lock = threading.Lock()
         self._load_all_models()
@@ -44,6 +46,7 @@ class YoloInference(BaseInference):
         print('Loading all YOLOv5 models...')
         for model_name in self.allowed_yolo_models:
             model_path = f"{self.weights_dir}/{model_name}.pt"
+            self.weights = Context.get_file_path(model_path)
             try:
                 print(f'Loading model: {model_name}...')
                 model = attempt_load(model_path)

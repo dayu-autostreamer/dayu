@@ -20,6 +20,10 @@ COPY ${base_dir}/requirements.txt ./base_requirements.txt
 # 修改，添加两个requirements
 COPY ${app_dir}/requirements_arm64.txt ./app_requirements.txt
 
+RUN apt-get update && \
+    apt-get install -y build-essential python3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 # 修改 pip 安装命令，添加 --use-pep517 参数
 RUN pip3 install --upgrade pip && \
     pip3 install --use-pep517 -r lib_requirements.txt --ignore-installed -i https://mirrors.aliyun.com/pypi/simple && \
@@ -27,7 +31,7 @@ RUN pip3 install --upgrade pip && \
     pip3 install -r app_requirements.txt -i https://mirrors.aliyun.com/pypi/simple
 
 COPY ${dependency_dir} /home/dependency
-# ENV PYTHONPATH="/home/dependency"
+ENV PYTHONPATH="/home/dependency"
 
 # # new add for docker image build
 # ENV PROCESSOR_NAME="detector_processor"
@@ -42,7 +46,5 @@ WORKDIR /app
 COPY  ${code_dir}/* /app/
 
 # 修改，bin/bash
-# CMD ["gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
-CMD ["/bin/bash"]
-
-# 进入后跑main函数
+CMD ["gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
+# CMD ["/bin/bash"]
