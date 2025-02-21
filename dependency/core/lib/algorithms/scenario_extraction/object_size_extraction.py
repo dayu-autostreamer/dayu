@@ -2,7 +2,7 @@ import abc
 import numpy as np
 
 from .base_extraction import BaseExtraction
-from core.lib.common import ClassFactory, ClassType
+from core.lib.common import ClassFactory, ClassType, VideoOps
 
 __all__ = ('ObjectSizeExtraction',)
 
@@ -14,7 +14,7 @@ class ObjectSizeExtraction(BaseExtraction, abc.ABC):
 
     def __call__(self, result, task):
         obj_size = []
-        frame_size = task.get_metadata()['resolution']
+        frame_size = VideoOps.text2resolution(task.get_metadata()['resolution'])
         for frame_result in result:
             bboxes = frame_result[0]
             boxes_size = 0 if len(bboxes) == 0 else \
