@@ -102,3 +102,6 @@
     app = ProcessorServer().app
     ```
     测试processor类是否初始化成功。
+
+### 其他
+1. 一定要注意supernet的权重要和docker镜像中torch vision的具体detection类匹配，否则需要做网络转换，比如Faster RCNN的RPN head结构有微小变化，旧版本没有Conv2dNormActivation实现，要把Conv2dNormActivation里的Conv抠出来重新保存权重。

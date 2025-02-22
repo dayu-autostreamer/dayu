@@ -113,13 +113,16 @@ class OfaInference(BaseInference):
         '''
         Switch the model to the one specified in the arguments.
         '''
-        relative_bn_weights_path = self.subnet_bn_paths[index]
-        bn_weights_path = Context.get_file_path(relative_bn_weights_path)
-        load_bn_statistics(self.model, bn_weights_path)
-        self.model.backbone.body.set_active_subnet(**self.subnet_archs[index])
-        self.model.eval()
-        # subnet_config = self.model.backbone.body.sample_active_subnet()
-        # self.model.backbone.body.set_active_subnet(**subnet_config)
+        with self.model_switch_lock:
+            if index >= self.subnet_nums or index < 0:
+                raise ValueError('Invalid model index')
+            relative_bn_weights_path = self.subnet_bn_paths[index]
+            bn_weights_path = Context.get_file_path(relative_bn_weights_path)
+            load_bn_statistics(self.model, bn_weights_path)
+            self.model.backbone.body.set_active_subnet(**self.subnet_archs[index])
+            self.model.eval()
+            self.current_model_index = index
+            print(f'Switched to model: {self.current_model_index}')
 
     def get_models_accuracy(self):
         return self.subnet_accuracy
