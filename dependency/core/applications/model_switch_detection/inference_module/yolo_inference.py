@@ -112,6 +112,12 @@ class YoloInference(BaseInference):
         Returns a list of floats.
         '''
         return self.model_latency
+    
+    def get_current_model_index(self):
+        '''
+        Get the current model index.
+        '''
+        return self.current_model_index
 
     def infer(self, image: np.ndarray):
         '''

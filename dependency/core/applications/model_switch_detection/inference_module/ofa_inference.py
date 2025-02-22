@@ -130,6 +130,9 @@ class OfaInference(BaseInference):
     def get_models_latency(self):
         return self.subnet_latency
     
+    def get_current_model_index(self):
+        return self.current_model_index
+    
     def get_models_num(self):
         '''
         Get the number of models.

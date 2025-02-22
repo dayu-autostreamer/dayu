@@ -9,7 +9,7 @@ pod-template:
       value: >
         {
           'model_type':'yolo', 
-          'switch_type':'rule_based', 
+          'switch_type':'random', 
           'decision_interval':10, 
           'weights_dir':'yolov5_weights', 
           'model_names': ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x'], 
@@ -18,7 +18,7 @@ pod-template:
       # value: >
       #   {
       #     'model_type':'ofa', 
-      #     'switch_type':'rule_based', 
+      #     'switch_type':'random', 
       #     'decision_interval':10,
       #     'ofa_det_type':'mbv3_faster_rcnn',
       #     'subnet_nums':7,

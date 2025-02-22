@@ -51,6 +51,13 @@ class BaseInference(ABC):
         pass
 
     @abstractmethod
+    def get_current_model_index(self):
+        '''
+        Get the current model index.
+        '''
+        pass
+
+    @abstractmethod
     def prepare_update_stats(self, image: np.ndarray, boxes, scores, labels, inference_latency):
         '''
         Prepare the stats for updating.
@@ -61,8 +68,8 @@ class BaseInference(ABC):
         # TODO: get queue length
         import random
         stats_entry.queue_length = random.randint(0, 50)
-        stats_entry.cur_model_index = self.current_model_index
-        stats_entry.cur_model_accuracy = self.get_models_accuracy()[self.current_model_index]
+        stats_entry.cur_model_index = self.get_current_model_index()
+        stats_entry.cur_model_accuracy = self.get_models_accuracy()[stats_entry.cur_model_index]
         stats_entry.processing_latency = inference_latency
         stats_entry.target_nums = len(boxes)
         if len(boxes) > 0:
