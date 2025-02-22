@@ -76,8 +76,7 @@ class OfaInference(BaseInference):
         try:
             print(f'Loading supernet...')
             model_path = Context.get_file_path(self.supernet_path)
-            self.model = torch.load(model_path, map_location=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
-                                    weights_only=False)
+            self.model = torch.load(model_path, map_location=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
             self.model.eval()
             if torch.cuda.is_available():
                 self.model = self.model.cuda()

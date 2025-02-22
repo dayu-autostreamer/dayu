@@ -105,7 +105,7 @@ def load_bn_statistics(model, stats_path):
         model: 神经网络模型
         stats_path: 包含BN统计数据的文件路径(.pth)
     """
-    bn_stats = torch.load(stats_path, weights_only=False)
+    bn_stats = torch.load(stats_path)
     
     for name, m in model.named_modules():
         if name in bn_stats and isinstance(m, (nn.BatchNorm2d, DynamicBatchNorm2d)):
