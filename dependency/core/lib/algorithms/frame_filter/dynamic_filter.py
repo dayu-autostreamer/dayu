@@ -1,16 +1,15 @@
 import abc
-# from core.lib.common import ClassFactory, ClassType
-# from .base_filter import BaseFilter
+from core.lib.common import ClassFactory, ClassType
+from .base_filter import BaseFilter
 import time
 import random
 import math
 __all__ = ('DynamicFilter',)
 
 
-# @ClassFactory.register(ClassType.GEN_FILTER, alias='dynamic')
-# class DynamicFilter(BaseFilter, abc.ABC):
+@ClassFactory.register(ClassType.GEN_FILTER, alias='dynamic')
 class DynamicFilter:
-    def __init__(self, min_fps, max_fps, min_duration, max_duration, transition_ratio=0.1):
+    def __init__(self, min_fps=1, max_fps=5, min_duration=120, max_duration=600, transition_ratio=0.1):
         self.min_fps = min_fps
         self.max_fps = max_fps
         self.min_duration = min_duration
@@ -36,7 +35,7 @@ class DynamicFilter:
 
     def _generate_fps_range(self):
         """Generate random FPS range within configured bounds"""
-        min_val = random.uniform(self.min_fps, self.max_fps)
+        min_val = random.uniform(self.min_fps, (self.max_fps-self.min_fps)/2)
         max_val = random.uniform(min_val, self.max_fps)
         return {'min_fps': min_val, 'max_fps': max_val}
 
@@ -95,7 +94,7 @@ class DynamicFilter:
             sine_val = math.sin(phase)
             return (sine_val + 1)/2 * (self.current_fps_range['max_fps'] - self.current_fps_range['min_fps']) + self.current_fps_range['min_fps']
 
-    def __call__(self):
+    def __call__(self, system, frame):
         """Determine if current frame should be processed"""
         current_time = time.time()
         self._update_cycle_state(current_time)
@@ -118,7 +117,7 @@ class DynamicFilter:
     
 # test code
 if __name__ == '__main__':
-    filter = DynamicFilter(1, 10, 60, 120)
+    filter = DynamicFilter(1, 10, 20, 60)
     while True:
         if filter():
             print('Processing frame')

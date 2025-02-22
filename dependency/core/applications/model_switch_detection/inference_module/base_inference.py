@@ -4,6 +4,11 @@ from .stats_manager import StatsManager, StatsEntry
 import cv2
 import time
 
+from core.lib.network import get_merge_address, http_request
+from core.lib.network import NodeInfo, PortInfo
+from core.lib.network import NetworkAPIPath, NetworkAPIMethod
+from core.lib.common import Context
+
 class BaseInference(ABC):
     @abstractmethod
     def __init__(self, *args, **kwargs):
@@ -57,6 +62,15 @@ class BaseInference(ABC):
         '''
         pass
 
+    def get_queue(self):
+        self.local_device = NodeInfo.get_local_device()
+        self.processor_port = Context.get_parameter('GUNICORN_PORT')
+        queue_url = get_merge_address('127.0.0.1',
+                                        port=self.processor_port,
+                                        path=NetworkAPIPath.PROCESSOR_QUEUE_LENGTH) 
+        result = http_request(url=queue_url, method=NetworkAPIMethod.PROCESSOR_QUEUE_LENGTH, timeout=5)
+        return result
+
     @abstractmethod
     def prepare_update_stats(self, image: np.ndarray, boxes, scores, labels, inference_latency):
         '''
@@ -65,9 +79,7 @@ class BaseInference(ABC):
         # prepare the stats entry
         stats_entry = StatsEntry()
         stats_entry.timestamp = time.time()
-        # TODO: get queue length
-        import random
-        stats_entry.queue_length = random.randint(0, 50)
+        stats_entry.queue_length = int(self.get_queue())
         stats_entry.cur_model_index = self.get_current_model_index()
         stats_entry.cur_model_accuracy = self.get_models_accuracy()[stats_entry.cur_model_index]
         stats_entry.processing_latency = inference_latency
