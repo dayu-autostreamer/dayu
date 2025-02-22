@@ -90,7 +90,7 @@ class Controller:
 
         LOGGER.info(f'[Submit Task] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
 
-        service_name, _ = self.cur_task.get_current_service()
+        service_name, _ = self.cur_task.get_current_service_info()
         dst_device = self.cur_task.get_current_stage_device()
 
         action = ''
@@ -107,6 +107,7 @@ class Controller:
 
         return action
 
+    # TODO: change step to next stage with dag
     def process_return(self):
         assert self.cur_task, 'Current Task of Controller is Not set!'
 

@@ -1,7 +1,6 @@
 import os
 
-workers = 4
-timeout = 120
+workers = 1
 
 worker_class = "uvicorn.workers.UvicornWorker"
 

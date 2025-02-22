@@ -65,13 +65,16 @@ class Service:
     @staticmethod
     def deserialize(data: str):
         data = json.loads(data)
-        service = Service(data['service_name'], data['execute_device'],
-                          execute_time=data['execute_data']['execute_time'] if 'execute_time'
-                                                                               in data['execute_data'] else 0,
-                          transmit_time=data['execute_data']['transmit_time'] if 'transmit_time'
-                                                                                 in data['execute_data'] else 0,
-                          real_execute_time=data['execute_data']['real_execute_time'] if 'real_execute_time'
-                                                                                         in data['execute_data'] else 0)
+        service = Service(service_name=data['service_name'])
+
+        service.set_execute_device(data['execute_device']) if 'execute_device' in data else None
+        service.set_transmit_time(data['transmit_time']) \
+            if 'execute_data' in data and 'transmit_time' in data['execute_data'] else None
+        service.set_execute_time(data['execute_time']) \
+            if 'execute_data' in data and 'execute_time' in data['execute_data'] else None
+        service.set_real_execute_time(data['real_execute_time']) \
+            if 'execute_data' in data and 'real_execute_time' in data['execute_data'] else None
+
         return service
 
     def __hash__(self):

@@ -17,7 +17,7 @@ class CASVABSOperation(BaseBSOperation, abc.ABC):
         parameters = {'source_id': system.source_id,
                       'meta_data': system.raw_meta_data,
                       'device': system.local_device,
-                      'pipeline': Task.extract_dicts_from_dag(system.task_pipeline),
+                      'pipeline': Task.extract_deployment_info_from_dag(system.task_pipeline),
                       'skip_count': system.getter_filter.skip_count
                       }
         system.getter_filter.reset_filter()
