@@ -1,9 +1,9 @@
 class NetworkAPIPath:
     CONTROLLER_TASK = '/submit_task'
-    CONTROLLER_RETURN = '/process_return'
+    CONTROLLER_RETURN = '/process_return_task'
 
     PROCESSOR_PROCESS = '/predict'
-    PROCESSOR_PROCESS_RETURN = '/process_return'
+    PROCESSOR_PROCESS_RETURN = '/predict_and_return'
     PROCESSOR_QUEUE_LENGTH = '/queue_length'
 
     DISTRIBUTOR_DISTRIBUTE = '/distribute'
