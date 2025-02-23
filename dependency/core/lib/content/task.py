@@ -12,7 +12,7 @@ class Task:
                  task_id: int,
                  source_device: str,
                  dag: DAG = None,
-                 flow_index: str = '',
+                 flow_index: str = 'start',
                  metadata: dict = None,
                  raw_metadata: dict = None,
                  content: object = None,
@@ -24,47 +24,69 @@ class Task:
                  parent_uuid: str = '',
                  root_uuid: str = ''):
 
+        # unique uuid for each duplicated task
         self.__task_uuid = task_uuid or str(uuid.uuid4())
+        # parent uuid for duplicated task (currently unused)
         self.__parent_uuid = parent_uuid
+        # unique uuid for each task
         self.__root_uuid = root_uuid or self.__task_uuid
 
+        # sequential id for each source
         self.__source_id = source_id
+        # sequential id for each task
         self.__task_id = task_id
+        # hostname of source binding device (position of generator)
         self.__source_device = source_device
 
+        # metadata of task
         self.__metadata = metadata
 
+        # raw metadata of source
         self.__raw_metadata = raw_metadata
 
+        # dag info of task
         self.__dag_flow = dag
 
+        # current service name in dag (work as pointer)
         self.__cur_flow_index = flow_index
 
+        # intermediate content data for processing
         self.__content_data = content
 
+        # scenario data extracted from processing
         self.__scenario_data = scenario if scenario else {}
 
+        # temporary data (main for time tickets)
         self.__tmp_data = temp if temp else {}
 
+        # hash data for stream data in task
         self.hash_data = hash_data if hash_data else []
 
+        # file path to store stream data
         self.__file_path = file_path
 
     @staticmethod
     def extract_dag_from_dict(dag_dict: dict, start_node_name='start', end_node_name='end'):
+        """transfer DAG dict in to DAG class"""
         dag_flow = DAG.deserialize(dag_dict)
         if start_node_name not in dag_dict:
             dag_flow.add_start_node(Service(start_node_name))
+        if end_node_name not in dag_dict:
             dag_flow.add_end_node(Service(end_node_name))
 
         return dag_flow
 
     @staticmethod
     def extract_dict_from_dag(dag_flow: DAG):
+        """transfer DAG class in to DAG dict"""
         return DAG.serialize(dag_flow)
 
     @staticmethod
     def extract_deployment_info_from_dag(dag_flow: DAG):
+        """
+        get deployment info from dag class
+        service_name/execute device for each node in DAG
+        """
         dag_dict = DAG.serialize(dag_flow)
         deployment_info = {}
         for node_name in dag_dict:
@@ -226,6 +248,24 @@ class Task:
         delay_info += f'total delay:{total_time:.4f}s average delay: {total_time / self.get_metadata()["buffer_size"]:.4f}s'
         return delay_info
 
+    def get_parallel_services(self):
+        """get parallel services for joint service"""
+        next_node_names = self.__dag_flow.get_node(self.__cur_flow_index).next_nodes
+        if len(next_node_names) > 1:
+            # current node is split node
+            return [self.__cur_flow_index]
+        else:
+            # current node is joint node
+            next_node = self.__dag_flow.get_node(next_node_names[0])
+            return next_node.prev_nodes
+
+    def get_joint_service(self):
+        """get joint service (next node of current node)"""
+        next_node_names = self.__dag_flow.get_node(self.__cur_flow_index).next_nodes
+        assert len(next_node_names) == 1, (f"Current node is split node with {len(next_node_names)} next nodes, "
+                                           f"no joint service!")
+        return self.__dag_flow.get_node(next_node_names[0]).service.get_service_name()
+
     def step_to_next_stage(self):
         next_services = self.__dag_flow.get_next_nodes(self.__cur_flow_index)
         return [self.fork_task(service) for service in next_services]
@@ -249,6 +289,7 @@ class Task:
     def fork_task(self, new_flow_index):
         new_task = copy.deepcopy(self)
         new_task.set_flow_index(new_flow_index)
+        new_task.set_parent_uuid(self.__task_uuid)
         return new_task
 
     # TODO: merge task

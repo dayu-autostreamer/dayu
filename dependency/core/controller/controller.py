@@ -10,9 +10,14 @@ from core.lib.network import get_merge_address
 from core.lib.network import NodeInfo, PortInfo
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 
+from .task_coordinator import TaskCoordinator
 
+
+# TODO: check for time storage
 class Controller:
     def __init__(self):
+        self.task_coordinator = TaskCoordinator()
+
         self.cur_task = None
 
         self.is_display = Context.get_parameter('DISPLAY', direct=False)
@@ -86,7 +91,9 @@ class Controller:
 
     def submit_task(self):
 
-        assert self.cur_task, 'Current task of controller is NOT set!'
+        if not self.cur_task:
+            LOGGER.warning('Current task of controller is NOT set!')
+            return
 
         LOGGER.info(f'[Submit Task] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
 
@@ -105,11 +112,34 @@ class Controller:
 
         return action
 
-    # TODO: change step to next stage with dag
     def process_return(self):
         assert self.cur_task, 'Current task of controller is NOT set!'
 
         LOGGER.info(f'[Process Return] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
+
+        required_parallel_task_count = len(self.cur_task.get_parallel_services())
+
+        # node with parallel nodes should merge before step to next stage
+        if required_parallel_task_count > 1:
+            # current node have parallel nodes
+            joint_service_name = self.cur_task.get_joint_service()
+            parallel_count = self.task_coordinator.store_task_data(self.cur_task, joint_service_name)
+
+            # wait when some duplicated tasks (with parallel nodes) not arrive
+            if parallel_count != required_parallel_task_count:
+                self.cur_task = None
+                return
+            tasks = self.task_coordinator.retrieve_task_data(self.cur_task.get_root_uuid(),
+                                                             joint_service_name,
+                                                             required_parallel_task_count)
+            # something wrong causes invalid task retrieving
+            if not tasks:
+                self.cur_task = None
+                return
+
+            # merge parallel tasks
+            for task in tasks:
+                self.cur_task.merge_task(task)
 
         self.cur_task.step_to_next_stage()
 
