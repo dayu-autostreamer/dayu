@@ -1,5 +1,6 @@
 import copy
 import json
+import uuid
 
 from .service import Service
 from .dag import DAG
@@ -18,7 +19,15 @@ class Task:
                  scenario: dict = None,
                  temp: dict = None,
                  hash_data: list = None,
-                 file_path: str = None):
+                 file_path: str = None,
+                 task_uuid: str = '',
+                 parent_uuid: str = '',
+                 root_uuid: str = ''):
+
+        self.__task_uuid = task_uuid or str(uuid.uuid4())
+        self.__parent_uuid = parent_uuid
+        self.__root_uuid = root_uuid or self.__task_uuid
+
         self.__source_id = source_id
         self.__task_id = task_id
         self.__source_device = source_device
@@ -138,6 +147,30 @@ class Task:
     def add_hash_data(self, hash_code):
         self.hash_data.append(hash_code)
 
+    def get_task_uuid(self):
+        return self.__task_uuid
+
+    def set_task_uuid(self, task_uuid: str):
+        assert uuid.UUID(task_uuid).version == 4, \
+            f'Invalid version for input UUID, need 4 give {uuid.UUID(task_uuid).version}'
+        self.__task_uuid = task_uuid
+
+    def get_parent_uuid(self):
+        return self.__parent_uuid
+
+    def set_parent_uuid(self, parent_uuid: str):
+        assert not parent_uuid or uuid.UUID(parent_uuid).version == 4, \
+            f'Invalid version for input UUID, need 4 give {uuid.UUID(parent_uuid).version}'
+        self.__parent_uuid = parent_uuid
+
+    def get_root_uuid(self):
+        return self.__root_uuid
+
+    def set_root_uuid(self, root_uuid: str):
+        assert uuid.UUID(root_uuid).version == 4, \
+            f'Invalid version for input UUID, need 4 give {uuid.UUID(root_uuid).version}'
+        self.__root_uuid = root_uuid
+
     def get_current_service_info(self):
         assert self.__dag_flow, 'Task DAG is empty!'
         service = self.__dag_flow.get_node(self.__cur_flow_index).service
@@ -195,7 +228,7 @@ class Task:
 
     def step_to_next_stage(self):
         next_services = self.__dag_flow.get_next_nodes(self.__cur_flow_index)
-        return [self.duplicate_task(service) for service in next_services]
+        return [self.fork_task(service) for service in next_services]
 
     def get_current_stage_device(self):
         assert self.__dag_flow, 'Task DAG is empty!'
@@ -213,7 +246,7 @@ class Task:
             node.service.set_execute_device(device)
         return dag
 
-    def duplicate_task(self, new_flow_index):
+    def fork_task(self, new_flow_index):
         new_task = copy.deepcopy(self)
         new_task.set_flow_index(new_flow_index)
         return new_task
@@ -236,7 +269,10 @@ class Task:
             'scenario_data': task.get_scenario_data(),
             'tmp_data': task.get_tmp_data(),
             'hash_data': task.get_hash_data(),
-            'file_path': task.get_file_path()
+            'file_path': task.get_file_path(),
+            'task_uuid': task.get_task_uuid(),
+            'parent_uuid': task.get_parent_uuid(),
+            'root_uuid': task.get_root_uuid(),
         })
 
     @staticmethod
@@ -255,5 +291,8 @@ class Task:
         task.set_tmp_data(data['tmp_data']) if 'tmp_data' in data else None
         task.set_hash_data(data['hash_data']) if 'hash_data' in data else None
         task.set_file_path(data['file_path']) if 'file_path' in data else None
+        task.set_task_uuid(data['task_uuid']) if 'task_uuid' in data else None
+        task.set_parent_uuid(data['parent_uuid']) if 'parent_uuid' in data else None
+        task.set_root_uuid(data['root_uuid']) if 'root_uuid' in data else None
 
         return task

@@ -86,14 +86,12 @@ class Controller:
 
     def submit_task(self):
 
-        assert self.cur_task, 'Current Task of Controller is Not set!'
+        assert self.cur_task, 'Current task of controller is NOT set!'
 
         LOGGER.info(f'[Submit Task] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
 
         service_name, _ = self.cur_task.get_current_service_info()
         dst_device = self.cur_task.get_current_stage_device()
-
-        action = ''
 
         if service_name == 'end':
             self.send_task_to_distributor()
@@ -109,14 +107,14 @@ class Controller:
 
     # TODO: change step to next stage with dag
     def process_return(self):
-        assert self.cur_task, 'Current Task of Controller is Not set!'
+        assert self.cur_task, 'Current task of controller is NOT set!'
 
         LOGGER.info(f'[Process Return] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
 
         self.cur_task.step_to_next_stage()
 
     def record_transmit_ts(self, is_end: bool):
-        assert self.cur_task, 'Current Task of Controller is Not set!'
+        assert self.cur_task, 'Current task of controller is NOT set!'
 
         try:
             task, duration = TimeEstimator.record_pipeline_ts(self.cur_task, is_end=is_end, sub_tag='transmit')
@@ -131,7 +129,7 @@ class Controller:
                         f'record transmit time of stage {self.cur_task.get_flow_index()}: {duration:.3f}s')
 
     def record_execute_ts(self, is_end: bool):
-        assert self.cur_task, 'Current Task of Controller is Not set!'
+        assert self.cur_task, 'Current task of controller is NOT set!'
 
         try:
             task, duration = TimeEstimator.record_pipeline_ts(self.cur_task, is_end=is_end, sub_tag='execute')
