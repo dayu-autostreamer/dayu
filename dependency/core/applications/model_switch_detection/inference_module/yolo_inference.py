@@ -61,7 +61,8 @@ class YoloInference(BaseInference):
                 print(f'Error loading model {model_name}: {str(e)}!')
             
         print('All models loaded.')
-        self.current_model_index = 0
+        with self.model_switch_lock:
+            self.current_model_index = 0
         print(f'Switched to model: {self.allowed_yolo_models[self.current_model_index]}.')
 
     def _measure_initial_latencies(self):

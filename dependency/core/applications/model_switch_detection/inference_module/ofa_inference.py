@@ -83,8 +83,8 @@ class OfaInference(BaseInference):
             print(f'Supernet loaded.')
         except Exception as e:
             print(f'Error loading supernet: {str(e)}!')
-
-        self.current_model_index = 0
+        with self.model_switch_lock:
+            self.current_model_index = 0
         print(f'Switched to model: {self.current_model_index}.')
 
     def _measure_initial_latencies(self):

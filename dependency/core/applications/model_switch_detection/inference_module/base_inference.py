@@ -107,5 +107,5 @@ class BaseInference(ABC):
         gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         stats_entry.brightness = np.mean(gray_image)
         stats_entry.contrast = np.std(gray_image)
-        print(f'Updating stats: {stats_entry}')
+        # print(f'Updating stats: {stats_entry}')
         self.stats_manager.update_stats(stats_entry)

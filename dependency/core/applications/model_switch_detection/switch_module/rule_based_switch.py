@@ -15,7 +15,7 @@ class RuleBasedSwitch(BaseSwitch):
         self.decision_interval = decision_interval
         self.detector_instance = detector_instance
 
-        self.queue_threshold = 20  # 队列积压警戒值
+        self.queue_threshold = 10  # 队列积压警戒值
         self.current_pressure = 0  # 系统压力计数器
         self.pressure_threshold = 2  # 连续压力次数阈值
 

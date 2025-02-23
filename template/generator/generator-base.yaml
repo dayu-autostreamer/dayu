@@ -1,10 +1,12 @@
 position: edge
 pod-template:
+  # image: generator:dwy-test
   image: generator
   imagePullPolicy: Always
   env:
     - name: GEN_FILTER_NAME
-      value: dynamic
+      # value: dynamic
+      value: simple
     - name: GEN_GETTER_FILTER_NAME
       value: simple
     - name: GEN_PROCESS_NAME

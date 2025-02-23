@@ -16,6 +16,13 @@ def _import_rule_based_switch_module():
         from .switch_module.rule_based_switch import RuleBasedSwitch
     return RuleBasedSwitch
 
+def _import_cmab_switch_module():
+    if __name__ == '__main__':
+        from switch_module.cmab_switch import CMABSwitch
+    else:
+        from .switch_module.cmab_switch import CMABSwitch
+    return CMABSwitch
+
 def _import_yolo_inference_module():
     if __name__ == '__main__':
         from inference_module.yolo_inference import YoloInference
@@ -57,6 +64,9 @@ class ModelSwitchDetection:
         elif switch_type == 'rule_based':
             RuleBasedSwitch = _import_rule_based_switch_module()
             self.switcher = RuleBasedSwitch(decision_interval, self.detector)
+        elif switch_type == 'cmab':
+            CMABSwitch = _import_cmab_switch_module()
+            self.switcher = CMABSwitch(decision_interval, self.detector)
         else:
             raise ValueError('Invalid switch type')
 
