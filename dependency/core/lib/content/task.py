@@ -5,6 +5,8 @@ import uuid
 from .service import Service
 from .dag import DAG
 
+from core.lib.solvers import LCASolver, IntermediateNodeSolver, PathSolver
+
 
 class Task:
     def __init__(self,
@@ -133,9 +135,11 @@ class Task:
     def set_raw_metadata(self, data: dict):
         self.__raw_metadata = data
 
+    # TODO
     def get_content(self):
         return self.__content_data
 
+    # TODO
     def set_content(self, content):
         self.__content_data = content
 
@@ -223,58 +227,65 @@ class Task:
         return (self.__tmp_data[f'dayu:{self.__root_uuid}:total_end_time'] -
                 self.__tmp_data[f'dayu:{self.__root_uuid}:total_start_time'])
 
-    # TODO: calculate total delay
     def calculate_total_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
         assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
-        total_time = 0
-        for service in self.__dag_flow:
-            total_time += service.get_service_total_time()
 
+        total_time, _ = PathSolver(self.__dag_flow).get_weighted_shortest_path('start', 'end',
+                                                                               lambda x: x.get_service_total_time())
         return total_time
 
-    # TODO: calculate transmit time
     def calculate_cloud_edge_transmit_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
         assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
-        transmit_time = 0
-        for service in self.__dag_flow:
-            transmit_time = max(transmit_time, service.get_transmit_time())
 
+        # get the longest transmitting time as cloud-edge transmitting time
+        transmit_time = 0
+        for service_name in self.__dag_flow:
+            service = self.__dag_flow.get_node(service_name).service
+            transmit_time = max(transmit_time, service.get_transmit_time())
         return transmit_time
 
-    # TODO: get delay info
     def get_delay_info(self):
         assert self.__dag_flow, 'Task DAG is empty!'
         assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
 
         delay_info = ''
-        total_time = 0
+        total_time = self.calculate_total_time()
+        real_total_time = self.get_real_end_to_end_time()
         delay_info += f'[Delay Info] Source:{self.get_source_id()}  Task:{self.get_task_id()}\n'
         for service in self.__dag_flow:
             delay_info += f'stage[{service.get_service_name()}] -> (device:{service.get_execute_device()})    ' \
                           f'execute delay:{service.get_execute_time():.4f}s    ' \
                           f'transmit delay:{service.get_transmit_time():.4f}s\n'
-        delay_info += f'total delay:{total_time:.4f}s average delay: {total_time / self.get_metadata()["buffer_size"]:.4f}s'
+        delay_info += (f'total delay:{total_time:.4f}s  '
+                       f'average delay: {total_time / self.get_metadata()["buffer_size"]:.4f}s\n')
+        delay_info += (f'real end-to-end delay:{real_total_time:.4f}s  '
+                       f'average delay: {real_total_time / self.get_metadata()["buffer_size"]:.4f}s\n')
         return delay_info
 
-    def get_parallel_services(self):
-        """get parallel services for joint service"""
-        next_node_names = self.__dag_flow.get_node(self.__cur_flow_index).next_nodes
-        if len(next_node_names) > 1:
-            # current node is split node
-            return [self.__cur_flow_index]
-        else:
-            # current node is joint node
-            next_node = self.__dag_flow.get_node(next_node_names[0])
-            return next_node.prev_nodes
+    def get_parallel_info_for_merge(self):
+        """
+        Obtain nodes parallel to the current node and the corresponding joint nodes
 
-    def get_joint_service(self):
-        """get joint service (next node of current node)"""
+        output:
+        [
+            {joint_service: joint_service_name1, parallel_services:[...]},
+            {joint_service: joint_service_name2, parallel_services:[...]},
+            ...
+        ]
+        """
         next_node_names = self.__dag_flow.get_node(self.__cur_flow_index).next_nodes
-        assert len(next_node_names) == 1, (f"Current node is split node with {len(next_node_names)} next nodes, "
-                                           f"no joint service!")
-        return self.__dag_flow.get_node(next_node_names[0]).service.get_service_name()
+
+        parallel_info = [
+            {
+                'joint_service': next_node_name,
+                'parallel_services': self.__dag_flow.get_prev_nodes(next_node_name)
+            }
+            for next_node_name in next_node_names
+        ]
+
+        return parallel_info
 
     def step_to_next_stage(self):
         next_services = self.__dag_flow.get_next_nodes(self.__cur_flow_index)
@@ -299,12 +310,26 @@ class Task:
     def fork_task(self, new_flow_index):
         new_task = copy.deepcopy(self)
         new_task.set_flow_index(new_flow_index)
+        new_task.set_task_uuid(uuid.uuid4())
         new_task.set_parent_uuid(self.__task_uuid)
         return new_task
 
-    # TODO: merge task
-    def merge_task(self, other_task):
-        pass
+    def merge_task(self, other_task: 'Task'):
+        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_flow_index(), other_task.get_flow_index())
+
+        merged_task = copy.deepcopy(self)
+        merged_task.set_flow_index(lca_service_name)
+        merged_task.set_task_uuid(uuid.uuid4())
+
+        merged_dag = merged_task.get_dag()
+        other_dag = other_task.get_dag()
+
+        nodes_for_merge = IntermediateNodeSolver(merged_dag).get_intermediate_nodes(lca_service_name,
+                                                                                    other_task.get_flow_index())
+        for node in nodes_for_merge:
+            merged_dag.set_node_service(node, other_dag.get_node(node).service)
+
+        merged_task.set_dag(merged_dag)
 
     @staticmethod
     def serialize(task: 'Task'):

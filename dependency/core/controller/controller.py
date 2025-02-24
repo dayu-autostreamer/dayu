@@ -1,3 +1,4 @@
+import copy
 import os
 
 from core.lib.estimation import TimeEstimator
@@ -116,36 +117,41 @@ class Controller:
         return action
 
     def process_return(self):
+        """step to next step and submit task"""
         assert self.cur_task, 'Current task of controller is NOT set!'
-
         LOGGER.info(f'[Process Return] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
 
-        required_parallel_task_count = len(self.cur_task.get_parallel_services())
+        actions = []
+        parallel_joints = self.cur_task.get_parallel_info_for_merge()
+        for parallel_joint in parallel_joints:
+            joint_service_name = parallel_joint['joint_service']
+            parallel_service_names = parallel_joint['parallel_services']
+            required_parallel_task_count = len(parallel_service_names)
 
-        # node with parallel nodes should merge before step to next stage
-        if required_parallel_task_count > 1:
-            # current node have parallel nodes
-            joint_service_name = self.cur_task.get_joint_service()
-            parallel_count = self.task_coordinator.store_task_data(self.cur_task, joint_service_name)
+            # node with parallel nodes should merge before step to next stage
+            if required_parallel_task_count > 1:
+                parallel_count = self.task_coordinator.store_task_data(copy.deepcopy(self.cur_task), joint_service_name)
+                # wait when some duplicated tasks (with parallel nodes) not arrive
+                if parallel_count != required_parallel_task_count:
+                    actions.append('wait')
+                    continue
+                # retrieve parallel nodes in redis
+                tasks = self.task_coordinator.retrieve_task_data(self.cur_task.get_root_uuid(),
+                                                                 joint_service_name,
+                                                                 required_parallel_task_count)
+                # something wrong causes invalid task retrieving
+                if not tasks:
+                    actions.append('wait')
+                    continue
 
-            # wait when some duplicated tasks (with parallel nodes) not arrive
-            if parallel_count != required_parallel_task_count:
-                self.cur_task = None
-                return ['wait']
-            tasks = self.task_coordinator.retrieve_task_data(self.cur_task.get_root_uuid(),
-                                                             joint_service_name,
-                                                             required_parallel_task_count)
-            # something wrong causes invalid task retrieving
-            if not tasks:
-                self.cur_task = None
-                return ['wait']
+                # merge parallel tasks
+                for task in tasks:
+                    self.cur_task.merge_task(task)
 
-            # merge parallel tasks
-            for task in tasks:
-                self.cur_task.merge_task(task)
+            new_task = self.cur_task.fork_task(joint_service_name)
+            actions.append(self.submit_task(new_task))
 
-        next_tasks = self.cur_task.step_to_next_stage()
-        return [self.submit_task(task) for task in next_tasks]
+        return actions
 
     def record_transmit_ts(self, task: Task = None, is_end: bool = False):
         cur_task = task or self.cur_task

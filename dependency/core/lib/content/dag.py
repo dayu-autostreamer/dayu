@@ -1,4 +1,5 @@
-from typing import List
+from collections import deque
+from typing import List, Dict, Set
 
 from .service import Service
 
@@ -36,6 +37,9 @@ class DAG:
             raise KeyError(f"Service {service_name} does not exist in DAG")
 
         return self.nodes[service_name]
+
+    def set_node_service(self, service_name: str, service: Service):
+        self.get_node(service_name).service = service
 
     def get_next_nodes(self, service_name: str) -> List[Service]:
         if service_name not in self.nodes:
