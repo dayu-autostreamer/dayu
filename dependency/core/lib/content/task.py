@@ -213,6 +213,16 @@ class Task:
         service = self.__dag_flow.get_node(self.__cur_flow_index).service
         service.set_real_execute_time(real_execute_time=real_execute_time)
 
+    def get_real_end_to_end_time(self):
+        """get real end to end time of task: from generator to distributor by estimation"""
+        if f'dayu:{self.__root_uuid}:total_start_time' not in self.__tmp_data:
+            raise ValueError(f'Timestamp of task starting lacks: dayu:{self.__root_uuid}:total_start_time')
+        if f'dayu:{self.__root_uuid}:total_start_time' not in self.__tmp_data:
+            raise ValueError(f'Timestamp of task ending lacks: dayu:{self.__root_uuid}:total_end_time')
+
+        return (self.__tmp_data[f'dayu:{self.__root_uuid}:total_end_time'] -
+                self.__tmp_data[f'dayu:{self.__root_uuid}:total_start_time'])
+
     # TODO: calculate total delay
     def calculate_total_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'

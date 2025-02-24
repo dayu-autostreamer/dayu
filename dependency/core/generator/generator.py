@@ -9,7 +9,6 @@ from core.lib.network import http_request
 from core.lib.estimation import TimeEstimator
 
 
-# TODO: update pipeline to dag
 class Generator:
     def __init__(self, source_id: int, metadata: dict, task_dag: list, ):
         self.current_task = None
@@ -49,7 +48,7 @@ class Generator:
                                                             is_end=False)
 
     def record_transmit_start_ts(self):
-        self.current_task, _ = TimeEstimator.record_pipeline_ts(self.current_task,
+        self.current_task, _ = TimeEstimator.record_dag_ts(self.current_task,
                                                                 is_end=False,
                                                                 sub_tag='transmit')
 

@@ -106,9 +106,9 @@ class ProcessorServer:
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
 
-        task, duration = TimeEstimator.record_pipeline_ts(task, is_end=False, sub_tag='real_execute')
+        task, duration = TimeEstimator.record_dag_ts(task, is_end=False, sub_tag='real_execute')
         new_task = self.processor(task)
-        new_task, duration = TimeEstimator.record_pipeline_ts(new_task, is_end=True, sub_tag='real_execute')
+        new_task, duration = TimeEstimator.record_dag_ts(new_task, is_end=True, sub_tag='real_execute')
         new_task.save_real_execute_time(duration)
 
         LOGGER.debug(f'[Monitor Task] (Process end) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')

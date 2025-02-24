@@ -24,20 +24,19 @@ class Timer:
 
 
 class TimeEstimator:
-
     @staticmethod
-    def record_pipeline_ts(task: Task, is_end: bool, sub_tag: str = 'transmit') -> (Task, float):
+    def record_dag_ts(task: Task, is_end: bool, sub_tag: str = 'transmit') -> (Task, float):
         """
-        record pipeline timestamp in system
-        :param task: pipeline task
+        record dag timestamp in system
+        :param task: dag task
         :param is_end: if recording the end of current timestamp
-        :param sub_tag: sub tag of ts record name (eg:transmit_time_1)
-        :return: task: pipeline task with recorded time
+        :param sub_tag: sub tag of ts record name (eg:transmit_time_service_1)
+        :return: task: dag task with recorded time
                  duration: time estimation result
 
         """
         data, duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                                 f'{sub_tag}_time_{task.get_flow_index()}',
+                                                 f'dayu:{task.get_root_uuid()}:{sub_tag}_time_{task.get_flow_index()}',
                                                  is_end=is_end)
         task.set_tmp_data(data)
         return task, duration
@@ -54,7 +53,7 @@ class TimeEstimator:
         """
 
         data, duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                                 tag=tag,
+                                                 tag=f'dayu:{task.get_root_uuid()}:{tag}',
                                                  is_end=is_end)
         task.set_tmp_data(data)
         return task, duration

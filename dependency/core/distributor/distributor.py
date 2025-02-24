@@ -24,7 +24,7 @@ class Distributor:
         self.cur_task = Task.deserialize(task_data)
 
     def distribute_data(self):
-        assert self.cur_task, 'Current Task of Controller is Not set!'
+        assert self.cur_task, 'Current task of distributor is NOT set!'
 
         LOGGER.info(f'[Distribute Data] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
 
@@ -74,9 +74,9 @@ class Distributor:
                      data={'data': Task.serialize(self.cur_task)})
 
     def record_transmit_ts(self):
-        assert self.cur_task, 'Current Task of Distributor is Not set!'
+        assert self.cur_task, 'Current task of distributor is NOT set!'
 
-        task, duration = TimeEstimator.record_pipeline_ts(self.cur_task, is_end=True, sub_tag='transmit')
+        task, duration = TimeEstimator.record_dag_ts(self.cur_task, is_end=True, sub_tag='transmit')
         self.cur_task = task
 
         self.cur_task.save_transmit_time(duration)
