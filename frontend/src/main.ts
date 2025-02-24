@@ -12,8 +12,6 @@ import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
 import VueGridLayout from "vue-grid-layout";
 
-
-
 const app = createApp(App);
 
 directive(app);

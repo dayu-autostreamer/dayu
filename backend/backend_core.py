@@ -1,3 +1,6 @@
+import copy
+from collections import deque
+
 import cv2
 import numpy as np
 import os
@@ -22,6 +25,8 @@ class BackendCore:
         self.services = None
 
         self.source_configs = []
+        # {dag_id:"",graph:{},meta_data:...} 有name 有id
+        # graph:{"A":{node_id:"",prev:[],succ:[],service_id:"",}} 需要改成service_id
         self.dags = []
 
         self.time_ticket = 0
@@ -67,13 +72,15 @@ class BackendCore:
 
     # TODO: dag node_list
     def parse_apply_templates(self, policy, source_deploy):
+        # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
         yaml_dict = {}
 
+        # 涉及policy
         yaml_dict.update(self.template_helper.load_policy_apply_yaml(policy))
 
+        # 涉及source_deploy
         service_dict, source_deploy = self.extract_service_from_source_deployment(source_deploy)
         yaml_dict.update({'processor': self.template_helper.load_application_apply_yaml(service_dict)})
-
         docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy)
 
         self.cur_yaml_docs = docs_list
@@ -81,24 +88,50 @@ class BackendCore:
 
         return docs_list
 
-    # dag node_list
+    # 遍历邻接表
+    def bfs_dag(self, dag_graph, dag_callback):
+        source=dag_graph['begin']
+        queue = deque(dag_graph[source])
+        visited = {source}
+        while queue:
+            # 从队列中取出一个节点
+            current_node_item = queue.popleft()
+            # 调用回调函数处理当前节点
+            dag_callback(current_node_item)
+
+            # 遍历当前节点的所有邻接节点
+            for child_id in current_node_item['succ']:
+                if child_id not in visited:
+                    # 如果邻接节点未被访问过，则将其加入队列和已访问集合
+                    queue.append(dag_graph[child_id])
+                    visited.add(child_id)
+
+    # dag node_list 提取出yaml 进行部署
     def extract_service_from_source_deployment(self, source_deploy):
         service_dict = {}
 
         for s in source_deploy:
             dag = s['dag']
-            node = s['node']
-            extracted_dag = []
-            for service_id in dag:
+            node_set = s['node']
+            extracted_dag = copy.deepcopy(dag)
+
+            def get_service_callback(node_item):
+                service_id=node_item['service_id']
                 service = self.find_service_by_id(service_id)
                 service_name = service['service']
                 service_yaml = service['yaml']
-                extracted_dag.append(service)
                 if service_id in service_dict:
-                    service_dict[service_id]['node'].append(node)
+                    pre_node_list=service_dict[service_id]['node']
+                    service_dict[service_id]['node']=list(set(pre_node_list+node_set))
                 else:
-                    service_dict[service_id] = {'service_name': service_name, 'yaml': service_yaml, 'node': [node]}
+                    service_dict[service_id] = {'service_name': service_name, 'yaml': service_yaml, 'node': node_set}
+
+                # 重建一个dag图 新添加一个service字段
+                extracted_dag[node_item['id']]['service']=service
+
+            self.bfs_dag(dag, get_service_callback)
             s['dag'] = extracted_dag
+
         return service_dict, source_deploy
 
     def get_yaml_docs(self):
@@ -173,16 +206,41 @@ class BackendCore:
     def check_simulation_datasource(self):
         return KubeHelper.check_pod_name('datasource', namespace=self.namespace)
 
-    # TODO: check legal dag (目前还是pipeline的检查方式)
-    def check_dag(self, dag, initial_form='frame'):
-        last_data_form = initial_form
-        for custom_service_id in dag:
-            custom_service = self.find_service_by_id(custom_service_id)
-            if custom_service and custom_service['input'] == last_data_form:
-                last_data_form = custom_service['output']
-            else:
-                return False
-        return True
+    # TODO: check legal dag (目前还是pipeline的检查方式) 已完成 需要加上源节点的模态验证
+    # 需要验证前后数据输出输入的一一对应
+    # 拓扑排序验证dag图合法,保证graph有所有节点
+    # 传入的dag数据格式:{source:node_id,graph:{id1:[],id2:[]...}}
+    def check_dag(self, dag):
+        # 拓扑排序验证最终集合与原graph长度相同
+        def topo_sort(graph):
+            # 统计每个节点的入度
+            in_degree = {node: 0 for node in graph}
+            for node in graph:
+                for neighbor in graph[node]:
+                    in_degree[neighbor] += 1
+
+            # 初始化队列，将入度为0的节点加入队列
+            queue = [node for node in in_degree if in_degree[node] == 0]
+            topo_order = []
+
+            # 进行拓扑排序
+            while queue:
+                parent = queue.pop(0)
+                topo_order.append(parent)
+                for child in graph[parent]:
+                    parent_service = self.find_service_by_id(parent)
+                    child_service = self.find_service_by_id(child)
+                    # 父子输入输出不匹配就返回False
+                    if child_service and parent_service and child_service['input'] != parent_service['output']:
+                        return False
+                    in_degree[child] -= 1
+                    if in_degree[child] == 0:
+                        queue.append(child)
+
+            # 如果拓扑排序的结果长度等于图中节点的数量，则说明图本身是一个合法的DAG
+            return len(topo_order) == len(graph)
+
+        return topo_sort(dag['graph'])
 
     def get_source_ids(self):
         source_ids = []
