@@ -170,6 +170,7 @@ class BackendServer:
                     current_service_list.append(service_id)
         return current_service_list
 
+    # 直接返回当前dag数据
     async def get_dag_workflows(self):
         """
         get current dag workflows
@@ -177,19 +178,39 @@ class BackendServer:
                     {
                         "dag_id":1,
                         "dag_name":"headup",
-                        "dag":["face_detection","face_alignment"]
+                        "dag":{
+                            "node_id_A":{
+                                "id" : "skyrim's node",
+                                "prev" : [],
+                                "succ" : ["node_id_B", ...],
+                                "service_id" : "car_detection"
+                            },
+                            "node_id_B":{
+                                "id" : "skyrim's node",
+                                "prev" : ["node_id_A"],
+                                "succ" : [],
+                                "service_id" : "plate_recognition"
+                            }
+                        }
                     },
                     {
-                        "dag_id":1,
-                        "dag_name":"traffic",
-                        "dag":["car_detection","plate_recognition"]
-                    },
-                    {
-                        "dag_id":1,
-                        "dag_name":"ixpe",
-                        "dag":["ixpe_preprocess","ixpe_sr_and_pc","ixpe_edge_observe"]
+                        "dag_id":2,
+                        "dag_name":"headup",
+                        "dag":{
+                            "node_id_A":{
+                                "id" : "skyrim's node",
+                                "prev" : [],
+                                "succ" : ["node_id_B", ...],
+                                "service_id" : car_detection
+                            },
+                            "node_id_B":{
+                                "id" : "skyrim's node",
+                                "prev" : ["node_id_A"],
+                                "succ" : [],
+                                "service_id" : plate_recognition
+                            }
+                        }
                     }
-
                 ],
         :return:
         """
@@ -219,13 +240,26 @@ class BackendServer:
                                       + ', out: ' + service['output'] + ')')
         return self.server.services
 
+    # 更新
     async def update_dag_workflows(self, data=Body(...)):
         """
         add new dag workflows
         body
         {
             "dag_name":"headup",
-            "dag":["face_detection","face_alignment"]
+            "dag":{
+                "begin" : "node_id_A",//需要是一个列表 支持多个begin
+                "service_id":{
+                    "prev" : [],
+                    "succ" : ["node_id_B", ...],
+                    "service_id" : car_detection
+                },
+                "service_id":{
+                    "prev" : ["node_id_A"],
+                    "succ" : [],
+                    "service_id" : plate_recognition
+                }
+            }
         },
         :return:
             {'state':success/fail, 'msg':'...'}
@@ -369,7 +403,7 @@ class BackendServer:
 
         return {'state': 'fail', 'msg': 'Delete datasource failed: datasource not exists'}
 
-    # TODO: install dag with node_list
+    # TODO: 部署dag服务 /api/insall
     async def install_service(self, data=Body(...)):
         """
         install system components to prepare for executing dags
@@ -378,6 +412,18 @@ class BackendServer:
             "dag_id": (id),
             "policy_id": (id)
         }
+
+        content = {
+            source_config_label: source_config_label,
+            policy_id: policy_id,
+            source: this.selectedSources,
+        };
+
+        source = [
+            { id: 0, name: "s1", dag_selected: "", node_selected: [] },
+            { id: 1, name: "s2", dag_selected: "", node_selected: [] }...
+        ],
+
         :return:
         {'msg': 'service start successfully'}
         {'msg': 'Invalid service name!'}
@@ -396,8 +442,10 @@ class BackendServer:
 
         source_label = data['source_config_label']
         policy_id = data['policy_id']
-        dag_list = data['dag_list']
-        node_list = data['node_list']
+        source_map_list = data['source']
+        # 从source数据中构造dag_list和node_set_list
+        dag_list = [x['dag_selected'] for x in source_map_list]
+        node_set_list = [x['node_selected'] for x in source_map_list]
 
         source_deploy = []
 
@@ -409,29 +457,33 @@ class BackendServer:
         if source_config is None:
             return {'state': 'fail', 'msg': 'Install services failed: datasource configuration not exists'}
 
-        if len(source_config) != len(dag_list) != len(node_list):
+        if len(source_config) != len(dag_list) != len(node_set_list):
             return {'state': 'fail', 'msg': 'Install services failed: datasource mapping failed'}
 
-        for source, dag_id, node in zip(source_config['source_list'], dag_list, node_list):
+        for source, dag_id, node_set in zip(source_config['source_list'], dag_list, node_set_list):
 
             dag = self.server.find_dag_by_id(dag_id)
             if dag is None:
                 return {'state': 'fail', 'msg': 'Install services failed: dag not exists'}
 
-            if not self.server.check_node_exist(node):
-                return {'state': 'fail', 'msg': f'Install services failed: edge node "{node}" not exists'}
+            for node in node_set:
+                if not self.server.check_node_exist(node):
+                    return {'state': 'fail', 'msg': f'Install services failed: edge node "{node}" not exists'}
 
             source.update({'source_type': source_config['source_type'], 'source_mode': source_config['source_mode']})
 
-            source_deploy.append({'source': source, 'dag': dag, 'node': node})
+            # 注意此处source_deploy被修改需要递归修改
+            source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
         try:
+            # 根据构造的map_list获取yaml文件
             yaml = self.server.parse_apply_templates(policy, source_deploy)
         except Exception as e:
             LOGGER.warning(f'Parse templates failed: {str(e)}')
             LOGGER.exception(e)
             yaml = None
         try:
+            # 根据yaml文件进行部署
             result = install_loop(yaml)
         except Exception as e:
             LOGGER.exception(e)

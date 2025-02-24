@@ -1,5 +1,6 @@
 import copy
 import os
+import random
 import re
 from kube_helper import KubeHelper
 
@@ -149,9 +150,11 @@ class TemplateHelper:
         return docs_list
 
     # TODO: 如何选择哪个节点作为数据源？
-    #       第一次迭代：随机选择数据源的节点集的一个节点作为generator的节点集
+    #       第一次迭代：随机选择数据源的节点集的一个节点作为generator的节点集 完成
     #       第二次迭代考虑获取scheduler对generator所在节点的选择决策
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
+       # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
+
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
         edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
@@ -159,7 +162,8 @@ class TemplateHelper:
         for source_info in source_deploy:
             new_edge_worker = copy.deepcopy(edge_worker_template)
             source = source_info['source']
-            node = source_info['node']
+            node_set=source_info['node_set']
+            node = random.choice(node_set)
             dag = source_info['dag']
 
             new_edge_worker['template']['spec']['nodeName'] = node
@@ -173,8 +177,7 @@ class TemplateHelper:
                     {'name': 'SOURCE_TYPE', 'value': str(source['source_type'])},
                     {'name': 'SOURCE_ID', 'value': str(source['id'])},
                     {'name': 'SOURCE_METADATA', 'value': str(source['metadata'])},
-                    {'name': 'DAG', 'value': str([{'service_name': service['service']} for service in dag])},
-
+                    {'name': 'DAG', 'value': str([{'service_name': item['service']} for item in dag])},
                 ])
 
             if node in edge_workers_dict:
@@ -259,13 +262,12 @@ class TemplateHelper:
 
         return yaml_doc
 
-    # TODO: 第一次迭代，采用默认方式，即每个数据源对应的节点上，安装此数据源对应的全部逻辑节点
+    # TODO: 第一次迭代，采用默认方式，即每个数据源对应的节点上，安装此dag对应的全部逻辑节点
     #       下一次迭代考虑在此处获取scheduler的部署决策
     def finetune_processor_yaml(self, service_dict, cloud_node):
-
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
-            yaml_doc = service_dict[service_id]['service']
+            yaml_doc = service_dict[service_id]['yaml']
             service_name = service_dict[service_id]['service_name']
             yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
