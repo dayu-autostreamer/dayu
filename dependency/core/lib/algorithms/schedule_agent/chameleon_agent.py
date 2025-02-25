@@ -238,7 +238,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         FileOps.remove_data_file(tmp_task)
         if response:
             task = Task.deserialize(response)
-            return task.get_content()
+            return task.get_first_content()
         else:
             return None
 

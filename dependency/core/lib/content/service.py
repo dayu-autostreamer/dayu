@@ -3,7 +3,7 @@ import json
 
 class Service:
     def __init__(self, service_name, execute_device='',
-                 transmit_time=0, execute_time=0, real_execute_time=0):
+                 transmit_time=0, execute_time=0, real_execute_time=0, content: object = None):
         self.__service_name = service_name
         self.__execute_device = execute_device
         self.__transmit_time = transmit_time
@@ -14,6 +14,9 @@ class Service:
 
         # real_execute_time only includes real execute time of service in processor
         self.__real_execute_time = real_execute_time
+
+        # result data of service
+        self.__content = content
 
     def get_service_name(self):
         return self.__service_name
@@ -52,6 +55,12 @@ class Service:
     def get_service_total_time(self):
         return self.__transmit_time + self.__execute_time
 
+    def get_content_data(self):
+        return self.__content
+
+    def set_content_data(self, content):
+        self.__content = content
+
     @staticmethod
     def serialize(service: 'Service'):
         return json.dumps({
@@ -85,5 +94,3 @@ class Service:
 
     def __repr__(self):
         return self.__service_name
-
-

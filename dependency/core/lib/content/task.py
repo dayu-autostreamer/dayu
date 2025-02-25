@@ -17,7 +17,6 @@ class Task:
                  flow_index: str = 'start',
                  metadata: dict = None,
                  raw_metadata: dict = None,
-                 content: object = None,
                  scenario: dict = None,
                  temp: dict = None,
                  hash_data: list = None,
@@ -51,9 +50,6 @@ class Task:
 
         # current service name in dag (work as pointer)
         self.__cur_flow_index = flow_index
-
-        # intermediate content data for processing
-        self.__content_data = content
 
         # scenario data extracted from processing
         self.__scenario_data = scenario if scenario else {}
@@ -135,14 +131,6 @@ class Task:
     def set_raw_metadata(self, data: dict):
         self.__raw_metadata = data
 
-    # TODO
-    def get_content(self):
-        return self.__content_data
-
-    # TODO
-    def set_content(self, content):
-        self.__content_data = content
-
     def get_scenario_data(self):
         return self.__scenario_data
 
@@ -196,6 +184,26 @@ class Task:
         assert uuid.UUID(root_uuid).version == 4, \
             f'Invalid version for input UUID, need 4 give {uuid.UUID(root_uuid).version}'
         self.__root_uuid = root_uuid
+
+    def get_current_content(self):
+        return self.__dag_flow.get_node(self.__cur_flow_index).service.get_content_data()
+
+    def get_prev_content(self):
+        prev_service_names = self.__dag_flow.get_prev_nodes(self.__cur_flow_index)
+        prev_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
+                         for service_name in prev_service_names]
+        # return one of prev non-empty content
+        return next((content for content in prev_contents if content is not None), None)
+
+    def get_first_content(self):
+        first_service_names = self.__dag_flow.get_prev_nodes('start')
+        first_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
+                          for service_name in first_service_names]
+        # return one of first non-empty content
+        return next((content for content in first_contents if content is not None), None)
+
+    def set_current_content(self, content):
+        self.__dag_flow.get_node(self.__cur_flow_index).service.set_content_data(content)
 
     def get_current_service_info(self):
         assert self.__dag_flow, 'Task DAG is empty!'
@@ -341,7 +349,6 @@ class Task:
             'cur_flow_index': task.get_flow_index(),
             'meta_data': task.get_metadata(),
             'raw_meta_data': task.get_raw_metadata(),
-            'content_data': task.get_content(),
             'scenario_data': task.get_scenario_data(),
             'tmp_data': task.get_tmp_data(),
             'hash_data': task.get_hash_data(),
@@ -362,7 +369,6 @@ class Task:
         task.set_flow_index(data['cur_flow_index']) if 'cur_flow_index' in data else None
         task.set_metadata(data['meta_data']) if 'meta_data' in data else None
         task.set_raw_metadata(data['raw_meta_data']) if 'raw_meta_data' in data else None
-        task.set_content(data['content_data']) if 'content_data' in data else None
         task.set_scenario_data(data['scenario_data']) if 'scenario_data' in data else None
         task.set_tmp_data(data['tmp_data']) if 'tmp_data' in data else None
         task.set_hash_data(data['hash_data']) if 'hash_data' in data else None

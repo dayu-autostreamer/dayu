@@ -25,7 +25,6 @@ class VideoGenerator(Generator):
                                  dag=self.task_dag,
                                  metadata=self.meta_data,
                                  raw_metadata=self.raw_meta_data,
-                                 content=self.task_content,
                                  hash_data=hash_codes,
                                  file_path=compressed_path
                                  )

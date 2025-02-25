@@ -19,8 +19,6 @@ class Generator:
         self.raw_meta_data = metadata.copy()
         self.meta_data = metadata.copy()
 
-        self.task_content = None
-
         self.local_device = NodeInfo.get_local_device()
         self.task_dag = Task.set_execute_device(self.task_dag, self.local_device)
 

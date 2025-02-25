@@ -74,7 +74,7 @@ class ProcessorServer:
         FileOps.save_data_file(cur_task, file_data)
 
         new_task = self.processor(cur_task)
-        LOGGER.debug(f'[Processor Return completed] content length: {len(new_task.get_content())}')
+        LOGGER.debug(f'[Processor Return completed] content length: {len(new_task.get_current_content())}')
         FileOps.remove_data_file(cur_task)
         if new_task:
             return Task.serialize(new_task)

@@ -136,7 +136,7 @@ class HEIAgent(BaseAgent, abc.ABC):
             delay = task.calculate_total_time()
             meta_data = task.get_metadata()
             raw_metadata = task.get_raw_metadata()
-            content = task.get_content()
+            content = task.get_first_content()
             pipeline = task.get_dag()
 
             hash_data = task.get_hash_data()
