@@ -5,7 +5,7 @@ import uuid
 from .service import Service
 from .dag import DAG
 
-from core.lib.solvers import LCASolver, IntermediateNodeSolver, PathSolver
+from core.lib.solver import LCASolver, IntermediateNodeSolver, PathSolver
 
 
 class Task:
