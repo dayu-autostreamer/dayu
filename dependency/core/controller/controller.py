@@ -127,16 +127,17 @@ class Controller:
             joint_service_name = parallel_joint['joint_service']
             parallel_service_names = parallel_joint['parallel_services']
             required_parallel_task_count = len(parallel_service_names)
+            new_task = self.cur_task.fork_task(joint_service_name)
 
             # node with parallel nodes should merge before step to next stage
             if required_parallel_task_count > 1:
-                parallel_count = self.task_coordinator.store_task_data(copy.deepcopy(self.cur_task), joint_service_name)
+                parallel_count = self.task_coordinator.store_task_data(new_task, joint_service_name)
                 # wait when some duplicated tasks (with parallel nodes) not arrive
                 if parallel_count != required_parallel_task_count:
                     actions.append('wait')
                     continue
                 # retrieve parallel nodes in redis
-                tasks = self.task_coordinator.retrieve_task_data(self.cur_task.get_root_uuid(),
+                tasks = self.task_coordinator.retrieve_task_data(new_task.get_root_uuid(),
                                                                  joint_service_name,
                                                                  required_parallel_task_count)
                 # something wrong causes invalid task retrieving
@@ -146,9 +147,8 @@ class Controller:
 
                 # merge parallel tasks
                 for task in tasks:
-                    self.cur_task.merge_task(task)
+                    new_task.merge_task(task)
 
-            new_task = self.cur_task.fork_task(joint_service_name)
             actions.append(self.submit_task(new_task))
 
         return actions

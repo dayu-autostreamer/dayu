@@ -315,9 +315,10 @@ class Task:
             node.service.set_execute_device(device)
         return dag
 
-    def fork_task(self, new_flow_index):
+    def fork_task(self, new_flow_index: str = None) -> 'Task':
         new_task = copy.deepcopy(self)
-        new_task.set_flow_index(new_flow_index)
+        if new_flow_index:
+            new_task.set_flow_index(new_flow_index)
         new_task.set_task_uuid(uuid.uuid4())
         new_task.set_parent_uuid(self.__task_uuid)
         return new_task
@@ -332,8 +333,12 @@ class Task:
         merged_dag = merged_task.get_dag()
         other_dag = other_task.get_dag()
 
+        # Complete missing part of merged_task with other_task
+        # missing part contains intermediate nodes between "LCA" and "current node of other_task" (including latter)
         nodes_for_merge = IntermediateNodeSolver(merged_dag).get_intermediate_nodes(lca_service_name,
                                                                                     other_task.get_flow_index())
+        nodes_for_merge.add(other_task.get_flow_index())
+
         for node in nodes_for_merge:
             merged_dag.set_node_service(node, other_dag.get_node(node).service)
 
