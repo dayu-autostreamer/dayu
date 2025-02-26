@@ -6,8 +6,8 @@ from core.lib.common import LOGGER, Context
 
 class TaskCoordinator:
     def __init__(self):
-        self.max_connections = Context.get_parameter('MAX_REDIS_CONNECTIONS', 10, direct=False)
-        self.storage_timeout = Context.get_parameter('REDIS_STORAGE_TIMEOUT', 3600, direct=False)
+        self.max_connections = Context.get_parameter('MAX_REDIS_CONNECTIONS', '10', direct=False)
+        self.storage_timeout = Context.get_parameter('REDIS_STORAGE_TIMEOUT', '3600', direct=False)
         self.pool = redis.ConnectionPool(max_connections=self.max_connections)
         self.redis = redis.Redis(connection_pool=self.pool)
         self.lock_prefix = 'dayu:dag:lock'
@@ -22,12 +22,12 @@ class TaskCoordinator:
 
             with self.redis.pipeline() as pipe:
                 pipe.hset(storage_key, task.get_task_uuid(), task.serialize())
-                pipe.hlen(storage_key)
                 pipe.expire(storage_key, self.storage_timeout)
-                _, count = pipe.execute()
+                pipe.hlen(storage_key)
+                _, _, count = pipe.execute()
 
-                LOGGER.debug(f"Stored source {task.get_source_id()} task {task.get_task_id()} "
-                             f"(uuid: {task.get_task_uuid()}) at {storage_key}, current count: {count}")
+                LOGGER.debug(f"Store 'source {task.get_source_id()} task {task.get_task_id()} "
+                             f"current_service {task.get_flow_index()}' into {storage_key}, current count: {count}")
 
                 return count
 
@@ -82,7 +82,7 @@ class TaskCoordinator:
                                    f"get {len(cur_task_services)}, current services: {cur_task_services}")
                     return None
 
-                LOGGER.debug(f"Retrieved {len(parsed_tasks)} tasks from {storage_key}")
+                LOGGER.debug(f"Retrieve {len(parsed_tasks)} tasks from {storage_key}, services:{cur_task_services}")
                 return parsed_tasks
         except Exception as e:
             LOGGER.warning(f'Redis operation failed in retrieve tasks: {str(e)}')

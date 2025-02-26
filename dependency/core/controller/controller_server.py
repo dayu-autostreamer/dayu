@@ -5,6 +5,7 @@ from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.common import FileOps
+from core.lib.content import Task
 
 from .controller import Controller
 
@@ -40,7 +41,7 @@ class ControllerServer:
 
     def submit_task_background(self, data, file_data):
         """deal with tasks submitted by the generator or other controllers"""
-        self.controller.set_current_task(data)
+        self.controller.set_current_task(Task.deserialize(data))
         FileOps.save_data_file(self.controller.cur_task, file_data)
         # record end time of transmitting
         self.controller.record_transmit_ts(is_end=True)
@@ -54,7 +55,7 @@ class ControllerServer:
 
     def process_return_background(self, data):
         """deal with tasks returned by the processor"""
-        self.controller.set_current_task(data)
+        self.controller.set_current_task(Task.deserialize(data))
         # record end time of executing
         self.controller.record_execute_ts(is_end=True)
 

@@ -31,8 +31,8 @@ class Controller:
 
         self.local_device = NodeInfo.get_local_device()
 
-    def set_current_task(self, task_data: str):
-        self.cur_task = Task.deserialize(task_data)
+    def set_current_task(self, task: Task):
+        self.cur_task = task
 
     def send_task_to_other_device(self, task: Task = None, device: str = ''):
         cur_task = task or self.cur_task
@@ -149,6 +149,8 @@ class Controller:
                 # merge parallel tasks
                 for task in tasks:
                     new_task.merge_task(task)
+                LOGGER.debug(f"Merge task with services {[task.get_flow_index() for task in tasks]} "
+                             f"into task with service '{joint_service_name}'")
 
             actions.append(self.submit_task(new_task))
 

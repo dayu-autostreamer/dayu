@@ -166,24 +166,18 @@ class Task:
         return self.__task_uuid
 
     def set_task_uuid(self, task_uuid: str):
-        assert uuid.UUID(task_uuid).version == 4, \
-            f'Invalid version for input UUID, need 4 give {uuid.UUID(task_uuid).version}'
         self.__task_uuid = task_uuid
 
     def get_parent_uuid(self):
         return self.__parent_uuid
 
     def set_parent_uuid(self, parent_uuid: str):
-        assert not parent_uuid or uuid.UUID(parent_uuid).version == 4, \
-            f'Invalid version for input UUID, need 4 give {uuid.UUID(parent_uuid).version}'
         self.__parent_uuid = parent_uuid
 
     def get_root_uuid(self):
         return self.__root_uuid
 
     def set_root_uuid(self, root_uuid: str):
-        assert uuid.UUID(root_uuid).version == 4, \
-            f'Invalid version for input UUID, need 4 give {uuid.UUID(root_uuid).version}'
         self.__root_uuid = root_uuid
 
     def get_current_content(self):
@@ -320,7 +314,7 @@ class Task:
         new_task = copy.deepcopy(self)
         if new_flow_index:
             new_task.set_flow_index(new_flow_index)
-        new_task.set_task_uuid(uuid.uuid4())
+        new_task.set_task_uuid(str(uuid.uuid4()))
         new_task.set_parent_uuid(self.__task_uuid)
         return new_task
 
@@ -329,7 +323,7 @@ class Task:
 
         merged_task = copy.deepcopy(self)
         merged_task.set_flow_index(lca_service_name)
-        merged_task.set_task_uuid(uuid.uuid4())
+        merged_task.set_task_uuid(str(uuid.uuid4()))
 
         merged_dag = merged_task.get_dag()
         other_dag = other_task.get_dag()
