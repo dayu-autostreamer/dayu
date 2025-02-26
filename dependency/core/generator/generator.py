@@ -63,7 +63,7 @@ class Generator:
         self.record_transmit_start_ts()
         http_request(url=controller_address,
                      method=NetworkAPIMethod.CONTROLLER_TASK,
-                     data={'data': Task.serialize(self.current_task)},
+                     data={'data': self.current_task.serialize()},
                      files={'file': (self.current_task.get_file_path(),
                                      open(self.current_task.get_file_path(), 'rb'),
                                      'multipart/form-data')}

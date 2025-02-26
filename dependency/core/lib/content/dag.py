@@ -1,13 +1,26 @@
+import json
 from typing import List
 
 from .service import Service
 
 
 class Node:
-    def __init__(self, service: Service):
+    def __init__(self, service: Service, prev_nodes=None, next_nodes=None):
         self.service = service
-        self.prev_nodes = []
-        self.next_nodes = []
+        self.prev_nodes = prev_nodes if prev_nodes else []
+        self.next_nodes = next_nodes if next_nodes else []
+
+    def get_prev_nodes(self):
+        return self.prev_nodes
+
+    def set_prev_nodes(self, prev_nodes):
+        self.prev_nodes = prev_nodes
+
+    def get_next_nodes(self):
+        return self.next_nodes
+
+    def set_next_nodes(self, next_nodes):
+        self.next_nodes = next_nodes
 
     def add_next_node(self, next_node: Service):
         self.next_nodes.append(next_node.get_service_name())
@@ -15,13 +28,27 @@ class Node:
     def add_prev_node(self, prev_node: Service):
         self.prev_nodes.append(prev_node.get_service_name())
 
-    @staticmethod
-    def serialize(node: 'Node'):
+    def to_dict(self):
         return {
-            "service": Service.serialize(node.service),
-            "prev_nodes": node.prev_nodes,
-            "next_nodes": node.next_nodes,
+            "service": Service.to_dict(self.service),
+            "prev_nodes": self.prev_nodes,
+            "next_nodes": self.next_nodes,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        node = cls(Service.from_dict(data['service']))
+        node.set_prev_nodes(data['prev_nodes']) if 'prev_nodes' in data else None
+        node.set_next_nodes(data['next_nodes']) if 'next_nodes' in data else None
+
+        return node
+
+    def serialize(self):
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def deserialize(cls, data):
+        return cls.from_dict(json.loads(data))
 
     def __repr__(self):
         return f"{self.service}"
@@ -52,13 +79,19 @@ class DAG:
 
         return self.nodes[service_name].prev_nodes
 
-    def add_node(self, service: Service):
-        assert isinstance(service, Service), f"Type error: Expected Service, got {type(service)}"
-
-        service_name = service.get_service_name()
-        if service_name in self.nodes:
-            raise ValueError(f'Node "{service}" already exists in DAG')
-        self.nodes[service_name] = Node(service)
+    def add_node(self, in_node):
+        if isinstance(in_node, Node):
+            service_name = in_node.service.get_service_name()
+            if service_name in self.nodes:
+                raise ValueError(f'Node "{in_node}" already exists in DAG')
+            self.nodes[service_name] = in_node
+        elif isinstance(in_node, Service):
+            service_name = in_node.get_service_name()
+            if service_name in self.nodes:
+                raise ValueError(f'Node "{in_node}" already exists in DAG')
+            self.nodes[service_name] = Node(in_node)
+        else:
+            raise TypeError(f'Expected input type Service or Node, got {type(in_node)}')
 
     def add_edge(self, from_node: Service, to_node: Service):
         from_node_name = from_node.get_service_name()
@@ -111,6 +144,7 @@ class DAG:
             self.add_edge(node.service, end_node)
 
     def validate_dag(self):
+        self._check_edge_consistency()
         self._check_duplicate_edges()
         self._check_cycles()
         self._check_connectivity()
@@ -120,7 +154,6 @@ class DAG:
         edge_set = set()
         for node in self.nodes.values():
             for child_name in node.next_nodes:
-                child = self.get_node(child_name)
                 edge = (node.service.get_service_name(), child_name)
                 if edge in edge_set:
                     raise ValueError(f"Duplicate edge in the DAG: {edge[0]} -> {edge[1]}")
@@ -150,6 +183,7 @@ class DAG:
                     raise ValueError(f"Cycle detected in DAG")
 
     def _check_connectivity(self):
+        """check if dag has multiple disconnected components"""
         if not self.nodes:
             return
 
@@ -171,27 +205,72 @@ class DAG:
         if len(visited) != len(self.nodes):
             raise ValueError("DAG contains multiple disconnected components")
 
-    @staticmethod
-    def serialize(dag: 'DAG'):
+    def _check_edge_consistency(self):
+        """
+        check if prev_nodes and next_nodes in Node is consistent
+        1. Auto-repair missing references
+        2. Throw error for conflicting references
+        """
+        # First pass: Check forward references (next_nodes -> prev_nodes)
+        for service_name, node in self.nodes.items():
+            # Check next_nodes consistency
+            for child_name in node.next_nodes:
+                child_node = self.nodes.get(child_name)
+                if not child_node:
+                    raise ValueError(f"Invalid reference: {service_name} -> {child_name} "
+                                     f"(child node doesn't exist)")
+                # Repair missing parent reference
+                if service_name not in child_node.prev_nodes:
+                    child_node.prev_nodes.append(service_name)
+            # Check prev_nodes consistency
+            for parent_name in node.prev_nodes:
+                parent_node = self.nodes.get(parent_name)
+                if not parent_node:
+                    raise ValueError(f"Invalid reference: {parent_name} <- {service_name} "
+                                     f"(parent node doesn't exist)")
+                # Repair missing child reference
+                if service_name not in parent_node.next_nodes:
+                    parent_node.next_nodes.append(service_name)
+
+        # Second pass: Verify full consistency after repairs
+        for service_name, node in self.nodes.items():
+            # Verify next_nodes -> prev_nodes consistency
+            for child_name in node.next_nodes:
+                if service_name not in self.nodes[child_name].prev_nodes:
+                    raise ValueError(
+                        f"Edge mismatch: {service_name} lists {child_name} as child, "
+                        f"but {child_name} doesn't list {service_name} as parent"
+                    )
+            # Verify prev_nodes -> next_nodes consistency
+            for parent_name in node.prev_nodes:
+                if service_name not in self.nodes[parent_name].next_nodes:
+                    raise ValueError(
+                        f"Edge mismatch: {service_name} lists {parent_name} as parent, "
+                        f"but {parent_name} doesn't list {service_name} as child"
+                    )
+
+    def to_dict(self):
         dag_dict = {}
-        for service_name, node in dag.nodes.items():
-            dag_dict[service_name] = Node.serialize(node)
+        for service_name, node in self.nodes.items():
+            dag_dict[service_name] = node.to_dict()
+
         return dag_dict
 
-    @staticmethod
-    def deserialize(dag_dict: dict):
-        dag = DAG()
+    @classmethod
+    def from_dict(cls, dag_dict: dict):
+        dag = cls()
         for node_name, node_data in dag_dict.items():
-            service = Service.deserialize(node_data["service"])
-            dag.add_node(service)
-
-        for node_name, node_data in dag_dict.items():
-            for child_name in node_data["next_nodes"]:
-                node_service = dag.get_node(node_name).service
-                child_service = dag.get_node(child_name).service
-                dag.add_edge(node_service, child_service)
-        dag.validate_dag()
+            node = Node.from_dict(node_data)
+            dag.add_node(node)
         return dag
+
+    def serialize(self):
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def deserialize(cls, data: str):
+        dag_dict = json.loads(data)
+        return cls.from_dict(dag_dict)
 
     def __repr__(self):
         return "\n".join(

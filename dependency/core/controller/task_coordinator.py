@@ -21,7 +21,7 @@ class TaskCoordinator:
             storage_key = f"{self.joint_service_key_prefix}:{task.get_root_uuid()}:{joint_service_name}"
 
             with self.redis.pipeline() as pipe:
-                pipe.hset(storage_key, task.get_task_uuid(), Task.serialize(task))
+                pipe.hset(storage_key, task.get_task_uuid(), task.serialize())
                 pipe.hlen(storage_key)
                 pipe.expire(storage_key, self.storage_timeout)
                 _, count = pipe.execute()

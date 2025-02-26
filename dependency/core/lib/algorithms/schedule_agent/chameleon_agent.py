@@ -230,7 +230,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         tmp_task.set_file_path(cur_path)
         response = http_request(url=self.processor_address,
                                 method=NetworkAPIMethod.PROCESSOR_PROCESS_RETURN,
-                                data={'data': Task.serialize(tmp_task)},
+                                data={'data': tmp_task.serialize()},
                                 files={'file': (tmp_task.get_file_path(),
                                                 open(tmp_task.get_file_path(), 'rb'),
                                                 'multipart/form-data')}

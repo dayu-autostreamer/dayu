@@ -66,18 +66,19 @@ class Task:
     @staticmethod
     def extract_dag_from_dict(dag_dict: dict, start_node_name='start', end_node_name='end'):
         """transfer DAG dict in to DAG class"""
-        dag_flow = DAG.deserialize(dag_dict)
+        dag_flow = DAG.from_dict(dag_dict)
         if start_node_name not in dag_dict:
             dag_flow.add_start_node(Service(start_node_name))
         if end_node_name not in dag_dict:
             dag_flow.add_end_node(Service(end_node_name))
+        dag_flow.validate_dag()
 
         return dag_flow
 
     @staticmethod
     def extract_dict_from_dag(dag_flow: DAG):
         """transfer DAG class in to DAG dict"""
-        return DAG.serialize(dag_flow)
+        return dag_flow.to_dict()
 
     @staticmethod
     def extract_deployment_info_from_dag(dag_flow: DAG):
@@ -85,7 +86,7 @@ class Task:
         get deployment info from dag class
         service_name/execute device for each node in DAG
         """
-        dag_dict = DAG.serialize(dag_flow)
+        dag_dict = dag_flow.to_dict()
         deployment_info = {}
         for node_name in dag_dict:
             node = dag_dict[node_name]
@@ -344,42 +345,48 @@ class Task:
 
         merged_task.set_dag(merged_dag)
 
-    @staticmethod
-    def serialize(task: 'Task'):
-        return json.dumps({
-            'source_id': task.get_source_id(),
-            'task_id': task.get_task_id(),
-            'source_device': task.get_source_device(),
-            'dag': DAG.serialize(task.get_dag()),
-            'cur_flow_index': task.get_flow_index(),
-            'meta_data': task.get_metadata(),
-            'raw_meta_data': task.get_raw_metadata(),
-            'scenario_data': task.get_scenario_data(),
-            'tmp_data': task.get_tmp_data(),
-            'hash_data': task.get_hash_data(),
-            'file_path': task.get_file_path(),
-            'task_uuid': task.get_task_uuid(),
-            'parent_uuid': task.get_parent_uuid(),
-            'root_uuid': task.get_root_uuid(),
-        })
+    def to_dict(self):
+        return {
+            'source_id': self.get_source_id(),
+            'task_id': self.get_task_id(),
+            'source_device': self.get_source_device(),
+            'dag': self.get_dag().to_dict() if self.get_dag() else None,
+            'cur_flow_index': self.get_flow_index(),
+            'meta_data': self.get_metadata(),
+            'raw_meta_data': self.get_raw_metadata(),
+            'scenario_data': self.get_scenario_data(),
+            'tmp_data': self.get_tmp_data(),
+            'hash_data': self.get_hash_data(),
+            'file_path': self.get_file_path(),
+            'task_uuid': self.get_task_uuid(),
+            'parent_uuid': self.get_parent_uuid(),
+            'root_uuid': self.get_root_uuid(),
+        }
 
-    @staticmethod
-    def deserialize(data: str):
-        data = json.loads(data)
-        task = Task(source_id=data['source_id'],
-                    task_id=data['task_id'],
-                    source_device=data['source_device'])
+    @classmethod
+    def from_dict(cls, dag_dict):
+        task = cls(source_id=dag_dict['source_id'],
+                   task_id=dag_dict['task_id'],
+                   source_device=dag_dict['source_device'])
 
-        task.set_dag(DAG.deserialize(data['dag'])) if 'dag' in data else None
-        task.set_flow_index(data['cur_flow_index']) if 'cur_flow_index' in data else None
-        task.set_metadata(data['meta_data']) if 'meta_data' in data else None
-        task.set_raw_metadata(data['raw_meta_data']) if 'raw_meta_data' in data else None
-        task.set_scenario_data(data['scenario_data']) if 'scenario_data' in data else None
-        task.set_tmp_data(data['tmp_data']) if 'tmp_data' in data else None
-        task.set_hash_data(data['hash_data']) if 'hash_data' in data else None
-        task.set_file_path(data['file_path']) if 'file_path' in data else None
-        task.set_task_uuid(data['task_uuid']) if 'task_uuid' in data else None
-        task.set_parent_uuid(data['parent_uuid']) if 'parent_uuid' in data else None
-        task.set_root_uuid(data['root_uuid']) if 'root_uuid' in data else None
+        task.set_dag(DAG.from_dict(dag_dict['dag'])) if 'dag' in dag_dict and dag_dict['dag'] else None
+        task.set_flow_index(dag_dict['cur_flow_index']) if 'cur_flow_index' in dag_dict else None
+        task.set_metadata(dag_dict['meta_data']) if 'meta_data' in dag_dict else None
+        task.set_raw_metadata(dag_dict['raw_meta_data']) if 'raw_meta_data' in dag_dict else None
+        task.set_scenario_data(dag_dict['scenario_data']) if 'scenario_data' in dag_dict else None
+        task.set_tmp_data(dag_dict['tmp_data']) if 'tmp_data' in dag_dict else None
+        task.set_hash_data(dag_dict['hash_data']) if 'hash_data' in dag_dict else None
+        task.set_file_path(dag_dict['file_path']) if 'file_path' in dag_dict else None
+        task.set_task_uuid(dag_dict['task_uuid']) if 'task_uuid' in dag_dict else None
+        task.set_parent_uuid(dag_dict['parent_uuid']) if 'parent_uuid' in dag_dict else None
+        task.set_root_uuid(dag_dict['root_uuid']) if 'root_uuid' in dag_dict else None
 
         return task
+
+    def serialize(self):
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def deserialize(cls, data: str):
+        data = json.loads(data)
+        return cls.from_dict(data)

@@ -77,7 +77,7 @@ class ProcessorServer:
         LOGGER.debug(f'[Processor Return completed] content length: {len(new_task.get_current_content())}')
         FileOps.remove_data_file(cur_task)
         if new_task:
-            return Task.serialize(new_task)
+            return new_task.serialize()
 
     async def query_queue_length(self):
         return self.task_queue.size()
@@ -119,4 +119,4 @@ class ProcessorServer:
     def send_result_back_to_controller(self, task):
 
         http_request(url=self.controller_address, method=NetworkAPIMethod.CONTROLLER_RETURN,
-                     data={'data': Task.serialize(task)})
+                     data={'data': task.serialize()})

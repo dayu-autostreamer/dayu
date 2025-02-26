@@ -1,4 +1,3 @@
-import copy
 import os
 
 from core.lib.estimation import TimeEstimator
@@ -44,14 +43,14 @@ class Controller:
 
         http_request(url=controller_address,
                      method=NetworkAPIMethod.CONTROLLER_TASK,
-                     data={'data': Task.serialize(cur_task)},
+                     data={'data': cur_task.serialize()},
                      files={'file': (cur_task.get_file_path(),
                                      open(cur_task.get_file_path(), 'rb'),
                                      'multipart/form-data')}
                      )
 
         LOGGER.info(f'[To Device {device}] source: {cur_task.get_source_id()}  '
-                    f'task: {cur_task.get_task_id()}')
+                    f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
 
     def send_task_to_service(self, task: Task = None, service: str = ''):
         cur_task = task or self.cur_task
@@ -63,14 +62,14 @@ class Controller:
 
         http_request(url=service_address,
                      method=NetworkAPIMethod.PROCESSOR_PROCESS,
-                     data={'data': Task.serialize(cur_task)},
+                     data={'data': cur_task.serialize()},
                      files={'file': (cur_task.get_file_path(),
                                      open(cur_task.get_file_path(), 'rb'),
                                      'multipart/form-data')}
                      )
 
         LOGGER.info(f'[To Service {service}] source: {cur_task.get_source_id()}  '
-                    f'task: {cur_task.get_task_id()}')
+                    f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
 
     def send_task_to_distributor(self, task: Task = None):
         cur_task = task or self.cur_task
@@ -84,10 +83,11 @@ class Controller:
         http_request(url=self.distribute_address,
                      method=NetworkAPIMethod.DISTRIBUTOR_DISTRIBUTE,
                      files={'file': (cur_task.get_file_path(), file_content, 'multipart/form-data')},
-                     data={'data': Task.serialize(cur_task)}
+                     data={'data': cur_task.serialize()}
                      )
 
-        LOGGER.info(f'[To Distributor] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
+        LOGGER.info(f'[To Distributor] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
+                    f'current service: {cur_task.get_flow_index()}')
 
     def submit_task(self, task: Task = None):
         cur_task = task or self.cur_task
@@ -95,7 +95,8 @@ class Controller:
             LOGGER.warning('Current task of controller is NOT set!')
             return
 
-        LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
+        LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
+                    f'current service: {cur_task.get_flow_index()}')
 
         service_name, _ = cur_task.get_current_service_info()
         dst_device = cur_task.get_current_stage_device()

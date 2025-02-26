@@ -61,30 +61,35 @@ class Service:
     def set_content_data(self, content):
         self.__content = content
 
-    @staticmethod
-    def serialize(service: 'Service'):
-        return json.dumps({
-            'service_name': service.get_service_name(),
-            'execute_device': service.get_execute_device(),
-            'execute_data': {'transmit_time': service.get_transmit_time(),
-                             'execute_time': service.get_execute_time(),
-                             'real_execute_time': service.get_real_execute_time()},
-        })
+    def to_dict(self):
+        return {
+            'service_name': self.get_service_name(),
+            'execute_device': self.get_execute_device(),
+            'execute_data': {'transmit_time': self.get_transmit_time(),
+                             'execute_time': self.get_execute_time(),
+                             'real_execute_time': self.get_real_execute_time()},
+        }
 
-    @staticmethod
-    def deserialize(data: str):
-        data = json.loads(data)
-        service = Service(service_name=data['service_name'])
+    @classmethod
+    def from_dict(cls, dag_dict: dict):
+        service = Service(service_name=dag_dict['service_name'])
 
-        service.set_execute_device(data['execute_device']) if 'execute_device' in data else None
-        service.set_transmit_time(data['transmit_time']) \
-            if 'execute_data' in data and 'transmit_time' in data['execute_data'] else None
-        service.set_execute_time(data['execute_time']) \
-            if 'execute_data' in data and 'execute_time' in data['execute_data'] else None
-        service.set_real_execute_time(data['real_execute_time']) \
-            if 'execute_data' in data and 'real_execute_time' in data['execute_data'] else None
+        service.set_execute_device(dag_dict['execute_device']) if 'execute_device' in dag_dict else None
+        service.set_transmit_time(dag_dict['execute_data']['transmit_time']) \
+            if 'execute_data' in dag_dict and 'transmit_time' in dag_dict['execute_data'] else None
+        service.set_execute_time(dag_dict['execute_data']['execute_time']) \
+            if 'execute_data' in dag_dict and 'execute_time' in dag_dict['execute_data'] else None
+        service.set_real_execute_time(dag_dict['execute_data']['real_execute_time']) \
+            if 'execute_data' in dag_dict and 'real_execute_time' in dag_dict['execute_data'] else None
 
         return service
+
+    def serialize(self):
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def deserialize(cls, data: str):
+        return cls.from_dict(json.loads(data))
 
     def __hash__(self):
         return hash(self.__service_name)
