@@ -1,107 +1,103 @@
 <template xmlns="http://www.w3.org/1999/html">
-  <!-- <el-card class="box-card"> -->
-  <form @submit.prevent="submitService">
+  <div>
     <div>
-      <div>
-        <h3>Scheduler Policy</h3>
-      </div>
+      <h3>Scheduler Policy</h3>
+    </div>
+    <div>
+      <el-select
+        style="width: 100%"
+        v-model="selectedPolicyIndex"
+        placeholder="Please choose scheduler policy"
+      >
+        <el-option
+          v-for="(option, index) in policyOptions"
+          :key="index"
+          :label="option.policy_name"
+          :value="index"
+        ></el-option>
+      </el-select>
+    </div>
+  </div>
+
+  <br />
+
+  <div>
+    <div>
+      <h3>DataSource Configuration</h3>
+    </div>
+    <div>
       <div>
         <el-select
           style="width: 100%"
-          v-model="selectedPolicyIndex"
-          placeholder="Please choose scheduler policy"
+          v-model="selectedDatasourceIndex"
+          @change="handleDatasourceChange"
+          placeholder="Please choose datasource config"
         >
           <el-option
-            v-for="(option, index) in policyOptions"
+            v-for="(option, index) in datasourceOptions"
             :key="index"
-            :label="option.policy_name"
+            :label="option.source_name"
             :value="index"
           ></el-option>
         </el-select>
       </div>
     </div>
+  </div>
 
-    <br />
+  <br />
 
-    <div>
+  <div>
+    <div
+      v-for="(source, index) in selectedSources"
+      :key="index"
+      style="margin-top: 10px"
+    >
       <div>
-        <h3>DataSource Configuration</h3>
+        <h2>source {{ source.id }}: {{ source.name }}</h2>
       </div>
-      <div>
-        <div>
-          <el-select
-            style="width: 100%"
-            v-model="selectedDatasourceIndex"
-            @change="handleDatasourceChange"
-            placeholder="Please choose datasource config"
-          >
-            <el-option
-              v-for="(option, index) in datasourceOptions"
-              :key="index"
-              :label="option.source_name"
-              :value="index"
-            ></el-option>
-          </el-select>
-        </div>
-      </div>
-    </div>
-
-    <br />
-
-    <div>
-      <div
-        v-for="(source, index) in selectedSources"
-        :key="index"
-        style="margin-top: 10px"
+      <el-select
+        style="width: 38%; margin-top: 20px"
+        v-model="source.dag_selected"
+        @change="updateDagSelection(index, source, source.dag_selected)"
+        placeholder="Assign dag"
       >
-        <div>
-          <h2>source {{ source.id }}: {{ source.name }}</h2>
-        </div>
-        <el-select
-          style="width: 38%; margin-top: 20px"
-          v-model="source.dag_selected"
-          @change="updateDagSelection(index, source, source.dag_selected)"
-          placeholder="Assign dag"
-        >
-          <el-option
-            v-for="(option, index) in dagOptions"
-            :key="index"
-            :label="option.dag_name"
-            :value="option.dag_id"
-          ></el-option>
-        </el-select>
+        <el-option
+          v-for="(option, index) in dagOptions"
+          :key="index"
+          :label="option.dag_name"
+          :value="option.dag_id"
+        ></el-option>
+      </el-select>
 
-        <!-- #TODO: 将绑定节点的单选框改为多选框，返回一个节点列表（支持不选，不选为默认使用所有节点，需要有文字提示） 已完成  -->
-        <el-select
-          style="width: 58%; margin-top: 20px; margin-left: 4%"
-          v-model="source.node_selected"
-          @change="updateNodeSelection(index, source, source.node_selected)"
-          placeholder="Bind edge nodes(Default bind all nodes)"
-          multiple
-        >
-          <el-option
-            v-for="(option, index) in nodeOptions"
-            :key="index"
-            :label="option.name"
-            :value="option.name"
-          ></el-option>
-        </el-select>
-      </div>
+      <el-select
+        style="width: 58%; margin-top: 20px; margin-left: 4%"
+        v-model="source.node_selected"
+        @change="updateNodeSelection(index, source, source.node_selected)"
+        placeholder="Bind edge nodes(Default bind all nodes)"
+        multiple
+      >
+        <el-option
+          v-for="(option, index) in nodeOptions"
+          :key="index"
+          :label="option.name"
+          :value="option.name"
+        ></el-option>
+      </el-select>
     </div>
+  </div>
 
-    <!-- :loading="loading" :disabled="installed === 'install'" -->
-    <div style="text-align: center">
-      <el-button
-        type="primary"
-        round
-        native-type="submit"
-        :loading="loading"
-        :disabled="installed === 'install'"
-        style="margin-top: 25px"
-        >Install Services
-      </el-button>
-    </div>
-  </form>
+  <div style="text-align: center">
+    <el-button
+      type="primary"
+      round
+      native-type="submit"
+      :loading="loading"
+      :disabled="installed === 'install'"
+      style="margin-top: 25px"
+      @click="submitService"
+      >Install Services
+    </el-button>
+  </div>
 </template>
 
 <script>
@@ -111,7 +107,6 @@ import { ElMessage } from "element-plus";
 import axios from "axios";
 import { useInstallStateStore } from "/@/stores/installState";
 import { ref, watch, onMounted } from "vue";
-// const install_state = useInstallStateStore()
 export default {
   components: {
     ElButton,
@@ -119,8 +114,8 @@ export default {
   data() {
     return {
       selectedSources: [
-        { id: 0, name: "s1", dag_selected: "", node_selected: [] },
-        { id: 1, name: "s2", dag_selected: "", node_selected: [] },
+        // { id: 0, name: "s1", dag_selected: "", node_selected: [] },
+        // { id: 1, name: "s2", dag_selected: "", node_selected: [] },
       ],
       // imageList: [],
       selectedDatasourceIndex: null,
@@ -140,10 +135,10 @@ export default {
     const datasourceOptions = ref(null);
     // 临时数据
     const dagOptions = ref([
-      { dag_name: "233dag", dag_id: "233dag" },
-      { dag_name: "244dag", dag_id: "244dag" },
+      // { dag_name: "233dag", dag_id: "233dag" },
+      // { dag_name: "244dag", dag_id: "244dag" },
     ]);
-    const nodeOptions = ref([{ name: 233 }, { name: 244 }]);
+    const nodeOptions = ref([]);
     const getTask = async () => {
       try {
         const response = await axios.get("/api/policy");
@@ -159,6 +154,7 @@ export default {
         const response = await axios.get("/api/datasource");
         if (response.data !== null) {
           datasourceOptions.value = response.data;
+          console.log(datasourceOptions.value);
         }
       } catch (error) {
         console.error("Failed to fetch datasource options", error);
@@ -221,7 +217,7 @@ export default {
   },
   methods: {
     async updateDagSelection(index, source, selected) {
-      this.selectedSources[index].dag_selected.push(selected);
+      this.selectedSources[index].dag_selected = selected;
     },
     async updateNodeSelection(index, source, selected) {
       this.selectedSources[index].node_selected = selected;
@@ -237,9 +233,12 @@ export default {
           index >= 0 &&
           index < this.datasourceOptions.length
         ) {
+          console.log(this.datasourceOptions);
           const datasource = this.datasourceOptions[index];
           for (var i = 0; i < datasource.source_list.length; i++) {
             this.selectedSources.push(datasource.source_list[i]);
+            this.selectedSources[i].node_selected = [];
+            this.selectedSources[i].dag_selected = "";
           }
         } else {
           console.error("Invalid selected index.");
@@ -249,8 +248,6 @@ export default {
       }
     },
 
-    // TODO: 提交install的js脚本检查一下需不需要改，原来是对多数据源每个数据源选择一个node，
-    // 最后是一个node_list，现在应该需要node_list里面每个元素是个列表（每个数据源选择一个列表）
     submitService() {
       const policy_index = this.selectedPolicyIndex;
       if (
@@ -276,14 +273,15 @@ export default {
         this.datasourceOptions[source_index].source_label;
       const policy_id = this.policyOptions[policy_index].policy_id;
 
-      // 不选节点则默认将DAG绑定到集群全部节点上
+      console.log(this.selectedSources);
+      // 如果没有指定就全选
       for (let i = 0; i < this.selectedSources.length; i++) {
-        if (this.selectedSources.node_selected.length === 0) {
+        if (this.selectedSources[i].node_selected.length === 0) {
           this.selectedSources.node_selected = nodeOptions;
         }
       }
 
-      // selectedSources中包含了所有的映射信息
+      // selectedSources contains all map info
       const content = {
         source_config_label: source_config_label,
         policy_id: policy_id,
@@ -304,8 +302,7 @@ export default {
           this.loading = false;
           if (state === "success") {
             this.install_state.install();
-            // this.installed = 'install';
-            // console.log(this.install_state.status);
+
             msg += ". Refreshing..";
             ElMessage({
               message: msg,

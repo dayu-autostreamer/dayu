@@ -73,6 +73,9 @@ class BackendCore:
     # TODO: dag node_list
     def parse_apply_templates(self, policy, source_deploy):
         # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
+        LOGGER.info(f'进入parse_apply_templates')
+        LOGGER.info(f"请看{policy}\n"
+                    f"请看{source_deploy}")
         yaml_dict = {}
 
         # 涉及policy
@@ -80,8 +83,11 @@ class BackendCore:
 
         # 涉及source_deploy
         service_dict, source_deploy = self.extract_service_from_source_deployment(source_deploy)
+        LOGGER.info(f"extract完毕,请看{service_dict, source_deploy}")
         yaml_dict.update({'processor': self.template_helper.load_application_apply_yaml(service_dict)})
+        LOGGER.info(f"update完毕,请看{yaml_dict}")
         docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy)
+        LOGGER.info(f"处理完毕,请看{docs_list}")
 
         self.cur_yaml_docs = docs_list
         YamlOps.write_all_yaml(docs_list, self.save_yaml_path)
@@ -90,9 +96,10 @@ class BackendCore:
 
     # 遍历邻接表
     def bfs_dag(self, dag_graph, dag_callback):
-        source=dag_graph['begin']
-        queue = deque(dag_graph[source])
-        visited = {source}
+        source_list: list = dag_graph['begin']
+        # 源可能有多个
+        queue = deque(source_list)
+        visited = set(source_list)
         while queue:
             # 从队列中取出一个节点
             current_node_item = queue.popleft()
@@ -108,28 +115,30 @@ class BackendCore:
 
     # dag node_list 提取出yaml 进行部署
     def extract_service_from_source_deployment(self, source_deploy):
+        LOGGER.info(f"进入extract方法,请看source_deploy:{source_deploy}")
         service_dict = {}
 
         for s in source_deploy:
             dag = s['dag']
-            node_set = s['node']
+            node_set = s['node_set']
             extracted_dag = copy.deepcopy(dag)
 
             def get_service_callback(node_item):
-                service_id=node_item['service_id']
+                service_id = node_item['service_id']
                 service = self.find_service_by_id(service_id)
                 service_name = service['service']
                 service_yaml = service['yaml']
                 if service_id in service_dict:
-                    pre_node_list=service_dict[service_id]['node']
-                    service_dict[service_id]['node']=list(set(pre_node_list+node_set))
+                    pre_node_list = service_dict[service_id]['node']
+                    service_dict[service_id]['node'] = list(set(pre_node_list + node_set))
                 else:
                     service_dict[service_id] = {'service_name': service_name, 'yaml': service_yaml, 'node': node_set}
 
                 # 重建一个dag图 新添加一个service字段
-                extracted_dag[node_item['id']]['service']=service
+                extracted_dag[node_item['id']]['service'] = service
 
             self.bfs_dag(dag, get_service_callback)
+            LOGGER.info(f"dag 顺利遍历结束")
             s['dag'] = extracted_dag
 
         return service_dict, source_deploy
@@ -209,38 +218,62 @@ class BackendCore:
     # TODO: check legal dag (目前还是pipeline的检查方式) 已完成 需要加上源节点的模态验证
     # 需要验证前后数据输出输入的一一对应
     # 拓扑排序验证dag图合法,保证graph有所有节点
-    # 传入的dag数据格式:{source:node_id,graph:{id1:[],id2:[]...}}
-    def check_dag(self, dag):
+    # "dag": {
+    # "begin": [node_id_A...], // 需要是一个列表
+    # "service_id": {
+    #     "prev": [],
+    #     "succ": ["node_id_B", ...],
+    #     "service_id": car_detection
+    # },
+    # "service_id": {
+    #     "prev": ["node_id_A"],
+    #     "succ": [],
+    #     "service_id": plate_recognition
+    # }
+    # }
+    def check_dag(self, dag, modal='frame'):
         # 拓扑排序验证最终集合与原graph长度相同
-        def topo_sort(graph):
-            # 统计每个节点的入度
-            in_degree = {node: 0 for node in graph}
-            for node in graph:
-                for neighbor in graph[node]:
-                    in_degree[neighbor] += 1
+        LOGGER.info(f"开始验证dag图合法性,{dag}")
 
+        def topo_sort(graph, modal):
+            # 统计每个节点的入度
+            in_degree = {}
+            for node in graph.keys():
+                if node!='begin':
+                    in_degree[node] = len(graph[node]['prev'])
             # 初始化队列，将入度为0的节点加入队列
-            queue = [node for node in in_degree if in_degree[node] == 0]
+            queue = graph['begin']
             topo_order = []
+
+            # 初始模态不一致直接返回
+            for node in queue:
+                node_service = self.find_service_by_id(node)
+                if node_service['input'] != modal:
+                    LOGGER.info(f"初始模态不一致,返回,当前节点的service为{node_service}")
+                    return False
 
             # 进行拓扑排序
             while queue:
                 parent = queue.pop(0)
                 topo_order.append(parent)
-                for child in graph[parent]:
+                for child in graph[parent]['succ']:
                     parent_service = self.find_service_by_id(parent)
                     child_service = self.find_service_by_id(child)
                     # 父子输入输出不匹配就返回False
                     if child_service and parent_service and child_service['input'] != parent_service['output']:
+                        LOGGER.info(f"输入输出模态不一致,返回")
                         return False
                     in_degree[child] -= 1
                     if in_degree[child] == 0:
                         queue.append(child)
 
             # 如果拓扑排序的结果长度等于图中节点的数量，则说明图本身是一个合法的DAG
-            return len(topo_order) == len(graph)
+            return len(topo_order) == len(in_degree)
 
-        return topo_sort(dag['graph'])
+        res = topo_sort(dag, modal)
+        LOGGER.info(f"验证结果为:{res}")
+
+        return res
 
     def get_source_ids(self):
         source_ids = []
