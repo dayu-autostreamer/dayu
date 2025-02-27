@@ -32,7 +32,7 @@ class TaskCoordinator:
                 return count
 
         except Exception as e:
-            LOGGER.warning(f'Redis operation failed in store task: {str(e)}')
+            LOGGER.warning(f'Redis operation failed in storing task: {str(e)}')
 
     def retrieve_task_data(self, root_uuid, joint_service_name, required_count):
         try:
