@@ -26,8 +26,8 @@ class TaskCoordinator:
                 pipe.hlen(storage_key)
                 _, _, count = pipe.execute()
 
-                LOGGER.debug(f"Store 'source {task.get_source_id()} task {task.get_task_id()} "
-                             f"current_service {task.get_flow_index()}' into {storage_key}, current count: {count}")
+                LOGGER.debug(f'Store "source {task.get_source_id()} task {task.get_task_id()} '
+                             f'current_service {task.get_flow_index()}" into {storage_key}, current count: {count}')
 
                 return count
 
