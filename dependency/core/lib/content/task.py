@@ -5,6 +5,8 @@ import uuid
 from .service import Service
 from .dag import DAG
 
+from core.lib.solver import LCASolver, IntermediateNodeSolver, PathSolver
+
 
 class Task:
     def __init__(self,
@@ -15,7 +17,6 @@ class Task:
                  flow_index: str = 'start',
                  metadata: dict = None,
                  raw_metadata: dict = None,
-                 content: object = None,
                  scenario: dict = None,
                  temp: dict = None,
                  hash_data: list = None,
@@ -50,9 +51,6 @@ class Task:
         # current service name in dag (work as pointer)
         self.__cur_flow_index = flow_index
 
-        # intermediate content data for processing
-        self.__content_data = content
-
         # scenario data extracted from processing
         self.__scenario_data = scenario if scenario else {}
 
@@ -68,18 +66,19 @@ class Task:
     @staticmethod
     def extract_dag_from_dict(dag_dict: dict, start_node_name='start', end_node_name='end'):
         """transfer DAG dict in to DAG class"""
-        dag_flow = DAG.deserialize(dag_dict)
+        dag_flow = DAG.from_dict(dag_dict)
         if start_node_name not in dag_dict:
             dag_flow.add_start_node(Service(start_node_name))
         if end_node_name not in dag_dict:
             dag_flow.add_end_node(Service(end_node_name))
+        dag_flow.validate_dag()
 
         return dag_flow
 
     @staticmethod
     def extract_dict_from_dag(dag_flow: DAG):
         """transfer DAG class in to DAG dict"""
-        return DAG.serialize(dag_flow)
+        return dag_flow.to_dict()
 
     @staticmethod
     def extract_deployment_info_from_dag(dag_flow: DAG):
@@ -87,7 +86,7 @@ class Task:
         get deployment info from dag class
         service_name/execute device for each node in DAG
         """
-        dag_dict = DAG.serialize(dag_flow)
+        dag_dict = dag_flow.to_dict()
         deployment_info = {}
         for node_name in dag_dict:
             node = dag_dict[node_name]
@@ -133,12 +132,6 @@ class Task:
     def set_raw_metadata(self, data: dict):
         self.__raw_metadata = data
 
-    def get_content(self):
-        return self.__content_data
-
-    def set_content(self, content):
-        self.__content_data = content
-
     def get_scenario_data(self):
         return self.__scenario_data
 
@@ -173,25 +166,39 @@ class Task:
         return self.__task_uuid
 
     def set_task_uuid(self, task_uuid: str):
-        assert uuid.UUID(task_uuid).version == 4, \
-            f'Invalid version for input UUID, need 4 give {uuid.UUID(task_uuid).version}'
         self.__task_uuid = task_uuid
 
     def get_parent_uuid(self):
         return self.__parent_uuid
 
     def set_parent_uuid(self, parent_uuid: str):
-        assert not parent_uuid or uuid.UUID(parent_uuid).version == 4, \
-            f'Invalid version for input UUID, need 4 give {uuid.UUID(parent_uuid).version}'
         self.__parent_uuid = parent_uuid
 
     def get_root_uuid(self):
         return self.__root_uuid
 
     def set_root_uuid(self, root_uuid: str):
-        assert uuid.UUID(root_uuid).version == 4, \
-            f'Invalid version for input UUID, need 4 give {uuid.UUID(root_uuid).version}'
         self.__root_uuid = root_uuid
+
+    def get_current_content(self):
+        return self.__dag_flow.get_node(self.__cur_flow_index).service.get_content_data()
+
+    def get_prev_content(self):
+        prev_service_names = self.__dag_flow.get_prev_nodes(self.__cur_flow_index)
+        prev_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
+                         for service_name in prev_service_names]
+        # return one of prev non-empty content
+        return next((content for content in prev_contents if content is not None), None)
+
+    def get_first_content(self):
+        first_service_names = self.__dag_flow.get_prev_nodes('start')
+        first_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
+                          for service_name in first_service_names]
+        # return one of first non-empty content
+        return next((content for content in first_contents if content is not None), None)
+
+    def set_current_content(self, content):
+        self.__dag_flow.get_node(self.__cur_flow_index).service.set_content_data(content)
 
     def get_current_service_info(self):
         assert self.__dag_flow, 'Task DAG is empty!'
@@ -213,58 +220,75 @@ class Task:
         service = self.__dag_flow.get_node(self.__cur_flow_index).service
         service.set_real_execute_time(real_execute_time=real_execute_time)
 
-    # TODO: calculate total delay
+    def get_real_end_to_end_time(self):
+        """get real end to end time of task: from generator to distributor by estimation"""
+        if f'dayu:{self.__root_uuid}:total_start_time' not in self.__tmp_data:
+            raise ValueError(f'Timestamp of task starting lacks: dayu:{self.__root_uuid}:total_start_time')
+        if f'dayu:{self.__root_uuid}:total_start_time' not in self.__tmp_data:
+            raise ValueError(f'Timestamp of task ending lacks: dayu:{self.__root_uuid}:total_end_time')
+
+        return (self.__tmp_data[f'dayu:{self.__root_uuid}:total_end_time'] -
+                self.__tmp_data[f'dayu:{self.__root_uuid}:total_start_time'])
+
     def calculate_total_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
         assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
-        total_time = 0
-        for service in self.__dag_flow:
-            total_time += service.get_service_total_time()
 
+        total_time, _ = PathSolver(self.__dag_flow).get_weighted_shortest_path('start', 'end',
+                                                                               lambda x: x.get_service_total_time())
         return total_time
 
-    # TODO: calculate transmit time
     def calculate_cloud_edge_transmit_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
         assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
-        transmit_time = 0
-        for service in self.__dag_flow:
-            transmit_time = max(transmit_time, service.get_transmit_time())
 
+        # get the longest transmitting time as cloud-edge transmitting time
+        transmit_time = 0
+        for service_name in self.__dag_flow:
+            service = self.__dag_flow.get_node(service_name).service
+            transmit_time = max(transmit_time, service.get_transmit_time())
         return transmit_time
 
-    # TODO: get delay info
     def get_delay_info(self):
         assert self.__dag_flow, 'Task DAG is empty!'
         assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
 
         delay_info = ''
-        total_time = 0
+        total_time = self.calculate_total_time()
+        real_total_time = self.get_real_end_to_end_time()
         delay_info += f'[Delay Info] Source:{self.get_source_id()}  Task:{self.get_task_id()}\n'
         for service in self.__dag_flow:
             delay_info += f'stage[{service.get_service_name()}] -> (device:{service.get_execute_device()})    ' \
                           f'execute delay:{service.get_execute_time():.4f}s    ' \
                           f'transmit delay:{service.get_transmit_time():.4f}s\n'
-        delay_info += f'total delay:{total_time:.4f}s average delay: {total_time / self.get_metadata()["buffer_size"]:.4f}s'
+        delay_info += (f'total delay:{total_time:.4f}s  '
+                       f'average delay: {total_time / self.get_metadata()["buffer_size"]:.4f}s\n')
+        delay_info += (f'real end-to-end delay:{real_total_time:.4f}s  '
+                       f'average delay: {real_total_time / self.get_metadata()["buffer_size"]:.4f}s\n')
         return delay_info
 
-    def get_parallel_services(self):
-        """get parallel services for joint service"""
-        next_node_names = self.__dag_flow.get_node(self.__cur_flow_index).next_nodes
-        if len(next_node_names) > 1:
-            # current node is split node
-            return [self.__cur_flow_index]
-        else:
-            # current node is joint node
-            next_node = self.__dag_flow.get_node(next_node_names[0])
-            return next_node.prev_nodes
+    def get_parallel_info_for_merge(self):
+        """
+        Obtain nodes parallel to the current node and the corresponding joint nodes
 
-    def get_joint_service(self):
-        """get joint service (next node of current node)"""
+        output:
+        [
+            {joint_service: joint_service_name1, parallel_services:[...]},
+            {joint_service: joint_service_name2, parallel_services:[...]},
+            ...
+        ]
+        """
         next_node_names = self.__dag_flow.get_node(self.__cur_flow_index).next_nodes
-        assert len(next_node_names) == 1, (f"Current node is split node with {len(next_node_names)} next nodes, "
-                                           f"no joint service!")
-        return self.__dag_flow.get_node(next_node_names[0]).service.get_service_name()
+
+        parallel_info = [
+            {
+                'joint_service': next_node_name,
+                'parallel_services': self.__dag_flow.get_prev_nodes(next_node_name)
+            }
+            for next_node_name in next_node_names
+        ]
+
+        return parallel_info
 
     def step_to_next_stage(self):
         next_services = self.__dag_flow.get_next_nodes(self.__cur_flow_index)
@@ -286,54 +310,77 @@ class Task:
             node.service.set_execute_device(device)
         return dag
 
-    def fork_task(self, new_flow_index):
+    def fork_task(self, new_flow_index: str = None) -> 'Task':
         new_task = copy.deepcopy(self)
-        new_task.set_flow_index(new_flow_index)
+        if new_flow_index:
+            new_task.set_flow_index(new_flow_index)
+        new_task.set_task_uuid(str(uuid.uuid4()))
         new_task.set_parent_uuid(self.__task_uuid)
         return new_task
 
-    # TODO: merge task
-    def merge_task(self, other_task):
-        pass
+    def merge_task(self, other_task: 'Task'):
+        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_flow_index(), other_task.get_flow_index())
 
-    @staticmethod
-    def serialize(task: 'Task'):
-        return json.dumps({
-            'source_id': task.get_source_id(),
-            'task_id': task.get_task_id(),
-            'source_device': task.get_source_device(),
-            'dag': DAG.serialize(task.get_dag()),
-            'cur_flow_index': task.get_flow_index(),
-            'meta_data': task.get_metadata(),
-            'raw_meta_data': task.get_raw_metadata(),
-            'content_data': task.get_content(),
-            'scenario_data': task.get_scenario_data(),
-            'tmp_data': task.get_tmp_data(),
-            'hash_data': task.get_hash_data(),
-            'file_path': task.get_file_path(),
-            'task_uuid': task.get_task_uuid(),
-            'parent_uuid': task.get_parent_uuid(),
-            'root_uuid': task.get_root_uuid(),
-        })
+        merged_task = copy.deepcopy(self)
+        merged_task.set_flow_index(lca_service_name)
+        merged_task.set_task_uuid(str(uuid.uuid4()))
 
-    @staticmethod
-    def deserialize(data: str):
-        data = json.loads(data)
-        task = Task(source_id=data['source_id'],
-                    task_id=data['task_id'],
-                    source_device=data['source_device'])
+        merged_dag = merged_task.get_dag()
+        other_dag = other_task.get_dag()
 
-        task.set_dag(DAG.deserialize(data['dag'])) if 'dag' in data else None
-        task.set_flow_index(data['cur_flow_index']) if 'cur_flow_index' in data else None
-        task.set_metadata(data['meta_data']) if 'meta_data' in data else None
-        task.set_raw_metadata(data['raw_meta_data']) if 'raw_meta_data' in data else None
-        task.set_content(data['content_data']) if 'content_data' in data else None
-        task.set_scenario_data(data['scenario_data']) if 'scenario_data' in data else None
-        task.set_tmp_data(data['tmp_data']) if 'tmp_data' in data else None
-        task.set_hash_data(data['hash_data']) if 'hash_data' in data else None
-        task.set_file_path(data['file_path']) if 'file_path' in data else None
-        task.set_task_uuid(data['task_uuid']) if 'task_uuid' in data else None
-        task.set_parent_uuid(data['parent_uuid']) if 'parent_uuid' in data else None
-        task.set_root_uuid(data['root_uuid']) if 'root_uuid' in data else None
+        # Complete missing part of merged_task with other_task
+        # missing part contains intermediate nodes between "LCA" and "current node of other_task" (including latter)
+        nodes_for_merge = IntermediateNodeSolver(merged_dag).get_intermediate_nodes(lca_service_name,
+                                                                                    other_task.get_flow_index())
+        nodes_for_merge.add(other_task.get_flow_index())
+
+        for node in nodes_for_merge:
+            merged_dag.set_node_service(node, other_dag.get_node(node).service)
+
+        merged_task.set_dag(merged_dag)
+
+    def to_dict(self):
+        return {
+            'source_id': self.get_source_id(),
+            'task_id': self.get_task_id(),
+            'source_device': self.get_source_device(),
+            'dag': self.get_dag().to_dict() if self.get_dag() else None,
+            'cur_flow_index': self.get_flow_index(),
+            'meta_data': self.get_metadata(),
+            'raw_meta_data': self.get_raw_metadata(),
+            'scenario_data': self.get_scenario_data(),
+            'tmp_data': self.get_tmp_data(),
+            'hash_data': self.get_hash_data(),
+            'file_path': self.get_file_path(),
+            'task_uuid': self.get_task_uuid(),
+            'parent_uuid': self.get_parent_uuid(),
+            'root_uuid': self.get_root_uuid(),
+        }
+
+    @classmethod
+    def from_dict(cls, dag_dict):
+        task = cls(source_id=dag_dict['source_id'],
+                   task_id=dag_dict['task_id'],
+                   source_device=dag_dict['source_device'])
+
+        task.set_dag(DAG.from_dict(dag_dict['dag'])) if 'dag' in dag_dict and dag_dict['dag'] else None
+        task.set_flow_index(dag_dict['cur_flow_index']) if 'cur_flow_index' in dag_dict else None
+        task.set_metadata(dag_dict['meta_data']) if 'meta_data' in dag_dict else None
+        task.set_raw_metadata(dag_dict['raw_meta_data']) if 'raw_meta_data' in dag_dict else None
+        task.set_scenario_data(dag_dict['scenario_data']) if 'scenario_data' in dag_dict else None
+        task.set_tmp_data(dag_dict['tmp_data']) if 'tmp_data' in dag_dict else None
+        task.set_hash_data(dag_dict['hash_data']) if 'hash_data' in dag_dict else None
+        task.set_file_path(dag_dict['file_path']) if 'file_path' in dag_dict else None
+        task.set_task_uuid(dag_dict['task_uuid']) if 'task_uuid' in dag_dict else None
+        task.set_parent_uuid(dag_dict['parent_uuid']) if 'parent_uuid' in dag_dict else None
+        task.set_root_uuid(dag_dict['root_uuid']) if 'root_uuid' in dag_dict else None
 
         return task
+
+    def serialize(self):
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def deserialize(cls, data: str):
+        data = json.loads(data)
+        return cls.from_dict(data)

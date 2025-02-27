@@ -1,5 +1,3 @@
-import json
-
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 
 from fastapi.routing import APIRoute
@@ -7,12 +5,12 @@ from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.common import FileOps
+from core.lib.content import Task
 
 from .controller import Controller
 
 
 class ControllerServer:
-    # TODO: 修改api名字
     def __init__(self):
         self.controller = Controller()
 
@@ -42,19 +40,30 @@ class ControllerServer:
         backtask.add_task(self.process_return_background, data)
 
     def submit_task_background(self, data, file_data):
-        self.controller.set_current_task(data)
+        """deal with tasks submitted by the generator or other controllers"""
+        self.controller.set_current_task(Task.deserialize(data))
         FileOps.save_data_file(self.controller.cur_task, file_data)
-
+        # record end time of transmitting
         self.controller.record_transmit_ts(is_end=True)
+
         action = self.controller.submit_task()
-        if action == 'transmit':
+
+        # for execute action, the file is remained
+        # so that task returned from processor don't need to carry with file.
+        if not action == 'execute':
             FileOps.remove_data_file(self.controller.cur_task)
 
     def process_return_background(self, data):
-        self.controller.set_current_task(data)
-
+        """deal with tasks returned by the processor"""
+        self.controller.set_current_task(Task.deserialize(data))
+        # record end time of executing
         self.controller.record_execute_ts(is_end=True)
-        self.controller.process_return()
-        action = self.controller.submit_task()
-        if action == 'transmit':
+
+        actions = self.controller.process_return()
+
+        # for execute action, the file is remained
+        # so that task returned from processor don't need to carry with file;
+        # for wait action of joint node, the file is remained
+        # so that joint task merged from waiting tasks has file to transmit.
+        if 'execute' not in actions and 'wait' not in actions:
             FileOps.remove_data_file(self.controller.cur_task)
