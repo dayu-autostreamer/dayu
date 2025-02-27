@@ -202,7 +202,7 @@ export default {
     // node id -> array index
     const nodeMap = ref({});
 
-    // Using Dagre algorithm 2 beautify dag
+    // Using Dagre algorithm to beautify dag
     async function layoutGraph(direction) {
       nodeList.value = layout(nodeList.value, lineList.value, direction);
       nextTick(() => {
@@ -215,7 +215,7 @@ export default {
       vueFlowInstance.fitView();
     });
     onNodeDragStop(({ event, nodes, node }) => {
-      console.log("Node Drag Stop", { event, nodes, node });
+      // console.log("Node Drag Stop", { event, nodes, node });
     });
     onConnect((connection) => {
       const line = {
@@ -247,14 +247,19 @@ export default {
     return {
       services: [
         {
-          id: 1,
-          name: "car_detection",
+          id: "car_detection",
+          name: "car detection",
           description: "I am car_detection",
         },
         {
-          id: 2,
-          name: "plate_detection",
+          id: "plate_detection",
+          name: "plate detection",
           description: "I amd plate_detection",
+        },
+        {
+          id: "plate detection(2333333333333333333333)",
+          name: "plate_detection(2333333333333333333333)",
+          description: "I amd plate_detection2333333333333",
         },
       ],
       editInput: "",
@@ -370,7 +375,6 @@ export default {
         });
     },
 
-    //
     handleNewSubmit() {
       if (this.newInputName === "" || this.newInputName === null) {
         ElMessage.error("Please fill the dag name");
@@ -397,12 +401,11 @@ export default {
             if (graph.begin === undefined) {
               graph.begin = [];
             }
-            graph.begin.push(node.id);
+            graph.begin.push(node.service_id);
           }
         }
         return graph;
       };
-
       const graph = constructDagGraph();
       const newData = {
         dag_name: this.newInputName,
@@ -416,7 +419,8 @@ export default {
       fetch("/api/dag_workflow")
         .then((response) => response.json())
         .then((data) => {
-          // 成功获取数据后，更新dagList字段
+          // update dagList
+          console.log("dagList如下所示", data);
           this.dagList = data;
           for (let i = 0; i < this.dagList.length; i++) {
             this.dagList[i].nodeList = this.layout(
@@ -463,11 +467,13 @@ export default {
       })
         .then((response) => response.json())
         .then((data) => {
+          console.log("完成update请求");
           const state = data["state"];
           const msg = data["msg"];
           console.log(state);
           this.showMsg(state, msg);
           if (state === "success") {
+            console.log("开始获取dagList");
             this.getDagList();
             this.newInputName = "";
             this.newInputDag = "";
@@ -602,9 +608,15 @@ input[type="file"] {
 }
 
 .svc-item {
+  display: inline-block;
   margin: 2px; /* 可根据需要调整 */
   padding: 2px; /* 可根据需要调整 */
   border-radius: 10px; /* 圆角矩形 */
+}
+
+.vue-flow__node-input {
+  width: auto;
+  padding: 5px;
 }
 
 .description {

@@ -1,11 +1,10 @@
 import vue from "@vitejs/plugin-vue";
 import { resolve } from "path";
 import { defineConfig, ConfigEnv } from "vite";
-import vueSetupExtend from "vite-plugin-vue-setup-extend-plus";
+// import vueSetupExtend from "vite-plugin-vue-setup-extend-plus";
 import viteCompression from "vite-plugin-compression";
 import { buildConfig } from "./src/utils/build";
 import EnvironmentPlugin from "vite-plugin-environment";
-import { de } from "element-plus/es/locale";
 
 const pathResolve = (dir: string) => {
   return resolve(__dirname, ".", dir);
@@ -18,19 +17,20 @@ const alias: Record<string, string> = {
 
 // 之前使用loadEnv获取环境变量 现在使用node自带的process对象配置环境变量
 const viteConfig = defineConfig((mode: ConfigEnv) => {
-  const dealDefaultEnv = () => {
-    process.env.VITE_BACKEND_ADDRESS = "http://$CLOUD_IP:$BACKEND_PORT";
-    process.env.VITE_PORT = "8000";
-    process.env.VITE_OPEN = "false";
-    process.env.VITE_OPEN_CDN = "false";
-    process.env.VITE_PUBLIC_PATH = "/vue-next-admin-preview/";
-  };
-  //   如果没有环境变量的话就用这里替代
-  dealDefaultEnv();
+  // const dealDefaultEnv = () => {
+  //   console.log("没有找到环境变量文件，使用默认值");
+  //   process.env.VITE_BACKEND_ADDRESS = "http://$CLOUD_IP:$BACKEND_PORT";
+  //   process.env.VITE_PORT = "8000";
+  //   process.env.VITE_OPEN = "false";
+  //   process.env.VITE_OPEN_CDN = "false";
+  //   process.env.VITE_PUBLIC_PATH = "/vue-next-admin-preview/";
+  // };
+  // //   如果没有环境变量的话就用这里替代
+  // dealDefaultEnv();
   return {
     plugins: [
       vue(),
-      vueSetupExtend(),
+      // vueSetupExtend(),
       viteCompression(),
       JSON.parse(String(process.env.VITE_OPEN_CDN)) ? buildConfig.cdn() : null,
       EnvironmentPlugin([

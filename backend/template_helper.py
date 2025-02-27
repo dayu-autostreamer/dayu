@@ -4,7 +4,7 @@ import random
 import re
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps
+from core.lib.common import YamlOps, LOGGER
 from core.lib.network import NodeInfo
 
 
@@ -151,10 +151,11 @@ class TemplateHelper:
 
     # TODO: 如何选择哪个节点作为数据源？
     #       第一次迭代：随机选择数据源的节点集的一个节点作为generator的节点集 完成
+    #       想一下和scheduler的交互接口，第二次迭代不需测试 测试完之后给什么参数拿哪些参数node_list+数据源+一些额外信息
     #       第二次迭代考虑获取scheduler对generator所在节点的选择决策
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
-       # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
-
+        # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
+        LOGGER.info(f"微调generator yaml {source_deploy}")
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
         edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
@@ -162,13 +163,22 @@ class TemplateHelper:
         for source_info in source_deploy:
             new_edge_worker = copy.deepcopy(edge_worker_template)
             source = source_info['source']
-            node_set=source_info['node_set']
+            node_set = source_info['node_set']
+            # 随机选择其中一个节点
             node = random.choice(node_set)
             dag = source_info['dag']
 
             new_edge_worker['template']['spec']['nodeName'] = node
 
             container = new_edge_worker['template']['spec']['containers'][0]
+
+            DAG_ENV={}
+            for key in dag.keys():
+                temp_node = {}
+                if key != 'begin':
+                    temp_node['service']={'service_name': key}
+                    temp_node['next_nodes']=dag[key]['succ']
+                    DAG_ENV[key] = temp_node
 
             container['env'].extend(
                 [
@@ -177,7 +187,7 @@ class TemplateHelper:
                     {'name': 'SOURCE_TYPE', 'value': str(source['source_type'])},
                     {'name': 'SOURCE_ID', 'value': str(source['id'])},
                     {'name': 'SOURCE_METADATA', 'value': str(source['metadata'])},
-                    {'name': 'DAG', 'value': str([{'service_name': item['service']} for item in dag])},
+                    {'name': 'DAG', 'value': str(DAG_ENV)},
                 ])
 
             if node in edge_workers_dict:
@@ -190,7 +200,10 @@ class TemplateHelper:
 
         return yaml_doc
 
+
     def finetune_controller_yaml(self, yaml_doc, edge_nodes, cloud_node):
+        LOGGER.info(f"微调controller yaml {edge_nodes}")
+
         yaml_doc = self.fill_template(yaml_doc, 'controller')
 
         edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
@@ -210,6 +223,7 @@ class TemplateHelper:
 
         return yaml_doc
 
+
     def finetune_distributor_yaml(self, yaml_doc, cloud_node):
         yaml_doc = self.fill_template(yaml_doc, 'distributor')
 
@@ -221,6 +235,7 @@ class TemplateHelper:
 
         return yaml_doc
 
+
     def finetune_scheduler_yaml(self, yaml_doc, cloud_node):
         yaml_doc = self.fill_template(yaml_doc, 'scheduler')
 
@@ -231,6 +246,7 @@ class TemplateHelper:
         yaml_doc['spec']['cloudWorker'] = new_cloud_worker
 
         return yaml_doc
+
 
     def finetune_monitor_yaml(self, yaml_doc, edge_nodes, cloud_node):
         yaml_doc = self.fill_template(yaml_doc, 'monitor')
@@ -262,7 +278,9 @@ class TemplateHelper:
 
         return yaml_doc
 
+
     # TODO: 第一次迭代，采用默认方式，即每个数据源对应的节点上，安装此dag对应的全部逻辑节点
+    #       测试完后，思考对scheduler发送什么请求，获取什么参数（比如每个物理节点部署什么节点，最后固化到yaml中） 以指导自己的部署
     #       下一次迭代考虑在此处获取scheduler的部署决策
     def finetune_processor_yaml(self, service_dict, cloud_node):
         yaml_docs = []
@@ -292,8 +310,8 @@ class TemplateHelper:
 
         return yaml_docs
 
-    def process_image(self, image: str) -> str:
 
+    def process_image(self, image: str) -> str:
         """
             legal input:
                 - registry/repository/image:tag
@@ -328,9 +346,11 @@ class TemplateHelper:
         full_image = f"{registry}/{repository}/{image_name}:{tag}"
         return full_image
 
+
     def prepare_file_path(self, file_path: str) -> str:
         file_prefix = self.load_base_info()['default-file-mount-prefix']
         return os.path.join(file_prefix, file_path, "")
+
 
     @staticmethod
     def get_all_selected_edge_nodes(yaml_dict):

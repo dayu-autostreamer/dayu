@@ -145,7 +145,8 @@ class BackendServer:
         display all scheduled policies
         {
             policy_id:id,
-            policy_name：name}
+            policy_name：name
+        }
         """
         self.server.parse_base_info()
         cur_policy = []
@@ -248,7 +249,7 @@ class BackendServer:
         {
             "dag_name":"headup",
             "dag":{
-                "begin" : "node_id_A",//需要是一个列表 支持多个begin
+                "begin" : [node_id_A...],//需要是一个列表 支持多个begin
                 "service_id":{
                     "prev" : [],
                     "succ" : ["node_id_B", ...],
@@ -273,6 +274,7 @@ class BackendServer:
                 'dag_name': dag_name,
                 'dag': dag
             })
+            LOGGER.info(f"完成验证{self.server.dags}")
             return {'state': 'success', 'msg': 'Add new dag Successfully'}
         else:
             return {'state': 'fail', 'msg': 'Add new dag failed: illegal dag'}
@@ -439,26 +441,35 @@ class BackendServer:
             return _result
 
         data = json.loads(str(data, encoding='utf-8'))
+        LOGGER.info(f"安装服务已启动:{data}")
 
         source_label = data['source_config_label']
         policy_id = data['policy_id']
         source_map_list = data['source']
         # 从source数据中构造dag_list和node_set_list
+        LOGGER.info(f"获取的数据为:source_label{source_label}")
+        LOGGER.info(f"policy_id{policy_id}"
+                    f"source_map_list{source_map_list}")
         dag_list = [x['dag_selected'] for x in source_map_list]
+        LOGGER.info(f"获得的{dag_list}")
         node_set_list = [x['node_selected'] for x in source_map_list]
+        LOGGER.info(f"获得的{node_set_list}")
 
         source_deploy = []
 
         policy = self.server.find_scheduler_policy_by_id(policy_id)
         if policy is None:
             return {'state': 'fail', 'msg': 'Install services failed: scheduler policy not exists'}
+        LOGGER.info(f"policy为{policy}")
 
         source_config = self.server.find_datasource_configuration_by_label(source_label)
         if source_config is None:
             return {'state': 'fail', 'msg': 'Install services failed: datasource configuration not exists'}
+        LOGGER.info(f"找到数据源配置为{source_config}")
 
         if len(source_config) != len(dag_list) != len(node_set_list):
             return {'state': 'fail', 'msg': 'Install services failed: datasource mapping failed'}
+        LOGGER.info(f"长度一样,没啥问题")
 
         for source, dag_id, node_set in zip(source_config['source_list'], dag_list, node_set_list):
 
@@ -471,13 +482,17 @@ class BackendServer:
                     return {'state': 'fail', 'msg': f'Install services failed: edge node "{node}" not exists'}
 
             source.update({'source_type': source_config['source_type'], 'source_mode': source_config['source_mode']})
+            LOGGER.info(f"更新source成功{source}")
 
             # 注意此处source_deploy被修改需要递归修改
             source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
+            LOGGER.info(f"更新source_deploy成功{source_deploy}")
 
         try:
             # 根据构造的map_list获取yaml文件
             yaml = self.server.parse_apply_templates(policy, source_deploy)
+            LOGGER.info(f"获取模板文件{yaml}")
+
         except Exception as e:
             LOGGER.warning(f'Parse templates failed: {str(e)}')
             LOGGER.exception(e)
@@ -485,6 +500,8 @@ class BackendServer:
         try:
             # 根据yaml文件进行部署
             result = install_loop(yaml)
+            LOGGER.info(f"安装结束{result}")
+
         except Exception as e:
             LOGGER.exception(e)
             result = False
