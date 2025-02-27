@@ -55,6 +55,38 @@ create_service_account() {
     fi
 }
 
+create_redis() {
+  echo "$(green_text [DAYU]) Creating redis ..."
+      kubectl -n "$NAMESPACE" apply -f - <<EOF
+apiVersion: $API_VERSION
+kind: $KIND
+metadata:
+  name: redis
+  namespace: $NAMESPACE
+spec:
+  cloudWorker:
+    logLevel:
+      level: "DEBUG"
+    template:
+      spec:
+        containers:
+          - image: $REGISTRY/redis:latest
+            imagePullPolicy: IfNotPresent
+            name: redis
+            ports:
+              - containerPort: 6379
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: $CLOUD_NODE
+        serviceAccountName: $SERVICE_ACCOUNT
+  serviceConfig:
+    port: 6379
+    pos: cloud
+    targetPort: 6379
+EOF
+
+
+}
+
 create_datasource() {
   if [ "$DATASOURCE_USE_SIMULATION" = "true" ]; then
     echo "$(green_text [DAYU]) Creating datasource ..."
@@ -221,6 +253,7 @@ start_system() {
     echo "$(green_text [DAYU]) Starting DAYU system in namespace $NAMESPACE..."
     check_and_create_namespace
     create_service_account
+    create_redis
     create_backend
     create_frontend
     create_datasource

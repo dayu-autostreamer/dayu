@@ -1,14 +1,17 @@
 import redis
 
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context
+from core.lib.common import LOGGER, Context, SystemConstant
+from core.lib.network import NodeInfo, PortInfo
 
 
 class TaskCoordinator:
     def __init__(self):
         self.max_connections = Context.get_parameter('MAX_REDIS_CONNECTIONS', '10', direct=False)
         self.storage_timeout = Context.get_parameter('REDIS_STORAGE_TIMEOUT', '3600', direct=False)
-        self.pool = redis.ConnectionPool(max_connections=self.max_connections)
+        self.pool = redis.ConnectionPool(host=NodeInfo.hostname2ip(NodeInfo.get_cloud_node()),
+                                         port=PortInfo.get_component_port(SystemConstant.REDIS.value),
+                                         max_connections=self.max_connections)
         self.redis = redis.Redis(connection_pool=self.pool)
         self.lock_prefix = 'dayu:dag:lock'
         self.joint_service_key_prefix = 'dayu:dag:joint_service'

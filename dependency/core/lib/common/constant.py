@@ -14,6 +14,7 @@ class SystemConstant(Enum):
     BACKEND = 'backend'
     FRONTEND = 'frontend'
     DATASOURCE = 'datasource'
+    REDIS = 'redis'
 
 
 class FileNameConstant(Enum):
