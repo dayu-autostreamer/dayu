@@ -279,6 +279,7 @@ export default {
       }
     }
 
+
     // life cycle callback
     onInit((vueFlowInstance) => {
       vueFlowInstance.fitView();
@@ -309,6 +310,7 @@ export default {
       lineList,
       nodeList,
       nodeMap,
+      layout,
     };
   },
 
@@ -495,119 +497,139 @@ export default {
       console.log(this.services);
     },
 
-    /*methods for dag view*/
-
-
-    async showDagDetail(row, event) {
-      if (!row || !event) {
-        console.warn('Invalid parameters');
-        return;
-      }
-
+    async layoutGraph(direction) {
       try {
-        this.activeDag = row.dag_id;
 
-        const baseX = event.clientX || 0;
-        const baseY = event.clientY || 0;
-
-        this.hoverPosition = {
-          x: baseX + 20,
-          y: baseY - 50
-        };
-
-        if (!row.nodeList) {
-          const nodeList = this.parseDag(row.dag);
-          const lineList = this.generateEdges(row.dag);
-
-          // 应用布局算法
-          const layoutNodes = this.layout(nodeList, lineList, 'LR');
-
-          Object.assign(row, {
-            nodeList: layoutNodes,
-            lineList
-          });
-        }
-      } catch (error) {
-        console.error('DAG detail error:', error);
-        this.activeDag = null;
+        const result = await this.layout(
+            this.nodeList,
+            this.lineList,
+            direction
+        );
+        this.nodeList = result.nodes;
+        this.lineList = result.edges;
+        nextTick(() => this.fitView());
+      } catch (e) {
+        console.error("Layout failed:", e);
+        ElMessage.error("DAG layout error");
       }
-    },
+    }
+  },
 
-    hideDagDetail() {
+  /*methods for dag view*/
+  async showDagDetail(row, event) {
+    if (!row || !event) {
+      console.warn('Invalid parameters');
+      return;
+    }
+
+    try {
+      this.activeDag = row.dag_id;
+
+      const baseX = event.clientX || 0;
+      const baseY = event.clientY || 0;
+
+      this.hoverPosition = {
+        x: baseX + 20,
+        y: baseY - 50
+      };
+
+      if (!row.nodeList) {
+        const nodeList = this.parseDag(row.dag);
+        const lineList = this.generateEdges(row.dag);
+
+        // 应用布局算法
+        const layoutNodes = this.layout(nodeList, lineList, 'LR');
+
+        Object.assign(row, {
+          nodeList: layoutNodes,
+          lineList
+        });
+      }
+    } catch (error) {
+      console.error('DAG detail error:', error);
       this.activeDag = null;
-    },
-    countEdges(dag) {
-      let count = 0
-      for (const node of Object.values(dag)) {
-        if (node.succ && Array.isArray(node.succ)) {
-          count += node.succ.length
-        }
+    }
+  },
+
+  hideDagDetail() {
+    this.activeDag = null;
+  },
+  countEdges(dag) {
+    let count = 0
+    for (const node of Object.values(dag)) {
+      if (node.succ && Array.isArray(node.succ)) {
+        count += node.succ.length
       }
-      return count
-    },
+    }
+    return count
+  },
 
-    randomColor() {
-      const colors = [
-        "#F0F4F8", "#E3F2FD", "#E8F5E9", "#F3E5F5",
-        "#FFF3E0", "#FBE9E7", "#E0F7FA", "#F1F8E9",
-        "#FCE4EC", "#EDE7F6", "#E8F5E6", "#FFEBEE",
-        "#E0F2F1", "#F5F5F5", "#FFF8E1", "#EFEBE9"
-      ];
-      return colors[Math.floor(Math.random() * colors.length)];
-    },
-
-
-    parseDag(dag) {
-      // 只生成基础节点数据，不设置具体位置
-      return Object.keys(dag)
-          .filter(k => k !== 'begin')
-          .map(key => ({
-            id: key,
-            data: {label: key},
-            style: {
-              backgroundColor: this.randomColor(),
-              border: '1px solid #e2e8f0'
-            }
-          }));
-    },
+  randomColor() {
+    const colors = [
+      "#F0F4F8", "#E3F2FD", "#E8F5E9", "#F3E5F5",
+      "#FFF3E0", "#FBE9E7", "#E0F7FA", "#F1F8E9",
+      "#FCE4EC", "#EDE7F6", "#E8F5E6", "#FFEBEE",
+      "#E0F2F1", "#F5F5F5", "#FFF8E1", "#EFEBE9"
+    ];
+    return colors[Math.floor(Math.random() * colors.length)];
+  },
 
 
-    generateEdges(dag) {
-      const edges = []
-      for (const [source, node] of Object.entries(dag)) {
-        if (node.succ) {
-          node.succ.forEach(target => {
-            edges.push({
-              id: `${source}-${target}`,
-              source,
-              target,
-              markerEnd: MarkerType.ArrowClosed
-            })
+  parseDag(dag) {
+    // 只生成基础节点数据，不设置具体位置
+    return Object.keys(dag)
+        .filter(k => k !== 'begin')
+        .map(key => ({
+          id: key,
+          data: {label: key},
+          style: {
+            backgroundColor: this.randomColor(),
+            border: '1px solid #e2e8f0'
+          }
+        }));
+  },
+
+
+  generateEdges(dag) {
+    const edges = []
+    for (const [source, node] of Object.entries(dag)) {
+      if (node.succ) {
+        node.succ.forEach(target => {
+          edges.push({
+            id: `${source}-${target}`,
+            source,
+            target,
+            markerEnd: MarkerType.ArrowClosed
           })
-        }
+        })
       }
-      return edges
-    },
+    }
+    return edges
   },
-  mounted() {
-    // init dag data list
-    this.fetchData();
+}
+,
+mounted()
+{
+  // init dag data list
+  this.fetchData();
 
-    const getServiceInterval = () => {
-      let timer;
-      if (timer !== undefined) {
-        clearInterval(timer);
-      }
-      timer = setInterval(() => {
-        this.fetchData();
-      }, 5000);
-    };
-    getServiceInterval();
+  const getServiceInterval = () => {
+    let timer;
+    if (timer !== undefined) {
+      clearInterval(timer);
+    }
+    timer = setInterval(() => {
+      this.fetchData();
+    }, 5000);
+  };
+  getServiceInterval();
 
-    this.getServiceList();
-    this.layoutGraph('LR')
-  },
-};
+  this.getServiceList();
+  this.layoutGraph('LR')
+}
+,
+}
+;
 </script>
 
 <style scoped>
