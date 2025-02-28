@@ -132,7 +132,7 @@
             <div class="mini-dag">
               <div class="nodes">
                 <span class="first-service">
-                  {{ scope.row.dagList[0].name || 'No Service' }}
+                  {{ scope.row.nodeList?.[0]?.data.label || 'default' }}
                 </span>
               </div>
 
