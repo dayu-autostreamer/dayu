@@ -408,15 +408,22 @@ export default {
       fetch("/api/dag_workflow")
           .then((response) => response.json())
           .then((data) => {
-            // update dagList
-            this.dagList = data;
-            for (let i = 0; i < this.dagList.length; i++) {
-              this.dagList[i].nodeList = this.layout(
-                  this.dagList.nodeList.value,
-                  this.dagList.lineList.value,
+            this.dagList = data.map(dag => {
+              const nodeList = this.parseDag(dag.dag);
+              const lineList = this.generateEdges(dag.dag);
+
+              const layoutNodes = this.layout(
+                  nodeList,
+                  lineList,
                   "LR"
               );
-            }
+
+              return {
+                ...dag,
+                nodeList: layoutNodes,  // 添加布局后的节点
+                lineList               // 添加边数据
+              };
+            });
           })
           .catch((error) => {
             // console.error('Error fetching data:', error);
@@ -534,7 +541,7 @@ export default {
           const layoutNodes = this.layout(
               nodeList.map(n => ({
                 ...n,
-                dimensions: {width: 160, height: 40} // 详情卡专用尺寸
+                dimensions: {width: 160, height: 40}
               })),
               lineList,
               'LR'
