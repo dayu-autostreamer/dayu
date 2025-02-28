@@ -10,7 +10,7 @@ export function useLayout() {
     function layout(nodes, edges, direction) {
         if (!Array.isArray(nodes)) {
             console.error('Invalid nodes:', nodes)
-            return [] // 返回空数组避免后续错误
+            return []
         }
 
         const dagreGraph = new dagre.graphlib.Graph()
@@ -21,16 +21,8 @@ export function useLayout() {
         previousDirection.value = direction
 
         nodes.forEach(node => {
-            const graphNode = findNode(node.id)
-            const dimensions = graphNode?.dimensions || {
-                width: 200,
-                height: 50
-            }
-
-            dagreGraph.setNode(node.id, {
-                width: dimensions.width,
-                height: dimensions.height
-            })
+            const dimensions = node.dimensions || {width: 200, height: 50}
+            dagreGraph.setNode(node.id, dimensions)
         })
         if (Array.isArray(edges)) {
             edges.forEach(edge => {
@@ -55,7 +47,7 @@ export function useLayout() {
                     targetPosition: isHorizontal ? Position.Left : Position.Top,
                     sourcePosition: isHorizontal ? Position.Right : Position.Bottom,
                     position: {
-                        x: pos.x - (node.dimensions?.width || 200) / 2, // 中心对齐
+                        x: pos.x - (node.dimensions?.width || 200) / 2,
                         y: pos.y - (node.dimensions?.height || 50) / 2
                     }
                 }

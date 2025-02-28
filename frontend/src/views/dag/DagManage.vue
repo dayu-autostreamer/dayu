@@ -252,7 +252,7 @@ export default {
     const {onDragOver, onDrop, onDragLeave, isDragOver, onDragStart} =
         useDragAndDrop();
 
-    const {layout} = useLayout();
+    const layoutMethods = useLayout();
 
     // Edge Array
     const lineList = ref([]);
@@ -260,24 +260,6 @@ export default {
     const nodeList = ref([]);
     // node id -> array index
     const nodeMap = ref({});
-
-    // Using Dagre algorithm to beautify dag
-    async function layoutGraph(direction) {
-      try {
-        const {nodes, edges} = await this.layout(
-            this.nodeList,
-            this.lineList,
-            direction
-        );
-        this.nodeList = [...nodes];
-        this.lineList = [...edges];
-        nextTick(() => {
-          fitView();
-        });
-      } catch (e) {
-        console.error('Layout failed:', e);
-      }
-    }
 
 
     // life cycle callback
@@ -310,7 +292,7 @@ export default {
       lineList,
       nodeList,
       nodeMap,
-      layout,
+      ...layoutMethods,
     };
   },
 
@@ -500,24 +482,15 @@ export default {
 
     async layoutGraph(direction) {
       try {
-        // 防御性检查
-        if (!Array.isArray(this.nodeList)) {
-          throw new Error('节点列表未初始化');
-        }
 
-        // 执行布局计算
-        const {nodes, edges} = this.layout(
-            [...this.nodeList], // 创建副本避免污染原始数据
-            [...this.lineList],
+        const layoutNodes = this.layout(
+            this.nodeList,
+            this.lineList,
             direction
-        );
+        )
 
-        // 响应式更新
-        this.nodeList = nodes.map(n => ({...n}));
-        this.lineList = edges.map(e => ({...e}));
+        this.nodeList = [...layoutNodes]
 
-        await nextTick();
-        this.fitView();
       } catch (e) {
         console.error("Layout failed:", e);
         ElMessage.error("DAG layout error");
@@ -546,8 +519,15 @@ export default {
           const nodeList = this.parseDag(row.dag);
           const lineList = this.generateEdges(row.dag);
 
-          // 应用布局算法
-          const layoutNodes = this.layout(nodeList, lineList, 'LR');
+
+          const layoutNodes = this.layout(
+              nodeList.map(n => ({
+                ...n,
+                dimensions: {width: 160, height: 40} // 详情卡专用尺寸
+              })),
+              lineList,
+              'LR'
+          )
 
           Object.assign(row, {
             nodeList: layoutNodes,
@@ -633,7 +613,12 @@ export default {
     getServiceInterval();
 
     this.getServiceList();
-    this.layoutGraph('LR')
+
+    this.$nextTick(() => {
+      if (this.nodeList.length > 0) {
+        this.layoutGraph('LR')
+      }
+    })
   }
   ,
 }
