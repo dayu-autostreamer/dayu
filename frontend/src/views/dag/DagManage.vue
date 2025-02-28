@@ -514,30 +514,48 @@ export default {
       return count
     },
 
-  parseDag(dag) {
-    return Object.keys(dag)
-      .filter(k => k !== 'begin')
-      .map((key, index) => ({
-        id: key,
-        position: { x: index * 200, y: 0 },
-        data: { label: key },
-        style: { backgroundColor: this.randomColor() }
-      }))
-  },
+    randomColor() {
+      const colors = [
+        "#F0F4F8", "#E3F2FD", "#E8F5E9", "#F3E5F5",
+        "#FFF3E0", "#FBE9E7", "#E0F7FA", "#F1F8E9",
+        "#FCE4EC", "#EDE7F6", "#E8F5E6", "#FFEBEE",
+        "#E0F2F1", "#F5F5F5", "#FFF8E1", "#EFEBE9"
+      ];
+      return colors[Math.floor(Math.random() * colors.length)];
+    },
+
+
+    parseDag(dag) {
+      return Object.keys(dag)
+          .filter(k => k !== 'begin')
+          .map((key, index) => ({
+            id: key,
+            position: {x: index * 200, y: 0},
+            data: {label: key},
+            style: {
+              backgroundColor: this.randomColor(),
+              border: '1px solid #e2e8f0'
+            }
+          }))
+    },
+
 
     generateEdges(dag) {
-      const edges = [];
-      Object.entries(dag).forEach(([id, node]) => {
-        node.succ?.forEach(target => {
-          edges.push({
-            source: id,
-            target,
-            id: `${id}-${target}`
-          });
-        });
-      });
-      return edges;
-    }
+      const edges = []
+      for (const [source, node] of Object.entries(dag)) {
+        if (node.succ) {
+          node.succ.forEach(target => {
+            edges.push({
+              id: `${source}-${target}`,
+              source,
+              target,
+              markerEnd: MarkerType.ArrowClosed
+            })
+          })
+        }
+      }
+      return edges
+    },
   },
   mounted() {
     // init dag data list
