@@ -6,9 +6,9 @@
 
     <div>
       <div class="new-dag-font-style">Dag Name</div>
-      <el-input v-model="newInputName" placeholder="Please fill the dag name" />
-      <br />
-      <br />
+      <el-input v-model="newInputName" placeholder="Please fill the dag name"/>
+      <br/>
+      <br/>
       <div style="display: inline">
         <div class="new-dag-font-style">
           Service Containers
@@ -20,23 +20,12 @@
           </el-tooltip>
         </div>
       </div>
-      <div class="svc-container-description">
-        <div
-          style="
-            display: flex;
-            justify-content: center;
-            font-size: large;
-            font-weight: 180;
-            font-family: 'Times New Roman', Times, serif;
-          "
-        >
-          YOU CAN DRAG THESE SERVICES TO THE PANE.
-        </div>
+      <div>
         <ul style="list-style-type: none" class="svc-container">
           <li
-            v-for="(service, index) in services"
-            :key="index"
-            class="svc-item"
+              v-for="(service, index) in services"
+              :key="index"
+              class="svc-item"
           >
             <el-tooltip placement="top">
               <template #content>
@@ -45,9 +34,9 @@
                 </div>
               </template>
               <div
-                class="vue-flow__node-input"
-                :draggable="true"
-                @dragstart="onDragStart($event, '', service)"
+                  class="vue-flow__node-input"
+                  :draggable="true"
+                  @dragstart="onDragStart($event, '', service)"
               >
                 {{ service.name }}
               </div>
@@ -56,26 +45,28 @@
         </ul>
       </div>
     </div>
-    <br />
+    <br/>
 
     <div>
       <ElRow>
         <ElCol :span="2">
           <el-button type="warning" @click="draw">Draw</el-button>
         </ElCol>
-        <ElCol :span="18"> </ElCol>
+        <ElCol :span="18"></ElCol>
         <ElCol :span="2">
           <el-button
-            type="primary"
-            round
-            @click="handleNewSubmit"
-            v-if="drawing"
-            >Add</el-button
+              type="primary"
+              round
+              @click="handleNewSubmit"
+              v-if="drawing"
+          >Add
+          </el-button
           >
         </ElCol>
         <ElCol :span="2">
           <el-button type="primary" round @click="clearInput" v-if="drawing"
-            >Clear</el-button
+          >Clear
+          </el-button
           >
         </ElCol>
       </ElRow>
@@ -83,36 +74,43 @@
 
     <!-- drawing area -->
     <div
-      class="draw-container"
-      v-if="drawing"
-      @drop="onDrop($event, nodeList, nodeMap)"
+        class="draw-container"
+        v-if="drawing"
+        @drop="onDrop($event, nodeList, nodeMap)"
     >
       <VueFlow
-        :nodes="nodeList"
-        :edges="lineList"
-        :default-viewport="{ zoom: 1.5 }"
-        :min-zoom="0.2"
-        :max-zoom="4"
-        @dragover="onDragOver"
-        @dragleave="onDragLeave"
+          :nodes="nodeList"
+          :edges="lineList"
+          :default-viewport="{ zoom: 1.5 }"
+          :min-zoom="1.3"
+          :max-zoom="2"
+          @dragover="onDragOver"
+          @dragleave="onDragLeave"
       >
-        <Background pattern-color="#aaa" :gap="16" />
+        <div v-if="drawing" class="drag-tip">
+          <el-icon class="tip-icon">
+            <MagicStick/>
+          </el-icon>
+          <span>Drag service nodes to build your workflow</span>
+        </div>
 
-        <MiniMap />
+        <Background pattern-color="#aaa" :gap="16"/>
+
+        <MiniMap/>
         <Panel class="process-panel" position="top-right">
           <div class="layout-panel">
             <button title="set horizontal layout" @click="layoutGraph('LR')">
-              <Icon name="horizontal" />
+              <Icon name="horizontal"/>
             </button>
 
             <button title="set vertical layout" @click="layoutGraph('TB')">
-              <Icon name="vertical" />
+              <Icon name="vertical"/>
             </button>
           </div>
         </Panel>
       </VueFlow>
     </div>
-    <br /><br />
+    <br/><br/>
     <div>
       <h3>Current Application Dags</h3>
     </div>
@@ -125,22 +123,22 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="Dag" width="320"> </el-table-column>
+      <el-table-column label="Dag" width="320"></el-table-column>
       <el-table-column label="Action">
         <template #default="scope">
           <el-button
-            size="small"
-            type="danger"
-            @click="deleteWorkflow(scope.$index, scope.row.dag_id)"
-            >Delete
+              size="small"
+              type="danger"
+              @click="deleteWorkflow(scope.$index, scope.row.dag_id)"
+          >Delete
           </el-button>
         </template>
       </el-table-column>
     </el-table>
 
-    <br />
+    <br/>
 
-    <br />
+    <br/>
   </div>
 </template>
 
@@ -156,14 +154,15 @@ import {
   ElCol,
   ElRow,
 } from "element-plus";
-import { ref, nextTick } from "vue";
-import { Panel, VueFlow, useVueFlow, MarkerType } from "@vue-flow/core";
-import { ControlButton, Controls } from "@vue-flow/controls";
-import { Background } from "@vue-flow/background";
-import { MiniMap } from "@vue-flow/minimap";
+import {ref, nextTick} from "vue";
+import {Panel, VueFlow, useVueFlow, MarkerType} from "@vue-flow/core";
+import {ControlButton, Controls} from "@vue-flow/controls";
+import {Background} from "@vue-flow/background";
+import {MiniMap} from "@vue-flow/minimap";
 import useDragAndDrop from "./useDnD";
 import Icon from "./Icon.vue";
-import { useLayout } from "./useLayout";
+import {useLayout} from "./useLayout";
+
 export default {
   name: "DagManage",
   components: {
@@ -187,12 +186,12 @@ export default {
     Panel,
   },
   setup() {
-    const { onInit, onNodeDragStop, onConnect, fitView } = useVueFlow();
+    const {onInit, onNodeDragStop, onConnect, fitView} = useVueFlow();
 
-    const { onDragOver, onDrop, onDragLeave, isDragOver, onDragStart } =
-      useDragAndDrop();
+    const {onDragOver, onDrop, onDragLeave, isDragOver, onDragStart} =
+        useDragAndDrop();
 
-    const { layout } = useLayout();
+    const {layout} = useLayout();
 
     // Edge Array
     const lineList = ref([]);
@@ -213,7 +212,7 @@ export default {
     onInit((vueFlowInstance) => {
       vueFlowInstance.fitView();
     });
-    onNodeDragStop(({ event, nodes, node }) => {
+    onNodeDragStop(({event, nodes, node}) => {
       // console.log("Node Drag Stop", { event, nodes, node });
     });
     onConnect((connection) => {
@@ -245,11 +244,6 @@ export default {
   data() {
     return {
       services: [
-        {
-          id: "car_detection",
-          name: "car detection",
-          description: "I am car_detection",
-        },
       ],
       editInput: "",
       newInputName: "",
@@ -298,20 +292,20 @@ export default {
         method: "DELETE",
         body: JSON.stringify(content),
       })
-        .then((response) => response.json())
-        .then((data) => {
-          const state = data["state"];
-          let msg = data["msg"];
-          msg += ". Refreshing..";
-          this.showMsg(state, msg);
-          setTimeout(() => {
-            location.reload();
-          }, 500);
-        })
-        .catch((error) => {
-          ElMessage.error("Network error");
-          console.log(error);
-        });
+          .then((response) => response.json())
+          .then((data) => {
+            const state = data["state"];
+            let msg = data["msg"];
+            msg += ". Refreshing..";
+            this.showMsg(state, msg);
+            setTimeout(() => {
+              location.reload();
+            }, 500);
+          })
+          .catch((error) => {
+            ElMessage.error("Network error");
+            console.log(error);
+          });
     },
 
     handleNewSubmit() {
@@ -356,22 +350,22 @@ export default {
     // get dag from backen
     getDagList() {
       fetch("/api/dag_workflow")
-        .then((response) => response.json())
-        .then((data) => {
-          // update dagList
-          this.dagList = data;
-          for (let i = 0; i < this.dagList.length; i++) {
-            this.dagList[i].nodeList = this.layout(
-              this.dagList.nodeList.value,
-              this.dagList.lineList.value,
-              "LR"
-            );
-          }
-        })
-        .catch((error) => {
-          // console.error('Error fetching data:', error);
-          console.error("Error fetching data");
-        });
+          .then((response) => response.json())
+          .then((data) => {
+            // update dagList
+            this.dagList = data;
+            for (let i = 0; i < this.dagList.length; i++) {
+              this.dagList[i].nodeList = this.layout(
+                  this.dagList.nodeList.value,
+                  this.dagList.lineList.value,
+                  "LR"
+              );
+            }
+          })
+          .catch((error) => {
+            // console.error('Error fetching data:', error);
+            console.error("Error fetching data");
+          });
     },
     fetchData() {
       this.getDagList();
@@ -403,23 +397,23 @@ export default {
         },
         body: JSON.stringify(data),
       })
-        .then((response) => response.json())
-        .then((data) => {
-          const state = data["state"];
-          const msg = data["msg"];
-          console.log(state);
-          this.showMsg(state, msg);
-          if (state === "success") {
-            this.getDagList();
-            this.newInputName = "";
-            this.newInputDag = "";
-            this.newInputDagId = "";
-            location.reload();
-          }
-        })
-        .catch((error) => {
-          console.error("Error sending data:", error);
-        });
+          .then((response) => response.json())
+          .then((data) => {
+            const state = data["state"];
+            const msg = data["msg"];
+            console.log(state);
+            this.showMsg(state, msg);
+            if (state === "success") {
+              this.getDagList();
+              this.newInputName = "";
+              this.newInputDag = "";
+              this.newInputDagId = "";
+              location.reload();
+            }
+          })
+          .catch((error) => {
+            console.error("Error sending data:", error);
+          });
     },
     async getServiceList() {
       const response = await fetch("/api/service");
@@ -444,6 +438,7 @@ export default {
     getServiceInterval();
 
     this.getServiceList();
+    this.layoutGraph('LR')
   },
 };
 </script>
@@ -522,36 +517,52 @@ input[type="file"] {
 
 .new-dag-font-style {
   font-size: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 15px;
   font-weight: bold;
 }
 
 .svc-container {
+  margin-top: -20px;
   display: flex;
   flex-wrap: wrap;
-  padding: 3px; 
+  padding: 10px;
   list-style-type: none;
 }
 
-.svc-container-description {
-  background-color: antiquewhite;
-}
+
 
 .svc-item {
   display: inline-block;
-  margin: 2px; 
-  padding: 2px; 
-  border-radius: 10px; 
+  margin: 2px;
+  padding: 2px;
+  border-radius: 12px;
 }
 
 .vue-flow__node-input {
+  border: 1px solid #e2e8f0; /* 柔和的蓝灰色 */
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  width: auto;
+  padding: 10px;
+  font-size: 18px;
+}
+
+.vue-flow__node-input:hover {
+  border-color: #94a3b8; /* 悬停时稍深的颜色 */
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+.vue-flow__node-input2 {
   width: auto;
   padding: 5px;
+  font-size: 20px;
 }
 
 .description {
-  white-space: pre-wrap; 
-  word-wrap: break-word; 
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 
 .el-button {
@@ -612,4 +623,41 @@ input[type="file"] {
   color: white;
   font-size: 12px;
 }
+
+.drag-tip {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 8px 16px;
+  border-radius: 24px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  backdrop-filter: blur(4px);
+  border: 1px solid #ebeef5;
+  animation: float 3s ease-in-out infinite;
+}
+
+.tip-icon {
+  color: #409eff;
+  font-size: 18px;
+}
+
+.drag-tip span {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  color: #606266;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50% { transform: translateX(-50%) translateY(-4px); }
+}
+
 </style>

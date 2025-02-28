@@ -57,14 +57,22 @@ export default function useDragAndDrop() {
 
   function randomColor() {
     const colors = [
-      "#3674B5",
-      "#578FCA",
-      "#A1E3F9",
-      "#D1F8EF",
-      "#DFF2EB",
-      "#B9E5E8",
-      "#7AB2D3",
-      "#4A628A",
+    "#F0F4F8", // 极浅灰蓝
+    "#E3F2FD", // 柔和的天蓝
+    "#E8F5E9", // 薄荷绿
+    "#F3E5F5", // 浅紫丁香
+    "#FFF3E0", // 杏仁白
+    "#FBE9E7", // 浅珊瑚
+    "#E0F7FA", // 冰蓝
+    "#F1F8E9", // 嫩绿
+    "#FCE4EC", // 浅粉红
+    "#EDE7F6", // 薰衣草紫
+    "#E8F5E6", // 青苹果
+    "#FFEBEE", // 淡玫瑰
+    "#E0F2F1", // 浅水蓝
+    "#F5F5F5", // 浅灰白
+    "#FFF8E1", // 香槟黄
+    "#EFEBE9", // 浅米色
     ];
     const randomIndex = Math.floor(Math.random() * colors.length);
     return colors[randomIndex];
@@ -76,8 +84,9 @@ export default function useDragAndDrop() {
     });
 
     const nodeId = serviceData.value.id;
+    const nodeName = serviceData.value.name;
     const nodeData = {
-      label: nodeId,
+      label: nodeName,
       prev: [],
       succ: [],
       service_id: serviceData.value.name,
@@ -88,11 +97,13 @@ export default function useDragAndDrop() {
       position: position,
       style: {
         backgroundColor: randomColor(),
-        class: "vue-flow__node-input",
+        class: "vue-flow__node-input2",
         width: "auto",
         height: "auto",
       },
       data: nodeData,
+      sourcePosition: 'right',
+      targetPosition: 'left'
     };
 
     const { off } = onNodesInitialized(() => {
