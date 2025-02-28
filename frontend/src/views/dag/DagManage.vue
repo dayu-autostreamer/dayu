@@ -138,11 +138,11 @@
           >{{ node }}</span>
               </div>
               <div class="edges">
-                <template v-if="scope.row.dag.begin?.length > 0">
-                  <el-icon v-for="(edge, idx) in scope.row.dag.begin.slice(0,3)" :key="idx">
+                <template v-if="scope.row.dag.edges?.length > 0">
+                  <el-icon v-for="(edge, idx) in Math.min(3, scope.row.dag.edges.length)" :key="idx">
                     <Right/>
                   </el-icon>
-                  <span v-if="scope.row.dag.begin.length > 3">+{{ scope.row.dag.begin.length - 3 }}</span>
+                  <span v-if="scope.row.dag.edges.length > 3">+{{ scope.row.dag.edges.length - 3 }}</span>
                 </template>
                 <span v-else class="no-edges">-</span>
               </div>
@@ -390,7 +390,9 @@ export default {
 
       // get graph
       const constructDagGraph = () => {
-        const graph = {};
+        const graph = {
+          edges: []
+        };
         for (let i = 0; i < this.nodeList.length; i++) {
           const node = {
             service_id: this.nodeList[i].id,
@@ -912,7 +914,7 @@ input[type="file"] {
 
 .dag-detail-card {
   position: fixed;
-  z-index: 9999;
+  z-index: 9999 !important;
   pointer-events: none;
   width: 400px;
   height: 300px;
@@ -993,6 +995,9 @@ input[type="file"] {
       display: none;
     }
   }
+}
+.el-table__body tr.hover-row>td.el-table__cell {
+  z-index: auto !important;
 }
 
 </style>
