@@ -138,9 +138,13 @@
           >{{ node }}</span>
               </div>
               <div class="edges">
-                <el-icon v-for="i in 3" :key="i">
-                  <Right/>
-                </el-icon>
+                <template v-if="scope.row.dag.begin?.length > 0">
+                  <el-icon v-for="(edge, idx) in scope.row.dag.begin.slice(0,3)" :key="idx">
+                    <Right/>
+                  </el-icon>
+                  <span v-if="scope.row.dag.begin.length > 3">+{{ scope.row.dag.begin.length - 3 }}</span>
+                </template>
+                <span v-else class="no-edges">-</span>
               </div>
             </div>
             <div class="stats">
@@ -165,7 +169,7 @@
               class="dag-detail-card"
               :style="{
                 top: hoverPosition.y + 'px',
-                left: hoverPosition.x + 'px'
+                right: '120px'
               }"
           >
             <div class="dag-title">{{ scope.row.dag_name }}</div>
@@ -908,9 +912,13 @@ input[type="file"] {
 
 .dag-detail-card {
   position: fixed;
-  z-index: 2000;
+  z-index: 9999;
+  pointer-events: none;
   width: 400px;
   height: 300px;
+  right: 120px;
+  left: auto !important;
+  transform: translateX(0) !important;
   background: white;
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
@@ -940,6 +948,7 @@ input[type="file"] {
     right: 8px;
     font-size: 12px;
     color: #94a3b8;
+    pointer-events: auto;
   }
 }
 
@@ -971,6 +980,19 @@ input[type="file"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.edges {
+  .no-edges {
+    color: #999;
+    font-size: 12px;
+  }
+
+  .el-icon {
+    &:nth-child(n+4) {
+      display: none;
+    }
+  }
 }
 
 </style>
