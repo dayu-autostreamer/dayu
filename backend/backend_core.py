@@ -280,7 +280,7 @@ class BackendCore:
                     LOGGER.warning(f'Scenario fetch failed: {str(e)}')
                     continue
 
-                content = task.get_content()
+                content = task.get_first_content()
                 file_path = self.get_file_result(task.get_file_path())
 
                 try:

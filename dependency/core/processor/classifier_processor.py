@@ -17,7 +17,7 @@ class ClassifierProcessor(Processor):
     def __call__(self, task: Task):
         data_file_path = task.get_file_path()
         cap = cv2.VideoCapture(data_file_path)
-        content = task.get_content()
+        content = task.get_prev_content()
         if content is None:
             LOGGER.warning(f'content of source {task.get_source_id()} task {task.get_task_id()} is none!')
             return task
@@ -42,6 +42,6 @@ class ClassifierProcessor(Processor):
         except Exception as e:
             pass
 
-        task.set_content(content_output)
+        task.set_current_content(content_output)
 
         return task

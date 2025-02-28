@@ -22,10 +22,9 @@ class VideoGenerator(Generator):
         self.current_task = Task(source_id=self.source_id,
                                  task_id=self.task_id,
                                  source_device=self.local_device,
-                                 pipeline=self.task_pipeline,
+                                 dag=self.task_dag,
                                  metadata=self.meta_data,
                                  raw_metadata=self.raw_meta_data,
-                                 content=self.task_content,
                                  hash_data=hash_codes,
                                  file_path=compressed_path
                                  )

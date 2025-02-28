@@ -226,11 +226,11 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         cur_path = self.compress_video(frames)
 
-        tmp_task = Task(source_id=0, task_id=0, source_device='', pipeline=self.task_pipeline)
+        tmp_task = Task(source_id=0, task_id=0, source_device='', dag=self.task_pipeline)
         tmp_task.set_file_path(cur_path)
         response = http_request(url=self.processor_address,
                                 method=NetworkAPIMethod.PROCESSOR_PROCESS_RETURN,
-                                data={'data': Task.serialize(tmp_task)},
+                                data={'data': tmp_task.serialize()},
                                 files={'file': (tmp_task.get_file_path(),
                                                 open(tmp_task.get_file_path(), 'rb'),
                                                 'multipart/form-data')}
@@ -238,7 +238,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         FileOps.remove_data_file(tmp_task)
         if response:
             task = Task.deserialize(response)
-            return task.get_content()
+            return task.get_first_content()
         else:
             return None
 

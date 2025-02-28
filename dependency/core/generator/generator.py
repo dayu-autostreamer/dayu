@@ -9,7 +9,6 @@ from core.lib.network import http_request
 from core.lib.estimation import TimeEstimator
 
 
-# TODO: update pipeline to dag
 class Generator:
     def __init__(self, source_id: int, metadata: dict, task_dag: list, ):
         self.current_task = None
@@ -19,8 +18,6 @@ class Generator:
 
         self.raw_meta_data = metadata.copy()
         self.meta_data = metadata.copy()
-
-        self.task_content = None
 
         self.local_device = NodeInfo.get_local_device()
         self.task_dag = Task.set_execute_device(self.task_dag, self.local_device)
@@ -49,7 +46,7 @@ class Generator:
                                                             is_end=False)
 
     def record_transmit_start_ts(self):
-        self.current_task, _ = TimeEstimator.record_pipeline_ts(self.current_task,
+        self.current_task, _ = TimeEstimator.record_dag_ts(self.current_task,
                                                                 is_end=False,
                                                                 sub_tag='transmit')
 
@@ -66,7 +63,7 @@ class Generator:
         self.record_transmit_start_ts()
         http_request(url=controller_address,
                      method=NetworkAPIMethod.CONTROLLER_TASK,
-                     data={'data': Task.serialize(self.current_task)},
+                     data={'data': self.current_task.serialize()},
                      files={'file': (self.current_task.get_file_path(),
                                      open(self.current_task.get_file_path(), 'rb'),
                                      'multipart/form-data')}

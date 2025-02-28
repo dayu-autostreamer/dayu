@@ -74,10 +74,10 @@ class ProcessorServer:
         FileOps.save_data_file(cur_task, file_data)
 
         new_task = self.processor(cur_task)
-        LOGGER.debug(f'[Processor Return completed] content length: {len(new_task.get_content())}')
+        LOGGER.debug(f'[Processor Return completed] content length: {len(new_task.get_current_content())}')
         FileOps.remove_data_file(cur_task)
         if new_task:
-            return Task.serialize(new_task)
+            return new_task.serialize()
 
     async def query_queue_length(self):
         return self.task_queue.size()
@@ -106,9 +106,9 @@ class ProcessorServer:
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
 
-        task, duration = TimeEstimator.record_pipeline_ts(task, is_end=False, sub_tag='real_execute')
+        task, duration = TimeEstimator.record_dag_ts(task, is_end=False, sub_tag='real_execute')
         new_task = self.processor(task)
-        new_task, duration = TimeEstimator.record_pipeline_ts(new_task, is_end=True, sub_tag='real_execute')
+        new_task, duration = TimeEstimator.record_dag_ts(new_task, is_end=True, sub_tag='real_execute')
         new_task.save_real_execute_time(duration)
 
         LOGGER.debug(f'[Monitor Task] (Process end) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
@@ -119,4 +119,4 @@ class ProcessorServer:
     def send_result_back_to_controller(self, task):
 
         http_request(url=self.controller_address, method=NetworkAPIMethod.CONTROLLER_RETURN,
-                     data={'data': Task.serialize(task)})
+                     data={'data': task.serialize()})
