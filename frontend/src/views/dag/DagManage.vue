@@ -165,7 +165,7 @@
           >
             <div class="dag-title">{{ scope.row.dag_name }}</div>
             <VueFlow
-                class="detail-flow"
+                class="preview-flow"
                 :nodes="scope.row.nodeList"
                 :edges="scope.row.lineList"
                 :view-fit="true"
@@ -934,21 +934,7 @@ input[type="file"] {
   }
 
 
-  .detail-flow {
-    height: 240px;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    min-height: 200px;
-    overflow: hidden !important;
 
-    .vue-flow__viewport {
-      overflow: hidden !important;
-    }
-  }
-
-  .hover-tip {
-    display: none !important;
-  }
 }
 
 @keyframes slide-in {
@@ -1009,6 +995,16 @@ input[type="file"] {
 }
 
 .main-flow .vue-flow__node {
+}
+
+.preview-flow {
+  z-index: 100000;
+  pointer-events: none;
+}
+
+.preview-flow .vue-flow__node {
+  transform: scale(0.8);
+  cursor: default !important;
 }
 
 </style>
