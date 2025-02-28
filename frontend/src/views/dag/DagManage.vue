@@ -208,6 +208,7 @@ import {MiniMap} from "@vue-flow/minimap";
 import useDragAndDrop from "./useDnD";
 import Icon from "./Icon.vue";
 import {useLayout} from "./useLayout";
+import { Connection, Link, Right, MagicStick } from '@element-plus/icons-vue';
 
 export default {
   name: "DagManage",
@@ -230,6 +231,11 @@ export default {
     Controls,
     Icon,
     Panel,
+
+    Connection,
+    Link,
+    Right,
+    MagicStick
   },
   setup() {
     const {onInit, onNodeDragStop, onConnect, fitView} = useVueFlow();
