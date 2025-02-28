@@ -76,11 +76,11 @@
     <div
         class="draw-container"
         v-if="drawing"
-        @drop="onDrop($event, nodeList, nodeMap)"
+        @drop="onDrop($event, flowNodes, flowNodeMap)"
     >
       <VueFlow
-          :nodes="nodeList"
-          :edges="lineList"
+          :nodes="flowNodes"
+          :edges="flowEdges"
           :default-viewport="{ zoom: 1.5 }"
           :min-zoom="1.3"
           :max-zoom="2"
@@ -169,7 +169,6 @@
                 :view-fit="false"
                 class="detail-flow"
             />
-            <div class="hover-tip">Click to expand</div>
           </div>
         </template>
       </el-table-column>
@@ -248,12 +247,10 @@ export default {
 
     const layoutMethods = useLayout();
 
-    // Edge Array
-    const lineList = ref([]);
-    // Node Array
-    const nodeList = ref([]);
-    // node id -> array index
-    const nodeMap = ref({});
+
+    const flowNodes = ref([])
+    const flowEdges = ref([])
+    const flowNodeMap = ref({})
 
     const layoutGraph = async (direction) => {
       try {
@@ -298,9 +295,9 @@ export default {
       isDragOver,
       onDragStart,
       layoutGraph,
-      lineList,
-      nodeList,
-      nodeMap,
+      flowNodes,
+      flowEdges,
+      flowNodeMap,
       ...layoutMethods,
     };
   },
@@ -327,9 +324,9 @@ export default {
 
   methods: {
     flushDrawData() {
-      this.lineList = [];
-      this.nodeList = [];
-      this.nodeMap = {};
+      this.flowNodes = [];
+      this.flowEdges = [];
+      this.flowNodeMap = {};
     },
     draw() {
       this.drawing = !this.drawing;
@@ -372,8 +369,8 @@ export default {
         ElMessage.error("Please fill the dag name");
         return;
       }
-      console.log(this.nodeList);
-      if (this.nodeList === undefined || this.nodeList.length === 0) {
+      console.log(this.flowNodes);
+      if (this.flowNodes === undefined || this.flowNodes.length === 0) {
         ElMessage.error("Please choose services");
         return;
       }
@@ -381,11 +378,11 @@ export default {
       // get graph
       const constructDagGraph = () => {
         const graph = {};
-        for (let i = 0; i < this.nodeList.length; i++) {
+        for (let i = 0; i < this.flowNodes.length; i++) {
           const node = {
-            service_id: this.nodeList[i].id,
-            prev: this.nodeList[i].data.prev,
-            succ: this.nodeList[i].data.succ,
+            service_id: this.flowNodes[i].id,
+            prev: this.flowNodes[i].data.prev,
+            succ: this.flowNodes[i].data.succ,
           };
           graph[node.service_id] = node;
 
@@ -485,12 +482,12 @@ export default {
     async layoutGraph(direction) {
       try {
         const layoutNodes = this.layout(
-            [...this.nodeList],
-            [...this.lineList],
+            [...this.flowNodes],
+            [...this.flowEdges],
             direction
         )
 
-        this.nodeList = [...layoutNodes]
+        this.flowNodes = [...layoutNodes]
 
       } catch (e) {
         console.error("Layout failed:", e);
@@ -629,7 +626,7 @@ export default {
     this.getServiceList();
 
     this.$nextTick(() => {
-      if (this.nodeList.length > 0) {
+      if (this.flowNodes.length > 0) {
         this.layoutGraph('LR')
       }
     })
