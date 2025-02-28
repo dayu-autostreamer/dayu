@@ -110,7 +110,7 @@ class KubeHelper:
     def check_component_pods_exist(namespace):
         config.load_incluster_config()
         v1 = client.CoreV1Api()
-        except_pod_name = ['backend','frontend','datasource']
+        except_pod_name = ['backend','frontend','datasource','redis']
         pods = v1.list_namespaced_pod(namespace)
         for pod in pods.items:
             if not any(except_name in pod.metadata.name for except_name in except_pod_name):
