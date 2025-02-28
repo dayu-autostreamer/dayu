@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from core.lib.common import Context
 
 @dataclass
 class StatsEntry:
@@ -42,7 +43,7 @@ class StatsEntry:
         )
     
 class StatsManager:
-    def __init__(self, time_window: int = 10.0):
+    def __init__(self, time_window: int = 30.0):
         # initialize a deque to store the stats
         from collections import deque
         self.stats = deque()
@@ -59,3 +60,10 @@ class StatsManager:
         # remove the outdated stats
         while self.stats and entry.timestamp - self.stats[0].timestamp > self.time_window:
             self.stats.popleft()
+
+        result_path = Context.get_file_path('stats.csv')
+        # 现有结果写入一个文件, csv格式
+        with open(result_path, 'w') as f:
+            f.write('timestamp,queue_length,cur_model_index,cur_model_accuracy,processing_latency,target_nums,avg_confidence,std_confidence,avg_size,std_size,brightness,contrast\n')
+            for entry in self.stats:
+                f.write(f'{entry.timestamp},{entry.queue_length},{entry.cur_model_index},{entry.cur_model_accuracy},{entry.processing_latency},{entry.target_nums},{entry.avg_confidence},{entry.std_confidence},{entry.avg_size},{entry.std_size},{entry.brightness},{entry.contrast}\n')

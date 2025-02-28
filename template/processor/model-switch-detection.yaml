@@ -9,7 +9,7 @@ pod-template:
       value: >
         {
           'model_type':'yolo', 
-          'switch_type':'random', 
+          'switch_type':'ac', 
           'decision_interval':10, 
           'weights_dir':'yolov5_weights', 
           'model_names': ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x'], 
