@@ -480,6 +480,15 @@ export default {
     hideDagDetail() {
       this.activeDag = null;
     },
+    countEdges(dag) {
+      let count = 0
+      for (const node of Object.values(dag)) {
+        if (node.succ && Array.isArray(node.succ)) {
+          count += node.succ.length
+        }
+      }
+      return count
+    },
 
     parseDag(dag) {
       // Convert Dag data to VueFlow node format
