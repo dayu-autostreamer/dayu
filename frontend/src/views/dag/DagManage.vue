@@ -1,7 +1,7 @@
 <template>
   <div class="outline">
     <div>
-      <h3>Add Application Dags</h3>
+      <h3>Add Application Dag</h3>
     </div>
 
     <div>
@@ -114,7 +114,7 @@
     <div>
       <h3>Current Application Dags</h3>
     </div>
-    <!-- #TODO: Display Dag thumbnails (left 4 future)  -->
+
     <el-table :data="dagList" style="width: 100%">
       <el-table-column label="Dag Name" width="180">
         <template #default="scope">
@@ -123,7 +123,53 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="Dag" width="320"></el-table-column>
+      <el-table-column label="Dag" width="320">
+        <template #default="scope">
+          <div class="dag-preview" @mouseenter="showDagDetail(scope.row)" @mouseleave="hideDagDetail">
+            <!-- thumbnail view -->
+            <div class="mini-dag">
+              <div class="nodes">
+          <span
+              v-for="node in scope.row.dag.begin"
+              :key="node"
+              class="node"
+          >{{ node }}</span>
+              </div>
+              <div class="edges">
+                <el-icon v-for="i in 3" :key="i">
+                  <Right/>
+                </el-icon>
+              </div>
+            </div>
+            <div class="stats">
+              <el-tag type="info" size="small">
+                <el-icon>
+                  <Connection/>
+                </el-icon>
+                {{ Object.keys(scope.row.dag).length - 1 }} nodes
+              </el-tag>
+              <el-tag type="success" size="small">
+                <el-icon>
+                  <Link/>
+                </el-icon>
+                {{ countEdges(scope.row.dag) }} links
+              </el-tag>
+            </div>
+          </div>
+
+          <!-- floating details card -->
+          <div v-if="activeDag === scope.row.dag_id" class="dag-detail-card">
+            <div class="dag-title">{{ scope.row.dag_name }}</div>
+            <VueFlow
+                :nodes="scope.row.nodeList"
+                :edges="scope.row.lineList"
+                :view-fit="false"
+                class="detail-flow"
+            />
+            <div class="hover-tip">Click to expand</div>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="Action">
         <template #default="scope">
           <el-button
@@ -243,8 +289,7 @@ export default {
 
   data() {
     return {
-      services: [
-      ],
+      services: [],
       editInput: "",
       newInputName: "",
       newInputDag: "",
@@ -421,6 +466,45 @@ export default {
       this.services = data;
       console.log(this.services);
     },
+
+    /*methods for dag view*/
+    showDagDetail(row) {
+      this.activeDag = row.dag_id;
+      // Dynamically load Dag details (if not loaded)
+      if (!row.nodeList) {
+        this.$set(row, 'nodeList', this.parseDag(row.dag));
+        this.$set(row, 'lineList', this.generateEdges(row.dag));
+      }
+    },
+
+    hideDagDetail() {
+      this.activeDag = null;
+    },
+
+    parseDag(dag) {
+      // Convert Dag data to VueFlow node format
+      return Object.keys(dag)
+          .filter(k => k !== 'begin')
+          .map(k => ({
+            id: k,
+            position: {x: 0, y: 0},
+            data: {label: k}
+          }));
+    },
+
+    generateEdges(dag) {
+      const edges = [];
+      Object.entries(dag).forEach(([id, node]) => {
+        node.succ?.forEach(target => {
+          edges.push({
+            source: id,
+            target,
+            id: `${id}-${target}`
+          });
+        });
+      });
+      return edges;
+    }
   },
   mounted() {
     // init dag data list
@@ -528,7 +612,6 @@ input[type="file"] {
   padding: 10px;
   list-style-type: none;
 }
-
 
 
 .svc-item {
@@ -656,8 +739,96 @@ input[type="file"] {
 }
 
 @keyframes float {
-  0%, 100% { transform: translateX(-50%) translateY(0); }
-  50% { transform: translateX(-50%) translateY(-4px); }
+  0%, 100% {
+    transform: translateX(-50%) translateY(0);
+  }
+  50% {
+    transform: translateX(-50%) translateY(-4px);
+  }
+}
+
+
+.dag-preview {
+  position: relative;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f8fafc;
+  transition: all 0.3s;
+}
+
+.mini-dag {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+
+  .node {
+    padding: 2px 8px;
+    background: #e2e8f0;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  .edges {
+    color: #94a3b8;
+    display: flex;
+    gap: 2px;
+  }
+}
+
+.stats {
+  display: flex;
+  gap: 8px;
+
+  .el-tag {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+}
+
+
+.dag-detail-card {
+  position: fixed;
+  z-index: 2000;
+  width: 400px;
+  height: 300px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+  padding: 16px;
+  animation: slide-in 0.3s ease;
+
+  .dag-title {
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: #2d3748;
+  }
+
+  .detail-flow {
+    height: 240px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+  }
+
+  .hover-tip {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    font-size: 12px;
+    color: #94a3b8;
+  }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 </style>

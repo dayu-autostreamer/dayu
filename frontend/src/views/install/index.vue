@@ -4,7 +4,7 @@
   <div class="home-container layout-pd">
 
     <el-row :gutter="15" class="home-card-two mb15">
-      <el-col :xs="24" :sm="24" :md="9" :lg="9" :xl="9">
+      <el-col :xs="24" :sm="24" :md="9" :lg="9" :xl="14">
         <div class="home-card-item">
           <div style="height: 100%">
             <div class="flex-margin flex w100">
@@ -15,7 +15,7 @@
           </div>
         </div>
       </el-col>
-      <el-col :xs="24" :sm="24" :md="15" :lg="15" :xl="15">
+      <el-col :xs="24" :sm="24" :md="15" :lg="15" :xl="10">
         <div class="home-card-item">
           <div style="height: 100%">
             <div class="flex-margin flex w100">
