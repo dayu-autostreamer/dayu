@@ -150,7 +150,6 @@ class TemplateHelper:
         return docs_list
 
     # TODO: 如何选择哪个节点作为数据源？
-    #       第一次迭代：随机选择数据源的节点集的一个节点作为generator的节点集 完成
     #       想一下和scheduler的交互接口，第二次迭代不需测试 测试完之后给什么参数拿哪些参数node_list+数据源+一些额外信息
     #       第二次迭代考虑获取scheduler对generator所在节点的选择决策
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
@@ -164,7 +163,6 @@ class TemplateHelper:
             new_edge_worker = copy.deepcopy(edge_worker_template)
             source = source_info['source']
             node_set = source_info['node_set']
-            # 随机选择其中一个节点
             node = random.choice(node_set)
             dag = source_info['dag']
 
@@ -202,7 +200,6 @@ class TemplateHelper:
 
 
     def finetune_controller_yaml(self, yaml_doc, edge_nodes, cloud_node):
-        LOGGER.info(f"微调controller yaml {edge_nodes}")
 
         yaml_doc = self.fill_template(yaml_doc, 'controller')
 
@@ -279,8 +276,7 @@ class TemplateHelper:
         return yaml_doc
 
 
-    # TODO: 第一次迭代，采用默认方式，即每个数据源对应的节点上，安装此dag对应的全部逻辑节点
-    #       测试完后，思考对scheduler发送什么请求，获取什么参数（比如每个物理节点部署什么节点，最后固化到yaml中） 以指导自己的部署
+    # TODO: 测试完后，思考对scheduler发送什么请求，获取什么参数（比如每个物理节点部署什么节点，最后固化到yaml中） 以指导自己的部署
     #       下一次迭代考虑在此处获取scheduler的部署决策
     def finetune_processor_yaml(self, service_dict, cloud_node):
         yaml_docs = []

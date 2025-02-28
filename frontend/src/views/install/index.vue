@@ -49,10 +49,10 @@ export default {
 
       loading: false,
 
-      // 视频流信息
+      // video source
       info: null,
 
-      // 已选择的视频流相关
+      // selected video source label
       selected_label: null,
 
       state: null,
