@@ -386,7 +386,7 @@ export default {
           };
           graph[node.service_id] = node;
 
-          if (this.nodeList[i].data.prev.length === 0) {
+          if (this.flowNodes[i].data.prev.length === 0) {
             if (graph.begin === undefined) {
               graph.begin = [];
             }
