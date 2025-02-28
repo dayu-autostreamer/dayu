@@ -426,8 +426,8 @@ export default {
             });
           })
           .catch((error) => {
-            // console.error('Error fetching data:', error);
-            console.error("Error fetching data");
+            console.error('Error fetching data:', error);
+            // console.error("Error fetching data");
           });
     },
     fetchData() {
