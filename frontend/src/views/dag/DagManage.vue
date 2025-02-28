@@ -125,7 +125,9 @@
       </el-table-column>
       <el-table-column label="Dag" width="320">
         <template #default="scope">
-          <div class="dag-preview" @mouseenter="showDagDetail(scope.row)" @mouseleave="hideDagDetail">
+          <div class="dag-preview"
+               @mouseenter="showDagDetail(scope.row, $event)"
+               @mouseleave="hideDagDetail">
             <!-- thumbnail view -->
             <div class="mini-dag">
               <div class="nodes">
@@ -494,27 +496,40 @@ export default {
     },
 
     /*methods for dag view*/
+
+
     async showDagDetail(row, event) {
-      if (!row) return;
+      if (!row || !event) {
+        console.warn('Invalid parameters');
+        return;
+      }
 
-      this.activeDag = row.dag_id;
-      this.hoverPosition = {
-        x: event.clientX + 20,
-        y: event.clientY
-      };
+      try {
+        this.activeDag = row.dag_id;
 
-      if (!row.nodeList) {
-        try {
-          let nodeList = this.parseDag(row.dag);
-          let lineList = this.generateEdges(row.dag);
+        const baseX = event.clientX || 0;
+        const baseY = event.clientY || 0;
 
-          nodeList = this.layout(nodeList, lineList, 'LR');
+        this.hoverPosition = {
+          x: baseX + 20,
+          y: baseY - 50
+        };
 
-          row.nodeList = [...nodeList];
-          row.lineList = [...lineList];
-        } catch (error) {
-          console.error('Error parsing DAG:', error);
+        if (!row.nodeList) {
+          const nodeList = this.parseDag(row.dag);
+          const lineList = this.generateEdges(row.dag);
+
+          // 应用布局算法
+          const layoutNodes = this.layout(nodeList, lineList, 'LR');
+
+          Object.assign(row, {
+            nodeList: layoutNodes,
+            lineList
+          });
         }
+      } catch (error) {
+        console.error('DAG detail error:', error);
+        this.activeDag = null;
       }
     },
 
