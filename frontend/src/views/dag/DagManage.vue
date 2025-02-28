@@ -158,7 +158,7 @@
           </div>
 
           <!-- floating details card -->
-          <div v-if="activeDag === scope.row.dag_id" class="dag-detail-card">
+          <div v-if="activeDag !== null && activeDag === scope.row.dag_id" class="dag-detail-card">
             <div class="dag-title">{{ scope.row.dag_name }}</div>
             <VueFlow
                 :nodes="scope.row.nodeList"
@@ -307,6 +307,8 @@ export default {
       // drawing flag
       drawing: false,
       dagList: [],
+
+      activeDag: null,
     };
   },
 
@@ -476,14 +478,23 @@ export default {
     /*methods for dag view*/
 
     showDagDetail(row) {
+      if (!row) return;
+
       this.activeDag = row.dag_id;
       // // Dynamically load Dag details (if not loaded)
       if (!row.nodeList) {
 
-        Object.assign(row, {
-          nodeList: this.parseDag(row.dag),
-          lineList: this.generateEdges(row.dag)
-        });
+        try {
+          const nodeList = this.parseDag(row.dag);
+          const lineList = this.generateEdges(row.dag);
+
+          Object.assign(row, {
+            nodeList,
+            lineList
+          });
+        } catch (error) {
+          console.error('Error parsing DAG:', error);
+        }
 
       }
     },
