@@ -208,7 +208,7 @@ import {MiniMap} from "@vue-flow/minimap";
 import useDragAndDrop from "./useDnD";
 import Icon from "./Icon.vue";
 import {useLayout} from "./useLayout";
-import { Connection, Link, Right, MagicStick } from '@element-plus/icons-vue';
+import {Connection, Link, Right, MagicStick} from '@element-plus/icons-vue';
 
 export default {
   name: "DagManage",
@@ -474,12 +474,17 @@ export default {
     },
 
     /*methods for dag view*/
+
     showDagDetail(row) {
       this.activeDag = row.dag_id;
-      // Dynamically load Dag details (if not loaded)
+      // // Dynamically load Dag details (if not loaded)
       if (!row.nodeList) {
-        this.$set(row, 'nodeList', this.parseDag(row.dag));
-        this.$set(row, 'lineList', this.generateEdges(row.dag));
+
+        Object.assign(row, {
+          nodeList: this.parseDag(row.dag),
+          lineList: this.generateEdges(row.dag)
+        });
+
       }
     },
 
