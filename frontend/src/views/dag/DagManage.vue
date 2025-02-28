@@ -476,7 +476,6 @@ export default {
     },
 
     /*methods for dag view*/
-
     showDagDetail(row) {
       if (!row) return;
 
@@ -487,6 +486,9 @@ export default {
         try {
           const nodeList = this.parseDag(row.dag);
           const lineList = this.generateEdges(row.dag);
+
+          console.log('nodeList:', nodeList)
+          console.log('lineList', lineList)
 
           Object.assign(row, {
             nodeList,
