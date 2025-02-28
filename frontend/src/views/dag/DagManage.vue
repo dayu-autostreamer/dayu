@@ -79,6 +79,7 @@
         @drop="onDrop($event, flowNodes, flowNodeMap)"
     >
       <VueFlow
+          class="main-flow"
           :nodes="flowNodes"
           :edges="flowEdges"
           :default-viewport="{ zoom: 1.5 }"
@@ -164,10 +165,12 @@
           >
             <div class="dag-title">{{ scope.row.dag_name }}</div>
             <VueFlow
+                class="detail-flow"
                 :nodes="scope.row.nodeList"
                 :edges="scope.row.lineList"
                 :view-fit="true"
-                class="detail-flow"
+                :draggable="false"
+
             />
           </div>
         </template>
@@ -930,19 +933,17 @@ input[type="file"] {
     color: #2d3748;
   }
 
-  .detail-flow {
-    overflow: hidden !important;
-
-    .vue-flow__viewport {
-      overflow: hidden !important;
-    }
-  }
 
   .detail-flow {
     height: 240px;
     border: 1px solid #e2e8f0;
     border-radius: 8px;
     min-height: 200px;
+    overflow: hidden !important;
+
+    .vue-flow__viewport {
+      overflow: hidden !important;
+    }
   }
 
   .hover-tip {
@@ -1005,6 +1006,9 @@ input[type="file"] {
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.main-flow .vue-flow__node {
 }
 
 </style>
