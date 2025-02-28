@@ -73,7 +73,7 @@
         style="width: 58%; margin-top: 20px; margin-left: 4%"
         v-model="source.node_selected"
         @change="updateNodeSelection(index, source, source.node_selected)"
-        placeholder="Bind edge nodes(Default bind all nodes)"
+        placeholder="Bind edge nodes (default all nodes)"
         multiple
       >
         <el-option
