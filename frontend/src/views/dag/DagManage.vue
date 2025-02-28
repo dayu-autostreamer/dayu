@@ -512,8 +512,7 @@ export default {
         console.error("Layout failed:", e);
         ElMessage.error("DAG layout error");
       }
-    }
-  },
+    },
 
   /*methods for dag view*/
   async showDagDetail(row, event) {
