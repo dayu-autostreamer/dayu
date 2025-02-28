@@ -261,6 +261,21 @@ export default {
     // node id -> array index
     const nodeMap = ref({});
 
+    const layoutGraph = async (direction) => {
+      try {
+        const layoutNodes = layout(
+            [...nodeList.value],
+            [...lineList.value],
+            direction
+        )
+        nodeList.value = layoutNodes
+        await nextTick()
+        fitView()
+      } catch (e) {
+        console.error("Layout failed:", e)
+        ElMessage.error("DAG layout error")
+      }
+    }
 
     // life cycle callback
     onInit((vueFlowInstance) => {
@@ -323,14 +338,7 @@ export default {
       this.nodeMap = {};
     },
     draw() {
-      // show draw area
-      if (!this.drawing) {
-        this.drawing = !this.drawing;
-      } else {
-        // flush draw state
-        this.drawing = !this.drawing;
-        t;
-      }
+      this.drawing = !this.drawing;
     },
     clearInput() {
       this.newInputName = "";
@@ -482,10 +490,9 @@ export default {
 
     async layoutGraph(direction) {
       try {
-
         const layoutNodes = this.layout(
-            this.nodeList,
-            this.lineList,
+            [...this.nodeList],
+            [...this.lineList],
             direction
         )
 
@@ -510,10 +517,23 @@ export default {
         const baseX = event.clientX || 0;
         const baseY = event.clientY || 0;
 
-        this.hoverPosition = {
-          x: baseX + 20,
-          y: baseY - 50
-        };
+        const SAFE_MARGIN = 20;
+        const cardWidth = 400;
+        const cardHeight = 300;
+
+        let posX = baseX + 20;
+        let posY = baseY - 50;
+
+        if (posX + cardWidth > window.innerWidth) {
+          posX = window.innerWidth - cardWidth - SAFE_MARGIN;
+        }
+
+        if (posY + cardHeight > window.innerHeight) {
+          posY = window.innerHeight - cardHeight - SAFE_MARGIN;
+        }
+
+        this.hoverPosition = {x: posX, y: posY};
+
 
         if (!row.nodeList) {
           const nodeList = this.parseDag(row.dag);
@@ -896,6 +916,10 @@ input[type="file"] {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
   padding: 16px;
   animation: slide-in 0.3s ease;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow: auto;
+  transition: all 0.3s ease;
 
   .dag-title {
     font-weight: 600;
@@ -907,6 +931,7 @@ input[type="file"] {
     height: 240px;
     border: 1px solid #e2e8f0;
     border-radius: 8px;
+    min-height: 200px;
   }
 
   .hover-tip {
