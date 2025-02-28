@@ -115,7 +115,6 @@ export default {
     return {
       selectedSources: [
         // { id: 0, name: "s1", dag_selected: "", node_selected: [] },
-        // { id: 1, name: "s2", dag_selected: "", node_selected: [] },
       ],
       // imageList: [],
       selectedDatasourceIndex: null,
@@ -123,7 +122,7 @@ export default {
 
       selectedUrls: {},
       successMessage: "",
-      // installed: install_state.status, // install:已安装, uninstall:未安装
+      // installed: install_state.status
       stageMessage: null,
       loading: false,
     };
@@ -133,10 +132,8 @@ export default {
     const installed = ref(null);
     const policyOptions = ref(null);
     const datasourceOptions = ref(null);
-    // 临时数据
     const dagOptions = ref([
       // { dag_name: "233dag", dag_id: "233dag" },
-      // { dag_name: "244dag", dag_id: "244dag" },
     ]);
     const nodeOptions = ref([]);
     const getTask = async () => {
@@ -274,7 +271,7 @@ export default {
       const policy_id = this.policyOptions[policy_index].policy_id;
 
       console.log(this.selectedSources);
-      // 如果没有指定就全选
+      // if user assigned none then add all.
       for (let i = 0; i < this.selectedSources.length; i++) {
         if (this.selectedSources[i].node_selected.length === 0) {
           this.selectedSources.node_selected = nodeOptions;

@@ -81,7 +81,7 @@
       </ElRow>
     </div>
 
-    <!-- 作图区域 -->
+    <!-- drawing area -->
     <div
       class="draw-container"
       v-if="drawing"
@@ -121,7 +121,6 @@
       <el-table-column label="Dag Name" width="180">
         <template #default="scope">
           <div style="display: flex; align-items: center">
-            <!-- <el-icon><timer /></el-icon> -->
             <span style="margin-left: 10px">{{ scope.row.dag_name }}</span>
           </div>
         </template>
@@ -251,16 +250,6 @@ export default {
           name: "car detection",
           description: "I am car_detection",
         },
-        {
-          id: "plate_detection",
-          name: "plate detection",
-          description: "I amd plate_detection",
-        },
-        {
-          id: "plate detection(2333333333333333333333)",
-          name: "plate_detection(2333333333333333333333)",
-          description: "I amd plate_detection2333333333333",
-        },
       ],
       editInput: "",
       newInputName: "",
@@ -272,57 +261,7 @@ export default {
 
       // drawing flag
       drawing: false,
-      dagList: [
-        {
-          dag_id: "1",
-          dag_name: "233",
-          nodeList: [
-            {
-              id: "car_detection",
-              type: "",
-              position: {
-                x: 127.77777099609375,
-                y: 72.88887532552083,
-              },
-              style: {
-                backgroundColor: "#578FCA",
-              },
-              data: {
-                label: "car_detection",
-                prev: [],
-                succ: [],
-                service_id: "car_detection",
-              },
-            },
-            {
-              id: "plate_detection",
-              type: "",
-              position: {
-                x: 288.44443766276044,
-                y: 178.88887532552084,
-              },
-              style: {
-                backgroundColor: "#578FCA",
-              },
-              data: {
-                label: "plate_detection",
-                prev: [],
-                succ: [],
-                service_id: "plate_detection",
-              },
-            },
-          ],
-          lineList: [
-            {
-              id: "car_detection-plate_detection",
-              source: "car_detection",
-              target: "plate_detection",
-              label: "",
-              markerEnd: "arrowclosed",
-            },
-          ],
-        },
-      ],
+      dagList: [],
     };
   },
 
@@ -420,7 +359,6 @@ export default {
         .then((response) => response.json())
         .then((data) => {
           // update dagList
-          console.log("dagList如下所示", data);
           this.dagList = data;
           for (let i = 0; i < this.dagList.length; i++) {
             this.dagList[i].nodeList = this.layout(
@@ -467,13 +405,11 @@ export default {
       })
         .then((response) => response.json())
         .then((data) => {
-          console.log("完成update请求");
           const state = data["state"];
           const msg = data["msg"];
           console.log(state);
           this.showMsg(state, msg);
           if (state === "success") {
-            console.log("开始获取dagList");
             this.getDagList();
             this.newInputName = "";
             this.newInputDag = "";
@@ -562,12 +498,6 @@ input[type="file"] {
   border: 1px solid #ccc;
 }
 
-.draw-container svg {
-  width: 100%;
-  height: 100%;
-  pointer-events: none; /* 防止 SVG 阻挡鼠标事件 */
-}
-
 .compact-container {
   width: 100%;
   height: 100px;
@@ -599,7 +529,7 @@ input[type="file"] {
 .svc-container {
   display: flex;
   flex-wrap: wrap;
-  padding: 3px; /* 可根据需要调整 */
+  padding: 3px; 
   list-style-type: none;
 }
 
@@ -609,9 +539,9 @@ input[type="file"] {
 
 .svc-item {
   display: inline-block;
-  margin: 2px; /* 可根据需要调整 */
-  padding: 2px; /* 可根据需要调整 */
-  border-radius: 10px; /* 圆角矩形 */
+  margin: 2px; 
+  padding: 2px; 
+  border-radius: 10px; 
 }
 
 .vue-flow__node-input {
@@ -620,8 +550,8 @@ input[type="file"] {
 }
 
 .description {
-  white-space: pre-wrap; /* 保留换行符并自动换行 */
-  word-wrap: break-word; /* 长单词自动换行 */
+  white-space: pre-wrap; 
+  word-wrap: break-word; 
 }
 
 .el-button {
