@@ -255,11 +255,11 @@ export default {
     const layoutGraph = async (direction) => {
       try {
         const layoutNodes = layout(
-            [...nodeList.value],
-            [...lineList.value],
+            [...flowNodes.value],
+            [...flowEdges.value],
             direction
         )
-        nodeList.value = layoutNodes
+        flowNodes.value = layoutNodes
         await nextTick()
         fitView()
       } catch (e) {
@@ -283,9 +283,9 @@ export default {
         label: "",
         markerEnd: MarkerType.ArrowClosed,
       };
-      lineList.value.push(line);
-      nodeMap.value[connection.source].data.succ.push(connection.target);
-      nodeMap.value[connection.target].data.prev.push(connection.source);
+      flowEdges.value.push(line);
+      flowNodeMap.value[connection.source].data.succ.push(connection.target);
+      flowNodeMap.value[connection.target].data.prev.push(connection.source);
     });
 
     return {
