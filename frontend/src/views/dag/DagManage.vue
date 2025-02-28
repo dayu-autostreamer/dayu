@@ -158,7 +158,14 @@
           </div>
 
           <!-- floating details card -->
-          <div v-if="activeDag !== null && activeDag === scope.row.dag_id" class="dag-detail-card">
+          <div
+              v-if="activeDag === scope.row.dag_id"
+              class="dag-detail-card"
+              :style="{
+                top: hoverPosition.y + 'px',
+                left: hoverPosition.x + 'px'
+              }"
+          >
             <div class="dag-title">{{ scope.row.dag_name }}</div>
             <VueFlow
                 :nodes="scope.row.nodeList"
@@ -254,10 +261,20 @@ export default {
 
     // Using Dagre algorithm to beautify dag
     async function layoutGraph(direction) {
-      nodeList.value = layout(nodeList.value, lineList.value, direction);
-      nextTick(() => {
-        fitView();
-      });
+      try {
+        const {nodes, edges} = await this.layout(
+            this.nodeList,
+            this.lineList,
+            direction
+        );
+        this.nodeList = [...nodes];
+        this.lineList = [...edges];
+        nextTick(() => {
+          fitView();
+        });
+      } catch (e) {
+        console.error('Layout failed:', e);
+      }
     }
 
     // life cycle callback
@@ -309,6 +326,7 @@ export default {
       dagList: [],
 
       activeDag: null,
+      hoverPosition: {x: 0, y: 0},
     };
   },
 
@@ -476,28 +494,27 @@ export default {
     },
 
     /*methods for dag view*/
-    showDagDetail(row) {
+    async showDagDetail(row, event) {
       if (!row) return;
 
       this.activeDag = row.dag_id;
-      // // Dynamically load Dag details (if not loaded)
+      this.hoverPosition = {
+        x: event.clientX + 20,
+        y: event.clientY
+      };
+
       if (!row.nodeList) {
-
         try {
-          const nodeList = this.parseDag(row.dag);
-          const lineList = this.generateEdges(row.dag);
+          let nodeList = this.parseDag(row.dag);
+          let lineList = this.generateEdges(row.dag);
 
-          console.log('nodeList:', nodeList)
-          console.log('lineList', lineList)
+          nodeList = this.layout(nodeList, lineList, 'LR');
 
-          Object.assign(row, {
-            nodeList,
-            lineList
-          });
+          row.nodeList = [...nodeList];
+          row.lineList = [...lineList];
         } catch (error) {
           console.error('Error parsing DAG:', error);
         }
-
       }
     },
 
@@ -526,17 +543,17 @@ export default {
 
 
     parseDag(dag) {
+      // 只生成基础节点数据，不设置具体位置
       return Object.keys(dag)
           .filter(k => k !== 'begin')
-          .map((key, index) => ({
+          .map(key => ({
             id: key,
-            position: {x: index * 200, y: 0},
             data: {label: key},
             style: {
               backgroundColor: this.randomColor(),
               border: '1px solid #e2e8f0'
             }
-          }))
+          }));
     },
 
 
@@ -880,6 +897,25 @@ input[type="file"] {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+.dag-detail-card .vue-flow__node {
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.dag-detail-card .vue-flow__edge-path {
+  stroke: #64748b;
+  stroke-width: 2;
+}
+
+.mini-dag .node {
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 </style>
