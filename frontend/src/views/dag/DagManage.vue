@@ -132,7 +132,7 @@
             <div class="mini-dag">
               <div class="nodes">
                 <span class="first-service">
-                  {{ scope.row.dag.begin?.[0] || 'No Service' }}
+                  {{ scope.row.dagList.begin?.[0].name || 'No Service' }}
                 </span>
               </div>
 
@@ -908,7 +908,7 @@ input[type="file"] {
   height: 300px;
   right: 120px;
   left: auto !important;
-  top: 50% !important;
+  top: 40% !important;
   transform: translate(-20px, -50%) !important;
   background: white;
   border-radius: 12px;
