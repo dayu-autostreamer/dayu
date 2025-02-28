@@ -82,7 +82,7 @@
           :nodes="flowNodes"
           :edges="flowEdges"
           :default-viewport="{ zoom: 1.5 }"
-          :min-zoom="1.3"
+          :min-zoom="1"
           :max-zoom="2"
           @dragover="onDragOver"
           @dragleave="onDragLeave"
@@ -166,7 +166,7 @@
             <VueFlow
                 :nodes="scope.row.nodeList"
                 :edges="scope.row.lineList"
-                :view-fit="false"
+                :view-fit="true"
                 class="detail-flow"
             />
           </div>

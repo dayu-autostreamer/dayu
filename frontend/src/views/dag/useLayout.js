@@ -21,8 +21,12 @@ export function useLayout() {
         previousDirection.value = direction
 
         nodes.forEach(node => {
-            const dimensions = node.dimensions || {width: 200, height: 50}
-            dagreGraph.setNode(node.id, dimensions)
+            const graphNode = findNode(node.id)
+
+            dagreGraph.setNode(node.id, {
+                width: graphNode.dimensions.width || 150,
+                height: graphNode.dimensions.height || 50
+            })
         })
         if (Array.isArray(edges)) {
             edges.forEach(edge => {
@@ -41,15 +45,12 @@ export function useLayout() {
 
         return nodes.map(node => {
             try {
-                const pos = dagreGraph.node(node.id) || {x: 0, y: 0}
+                const nodeWithPosition = dagreGraph.node(node.id)
                 return {
                     ...node,
                     targetPosition: isHorizontal ? Position.Left : Position.Top,
                     sourcePosition: isHorizontal ? Position.Right : Position.Bottom,
-                    position: {
-                        x: pos.x - (node.dimensions?.width || 200) / 2,
-                        y: pos.y - (node.dimensions?.height || 50) / 2
-                    }
+                    position: {x: nodeWithPosition.x, y: nodeWithPosition.y},
                 }
             } catch {
                 return node
