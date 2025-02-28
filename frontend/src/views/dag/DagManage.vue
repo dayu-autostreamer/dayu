@@ -131,21 +131,11 @@
             <!-- thumbnail view -->
             <div class="mini-dag">
               <div class="nodes">
-          <span
-              v-for="node in scope.row.dag.begin"
-              :key="node"
-              class="node"
-          >{{ node }}</span>
+                <span class="first-service">
+                  {{ scope.row.dag.begin?.[0] || 'No Service' }}
+                </span>
               </div>
-              <div class="edges">
-                <template v-if="scope.row.dag?.length > 0">
-                  <el-icon v-for="(edge, idx) in Math.min(3, scope.row.dag.length)" :key="idx">
-                    <Right/>
-                  </el-icon>
-                  <span v-if="scope.row.dag.edges.length > 3">+{{ scope.row.dag.edges.length - 3 }}</span>
-                </template>
-                <span v-else class="no-edges">-</span>
-              </div>
+
             </div>
             <div class="stats">
               <el-tag type="info" size="small">
@@ -912,13 +902,14 @@ input[type="file"] {
 
 .dag-detail-card {
   position: fixed;
-  z-index: 9999 !important;
+  z-index: 99999 !important;
   pointer-events: none;
   width: 400px;
   height: 300px;
   right: 120px;
   left: auto !important;
-  transform: translateX(0) !important;
+  top: 50% !important;
+  transform: translate(-20px, -50%) !important;
   background: white;
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
@@ -936,6 +927,14 @@ input[type="file"] {
   }
 
   .detail-flow {
+    overflow: hidden !important;
+
+    .vue-flow__viewport {
+      overflow: hidden !important;
+    }
+  }
+
+  .detail-flow {
     height: 240px;
     border: 1px solid #e2e8f0;
     border-radius: 8px;
@@ -943,12 +942,7 @@ input[type="file"] {
   }
 
   .hover-tip {
-    position: absolute;
-    bottom: 8px;
-    right: 8px;
-    font-size: 12px;
-    color: #94a3b8;
-    pointer-events: auto;
+    display: none !important;
   }
 }
 
@@ -994,8 +988,19 @@ input[type="file"] {
     }
   }
 }
-.el-table__body tr.hover-row>td.el-table__cell {
+
+.el-table__body tr.hover-row > td {
   z-index: auto !important;
+}
+
+.first-service {
+  background: #e2e8f0;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 </style>
