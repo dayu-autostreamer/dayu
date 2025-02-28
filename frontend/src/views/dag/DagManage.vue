@@ -514,16 +514,16 @@ export default {
       return count
     },
 
-    parseDag(dag) {
-      // Convert Dag data to VueFlow node format
-      return Object.keys(dag)
-          .filter(k => k !== 'begin')
-          .map(k => ({
-            id: k,
-            position: {x: 0, y: 0},
-            data: {label: k}
-          }));
-    },
+  parseDag(dag) {
+    return Object.keys(dag)
+      .filter(k => k !== 'begin')
+      .map((key, index) => ({
+        id: key,
+        position: { x: index * 200, y: 0 },
+        data: { label: key },
+        style: { backgroundColor: this.randomColor() }
+      }))
+  },
 
     generateEdges(dag) {
       const edges = [];
