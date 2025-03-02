@@ -154,7 +154,6 @@ class TemplateHelper:
     #       第二次迭代考虑获取scheduler对generator所在节点的选择决策
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
         # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
-        LOGGER.info(f"微调generator yaml {source_deploy}")
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
         edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
@@ -170,12 +169,12 @@ class TemplateHelper:
 
             container = new_edge_worker['template']['spec']['containers'][0]
 
-            DAG_ENV={}
+            DAG_ENV = {}
             for key in dag.keys():
                 temp_node = {}
                 if key != 'begin':
-                    temp_node['service']={'service_name': key}
-                    temp_node['next_nodes']=dag[key]['succ']
+                    temp_node['service'] = {'service_name': key}
+                    temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
 
             container['env'].extend(
@@ -198,7 +197,6 @@ class TemplateHelper:
 
         return yaml_doc
 
-
     def finetune_controller_yaml(self, yaml_doc, edge_nodes, cloud_node):
 
         yaml_doc = self.fill_template(yaml_doc, 'controller')
@@ -220,7 +218,6 @@ class TemplateHelper:
 
         return yaml_doc
 
-
     def finetune_distributor_yaml(self, yaml_doc, cloud_node):
         yaml_doc = self.fill_template(yaml_doc, 'distributor')
 
@@ -232,7 +229,6 @@ class TemplateHelper:
 
         return yaml_doc
 
-
     def finetune_scheduler_yaml(self, yaml_doc, cloud_node):
         yaml_doc = self.fill_template(yaml_doc, 'scheduler')
 
@@ -243,7 +239,6 @@ class TemplateHelper:
         yaml_doc['spec']['cloudWorker'] = new_cloud_worker
 
         return yaml_doc
-
 
     def finetune_monitor_yaml(self, yaml_doc, edge_nodes, cloud_node):
         yaml_doc = self.fill_template(yaml_doc, 'monitor')
@@ -275,7 +270,6 @@ class TemplateHelper:
 
         return yaml_doc
 
-
     # TODO: 测试完后，思考对scheduler发送什么请求，获取什么参数（比如每个物理节点部署什么节点，最后固化到yaml中） 以指导自己的部署
     #       下一次迭代考虑在此处获取scheduler的部署决策
     def finetune_processor_yaml(self, service_dict, cloud_node):
@@ -305,7 +299,6 @@ class TemplateHelper:
             yaml_docs.append(yaml_doc)
 
         return yaml_docs
-
 
     def process_image(self, image: str) -> str:
         """
@@ -344,11 +337,9 @@ class TemplateHelper:
         full_image = f"{registry}/{repository}/{image_name}:{tag}"
         return full_image
 
-
     def prepare_file_path(self, file_path: str) -> str:
         file_prefix = self.load_base_info()['default-file-mount-prefix']
         return os.path.join(file_prefix, file_path, "")
-
 
     @staticmethod
     def get_all_selected_edge_nodes(yaml_dict):

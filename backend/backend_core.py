@@ -195,13 +195,12 @@ class BackendCore:
     def check_simulation_datasource(self):
         return KubeHelper.check_pod_name('datasource', namespace=self.namespace)
 
-
     def check_dag(self, dag, modal='frame'):
 
         def topo_sort(graph, modal):
             in_degree = {}
             for node in graph.keys():
-                if node!='begin':
+                if node != 'begin':
                     in_degree[node] = len(graph[node]['prev'])
             queue = graph['begin']
             topo_order = []
