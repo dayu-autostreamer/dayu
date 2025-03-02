@@ -235,11 +235,13 @@ class BackendServer:
         :return:
         """
         self.server.parse_base_info()
+        service_dict = {}
         services = self.server.services
         for service in services:
             service['description'] = (service['description'] + ' (in:' + service['input']
                                       + ', out: ' + service['output'] + ')')
-        return self.server.services
+            service_dict[service['id']] = service if service['id'] not in service_dict else service_dict[service['id']]
+        return [service_dict[service_id] for service_id in service_dict]
 
     # 更新
     async def update_dag_workflows(self, data=Body(...)):
