@@ -23,12 +23,26 @@ def _import_cmab_switch_module():
         from .switch_module.cmab_switch import CMABSwitch
     return CMABSwitch
 
-def _import_acmab_switch_module():
+def _import_cmab_ts_switch_module():
+    if __name__ == '__main__':
+        from switch_module.cmab_ts_switch import CMABTSSwitch
+    else:
+        from .switch_module.cmab_ts_switch import CMABTSSwitch
+    return CMABTSSwitch
+
+def _import_ac_switch_module():
     if __name__ == '__main__':
         from switch_module.ac_switch import ACSwitch
     else:
         from .switch_module.ac_switch import ACSwitch
     return ACSwitch
+
+def _import_ac_lstm_switch_module():
+    if __name__ == '__main__':
+        from switch_module.ac_lstm_switch import LSTMACSwitch
+    else:
+        from .switch_module.ac_lstm_switch import LSTMACSwitch
+    return LSTMACSwitch
 
 def _import_yolo_inference_module():
     if __name__ == '__main__':
@@ -74,10 +88,15 @@ class ModelSwitchDetection:
         elif switch_type == 'cmab':
             CMABSwitch = _import_cmab_switch_module()
             self.switcher = CMABSwitch(decision_interval, self.detector)
+        elif switch_type == 'cmab_ts':
+            CMABTSSwitch = _import_cmab_ts_switch_module()
+            self.switcher = CMABTSSwitch(decision_interval, self.detector)
         elif switch_type == 'ac':
-            ACSwitch = _import_acmab_switch_module()
+            ACSwitch = _import_ac_switch_module()
             self.switcher = ACSwitch(decision_interval, self.detector)
-
+        elif switch_type == 'ac_lstm':
+            LSTMACSwitch = _import_ac_lstm_switch_module()
+            self.switcher = LSTMACSwitch(decision_interval, self.detector)
         else:
             raise ValueError('Invalid switch type')
 
