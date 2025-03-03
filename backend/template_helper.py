@@ -152,14 +152,6 @@ class TemplateHelper:
             docs_list.append(self.finetune_monitor_yaml(yaml_dict['monitor'], edge_nodes, cloud_node))
         if not scopes or 'processor' in scopes:
             docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node))
-        docs_list = [
-            self.finetune_generator_yaml(yaml_dict['generator'], source_deploy),
-            self.finetune_controller_yaml(yaml_dict['controller'], edge_nodes, cloud_node),
-            self.finetune_distributor_yaml(yaml_dict['distributor'], cloud_node),
-            self.finetune_scheduler_yaml(yaml_dict['scheduler'], cloud_node),
-            self.finetune_monitor_yaml(yaml_dict['monitor'], edge_nodes, cloud_node),
-            *self.finetune_processor_yaml(yaml_dict['processor'], cloud_node)
-        ]
 
         return docs_list
 
