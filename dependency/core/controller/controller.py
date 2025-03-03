@@ -6,7 +6,7 @@ from core.lib.common import LOGGER
 from core.lib.common import Context
 from core.lib.common import SystemConstant
 from core.lib.content import Task
-from core.lib.network import get_merge_address
+from core.lib.network import merge_address
 from core.lib.network import NodeInfo, PortInfo
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 
@@ -21,13 +21,13 @@ class Controller:
 
         self.is_display = Context.get_parameter('DISPLAY', direct=False)
 
-        self.service_ports_dict = PortInfo.get_service_ports_dict()
+        self.service_ports_dict = None
         self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
         self.distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
         self.distributor_hostname = NodeInfo.get_cloud_node()
-        self.distribute_address = get_merge_address(NodeInfo.hostname2ip(self.distributor_hostname),
-                                                    port=self.distributor_port,
-                                                    path=NetworkAPIPath.DISTRIBUTOR_DISTRIBUTE)
+        self.distribute_address = merge_address(NodeInfo.hostname2ip(self.distributor_hostname),
+                                                port=self.distributor_port,
+                                                path=NetworkAPIPath.DISTRIBUTOR_DISTRIBUTE)
 
         self.local_device = NodeInfo.get_local_device()
 
@@ -37,9 +37,9 @@ class Controller:
     def send_task_to_other_device(self, task: Task = None, device: str = ''):
         cur_task = task or self.cur_task
         self.record_transmit_ts(task=cur_task, is_end=False)
-        controller_address = get_merge_address(NodeInfo.hostname2ip(device),
-                                               port=self.controller_port,
-                                               path=NetworkAPIPath.CONTROLLER_TASK)
+        controller_address = merge_address(NodeInfo.hostname2ip(device),
+                                           port=self.controller_port,
+                                           path=NetworkAPIPath.CONTROLLER_TASK)
 
         http_request(url=controller_address,
                      method=NetworkAPIMethod.CONTROLLER_TASK,
@@ -55,10 +55,16 @@ class Controller:
     def send_task_to_service(self, task: Task = None, service: str = ''):
         cur_task = task or self.cur_task
         self.record_execute_ts(task=cur_task, is_end=False)
-        service_address = get_merge_address(NodeInfo.hostname2ip(self.local_device),
-                                            port=self.service_ports_dict[service],
-                                            path=NetworkAPIPath.PROCESSOR_PROCESS
-                                            )
+
+        self.service_ports_dict = PortInfo.get_service_ports_dict()
+        if service not in self.service_ports_dict:
+            LOGGER.warning(f'[Service Not Exist] Service {service} does not exist in {self.local_device} '
+                           f'(has service: {self.service_ports_dict.keys()})')
+
+        service_address = merge_address(NodeInfo.hostname2ip(self.local_device),
+                                        port=self.service_ports_dict[service],
+                                        path=NetworkAPIPath.PROCESSOR_PROCESS
+                                        )
 
         http_request(url=service_address,
                      method=NetworkAPIMethod.PROCESSOR_PROCESS,

@@ -2,7 +2,7 @@ import json
 
 from core.lib.common import Context, LOGGER, SystemConstant
 from core.lib.content import Task
-from core.lib.network import get_merge_address
+from core.lib.network import merge_address
 from core.lib.network import NodeInfo, PortInfo
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.network import http_request
@@ -25,8 +25,8 @@ class Generator:
         self.scheduler_hostname = NodeInfo.get_cloud_node()
         self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
         self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
-        self.schedule_address = get_merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),
-                                                  port=self.scheduler_port, path=NetworkAPIPath.SCHEDULER_SCHEDULE)
+        self.schedule_address = merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),
+                                              port=self.scheduler_port, path=NetworkAPIPath.SCHEDULER_SCHEDULE)
 
         self.before_schedule_operation = Context.get_algorithm('GEN_BSO')
         self.after_schedule_operation = Context.get_algorithm('GEN_ASO')
@@ -57,9 +57,9 @@ class Generator:
 
         dst_device = self.current_task.get_current_stage_device()
         controller_ip = NodeInfo.hostname2ip(dst_device)
-        controller_address = get_merge_address(controller_ip,
-                                               port=self.controller_port,
-                                               path=NetworkAPIPath.CONTROLLER_TASK)
+        controller_address = merge_address(controller_ip,
+                                           port=self.controller_port,
+                                           path=NetworkAPIPath.CONTROLLER_TASK)
         self.record_transmit_start_ts()
         http_request(url=controller_address,
                      method=NetworkAPIMethod.CONTROLLER_TASK,

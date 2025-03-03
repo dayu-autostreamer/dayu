@@ -5,7 +5,7 @@ from core.lib.common import ClassFactory, ClassType, Context, LOGGER, EncodeOps
 from core.lib.common import VideoOps
 from core.lib.estimation import AccEstimator, OverheadEstimator
 from core.lib.common import Queue, FileOps
-from core.lib.network import NodeInfo, get_merge_address, NetworkAPIPath, NetworkAPIMethod, PortInfo, http_request
+from core.lib.network import NodeInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, PortInfo, http_request
 from core.lib.content import Task
 
 from .base_agent import BaseAgent
@@ -220,9 +220,9 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         if not self.processor_address:
             processor_hostname = NodeInfo.get_cloud_node()
             processor_port = PortInfo.get_service_port(self.current_analytics)
-            self.processor_address = get_merge_address(NodeInfo.hostname2ip(processor_hostname),
-                                                       port=processor_port,
-                                                       path=NetworkAPIPath.PROCESSOR_PROCESS_RETURN)
+            self.processor_address = merge_address(NodeInfo.hostname2ip(processor_hostname),
+                                                   port=processor_port,
+                                                   path=NetworkAPIPath.PROCESSOR_PROCESS_RETURN)
 
         cur_path = self.compress_video(frames)
 

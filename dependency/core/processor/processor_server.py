@@ -7,7 +7,7 @@ from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from core.lib.common import Context, SystemConstant
 from core.lib.common import LOGGER, FileOps
-from core.lib.network import NodeInfo, PortInfo, http_request, get_merge_address, NetworkAPIMethod, NetworkAPIPath
+from core.lib.network import NodeInfo, PortInfo, http_request, merge_address, NetworkAPIMethod, NetworkAPIPath
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
 
@@ -44,9 +44,9 @@ class ProcessorServer:
         self.local_device = NodeInfo.get_local_device()
         self.processor_port = Context.get_parameter('GUNICORN_PORT')
         self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
-        self.controller_address = get_merge_address(NodeInfo.hostname2ip(self.local_device),
-                                                    port=self.controller_port,
-                                                    path=NetworkAPIPath.CONTROLLER_RETURN)
+        self.controller_address = merge_address(NodeInfo.hostname2ip(self.local_device),
+                                                port=self.controller_port,
+                                                path=NetworkAPIPath.CONTROLLER_RETURN)
 
         threading.Thread(target=self.loop_process).start()
 

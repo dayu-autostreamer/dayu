@@ -5,7 +5,7 @@ from datetime import datetime
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
 from core.lib.common import LOGGER, FileNameConstant, FileOps, SystemConstant
-from core.lib.network import http_request, NodeInfo, get_merge_address, NetworkAPIMethod, NetworkAPIPath, PortInfo
+from core.lib.network import http_request, NodeInfo, merge_address, NetworkAPIMethod, NetworkAPIPath, PortInfo
 
 
 class Distributor:
@@ -14,9 +14,9 @@ class Distributor:
 
         self.scheduler_hostname = NodeInfo.get_cloud_node()
         self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        self.scheduler_address = get_merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),
-                                                   port=self.scheduler_port,
-                                                   path=NetworkAPIPath.SCHEDULER_SCENARIO)
+        self.scheduler_address = merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),
+                                               port=self.scheduler_port,
+                                               path=NetworkAPIPath.SCHEDULER_SCENARIO)
 
         self.record_path = FileNameConstant.DISTRIBUTOR_RECORD.value
 

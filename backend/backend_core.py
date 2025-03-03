@@ -7,7 +7,7 @@ import os
 import time
 from core.lib.content import Task
 from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant, EncodeOps
-from core.lib.network import http_request, NodeInfo, PortInfo, get_merge_address, NetworkAPIPath, NetworkAPIMethod
+from core.lib.network import http_request, NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod
 
 from kube_helper import KubeHelper
 from template_helper import TemplateHelper
@@ -70,7 +70,6 @@ class BackendCore:
         return load_file_name.split('.')[0]
 
     def parse_apply_templates(self, policy, source_deploy):
-        # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
         yaml_dict = {}
 
         yaml_dict.update(self.template_helper.load_policy_apply_yaml(policy))
@@ -96,7 +95,6 @@ class BackendCore:
                     queue.append(dag_graph[child_id])
                     visited.add(child_id)
 
-    # get yaml the deploy
     def extract_service_from_source_deployment(self, source_deploy):
         service_dict = {}
 
@@ -333,9 +331,9 @@ class BackendCore:
             scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
         except AssertionError:
             return
-        self.resource_url = get_merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                              port=scheduler_port,
-                                              path=NetworkAPIPath.SCHEDULER_GET_RESOURCE)
+        self.resource_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
+                                          port=scheduler_port,
+                                          path=NetworkAPIPath.SCHEDULER_GET_RESOURCE)
 
     def get_result_url(self):
         cloud_hostname = NodeInfo.get_cloud_node()
@@ -343,12 +341,12 @@ class BackendCore:
             distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
         except AssertionError:
             return
-        self.result_url = get_merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                            port=distributor_port,
-                                            path=NetworkAPIPath.DISTRIBUTOR_RESULT)
-        self.result_file_url = get_merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                                 port=distributor_port,
-                                                 path=NetworkAPIPath.DISTRIBUTOR_FILE)
+        self.result_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
+                                        port=distributor_port,
+                                        path=NetworkAPIPath.DISTRIBUTOR_RESULT)
+        self.result_file_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
+                                             port=distributor_port,
+                                             path=NetworkAPIPath.DISTRIBUTOR_FILE)
 
     def get_log_url(self):
         cloud_hostname = NodeInfo.get_cloud_node()
@@ -356,12 +354,12 @@ class BackendCore:
             distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
         except AssertionError:
             return
-        self.log_fetch_url = get_merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                               port=distributor_port,
-                                               path=NetworkAPIPath.DISTRIBUTOR_ALL_RESULT)
-        self.log_clear_url = get_merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                               port=distributor_port,
-                                               path=NetworkAPIPath.DISTRIBUTOR_CLEAR_DATABASE)
+        self.log_fetch_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
+                                           port=distributor_port,
+                                           path=NetworkAPIPath.DISTRIBUTOR_ALL_RESULT)
+        self.log_clear_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
+                                           port=distributor_port,
+                                           path=NetworkAPIPath.DISTRIBUTOR_CLEAR_DATABASE)
 
     def get_file_result(self, file_name):
         if not self.result_file_url:

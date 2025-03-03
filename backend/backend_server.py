@@ -171,7 +171,6 @@ class BackendServer:
                     current_service_list.append(service_id)
         return current_service_list
 
-    # 直接返回当前dag数据
     async def get_dag_workflows(self):
         """
         get current dag workflows
@@ -243,7 +242,6 @@ class BackendServer:
             service_dict[service['id']] = service if service['id'] not in service_dict else service_dict[service['id']]
         return [service_dict[service_id] for service_id in service_dict]
 
-    # 更新
     async def update_dag_workflows(self, data=Body(...)):
         """
         add new dag workflows
@@ -477,6 +475,7 @@ class BackendServer:
             source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
         try:
+            # TODO: separate "generator,processor" from fist deployment
             yaml = self.server.parse_apply_templates(policy, source_deploy)
 
         except Exception as e:
@@ -484,7 +483,6 @@ class BackendServer:
             LOGGER.exception(e)
             yaml = None
         try:
-            # 根据yaml文件进行部署
             result = install_loop(yaml)
 
         except Exception as e:

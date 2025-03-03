@@ -1,11 +1,12 @@
 import copy
+import json
 import os
 import random
 import re
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps, LOGGER
-from core.lib.network import NodeInfo
+from core.lib.common import YamlOps, LOGGER, SystemConstant
+from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
 class TemplateHelper:
@@ -149,11 +150,37 @@ class TemplateHelper:
 
         return docs_list
 
-    # TODO: 如何选择哪个节点作为数据源？
-    #       想一下和scheduler的交互接口，第二次迭代不需测试 测试完之后给什么参数拿哪些参数node_list+数据源+一些额外信息
-    #       第二次迭代考虑获取scheduler对generator所在节点的选择决策
+    # TODO: 添加请求scheduler获取source node selection结果
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
-        # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
+        scheduler_hostname = NodeInfo.get_cloud_node()
+        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
+        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                          port=scheduler_port,
+                                          path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE)
+
+        # TODO: modify here (set params as scheduler input)
+        #     template:
+        #     [
+        #       {
+        #           "source": {...},
+        #           "dag": {...},
+        #           "node_set": [...],
+        #       },
+        #       {...}
+        #     ]
+        params = {}
+
+        response = http_request(url=scheduler_address,
+                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE,
+                                data={'data': json.dumps(params)},
+                                )
+
+        if response is None:
+            LOGGER.warning('[Source Node Selection] No response from scheduler.')
+            selection_plan = None
+        else:
+            selection_plan = response['plan']
+
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
         edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
@@ -162,6 +189,19 @@ class TemplateHelper:
             new_edge_worker = copy.deepcopy(edge_worker_template)
             source = source_info['source']
             node_set = source_info['node_set']
+
+            # TODO: modify here (set node from 'selection_plan')
+            #       template of selection_plan:
+            #       {
+            #           source_id1: selected_node1,
+            #           source_id2: selected_node2,
+            #           ...
+            #       }
+
+            # TODO: (tips in node selection)
+            #      if selection_plan is None or current source_id not in selection_plan:
+            #      use default node (first node in current node_set) as selected node
+
             node = random.choice(node_set)
             dag = source_info['dag']
 
@@ -198,7 +238,6 @@ class TemplateHelper:
         return yaml_doc
 
     def finetune_controller_yaml(self, yaml_doc, edge_nodes, cloud_node):
-
         yaml_doc = self.fill_template(yaml_doc, 'controller')
 
         edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
@@ -270,14 +309,52 @@ class TemplateHelper:
 
         return yaml_doc
 
-    # TODO: 测试完后，思考对scheduler发送什么请求，获取什么参数（比如每个物理节点部署什么节点，最后固化到yaml中） 以指导自己的部署
-    #       下一次迭代考虑在此处获取scheduler的部署决策
+    # TODO: 添加请求scheduler获取service deployment结果
     def finetune_processor_yaml(self, service_dict, cloud_node):
+        scheduler_hostname = NodeInfo.get_cloud_node()
+        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
+        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                          port=scheduler_port,
+                                          path=NetworkAPIPath.SCHEDULER_INITIAL_DEPLOYMENT)
+        # TODO: modify here (set params as scheduler input)
+        #     template:
+        #     [
+        #       {
+        #           "source": {...},
+        #           "dag": {...},
+        #           "node_set": [...],
+        #           "source_node": xxx,
+        #       },
+        #       {...}
+        #     ]
+        params = {}
+        response = http_request(url=scheduler_address,
+                                method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
+                                data={'data': json.dumps(params)},
+                                )
+        if response is None:
+            LOGGER.warning('[Service Deployment] No response from scheduler.')
+            deployment_plan = None
+        else:
+            deployment_plan = response['plan']
+
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
             yaml_doc = service_dict[service_id]['yaml']
             service_name = service_dict[service_id]['service_name']
             yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
+
+            # TODO: modify here (set service deployment from 'deployment_plan')
+            #       template of deployment_plan:
+            #       {
+            #           node1: [service1, service2,...],
+            #           node2: [...]
+            #           ...
+            #       }
+
+            # TODO: (tips in service deployment)
+            #      if deployment_plan is None or current source_id not in deployment_plan:
+            #      use default plan (deploy all services of DAG on each node in node_set)
 
             edge_nodes = service_dict[service_id]['node']
 

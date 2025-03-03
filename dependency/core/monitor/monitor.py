@@ -2,7 +2,7 @@ import json
 import time
 
 from core.lib.common import LOGGER, Context, ClassFactory, ClassType, SystemConstant, NodeRoleConstant
-from core.lib.network import NodeInfo, PortInfo, get_merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
+from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
 class Monitor:
@@ -14,9 +14,9 @@ class Monitor:
 
         self.scheduler_hostname = NodeInfo.get_cloud_node()
         self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        self.scheduler_address = get_merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),
-                                                   port=self.scheduler_port,
-                                                   path=NetworkAPIPath.SCHEDULER_POST_RESOURCE)
+        self.scheduler_address = merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),
+                                               port=self.scheduler_port,
+                                               path=NetworkAPIPath.SCHEDULER_POST_RESOURCE)
 
         self.local_device = NodeInfo.get_local_device()
         self.is_iperf3_server = NodeInfo.get_node_role(NodeInfo.get_local_device()) == NodeRoleConstant.CLOUD.value

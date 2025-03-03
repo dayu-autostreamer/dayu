@@ -34,6 +34,12 @@ class SchedulerServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_GET_RESOURCE]
                      ),
+            APIRoute(NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE,
+                     self.get_source_nodes_selection,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE]
+                     ),
+            APIRoute(),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -64,3 +70,13 @@ class SchedulerServer:
 
     async def get_resource_state(self):
         return self.scheduler.get_scheduler_resource()
+
+    # TODO
+    async def get_source_nodes_selection(self, data: str = Form(...)):
+        data = json.loads(data)
+        return {'plan': None}
+
+    # TODO
+    async def get_initial_deployment_plan(self, data: str = Form(...)):
+        data = json.loads(data)
+        return {'plan': None}
