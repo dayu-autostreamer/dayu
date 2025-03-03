@@ -7,7 +7,7 @@ from .base_config_extraction import BaseConfigExtraction
 __all__ = ('HEIDRLConfigExtraction',)
 
 
-@ClassFactory.register(ClassType.SCH_CONFIG, alias='hei_drl')
+@ClassFactory.register(ClassType.SCH_CONFIG_EXTRACTION, alias='hei_drl')
 class HEIDRLConfigExtraction(BaseConfigExtraction, abc.ABC):
 
     def __init__(self, hei_drl_config: str, hei_hyper_config: str):

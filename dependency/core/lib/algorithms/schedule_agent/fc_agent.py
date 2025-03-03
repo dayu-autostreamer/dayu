@@ -24,6 +24,8 @@ class FCAgent(BaseAgent, abc.ABC):
                  window_length: int = 20,
                  delay_constraint: float = 0.2,
                  theta: float = 3):
+        super().__init__()
+
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
 

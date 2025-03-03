@@ -22,10 +22,12 @@ class ClassType:
     GEN_GETTER_FILTER = 'generator_data_getter_filter'
 
     SCH_AGENT = 'scheduler_agent'
-    SCH_STARTUP = 'scheduler_startup_policy'
-    SCH_CONFIG = 'scheduler_config_extraction'
-    SCH_SCENARIO = 'scheduler_scenario_extraction'
-    SCH_POLICY = 'scheduler_policy_extraction'
+    SCH_STARTUP_POLICY = 'scheduler_startup_policy'
+    SCH_CONFIG_EXTRACTION = 'scheduler_config_extraction'
+    SCH_SCENARIO_EXTRACTION = 'scheduler_scenario_extraction'
+    SCH_POLICY_EXTRACTION = 'scheduler_policy_extraction'
+    SCH_SELECTION_POLICY = 'scheduler_selection_policy'
+    SCH_DEPLOYMENT_POLICY = 'scheduler_deployment_policy'
 
     PROCESSOR = 'processor'
     PRO_DETECTOR = 'processor_detector'

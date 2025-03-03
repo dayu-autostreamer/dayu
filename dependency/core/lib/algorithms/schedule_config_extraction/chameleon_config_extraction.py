@@ -7,7 +7,7 @@ from .base_config_extraction import BaseConfigExtraction
 __all__ = ('ChameleonConfigExtraction',)
 
 
-@ClassFactory.register(ClassType.SCH_CONFIG, alias='chameleon')
+@ClassFactory.register(ClassType.SCH_CONFIG_EXTRACTION, alias='chameleon')
 class ChameleonConfigExtraction(BaseConfigExtraction, abc.ABC):
     def __call__(self, scheduler):
         config_path = Context.get_file_path(os.path.join('scheduler/chameleon', FileNameConstant.SCHEDULE_CONFIG.value))

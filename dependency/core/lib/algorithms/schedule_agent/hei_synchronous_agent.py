@@ -22,6 +22,8 @@ class HEISYNAgent(BaseAgent, abc.ABC):
                  model_dir: str = 'model',
                  load_model: bool = False,
                  load_model_episode: int = 0):
+        super().__init__()
+
         from .hei import SoftActorCritic, RandomBuffer, Adapter, NegativeFeedback, StateBuffer
 
         self.agent_id = agent_id

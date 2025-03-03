@@ -7,7 +7,7 @@ from .base_config_extraction import BaseConfigExtraction
 __all__ = ('CASVAConfigExtraction',)
 
 
-@ClassFactory.register(ClassType.SCH_CONFIG, alias='casva')
+@ClassFactory.register(ClassType.SCH_CONFIG_EXTRACTION, alias='casva')
 class CASVAConfigExtraction(BaseConfigExtraction, abc.ABC):
 
     def __init__(self, casva_drl_config: str, casva_hyper_config: str) -> None:

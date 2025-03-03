@@ -10,6 +10,8 @@ __all__ = ('FixedAgent',)
 class FixedAgent(BaseAgent, abc.ABC):
 
     def __init__(self, system, agent_id: int, fixed_policy: dict = None):
+        super().__init__()
+
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
         self.fixed_policy = fixed_policy

@@ -23,6 +23,8 @@ class HEIDRLAgent(BaseAgent, abc.ABC):
                  load_model: bool = False,
                  load_model_episode: int = 0,
                  acc_gt_dir: str = '',):
+        super().__init__()
+
         from .hei import SoftActorCritic, RandomBuffer, Adapter, StateBuffer
 
         self.agent_id = agent_id

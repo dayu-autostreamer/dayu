@@ -29,6 +29,8 @@ class HEIAgent(BaseAgent, abc.ABC):
                  punishment_bound: float = -2,
                  reward_bound: float = 0.5,
                  reward_coefficient: float = 0.3, ):
+        super().__init__()
+
         from .hei import SoftActorCritic, RandomBuffer, Adapter, NegativeFeedback, StateBuffer
 
         self.agent_id = agent_id

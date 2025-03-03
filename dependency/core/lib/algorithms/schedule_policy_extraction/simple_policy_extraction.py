@@ -6,7 +6,7 @@ from .base_policy_extraction import BasePolicyExtraction
 __all__ = ('SimplePolicyExtraction',)
 
 
-@ClassFactory.register(ClassType.SCH_POLICY, alias='simple')
+@ClassFactory.register(ClassType.SCH_POLICY_EXTRACTION, alias='simple')
 class SimplePolicyExtraction(BasePolicyExtraction, abc.ABC):
     def __call__(self, task):
         policy = {}
