@@ -163,12 +163,12 @@ class TemplateHelper:
         #     [
         #       {
         #           "source": {...},
-        #           "dag": {...},
+        #           "dag": {...}, #(same as input in generator)
         #           "node_set": [...],
         #       },
         #       {...}
         #     ]
-        params = {}
+        params = []
 
         response = http_request(url=scheduler_address,
                                 method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE,
@@ -320,14 +320,13 @@ class TemplateHelper:
         #     template:
         #     [
         #       {
-        #           "source": {...},
-        #           "dag": {...},
+        #           "source": {...},  #(+ source node)
+        #           "dag": {...}, # (same as input into generator)
         #           "node_set": [...],
-        #           "source_node": xxx,
         #       },
         #       {...}
         #     ]
-        params = {}
+        params = []
         response = http_request(url=scheduler_address,
                                 method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
                                 data={'data': json.dumps(params)},
@@ -351,6 +350,7 @@ class TemplateHelper:
             #           node2: [...]
             #           ...
             #       }
+            #     # (no cloud)
 
             # TODO: (tips in service deployment)
             #      if deployment_plan is None or current source_id not in deployment_plan:
