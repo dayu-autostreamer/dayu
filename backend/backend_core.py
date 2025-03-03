@@ -1,5 +1,6 @@
 import copy
 from collections import deque
+from func_timeout import func_set_timeout as timeout
 
 import cv2
 import numpy as np
@@ -69,19 +70,47 @@ class BackendCore:
             return None
         return load_file_name.split('.')[0]
 
-    def parse_apply_templates(self, policy, source_deploy):
+    @timeout(60)
+    def parse_and_apply_templates(self, policy, source_deploy):
         yaml_dict = {}
 
         yaml_dict.update(self.template_helper.load_policy_apply_yaml(policy))
 
         service_dict, source_deploy = self.extract_service_from_source_deployment(source_deploy)
         yaml_dict.update({'processor': self.template_helper.load_application_apply_yaml(service_dict)})
-        docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy)
 
+        first_stage_components = ['scheduler', 'distributor', 'monitor', 'controller']
+        second_stage_components = ['generator', 'processor']
+
+        LOGGER.info(f'[First Deployment Stage] deploy components:{first_stage_components}')
+        first_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
+                                                                        scopes=first_stage_components)
+        result = self.install_yaml_templates(first_docs_list)
+        if not result:
+            return False
+
+        LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
+        second_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
+                                                                         scopes=second_stage_components)
+        result = self.install_yaml_templates(second_docs_list)
+        if not result:
+            return False
+
+        self.save_component_yaml(first_docs_list.extend(second_docs_list))
+
+        return True
+
+    def install_yaml_templates(self, yaml_docs):
+        if not yaml_docs:
+            return False
+        _result = KubeHelper.apply_custom_resources(yaml_docs)
+        while not KubeHelper.check_pods_running(self.namespace):
+            time.sleep(1)
+        return _result
+
+    def save_component_yaml(self, docs_list):
         self.cur_yaml_docs = docs_list
         YamlOps.write_all_yaml(docs_list, self.save_yaml_path)
-
-        return docs_list
 
     def bfs_dag(self, dag_graph, dag_callback):
         source_list: list = dag_graph['begin']

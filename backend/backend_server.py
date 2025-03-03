@@ -429,15 +429,6 @@ class BackendServer:
         {'msg': 'Invalid service name!'}
         """
 
-        @timeout(60)
-        def install_loop(yaml_docs):
-            if not yaml_docs:
-                return False
-            _result = KubeHelper.apply_custom_resources(yaml_docs)
-            while not KubeHelper.check_pods_running(self.server.namespace):
-                time.sleep(1)
-            return _result
-
         data = json.loads(str(data, encoding='utf-8'))
 
         source_label = data['source_config_label']
@@ -475,17 +466,9 @@ class BackendServer:
             source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
         try:
-            # TODO: separate "generator,processor" from fist deployment
-            yaml = self.server.parse_apply_templates(policy, source_deploy)
-
+            result = self.server.parse_and_apply_templates(policy, source_deploy)
         except Exception as e:
-            LOGGER.warning(f'Parse templates failed: {str(e)}')
-            LOGGER.exception(e)
-            yaml = None
-        try:
-            result = install_loop(yaml)
-
-        except Exception as e:
+            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             LOGGER.exception(e)
             result = False
 
