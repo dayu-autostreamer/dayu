@@ -112,18 +112,6 @@ class BackendCore:
         self.cur_yaml_docs = docs_list
         YamlOps.write_all_yaml(docs_list, self.save_yaml_path)
 
-    def bfs_dag(self, dag_graph, dag_callback):
-        source_list: list = dag_graph['begin']
-        queue = deque(source_list)
-        visited = set(source_list)
-        while queue:
-            current_node_item = queue.popleft()
-            dag_callback(current_node_item)
-            for child_id in current_node_item['succ']:
-                if child_id not in visited:
-                    queue.append(dag_graph[child_id])
-                    visited.add(child_id)
-
     def extract_service_from_source_deployment(self, source_deploy):
         service_dict = {}
 
@@ -208,6 +196,19 @@ class BackendCore:
         url = f'{source_protocol}://{source_ip}:{source_port}/{source_type}{source_id}'
 
         return url
+
+    @staticmethod
+    def bfs_dag(dag_graph, dag_callback):
+        source_list: list = dag_graph['begin']
+        queue = deque(source_list)
+        visited = set(source_list)
+        while queue:
+            current_node_item = queue.popleft()
+            dag_callback(current_node_item)
+            for child_id in current_node_item['succ']:
+                if child_id not in visited:
+                    queue.append(dag_graph[child_id])
+                    visited.add(child_id)
 
     @staticmethod
     def check_node_exist(node):
