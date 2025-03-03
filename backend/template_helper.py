@@ -204,8 +204,9 @@ class TemplateHelper:
             #       }
 
             # TODO: (tips in node selection)
-            #      if selection_plan is None or current source_id not in selection_plan:
+            #      if 1.(selection_plan is None) or 2.(current source_id not in selection_plan) or 3.(selected_node not in node_set):
             #      use default node (first node in current node_set) as selected node
+            #      give related log: LOGGER.warning(...)   (in English)
 
             node = random.choice(node_set)
             dag = source_info['dag']
@@ -358,8 +359,9 @@ class TemplateHelper:
             #     # (no cloud)
 
             # TODO: (tips in service deployment)
-            #      if deployment_plan is None or current source_id not in deployment_plan:
+            #      if 1.(deployment_plan is None) or 2.(current source_id not in deployment_plan) or (3.type of services is not list):
             #      use default plan (deploy all services of DAG on each node in node_set)
+            #      give related log: LOGGER.warning(...)   (in English)
 
             edge_nodes = service_dict[service_id]['node']
 
