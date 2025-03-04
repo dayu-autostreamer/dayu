@@ -151,7 +151,7 @@ class TemplateHelper:
         if not scopes or 'monitor' in scopes:
             docs_list.append(self.finetune_monitor_yaml(yaml_dict['monitor'], edge_nodes, cloud_node))
         if not scopes or 'processor' in scopes:
-            docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node, source_deploy))
+            docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node))
 
         return docs_list
 
@@ -162,7 +162,6 @@ class TemplateHelper:
         scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
                                           port=scheduler_port,
                                           path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE)
-        # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
         # TODO: modify here (set params as scheduler input)
         #     template:
@@ -175,20 +174,6 @@ class TemplateHelper:
         #       {...}
         #     ]
         params = []
-
-        for source_info in source_deploy:
-            SOURCE_ENV = source_deploy['source']
-            NODE_SET_ENV = source_deploy['node_set']
-            DAG_ENV = {}
-            dag = source_info['dag']
-
-            for key in dag.keys():
-                temp_node = {}
-                if key != 'begin':
-                    temp_node['service'] = {'service_name': key}
-                    temp_node['next_nodes'] = dag[key]['succ']
-                    DAG_ENV[key] = temp_node
-            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
 
         response = http_request(url=scheduler_address,
                                 method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE,
@@ -223,15 +208,7 @@ class TemplateHelper:
             #      use default node (first node in current node_set) as selected node
             #      give related log: LOGGER.warning(...)   (in English)
 
-            if selection_plan != None and selection_plan.get(source) is not None and selection_plan.get(source):
-                node = selection_plan[source]
-            else:
-                LOGGER.warning("Using default selection plan.")
-                node = node_set[0]
-
-            source_deploy['source'].update({'deploy_node': node})
-
-            # node = random.choice(node_set)
+            node = random.choice(node_set)
             dag = source_info['dag']
 
             new_edge_worker['template']['spec']['nodeName'] = node
@@ -339,7 +316,7 @@ class TemplateHelper:
         return yaml_doc
 
     # TODO: 添加请求scheduler获取service deployment结果
-    def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy):
+    def finetune_processor_yaml(self, service_dict, cloud_node):
         scheduler_hostname = NodeInfo.get_cloud_node()
         scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
         scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
@@ -356,20 +333,6 @@ class TemplateHelper:
         #       {...}
         #     ]
         params = []
-        for source_info in source_deploy:
-            SOURCE_ENV = source_deploy['source']
-            NODE_SET_ENV = source_deploy['node_set']
-            DAG_ENV = {}
-            dag = source_info['dag']
-
-            for key in dag.keys():
-                temp_node = {}
-                if key != 'begin':
-                    temp_node['service'] = {'service_name': key}
-                    temp_node['next_nodes'] = dag[key]['succ']
-                    DAG_ENV[key] = temp_node
-            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
-
         response = http_request(url=scheduler_address,
                                 method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
                                 data={'data': json.dumps(params)},
@@ -379,15 +342,6 @@ class TemplateHelper:
             deployment_plan = None
         else:
             deployment_plan = response['plan']
-
-        invert_deployment_plan = {}
-        for node in deployment_plan:
-            if deployment_plan[node]:
-                for service in deployment_plan[node]:
-                    if invert_deployment_plan.get(service) == None:
-                        invert_deployment_plan[service] = []
-                    else:
-                        invert_deployment_plan[service].append(node)
 
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
@@ -405,18 +359,13 @@ class TemplateHelper:
             #     # (no cloud)
 
             # TODO: (tips in service deployment)
-            #      if 1.(deployment_plan is None) or 2.(current node_id not in deployment_plan) or (3.type of services is not list):
+            #      if 1.(deployment_plan is None) or 2.(current source_id not in deployment_plan) or (3.type of services is not list):
             #      use default plan (deploy all services of DAG on each node in node_set)
             #      give related log: LOGGER.warning(...)   (in English)
-            edge_nodes = service_dict[service_id]['node']
-            if invert_deployment_plan.get(service_id) != None and (set(invert_deployment_plan[service_id]) - set(
-                    edge_nodes) is not None):
-                edge_worker_template = invert_deployment_plan[service_id]
-            else:
-                LOGGER.warning("Using default service plan.")
-                edge_worker_template = service_dict[service_id]['node']
 
-            # edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
+            edge_nodes = service_dict[service_id]['node']
+
+            edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
             cloud_worker_template = yaml_doc['spec']['cloudWorker']
 
             edge_workers = []
