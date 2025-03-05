@@ -411,7 +411,7 @@ class TemplateHelper:
             edge_nodes = service_dict[service_id]['node']
             if invert_deployment_plan.get(service_id) != None and (set(invert_deployment_plan[service_id]) - set(
                     edge_nodes) is not None):
-                edge_worker_template = invert_deployment_plan[service_id]
+                edge_worker_template = list(set(invert_deployment_plan[service_id])&set(edge_nodes))
             else:
                 LOGGER.warning("Using default service plan.")
                 edge_worker_template = service_dict[service_id]['node']
