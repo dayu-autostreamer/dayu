@@ -8,7 +8,7 @@ __all__ = ('DynamicFilter',)
 
 
 @ClassFactory.register(ClassType.GEN_FILTER, alias='dynamic')
-class DynamicFilter:
+class DynamicFilter(BaseFilter, abc.ABC):
     def __init__(self, min_fps=1, max_fps=5, min_duration=120, max_duration=600, transition_ratio=0.1):
         self.min_fps = min_fps
         self.max_fps = max_fps
