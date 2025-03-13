@@ -26,8 +26,8 @@ export function useLayout() {
             const graphNode = findNode(node.id)
 
             dagreGraph.setNode(node.id, {
-                width: graphNode.dimensions.width || 150,
-                height: graphNode.dimensions.height || 50
+                width: graphNode.dimensions?.width || 150,
+                height: graphNode.dimensions?.height || 50
             })
         })
         if (Array.isArray(edgesCopy)) {
