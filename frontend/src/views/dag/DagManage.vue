@@ -85,6 +85,7 @@
           :default-viewport="{ zoom: 1.5 }"
           :min-zoom="1"
           :max-zoom="2"
+          :fit-view-on-init="false"
           @dragover="onDragOver"
           @dragleave="onDragLeave"
       >
@@ -635,11 +636,11 @@ export default {
 
     this.getServiceList();
 
-    this.$nextTick(() => {
-      if (this.flowNodes.length > 0) {
-        this.layoutGraph('LR')
-      }
-    })
+    // this.$nextTick(() => {
+    //   if (this.flowNodes.length > 0) {
+    //     this.layoutGraph('LR')
+    //   }
+    // })
   }
   ,
 }

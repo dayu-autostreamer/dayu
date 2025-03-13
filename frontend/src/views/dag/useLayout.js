@@ -12,6 +12,8 @@ export function useLayout() {
             console.error('Invalid nodes:', nodes)
             return []
         }
+        const nodesCopy = [...nodes]
+        const edgesCopy = [...edges]
 
         const dagreGraph = new dagre.graphlib.Graph()
         graph.value = dagreGraph
@@ -20,21 +22,16 @@ export function useLayout() {
         dagreGraph.setGraph({rankdir: direction})
         previousDirection.value = direction
 
-        nodes.forEach(node => {
+        nodesCopy.forEach(node => {
             const graphNode = findNode(node.id)
 
-            const dimensions = graphNode?.dimensions || {
-                width: 200,
-                height: 50
-            }
-
             dagreGraph.setNode(node.id, {
-                width: dimensions.width,
-                height: dimensions.height
+                width: graphNode.dimensions.width || 150,
+                height: graphNode.dimensions.height || 50
             })
         })
-        if (Array.isArray(edges)) {
-            edges.forEach(edge => {
+        if (Array.isArray(edgesCopy)) {
+            edgesCopy.forEach(edge => {
                 if (edge?.source && edge?.target) {
                     dagreGraph.setEdge(edge.source, edge.target)
                 }
@@ -45,17 +42,20 @@ export function useLayout() {
             dagre.layout(dagreGraph)
         } catch (e) {
             console.error('Dagre layout failed:', e)
-            return nodes
+            return nodesCopy
         }
 
-        return nodes.map(node => {
+        return nodesCopy.map(node => {
             try {
                 const nodeWithPosition = dagreGraph.node(node.id)
                 return {
                     ...node,
                     targetPosition: isHorizontal ? Position.Left : Position.Top,
                     sourcePosition: isHorizontal ? Position.Right : Position.Bottom,
-                    position: {x: nodeWithPosition.x, y: nodeWithPosition.y},
+                    position: {
+                        x: nodeWithPosition?.x || node.position.x,
+                        y: nodeWithPosition?.y || node.position.y
+                    },
                 }
             } catch {
                 return node
