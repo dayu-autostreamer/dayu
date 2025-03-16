@@ -9,12 +9,6 @@ def _import_random_switch_module():
         from .switch_module.random_switch import RandomSwitch
     return RandomSwitch
 
-def _import_rule_based_switch_module():
-    if __name__ == '__main__':
-        from switch_module.rule_based_switch import RuleBasedSwitch
-    else:
-        from .switch_module.rule_based_switch import RuleBasedSwitch
-    return RuleBasedSwitch
 
 def _import_cmab_switch_module():
     if __name__ == '__main__':
@@ -23,26 +17,12 @@ def _import_cmab_switch_module():
         from .switch_module.cmab_switch import CMABSwitch
     return CMABSwitch
 
-def _import_cmab_ts_switch_module():
+def _import_meta_switch_module():
     if __name__ == '__main__':
-        from switch_module.cmab_ts_switch import CMABTSSwitch
+        from switch_module.meta_switch import MetaSwitch
     else:
-        from .switch_module.cmab_ts_switch import CMABTSSwitch
-    return CMABTSSwitch
-
-def _import_ac_switch_module():
-    if __name__ == '__main__':
-        from switch_module.ac_switch import ACSwitch
-    else:
-        from .switch_module.ac_switch import ACSwitch
-    return ACSwitch
-
-def _import_ac_lstm_switch_module():
-    if __name__ == '__main__':
-        from switch_module.ac_lstm_switch import LSTMACSwitch
-    else:
-        from .switch_module.ac_lstm_switch import LSTMACSwitch
-    return LSTMACSwitch
+        from .switch_module.meta_switch import MetaSwitch
+    return MetaSwitch
 
 def _import_yolo_inference_module():
     if __name__ == '__main__':
@@ -82,21 +62,12 @@ class ModelSwitchDetection:
         if switch_type == 'random':
             RandomSwitch = _import_random_switch_module()
             self.switcher = RandomSwitch(decision_interval, self.detector)
-        elif switch_type == 'rule_based':
-            RuleBasedSwitch = _import_rule_based_switch_module()
-            self.switcher = RuleBasedSwitch(decision_interval, self.detector)
         elif switch_type == 'cmab':
             CMABSwitch = _import_cmab_switch_module()
             self.switcher = CMABSwitch(decision_interval, self.detector)
-        elif switch_type == 'cmab_ts':
-            CMABTSSwitch = _import_cmab_ts_switch_module()
-            self.switcher = CMABTSSwitch(decision_interval, self.detector)
-        elif switch_type == 'ac':
-            ACSwitch = _import_ac_switch_module()
-            self.switcher = ACSwitch(decision_interval, self.detector)
-        elif switch_type == 'ac_lstm':
-            LSTMACSwitch = _import_ac_lstm_switch_module()
-            self.switcher = LSTMACSwitch(decision_interval, self.detector)
+        elif switch_type == 'meta':
+            MetaSwitch = _import_meta_switch_module()
+            self.switcher = MetaSwitch(decision_interval, self.detector)
         else:
             raise ValueError('Invalid switch type')
 

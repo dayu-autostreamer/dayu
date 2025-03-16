@@ -15,8 +15,15 @@ class BaseSwitch(ABC):
         pass
 
     @abstractmethod
-    def get_detector_stats(*args, **kwargs):
+    def get_detector_stats(self, nums: int):
         '''
         Get the stats for switch decision.
+        '''
+        pass
+
+    @abstractmethod
+    def get_detector_interval_stats(self, nums: int, interval: float):
+        '''
+        Get the stats at intervals for switch decision.
         '''
         pass

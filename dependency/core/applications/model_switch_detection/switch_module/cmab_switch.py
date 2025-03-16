@@ -1,172 +1,321 @@
 from .base_switch import BaseSwitch
-import numpy as np
 import time
 import threading
-from typing import List, Dict
-from dataclasses import dataclass
-import math
+import numpy as np
+from scipy import linalg
 
-class LinUCBArm:
-    def __init__(self, context_dim: int, alpha: float = 1.0):
-        self.alpha = alpha
-        self.A = np.identity(context_dim)  # d x d
-        self.b = np.zeros((context_dim, 1))  # d x 1
-        self.theta = np.zeros((context_dim, 1))  # d x 1
-        
-    def update(self, context: np.ndarray, reward: float):
-        """更新模型参数"""
-        context = context.reshape(-1, 1)  # d x 1
-        self.A += context @ context.T
-        self.b += reward * context
-        self.theta = np.linalg.solve(self.A, self.b)
-        
-    def get_ucb_score(self, context: np.ndarray) -> float:
-        """计算UCB分数"""
-        context = context.reshape(-1, 1)  # d x 1
-        A_inv = np.linalg.inv(self.A)
-        mean = float(context.T @ self.theta)
-        var = float(self.alpha * np.sqrt(context.T @ A_inv @ context))
-        return mean + var
 
 class CMABSwitch(BaseSwitch):
-    def __init__(self, 
-                 decision_interval: int,
+    def __init__(self, decision_interval: int, 
                  detector_instance: object,
-                 alpha: float = 1.0,
-                 min_samples: int = 10,
+                 queue_low_threshold_length: int = 10,
+                 lambda_reg: float = 1.0,
+                 noise_variance: float = 0.1,
+                 exploration_rate: float = 0.1,
                  *args, **kwargs):
         """
-        初始化CMAB切换器
+        线性上下文汤普森采样(CMAB)模型切换器
         
         Args:
-            decision_interval: 决策间隔(秒)
+            decision_interval: 模型切换决策的时间间隔(秒)
             detector_instance: 检测器实例
-            alpha: UCB探索参数
-            min_samples: 每个臂最少需要的样本数
+            queue_low_threshold_length: 队列长度阈值，用于奖励计算
+            context_dimension: 特征向量的维度
+            lambda_reg: 正则化参数
+            noise_variance: 观测噪声方差
+            exploration_rate: 随机探索的概率
         """
         self.models_num = detector_instance.get_models_num()
         self.decision_interval = decision_interval
         self.detector_instance = detector_instance
-        self.alpha = alpha
-        self.min_samples = min_samples
+        self.queue_low_threshold_length = queue_low_threshold_length
         
-        # 特征维度: [queue_length, cur_model_accuracy, processing_latency, target_nums, 
-        #            avg_confidence, std_confidence, avg_size, std_size, brightness, contrast]
-        self.context_dim = 10
+        # 特征维度和贝叶斯线性回归参数
+        self.context_dimension = 10  # 固定为10个特征（9个实际特征 + 1个偏置项）
+        self.lambda_reg = lambda_reg
+        self.noise_variance = noise_variance
         
-        # 为每个模型初始化一个LinUCB实例
-        self.arms = [LinUCBArm(self.context_dim, alpha) for _ in range(self.models_num)]
+        # 探索参数
+        self.exploration_rate = exploration_rate
+        self.exploration_counter = 0
+        self.force_exploration_count = 15  # 每15次决策强制探索一次
         
-        # 记录每个模型的使用次数
-        self.model_counts = np.zeros(self.models_num)
+        # 每个模型的参数
+        self.models = {}
+        self.init_thompson_sampling_models()
         
+        # 跟踪最后选择的臂和切换时间
+        self.last_selected_arm = None
         self.last_switch_time = time.time()
+        self.last_context = None
+        
+        # 启动决策线程
         self.switch_thread = threading.Thread(target=self._switch_loop)
         self.switch_thread.daemon = True
         self.switch_thread.start()
         
-    def _extract_context(self, stats_list) -> np.ndarray:
-        """从统计信息中提取特征"""
-        if not stats_list:
-            return np.zeros(self.context_dim)
-            
-        # 使用最近的统计信息
-        latest_stats = stats_list[-1]
-        
-        # 构建特征向量
-        features = np.array([
-            latest_stats.queue_length,            # 系统负载指标
-            latest_stats.cur_model_accuracy,      # 模型准确率
-            latest_stats.processing_latency,      # 处理延迟
-            latest_stats.target_nums,             # 场景复杂度
-            latest_stats.avg_confidence,          # 检测置信度
-            latest_stats.std_confidence,          # 置信度std
-            latest_stats.avg_size,                # 目标尺寸
-            latest_stats.std_size,                # 尺寸std
-            latest_stats.brightness,              # 图像亮度
-            latest_stats.contrast                 # 图像对比度
-        ])
-        
-        # 特征归一化
-        features = np.clip(features, -10, 10)  # 截断异常值
-        return features
-        
-    def _compute_reward(self, stats_list) -> float:
-        """
-        计算动态奖励值
-        - 当队列长度较短时，更注重准确率
-        - 当队列长度较长时，更注重处理延迟
-        """
-        if not stats_list:
-            return 0.0
-            
-        # 使用最近的统计信息
-        latest_stats = stats_list[-1]
-        
-        # 计算队列比例和动态权重
-        queue_ratio = latest_stats.queue_length / 10.0  # 使用10作为队列阈值
-        w_accuracy = max(1 - queue_ratio, 0)  # 准确率权重
-        w_latency = min(queue_ratio, 5)  # 延迟权重
-        
-        # 计算奖励
-        reward = (2 * w_accuracy * (latest_stats.cur_model_accuracy/100.0 + latest_stats.avg_confidence) - 
-                 2 * w_latency * latest_stats.processing_latency)
-        
-        print(f"""Reward calculation:
-            Queue Length: {latest_stats.queue_length} (Ratio: {queue_ratio:.2f})
-            Weights: accuracy={w_accuracy:.2f}, latency={w_latency:.2f}
-            Accuracy: {latest_stats.cur_model_accuracy:.1f}
-            Confidence: {latest_stats.avg_confidence:.2f}
-            Latency: {latest_stats.processing_latency:.3f}s
-            Final Reward: {reward:.3f}""")
-        
-        return reward
-         
-    def _switch_loop(self):
-        """主循环"""
-        while True:
-            if time.time() - self.last_switch_time > self.decision_interval:
-                self._make_decision()
-                self.last_switch_time = time.time()
-            time.sleep(0.1)
-            
-    def _make_decision(self):
-        """做出切换决策"""
-        # 获取当前状态
-        stats = self.detector_instance.stats_manager.stats
-        if not stats:
-            return
-            
-        # 提取特征和计算奖励
-        context = self._extract_context(stats)
-        reward = self._compute_reward(stats)
-        
-        # 更新当前模型的参数
-        current_model = stats[-1].cur_model_index
-        self.arms[current_model].update(context, reward)
-        self.model_counts[current_model] += 1
-        
-        # 计算每个模型的UCB分数
-        ucb_scores = []
+        print(f"CMAB Linear Thompson Sampling initialized with {self.models_num} models")
+
+    def init_thompson_sampling_models(self):
+        """初始化每个模型的线性Thompson Sampling参数"""
         for i in range(self.models_num):
-            if self.model_counts[i] < self.min_samples:
-                # 如果样本不足，给予高分以鼓励探索
-                score = float('inf')
-            else:
-                score = self.arms[i].get_ucb_score(context)
-            ucb_scores.append(score)
+            self.models[i] = {
+                # 参数均值向量 (零向量)
+                'mu': np.zeros(self.context_dimension),
+                
+                # 参数协方差矩阵 (单位矩阵乘以正则化参数的逆)
+                'Sigma': np.eye(self.context_dimension) / self.lambda_reg,
+                
+                # 足够统计量: X^T X
+                'precision': self.lambda_reg * np.eye(self.context_dimension),
+                
+                # 足够统计量: X^T y
+                'precision_mean': np.zeros(self.context_dimension),
+                
+                # 观察计数
+                'count': 0,
+                
+                # 观察的奖励总和
+                'sum_reward': 0,
+                
+                # 奖励样本方差估计
+                'reward_variance': 1.0
+            }
+
+    def _switch_loop(self):
+        """模型切换决策的主循环"""
+        while True:
+            current_time = time.time()
             
-        # 选择得分最高的模型
-        best_model = np.argmax(ucb_scores)
+            # 如果达到了决策间隔时间
+            if current_time - self.last_switch_time > self.decision_interval:
+                # 获取当前统计数据以计算奖励
+                current_stats = self.get_detector_stats()
+                
+                if current_stats and self.last_selected_arm is not None and self.last_context is not None:
+                    # 将StatsEntry转换为字典用于奖励计算
+                    stats_dict = self.stats_entry_to_dict(current_stats[0])
+                    
+                    # 计算上一次选择的臂的奖励
+                    reward = self.calculate_reward(stats_dict)
+                    
+                    # 更新上一次选择的臂的参数
+                    self.update_thompson_sampling(self.last_selected_arm, self.last_context, reward)
+                
+                # 提取当前上下文特征
+                if current_stats:
+                    context = self.extract_features(current_stats[0])
+                    
+                    # 使用Thompson采样选择新臂
+                    selected_arm = self.select_model_thompson_sampling(context)
+                    
+                    # 切换到所选模型
+                    self.switch_model(selected_arm)
+                    print(f'Thompson Sampling switched model to {selected_arm}')
+                    
+                    # 更新追踪变量
+                    self.last_selected_arm = selected_arm
+                    self.last_context = context
+                    self.last_switch_time = current_time
+                    
+                    # 打印当前臂的统计信息
+                    self.print_arm_stats()
+            
+            time.sleep(0.1)
+
+    def extract_features(self, stats_entry):
+        """从StatsEntry中提取特征向量"""
+        stats = self.stats_entry_to_dict(stats_entry)
         
-        # 如果最佳模型与当前模型不同，则切换
-        if best_model != current_model:
-            print(f'CMAB switched model from {current_model} to {best_model} (UCB scores: {ucb_scores})')
-            self.switch_model(best_model)
+        # 提取特征，只对需要的特征进行归一化
+        # 固定特征数为10（9个特征 + 1个偏置项）
+        features = np.zeros(10)
+        
+        # 只对queue_length, brightness和contrast归一化
+        features[0] = float(stats['queue_length']) / self.queue_low_threshold_length  # 队列长度归一化
+        features[1] = float(stats['processing_latency'])  # 不归一化
+        features[2] = float(stats['target_nums'])  # 不归一化
+        features[3] = float(stats['avg_confidence'])  # 不归一化
+        features[4] = float(stats['std_confidence'])  # 不归一化
+        features[5] = float(stats['avg_size'])  # 不归一化
+        features[6] = float(stats['std_size'])  # 不归一化
+        features[7] = float(stats['brightness']) / 255.0  # 亮度归一化
+        features[8] = float(stats['contrast']) / 255.0  # 对比度归一化
+        
+        # 添加一个常数特征作为偏置项
+        features[9] = 1.0
             
+        # 打印提取的特征
+        print("Extracted features:")
+        for i, value in enumerate(features):
+            print(f"  feature_{i}: {value:.4f}")
+            
+        return features
+
+    def sample_parameter(self, arm):
+        """从模型的后验分布中采样参数向量"""
+        model_data = self.models[arm]
+        
+        try:
+            # 使用Cholesky分解从多元正态分布中采样，提高数值稳定性
+            L = linalg.cholesky(model_data['Sigma'], lower=True)
+            
+            # 采样标准正态分布
+            standard_normal = np.random.standard_normal(self.context_dimension)
+            
+            # 变换为目标分布
+            theta_sample = model_data['mu'] + L @ standard_normal
+            
+            return theta_sample
+        except (np.linalg.LinAlgError, ValueError) as e:
+            print(f"警告: 模型{arm}采样错误: {e}")
+            print("使用均值向量替代采样")
+            # 如果采样失败，返回均值向量
+            return model_data['mu']
+
+    def select_model_thompson_sampling(self, context):
+        """使用Thompson Sampling策略选择模型"""
+        # 检查是否是强制探索回合
+        self.exploration_counter += 1
+        force_exploration = self.exploration_counter >= self.force_exploration_count
+        
+        # 如果是强制探索回合，重置计数器并随机选择
+        if force_exploration:
+            self.exploration_counter = 0
+            # 随机选择一个模型
+            selected_arm = np.random.randint(0, self.models_num)
+            print(f"强制探索: 随机选择模型 {selected_arm}")
+            return selected_arm
+        
+        # ε-greedy随机探索
+        if np.random.random() < self.exploration_rate:
+            selected_arm = np.random.randint(0, self.models_num)
+            print(f"随机探索: 选择模型 {selected_arm}")
+            return selected_arm
+        
+        # Thompson Sampling决策
+        expected_rewards = {}
+        sampled_params = {}
+        
+        # 为每个模型采样参数并计算期望奖励
+        for arm in range(self.models_num):
+            # 从后验分布采样参数向量
+            theta = self.sample_parameter(arm)
+            sampled_params[arm] = theta
+            
+            # 计算期望奖励
+            expected_reward = np.dot(theta, context)
+            expected_rewards[arm] = float(expected_reward)  # 确保是Python浮点数
+        
+        # 选择期望奖励最高的模型
+        selected_arm = max(expected_rewards, key=expected_rewards.get)
+        
+        print(f"Thompson sampling选择模型: {selected_arm} (期望奖励={expected_rewards[selected_arm]:.4f})")
+        
+        # 打印所有模型的预期奖励
+        for arm, reward in expected_rewards.items():
+            print(f"  模型{arm}: 期望奖励={reward:.4f}, "
+                  f"参数范数={np.linalg.norm(sampled_params[arm]):.4f}")
+        
+        return selected_arm
+
+    def update_thompson_sampling(self, arm, context, reward):
+        """更新Thompson Sampling模型的参数"""
+        model_data = self.models[arm]
+        
+        # 累计计数和奖励
+        model_data['count'] += 1
+        model_data['sum_reward'] += reward
+        
+        # 更新协方差和精度矩阵
+        context_2d = context.reshape(-1, 1)  # 列向量
+        
+        # 更新精度矩阵 (X^T X)
+        model_data['precision'] += context_2d @ context_2d.T
+        
+        # 更新精度均值 (X^T y)
+        model_data['precision_mean'] += context * reward
+        
+        # 重新计算均值向量和协方差矩阵
+        try:
+            # 计算协方差矩阵 (Sigma)
+            model_data['Sigma'] = np.linalg.inv(model_data['precision'])
+            
+            # 计算均值向量 (mu = Sigma * precision_mean)
+            model_data['mu'] = model_data['Sigma'] @ model_data['precision_mean']
+            
+            # 更新奖励方差估计
+            if model_data['count'] > 1:
+                avg_reward = model_data['sum_reward'] / model_data['count']
+                # 简单估计方差
+                model_data['reward_variance'] = max(0.1, self.noise_variance)
+            
+            print(f"更新模型{arm}的Thompson Sampling参数:")
+            print(f"  count={model_data['count']}, avg_reward={model_data['sum_reward']/model_data['count']:.4f}")
+            print(f"  mu_norm={np.linalg.norm(model_data['mu']):.4f}, var={model_data['reward_variance']:.4f}")
+        except np.linalg.LinAlgError:
+            print(f"警告: 无法计算模型{arm}的精度矩阵逆。使用先前的值。")
+
+    def calculate_reward(self, stats):
+        """计算模型的奖励值"""
+        queue_ratio = stats['queue_length'] / self.queue_low_threshold_length
+        
+        # 权重计算
+        w1 = max(1 - queue_ratio, 0)  # 准确率权重
+        w2 = queue_ratio  # 延迟权重
+        
+        # 奖励计算
+        raw_reward = w1 * (stats['cur_model_accuracy']/100.0 + stats['avg_confidence']) - \
+                w2 * (stats['processing_latency'])
+        
+        print(f"计算奖励: {raw_reward:.4f} (w1={w1:.2f}, w2={w2:.2f})")
+        
+        return raw_reward
+
     def switch_model(self, index: int):
-        """切换到指定的模型"""
+        """切换到指定索引的模型"""
         self.detector_instance.switch_model(index)
+
+    def get_detector_stats(self):
+        """获取检测器的最新统计信息"""
+        stats = self.detector_instance.stats_manager.get_latest_stats()
+        return stats
+    
+    def get_detector_interval_stats(self, nums: int = 5, interval: float = 1.0):
+        """按间隔获取检测器的统计信息"""
+        stats = self.detector_instance.stats_manager.get_interval_stats(nums, interval)
+        return stats
+    
+    def stats_entry_to_dict(self, stats_entry):
+        """将StatsEntry对象转换为字典"""
+        if stats_entry is None:
+            return {}
         
-    def get_detector_stats(self, *args, **kwargs):
-        return super().get_detector_stats(**kwargs)
+        return {
+            'timestamp': stats_entry.timestamp,
+            'queue_length': stats_entry.queue_length,
+            'cur_model_index': stats_entry.cur_model_index,
+            'cur_model_accuracy': stats_entry.cur_model_accuracy,
+            'processing_latency': stats_entry.processing_latency,
+            'target_nums': stats_entry.target_nums,
+            'avg_confidence': stats_entry.avg_confidence,
+            'std_confidence': stats_entry.std_confidence,
+            'avg_size': stats_entry.avg_size,
+            'std_size': stats_entry.std_size,
+            'brightness': stats_entry.brightness,
+            'contrast': stats_entry.contrast
+        }
+    
+    def print_arm_stats(self):
+        """打印所有臂的当前统计信息"""
+        print("\n线性Thompson Sampling模型参数:")
+        print("------------------------")
+        for arm in range(self.models_num):
+            model_data = self.models[arm]
+            if model_data['count'] > 0:
+                avg_reward = model_data['sum_reward'] / model_data['count']
+            else:
+                avg_reward = 0.0
+            print(f"模型 {arm}: count={model_data['count']}, avg_reward={avg_reward:.4f}, "
+                  f"param_norm={np.linalg.norm(model_data['mu']):.4f}")
+        print("------------------------\n")

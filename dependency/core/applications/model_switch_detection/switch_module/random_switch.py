@@ -21,6 +21,8 @@ class RandomSwitch(BaseSwitch):
     def _switch_loop(self):
         while True:
             if time.time() - self.last_switch_time > self.decision_interval:
+                print(self.get_detector_stats())
+                print(self.get_detector_interval_stats())
                 model_index = np.random.randint(0, self.models_num)
                 self.switch_model(model_index)
                 print(f'Random switched model to {model_index}')
@@ -33,6 +35,11 @@ class RandomSwitch(BaseSwitch):
         '''
         self.detector_instance.switch_model(index)
 
-    def get_detector_stats(*args, **kwargs):
-        return super().get_detector_stats(**kwargs)
+    def get_detector_stats(self):
+        stats = self.detector_instance.stats_manager.get_latest_stats()
+        return stats
+    
+    def get_detector_interval_stats(self, nums: int = 5, interval: float = 1.0):
+        stats = self.detector_instance.stats_manager.get_interval_stats(nums, interval)
+        return stats
         
