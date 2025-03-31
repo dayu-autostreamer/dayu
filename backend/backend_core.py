@@ -1,4 +1,5 @@
 import copy
+import re
 from collections import deque
 from func_timeout import func_set_timeout as timeout
 
@@ -216,8 +217,24 @@ class BackendCore:
 
     @staticmethod
     def get_edge_nodes():
+        def sort_key(item):
+            name = item['name']
+            patterns = [
+                (r'^edge(\d+)$', 0),
+                (r'^edgexn(\d+)$', 1),
+                (r'^edgex(\d+)$', 2),
+                (r'^edgen(\d+)$', 3),
+            ]
+            for pattern, group in patterns:
+                match = re.match(pattern, name)
+                if match:
+                    num = int(match.group(1))
+                    return group, num
+            return len(patterns), 0
+
         node_role = NodeInfo.get_node_info_role()
         edge_nodes = [{'name': node_name} for node_name in node_role if node_role[node_name] == 'edge']
+        edge_nodes.sort(key=sort_key)
         return edge_nodes
 
     def check_simulation_datasource(self):
