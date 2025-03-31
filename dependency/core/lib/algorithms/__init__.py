@@ -12,6 +12,8 @@ from . import schedule_scenario_extraction
 from . import schedule_agent
 from . import schedule_startup_policy
 from . import schedule_policy_extraction
+from . import schedule_selection_policy
+from . import scheduler_deployment_policy
 from . import task_queue
 from . import scenario_extraction
 

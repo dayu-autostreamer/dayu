@@ -340,18 +340,17 @@ class TemplateHelper:
                                 )
         if response is None:
             LOGGER.warning('[Service Deployment] No response from scheduler.')
-            deployment_plan = None
+            invert_deployment_plan = {}
         else:
             deployment_plan = response['plan']
-
-        invert_deployment_plan = {}
-        for node in deployment_plan:
-            if deployment_plan[node]:
-                for service in deployment_plan[node]:
-                    if invert_deployment_plan.get(service) is None:
-                        invert_deployment_plan[service] = []
-                    else:
-                        invert_deployment_plan[service].append(node)
+            invert_deployment_plan = {}
+            for node in deployment_plan:
+                if deployment_plan[node]:
+                    for service in deployment_plan[node]:
+                        if invert_deployment_plan.get(service) is None:
+                            invert_deployment_plan[service] = []
+                        else:
+                            invert_deployment_plan[service].append(node)
 
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
