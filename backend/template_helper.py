@@ -198,6 +198,7 @@ class TemplateHelper:
             node_set = source_info['node_set']
 
             if selection_plan is not None and selection_plan[source['id']] is not None:
+                print('selection_plan', selection_plan)
                 node = selection_plan[source['id']]
             else:
                 LOGGER.warning("Using default selection plan.")
