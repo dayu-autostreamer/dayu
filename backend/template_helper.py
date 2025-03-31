@@ -194,11 +194,12 @@ class TemplateHelper:
         edge_workers_dict = {}
         for source_info in source_deploy:
             new_edge_worker = copy.deepcopy(edge_worker_template)
+            source_id = source_info['id']
             source = source_info['source']
             node_set = source_info['node_set']
 
-            if selection_plan is not None and selection_plan.get(source) is not None and selection_plan.get(source):
-                node = selection_plan[source]
+            if selection_plan is not None and selection_plan[source_id] is not None:
+                node = selection_plan[source_id]
             else:
                 LOGGER.warning("Using default selection plan.")
                 node = node_set[0]
