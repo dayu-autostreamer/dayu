@@ -97,6 +97,8 @@ class BackendCore:
         if not result:
             return False
 
+        print('first_docs_list', first_docs_list)
+        print('second_docs_list', second_docs_list)
         self.save_component_yaml(first_docs_list.extend(second_docs_list))
 
         return True
