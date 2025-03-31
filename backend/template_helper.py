@@ -163,7 +163,9 @@ class TemplateHelper:
 
         params = []
 
+        print('source_deploy:', source_deploy)
         for source_info in source_deploy:
+            print('source_info:', source_info)
             SOURCE_ENV = source_deploy['source']
             NODE_SET_ENV = source_deploy['node_set']
             DAG_ENV = {}
@@ -205,7 +207,6 @@ class TemplateHelper:
 
             source_deploy['source'].update({'deploy_node': node})
 
-            # node = random.choice(node_set)
             dag = source_info['dag']
 
             new_edge_worker['template']['spec']['nodeName'] = node
