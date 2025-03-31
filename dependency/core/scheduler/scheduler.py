@@ -45,7 +45,7 @@ class Scheduler:
 
         if plan is None:
             LOGGER.debug('No schedule plan, use startup policy')
-            plan = self.startup_policy(info)
+            plan = self.get_startup_policy(info)
 
         LOGGER.info(f'[Schedule Plan] Source {source_id}: {plan}')
 
@@ -85,10 +85,10 @@ class Scheduler:
 
     def get_source_node_selection_plan(self, source_id, data):
         agent = self.schedule_table[source_id]
-        plan = agent.get_schedule_plan(data)
+        plan = agent.get_source_selection_plan(data)
         return plan
 
     def get_deployment_plan(self, source_id, data):
         agent = self.schedule_table[source_id]
-        plan = agent.get_deployment_plan(data)
+        plan = agent.get_service_deployment_plan(data)
         return plan

@@ -72,7 +72,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         self.profiling_frames = []
 
-        self.task_pipeline = None
+        self.task_dag = None
 
         self.current_analytics = ''
 
@@ -228,7 +228,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         cur_path = self.compress_video(frames)
 
-        tmp_task = Task(source_id=0, task_id=0, source_device='', dag=self.task_pipeline)
+        tmp_task = Task(source_id=0, task_id=0, source_device='', all_edge_devices=[], dag=self.task_dag)
         tmp_task.set_file_path(cur_path)
         response = http_request(url=self.processor_address,
                                 method=NetworkAPIMethod.PROCESSOR_PROCESS_RETURN,
@@ -275,9 +275,9 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         frame_encoded = info['frame']
         frame_hash_code = info['hash_code']
-        pipeline = info['pipeline']
+        dag = info['dag']
 
-        self.task_pipeline = Task.extract_dag_from_dict(pipeline)
+        self.task_dag = Task.extract_dag_from_dag_deployment(dag)
 
         if frame_encoded:
             self.raw_frames.put((EncodeOps.decode_image(frame_encoded), frame_hash_code))
@@ -288,14 +288,13 @@ class ChameleonAgent(BaseAgent, abc.ABC):
             return None
 
         policy = self.fixed_policy.copy()
-        edge_device = info['device']
         cloud_device = self.cloud_device
-        pipe_seg = policy['pipeline']
-        pipeline = info['pipeline']
-        self.current_analytics = pipeline[0]['service_name']
-        pipeline = [{**p, 'execute_device': edge_device} for p in pipeline[:pipe_seg]] + \
-                   [{**p, 'execute_device': cloud_device} for p in pipeline[pipe_seg:]]
-        policy.update({'pipeline': pipeline})
+
+        self.current_analytics = self.task_dag.get_next_nodes('start')[0]
+        for service_name in dag:
+            dag[service_name]['service']['execute_device'] = cloud_device
+
+        policy.update({'dag': dag})
 
         best_config = self.best_config_list[0]
 

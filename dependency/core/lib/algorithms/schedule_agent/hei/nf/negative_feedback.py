@@ -25,7 +25,7 @@ class NegativeFeedback:
         resolution = latest_policy['resolution']
         fps = latest_policy['fps']
         buffer_size = latest_policy['buffer_size']
-        pipeline = latest_policy['pipeline']
+        pipeline = latest_policy['dag']
 
         self.pipeline_list = list(range(0, len(pipeline)))
         self.edge_device = latest_policy['edge_device']

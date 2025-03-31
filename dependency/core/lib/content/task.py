@@ -13,6 +13,7 @@ class Task:
                  source_id: int,
                  task_id: int,
                  source_device: str,
+                 all_edge_devices: list,
                  dag: DAG = None,
                  flow_index: str = 'start',
                  metadata: dict = None,
@@ -38,6 +39,8 @@ class Task:
         self.__task_id = task_id
         # hostname of source binding device (position of generator)
         self.__source_device = source_device
+        # hostname list of all offloading edge devices
+        self.__all_edge_devices = all_edge_devices
 
         # metadata of task
         self.__metadata = metadata
@@ -81,7 +84,7 @@ class Task:
         return dag_flow.to_dict()
 
     @staticmethod
-    def extract_deployment_info_from_dag(dag_flow: DAG):
+    def extract_dag_deployment_from_dag(dag_flow: DAG):
         """
         get deployment info from dag class
         service_name/execute device for each node in DAG
@@ -96,8 +99,63 @@ class Task:
                                           'prev_nodes': node['prev_nodes']}
         return deployment_info
 
+    @staticmethod
+    def extract_dag_from_dag_deployment(dag_deployment: dict):
+        return Task.extract_dag_from_dict(dag_deployment)
+
+    @staticmethod
+    def extract_pipeline_deployment_from_dag(dag_flow: DAG):
+        """get pipeline deployment info if dag has a linear structure"""
+        if not dag_flow.check_is_pipeline():
+            raise ValueError('Current DAG is not a pipeline structure.')
+
+        pipeline_deployment_info = []
+        start = 'start'
+        end = 'end'
+        current = dag_flow.get_next_nodes(start)[0]
+        while current != end:
+            pipeline_deployment_info.append(
+                {'service_name': dag_flow.get_node(current).service.get_service_name(),
+                 'execute_device': dag_flow.get_node(current).service.get_execute_device()}
+            )
+        pipeline_deployment_info.append(
+            {'service_name': dag_flow.get_node(current).service.get_service_name(),
+             'execute_device': dag_flow.get_node(current).service.get_execute_device()}
+        )
+
+        return pipeline_deployment_info
+
+    @staticmethod
+    def extract_dag_from_pipeline_deployment(pipeline_deployment: list):
+        dag_dict = {}
+        for service in pipeline_deployment[:-1]:
+            dag_dict[service['service_name']] = {
+                'service': service,
+                'next_nodes': [],
+            }
+        prev_node = None
+        for service in pipeline_deployment[-2::-1]:
+            if prev_node:
+                dag_dict[service['service_name']]['next_nodes'].append(prev_node)
+            prev_node = service['service_name']
+        dag_flow = Task.extract_dag_from_dict(dag_dict)
+        return dag_flow
+
+    @staticmethod
+    def extract_pipeline_deployment_from_dag_deployment(dag_dict: dict):
+        dag_flow = Task.extract_dag_from_dict(dag_dict)
+        return Task.extract_pipeline_deployment_from_dag(dag_flow)
+
+    @staticmethod
+    def extract_dag_deployment_from_pipeline_deployment(pipeline_deployment: list):
+        dag_workflow = Task.extract_dag_from_pipeline_deployment(pipeline_deployment)
+        return Task.extract_dag_deployment_from_dag(dag_workflow)
+
+    def get_pipeline_deployment_info(self):
+        return Task.extract_pipeline_deployment_from_dag(self.__dag_flow)
+
     def get_dag_deployment_info(self):
-        return Task.extract_deployment_info_from_dag(self.__dag_flow)
+        return Task.extract_dag_deployment_from_dag(self.__dag_flow)
 
     def get_source_id(self):
         return self.__source_id
@@ -107,6 +165,9 @@ class Task:
 
     def get_source_device(self):
         return self.__source_device
+
+    def get_all_edge_devices(self):
+        return self.__all_edge_devices
 
     def get_dag(self):
         return self.__dag_flow
@@ -191,7 +252,7 @@ class Task:
         return next((content for content in prev_contents if content is not None), None)
 
     def get_first_content(self):
-        first_service_names = self.__dag_flow.get_prev_nodes('start')
+        first_service_names = self.__dag_flow.get_next_nodes('start')
         first_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
                           for service_name in first_service_names]
         # return one of first non-empty content
@@ -344,6 +405,7 @@ class Task:
             'source_id': self.get_source_id(),
             'task_id': self.get_task_id(),
             'source_device': self.get_source_device(),
+            'all_edge_devices': self.get_all_edge_devices(),
             'dag': self.get_dag().to_dict() if self.get_dag() else None,
             'cur_flow_index': self.get_flow_index(),
             'meta_data': self.get_metadata(),
@@ -361,7 +423,8 @@ class Task:
     def from_dict(cls, dag_dict):
         task = cls(source_id=dag_dict['source_id'],
                    task_id=dag_dict['task_id'],
-                   source_device=dag_dict['source_device'])
+                   source_device=dag_dict['source_device'],
+                   all_edge_devices=dag_dict['all_edge_devices'])
 
         task.set_dag(DAG.from_dict(dag_dict['dag'])) if 'dag' in dag_dict and dag_dict['dag'] else None
         task.set_flow_index(dag_dict['cur_flow_index']) if 'cur_flow_index' in dag_dict else None

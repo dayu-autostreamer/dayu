@@ -7,7 +7,7 @@ def import_application():
         processor = service_name[len('processor-'):].replace('-', '_')
         module = import_module(f"core.applications.{processor}")
 
-        from core.lib.common import config
+        from core.lib.common import context
         context_namespace = config.__dict__
         for attr in getattr(module, "__all__", []):
             context_namespace[attr] = getattr(module, attr)

@@ -13,6 +13,8 @@ class VideoGenerator(Generator):
         self.task_id = 0
         self.video_data_source = source_url
 
+        self.all_edge_devices = Context.get_parameter('ALL_EDGE_DEVICES', direct=False)
+
         self.frame_filter = Context.get_algorithm('GEN_FILTER')
         self.frame_process = Context.get_algorithm('GEN_PROCESS')
         self.frame_compress = Context.get_algorithm('GEN_COMPRESS')
@@ -22,6 +24,7 @@ class VideoGenerator(Generator):
         self.current_task = Task(source_id=self.source_id,
                                  task_id=self.task_id,
                                  source_device=self.local_device,
+                                 all_edge_devices=self.all_edge_devices,
                                  dag=self.task_dag,
                                  metadata=self.meta_data,
                                  raw_metadata=self.raw_meta_data,

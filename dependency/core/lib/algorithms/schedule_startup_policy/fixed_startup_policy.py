@@ -14,5 +14,5 @@ class FixedStartupPolicy(BaseStartupPolicy, abc.ABC):
             'fps': 5,
             'encoding': 'mp4v',
             'buffer_size': 4,
-            'pipeline': info['pipeline']
+            'dag': info['dag']
         }

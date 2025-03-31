@@ -1,7 +1,6 @@
 import copy
 import json
 import os
-import random
 import re
 from kube_helper import KubeHelper
 
@@ -155,25 +154,13 @@ class TemplateHelper:
 
         return docs_list
 
-    # TODO: 添加请求scheduler获取source node selection结果
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
         scheduler_hostname = NodeInfo.get_cloud_node()
         scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
         scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
                                           port=scheduler_port,
                                           path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE)
-        # source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
-        # TODO: modify here (set params as scheduler input)
-        #     template:
-        #     [
-        #       {
-        #           "source": {...},
-        #           "dag": {...}, #(same as input in generator)
-        #           "node_set": [...],
-        #       },
-        #       {...}
-        #     ]
         params = []
 
         for source_info in source_deploy:
@@ -210,20 +197,7 @@ class TemplateHelper:
             source = source_info['source']
             node_set = source_info['node_set']
 
-            # TODO: modify here (set node from 'selection_plan')
-            #       template of selection_plan:
-            #       {
-            #           source_id1: selected_node1,
-            #           source_id2: selected_node2,
-            #           ...
-            #       }
-
-            # TODO: (tips in node selection)
-            #      if 1.(selection_plan is None) or 2.(current source_id not in selection_plan) or 3.(selected_node not in node_set):
-            #      use default node (first node in current node_set) as selected node
-            #      give related log: LOGGER.warning(...)   (in English)
-
-            if selection_plan != None and selection_plan.get(source) is not None and selection_plan.get(source):
+            if selection_plan is not None and selection_plan.get(source) is not None and selection_plan.get(source):
                 node = selection_plan[source]
             else:
                 LOGGER.warning("Using default selection plan.")
@@ -253,6 +227,7 @@ class TemplateHelper:
                     {'name': 'SOURCE_TYPE', 'value': str(source['source_type'])},
                     {'name': 'SOURCE_ID', 'value': str(source['id'])},
                     {'name': 'SOURCE_METADATA', 'value': str(source['metadata'])},
+                    {'name': 'ALL_EDGE_DEVICES', 'value': str(node_set)},
                     {'name': 'DAG', 'value': str(DAG_ENV)},
                 ])
 
@@ -338,23 +313,13 @@ class TemplateHelper:
 
         return yaml_doc
 
-    # TODO: 添加请求scheduler获取service deployment结果
     def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy):
         scheduler_hostname = NodeInfo.get_cloud_node()
         scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
         scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
                                           port=scheduler_port,
                                           path=NetworkAPIPath.SCHEDULER_INITIAL_DEPLOYMENT)
-        # TODO: modify here (set params as scheduler input)
-        #     template:
-        #     [
-        #       {
-        #           "source": {...},  #(+ source node)
-        #           "dag": {...}, # (same as input into generator)
-        #           "node_set": [...],
-        #       },
-        #       {...}
-        #     ]
+
         params = []
         for source_info in source_deploy:
             SOURCE_ENV = source_deploy['source']
@@ -384,7 +349,7 @@ class TemplateHelper:
         for node in deployment_plan:
             if deployment_plan[node]:
                 for service in deployment_plan[node]:
-                    if invert_deployment_plan.get(service) == None:
+                    if invert_deployment_plan.get(service) is None:
                         invert_deployment_plan[service] = []
                     else:
                         invert_deployment_plan[service].append(node)
@@ -395,28 +360,14 @@ class TemplateHelper:
             service_name = service_dict[service_id]['service_name']
             yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
-            # TODO: modify here (set service deployment from 'deployment_plan')
-            #       template of deployment_plan:
-            #       {
-            #           node1: [service1, service2,...],
-            #           node2: [...]
-            #           ...
-            #       }
-            #     # (no cloud)
-
-            # TODO: (tips in service deployment)
-            #      if 1.(deployment_plan is None) or 2.(current node_id not in deployment_plan) or (3.type of services is not list):
-            #      use default plan (deploy all services of DAG on each node in node_set)
-            #      give related log: LOGGER.warning(...)   (in English)
             edge_nodes = service_dict[service_id]['node']
-            if invert_deployment_plan.get(service_id) != None and (set(invert_deployment_plan[service_id]) - set(
-                    edge_nodes) is not None):
-                edge_worker_template = list(set(invert_deployment_plan[service_id])&set(edge_nodes))
+            if (invert_deployment_plan.get(service_id) is not None and
+                    (set(invert_deployment_plan[service_id]) - set(edge_nodes) is not None)):
+                edge_worker_template = list(set(invert_deployment_plan[service_id]) & set(edge_nodes))
             else:
                 LOGGER.warning("Using default service plan.")
                 edge_worker_template = service_dict[service_id]['node']
 
-            # edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
             cloud_worker_template = yaml_doc['spec']['cloudWorker']
 
             edge_workers = []

@@ -45,10 +45,10 @@ class TimeEstimator:
     def record_task_ts(task: Task, tag: str, is_end: bool = False) -> (Task, float):
         """
 
-        :param task: pipeline task
+        :param task: dag task
         :param tag: name of time ticket
         :param is_end: if recording the end of current timestamp
-        :return: task: pipeline task with recorded time
+        :return: task: dag task with recorded time
                  duration: time estimation result
         """
 

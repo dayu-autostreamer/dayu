@@ -139,7 +139,7 @@ class HEIAgent(BaseAgent, abc.ABC):
             meta_data = task.get_metadata()
             raw_metadata = task.get_raw_metadata()
             content = task.get_first_content()
-            pipeline = task.get_dag()
+            dag = task.get_dag()
 
             hash_data = task.get_hash_data()
 
@@ -150,7 +150,7 @@ class HEIAgent(BaseAgent, abc.ABC):
             fps_ratio = meta_data['fps'] / raw_metadata['fps']
 
             if not self.acc_estimator:
-                self.create_acc_estimator(service_name=pipeline[0].get_service_name())
+                self.create_acc_estimator(service_name=dag.get_next_nodes('start')[0])
             acc = self.acc_estimator.calculate_accuracy(hash_data, content, resolution_ratio, fps_ratio)
             acc_list.append(acc)
 
@@ -254,9 +254,9 @@ class HEIAgent(BaseAgent, abc.ABC):
         resolution_decision = self.system.resolution_list.index(policy['resolution'])
         fps_decision = self.system.fps_list.index(policy['fps'])
         buffer_size_decision = self.system.buffer_size_list.index(policy['buffer_size'])
-        pipeline_decision = next((i for i, service in enumerate(policy['pipeline'])
+        pipeline_decision = next((i for i, service in enumerate(policy['dag'])
                                   if service['execute_device'] == self.system.cloud_device),
-                                 len(policy['pipeline']) - 1)
+                                 len(policy['dag']) - 1)
         self.state_buffer.add_decision_buffer([resolution_decision, fps_decision,
                                                buffer_size_decision, pipeline_decision])
 

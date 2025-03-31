@@ -1,5 +1,5 @@
 import abc
-from core.lib.common import ClassFactory, ClassType
+from core.lib.common import ClassFactory, ClassType, KubeConfig, Context, ConfigLoader
 
 from .base_agent import BaseAgent
 
@@ -9,26 +9,50 @@ __all__ = ('FixedAgent',)
 @ClassFactory.register(ClassType.SCH_AGENT, alias='fixed')
 class FixedAgent(BaseAgent, abc.ABC):
 
-    def __init__(self, system, agent_id: int, fixed_policy: dict = None):
+    def __init__(self, system, agent_id: int, configuration=None, offloading=None):
         super().__init__()
 
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
-        self.fixed_policy = fixed_policy
+
+        if configuration is None or isinstance(configuration, dict):
+            self.fixed_configuration = configuration
+        elif isinstance(configuration, str):
+            self.fixed_configuration = ConfigLoader.load(Context.get_file_path(configuration))
+        else:
+            raise TypeError(f'Input "configuration" must be of type str or dict, get type {type(configuration)}')
+
+        if offloading is None or isinstance(offloading, dict):
+            self.fixed_offloading = offloading
+        elif isinstance(offloading, str):
+            self.fixed_offloading = ConfigLoader.load(Context.get_file_path(offloading))
+        else:
+            raise TypeError(f'Input "offloading" must be of type str or dict, get type {type(configuration)}')
 
     def get_schedule_plan(self, info):
-        if self.fixed_policy is None:
-            return self.fixed_policy
+        if self.fixed_configuration is None or self.fixed_offloading is None:
+            return None
 
-        policy = self.fixed_policy.copy()
-        edge_device = info['device']
+        configuration = self.fixed_configuration.copy()
+
+        policy = {}
+        policy.update(configuration)
         cloud_device = self.cloud_device
-        pipe_seg = policy['pipeline']
-        pipeline = info['pipeline']
-        pipeline = [{**p, 'execute_device': edge_device} for p in pipeline[:pipe_seg]] + \
-                   [{**p, 'execute_device': cloud_device} for p in pipeline[pipe_seg:]]
+        source_edge_device = info['source_device']
+        all_edge_devices = info['all_edge_devices']
+        all_devices = [*all_edge_devices, cloud_device]
+        service_info = KubeConfig.get_service_nodes_dict()
 
-        policy.update({'pipeline': pipeline})
+        dag = info['dag']
+
+        for service_name in dag:
+            if service_name in service_info and service_name in self.fixed_offloading \
+                    and self.fixed_offloading[service_name] in all_devices:
+                dag[service_name]['service']['execute_device'] = self.fixed_offloading[service_name]
+            else:
+                dag[service_name]['service']['execute_device'] = cloud_device
+
+        policy.update({'dag': dag})
         return policy
 
     def run(self):

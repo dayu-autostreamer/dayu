@@ -143,11 +143,57 @@ class DAG:
         for node in nodes_without_children:
             self.add_edge(node.service, end_node)
 
+    def get_start_node(self):
+        if 'start' not in self.nodes:
+            raise ValueError(f'Start node "{self}" does not exist in DAG')
+        return self.nodes['start']
+
+    def get_end_node(self):
+        if 'end' not in self.nodes:
+            raise ValueError(f'End node "{self}" does not exist in DAG')
+        return self.nodes['end']
+
+    def check_is_pipeline(self):
+        """Check if DAG forms a linear pipeline."""
+        start = self.get_start_node()
+        end = self.get_end_node()
+
+        # Traverse from start to end node
+        visited = set()
+        current = start
+        while current != end:
+            # Check for cycles
+            if current.service.get_service_name() in visited:
+                return False
+            visited.add(current.service.get_service_name())
+            # Validate middle node connections
+            if len(current.next_nodes) != 1 or len(current.prev_nodes) > 1:
+                return False
+            next_node = self.nodes[current.next_nodes[0]]
+            # Verify next node's input is current node
+            if current.service.get_service_name() not in next_node.prev_nodes:
+                return False
+            current = next_node
+
+        # Final check for end node
+        if len(current.prev_nodes) != 1 or len(current.next_nodes) != 0:
+            return False
+        visited.add(current.service.get_service_name())
+        # Ensure all nodes are in the chain
+        return len(visited) == len(self.nodes)
+
     def validate_dag(self):
+        self._check_start_end_node()
         self._check_edge_consistency()
         self._check_duplicate_edges()
         self._check_cycles()
         self._check_connectivity()
+
+    def _check_start_end_node(self):
+        if 'start' not in self.nodes:
+            raise ValueError(f'Start node "{self}" does not exist in DAG')
+        if 'end' not in self.nodes:
+            raise ValueError(f'End node "{self}" does not exist in DAG')
 
     def _check_duplicate_edges(self):
         """check if dag has duplicate edges"""
