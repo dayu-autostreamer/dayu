@@ -187,6 +187,7 @@ class TemplateHelper:
             selection_plan = None
         else:
             selection_plan = response['plan']
+            selection_plan = {int(k):v for k, v in selection_plan.items()}
 
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
@@ -197,7 +198,6 @@ class TemplateHelper:
             source = source_info['source']
             node_set = source_info['node_set']
 
-            print('selection_plan', selection_plan)
             if selection_plan is not None and selection_plan[source['id']] is not None:
                 node = selection_plan[source['id']]
             else:
