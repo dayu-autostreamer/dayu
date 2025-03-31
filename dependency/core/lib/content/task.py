@@ -366,8 +366,8 @@ class Task:
     def set_execute_device(dag, device):
         assert dag, 'DAG is empty!'
 
-        for node_name in dag:
-            node = dag[node_name]
+        for node_name in dag.nodes:
+            node = dag.nodes[node_name]
             node.service.set_execute_device(device)
         return dag
 
