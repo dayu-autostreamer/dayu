@@ -321,8 +321,8 @@ class TemplateHelper:
 
         params = []
         for source_info in source_deploy:
-            SOURCE_ENV = source_deploy['source']
-            NODE_SET_ENV = source_deploy['node_set']
+            SOURCE_ENV = source_info['source']
+            NODE_SET_ENV = source_info['node_set']
             DAG_ENV = {}
             dag = source_info['dag']
 
