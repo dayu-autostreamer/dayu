@@ -203,7 +203,7 @@ class TemplateHelper:
                 LOGGER.warning("Using default selection plan.")
                 node = node_set[0]
 
-            source_deploy['source'].update({'deploy_node': node})
+            source_info['source'].update({'deploy_node': node})
 
             dag = source_info['dag']
 
