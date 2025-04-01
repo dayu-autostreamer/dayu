@@ -363,11 +363,11 @@ class TemplateHelper:
             edge_nodes = service_dict[service_id]['node']
             if (service_id in invert_deployment_plan and
                     (set(invert_deployment_plan[service_id]) - set(edge_nodes) is not None)):
-                edge_worker_template = list(set(invert_deployment_plan[service_id]) & set(edge_nodes))
+                edge_nodes = list(set(invert_deployment_plan[service_id]) & set(edge_nodes))
             else:
                 LOGGER.warning("Using default service plan.")
-                edge_worker_template = service_dict[service_id]['node']
 
+            edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
             cloud_worker_template = yaml_doc['spec']['cloudWorker']
 
             edge_workers = []
