@@ -399,6 +399,7 @@ export default {
           }
         }
         console.log(graph);
+        console.log(graph._start)
         sleep(20000);
         return graph;
       };
