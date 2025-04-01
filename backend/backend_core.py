@@ -115,7 +115,6 @@ class BackendCore:
 
     def extract_service_from_source_deployment(self, source_deploy):
         service_dict = {}
-        print('source_deploy:', source_deploy)
 
         for s in source_deploy:
             dag = s['dag']

@@ -267,14 +267,12 @@ class BackendServer:
         """
         dag_name = data['dag_name']
         dag = data['dag']
-        print('dag:', dag)
         if self.server.check_dag(dag):
             self.server.dags.append({
                 'dag_id': Counter().get_count('dag_id'),
                 'dag_name': dag_name,
                 'dag': dag
             })
-            print('dag:', dag)
 
             return {'state': 'success', 'msg': 'Add new dag Successfully'}
         else:
