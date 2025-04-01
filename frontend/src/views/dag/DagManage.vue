@@ -382,7 +382,7 @@ export default {
           const succ = flowNode.data?.succ ? [...flowNode.data.succ] : [];
           graph[serviceId] = {service_id: serviceId, prev, succ};
           graph[serviceId] = {
-            service_id: serviceId,
+            id: serviceId,
             prev: prev,
             succ: flowNode.data?.succ ?? [],
           };
