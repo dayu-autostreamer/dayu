@@ -356,7 +356,7 @@ class TemplateHelper:
         print('service_dict:', service_dict)
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
-            yaml_doc = service_dict[service_id]['yaml']
+            yaml_doc = service_dict[service_id]['service']
             service_name = service_dict[service_id]['service_name']
             yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
