@@ -84,7 +84,6 @@ class BackendCore:
         second_stage_components = ['generator', 'processor']
 
         LOGGER.info(f'[First Deployment Stage] deploy components:{first_stage_components}')
-        print('first yaml dict:', yaml_dict)
         first_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
                                                                         scopes=first_stage_components)
         result = self.install_yaml_templates(first_docs_list)
@@ -92,7 +91,6 @@ class BackendCore:
             return False
 
         LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
-        print('second yaml dict:', yaml_dict)
         second_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
                                                                          scopes=second_stage_components)
         result = self.install_yaml_templates(second_docs_list)
@@ -117,6 +115,7 @@ class BackendCore:
 
     def extract_service_from_source_deployment(self, source_deploy):
         service_dict = {}
+        print('source_deploy:', source_deploy)
 
         for s in source_deploy:
             dag = s['dag']
