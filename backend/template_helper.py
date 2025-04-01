@@ -353,6 +353,7 @@ class TemplateHelper:
                         invert_deployment_plan[service] = [node]
 
         print("invert_deployment_plan:", invert_deployment_plan)
+        print('service_dict:', service_dict)
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
             yaml_doc = service_dict[service_id]['yaml']
@@ -360,7 +361,7 @@ class TemplateHelper:
             yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
             edge_nodes = service_dict[service_id]['node']
-            if (invert_deployment_plan.get(service_id) is not None and
+            if (service_id in invert_deployment_plan and
                     (set(invert_deployment_plan[service_id]) - set(edge_nodes) is not None)):
                 edge_worker_template = list(set(invert_deployment_plan[service_id]) & set(edge_nodes))
             else:
