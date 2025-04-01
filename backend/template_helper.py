@@ -345,14 +345,13 @@ class TemplateHelper:
         else:
             deployment_plan = response['plan']
             invert_deployment_plan = {}
-            for node in deployment_plan:
-                if deployment_plan[node]:
-                    for service in deployment_plan[node]:
-                        if invert_deployment_plan.get(service) is None:
-                            invert_deployment_plan[service] = []
-                        else:
-                            invert_deployment_plan[service].append(node)
-        print("invert_deployment_plan:", invert_deployment_plan)
+            for node, services in deployment_plan.items():
+                for service in services:
+                    if service in invert_deployment_plan:
+                        invert_deployment_plan[service].append(node)
+                    else:
+                        invert_deployment_plan[service] = [node]
+
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
             yaml_doc = service_dict[service_id]['yaml']
