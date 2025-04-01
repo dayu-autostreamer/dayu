@@ -206,11 +206,11 @@ class BackendCore:
         queue = deque(source_list)
         visited = set(source_list)
         while queue:
-            current_node_item = queue.popleft()
-            dag_callback(dag_graph[current_node_item])
+            current_node_item = dag_graph[queue.popleft()]
+            dag_callback(current_node_item)
             for child_id in current_node_item['succ']:
                 if child_id not in visited:
-                    queue.append(dag_graph[child_id])
+                    queue.append(child_id)
                     visited.add(child_id)
 
     @staticmethod
