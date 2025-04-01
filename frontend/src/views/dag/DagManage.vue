@@ -390,7 +390,7 @@ export default {
             prev: prev,
             succ: flowNode.data?.succ ?? [],
           };
-          console.log('prev 原始数据:', JSON.parse(JSON.stringify(node.prev)));
+          console.log('prev 原始数据:', JSON.parse(JSON.stringify(graph[serviceId].prev)));
           console.log(graph[serviceId])
           if (prev.length === 0) {
             graph._start.push(serviceId);
