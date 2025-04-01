@@ -473,7 +473,7 @@ export default {
               this.newInputName = "";
               this.newInputDag = "";
               this.newInputDagId = "";
-              location.reload();
+              // location.reload();
             }
           })
           .catch((error) => {
