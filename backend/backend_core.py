@@ -121,6 +121,7 @@ class BackendCore:
             dag = s['dag']
             node_set = s['node_set']
             extracted_dag = copy.deepcopy(dag)
+            del extracted_dag['_start']
 
             def get_service_callback(node_item):
                 service_id = node_item['service_id']
@@ -206,7 +207,7 @@ class BackendCore:
         visited = set(source_list)
         while queue:
             current_node_item = queue.popleft()
-            dag_callback(current_node_item)
+            dag_callback(dag_graph[current_node_item])
             for child_id in current_node_item['succ']:
                 if child_id not in visited:
                     queue.append(dag_graph[child_id])
