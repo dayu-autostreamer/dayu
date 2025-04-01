@@ -272,7 +272,7 @@ class BackendCore:
 
             return len(topo_order) == len(in_degree)
 
-        res = topo_sort(dag, modal)
+        res = topo_sort(dag.copy(), modal)
 
         return res
 
