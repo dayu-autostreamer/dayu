@@ -352,6 +352,7 @@ class TemplateHelper:
                     else:
                         invert_deployment_plan[service] = [node]
 
+        print("invert_deployment_plan:", invert_deployment_plan)
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
             yaml_doc = service_dict[service_id]['yaml']
