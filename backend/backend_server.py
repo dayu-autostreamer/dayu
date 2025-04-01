@@ -249,7 +249,7 @@ class BackendServer:
         {
             "dag_name":"headup",
             "dag":{
-                "begin" : [node_id_A...],//需要是一个列表 支持多个begin
+                "_start" : [node_id_A...],//需要是一个列表 支持多个begin
                 "service_id":{
                     "prev" : [],
                     "succ" : ["node_id_B", ...],

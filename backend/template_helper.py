@@ -171,7 +171,7 @@ class TemplateHelper:
 
             for key in dag.keys():
                 temp_node = {}
-                if key != 'begin':
+                if key != '_start':
                     temp_node['service'] = {'service_name': key}
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
@@ -215,7 +215,7 @@ class TemplateHelper:
             DAG_ENV = {}
             for key in dag.keys():
                 temp_node = {}
-                if key != 'begin':
+                if key != '_start':
                     temp_node['service'] = {'service_name': key}
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
@@ -329,7 +329,7 @@ class TemplateHelper:
 
             for key in dag.keys():
                 temp_node = {}
-                if key != 'begin':
+                if key != '_start':
                     temp_node['service'] = {'service_name': key}
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node

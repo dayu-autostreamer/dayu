@@ -195,26 +195,16 @@
 </template>
 
 <script>
-import {
-  ElTable,
-  ElTableColumn,
-  ElTooltip,
-  ElTag,
-  ElInput,
-  ElButton,
-  ElMessage,
-  ElCol,
-  ElRow,
-} from "element-plus";
-import {ref, nextTick} from "vue";
-import {Panel, VueFlow, useVueFlow, MarkerType} from "@vue-flow/core";
+import {ElButton, ElCol, ElInput, ElMessage, ElRow, ElTable, ElTableColumn, ElTag, ElTooltip,} from "element-plus";
+import {nextTick, ref} from "vue";
+import {MarkerType, Panel, useVueFlow, VueFlow} from "@vue-flow/core";
 import {ControlButton, Controls} from "@vue-flow/controls";
 import {Background} from "@vue-flow/background";
 import {MiniMap} from "@vue-flow/minimap";
 import useDragAndDrop from "./useDnD";
 import Icon from "./Icon.vue";
 import {useLayout} from "./useLayout";
-import {Connection, Link, Right, MagicStick} from '@element-plus/icons-vue';
+import {Connection, Link, MagicStick, Right} from '@element-plus/icons-vue';
 
 export default {
   name: "DagManage",
@@ -380,21 +370,21 @@ export default {
       }
 
       // get graph
-      const constructDagGraph = () => {
-        const graph = {};
-        for (let i = 0; i < this.flowNodes.length; i++) {
-          const node = {
-            service_id: this.flowNodes[i].id,
-            prev: this.flowNodes[i].data.prev,
-            succ: this.flowNodes[i].data.succ,
+      const constructDagGraph = function() {
+        const graph = {_start: []};
+        for (const flowNode of this.flowNodes) {
+          const serviceId = flowNode.id;
+          if (graph[serviceId]) {
+            throw new Error(`Duplicate service_id: ${serviceId}`);
+          }
+          const prev = flowNode.data?.prev ?? [];
+          graph[serviceId] = {
+            service_id: serviceId,
+            prev: prev,
+            succ: flowNode.data?.succ ?? [],
           };
-          graph[node.service_id] = node;
-
-          if (this.flowNodes[i].data.prev.length === 0) {
-            if (graph.begin === undefined) {
-              graph.begin = [];
-            }
-            graph.begin.push(node.service_id);
+          if (prev.length === 0) {
+            graph._start.push(serviceId);
           }
         }
         return graph;
@@ -588,7 +578,7 @@ export default {
 
     parseDag(dag) {
       return Object.keys(dag)
-          .filter(k => k !== 'begin')
+          .filter(k => k !== '_start')
           .map(key => ({
             id: key,
             data: {label: key},
@@ -933,7 +923,6 @@ input[type="file"] {
     margin-bottom: 12px;
     color: #2d3748;
   }
-
 
 
 }

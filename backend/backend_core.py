@@ -201,7 +201,7 @@ class BackendCore:
 
     @staticmethod
     def bfs_dag(dag_graph, dag_callback):
-        source_list: list = dag_graph['begin']
+        source_list = dag_graph['_start']
         queue = deque(source_list)
         visited = set(source_list)
         while queue:
@@ -246,9 +246,9 @@ class BackendCore:
         def topo_sort(graph, modal):
             in_degree = {}
             for node in graph.keys():
-                if node != 'begin':
+                if node != '_start':
                     in_degree[node] = len(graph[node]['prev'])
-            queue = graph['begin']
+            queue = graph['_start']
             topo_order = []
 
             for node in queue:
