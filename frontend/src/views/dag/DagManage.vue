@@ -384,7 +384,9 @@ export default {
           if (graph[serviceId]) {
             throw new Error(`Duplicate service_id: ${serviceId}`);
           }
-          const prev = flowNode.data?.prev ?? [];
+          const prev = flowNode.data?.prev ? [...flowNode.data.prev] : [];
+          const succ = flowNode.data?.succ ? [...flowNode.data.succ] : [];
+          graph[serviceId] = {service_id: serviceId, prev, succ};
           graph[serviceId] = {
             service_id: serviceId,
             prev: prev,
