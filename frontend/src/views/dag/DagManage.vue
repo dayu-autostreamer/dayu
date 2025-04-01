@@ -394,7 +394,7 @@ export default {
           }
         }
         console.log(graph);
-        sleep(2000);
+        sleep(20000);
         return graph;
       };
       const graph = constructDagGraph();
