@@ -97,7 +97,7 @@ class BackendCore:
         if not result:
             return False
 
-        self.save_component_yaml(first_docs_list+second_docs_list)
+        self.save_component_yaml(first_docs_list + second_docs_list)
 
         return True
 
@@ -248,7 +248,7 @@ class BackendCore:
             for node in graph.keys():
                 if node != '_start':
                     in_degree[node] = len(graph[node]['prev'])
-            queue = graph['_start']
+            queue = copy.deepcopy(graph['_start'])
             topo_order = []
 
             for node in queue:
@@ -272,9 +272,7 @@ class BackendCore:
 
             return len(topo_order) == len(in_degree)
 
-        res = topo_sort(dag.copy(), modal)
-
-        return res
+        return topo_sort(dag.copy(), modal)
 
     def get_source_ids(self):
         source_ids = []
