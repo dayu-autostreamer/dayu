@@ -124,7 +124,7 @@ class BackendCore:
             del extracted_dag['_start']
 
             def get_service_callback(node_item):
-                service_id = node_item['service_id']
+                service_id = node_item['id']
                 service = self.find_service_by_id(service_id)
                 service_name = service['service']
                 service_yaml = service['yaml']
