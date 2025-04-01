@@ -379,6 +379,7 @@ export default {
       const constructDagGraph = () => {
         const graph = {_start: []};
         for (const flowNode of this.flowNodes) {
+
           const serviceId = flowNode.id;
           if (graph[serviceId]) {
             throw new Error(`Duplicate service_id: ${serviceId}`);
@@ -389,6 +390,7 @@ export default {
             prev: prev,
             succ: flowNode.data?.succ ?? [],
           };
+          console.log(graph[serviceId])
           if (prev.length === 0) {
             graph._start.push(serviceId);
           }
