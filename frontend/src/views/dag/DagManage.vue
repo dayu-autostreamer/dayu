@@ -370,7 +370,7 @@ export default {
       }
 
       // get graph
-      const constructDagGraph = function() {
+      const constructDagGraph = () => {
         const graph = {_start: []};
         for (const flowNode of this.flowNodes) {
           const serviceId = flowNode.id;
