@@ -369,12 +369,6 @@ export default {
         return;
       }
 
-      const sleep = (ms) => {
-        const start = Date.now();
-        while (Date.now() - start < ms) {
-        } // 同步阻塞
-      };
-
       // get graph
       const constructDagGraph = () => {
         const graph = {_start: []};
@@ -400,10 +394,10 @@ export default {
         }
         console.log(graph);
         console.log(graph._start)
-        sleep(20000);
         return graph;
       };
       const graph = constructDagGraph();
+      console.log(graph._start)
       const newData = {
         dag_name: this.newInputName,
         dag: graph,
