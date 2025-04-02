@@ -108,13 +108,8 @@ class ProcessorServer:
 
         task, duration = TimeEstimator.record_dag_ts(task, is_end=False, sub_tag='real_execute')
         new_task = self.processor(task)
-        # print('process task service after process..')
-        # print('first content:',new_task.get_first_content())
         new_task, duration = TimeEstimator.record_dag_ts(new_task, is_end=True, sub_tag='real_execute')
         new_task.save_real_execute_time(duration)
-
-        print('after time record..')
-        print('first content:', new_task.get_first_content())
 
         LOGGER.debug(f'[Monitor Task] (Process end) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
         LOGGER.info(f'[Process Task] Source: {task.get_source_id()} / Task: {task.get_task_id()} Duration: {duration} ')

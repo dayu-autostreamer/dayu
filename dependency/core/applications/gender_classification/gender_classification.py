@@ -6,7 +6,7 @@ import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
 
-from core.lib.common import Context
+from core.lib.common import Context, LOGGER
 
 
 class GenderClassification:
@@ -30,7 +30,6 @@ class GenderClassification:
         bindings = []
 
         for binding in engine:
-            # print('bingding:', binding, engine.get_binding_shape(binding))
             size = trt.volume(engine.get_binding_shape(binding)) * engine.max_batch_size
             dtype = trt.nptype(engine.get_binding_dtype(binding))
             # Allocate host and device buffers
@@ -119,7 +118,7 @@ class GenderClassification:
         return image, image_raw, h, w
 
     def warm_up(self):
-        print('Warming up...')
+        LOGGER.info('Warming up...')
         for i in range(self.warm_up_turns):
             im = np.zeros([self.input_h, self.input_w, 3], dtype=np.uint8)
             self.infer(im)

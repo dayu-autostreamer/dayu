@@ -59,9 +59,6 @@ class ControllerServer:
         # record end time of executing
         self.controller.record_execute_ts(is_end=True)
 
-        print('process return..')
-        self.controller.cur_task.get_first_content()
-
         actions = self.controller.process_return()
 
         # for execute action, the file is remained

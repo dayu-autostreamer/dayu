@@ -39,9 +39,6 @@ class DetectorTrackerProcessor(Processor):
         task = self.get_scenario(result, task)
         task.set_current_content(convert_ndarray_to_list(result))
 
-        print('detector tracker processor..')
-        print('first content:',task.get_first_content())
-
         return task
 
     def infer(self, images: List[np.ndarray]):

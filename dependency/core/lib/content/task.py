@@ -253,18 +253,12 @@ class Task:
 
     def get_first_content(self):
         first_service_names = self.__dag_flow.get_next_nodes('start')
-        print('first_service_names:', first_service_names)
         first_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
                           for service_name in first_service_names]
-        contents = [self.__dag_flow.get_node(service_name).service.get_content_data() for service_name in self.__dag_flow.nodes]
-        print('first_contents:', first_contents)
-        print('contents:', contents)
         # return one of first non-empty content
         return next((content for content in first_contents if content is not None), None)
 
     def set_current_content(self, content):
-        print('cur_flow_index:', self.__cur_flow_index)
-        print('current_content:', content)
         self.__dag_flow.get_node(self.__cur_flow_index).service.set_content_data(content)
 
     def get_current_service_info(self):
