@@ -386,18 +386,15 @@ export default {
             prev: prev,
             succ: flowNode.data?.succ ?? [],
           };
-          console.log('prev 原始数据:', JSON.parse(JSON.stringify(graph[serviceId].prev)));
-          console.log(graph[serviceId])
+
           if (prev.length === 0) {
             graph._start.push(serviceId);
           }
         }
-        console.log(graph);
-        console.log(graph._start)
+
         return graph;
       };
       const graph = constructDagGraph();
-      console.log(graph._start)
       const newData = {
         dag_name: this.newInputName,
         dag: graph,
@@ -470,10 +467,8 @@ export default {
             this.showMsg(state, msg);
             if (state === "success") {
               this.getDagList();
-              this.newInputName = "";
-              this.newInputDag = "";
-              this.newInputDagId = "";
-              // location.reload();
+              location.reload();
+              this.clearInput()
             }
           })
           .catch((error) => {

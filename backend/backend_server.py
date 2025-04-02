@@ -3,6 +3,7 @@ import json
 import threading
 from datetime import datetime
 from func_timeout import func_set_timeout as timeout
+import func_timeout.exceptions as timeout_exceptions
 
 from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks
 from fastapi.routing import APIRoute
@@ -267,7 +268,8 @@ class BackendServer:
         """
         dag_name = data['dag_name']
         dag = data['dag']
-        if self.server.check_dag(dag):
+        state, msg = self.server.check_dag(dag)
+        if state:
             self.server.dags.append({
                 'dag_id': Counter().get_count('dag_id'),
                 'dag_name': dag_name,
@@ -276,7 +278,7 @@ class BackendServer:
 
             return {'state': 'success', 'msg': 'Add new dag Successfully'}
         else:
-            return {'state': 'fail', 'msg': 'Add new dag failed: illegal dag'}
+            return {'state': 'fail', 'msg': f'Add new dag failed: {msg}'}
 
     async def delete_dag_workflow(self, data=Body(...)):
         """
@@ -466,16 +468,20 @@ class BackendServer:
             source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
         try:
-            result = self.server.parse_and_apply_templates(policy, source_deploy)
+            result, msg = self.server.parse_and_apply_templates(policy, source_deploy)
+        except timeout_exceptions.FunctionTimedOut as e:
+            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            result = False
+            msg = 'timeout after 60 seconds'
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            LOGGER.exception(e)
             result = False
+            msg = 'unexpected system error, please refer to logs in backend'
 
         if result:
             return {'state': 'success', 'msg': 'Install services successfully'}
         else:
-            return {'state': 'fail', 'msg': 'Install services failed: system error'}
+            return {'state': 'fail', 'msg': f'Install services failed: {msg}'}
 
     async def uninstall_service(self):
         """
@@ -489,22 +495,28 @@ class BackendServer:
             res = KubeHelper.delete_custom_resources(yaml)
             while KubeHelper.check_component_pods_exist(self.server.namespace):
                 time.sleep(1)
-            return res
+            return res, '' if res else 'kubernetes api error'
 
         docs = self.server.get_yaml_docs()
         try:
-            result = stop_loop(docs)
+            result, msg = stop_loop(docs)
 
+        except timeout_exceptions.FunctionTimedOut as e:
+            msg = 'timeout after 120 seconds'
+            result = False
+            LOGGER.warning(f'Uninstall services failed: {msg}')
         except Exception as e:
+            LOGGER.warning(f'Uninstall services failed: {str(e)}')
             LOGGER.exception(e)
             result = False
+            msg = f'unexpected system error, please refer to logs in backend'
 
         self.server.clear_yaml_docs()
 
         if result:
             return {'state': 'success', 'msg': 'Uninstall services successfully'}
         else:
-            return {'state': 'fail', 'msg': 'Uninstall services failed: system error'}
+            return {'state': 'fail', 'msg': f'Uninstall services failed: {msg}'}
 
     async def get_install_state(self):
         """

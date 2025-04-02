@@ -3,6 +3,7 @@ import re
 from collections import deque
 from func_timeout import func_set_timeout as timeout
 
+
 import cv2
 import numpy as np
 import os
@@ -86,28 +87,28 @@ class BackendCore:
         LOGGER.info(f'[First Deployment Stage] deploy components:{first_stage_components}')
         first_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
                                                                         scopes=first_stage_components)
-        result = self.install_yaml_templates(first_docs_list)
+        result, msg = self.install_yaml_templates(first_docs_list)
         if not result:
-            return False
+            return False, msg
 
         LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
         second_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
                                                                          scopes=second_stage_components)
-        result = self.install_yaml_templates(second_docs_list)
+        result, msg = self.install_yaml_templates(second_docs_list)
         if not result:
-            return False
+            return False, msg
 
         self.save_component_yaml(first_docs_list + second_docs_list)
 
-        return True
+        return True, 'Install services successfully'
 
     def install_yaml_templates(self, yaml_docs):
         if not yaml_docs:
-            return False
+            return False, 'components yaml data is empty'
         _result = KubeHelper.apply_custom_resources(yaml_docs)
         while not KubeHelper.check_pods_running(self.namespace):
             time.sleep(1)
-        return _result
+        return _result, '' if _result else 'kubernetes api error'
 
     def save_component_yaml(self, docs_list):
         self.cur_yaml_docs = docs_list
@@ -254,8 +255,9 @@ class BackendCore:
             for node in queue:
                 node_service = self.find_service_by_id(node)
                 if node_service['input'] != modal:
-                    LOGGER.error(f"Init modal not equal!")
-                    return False
+                    error_msg = f"Node '{node}' has invalid input mode, expected '{modal}' got '{node_service['input']}'"
+                    LOGGER.warning(f"DAG Validation Error: {error_msg}")
+                    return False, error_msg
 
             while queue:
                 parent = queue.pop(0)
@@ -263,14 +265,27 @@ class BackendCore:
                 for child in graph[parent]['succ']:
                     parent_service = self.find_service_by_id(parent)
                     child_service = self.find_service_by_id(child)
-                    if child_service and parent_service and child_service['input'] != parent_service['output']:
-                        LOGGER.error(f"Node IO modal not equal!")
-                        return False
+                    if not parent_service or not child_service:
+                        error_msg = f"Missing service definition for node {parent if not parent_service else child}"
+                        LOGGER.error(f"DAG Validation Error: {error_msg}")
+                        return False, error_msg
+                    if child_service['input'] != parent_service['output']:
+                        error_msg = (
+                            f"Node connection mismatch, '{parent}' output '{parent_service['output']}', '{child}' input '{child_service['input']}' "
+                        )
+                        LOGGER.error(f"DAG Validation Error: {error_msg}")
+                        return False, error_msg
+
                     in_degree[child] -= 1
                     if in_degree[child] == 0:
                         queue.append(child)
 
-            return len(topo_order) == len(in_degree)
+            if len(topo_order) != len(in_degree):
+                error_msg = "DAG contains cycles or unreachable nodes"
+                LOGGER.warning(f"DAG Validation Error: {error_msg}")
+                return False, error_msg
+
+            return True, "DAG validation passed"
 
         return topo_sort(dag.copy(), modal)
 
