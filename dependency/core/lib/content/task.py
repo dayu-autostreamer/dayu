@@ -318,7 +318,8 @@ class Task:
         total_time = self.calculate_total_time()
         real_total_time = self.get_real_end_to_end_time()
         delay_info += f'[Delay Info] Source:{self.get_source_id()}  Task:{self.get_task_id()}\n'
-        for service in self.__dag_flow:
+        for service_name in self.__dag_flow.nodes:
+            service = self.__dag_flow.get_node(service_name).service
             delay_info += f'stage[{service.get_service_name()}] -> (device:{service.get_execute_device()})    ' \
                           f'execute delay:{service.get_execute_time():.4f}s    ' \
                           f'transmit delay:{service.get_transmit_time():.4f}s\n'
