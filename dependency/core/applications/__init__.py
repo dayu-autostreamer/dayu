@@ -6,7 +6,6 @@ def import_application():
     if service_name and service_name.startswith('processor-'):
         processor = service_name[len('processor-'):].replace('-', '_')
         module = import_module(f"core.applications.{processor}")
-        print('module import:', module)
 
         from core.lib.common import context
         context_namespace = context.__dict__
