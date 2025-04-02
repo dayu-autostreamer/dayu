@@ -27,7 +27,11 @@
               :key="index"
               class="svc-item"
           >
-            <el-tooltip placement="top">
+            <el-tooltip
+                placement="right"
+                :open-delay="500"
+                enterable
+            >
               <template #content>
                 <div class="description">
                   {{ service.description }}
