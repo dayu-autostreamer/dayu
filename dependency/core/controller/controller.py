@@ -79,6 +79,7 @@ class Controller:
 
     def send_task_to_distributor(self, task: Task = None):
         cur_task = task or self.cur_task
+        print('send task to distributor..')
         print('first content:',cur_task.get_first_content())
 
         self.record_transmit_ts(task=cur_task, is_end=False)
@@ -137,6 +138,8 @@ class Controller:
             parallel_service_names = parallel_joint['parallel_services']
             required_parallel_task_count = len(parallel_service_names)
             new_task = self.cur_task.fork_task(joint_service_name)
+            print('process return function..')
+            self.cur_task.get_first_content()
 
             # node with parallel nodes should merge before step to next stage
             if required_parallel_task_count > 1:
