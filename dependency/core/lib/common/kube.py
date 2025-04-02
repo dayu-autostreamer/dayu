@@ -1,5 +1,3 @@
-import sys
-
 from kubernetes import client, config
 from collections import defaultdict
 
@@ -14,7 +12,7 @@ class KubeConfig:
     @classmethod
     def _get_api(cls):
         if not cls._api:
-            config.load_kube_config()
+            config.load_incluster_config()
             cls._api = client.CoreV1Api()
         return cls._api
 
