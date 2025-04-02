@@ -79,6 +79,8 @@ class Controller:
 
     def send_task_to_distributor(self, task: Task = None):
         cur_task = task or self.cur_task
+        print('first content:',cur_task.get_first_content())
+
         self.record_transmit_ts(task=cur_task, is_end=False)
         if not os.path.exists(cur_task.get_file_path()):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '

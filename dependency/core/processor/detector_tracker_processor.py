@@ -38,6 +38,7 @@ class DetectorTrackerProcessor(Processor):
         result = self.infer(image_list)
         task = self.get_scenario(result, task)
         task.set_current_content(convert_ndarray_to_list(result))
+        print('first content:',task.get_first_content())
 
         return task
 

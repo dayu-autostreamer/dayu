@@ -37,6 +37,9 @@ class Distributor:
         task_task_id = self.cur_task.get_task_id()
         task_ctime = datetime.now().timestamp()
 
+        print('first content:',self.cur_task.get_first_content())
+
+
         conn = sqlite3.connect(self.record_path)
         c = conn.cursor()
 
