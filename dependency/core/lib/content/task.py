@@ -261,6 +261,8 @@ class Task:
         return next((content for content in first_contents if content is not None), None)
 
     def set_current_content(self, content):
+        print('cur_flow_index:', self.__cur_flow_index)
+        print('current_content:', content)
         self.__dag_flow.get_node(self.__cur_flow_index).service.set_content_data(content)
 
     def get_current_service_info(self):
