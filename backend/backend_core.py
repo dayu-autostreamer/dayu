@@ -351,6 +351,7 @@ class BackendCore:
                         cv2.imread(self.default_visualization_image)
                     )
                     LOGGER.warning(f'Video visualization fetch failed: {str(e)}')
+                    LOGGER.exception(e)
                 if os.path.exists(file_path):
                     os.remove(file_path)
 
