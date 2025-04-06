@@ -6,7 +6,7 @@
         <div class="home-card-item data-source-container">
           <div class="flex-margin flex w100">
             <div class="flex-auto" style="font-weight: bold">
-              Choose Datasource: &nbsp;
+              Choose Datasource: &nbsp; &nbsp;
               <el-select
                 v-model="selectedDataSource"
                 placeholder="Please choose datasource"
@@ -29,6 +29,7 @@
             type="primary"
             class="export-button"
             @click="exportTaskLog"
+            style="font-weight: bold"
           >
             Export Log
           </el-button>
@@ -190,7 +191,7 @@ export default {
 
     async fetchVisualizationConfig() {
       try {
-        const response = await fetch('/api/visualization')
+        const response = await fetch('/api/visualization_config')
         this.visualizationConfig = await response.json()
 
         // Initialize module states
@@ -291,7 +292,6 @@ export default {
 }
 
 .export-button {
-  width: 100%;
   padding: 8px 12px;
 }
 
