@@ -8,15 +8,15 @@
             <div class="flex-auto" style="font-weight: bold">
               Choose Datasource: &nbsp;
               <el-select
-                  v-model="selectedDataSource"
-                  placeholder="Please choose datasource"
-                  class="compact-select"
+                v-model="selectedDataSource"
+                placeholder="Please choose datasource"
+                class="compact-select"
               >
                 <el-option
-                    v-for="item in dataSourceList"
-                    :key="item.id"
-                    :label="item.label"
-                    :value="item.id"
+                  v-for="item in dataSourceList"
+                  :key="item.id"
+                  :label="item.label"
+                  :value="item.id"
                 />
               </el-select>
             </div>
@@ -26,9 +26,9 @@
       <el-col :xs="24" :sm="24" :md="4" :lg="4" :xl="4">
         <div class="home-card-item export-container">
           <el-button
-              type="primary"
-              class="export-button"
-              @click="exportTaskLog"
+            type="primary"
+            class="export-button"
+            @click="exportTaskLog"
           >
             Export Log
           </el-button>
@@ -44,10 +44,10 @@
             <h4>Active Visualizations:</h4>
             <el-checkbox-group v-model="activeVisualizationsArray">
               <el-checkbox
-                  v-for="viz in visualizationConfig"
-                  :key="viz.id"
-                  :label="viz.id"
-                  class="module-checkbox"
+                v-for="viz in visualizationConfig"
+                :key="viz.id"
+                :label="viz.id"
+                class="module-checkbox"
               >
                 {{ viz.name }}
               </el-checkbox>
@@ -60,29 +60,29 @@
     <!-- Visualization Modules Row -->
     <el-row :gutter="15" class="home-card-two mb15">
       <el-col
-          v-for="viz in visualizationConfig"
-          :key="viz.id"
-          :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
-          v-show="activeVisualizations.has(viz.id)"
+        v-for="viz in visualizationConfig"
+        :key="viz.id"
+        :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
+        v-show="activeVisualizations.has(viz.id)"
       >
         <div class="home-card-item viz-module">
           <div class="viz-module-header">
             <h3 class="viz-title">{{ viz.name }}</h3>
             <component
-                :is="vizControls[viz.type]"
-                v-if="vizControls[viz.type]"
-                :config="viz"
-                :variable-states="variableStates[viz.id]"
-                @update:variable-states="updateVariableStates(viz.id, $event)"
+              :is="vizControls[viz.type]"
+              v-if="vizControls[viz.type]"
+              :config="viz"
+              :variable-states="variableStates[viz.id]"
+              @update:variable-states="updateVariableStates(viz.id, $event)"
             />
           </div>
 
           <component
-              :is="visualizationComponents[viz.type]"
-              v-if="visualizationComponents[viz.type]"
-              :config="viz"
-              :data="processedData[viz.id]"
-              :variable-states="variableStates[viz.id]"
+            :is="visualizationComponents[viz.type]"
+            v-if="visualizationComponents[viz.type]"
+            :config="viz"
+            :data="processedData[viz.id]"
+            :variable-states="variableStates[viz.id]"
           />
         </div>
       </el-col>
@@ -91,27 +91,25 @@
 </template>
 
 <script>
-
-
-import {defineAsyncComponent, defineComponent, ref, reactive} from 'vue'
+import { defineAsyncComponent, reactive, ref, watch } from 'vue'
 
 export default {
   data() {
     return {
-      visualizationConfig: [], // Store visualization templates
-      activeVisualizations: new Set(), // Track enabled visualizations
-      variableStates: reactive({}), // Track variable visibility for curves
-      visualizationComponents: reactive({}),
-      vizControls: reactive({}),
-
-      dataSourceList: [],
       selectedDataSource: null,
-
+      dataSourceList: [],
       bufferedTaskCache: {},
       maxBufferedTaskCacheSize: 20,
+
+      // Visualization system
+      visualizationConfig: [],
+      activeVisualizations: new Set(),
+      variableStates: reactive({}),
+      visualizationComponents: reactive({}),
+      vizControls: reactive({}),
+      pollingInterval: null
     }
   },
-
   computed: {
     processedData() {
       const result = {}
@@ -119,17 +117,22 @@ export default {
         result[viz.id] = this.processVizData(viz)
       })
       return result
+    },
+    activeVisualizationsArray: {
+      get() {
+        return Array.from(this.activeVisualizations)
+      },
+      set(newVal) {
+        this.activeVisualizations = new Set(newVal)
+      }
     }
   },
-
   async created() {
     await this.autoRegisterComponents()
     await this.fetchDataSourceList()
     await this.fetchVisualizationConfig()
     this.setupDataPolling()
   },
-
-
   methods: {
     async autoRegisterComponents() {
       try {
@@ -161,8 +164,8 @@ export default {
     extractVizVariables(taskData, vizConfig) {
       const vizData = taskData[vizConfig.id] || {}
       return Object.fromEntries(
-          Object.entries(vizData)
-              .filter(([key]) => vizConfig.variables.includes(key))
+        Object.entries(vizData)
+          .filter(([key]) => vizConfig.variables.includes(key))
       )
     },
 
@@ -187,9 +190,10 @@ export default {
 
     async fetchVisualizationConfig() {
       try {
-        const response = await fetch('/api/visualization_config')
+        const response = await fetch('/api/visualization')
         this.visualizationConfig = await response.json()
 
+        // Initialize module states
         this.visualizationConfig.forEach(viz => {
           this.activeVisualizations.add(viz.id)
           if (!this.variableStates[viz.id]) {
@@ -238,227 +242,28 @@ export default {
     },
 
     exportTaskLog() {
-      console.log('exportTaskLog');
       fetch('/api/download_log')
-          .then(response => {
-            if (!response.ok) {
-              throw new Error('Network response was not ok');
-            }
-            const contentDisposition = response.headers.get('Content-Disposition');
-            let filename = 'task_log.json';
-            if (contentDisposition) {
-              const filenameMatch = /filename="([^"]+)"/.exec(contentDisposition);
-              if (filenameMatch && filenameMatch[1]) {
-                filename = filenameMatch[1];
-              }
-            }
-
-            return response.blob().then(blob => {
-              const url = window.URL.createObjectURL(new Blob([blob]));
-              const link = document.createElement('a');
-              link.href = url;
-              link.setAttribute('download', filename);
-              document.body.appendChild(link);
-              link.click();
-
-              document.body.removeChild(link);
-              window.URL.revokeObjectURL(url);
-            });
-          })
-          .catch(error => {
-            console.error('Download log failed:', error);
-          });
-    },
-
-
+        .then(response => response.blob())
+        .then(blob => {
+          const url = window.URL.createObjectURL(blob)
+          const link = document.createElement('a')
+          link.href = url
+          link.setAttribute('download', 'task_log.json')
+          document.body.appendChild(link)
+          link.click()
+          link.remove()
+        })
+    }
   },
   beforeUnmount() {
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval)
     }
-  },
-};
-
-
+  }
+}
 </script>
 
-<style scoped lang="scss">
-
-$homeNavLengh: 8;
-
-<style scoped lang="scss">
-$homeNavLengh: 8;
-
-
-.home-container {
-  overflow: hidden;
-
-  .home-card-one,
-  .home-card-two,
-  .home-card-three {
-    .home-card-item {
-      width: 100%;
-      height: 130px;
-      border-radius: 4px;
-      transition: all ease 0.3s;
-      padding: 20px;
-      overflow: hidden;
-      background: var(--el-color-white);
-      color: var(--el-text-color-primary);
-      border: 1px solid var(--next-border-color-light);
-
-      &:hover {
-        box-shadow: 0 2px 12px var(--next-color-dark-hover);
-        transition: all ease 0.3s;
-      }
-
-      &-icon {
-        width: 70px;
-        height: 70px;
-        border-radius: 100%;
-        flex-shrink: 1;
-
-        i {
-          color: var(--el-text-color-placeholder);
-        }
-      }
-
-      &-title {
-        font-size: 15px;
-        font-weight: bold;
-        height: 30px;
-      }
-    }
-  }
-
-  .home-card-one {
-    @for $i from 0 through 3 {
-      .home-one-animation#{$i} {
-        opacity: 0;
-        animation-name: error-num;
-        animation-duration: 0.5s;
-        animation-fill-mode: forwards;
-        animation-delay: calc($i/4) + s;
-      }
-    }
-  }
-
-  .home-card-two,
-  .home-card-three {
-    .home-card-item {
-      height: 50vh;
-      width: 100%;
-      overflow: scroll;
-
-      .home-monitor {
-        height: 100%;
-
-        .flex-warp-item {
-          width: 25%;
-          height: 111px;
-          display: flex;
-
-          .flex-warp-item-box {
-            margin: auto;
-            text-align: center;
-            color: var(--el-text-color-primary);
-            display: flex;
-            border-radius: 5px;
-            background: var(--next-bg-color);
-            cursor: pointer;
-            transition: all 0.3s ease;
-
-            &:hover {
-              background: var(--el-color-primary-light-9);
-              transition: all 0.3s ease;
-            }
-          }
-
-          @for $i from 0 through $homeNavLengh {
-            .home-animation#{$i} {
-              opacity: 0;
-              animation-name: error-num;
-              animation-duration: 0.5s;
-              animation-fill-mode: forwards;
-              animation-delay: calc($i/10) + s;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  .free-manage {
-    .home-card-item {
-      height: 50vh;
-      width: 100%;
-      overflow: scroll;
-    }
-  }
-
-  .toggleSource {
-    .home-card-item {
-      height: 10vh;
-      width: 100%;
-      overflow: scroll;
-    }
-  }
-
-}
-
-.viz-controls {
-  padding: 10px;
-  border-bottom: 1px solid #eee;
-
-  .el-checkbox {
-    margin-right: 15px;
-  }
-
-  .variable-selector {
-    margin-top: 8px;
-    padding-left: 20px;
-  }
-}
-
-.chart-container {
-  width: 24vw;
-  height: 32vh;
-}
-
-.responsive-image {
-  max-width: 100%;
-  height: auto;
-  display: block;
-  margin: 0 auto;
-}
-
-.home-container {
-  overflow: hidden;
-}
-
-.viz-header {
-  padding: 10px;
-  border-bottom: 1px solid #eee;
-  display: flex;
-  flex-direction: column;
-}
-
-.viz-checkbox {
-  margin-bottom: 8px;
-}
-
-.home-card-item {
-  height: 500px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.home-card-item > div:last-child {
-  flex-grow: 1;
-  overflow: auto;
-}
-
+<style scoped>
 .home-container {
   overflow: hidden;
   padding: 16px;
@@ -479,15 +284,48 @@ $homeNavLengh: 8;
 
 .compact-select {
   width: 70%;
-  ::v-deep .el-input__inner {
-    height: 32px;
-    line-height: 32px;
-  }
+}
+.compact-select ::v-deep .el-input__inner {
+  height: 32px;
+  line-height: 32px;
 }
 
 .export-button {
   width: 100%;
   padding: 8px 12px;
+}
+
+.viz-controls-row {
+  margin-top: 20px;
+}
+
+.viz-controls-panel {
+  background: var(--el-bg-color);
+  border-radius: 4px;
+  padding: 15px;
+  box-shadow: 0 2px 12px 0 rgba(0,0,0,.1);
+}
+
+.control-group {
+  margin-bottom: 15px;
+}
+
+.control-group h4 {
+  margin-bottom: 10px;
+  color: var(--el-text-color-primary);
+}
+
+.module-checkbox {
+  margin-right: 20px;
+  margin-bottom: 8px;
+}
+
+.viz-module {
+  height: 500px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  margin-top: 15px;
 }
 
 .viz-module-header {
@@ -502,4 +340,9 @@ $homeNavLengh: 8;
   text-align: center;
 }
 
+.home-card-item {
+  background: var(--el-bg-color);
+  border-radius: 4px;
+  border: 1px solid var(--el-border-color-light);
+}
 </style>

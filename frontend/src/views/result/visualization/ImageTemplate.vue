@@ -18,20 +18,20 @@
 import { ref, watch } from 'vue'
 
 export default {
-  extends: {
-    setup(props) {
-      const currentImage = ref(null)
+  props: ['config', 'data'],
 
-      watch(() => props.data, () => {
-        if (props.data?.length) {
-          currentImage.value = props.data[props.data.length - 1]?.image
-        } else {
-          currentImage.value = null
-        }
-      }, { immediate: true })
+  setup(props) {
+    const currentImage = ref(null)
 
-      return { currentImage }
-    }
+    watch(() => props.data, () => {
+      if (props.data?.length) {
+        currentImage.value = props.data[props.data.length - 1]?.image
+      } else {
+        currentImage.value = null
+      }
+    }, { immediate: true })
+
+    return { currentImage }
   }
 }
 </script>

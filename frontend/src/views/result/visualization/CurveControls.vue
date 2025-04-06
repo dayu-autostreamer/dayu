@@ -14,6 +14,49 @@
   </div>
 </template>
 
+<script>
+import { reactive, watch } from 'vue'
+
+export default {
+  props: {
+    config: {
+      type: Object,
+      required: true
+    },
+    variableStates: {
+      type: Object,
+      default: () => ({})
+    }
+  },
+  emits: ['update:variable-states'],
+
+  setup(props, { emit }) {
+    const localVariableStates = reactive(
+      Object.keys(props.variableStates).filter(k => props.variableStates[k])
+    )
+
+    const handleChange = () => {
+      const newStates = {}
+      props.config.variables.forEach(varName => {
+        newStates[varName] = localVariableStates.includes(varName)
+      })
+      emit('update:variable-states', newStates)
+    }
+
+    watch(() => props.variableStates, (newVal) => {
+      localVariableStates.splice(0)
+      Object.keys(newVal).filter(k => newVal[k]).forEach(k => {
+        localVariableStates.push(k)
+      })
+    }, { deep: true })
+
+    watch(localVariableStates, handleChange)
+
+    return { localVariableStates }
+  }
+}
+</script>
+
 <style scoped>
 .curve-controls {
   padding: 8px 0;
@@ -34,8 +77,8 @@
 
 .variable-checkbox {
   margin-right: 8px;
-  ::v-deep .el-checkbox__label {
-    font-size: 0.85em;
-  }
+}
+.variable-checkbox ::v-deep .el-checkbox__label {
+  font-size: 0.85em;
 }
 </style>
