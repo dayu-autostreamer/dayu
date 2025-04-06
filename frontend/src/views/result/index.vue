@@ -1,44 +1,63 @@
 <template>
   <div class="home-container layout-pd">
-    <el-row :gutter="15" class="home-card-two mb15 toggleSource">
+    <el-row :gutter="15" class="home-card-two mb15">
       <el-col :xs="24" :sm="24" :md="20" :lg="20" :xl="20">
-        <div class="home-card-item">
-          <div style="height: 100%">
-            <div class="flex-margin flex w100">
-              <div class="flex-auto" style="font-weight: bold">
+        <div class="home-card-item data-source-container">
+          <div class="flex-margin flex w100">
+            <div class="flex-auto" style="font-weight: bold">
 
-                Choose Datasource: &nbsp; &nbsp;
+              Choose Datasource: &nbsp; &nbsp;
 
-                <el-select v-model="selectedDataSource" placeholder="Please choose datasource"
-                           style="width: 40%; font-weight: normal">
-                  <el-option v-for="item in dataSourceList" :key="item.id" :label="item.label"
-                             :value="item.id">
-                  </el-option>
-                </el-select>
+              <el-select v-model="selectedDataSource" placeholder="Please choose datasource"
+                         style="width: 70%; font-weight: normal">
+                <el-option v-for="item in dataSourceList" :key="item.id" :label="item.label"
+                           :value="item.id">
+                </el-option>
+              </el-select>
 
-              </div>
             </div>
           </div>
         </div>
       </el-col>
       <el-col :xs="24" :sm="24" :md="4" :lg="4" :xl="4">
-        <div class="home-card-item">
-          <div style="height: 100%">
-            <div class="flex-margin flex w100">
-              <div class="flex-auto">
-                <div style="display: flex; justify-content: center; align-items: center;">
-                  <el-button type="primary" class="export-button" @click="exportTaskLog" style="font-weight: bold">
-                    Export Log
-                  </el-button>
-                </div>
-
+        <div class="home-card-item export-container">
+          <div class="flex-margin flex w100">
+            <div class="flex-auto">
+              <div style="display: flex; justify-content: center; align-items: center;">
+                <el-button type="primary" class="export-button" @click="exportTaskLog"
+                           style="font-weight: bold; width:100%">
+                  Export Log
+                </el-button>
               </div>
+
             </div>
           </div>
         </div>
       </el-col>
     </el-row>
 
+    <!-- Visualization Controls Row -->
+    <el-row class="viz-controls-row mb15">
+      <el-col :span="24">
+        <div class="viz-controls-panel">
+          <div class="control-group">
+            <h4>Visualization Modules:</h4>
+            <el-checkbox-group v-model="activeVisualizationsArray">
+              <el-checkbox
+                  v-for="viz in visualizationConfig"
+                  :key="viz.id"
+                  :label="viz.id"
+                  class="module-checkbox"
+              >
+                {{ viz.name }}
+              </el-checkbox>
+            </el-checkbox-group>
+          </div>
+        </div>
+      </el-col>
+    </el-row>
+
+    <!-- Visualization Modules Row -->
     <el-row :gutter="15" class="home-card-two mb15">
       <el-col
           v-for="viz in visualizationConfig"
@@ -46,16 +65,8 @@
           :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
           v-show="activeVisualizations.has(viz.id)"
       >
-        <div class="home-card-item">
-          <div class="viz-header">
-            <el-checkbox
-                v-model="activeVisualizations"
-                :label="viz.id"
-                class="viz-checkbox"
-            >
-              {{ viz.name }}
-            </el-checkbox>
-
+        <div class="home-card-item viz-module">
+          <div class="viz-module-header">
             <component
                 :is="vizControls[viz.type]"
                 v-if="vizControls[viz.type]"
@@ -233,9 +244,8 @@ export default {
             if (!response.ok) {
               throw new Error('Network response was not ok');
             }
-            // 从Content-Disposition头获取文件名
             const contentDisposition = response.headers.get('Content-Disposition');
-            let filename = 'LOG.json';  // 如果没有获取到文件名，使用默认值
+            let filename = 'task_log.json';
             if (contentDisposition) {
               const filenameMatch = /filename="([^"]+)"/.exec(contentDisposition);
               if (filenameMatch && filenameMatch[1]) {
