@@ -1,0 +1,19 @@
+import abc
+import numpy as np
+
+from core.lib.common import ClassFactory, ClassType
+from lib.content import Task
+
+from .curve_visualizer import CurveVisualizer
+
+__all__ = ('ObjectNumberVisualizer',)
+
+
+@ClassFactory.register(ClassType.VISUALIZER, alias='obj_num')
+class ObjectNumberVisualizer(CurveVisualizer, abc.ABC):
+    def __init__(self):
+        pass
+
+    def __call__(self, task: Task):
+        task_result = float(np.mean(task.get_scenario_data()['obj_num']))
+        return {'number': task_result}

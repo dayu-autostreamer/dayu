@@ -1,0 +1,12 @@
+- name: frame visualization
+  type: image
+  hook_name: roi_frame
+- name: object number
+  type: curve
+  variables: ["number"]
+  hook_name: obj_num
+- name: end to end delay
+  type: curve
+  variables: ["delay"]
+  hook_name: e2e_delay
+

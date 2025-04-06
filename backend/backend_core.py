@@ -3,7 +3,6 @@ import re
 from collections import deque
 from func_timeout import func_set_timeout as timeout
 
-
 import cv2
 import numpy as np
 import os
@@ -14,7 +13,6 @@ from core.lib.network import http_request, NodeInfo, PortInfo, merge_address, Ne
 
 from kube_helper import KubeHelper
 from template_helper import TemplateHelper
-from utils import get_first_frame_from_video, draw_bboxes
 
 
 class BackendCore:
@@ -26,6 +24,7 @@ class BackendCore:
         self.image_meta = None
         self.schedulers = None
         self.services = None
+        self.visualizations = None
 
         self.source_configs = []
 
@@ -62,6 +61,7 @@ class BackendCore:
             self.image_meta = base_info['default-image-meta']
             self.schedulers = base_info['scheduler-policies']
             self.services = base_info['services']
+            self.visualizations = base_info['visualizations']
         except KeyError as e:
             LOGGER.warning(f'Parse base info failed: {str(e)}')
 
@@ -328,30 +328,21 @@ class BackendCore:
 
                 source_id = task.get_source_id()
                 task_id = task.get_task_id()
-                delay = task.calculate_total_time()
+                file_path = self.get_file_result(task.get_file_path())
                 LOGGER.debug(task.get_delay_info())
+                visualization_data = {}
 
                 try:
-                    task_result = float(np.mean(task.get_scenario_data()['obj_num']))
+                    for idx, vf in enumerate(self.visualizations):
+                        al_name = vf['hook_name']
+                        al_params = eval(vf['params']) if 'params' in vf else {}
+                        vf_func = Context.get_algorithm('VISUALIZATION', al_name=al_name, **al_params)
+                        visualization_data[idx] = vf_func(task)
                 except Exception as e:
-                    LOGGER.debug(f'scenario: {task.get_scenario_data()}')
-                    LOGGER.warning(f'Scenario fetch failed: {str(e)}')
+                    LOGGER.warning(f'Prepare visualization data failed: {str(e)}')
+                    LOGGER.exception(e)
                     continue
 
-                content = task.get_first_content()
-                file_path = self.get_file_result(task.get_file_path())
-
-                try:
-                    image = get_first_frame_from_video(file_path)
-                    image = draw_bboxes(image, content[0][0])
-
-                    base64_data = EncodeOps.encode_image(image)
-                except Exception as e:
-                    base64_data = EncodeOps.encode_image(
-                        cv2.imread(self.default_visualization_image)
-                    )
-                    LOGGER.warning(f'Video visualization fetch failed: {str(e)}')
-                    LOGGER.exception(e)
                 if os.path.exists(file_path):
                     os.remove(file_path)
 
@@ -359,10 +350,8 @@ class BackendCore:
                     break
 
                 self.task_results[source_id].put_all([{
-                    'taskId': task_id,
-                    'result': task_result,
-                    'delay': delay,
-                    'visualize': base64_data
+                    'task_id': task_id,
+                    'data': visualization_data,
                 }])
 
     def check_datasource_config(self, config_path):
@@ -454,3 +443,7 @@ class BackendCore:
         http_request(self.log_clear_url, method=NetworkAPIMethod.DISTRIBUTOR_CLEAR_DATABASE)
 
         return results
+
+    def get_visualization_config(self):
+        self.parse_base_info()
+        return [{'id': idx, **vf} for idx, vf in enumerate(self.visualizations)]

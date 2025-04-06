@@ -38,38 +38,40 @@
         </div>
       </el-col>
     </el-row>
+
     <el-row :gutter="15" class="home-card-two mb15">
-      <el-col :xs="24" :sm="24" :md="8" :lg="8" :xl="8">
+      <el-col
+          v-for="viz in visualizationConfig"
+          :key="viz.id"
+          :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
+          v-show="activeVisualizations.has(viz.id)"
+      >
         <div class="home-card-item">
-          <div style="height: 100%">
-            <div class="flex-margin flex w100">
-              <div class="flex-auto">
-                <DataVisualize :data="filteredVisualizeData"/>
-              </div>
-            </div>
+          <div class="viz-header">
+            <el-checkbox
+                v-model="activeVisualizations"
+                :label="viz.id"
+                class="viz-checkbox"
+            >
+              {{ viz.name }}
+            </el-checkbox>
+
+            <component
+                :is="vizControls[viz.type]"
+                v-if="vizControls[viz.type]"
+                :config="viz"
+                :variable-states="variableStates[viz.id]"
+                @update:variable-states="updateVariableStates(viz.id, $event)"
+            />
           </div>
-        </div>
-      </el-col>
-      <el-col :xs="24" :sm="24" :md="8" :lg="8" :xl="8">
-        <div class="home-card-item">
-          <div style="height: 100%">
-            <div class="flex-margin flex w100">
-              <div class="flex-auto">
-                <ResultGraph :data="filteredResultData"/>
-              </div>
-            </div>
-          </div>
-        </div>
-      </el-col>
-      <el-col :xs="24" :sm="24" :md="8" :lg="8" :xl="8">
-        <div class="home-card-item">
-          <div style="height: 100%">
-            <div class="flex-margin flex w100">
-              <div class="flex-auto">
-                <DelayGraph :data="filteredDelayData"/>
-              </div>
-            </div>
-          </div>
+
+          <component
+              :is="visualizationComponents[viz.type]"
+              v-if="visualizationComponents[viz.type]"
+              :config="viz"
+              :data="processedData[viz.id]"
+              :variable-states="variableStates[viz.id]"
+          />
         </div>
       </el-col>
     </el-row>
@@ -80,447 +82,150 @@
 <script>
 
 
-import {reactive} from 'vue'
-import DataVisualize from './DataVisualize.vue'
-import ResultGraph from './ResultGraph.vue'
-import DelayGraph from './DelayGraph.vue'
-
+import {defineAsyncComponent, defineComponent, ref, reactive} from 'vue'
 
 export default {
-  components: {
-    DataVisualize,
-    ResultGraph,
-    DelayGraph,
-
-  },
   data() {
     return {
-      // 子组件注入的数据
-      visualizeData: null,
-      resultData: null,
-      delayData: null,
+      visualizationConfig: [], // Store visualization templates
+      activeVisualizations: new Set(), // Track enabled visualizations
+      variableStates: reactive({}), // Track variable visibility for curves
+      visualizationComponents: reactive({}),
+      vizControls: reactive({}),
 
-      // 数据源列表
-      dataSourceList: null,
-      // [
-      //     {
-      //         id: '1',
-      //         label: '数据源1'
-      //     }, {
-      //         id: '2',
-      //         label: '数据源2'
-      //     }
-      // ],
-
-      // 选择的数据源
+      dataSourceList: [],
       selectedDataSource: null,
 
-      visualizing_prompt: null,
-      result_title_prompt: null,
-      result_text_prompt: null,
-      delay_text_prompt: null,
-
       bufferedTaskCache: {},
-      // {
-      // 测试用fake数据
-      // "1": [
-      //             {
-      //                 taskId: "1",
-      //                 result: "8",
-      //                 delay: "0.5"
-      //             },
-      //             {
-      //                 taskId: "2",
-      //                 result: "9",
-      //                 delay: "0.6"
-      //             },
-      //             {
-      //                 taskId: "3",
-      //                 result: "10",
-      //                 delay: "0.7"
-      //             },
-      //             {
-      //                 taskId: "4",
-      //                 result: "11",
-      //                 delay: "0.8"
-      //             },
-      //             {
-      //                 taskId: "5",
-      //                 result: "12",
-      //                 delay: "0.9"
-      //             },
-      //             {
-      //                 taskId: "6",
-      //                 result: "13",
-      //                 delay: "1.0"
-      //             },
-      //             {
-      //                 taskId: "7",
-      //                 result: "14",
-      //                 delay: "1.1"
-      //             },
-      //             {
-      //                 taskId: "8",
-      //                 result: "15",
-      //                 delay: "1.2"
-      //             },
-      //             {
-      //                 taskId: "9",
-      //                 result: "16",
-      //                 delay: "1.3"
-      //             },
-      //             {
-      //                 taskId: "10",
-      //                 result: "17",
-      //                 delay: "1.4"
-      //             }
-      //         ],
-      //     "2": [
-      //             {
-      //                 taskId: "1",
-      //                 result: "8",
-      //                 delay: "0.5"
-      //             },
-      //             {
-      //                 taskId: "2",
-      //                 result: "9",
-      //                 delay: "0.6"
-      //             },
-      //             {
-      //                 taskId: "3",
-      //                 result: "10",
-      //                 delay: "0.7"
-      //             },
-      //             {
-      //                 taskId: "4",
-      //                 result: "11",
-      //                 delay: "0.8"
-      //             },
-      //             {
-      //                 taskId: "5",
-      //                 result: "12",
-      //                 delay: "0.9"
-      //             },
-      //             {
-      //                 taskId: "6",
-      //                 result: "13",
-      //                 delay: "1.0"
-      //             },
-      //             {
-      //                 taskId: "7",
-      //                 result: "14",
-      //                 delay: "1.1"
-      //             },
-      //             {
-      //                 taskId: "8",
-      //                 result: "15",
-      //                 delay: "1.2"
-      //             },
-      //             {
-      //                 taskId: "9",
-      //                 result: "16",
-      //                 delay: "1.3"
-      //             },
-      //             {
-      //                 taskId: "10",
-      //                 result: "17",
-      //                 delay: "1.4"
-      //             }
-      //         ]
-      // },
-
       maxBufferedTaskCacheSize: 20,
     }
   },
 
+  computed: {
+    processedData() {
+      const result = {}
+      this.visualizationConfig.forEach(viz => {
+        result[viz.id] = this.processVizData(viz)
+      })
+      return result
+    }
+  },
+
+  async created() {
+    await this.autoRegisterComponents()
+    await this.fetchDataSourceList()
+    await this.fetchVisualizationConfig()
+    this.setupDataPolling()
+  },
+
+
   methods: {
+    async autoRegisterComponents() {
+      try {
+        const modules = import.meta.glob('./visualization/*Template.vue')
+        const controls = import.meta.glob('./visualization/*Controls.vue')
 
-
-    generateRandomJPG() {
-      if (!this.selectedDataSource) {
-        return;
-      }
-      // 创建一个 canvas 元素
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-
-      // 设置 canvas 尺寸
-      canvas.width = 320;
-      canvas.height = 240;
-
-      // 生成随机颜色
-      const randomColor = `rgb(${Math.floor(Math.random() * 256)}, ${Math.floor(Math.random() * 256)}, ${Math.floor(Math.random() * 256)})`;
-
-      // 绘制随机颜色的矩形
-      ctx.fillStyle = randomColor;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // 将 canvas 转换为 data URL
-      const dataURL = canvas.toDataURL('image/jpeg');
-
-      // 更新组件数据，渲染随机图像
-      // this.visualizeData = dataURL;
-      return dataURL;
-    },
-
-    generateRandomData(sourceId) {
-      if (!sourceId) {
-        return;
-      }
-      if (!this.bufferedTaskCache[sourceId] || this.bufferedTaskCache[sourceId].length === 0) {
-        this.bufferedTaskCache[sourceId] = [];
-        // generate first 1 task
-        this.bufferedTaskCache[sourceId].push({
-          taskId: "1",
-          result: Math.floor(Math.random() * 100),
-          delay: Math.random().toFixed(2),
-          visualize: this.generateRandomJPG()
-        });
-      } else {
-        // generate next task
-        const nextTaskId = (parseInt(this.bufferedTaskCache[sourceId][this.bufferedTaskCache[sourceId].length - 1].taskId) + 2).toString();
-        this.bufferedTaskCache[sourceId].push({
-          taskId: nextTaskId,
-          result: Math.floor(Math.random() * 100),
-          delay: Math.random().toFixed(2),
-          visualize: this.generateRandomJPG()
-        });
-        if (this.bufferedTaskCache[sourceId].length > this.maxBufferedTaskCacheSize) {
-          this.bufferedTaskCache[sourceId].shift();
+        for (const path in modules) {
+          const type = path.split('/').pop().replace('Template.vue', '').toLowerCase()
+          this.visualizationComponents[type] = defineAsyncComponent(() => modules[path]())
         }
+
+        for (const path in controls) {
+          const type = path.split('/').pop().replace('Controls.vue', '').toLowerCase()
+          this.vizControls[type] = defineAsyncComponent(() => controls[path]())
+        }
+      } catch (error) {
+        console.error('Component auto-registration failed:', error)
       }
     },
-    generateFakeDataForAllSources() {
-      this.dataSourceList.forEach((item) => {
-        this.generateRandomData(item.id);
-      });
+
+    processVizData(vizConfig) {
+      const sourceData = this.bufferedTaskCache[this.selectedDataSource] || []
+      return sourceData.map(task => ({
+        taskId: task.task_id,
+        ...this.extractVizVariables(task.data, vizConfig)
+      }))
     },
 
-    // =========================== 与后端对接
-    // 1. 获取数据源，仅初始化时获取一次
-    getDataSourceList() {
-
-      // for test
-      // this.dataSourceList = [
-      //     {
-      //         id: 'datasource1',
-      //         label: '数据源1'
-      //     },
-      //     {
-      //         id: 'datasource2',
-      //         label: '数据源2'
-      //     }
-      // ];
-      // return;
-
-      // "/source_list"
-      // 后端返回json格式
-      // return [
-      //     {
-      //         id: 'datasource1',
-      //         label: '数据源1'
-      //     },
-      //     {
-      //         id: 'datasource2',
-      //         label: '数据源2'
-      //     }
-      // ];
-
-      //  如果没有任务，返回空列表，表示现在没有开启的数据源
-
-      fetch('/api/source_list')
-          .then(response => response.json())
-          .then(data => {
-            if (!data || data.length === 0) {
-              return;
-            }
-            this.dataSourceList = data;
-            console.log(data);
-            // initialize buffered cache
-            this.dataSourceList.forEach((item) => {
-              this.bufferedTaskCache[item.id] = [];
-            });
-          });
-
+    extractVizVariables(taskData, vizConfig) {
+      const vizData = taskData[vizConfig.id] || {}
+      return Object.fromEntries(
+          Object.entries(vizData)
+              .filter(([key]) => vizConfig.variables.includes(key))
+      )
     },
 
-
-    // 2. 获取最新结果数据
-
-    // "/task_result"
-    // 后端返回json格式
-    // return {
-    //     'datasource1': [
-    //         {
-    //             taskId: "1",
-    //             result: "8",
-    //             delay: "0.5",
-    //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-    //         },
-    //         {
-    //             taskId: "2",
-    //             result: "9",
-    //             delay: "0.6",
-    //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-    //         }],
-    //     'datasource2': [
-    //         {
-    //             taskId: "1",
-    //             result: "8",
-    //             delay: "0.5",
-    //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-    //         },
-    //         {
-    //             taskId: "2",
-    //             result: "9",
-    //             delay: "0.6",
-    //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-    //         }]
-    // };
-
-    //如果是空字典就停住（可能没有key）
-    getLatestResultData() {
-
-      // for test
-      // this.bufferedTaskCache = {
-      //     'datasource1': [
-      //         {
-      //             taskId: "1",
-      //             result: "8",
-      //             delay: "0.5",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "2",
-      //             result: "9",
-      //             delay: "0.6",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "3",
-      //             result: "10",
-      //             delay: "0.7",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "4",
-      //             result: "11",
-      //             delay: "0.8",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "5",
-      //             result: "12",
-      //             delay: "0.9",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "6",
-      //             result: "13",
-      //             delay: "1.0",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "7",
-      //             result: "14",
-      //             delay: "1.1",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "8",
-      //             result: "15",
-      //             delay: "1.2",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "9",
-      //             result: "16",
-      //             delay: "1.3",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "10",
-      //             result: "17",
-      //             delay: "1.4",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         }
-      //     ],
-      //     'datasource2': [
-      //         {
-      //             taskId: "1",
-      //             result: "8",
-      //             delay: "0.5",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         },
-      //         {
-      //             taskId: "2",
-      //             result: "9",
-      //             delay: "0.6",
-      //             visualize: "data:image/jpg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gIoSUNDX1BST0ZJTEUAAQEAAAIYAAAAAAQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAAHRyWFlaAAPsxpwBwiKNIuGxlOz0WhhpoWCMcALb/iyiLCTt8l10f//Z",
-      //         }]
-      // };
-
-      // return;
-
-      fetch('/api/task_result')
-          .then(response => response.json())
-          .then(data => {
-            console.log('getLatestResultData');
-            console.log(data);
-
-            if (!data || Object.keys(data).length === 0) {
-              return;
-            }
-
-            for (const key in data) {
-              if (data[key].length === 0) {
-                continue;
-              }
-              for (const item of data[key]) {
-                if (!this.bufferedTaskCache[key] || this.bufferedTaskCache[key].length === 0) {
-                  this.bufferedTaskCache[key] = [];
-                }
-                this.bufferedTaskCache[key].push(item);
-                if (this.bufferedTaskCache[key].length > this.maxBufferedTaskCacheSize) {
-                  this.bufferedTaskCache[key].shift();
-                }
-              }
-            }
-
-          });
+    updateVariableStates(vizId, newStates) {
+      this.variableStates[vizId] = {
+        ...this.variableStates[vizId],
+        ...newStates
+      }
     },
 
-
-    // 3. 获取结果展示纵轴描述（开始时获取）
-    // /result_prompt
-    // 后端返回json格式
-    // return {
-    //     ‘prompt’: ‘执行结果’
-    // }
-
-
-    getResultPrompt() {
-      // for test
-      // this.prompt = '执行结果';
-      // return;
-
-
-      fetch('/api/result_prompt')
-          .then(response => response.json())
-          .then(data => {
-            if (!data) {
-              return;
-            }
-            console.log(data);
-            this.visualizing_prompt = data.visualizing_prompt;
-            this.result_title_prompt = data.result_title_prompt;
-            this.result_text_prompt = data.result_text_prompt;
-            this.delay_text_prompt = data.delay_text_prompt;
-          });
+    async fetchDataSourceList() {
+      try {
+        const response = await fetch('/api/source_list')
+        this.dataSourceList = await response.json()
+        this.dataSourceList.forEach(source => {
+          this.bufferedTaskCache[source.id] = this.bufferedTaskCache[source.id] || []
+        })
+      } catch (error) {
+        console.error('Failed to fetch data sources:', error)
+      }
     },
 
+    async fetchVisualizationConfig() {
+      try {
+        const response = await fetch('/api/visualization_config')
+        this.visualizationConfig = await response.json()
 
-    // 下载文件
+        this.visualizationConfig.forEach(viz => {
+          this.activeVisualizations.add(viz.id)
+          if (!this.variableStates[viz.id]) {
+            this.variableStates[viz.id] = reactive({})
+          }
+          viz.variables?.forEach(varName => {
+            if (this.variableStates[viz.id][varName] === undefined) {
+              this.variableStates[viz.id][varName] = true
+            }
+          })
+        })
+      } catch (error) {
+        console.error('Failed to fetch visualization config:', error)
+      }
+    },
+
+    async getLatestResultData() {
+      try {
+        const response = await fetch('/api/task_result')
+        const data = await response.json()
+
+        for (const sourceId in data) {
+          if (data[sourceId].length === 0) continue
+
+          if (!this.bufferedTaskCache[sourceId]) {
+            this.bufferedTaskCache[sourceId] = []
+          }
+
+          data[sourceId].forEach(task => {
+            this.bufferedTaskCache[sourceId].push(task)
+            if (this.bufferedTaskCache[sourceId].length > this.maxBufferedTaskCacheSize) {
+              this.bufferedTaskCache[sourceId].shift()
+            }
+          })
+        }
+      } catch (error) {
+        console.error('Failed to fetch task results:', error)
+      }
+    },
+
+    setupDataPolling() {
+      this.getLatestResultData()
+      this.pollingInterval = setInterval(() => {
+        this.getLatestResultData()
+      }, 2000)
+    },
+
     exportTaskLog() {
       console.log('exportTaskLog');
       fetch('/api/download_log')
@@ -557,84 +262,11 @@ export default {
 
 
   },
-  mounted() {
-    // this.generateRandomJPG();
-    // this.generateRandomGraphData();
-    // setInterval(() => {
-    //     this.generateRandomJPG();
-    //     this.generateRandomGraphData();
-    // }, 5000);
-
-    this.getDataSourceList();
-    // this.getResultPrompt();
-
-    // this.generateFakeDataForAllSources();
-    // setInterval(() => {
-    //     this.generateFakeDataForAllSources();
-    // }, 5000);
-
-    this.getLatestResultData();
-    console.log(this.bufferedTaskCache);
-    setInterval(() => {
-      this.getLatestResultData();
-      console.log(this.bufferedTaskCache);
-    }, 2000);
-
-
+  beforeUnmount() {
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval)
+    }
   },
-  watch: {
-    selectedDataSource: function (newVal, oldVal) {
-      if (newVal !== oldVal) {
-        // console.log(newVal);
-        // console.log(oldVal);
-
-        // this.resultData = this.bufferedTaskCache[newVal];
-        this.resultData = this.bufferedTaskCache[newVal];
-        this.delayData = this.bufferedTaskCache[newVal];
-        this.visualizeData = this.bufferedTaskCache[newVal];
-
-
-      }
-    },
-
-  },
-  computed: {
-    filteredVisualizeData() {
-      if (!this.visualizeData) {
-        return null;
-      }
-      return this.visualizeData.map((item) => {
-        return {
-          taskId: item.taskId,
-          visualize: item.visualize
-        }
-      });
-    },
-    filteredResultData() {
-      if (!this.resultData) {
-        return null;
-      }
-      return this.resultData.map((item) => {
-        return {
-          taskId: item.taskId,
-          result: item.result
-        }
-      });
-
-    },
-    filteredDelayData() {
-      if (!this.delayData) {
-        return null;
-      }
-      return this.delayData.map((item) => {
-        return {
-          taskId: item.taskId,
-          delay: item.delay
-        }
-      });
-    },
-
-  }
 };
 
 
@@ -759,4 +391,58 @@ $homeNavLengh: 8;
   }
 
 }
+
+.viz-controls {
+  padding: 10px;
+  border-bottom: 1px solid #eee;
+
+  .el-checkbox {
+    margin-right: 15px;
+  }
+
+  .variable-selector {
+    margin-top: 8px;
+    padding-left: 20px;
+  }
+}
+
+.chart-container {
+  width: 24vw;
+  height: 32vh;
+}
+
+.responsive-image {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+.home-container {
+  overflow: hidden;
+}
+
+.viz-header {
+  padding: 10px;
+  border-bottom: 1px solid #eee;
+  display: flex;
+  flex-direction: column;
+}
+
+.viz-checkbox {
+  margin-bottom: 8px;
+}
+
+.home-card-item {
+  height: 500px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.home-card-item > div:last-child {
+  flex-grow: 1;
+  overflow: auto;
+}
+
 </style>

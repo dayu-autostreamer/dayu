@@ -113,6 +113,11 @@ class BackendServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.BACKEND_TASK_RESULT]
                      ),
+            APIRoute(NetworkAPIPath.BACKEND_VISUALIZATION_CONFIG,
+                     self.get_visualization_config,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.BACKEND_VISUALIZATION_CONFIG]
+                     ),
             APIRoute(NetworkAPIPath.BACKEND_DOWNLOAD_LOG,
                      self.download_log,
                      response_class=FileResponse,
@@ -611,10 +616,8 @@ class BackendServer:
         10 lasted results
         {
         'datasource1':[
-            taskId: 12,
-            result: 23 ,
-            delay: 0.6,
-            visualize: "" (base64 image)
+            task_id: 12,
+            data: {0:{"delay":"0.5"},1:{"image":"xxx"}}
 
         ],
         'datasource2':[]
@@ -630,6 +633,12 @@ class BackendServer:
             ans[source_id] = self.server.task_results[source_id].get_all()
 
         return ans
+
+    async def get_visualization_config(self):
+        """
+        get visualization configuration
+        """
+        return self.server.get_visualization_config()
 
     async def get_datasource_state(self):
         state = 'open' if self.server.source_open else 'close'
