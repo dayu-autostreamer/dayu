@@ -43,7 +43,7 @@ export default {
               data: props.data.map(d => parseFloat(d[varName]) || 0,
               smooth: true
             }))
-        }
+        },
 
         chart?.setOption(option, true)
       }
