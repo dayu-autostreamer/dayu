@@ -8,15 +8,15 @@
             <div class="flex-auto" style="font-weight: bold">
               Choose Datasource: &nbsp; &nbsp;
               <el-select
-                v-model="selectedDataSource"
-                placeholder="Please choose datasource"
-                class="compact-select"
+                  v-model="selectedDataSource"
+                  placeholder="Please choose datasource"
+                  class="compact-select"
               >
                 <el-option
-                  v-for="item in dataSourceList"
-                  :key="item.id"
-                  :label="item.label"
-                  :value="item.id"
+                    v-for="item in dataSourceList"
+                    :key="item.id"
+                    :label="item.label"
+                    :value="item.id"
                 />
               </el-select>
             </div>
@@ -26,10 +26,10 @@
       <el-col :xs="24" :sm="24" :md="4" :lg="4" :xl="4">
         <div class="home-card-item export-container">
           <el-button
-            type="primary"
-            class="export-button"
-            @click="exportTaskLog"
-            style="font-weight: bold"
+              type="primary"
+              class="export-button"
+              @click="exportTaskLog"
+              style="font-weight: bold"
           >
             Export Log
           </el-button>
@@ -45,10 +45,10 @@
             <h4>Active Visualizations:</h4>
             <el-checkbox-group v-model="activeVisualizationsArray">
               <el-checkbox
-                v-for="viz in visualizationConfig"
-                :key="viz.id"
-                :label="viz.id"
-                class="module-checkbox"
+                  v-for="viz in visualizationConfig"
+                  :key="viz.id"
+                  :label="viz.id"
+                  class="module-checkbox"
               >
                 {{ viz.name }}
               </el-checkbox>
@@ -61,29 +61,29 @@
     <!-- Visualization Modules Row -->
     <el-row :gutter="15" class="home-card-two mb15">
       <el-col
-        v-for="viz in visualizationConfig"
-        :key="viz.id"
-        :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
-        v-show="activeVisualizations.has(viz.id)"
+          v-for="viz in visualizationConfig"
+          :key="viz.id"
+          :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
+          v-show="activeVisualizations.has(viz.id)"
       >
         <div class="home-card-item viz-module">
           <div class="viz-module-header">
             <h3 class="viz-title">{{ viz.name }}</h3>
             <component
-              :is="vizControls[viz.type]"
-              v-if="vizControls[viz.type]"
-              :config="viz"
-              :variable-states="variableStates[viz.id]"
-              @update:variable-states="updateVariableStates(viz.id, $event)"
+                :is="vizControls[viz.type]"
+                v-if="vizControls[viz.type]"
+                :config="viz"
+                :variable-states="variableStates[viz.id]"
+                @update:variable-states="updateVariableStates(viz.id, $event)"
             />
           </div>
 
           <component
-            :is="visualizationComponents[viz.type]"
-            v-if="visualizationComponents[viz.type]"
-            :config="viz"
-            :data="processedData[viz.id]"
-            :variable-states="variableStates[viz.id]"
+              :is="visualizationComponents[viz.type]"
+              v-if="visualizationComponents[viz.type]"
+              :config="viz"
+              :data="processedData[viz.id]"
+              :variable-states="variableStates[viz.id]"
           />
         </div>
       </el-col>
@@ -92,7 +92,7 @@
 </template>
 
 <script>
-import { defineAsyncComponent, reactive, markRaw, shallowRef } from 'vue'
+import {defineAsyncComponent, reactive, markRaw, shallowRef} from 'vue'
 
 export default {
   data() {
@@ -155,19 +155,26 @@ export default {
     },
 
     processVizData(vizConfig) {
-      const sourceData = this.bufferedTaskCache[this.selectedDataSource] || []
-      return sourceData.map(task => ({
-        taskId: task.task_id,
-        ...this.extractVizVariables(task.data, vizConfig)
-      }))
+      const sourceData = this.bufferedTaskCache[this.selectedDataSource] || [];
+      return sourceData.map(task => {
+        const vizData = task.data[vizConfig.id] || {};
+
+        return {
+          taskId: task.task_id,
+          ...Object.fromEntries(
+              Object.entries(vizData)
+                  .filter(([key]) => vizConfig.variables.includes(key))
+          )
+        };
+      });
     },
 
     extractVizVariables(taskData, vizConfig) {
       const vizData = taskData[vizConfig.id] || {}
 
       return Object.fromEntries(
-        Object.entries(vizData)
-          .filter(([key]) => vizConfig.variables.includes(key))
+          Object.entries(vizData)
+              .filter(([key]) => vizConfig.variables.includes(key))
       )
     },
 
@@ -222,15 +229,24 @@ export default {
           if (data[sourceId].length === 0) continue
 
           if (!this.bufferedTaskCache[sourceId]) {
-            this.bufferedTaskCache[sourceId] = []
+            this.$set(this.bufferedTaskCache, sourceId, []);
           }
 
           data[sourceId].forEach(task => {
+
+            const processedTask = {
+              task_id: task.task_id,
+              data: task.data.map(item => ({...item}))
+            };
+
             this.bufferedTaskCache[sourceId].push(task)
+
             if (this.bufferedTaskCache[sourceId].length > this.maxBufferedTaskCacheSize) {
-              this.bufferedTaskCache[sourceId].shift()
+              this.bufferedTaskCache[sourceId].shift();
             }
-          })
+
+          });
+          this.bufferedTaskCache = {...this.bufferedTaskCache};
         }
       } catch (error) {
         console.error('Failed to fetch task results:', error)
@@ -246,16 +262,16 @@ export default {
 
     exportTaskLog() {
       fetch('/api/download_log')
-        .then(response => response.blob())
-        .then(blob => {
-          const url = window.URL.createObjectURL(blob)
-          const link = document.createElement('a')
-          link.href = url
-          link.setAttribute('download', 'task_log.json')
-          document.body.appendChild(link)
-          link.click()
-          link.remove()
-        })
+          .then(response => response.blob())
+          .then(blob => {
+            const url = window.URL.createObjectURL(blob)
+            const link = document.createElement('a')
+            link.href = url
+            link.setAttribute('download', 'task_log.json')
+            document.body.appendChild(link)
+            link.click()
+            link.remove()
+          })
     }
   },
   beforeUnmount() {
@@ -288,6 +304,7 @@ export default {
 .compact-select {
   width: 70%;
 }
+
 .compact-select ::v-deep .el-input__inner {
   height: 32px;
   line-height: 32px;
@@ -305,7 +322,7 @@ export default {
   background: var(--el-bg-color);
   border-radius: 4px;
   padding: 15px;
-  box-shadow: 0 2px 12px 0 rgba(0,0,0,.1);
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, .1);
   display: flex;
   flex-direction: column;
 }
