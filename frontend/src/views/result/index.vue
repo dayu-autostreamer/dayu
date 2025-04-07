@@ -225,29 +225,32 @@ export default {
         const data = await response.json()
 
         console.log('get result data: ', data)
-        for (const sourceId in data) {
-          if (data[sourceId].length === 0) continue
 
+        Object.keys(data).forEach(sourceId => {
           if (!this.bufferedTaskCache[sourceId]) {
-            this.$set(this.bufferedTaskCache, sourceId, []);
+            this.$set(this.bufferedTaskCache, sourceId, [])
           }
 
           data[sourceId].forEach(task => {
-
-            const processedTask = {
+            const newTask = {
               task_id: task.task_id,
               data: task.data.map(item => ({...item}))
-            };
-
-            this.bufferedTaskCache[sourceId].push(task)
-
-            if (this.bufferedTaskCache[sourceId].length > this.maxBufferedTaskCacheSize) {
-              this.bufferedTaskCache[sourceId].shift();
             }
 
-          });
-          this.bufferedTaskCache = {...this.bufferedTaskCache};
-        }
+            this.bufferedTaskCache[sourceId].splice(
+                this.bufferedTaskCache[sourceId].length,
+                0,
+                newTask
+            )
+
+            if (this.bufferedTaskCache[sourceId].length > this.maxBufferedTaskCacheSize) {
+              this.bufferedTaskCache[sourceId].splice(0, 1)
+            }
+          })
+        })
+
+        // 强制触发视图更新
+        this.bufferedTaskCache = {...this.bufferedTaskCache}
       } catch (error) {
         console.error('Failed to fetch task results:', error)
       }
