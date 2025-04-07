@@ -8,15 +8,15 @@
             <div class="flex-auto" style="font-weight: bold">
               Choose Datasource: &nbsp;
               <el-select
-                v-model="selectedDataSource"
-                placeholder="Please choose datasource"
-                class="compact-select"
+                  v-model="selectedDataSource"
+                  placeholder="Please choose datasource"
+                  class="compact-select"
               >
                 <el-option
-                  v-for="item in dataSourceList"
-                  :key="item.id"
-                  :label="item.label"
-                  :value="item.id"
+                    v-for="item in dataSourceList"
+                    :key="item.id"
+                    :label="item.label"
+                    :value="item.id"
                 />
               </el-select>
             </div>
@@ -26,9 +26,9 @@
       <el-col :xs="24" :sm="24" :md="4" :lg="4" :xl="4">
         <div class="home-card-item export-container">
           <el-button
-            type="primary"
-            class="export-button"
-            @click="exportTaskLog"
+              type="primary"
+              class="export-button"
+              @click="exportTaskLog"
           >
             Export Log
           </el-button>
@@ -44,10 +44,10 @@
             <h4>Active Visualizations:</h4>
             <el-checkbox-group v-model="activeVisualizationsArray">
               <el-checkbox
-                v-for="viz in visualizationConfig"
-                :key="viz.id"
-                :label="viz.id"
-                class="module-checkbox"
+                  v-for="viz in visualizationConfig"
+                  :key="viz.id"
+                  :label="viz.id"
+                  class="module-checkbox"
               >
                 {{ viz.name }}
               </el-checkbox>
@@ -60,30 +60,30 @@
     <!-- Visualization Modules Row -->
     <el-row :gutter="15" class="home-card-two mb15">
       <el-col
-        v-for="viz in visualizationConfig"
-        :key="viz.id"
-        :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
-        v-show="componentsLoaded && activeVisualizations.has(viz.id)"
+          v-for="viz in visualizationConfig"
+          :key="viz.id"
+          :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
+          v-show="componentsLoaded && activeVisualizations.has(viz.id)"
       >
         <div class="home-card-item viz-module">
           <div class="viz-module-header">
             <h3 class="viz-title">{{ viz.name }}</h3>
             <component
-              :is="vizControls[viz.type]"
-              v-if="vizControls[viz.type]"
-              :config="viz"
-              :variable-states="variableStates[viz.id]"
-              @update:variable-states="updateVariableStates(viz.id, $event)"
+                :is="vizControls[viz.type]"
+                v-if="vizControls[viz.type]"
+                :config="viz"
+                :variable-states="variableStates[viz.id]"
+                @update:variable-states="updateVariableStates(viz.id, $event)"
             />
           </div>
 
           <component
-            :is="visualizationComponents[viz.type]"
-            v-if="componentsLoaded && visualizationComponents[viz.type]"
-            :key="`${viz.type}-${selectedDataSource}`"
-            :config="viz"
-            :data="processedData[viz.id]"
-            :variable-states="variableStates[viz.id]"
+              :is="visualizationComponents[viz.type]"
+              v-if="componentsLoaded && visualizationComponents[viz.type]"
+              :key="`${viz.type}-${selectedDataSource}`"
+              :config="viz"
+              :data="processedData[viz.id]"
+              :variable-states="variableStates[viz.id]"
           />
         </div>
       </el-col>
@@ -92,7 +92,7 @@
 </template>
 
 <script>
-import { defineAsyncComponent, reactive, ref, markRaw } from 'vue'
+import {defineAsyncComponent, reactive, ref, markRaw, toRaw} from 'vue'
 import mitt from 'mitt'
 
 const emitter = mitt()
@@ -179,8 +179,8 @@ export default {
         const cleanedData = {}
         Object.entries(vizData).forEach(([key, value]) => {
           cleanedData[key] = typeof value === 'string' ?
-            parseFloat(value) || 0 :
-            Number(value) || 0
+              parseFloat(value) || 0 :
+              Number(value) || 0
         })
 
         return {
@@ -217,14 +217,21 @@ export default {
 
         this.visualizationConfig.forEach(viz => {
           this.activeVisualizations.add(viz.id)
+
           if (!this.variableStates[viz.id]) {
-            this.$set(this.variableStates, viz.id, {})
+            this.variableStates[viz.id] = reactive({})
           }
           viz.variables?.forEach(varName => {
             if (this.variableStates[viz.id][varName] === undefined) {
-              this.$set(this.variableStates[viz.id], varName, true)
+              this.variableStates[viz.id][varName] = true
             }
           })
+        })
+
+        this.visualizationConfig = [...this.visualizationConfig]
+        console.log('Visualization config initialized:', {
+          config: toRaw(this.visualizationConfig),
+          variables: toRaw(this.variableStates)
         })
       } catch (error) {
         console.error('Failed to fetch visualization config:', error)
@@ -246,13 +253,13 @@ export default {
           data[sourceId].forEach(task => {
             const newTask = {
               task_id: task.task_id,
-              data: task.data.map(item => ({ ...item }))
+              data: task.data.map(item => ({...item}))
             }
 
             this.bufferedTaskCache[sourceId].splice(
-              this.bufferedTaskCache[sourceId].length,
-              0,
-              newTask
+                this.bufferedTaskCache[sourceId].length,
+                0,
+                newTask
             )
 
             if (this.bufferedTaskCache[sourceId].length > this.maxBufferedTaskCacheSize) {
@@ -261,7 +268,7 @@ export default {
           })
         })
 
-        this.bufferedTaskCache = { ...this.bufferedTaskCache }
+        this.bufferedTaskCache = {...this.bufferedTaskCache}
         emitter.emit('force-update-charts')
       } catch (error) {
         console.error('Failed to fetch task results:', error)
@@ -277,16 +284,16 @@ export default {
 
     exportTaskLog() {
       fetch('/api/download_log')
-        .then(response => response.blob())
-        .then(blob => {
-          const url = window.URL.createObjectURL(blob)
-          const link = document.createElement('a')
-          link.href = url
-          link.setAttribute('download', 'task_log.json')
-          document.body.appendChild(link)
-          link.click()
-          link.remove()
-        })
+          .then(response => response.blob())
+          .then(blob => {
+            const url = window.URL.createObjectURL(blob)
+            const link = document.createElement('a')
+            link.href = url
+            link.setAttribute('download', 'task_log.json')
+            document.body.appendChild(link)
+            link.click()
+            link.remove()
+          })
     },
 
     forceChartUpdate() {
@@ -323,6 +330,7 @@ export default {
 .compact-select {
   width: 70%;
 }
+
 .compact-select ::v-deep .el-input__inner {
   height: 32px;
   line-height: 32px;
@@ -341,7 +349,7 @@ export default {
   background: var(--el-bg-color);
   border-radius: 4px;
   padding: 15px;
-  box-shadow: 0 2px 12px 0 rgba(0,0,0,.1);
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, .1);
 }
 
 .control-group {
