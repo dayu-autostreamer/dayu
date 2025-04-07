@@ -304,10 +304,12 @@ export default {
   border-radius: 4px;
   padding: 15px;
   box-shadow: 0 2px 12px 0 rgba(0,0,0,.1);
+  display: flex;
+  flex-direction: column;
 }
 
 .control-group {
-  margin-bottom: 15px;
+  margin-bottom: 8px;
 }
 
 .control-group h4 {
@@ -315,9 +317,17 @@ export default {
   color: var(--el-text-color-primary);
 }
 
+.el-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
 .module-checkbox {
-  margin-right: 20px;
-  margin-bottom: 8px;
+  margin-right: 12px;
+  margin-bottom: 4px;
+  white-space: nowrap;
 }
 
 .viz-module {
@@ -345,4 +355,20 @@ export default {
   border-radius: 4px;
   border: 1px solid var(--el-border-color-light);
 }
+
+@media (max-width: 768px) {
+  .viz-controls-panel {
+    padding: 10px;
+  }
+
+  .adaptive-checkbox-group {
+    gap: 6px 8px;
+  }
+
+  .module-checkbox {
+    margin-right: 8px;
+    font-size: 0.9em;
+  }
+}
+
 </style>
