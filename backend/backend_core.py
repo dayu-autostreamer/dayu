@@ -3,12 +3,10 @@ import re
 from collections import deque
 from func_timeout import func_set_timeout as timeout
 
-import cv2
-import numpy as np
 import os
 import time
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant, EncodeOps
+from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant
 from core.lib.network import http_request, NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod
 
 from kube_helper import KubeHelper
@@ -336,7 +334,7 @@ class BackendCore:
                     for idx, vf in enumerate(self.visualizations):
                         al_name = vf['hook_name']
                         al_params = eval(vf['params']) if 'params' in vf else {}
-                        vf_func = Context.get_algorithm('VISUALIZATION', al_name=al_name, **al_params)
+                        vf_func = Context.get_algorithm('VISUALIZER', al_name=al_name, **al_params)
                         visualization_data[idx] = vf_func(task)
                 except Exception as e:
                     LOGGER.warning(f'Prepare visualization data failed: {str(e)}')
