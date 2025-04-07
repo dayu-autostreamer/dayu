@@ -1,13 +1,23 @@
-- name: frame visualization
+- name: Frame Visualization
   type: image
   variables: ["roi frame"]
   hook_name: roi_frame
-- name: object number
+- name: Object Number Curve
   type: curve
-  variables: ["number"]
+  x_axis: Task Index
+  y_axis: Number
+  variables: ["Object Number"]
   hook_name: obj_num
-- name: end to end delay
+- name: End to End Delay Curve
   type: curve
-  variables: ["delay"]
+  x_axis: Task Index
+  y_axis: Delay
+  variables: ["End to End Delay"]
   hook_name: e2e_delay
 
+
+######## Visualization Module Template ########
+#- name: Frame Visualization
+#  type: image
+#  variables: ["roi frame"]
+#  hook_name: roi_frame

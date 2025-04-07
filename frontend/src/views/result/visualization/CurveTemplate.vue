@@ -52,6 +52,11 @@ export default {
     const lastRenderTime = ref(0)
     const resizeObserver = ref(null)
 
+    const animationConfig = {
+      duration: 800,
+      easing: 'cubicInOut'
+    }
+
     // Computed Properties
     const safeData = computed(() => {
       try {
@@ -97,21 +102,17 @@ export default {
           return false
         }
 
-        // Dispose previous instance
         if (chart.value) {
           chart.value.dispose()
           chart.value = null
         }
 
-        // Initialize new instance
         chart.value = echarts.init(container.value)
         initialized.value = true
 
-        // Setup resize observer
+        // 修改：添加带动画的resize
         resizeObserver.value = new ResizeObserver(() => {
-          if (Date.now() - lastRenderTime.value > 200) {
-            chart.value?.resize()
-          }
+          chart.value?.resize({animation: animationConfig})
         })
         resizeObserver.value.observe(container.value)
 
@@ -135,10 +136,15 @@ export default {
 
       try {
         const option = getChartOption()
-        chart.value.setOption(option, {
-          notMerge: true,
-          lazyUpdate: true
-        })
+        // 修改：优化setOption参数
+        if (chart.value.getOption()) {
+          chart.value.setOption(option, {
+            replaceMerge: ['series', 'xAxis', 'yAxis'],
+            notMerge: false
+          })
+        } else {
+          chart.value.setOption(option)
+        }
         lastRenderTime.value = Date.now()
       } catch (e) {
         console.error('Chart render error:', e)
@@ -147,7 +153,10 @@ export default {
 
     const getChartOption = () => {
       return {
-        animation: false,
+        // 新增动画配置
+        animation: true,
+        animationDuration: animationConfig.duration,
+        animationEasing: animationConfig.easing,
         tooltip: {
           trigger: 'axis',
           formatter: params => {
@@ -202,21 +211,45 @@ export default {
             return typeof val === 'number' ? val :
                 typeof val === 'string' ? parseFloat(val) || 0 : 0
           }),
+          // 新增平滑配置
           smooth: true,
-          symbol: 'circle',
-          symbolSize: 6,
+          symbol: 'emptyCircle',
+          symbolSize: 8,
+          showSymbol: safeData.value.length < 50,
           connectNulls: true,
           lineStyle: {
             width: 2,
-            type: 'solid'
+            shadowColor: 'rgba(0, 0, 0, 0.2)',
+            shadowBlur: 8,
+            shadowOffsetY: 5
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              {offset: 0, color: 'rgba(64, 158, 255, 0.6)'},
+              {offset: 1, color: 'rgba(64, 158, 255, 0.02)'}
+            ])
           },
           emphasis: {
             lineStyle: {
               width: 3
             }
-          }
+          },
+          animationEasing: 'cubicOut',
+          animationDurationUpdate: animationConfig.duration
         }))
       }
+    }
+
+    const smoothUpdate = () => {
+      if (!chart.value) return
+      chart.value.setOption({
+        series: activeVariables.value.map(varName => ({
+          data: safeData.value.map(d => d[varName])
+        }))
+      }, {
+        replaceMerge: ['series'],
+        notMerge: false
+      })
     }
 
     // Lifecycle Hooks
@@ -238,11 +271,11 @@ export default {
     // Watchers
     watch(
         [safeData, activeVariables],
-        () => {
-          if (initialized.value) {
+        (newVal, oldVal) => {
+          if (newVal[0].length !== oldVal[0].length) {
             renderChart()
           } else {
-            initChart().then(renderChart)
+            smoothUpdate()
           }
         },
         {deep: true}
