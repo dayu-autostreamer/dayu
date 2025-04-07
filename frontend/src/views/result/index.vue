@@ -80,7 +80,7 @@
           <component
               :is="visualizationComponents[viz.type]"
               v-if="componentsLoaded && visualizationComponents[viz.type]"
-              :key="`${viz.type}-${selectedDataSource}`"
+              :key="`${viz.type}-${selectedDataSource}-${Date.now()}`"
               :config="viz"
               :data="processedData[viz.id]"
               :variable-states="variableStates[viz.id]"
@@ -203,26 +203,33 @@ export default {
     },
 
     processVizData(vizConfig) {
-      // console.log(this.bufferedTaskCache)
       if (!this.selectedDataSource || !this.bufferedTaskCache[this.selectedDataSource]) {
         console.warn(`Invalid data source: ${this.selectedDataSource}`)
         return []
       }
 
-      return this.bufferedTaskCache[this.selectedDataSource].filter(task => {
-        return task?.data?.some?.(item =>
-            item?.id === vizConfig.id &&
-            Object.keys(item?.data || {}).some(k => vizConfig.variables.includes(k))
-        )
-      })
+      const rawData = this.bufferedTaskCache[this.selectedDataSource]
+      console.log(`[DEBUG] Raw data for ${vizConfig.id}:`, JSON.parse(JSON.stringify(rawData)))
+
+      const filteredData = rawData
+          .filter(task => {
+            const hasValidItem = task.data?.some?.(item => {
+              const isMatch = item?.id === vizConfig.id
+              console.log(`[MATCH] ${item?.id} vs ${vizConfig.id} => ${isMatch}`)
+              return isMatch
+            })
+            return hasValidItem
+          })
           .map(task => {
             const vizDataItem = task.data.find(item => item.id === vizConfig.id)
-            const cleanedData = {}
+            console.log(`[DATA] Processing item for ${vizConfig.id}:`, vizDataItem)
 
-            // 严格匹配配置中的变量
+            // 添加变量值存在性检查
+            const cleanedData = {}
             vizConfig.variables?.forEach(varName => {
-              const rawValue = vizDataItem?.data?.[varName]
-              cleanedData[varName] = parseFloat(rawValue) || 0
+              const rawValue = vizDataItem?.data?.[varName] ?? null
+              console.log(`[VAR] ${varName} value:`, rawValue)
+              cleanedData[varName] = Number(rawValue) || 0
             })
 
             return {
@@ -230,6 +237,9 @@ export default {
               ...cleanedData
             }
           })
+
+      console.log(`[RESULT] Processed data for ${vizConfig.id}:`, filteredData)
+      return filteredData
     },
 
     updateVariableStates(vizId, newStates) {
@@ -290,34 +300,37 @@ export default {
         const response = await fetch('/api/task_result')
         const data = await response.json()
 
-        // 使用深拷贝强制触发响应式更新
-        const newCache = JSON.parse(JSON.stringify(this.bufferedTaskCache))
+        // 创建新缓存对象保持响应式
+        const newCache = {...this.bufferedTaskCache}
 
-        Object.keys(data).forEach(sourceIdStr => {
+        Object.entries(data).forEach(([sourceIdStr, tasks]) => {
           const sourceId = String(sourceIdStr)
-          if (!data[sourceId] || !Array.isArray(data[sourceId])) return
+          if (!Array.isArray(tasks)) return
 
-          const validTasks = data[sourceId]
+          const validTasks = tasks
               .filter(task => task?.task_id && Array.isArray(task.data))
               .map(task => ({
                 task_id: task.task_id,
                 data: task.data.map(item => ({
-                  id: item.id || 'unknown',
+                  id: item.id || vizConfig.id, // 修正点：使用配置ID作为fallback
                   data: item.data || {}
                 }))
               }))
 
+          // 合并新旧数据
           newCache[sourceId] = [
             ...(newCache[sourceId] || []),
             ...validTasks
           ].slice(-this.maxBufferedTaskCacheSize)
         })
 
-        // 替换整个缓存对象
-        this.bufferedTaskCache = reactive(JSON.parse(JSON.stringify(newCache)))
+        // 强制替换整个缓存对象
+        this.bufferedTaskCache = reactive({...newCache})
 
-        // 双保险更新
-        this.visualizationConfig = [...this.visualizationConfig]
+        // 添加可视化配置刷新
+        this.visualizationConfig = this.visualizationConfig.map(cfg => ({...cfg}))
+
+        // 添加延迟更新确保DOM刷新
         this.$nextTick(() => {
           emitter.emit('force-update-charts')
         })
@@ -447,6 +460,8 @@ export default {
 .viz-module {
   height: 500px !important;
   min-height: 500px;
+  transform: translateZ(0); /* 触发GPU加速 */
+  contain: strict;
 }
 
 /* 修复ECharts容器尺寸 */

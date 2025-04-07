@@ -26,10 +26,18 @@ export default {
     const currentImage = ref(null)
 
     watch(() => props.data, (newData) => {
-      console.log('[DEBUG] Image data:', newData)
-      currentImage.value = newData?.filter?.(item =>
-          item?.image?.startsWith?.('http')
-      )?.pop()?.image || null
+      console.log('[DEBUG] Image raw data:', newData)
+
+      // 增强数据结构检查
+      const validItems = (newData || []).filter(item => {
+        const hasImage = !!item?.image
+        console.log(`[IMAGE] Item ${item.taskId} has image: ${hasImage}`)
+        return hasImage
+      })
+
+      currentImage.value = validItems.length > 0
+          ? `${validItems[validItems.length - 1].image}?t=${Date.now()}`
+          : null
     }, {deep: true})
 
     return {currentImage}
