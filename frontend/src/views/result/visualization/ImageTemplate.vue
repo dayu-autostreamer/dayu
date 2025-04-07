@@ -25,20 +25,30 @@ export default {
   setup(props) {
     const currentImage = ref(null)
 
-    watch(() => props.data, () => {
-      if (Array.isArray(props.data) && props.data.length > 0) {
-        const validItems = props.data.filter(item =>
-            item.image && typeof item.image === 'string'
+    watch(() => props.data, (newData) => {
+      console.log('Image data received:', newData)
+      if (Array.isArray(newData) && newData.length > 0) {
+        const validItems = newData.filter(item =>
+            item.image && isValidImageUrl(item.image)
         )
         if (validItems.length > 0) {
-          currentImage.value = validItems[validItems.length - 1].image
+          currentImage.value = `${validItems[validItems.length - 1].image}?t=${Date.now()}`
           return
         }
       }
       currentImage.value = null
-    }, {immediate: true, deep: true})
+    }, {deep: true, immediate: true})
 
     return {currentImage}
+  }
+}
+
+function isValidImageUrl(url) {
+  try {
+    new URL(url)
+    return url.match(/\.(jpeg|jpg|gif|png|svg)$/) != null
+  } catch {
+    return false
   }
 }
 </script>

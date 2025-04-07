@@ -104,6 +104,9 @@ export default {
         if (!container.value) {
           console.warn('Chart container element not found')
           return false
+        } else {
+          container.value.style.height = '100%'
+          container.value.style.width = '100%'
         }
 
         if (chart.value) {
@@ -274,15 +277,16 @@ export default {
 
     // Watchers
     watch(
-        [safeData, activeVariables],
+        () => props.data,
         (newVal, oldVal) => {
-          if (newVal[0].length !== oldVal[0].length) {
-            renderChart()
-          } else {
-            smoothUpdate()
+          if (JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
+            console.log('Curve data changed:', newVal)
+            nextTick().then(() => {
+              renderChart()
+            })
           }
         },
-        {deep: true}
+        {deep: true, immediate: true}
     )
 
     return {

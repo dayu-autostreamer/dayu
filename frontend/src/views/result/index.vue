@@ -102,7 +102,7 @@ export default {
     return {
       selectedDataSource: null,
       dataSourceList: [],
-      bufferedTaskCache: {},
+      bufferedTaskCache: reactive({}),
       maxBufferedTaskCacheSize: 20,
       componentsLoaded: false,
       visualizationConfig: [],
@@ -148,6 +148,15 @@ export default {
     await this.fetchDataSourceList()
     await this.fetchVisualizationConfig()
     this.setupDataPolling()
+
+    emitter.on('force-update-charts', () => {
+      this.$nextTick(() => {
+        console.log('Force updating all charts')
+        this.visualizationConfig.forEach(viz => {
+          this.$set(this.variableStates, viz.id, {...this.variableStates[viz.id]})
+        })
+      })
+    })
   },
   methods: {
     async autoRegisterComponents() {
@@ -200,6 +209,7 @@ export default {
               cleanedData[key] = typeof value === 'number' ? value :
                   !isNaN(value) ? parseFloat(value) : 0;
             });
+
 
             return {
               taskId: String(task.task_id),
@@ -264,41 +274,33 @@ export default {
         Object.keys(data).forEach(sourceId => {
           if (!data[sourceId] || !Array.isArray(data[sourceId])) return
 
+          // 使用Vue.set保证响应式更新
           if (!this.bufferedTaskCache[sourceId]) {
-            this.bufferedTaskCache[sourceId] = reactive([])
+            this.$set(this.bufferedTaskCache, sourceId, reactive([]))
           }
 
           const validNewTasks = data[sourceId]
-              .filter(task =>
-                  task?.task_id !== undefined &&
-                  Array.isArray(task.data)
-              )
+              .filter(task => task?.task_id && Array.isArray(task.data))
               .map(task => ({
                 task_id: task.task_id,
                 data: task.data.map(item => ({
-                  ...item,
                   id: item.id || 'unknown',
                   data: item.data || {}
                 }))
               }))
 
-          if (validNewTasks.length === 0) return
+          // 使用响应式数组操作
+          const newCache = [
+            ...this.bufferedTaskCache[sourceId],
+            ...validNewTasks
+          ].slice(-this.maxBufferedTaskCacheSize)
 
-          const currentCache = this.bufferedTaskCache[sourceId]
-          currentCache.push(...validNewTasks)
-
-          if (currentCache.length > this.maxBufferedTaskCacheSize) {
-            this.bufferedTaskCache[sourceId] = reactive(
-                currentCache.slice(-this.maxBufferedTaskCacheSize)
-            )
-          } else {
-            this.bufferedTaskCache[sourceId].splice(currentCache.length)
-          }
+          this.bufferedTaskCache[sourceId] = reactive(newCache)
         })
 
+        // 强制触发视图更新
+        this.$forceUpdate()
         emitter.emit('force-update-charts')
-        console.debug('Data updated:', JSON.parse(JSON.stringify(this.bufferedTaskCache)))
-
       } catch (error) {
         console.error('Failed to fetch task results:', error)
       }
@@ -419,5 +421,18 @@ export default {
   background: var(--el-bg-color);
   border-radius: 4px;
   border: 1px solid var(--el-border-color-light);
+}
+
+/* 确保容器尺寸正确 */
+.viz-module {
+  height: 500px !important;
+  min-height: 500px;
+}
+
+/* 修复ECharts容器尺寸 */
+.chart-wrapper {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 400px !important;
 }
 </style>
