@@ -14,9 +14,6 @@
 import {ref, computed, onMounted, onBeforeUnmount, watch, nextTick} from 'vue'
 import * as echarts from 'echarts'
 import {PieChart} from '@element-plus/icons-vue'
-import mitt from 'mitt'
-
-const emitter = mitt()
 
 export default {
   name: 'CurveTemplate',
@@ -24,15 +21,25 @@ export default {
   props: {
     config: {
       type: Object,
-      default: () => ({})
+      required: true,
+      default: () => ({
+        id: '',
+        name: '',
+        type: 'curve',
+        variables: []
+      })
     },
     data: {
       type: Array,
       required: true,
-      default: () => []
+      default: () => [],
+      validator: value => Array.isArray(value) && value.every(item =>
+          typeof item?.taskId !== 'undefined'
+      )
     },
     variableStates: {
       type: Object,
+      required: true,
       default: () => ({})
     }
   },
@@ -42,13 +49,16 @@ export default {
     const chart = ref(null)
     const container = ref(null)
     const initialized = ref(false)
+    const lastRenderTime = ref(0)
     const resizeObserver = ref(null)
-    const lastRenderData = ref(null)
 
     // Computed Properties
     const safeData = computed(() => {
       try {
-        return Array.isArray(props.data) ? props.data : []
+        return (props.data || []).map(item => ({
+          ...item,
+          taskId: String(item.taskId || '')
+        }))
       } catch (e) {
         console.error('Data format error:', e)
         return []
@@ -56,14 +66,14 @@ export default {
     })
 
     const availableVariables = computed(() => {
-      return safeData.value[0]
-          ? Object.keys(safeData.value[0]).filter(k => k !== 'taskId')
-          : []
+      if (!safeData.value.length) return []
+      return Object.keys(safeData.value[0])
+          .filter(k => k !== 'taskId' && props.config.variables?.includes(k))
     })
 
     const activeVariables = computed(() => {
       return availableVariables.value.filter(
-          k => props.variableStates?.[k] !== false
+          k => props.variableStates[k] !== false
       )
     })
 
@@ -79,95 +89,146 @@ export default {
 
     // Methods
     const initChart = async () => {
-      await nextTick();
-
-      if (!container.value || !props.data?.length) {
-        setTimeout(initChart, 100); // 自动重试机制
-        return;
-      }
-
-      // 销毁旧实例
-      if (chart.value) {
-        chart.value.dispose();
-        chart.value = null;
-      }
-
       try {
-        chart.value = echarts.init(container.value);
-        chart.value.setOption(option);
-      } catch (e) {
-        console.error('ECharts init retrying...');
-        console.log(e)
-        setTimeout(initChart, 300);
-      }
-    };
+        await nextTick()
 
-    const renderChart = () => {
-      if (!chart.value || !initialized.value) return
+        if (!container.value) {
+          console.warn('Chart container element not found')
+          return false
+        }
+
+        // Dispose previous instance
+        if (chart.value) {
+          chart.value.dispose()
+          chart.value = null
+        }
+
+        // Initialize new instance
+        chart.value = echarts.init(container.value)
+        initialized.value = true
+
+        // Setup resize observer
+        resizeObserver.value = new ResizeObserver(() => {
+          if (Date.now() - lastRenderTime.value > 200) {
+            chart.value?.resize()
+          }
+        })
+        resizeObserver.value.observe(container.value)
+
+        return true
+      } catch (e) {
+        console.error('ECharts initialization failed:', e)
+        initialized.value = false
+        return false
+      }
+    }
+
+    const renderChart = async () => {
+      if (!chart.value || !initialized.value) {
+        if (!await initChart()) return
+      }
+
       if (showEmptyState.value) {
         chart.value.clear()
         return
       }
 
       try {
-        const currentDataKey = JSON.stringify({
-          dataLength: safeData.value.length,
-          variables: activeVariables.value
-        })
-
-        // Skip render if data hasn't changed
-        if (lastRenderData.value === currentDataKey) return
-        lastRenderData.value = currentDataKey
-
-// CurveTemplate.vue 中的 option 配置
-        const option = {
-          // 强制定义坐标轴类型
-          xAxis: {
-            type: 'category',
-            axisPointer: {
-              type: 'shadow' // 添加默认指针类型
-            },
-            data: safeData.value.map(d => d.taskId)
-          },
-          yAxis: {
-            type: 'value',
-            axisLine: {show: true}, // 显式定义轴线
-            axisTick: {show: true}  // 显式定义刻度
-          },
-          series: activeVariables.value.map(varName => ({
-            name: varName,
-            type: 'line',
-            connectNulls: true, // 处理空值
-            symbol: 'circle',   // 明确符号类型
-            data: safeData.value.map(d => d[varName]),
-            // 添加空数据保护
-            lineStyle: {
-              type: 'solid'
-            },
-            emphasis: {
-              disabled: false // 启用高亮状态
-            }
-          }))
-        };
-
+        const option = getChartOption()
         chart.value.setOption(option, {
           notMerge: true,
           lazyUpdate: true
         })
+        lastRenderTime.value = Date.now()
       } catch (e) {
         console.error('Chart render error:', e)
+      }
+    }
+
+    const getChartOption = () => {
+      return {
+        animation: false,
+        tooltip: {
+          trigger: 'axis',
+          formatter: params => {
+            if (!params || !params.length) return ''
+            return `${params[0].axisValue}<br/>` +
+                params.map(p =>
+                    `${p.marker} ${p.seriesName}: ${Number(p.value).toFixed(2)}`
+                ).join('<br>')
+          }
+        },
+        legend: {
+          data: activeVariables.value,
+          type: 'scroll'
+        },
+        grid: {
+          left: '3%',
+          right: '4%',
+          bottom: '15%',
+          containLabel: true
+        },
+        xAxis: {
+          type: 'category',
+          data: safeData.value.map(d => d.taskId),
+          axisLabel: {
+            rotate: 45,
+            formatter: value => value.length > 8 ? `${value.slice(0, 8)}...` : value
+          },
+          axisPointer: {
+            type: 'shadow'
+          },
+          axisLine: {show: true},
+          axisTick: {show: true}
+        },
+        yAxis: {
+          type: 'value',
+          axisLabel: {
+            formatter: value => Number(value).toFixed(2)
+          },
+          axisLine: {show: true},
+          axisTick: {show: true},
+          splitLine: {
+            lineStyle: {
+              type: 'dashed'
+            }
+          }
+        },
+        series: activeVariables.value.map(varName => ({
+          name: varName,
+          type: 'line',
+          data: safeData.value.map(d => {
+            const val = d[varName]
+            return typeof val === 'number' ? val :
+                typeof val === 'string' ? parseFloat(val) || 0 : 0
+          }),
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 6,
+          connectNulls: true,
+          lineStyle: {
+            width: 2,
+            type: 'solid'
+          },
+          emphasis: {
+            lineStyle: {
+              width: 3
+            }
+          }
+        }))
       }
     }
 
     // Lifecycle Hooks
     onMounted(async () => {
       await initChart()
-      emitter.on('force-update-charts', renderChart)
+      renderChart()
     })
 
     onBeforeUnmount(() => {
-      emitter.off('force-update-charts', renderChart)
-      resizeObserver.value?.disconnect()
+      if (resizeObserver.value) {
+        resizeObserver.value.disconnect()
+      }
       if (chart.value) {
         chart.value.dispose()
         chart.value = null
@@ -176,12 +237,12 @@ export default {
 
     // Watchers
     watch(
-        () => [safeData.value, activeVariables.value],
+        [safeData, activeVariables],
         () => {
           if (initialized.value) {
             renderChart()
           } else {
-            initChart()
+            initChart().then(renderChart)
           }
         },
         {deep: true}
@@ -222,5 +283,6 @@ export default {
 
 .empty-state p {
   margin-top: 10px;
+  font-size: 14px;
 }
 </style>
