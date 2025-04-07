@@ -97,6 +97,7 @@ export default {
         chart.value.setOption(option);
       } catch (e) {
         console.error('ECharts init retrying...');
+        console.log(e)
         setTimeout(initChart, 300);
       }
     };
