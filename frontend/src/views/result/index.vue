@@ -312,7 +312,7 @@ export default {
               .map(task => ({
                 task_id: task.task_id,
                 data: task.data.map(item => ({
-                  id: item.id || vizConfig.id, // 修正点：使用配置ID作为fallback
+                  id: item.id || 'unknown',
                   data: item.data || {}
                 }))
               }))
