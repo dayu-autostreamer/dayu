@@ -8,7 +8,7 @@
     />
     <div v-else class="image-placeholder">
       <el-icon :size="40"><Picture /></el-icon>
-      <p>No image available</p>
+      <p>No data available</p>
     </div>
   </div>
 </template>
