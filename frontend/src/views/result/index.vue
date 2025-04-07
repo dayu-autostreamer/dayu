@@ -290,7 +290,7 @@ export default {
       this.getLatestResultData()
       this.pollingInterval = setInterval(() => {
         this.getLatestResultData()
-      }, 1000)
+      }, 2000)
     },
 
     exportTaskLog() {
