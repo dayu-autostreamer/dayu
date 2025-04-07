@@ -26,18 +26,11 @@ export default {
     const currentImage = ref(null)
 
     watch(() => props.data, (newData) => {
-      console.log('Image data received:', newData)
-      if (Array.isArray(newData) && newData.length > 0) {
-        const validItems = newData.filter(item =>
-            item.image && isValidImageUrl(item.image)
-        )
-        if (validItems.length > 0) {
-          currentImage.value = `${validItems[validItems.length - 1].image}?t=${Date.now()}`
-          return
-        }
-      }
-      currentImage.value = null
-    }, {deep: true, immediate: true})
+      console.log('[DEBUG] Image data:', newData)
+      currentImage.value = newData?.filter?.(item =>
+          item?.image?.startsWith?.('http')
+      )?.pop()?.image || null
+    }, {deep: true})
 
     return {currentImage}
   }

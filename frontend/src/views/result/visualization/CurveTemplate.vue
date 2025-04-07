@@ -59,19 +59,13 @@ export default {
 
     // Computed Properties
     const safeData = computed(() => {
-      try {
-        return (props.data || []).map(item => {
-          const processedItem = {taskId: ''};
-          Object.entries(item).forEach(([key, value]) => {
-            processedItem[key] = typeof value === 'number' ? value :
-                !isNaN(value) ? parseFloat(value) : 0;
-          });
-          return processedItem;
-        });
-      } catch (e) {
-        console.error('Data format error:', e)
-        return []
-      }
+      console.log('[DEBUG] Curve received data:', props.data)
+      return (props.data || []).map(item => ({
+        taskId: item.taskId || 'unknown',
+        ...Object.fromEntries(
+            Object.entries(item).filter(([k]) => k !== 'taskId')
+        )
+      }))
     })
 
     const availableVariables = computed(() => {

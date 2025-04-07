@@ -151,7 +151,6 @@ export default {
 
     emitter.on('force-update-charts', () => {
       this.$nextTick(() => {
-        console.log('Force updating all charts')
         this.visualizationConfig.forEach(viz => {
           this.variableStates[viz.id] = {...this.variableStates[viz.id]}
         })
@@ -192,30 +191,30 @@ export default {
     },
 
     processVizData(vizConfig) {
-      const sourceData = this.bufferedTaskCache[this.selectedDataSource] || [];
 
-      return sourceData
+      return (this.bufferedTaskCache[this.selectedDataSource] || [])
           .filter(task => {
-            return task?.task_id !== undefined &&
-                Array.isArray(task.data) &&
-                task.data.some(item => item.id === vizConfig.id);
+            // 更宽松的过滤条件
+            return task?.task_id &&
+                task.data?.some?.(item =>
+                    item?.id === vizConfig.id &&
+                    Object.keys(item?.data || {}).length > 0
+                )
           })
           .map(task => {
-            const vizDataItem = task.data.find(item => item.id === vizConfig.id);
-            const vizData = vizDataItem?.data || {};
-
-            const cleanedData = {};
-            Object.entries(vizData).forEach(([key, value]) => {
-              cleanedData[key] = typeof value === 'number' ? value :
-                  !isNaN(value) ? parseFloat(value) : 0;
-            });
-
-
+            const vizData = task.data.find(item => item.id === vizConfig.id)?.data || {}
             return {
               taskId: String(task.task_id),
-              ...cleanedData
-            };
-          });
+              // 增强数据类型转换
+              ...Object.fromEntries(
+                  Object.entries(vizData).map(([k, v]) => [
+                    k,
+                    typeof v === 'number' ? v :
+                        !isNaN(v) ? parseFloat(v) : 0
+                  ])
+              )
+            }
+          })
     },
 
     updateVariableStates(vizId, newStates) {
@@ -269,17 +268,13 @@ export default {
     async getLatestResultData() {
       try {
         const response = await fetch('/api/task_result')
-        const data = await response.json()
+        const rawData = await response.json()
+        console.log('[DEBUG] API Response:', JSON.parse(JSON.stringify(rawData)))
 
-        Object.keys(data).forEach(sourceId => {
-          if (!data[sourceId] || !Array.isArray(data[sourceId])) return
+        Object.entries(rawData).forEach(([sourceId, tasks]) => {
+          if (!Array.isArray(tasks)) return
 
-          // 使用Vue.set保证响应式更新
-          if (!this.bufferedTaskCache[sourceId]) {
-            this.bufferedTaskCache[sourceId] = reactive([])
-          }
-
-          const validNewTasks = data[sourceId]
+          const validTasks = tasks
               .filter(task => task?.task_id && Array.isArray(task.data))
               .map(task => ({
                 task_id: task.task_id,
@@ -289,20 +284,24 @@ export default {
                 }))
               }))
 
-          // 使用响应式数组操作
-          const newCache = [
-            ...this.bufferedTaskCache[sourceId],
-            ...validNewTasks
-          ].slice(-this.maxBufferedTaskCacheSize)
+          const currentCache = this.bufferedTaskCache[sourceId] || []
+          const newCache = [...currentCache, ...validTasks]
+              .slice(-this.maxBufferedTaskCacheSize)
 
-          this.bufferedTaskCache[sourceId] = reactive(newCache)
+          // 关键响应式更新
+          this.bufferedTaskCache = {
+            ...this.bufferedTaskCache,
+            [sourceId]: reactive(newCache)
+          }
         })
 
-        // 强制触发视图更新
-        this.$forceUpdate()
-        emitter.emit('force-update-charts')
+        // 双保险更新机制
+        this.$nextTick(() => {
+          emitter.emit('force-update-charts')
+          this.visualizationConfig = [...this.visualizationConfig]
+        })
       } catch (error) {
-        console.error('Failed to fetch task results:', error)
+        console.error('[ERROR] Fetch failed:', error)
       }
     },
 
