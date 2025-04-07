@@ -8,7 +8,7 @@
             <div class="flex-auto" style="font-weight: bold">
               Choose Datasource: &nbsp;
               <el-select
-                  v-model.number="selectedDataSource"
+                  v-model="selectedDataSource"
                   placeholder="Please choose datasource"
                   class="compact-select"
               >
@@ -191,15 +191,13 @@ export default {
     },
 
     processVizData(vizConfig) {
-      const sourceId = Number(this.selectedDataSource)
-
-      console.log(this.bufferedTaskCache)
-      if (!sourceId || !this.bufferedTaskCache[sourceId]) {
-        console.warn(`Invalid data source: ${sourceId}`)
+      // console.log(this.bufferedTaskCache)
+      if (!this.selectedDataSource || !this.bufferedTaskCache[this.selectedDataSource]) {
+        console.warn(`Invalid data source: ${this.selectedDataSource}`)
         return []
       }
 
-      return this.bufferedTaskCache[sourceId].filter(task => {
+      return this.bufferedTaskCache[this.selectedDataSource].filter(task => {
         return task?.data?.some?.(item =>
             item?.id === vizConfig.id &&
             Object.keys(item?.data || {}).some(k => vizConfig.variables.includes(k))
@@ -234,9 +232,10 @@ export default {
       try {
         const response = await fetch('/api/source_list')
         this.dataSourceList = await response.json()
+
         this.dataSourceList = data.map(source => ({
           ...source,
-          id: Number(source.id)
+          id: String(source.id)
         }))
         this.dataSourceList.forEach(source => {
           this.bufferedTaskCache[source.id] = reactive([])
@@ -283,7 +282,7 @@ export default {
         const newCache = JSON.parse(JSON.stringify(this.bufferedTaskCache))
 
         Object.keys(data).forEach(sourceIdStr => {
-          const sourceId = Number(sourceIdStr)
+          const sourceId = String(sourceIdStr)
           if (!data[sourceId] || !Array.isArray(data[sourceId])) return
 
           const validTasks = data[sourceId]
