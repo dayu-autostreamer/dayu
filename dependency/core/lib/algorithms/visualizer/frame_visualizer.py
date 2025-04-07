@@ -2,7 +2,7 @@ import abc
 import cv2
 
 from core.lib.common import ClassFactory, ClassType, EncodeOps, LOGGER
-from lib.content import Task
+from core.lib.content import Task
 
 from .image_visualizer import ImageVisualizer
 

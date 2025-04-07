@@ -1,6 +1,6 @@
 import abc
 from core.lib.common import ClassFactory, ClassType
-from lib.content import Task
+from core.lib.content import Task
 
 from .curve_visualizer import CurveVisualizer
 
