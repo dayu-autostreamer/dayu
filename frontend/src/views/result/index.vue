@@ -247,6 +247,8 @@ export default {
         const response = await fetch('/api/task_result')
         const data = await response.json()
 
+        console.log(data)
+
         Object.keys(data).forEach(sourceId => {
           if (data[sourceId].length === 0) return
 
