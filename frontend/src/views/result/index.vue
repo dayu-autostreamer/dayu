@@ -92,7 +92,7 @@
 </template>
 
 <script>
-import {defineAsyncComponent, reactive, ref, markRaw, toRaw} from 'vue'
+import {defineAsyncComponent, reactive, ref, markRaw, toRaw, watch} from 'vue'
 import mitt from 'mitt'
 
 const emitter = mitt()
@@ -131,6 +131,18 @@ export default {
     }
   },
   async created() {
+    this.dataSourceList.forEach(source => {
+      this.bufferedTaskCache[source.id] = reactive([])
+    })
+
+    watch(
+        () => this.bufferedTaskCache,
+        (newVal) => {
+          console.log('Cache updated:', newVal)
+        },
+        {deep: true}
+    )
+
     await this.autoRegisterComponents()
     this.componentsLoaded = true
     await this.fetchDataSourceList()
@@ -174,17 +186,19 @@ export default {
       const sourceData = this.bufferedTaskCache[this.selectedDataSource] || [];
 
       return sourceData
-          .filter(task =>
-              task?.task_id !== undefined &&
-              task?.data?.[vizConfig.id] !== undefined
-          )
+          .filter(task => {
+            return task?.task_id !== undefined &&
+                Array.isArray(task.data) &&
+                task.data.some(item => item.id === vizConfig.id);
+          })
           .map(task => {
-            const vizData = task.data[vizConfig.id] || {};
-            const cleanedData = {};
+            const vizDataItem = task.data.find(item => item.id === vizConfig.id);
+            const vizData = vizDataItem?.data || {};
 
+            const cleanedData = {};
             Object.entries(vizData).forEach(([key, value]) => {
               cleanedData[key] = typeof value === 'number' ? value :
-                  typeof value === 'string' ? parseFloat(value) || 0 : 0;
+                  !isNaN(value) ? parseFloat(value) : 0;
             });
 
             return {
@@ -247,35 +261,44 @@ export default {
         const response = await fetch('/api/task_result')
         const data = await response.json()
 
-        console.log(data)
-
         Object.keys(data).forEach(sourceId => {
-          if (data[sourceId].length === 0) return
+          if (!data[sourceId] || !Array.isArray(data[sourceId])) return
 
           if (!this.bufferedTaskCache[sourceId]) {
             this.bufferedTaskCache[sourceId] = reactive([])
           }
 
-          data[sourceId].forEach(task => {
-            const newTask = {
-              task_id: task.task_id,
-              data: task.data.map(item => ({...item}))
-            }
+          const validNewTasks = data[sourceId]
+              .filter(task =>
+                  task?.task_id !== undefined &&
+                  Array.isArray(task.data)
+              )
+              .map(task => ({
+                task_id: task.task_id,
+                data: task.data.map(item => ({
+                  ...item,
+                  id: item.id || 'unknown',
+                  data: item.data || {}
+                }))
+              }))
 
-            this.bufferedTaskCache[sourceId].splice(
-                this.bufferedTaskCache[sourceId].length,
-                0,
-                newTask
+          if (validNewTasks.length === 0) return
+
+          const currentCache = this.bufferedTaskCache[sourceId]
+          currentCache.push(...validNewTasks)
+
+          if (currentCache.length > this.maxBufferedTaskCacheSize) {
+            this.bufferedTaskCache[sourceId] = reactive(
+                currentCache.slice(-this.maxBufferedTaskCacheSize)
             )
-
-            if (this.bufferedTaskCache[sourceId].length > this.maxBufferedTaskCacheSize) {
-              this.bufferedTaskCache[sourceId].splice(0, 1)
-            }
-          })
+          } else {
+            this.bufferedTaskCache[sourceId].splice(currentCache.length)
+          }
         })
 
-        this.bufferedTaskCache = {...this.bufferedTaskCache}
         emitter.emit('force-update-charts')
+        console.debug('Data updated:', JSON.parse(JSON.stringify(this.bufferedTaskCache)))
+
       } catch (error) {
         console.error('Failed to fetch task results:', error)
       }

@@ -60,10 +60,14 @@ export default {
     // Computed Properties
     const safeData = computed(() => {
       try {
-        return (props.data || []).map(item => ({
-          ...item,
-          taskId: String(item.taskId || '')
-        }))
+        return (props.data || []).map(item => {
+          const processedItem = {taskId: ''};
+          Object.entries(item).forEach(([key, value]) => {
+            processedItem[key] = typeof value === 'number' ? value :
+                !isNaN(value) ? parseFloat(value) : 0;
+          });
+          return processedItem;
+        });
       } catch (e) {
         console.error('Data format error:', e)
         return []

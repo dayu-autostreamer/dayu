@@ -1,39 +1,44 @@
 <template>
   <div class="image-container">
     <img
-      v-if="currentImage"
-      :src="currentImage"
-      :alt="config.name"
-      class="responsive-image"
+        v-if="currentImage"
+        :src="currentImage"
+        :alt="config.name"
+        class="responsive-image"
     />
     <div v-else class="image-placeholder">
-      <el-icon :size="40"><Picture /></el-icon>
+      <el-icon :size="40">
+        <Picture/>
+      </el-icon>
       <p>No data available</p>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, watch } from 'vue'
-import { Picture } from '@element-plus/icons-vue'
+import {ref, watch} from 'vue'
+import {Picture} from '@element-plus/icons-vue'
 
 export default {
-  components: { Picture },
+  components: {Picture},
   props: ['config', 'data'],
-
   setup(props) {
     const currentImage = ref(null)
 
     watch(() => props.data, () => {
-      if (props.data?.length) {
-        const lastItem = props.data[props.data.length - 1]
-        currentImage.value = lastItem?.image || null
-      } else {
-        currentImage.value = null
+      if (Array.isArray(props.data) && props.data.length > 0) {
+        const validItems = props.data.filter(item =>
+            item.image && typeof item.image === 'string'
+        )
+        if (validItems.length > 0) {
+          currentImage.value = validItems[validItems.length - 1].image
+          return
+        }
       }
-    }, { immediate: true })
+      currentImage.value = null
+    }, {immediate: true, deep: true})
 
-    return { currentImage }
+    return {currentImage}
   }
 }
 </script>
