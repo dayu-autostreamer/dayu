@@ -203,7 +203,7 @@ export default {
         const response = await fetch('/api/source_list')
         this.dataSourceList = await response.json()
         this.dataSourceList.forEach(source => {
-          this.$set(this.bufferedTaskCache, source.id, [])
+          this.bufferedTaskCache[source.id] = reactive([])
         })
       } catch (error) {
         console.error('Failed to fetch data sources:', error)
@@ -247,7 +247,7 @@ export default {
           if (data[sourceId].length === 0) return
 
           if (!this.bufferedTaskCache[sourceId]) {
-            this.$set(this.bufferedTaskCache, sourceId, [])
+            this.bufferedTaskCache[sourceId] = reactive([])
           }
 
           data[sourceId].forEach(task => {
