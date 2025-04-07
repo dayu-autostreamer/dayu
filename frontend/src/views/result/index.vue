@@ -164,7 +164,9 @@ export default {
 
     extractVizVariables(taskData, vizConfig) {
       const vizData = taskData[vizConfig.id] || {}
+      console.log('vizConfig:',vizConfig)
       console.log('vizConfig.variables:',vizConfig.variables)
+
       return Object.fromEntries(
         Object.entries(vizData)
           .filter(([key]) => vizConfig.variables.includes(key))
