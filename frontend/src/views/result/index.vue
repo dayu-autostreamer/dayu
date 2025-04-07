@@ -8,7 +8,7 @@
             <div class="flex-auto" style="font-weight: bold">
               Choose Datasource: &nbsp;
               <el-select
-                  v-model="selectedDataSource"
+                  v-model.number="selectedDataSource"
                   placeholder="Please choose datasource"
                   class="compact-select"
               >
@@ -191,19 +191,19 @@ export default {
     },
 
     processVizData(vizConfig) {
-      if (!this.selectedDataSource || !this.bufferedTaskCache[this.selectedDataSource]) {
-        console.warn(`[WARN] Invalid data source: ${this.selectedDataSource}`)
+      const sourceId = Number(this.selectedDataSource)
+
+      if (!sourceId || !this.bufferedTaskCache[sourceId]) {
+        console.warn(`Invalid numeric data source: ${sourceId}`)
         return []
       }
 
-      return this.bufferedTaskCache[this.selectedDataSource]
-          .filter(task => {
-            // 更精确的数据匹配逻辑
-            return task?.data?.some?.(item =>
-                item?.id === vizConfig.id &&
-                Object.keys(item?.data || {}).some(k => vizConfig.variables.includes(k))
-            )
-          })
+      return this.bufferedTaskCache[sourceId].filter(task => {
+        return task?.data?.some?.(item =>
+            item?.id === vizConfig.id &&
+            Object.keys(item?.data || {}).some(k => vizConfig.variables.includes(k))
+        )
+      })
           .map(task => {
             const vizDataItem = task.data.find(item => item.id === vizConfig.id)
             const cleanedData = {}
@@ -233,6 +233,10 @@ export default {
       try {
         const response = await fetch('/api/source_list')
         this.dataSourceList = await response.json()
+        this.dataSourceList = data.map(source => ({
+          ...source,
+          id: Number(source.id)
+        }))
         this.dataSourceList.forEach(source => {
           this.bufferedTaskCache[source.id] = reactive([])
         })
@@ -277,7 +281,8 @@ export default {
         // 使用深拷贝强制触发响应式更新
         const newCache = JSON.parse(JSON.stringify(this.bufferedTaskCache))
 
-        Object.keys(data).forEach(sourceId => {
+        Object.keys(data).forEach(sourceIdStr => {
+          const sourceId = Number(sourceIdStr)
           if (!data[sourceId] || !Array.isArray(data[sourceId])) return
 
           const validTasks = data[sourceId]
