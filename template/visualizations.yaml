@@ -1,5 +1,6 @@
 - name: frame visualization
   type: image
+  variables: ["roi frame"]
   hook_name: roi_frame
 - name: object number
   type: curve
