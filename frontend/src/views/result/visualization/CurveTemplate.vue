@@ -1,11 +1,11 @@
 <template>
   <div class="chart-container">
-    <div :id="config.name" class="chart-wrapper"></div>
+    <div ref="containerRef" :style="{ width: '100%', height: '100%' }"></div>
   </div>
 </template>
 
 <script>
-import { onMounted, onBeforeUnmount, watch } from 'vue'
+import {onMounted, onBeforeUnmount, watch} from 'vue'
 import * as echarts from 'echarts'
 
 export default {
@@ -14,8 +14,33 @@ export default {
   setup(props) {
     let chart = null
 
+    const containerRef = ref(null)
+
+    const initChart = async () => {
+      await nextTick()
+
+      if (!containerRef.value) return
+      if (chart) chart.dispose()
+
+      chart = echarts.init(containerRef.value)
+      renderChart()
+
+      window.addEventListener('resize', () => {
+        chart?.resize()
+      })
+    }
+
+
     const renderChart = () => {
-      if (!props.data?.length) return
+      if (!chart || !props.data?.length) return
+
+      console.log('ECharts Render Data:', {
+        taskIds: props.data?.map(d => d.taskId),
+        seriesData: props.data?.map(d =>
+            Object.fromEntries(
+                Object.entries(d).filter(([k]) => k !== 'taskId')
+            ))
+      })
 
       const option = {
         tooltip: {
@@ -38,39 +63,32 @@ export default {
         yAxis: {
           type: 'value'
         },
-        series: Object.keys(props.data[0])
-          .filter(k => k !== 'taskId' && props.variableStates[k])
-          .map(varName => ({
-            name: varName,
-            type: 'line',
-            data: props.data.map(d => parseFloat(d[varName]) || 0),
-            smooth: true
-          }))
+
+        series: props.data[0]
+            ? Object.keys(props.data[0])
+                .filter(k => k !== 'taskId')
+                .map(varName => ({
+                  name: varName,
+                  type: 'line',
+                  data: props.data.map(d => d[varName]),
+                }))
+            : []
       }
 
       chart?.setOption(option, true)
     }
 
-    onMounted(() => {
-      const container = document.getElementById(`chart-${props.config.id}`)
-      if (container) {
-        chart = echarts.init(container)
-        renderChart()
-        window.addEventListener('resize', () => chart?.resize())
-      }
-    })
-
+    onMounted(initChart)
     onBeforeUnmount(() => {
-      if (chart) {
-        window.removeEventListener('resize', () => chart.resize())
-        chart.dispose()
-      }
+      window.removeEventListener('resize', () => chart?.resize())
+      chart?.dispose()
     })
 
-    watch(() => props.data, renderChart, { deep: true })
-    watch(() => props.variableStates, renderChart, { deep: true })
+    watch(() => [props.data, props.variableStates], () => {
+      renderChart()
+    }, {deep: true})
 
-    return {}
+    return {containerRef}
   }
 }
 </script>

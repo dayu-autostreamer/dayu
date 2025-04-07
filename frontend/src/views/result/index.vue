@@ -157,6 +157,15 @@ export default {
 
     processVizData(vizConfig) {
       const sourceData = this.bufferedTaskCache[this.selectedDataSource] || [];
+
+      console.log('Processed Data Structure:', {
+        vizId: vizConfig.id,
+        data: sourceData.map(task => ({
+          taskId: task.task_id,
+          variables: Object.keys(task.data[vizConfig.id] || {})
+        }))
+      })
+
       return sourceData.map(task => {
         const vizData = task.data[vizConfig.id] || {};
 
