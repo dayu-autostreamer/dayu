@@ -328,14 +328,14 @@ class BackendCore:
                 task_id = task.get_task_id()
                 file_path = self.get_file_result(task.get_file_path())
                 LOGGER.debug(task.get_delay_info())
-                visualization_data = {}
+                visualization_data = []
 
                 try:
                     for idx, vf in enumerate(self.visualizations):
                         al_name = vf['hook_name']
                         al_params = eval(vf['params']) if 'params' in vf else {}
                         vf_func = Context.get_algorithm('VISUALIZER', al_name=al_name, **al_params)
-                        visualization_data[idx] = vf_func(task)
+                        visualization_data.append(vf_func(task))
                 except Exception as e:
                     LOGGER.warning(f'Prepare visualization data failed: {str(e)}')
                     LOGGER.exception(e)
