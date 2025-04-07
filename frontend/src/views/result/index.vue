@@ -92,7 +92,7 @@
 </template>
 
 <script>
-import { defineAsyncComponent, reactive, ref, watch } from 'vue'
+import { defineAsyncComponent, reactive, markRaw, shallowRef } from 'vue'
 
 export default {
   data() {
@@ -106,8 +106,8 @@ export default {
       visualizationConfig: [],
       activeVisualizations: new Set(),
       variableStates: reactive({}),
-      visualizationComponents: reactive({}),
-      vizControls: reactive({}),
+      visualizationComponents: {},
+      vizControls: {},
       pollingInterval: null
     }
   },
@@ -142,12 +142,12 @@ export default {
 
         for (const path in modules) {
           const type = path.split('/').pop().replace('Template.vue', '').toLowerCase()
-          this.visualizationComponents[type] = defineAsyncComponent(() => modules[path]())
+          this.visualizationComponents[type] = markRaw(defineAsyncComponent(() => modules[path]()))
         }
 
         for (const path in controls) {
           const type = path.split('/').pop().replace('Controls.vue', '').toLowerCase()
-          this.vizControls[type] = defineAsyncComponent(() => controls[path]())
+          this.vizControls[type] = markRaw(defineAsyncComponent(() => controls[path]()))
         }
       } catch (error) {
         console.error('Component auto-registration failed:', error)
@@ -242,7 +242,7 @@ export default {
       this.getLatestResultData()
       this.pollingInterval = setInterval(() => {
         this.getLatestResultData()
-      }, 2000)
+      }, 1000)
     },
 
     exportTaskLog() {
