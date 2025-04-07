@@ -191,28 +191,32 @@ export default {
     },
 
     processVizData(vizConfig) {
+      if (!this.selectedDataSource || !this.bufferedTaskCache[this.selectedDataSource]) {
+        console.warn(`[WARN] Invalid data source: ${this.selectedDataSource}`)
+        return []
+      }
 
-      return (this.bufferedTaskCache[this.selectedDataSource] || [])
+      return this.bufferedTaskCache[this.selectedDataSource]
           .filter(task => {
-            // 更宽松的过滤条件
-            return task?.task_id &&
-                task.data?.some?.(item =>
-                    item?.id === vizConfig.id &&
-                    Object.keys(item?.data || {}).length > 0
-                )
+            // 更精确的数据匹配逻辑
+            return task?.data?.some?.(item =>
+                item?.id === vizConfig.id &&
+                Object.keys(item?.data || {}).some(k => vizConfig.variables.includes(k))
+            )
           })
           .map(task => {
-            const vizData = task.data.find(item => item.id === vizConfig.id)?.data || {}
+            const vizDataItem = task.data.find(item => item.id === vizConfig.id)
+            const cleanedData = {}
+
+            // 严格匹配配置中的变量
+            vizConfig.variables?.forEach(varName => {
+              const rawValue = vizDataItem?.data?.[varName]
+              cleanedData[varName] = parseFloat(rawValue) || 0
+            })
+
             return {
               taskId: String(task.task_id),
-              // 增强数据类型转换
-              ...Object.fromEntries(
-                  Object.entries(vizData).map(([k, v]) => [
-                    k,
-                    typeof v === 'number' ? v :
-                        !isNaN(v) ? parseFloat(v) : 0
-                  ])
-              )
+              ...cleanedData
             }
           })
     },
@@ -268,13 +272,15 @@ export default {
     async getLatestResultData() {
       try {
         const response = await fetch('/api/task_result')
-        const rawData = await response.json()
-        console.log('[DEBUG] API Response:', JSON.parse(JSON.stringify(rawData)))
+        const data = await response.json()
 
-        Object.entries(rawData).forEach(([sourceId, tasks]) => {
-          if (!Array.isArray(tasks)) return
+        // 使用深拷贝强制触发响应式更新
+        const newCache = JSON.parse(JSON.stringify(this.bufferedTaskCache))
 
-          const validTasks = tasks
+        Object.keys(data).forEach(sourceId => {
+          if (!data[sourceId] || !Array.isArray(data[sourceId])) return
+
+          const validTasks = data[sourceId]
               .filter(task => task?.task_id && Array.isArray(task.data))
               .map(task => ({
                 task_id: task.task_id,
@@ -284,24 +290,22 @@ export default {
                 }))
               }))
 
-          const currentCache = this.bufferedTaskCache[sourceId] || []
-          const newCache = [...currentCache, ...validTasks]
-              .slice(-this.maxBufferedTaskCacheSize)
-
-          // 关键响应式更新
-          this.bufferedTaskCache = {
-            ...this.bufferedTaskCache,
-            [sourceId]: reactive(newCache)
-          }
+          newCache[sourceId] = [
+            ...(newCache[sourceId] || []),
+            ...validTasks
+          ].slice(-this.maxBufferedTaskCacheSize)
         })
 
-        // 双保险更新机制
+        // 替换整个缓存对象
+        this.bufferedTaskCache = reactive(JSON.parse(JSON.stringify(newCache)))
+
+        // 双保险更新
+        this.visualizationConfig = [...this.visualizationConfig]
         this.$nextTick(() => {
           emitter.emit('force-update-charts')
-          this.visualizationConfig = [...this.visualizationConfig]
         })
       } catch (error) {
-        console.error('[ERROR] Fetch failed:', error)
+        console.error('Data fetch failed:', error)
       }
     },
 

@@ -32,10 +32,14 @@ export default {
     data: {
       type: Array,
       required: true,
-      default: () => [],
-      validator: value => Array.isArray(value) && value.every(item =>
-          typeof item?.taskId !== 'undefined'
-      )
+      validator: value => {
+        const isValid = Array.isArray(value) && value.every(item => {
+          return typeof item.taskId !== 'undefined' &&
+              Object.values(item).some(v => typeof v === 'number')
+        })
+        console.log('[CURVE] Data validation:', isValid, value)
+        return isValid
+      }
     },
     variableStates: {
       type: Object,
