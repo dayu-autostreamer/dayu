@@ -193,8 +193,9 @@ export default {
     processVizData(vizConfig) {
       const sourceId = Number(this.selectedDataSource)
 
+      console.log(this.bufferedTaskCache)
       if (!sourceId || !this.bufferedTaskCache[sourceId]) {
-        console.warn(`Invalid numeric data source: ${sourceId}`)
+        console.warn(`Invalid data source: ${sourceId}`)
         return []
       }
 
