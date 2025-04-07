@@ -243,7 +243,7 @@ export default {
     async fetchDataSourceList() {
       try {
         const response = await fetch('/api/source_list')
-        this.dataSourceList = await response.json()
+        const data = await response.json()
 
         this.dataSourceList = data.map(source => ({
           ...source,
