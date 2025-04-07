@@ -297,60 +297,73 @@ class BackendCore:
 
         return source_ids
 
+    def prepare_visualization_data(self, task):
+        visualization_data = []
+        for idx, vf in enumerate(self.visualizations):
+            al_name = vf['hook_name']
+            al_params = eval(vf['params']) if 'params' in vf else {}
+            vf_func = Context.get_algorithm('VISUALIZER', al_name=al_name, **al_params)
+            visualization_data.append(vf_func(task))
+
+        return visualization_data
+
+    def parse_task_result(self, results):
+        for result in results:
+            if result is None or result == '':
+                continue
+
+            task = Task.deserialize(result)
+
+            source_id = task.get_source_id()
+            task_id = task.get_task_id()
+            file_path = self.get_file_result(task.get_file_path())
+            LOGGER.debug(task.get_delay_info())
+
+            try:
+                visualization_data = self.prepare_visualization_data(task)
+            except Exception as e:
+                LOGGER.warning(f'Prepare visualization data failed: {str(e)}')
+                LOGGER.exception(e)
+                continue
+
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+            if not self.source_open:
+                break
+
+            self.task_results[source_id].put_all([{
+                'task_id': task_id,
+                'data': visualization_data,
+            }])
+
     def run_get_result(self):
         time_ticket = 0
         while self.is_get_result:
-            time.sleep(1)
-            self.get_result_url()
-            if not self.result_url:
-                LOGGER.debug('[NO RESULT] Fetch result url failed.')
-                continue
-            response = http_request(self.result_url,
-                                    method=NetworkAPIMethod.DISTRIBUTOR_RESULT,
-                                    json={'time_ticket': time_ticket, 'size': 0})
+            try:
+                time.sleep(1)
+                self.get_result_url()
+                if not self.result_url:
+                    LOGGER.debug('[NO RESULT] Fetch result url failed.')
+                    continue
+                response = http_request(self.result_url,
+                                        method=NetworkAPIMethod.DISTRIBUTOR_RESULT,
+                                        json={'time_ticket': time_ticket, 'size': 0})
 
-            if not response:
-                self.result_url = None
-                self.result_file_url = None
-                LOGGER.debug('[NO RESULT] Request result url failed.')
-                continue
-
-            time_ticket = response["time_ticket"]
-            LOGGER.debug(f'time ticket: {time_ticket}')
-            results = response['result']
-            for result in results:
-                if result is None or result == '':
+                if not response:
+                    self.result_url = None
+                    self.result_file_url = None
+                    LOGGER.debug('[NO RESULT] Request result url failed.')
                     continue
 
-                task = Task.deserialize(result)
+                time_ticket = response["time_ticket"]
+                LOGGER.debug(f'time ticket: {time_ticket}')
+                results = response['result']
+                self.parse_task_result(results)
 
-                source_id = task.get_source_id()
-                task_id = task.get_task_id()
-                file_path = self.get_file_result(task.get_file_path())
-                LOGGER.debug(task.get_delay_info())
-                visualization_data = []
-
-                try:
-                    for idx, vf in enumerate(self.visualizations):
-                        al_name = vf['hook_name']
-                        al_params = eval(vf['params']) if 'params' in vf else {}
-                        vf_func = Context.get_algorithm('VISUALIZER', al_name=al_name, **al_params)
-                        visualization_data.append(vf_func(task))
-                except Exception as e:
-                    LOGGER.warning(f'Prepare visualization data failed: {str(e)}')
-                    LOGGER.exception(e)
-                    continue
-
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-
-                if not self.source_open:
-                    break
-
-                self.task_results[source_id].put_all([{
-                    'task_id': task_id,
-                    'data': visualization_data,
-                }])
+            except Exception as e:
+                LOGGER.warning(f'Error occurred in getting task result: {str(e)}')
+                LOGGER.exception(e)
 
     def check_datasource_config(self, config_path):
         if not YamlOps.is_yaml_file(config_path):
