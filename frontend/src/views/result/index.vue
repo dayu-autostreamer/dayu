@@ -156,6 +156,18 @@ export default {
         })
       })
     })
+
+    console.log('Data source IDs:',
+        this.dataSourceList.map(s => ({
+          id: s.id,
+          type: typeof s.id
+        })))
+    console.log('Cache keys:',
+        Object.keys(this.bufferedTaskCache).map(k => ({
+          key: k,
+          type: typeof k
+        })))
+
   },
   methods: {
     async autoRegisterComponents() {
