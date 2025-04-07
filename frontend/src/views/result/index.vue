@@ -212,7 +212,7 @@ export default {
 
     async fetchVisualizationConfig() {
       try {
-        const response = await fetch('/api/visualization')
+        const response = await fetch('/api/visualization_config')
         this.visualizationConfig = await response.json()
 
         this.visualizationConfig.forEach(viz => {
