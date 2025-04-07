@@ -2,7 +2,10 @@
   <div class="curve-controls">
     <div class="variable-group">
       <span class="variable-title">Display Variables:</span>
-      <el-checkbox-group v-model="localVariableStates">
+      <el-checkbox-group
+        v-model="selectedVariables"
+        @change="handleVariableChange"
+      >
         <el-checkbox
           v-for="varName in config.variables"
           :key="varName"
@@ -15,7 +18,7 @@
 </template>
 
 <script>
-import { reactive, watch } from 'vue'
+import { ref, watch } from 'vue'
 
 export default {
   props: {
@@ -31,28 +34,23 @@ export default {
   emits: ['update:variable-states'],
 
   setup(props, { emit }) {
-    const localVariableStates = reactive(
+    const selectedVariables = ref(
       Object.keys(props.variableStates).filter(k => props.variableStates[k])
     )
 
-    const handleChange = () => {
+    const handleVariableChange = () => {
       const newStates = {}
       props.config.variables.forEach(varName => {
-        newStates[varName] = localVariableStates.includes(varName)
+        newStates[varName] = selectedVariables.value.includes(varName)
       })
       emit('update:variable-states', newStates)
     }
 
     watch(() => props.variableStates, (newVal) => {
-      localVariableStates.splice(0)
-      Object.keys(newVal).filter(k => newVal[k]).forEach(k => {
-        localVariableStates.push(k)
-      })
+      selectedVariables.value = Object.keys(newVal).filter(k => newVal[k])
     }, { deep: true })
 
-    watch(localVariableStates, handleChange)
-
-    return { localVariableStates }
+    return { selectedVariables, handleVariableChange }
   }
 }
 </script>

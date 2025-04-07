@@ -6,17 +6,17 @@
         <div class="home-card-item data-source-container">
           <div class="flex-margin flex w100">
             <div class="flex-auto" style="font-weight: bold">
-              Choose Datasource: &nbsp; &nbsp;
+              Choose Datasource: &nbsp;
               <el-select
-                  v-model="selectedDataSource"
-                  placeholder="Please choose datasource"
-                  class="compact-select"
+                v-model="selectedDataSource"
+                placeholder="Please choose datasource"
+                class="compact-select"
               >
                 <el-option
-                    v-for="item in dataSourceList"
-                    :key="item.id"
-                    :label="item.label"
-                    :value="item.id"
+                  v-for="item in dataSourceList"
+                  :key="item.id"
+                  :label="item.label"
+                  :value="item.id"
                 />
               </el-select>
             </div>
@@ -26,10 +26,9 @@
       <el-col :xs="24" :sm="24" :md="4" :lg="4" :xl="4">
         <div class="home-card-item export-container">
           <el-button
-              type="primary"
-              class="export-button"
-              @click="exportTaskLog"
-              style="font-weight: bold"
+            type="primary"
+            class="export-button"
+            @click="exportTaskLog"
           >
             Export Log
           </el-button>
@@ -45,10 +44,10 @@
             <h4>Active Visualizations:</h4>
             <el-checkbox-group v-model="activeVisualizationsArray">
               <el-checkbox
-                  v-for="viz in visualizationConfig"
-                  :key="viz.id"
-                  :label="viz.id"
-                  class="module-checkbox"
+                v-for="viz in visualizationConfig"
+                :key="viz.id"
+                :label="viz.id"
+                class="module-checkbox"
               >
                 {{ viz.name }}
               </el-checkbox>
@@ -61,31 +60,30 @@
     <!-- Visualization Modules Row -->
     <el-row :gutter="15" class="home-card-two mb15">
       <el-col
-          v-for="viz in visualizationConfig"
-          :key="viz.id"
-          :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
-          v-show="componentsLoaded && activeVisualizations.has(viz.id)"
+        v-for="viz in visualizationConfig"
+        :key="viz.id"
+        :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
+        v-show="componentsLoaded && activeVisualizations.has(viz.id)"
       >
         <div class="home-card-item viz-module">
           <div class="viz-module-header">
             <h3 class="viz-title">{{ viz.name }}</h3>
             <component
-                :is="vizControls[viz.type]"
-                v-if="vizControls[viz.type]"
-                v-show="componentsLoaded"
-                :config="viz"
-                :variable-states="variableStates[viz.id]"
-                @update:variable-states="updateVariableStates(viz.id, $event)"
+              :is="vizControls[viz.type]"
+              v-if="vizControls[viz.type]"
+              :config="viz"
+              :variable-states="variableStates[viz.id]"
+              @update:variable-states="updateVariableStates(viz.id, $event)"
             />
           </div>
 
           <component
-              :is="visualizationComponents[viz.type]"
-              v-if="componentsLoaded && visualizationComponents[viz.type] && processedData[viz.id]"
-              :key="viz.id + selectedDataSource"
-              :config="viz"
-              :data="processedData[viz.id]"
-              :variable-states="variableStates[viz.id]"
+            :is="visualizationComponents[viz.type]"
+            v-if="componentsLoaded && visualizationComponents[viz.type]"
+            :key="`${viz.type}-${selectedDataSource}`"
+            :config="viz"
+            :data="processedData[viz.id]"
+            :variable-states="variableStates[viz.id]"
           />
         </div>
       </el-col>
@@ -94,19 +92,19 @@
 </template>
 
 <script>
-import {defineAsyncComponent, reactive, markRaw, shallowRef} from 'vue'
+import { defineAsyncComponent, reactive, ref, markRaw } from 'vue'
+import mitt from 'mitt'
+
+const emitter = mitt()
 
 export default {
   data() {
     return {
-      componentsLoaded: false,
-
       selectedDataSource: null,
       dataSourceList: [],
       bufferedTaskCache: {},
       maxBufferedTaskCacheSize: 20,
-
-      // Visualization system
+      componentsLoaded: false,
       visualizationConfig: [],
       activeVisualizations: new Set(),
       variableStates: reactive({}),
@@ -135,7 +133,6 @@ export default {
   async created() {
     await this.autoRegisterComponents()
     this.componentsLoaded = true
-
     await this.fetchDataSourceList()
     await this.fetchVisualizationConfig()
     this.setupDataPolling()
@@ -146,14 +143,9 @@ export default {
         const modules = import.meta.glob('./visualization/*Template.vue')
         const controls = import.meta.glob('./visualization/*Controls.vue')
 
-        this.visualizationComponents = {}
-        this.vizControls = {}
         await Promise.all([
           ...Object.entries(modules).map(async ([path, loader]) => {
-            const type = path.split('/').pop()
-                .replace('Template.vue', '')
-                .toLowerCase()
-
+            const type = path.split('/').pop().replace('Template.vue', '').toLowerCase()
             try {
               const comp = await loader()
               this.visualizationComponents[type] = markRaw(comp.default)
@@ -163,10 +155,7 @@ export default {
             }
           }),
           ...Object.entries(controls).map(async ([path, loader]) => {
-            const type = path.split('/').pop()
-                .replace('Controls.vue', '')
-                .toLowerCase()
-
+            const type = path.split('/').pop().replace('Controls.vue', '').toLowerCase()
             try {
               const comp = await loader()
               this.vizControls[type] = markRaw(comp.default)
@@ -177,35 +166,28 @@ export default {
           })
         ])
       } catch (error) {
-        console.error('Component registration failed:', error)
+        console.error('Component auto-registration failed:', error)
       }
     },
 
     processVizData(vizConfig) {
       const sourceData = this.bufferedTaskCache[this.selectedDataSource] || []
-      console.log('[Data Flow] Raw data for viz', vizConfig.id, ':', JSON.parse(JSON.stringify(sourceData)))
-
-      const processed = sourceData.map(task => {
+      return sourceData.map(task => {
         const vizData = task.data[vizConfig.id] || {}
-        console.log('[Data Flow] Processing task', task.task_id, ':', vizData)
+
+        // 数据清洗和类型转换
+        const cleanedData = {}
+        Object.entries(vizData).forEach(([key, value]) => {
+          cleanedData[key] = typeof value === 'string' ?
+            parseFloat(value) || 0 :
+            Number(value) || 0
+        })
 
         return {
-          taskId: task.task_id,
-          ...vizData
+          taskId: task.task_id.toString(),
+          ...cleanedData
         }
       })
-
-      console.log('[Data Flow] Final processed data:', processed)
-      return processed
-    },
-
-    extractVizVariables(taskData, vizConfig) {
-      const vizData = taskData[vizConfig.id] || {}
-
-      return Object.fromEntries(
-          Object.entries(vizData)
-              .filter(([key]) => vizConfig.variables.includes(key))
-      )
     },
 
     updateVariableStates(vizId, newStates) {
@@ -213,6 +195,7 @@ export default {
         ...this.variableStates[vizId],
         ...newStates
       }
+      emitter.emit('force-update-charts')
     },
 
     async fetchDataSourceList() {
@@ -220,7 +203,7 @@ export default {
         const response = await fetch('/api/source_list')
         this.dataSourceList = await response.json()
         this.dataSourceList.forEach(source => {
-          this.bufferedTaskCache[source.id] = this.bufferedTaskCache[source.id] || []
+          this.$set(this.bufferedTaskCache, source.id, [])
         })
       } catch (error) {
         console.error('Failed to fetch data sources:', error)
@@ -229,18 +212,17 @@ export default {
 
     async fetchVisualizationConfig() {
       try {
-        const response = await fetch('/api/visualization_config')
+        const response = await fetch('/api/visualization')
         this.visualizationConfig = await response.json()
 
-        // Initialize module states
         this.visualizationConfig.forEach(viz => {
           this.activeVisualizations.add(viz.id)
           if (!this.variableStates[viz.id]) {
-            this.variableStates[viz.id] = reactive({})
+            this.$set(this.variableStates, viz.id, {})
           }
           viz.variables?.forEach(varName => {
             if (this.variableStates[viz.id][varName] === undefined) {
-              this.variableStates[viz.id][varName] = true
+              this.$set(this.variableStates[viz.id], varName, true)
             }
           })
         })
@@ -254,9 +236,9 @@ export default {
         const response = await fetch('/api/task_result')
         const data = await response.json()
 
-        console.log('get result data: ', data)
-
         Object.keys(data).forEach(sourceId => {
+          if (data[sourceId].length === 0) return
+
           if (!this.bufferedTaskCache[sourceId]) {
             this.$set(this.bufferedTaskCache, sourceId, [])
           }
@@ -264,13 +246,13 @@ export default {
           data[sourceId].forEach(task => {
             const newTask = {
               task_id: task.task_id,
-              data: task.data.map(item => ({...item}))
+              data: task.data.map(item => ({ ...item }))
             }
 
             this.bufferedTaskCache[sourceId].splice(
-                this.bufferedTaskCache[sourceId].length,
-                0,
-                newTask
+              this.bufferedTaskCache[sourceId].length,
+              0,
+              newTask
             )
 
             if (this.bufferedTaskCache[sourceId].length > this.maxBufferedTaskCacheSize) {
@@ -279,8 +261,8 @@ export default {
           })
         })
 
-        // 强制触发视图更新
-        this.bufferedTaskCache = {...this.bufferedTaskCache}
+        this.bufferedTaskCache = { ...this.bufferedTaskCache }
+        emitter.emit('force-update-charts')
       } catch (error) {
         console.error('Failed to fetch task results:', error)
       }
@@ -295,16 +277,20 @@ export default {
 
     exportTaskLog() {
       fetch('/api/download_log')
-          .then(response => response.blob())
-          .then(blob => {
-            const url = window.URL.createObjectURL(blob)
-            const link = document.createElement('a')
-            link.href = url
-            link.setAttribute('download', 'task_log.json')
-            document.body.appendChild(link)
-            link.click()
-            link.remove()
-          })
+        .then(response => response.blob())
+        .then(blob => {
+          const url = window.URL.createObjectURL(blob)
+          const link = document.createElement('a')
+          link.href = url
+          link.setAttribute('download', 'task_log.json')
+          document.body.appendChild(link)
+          link.click()
+          link.remove()
+        })
+    },
+
+    forceChartUpdate() {
+      emitter.emit('force-update-charts')
     }
   },
   beforeUnmount() {
@@ -337,13 +323,13 @@ export default {
 .compact-select {
   width: 70%;
 }
-
 .compact-select ::v-deep .el-input__inner {
   height: 32px;
   line-height: 32px;
 }
 
 .export-button {
+  width: 100%;
   padding: 8px 12px;
 }
 
@@ -355,9 +341,7 @@ export default {
   background: var(--el-bg-color);
   border-radius: 4px;
   padding: 15px;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, .1);
-  display: flex;
-  flex-direction: column;
+  box-shadow: 0 2px 12px 0 rgba(0,0,0,.1);
 }
 
 .control-group {
@@ -369,17 +353,9 @@ export default {
   color: var(--el-text-color-primary);
 }
 
-.el-checkbox-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: center;
-}
-
 .module-checkbox {
-  margin-right: 12px;
-  margin-bottom: 4px;
-  white-space: nowrap;
+  margin-right: 20px;
+  margin-bottom: 8px;
 }
 
 .viz-module {
@@ -407,20 +383,4 @@ export default {
   border-radius: 4px;
   border: 1px solid var(--el-border-color-light);
 }
-
-@media (max-width: 768px) {
-  .viz-controls-panel {
-    padding: 10px;
-  }
-
-  .adaptive-checkbox-group {
-    gap: 6px 8px;
-  }
-
-  .module-checkbox {
-    margin-right: 8px;
-    font-size: 0.9em;
-  }
-}
-
 </style>

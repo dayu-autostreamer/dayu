@@ -1,23 +1,24 @@
 <template>
   <div class="image-container">
-    <div class="image-wrapper">
-      <img
-        v-if="currentImage"
-        :src="currentImage"
-        :alt="config.name"
-        class="responsive-image"
-      />
-      <div v-else class="image-placeholder">
-        No image available
-      </div>
+    <img
+      v-if="currentImage"
+      :src="currentImage"
+      :alt="config.name"
+      class="responsive-image"
+    />
+    <div v-else class="image-placeholder">
+      <el-icon :size="40"><Picture /></el-icon>
+      <p>No image available</p>
     </div>
   </div>
 </template>
 
 <script>
 import { ref, watch } from 'vue'
+import { Picture } from '@element-plus/icons-vue'
 
 export default {
+  components: { Picture },
   props: ['config', 'data'],
 
   setup(props) {
@@ -25,7 +26,8 @@ export default {
 
     watch(() => props.data, () => {
       if (props.data?.length) {
-        currentImage.value = props.data[props.data.length - 1]?.image
+        const lastItem = props.data[props.data.length - 1]
+        currentImage.value = lastItem?.image || null
       } else {
         currentImage.value = null
       }
@@ -39,16 +41,13 @@ export default {
 <style scoped>
 .image-container {
   width: 100%;
-  height: calc(100% - 40px);
-  padding: 12px;
-}
-
-.image-wrapper {
-  width: 100%;
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: #f5f7fa;
+  border-radius: 4px;
+  overflow: hidden;
 }
 
 .responsive-image {
@@ -60,9 +59,7 @@ export default {
 .image-placeholder {
   color: #999;
   font-size: 0.9em;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  text-align: center;
+  padding: 20px;
 }
 </style>

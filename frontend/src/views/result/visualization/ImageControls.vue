@@ -1,7 +1,7 @@
 <template>
   <div class="image-controls">
     <el-tag type="info" size="small" effect="plain">
-      Automatic Update
+      Auto-Refresh
     </el-tag>
   </div>
 </template>
