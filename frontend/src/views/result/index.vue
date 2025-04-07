@@ -153,7 +153,7 @@ export default {
       this.$nextTick(() => {
         console.log('Force updating all charts')
         this.visualizationConfig.forEach(viz => {
-          this.$set(this.variableStates, viz.id, {...this.variableStates[viz.id]})
+          this.variableStates[viz.id] = {...this.variableStates[viz.id]}
         })
       })
     })
@@ -276,7 +276,7 @@ export default {
 
           // 使用Vue.set保证响应式更新
           if (!this.bufferedTaskCache[sourceId]) {
-            this.$set(this.bufferedTaskCache, sourceId, reactive([]))
+            this.bufferedTaskCache[sourceId] = reactive([])
           }
 
           const validNewTasks = data[sourceId]
