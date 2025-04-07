@@ -171,23 +171,27 @@ export default {
     },
 
     processVizData(vizConfig) {
-      const sourceData = this.bufferedTaskCache[this.selectedDataSource] || []
-      return sourceData.map(task => {
-        const vizData = task.data[vizConfig.id] || {}
+      const sourceData = this.bufferedTaskCache[this.selectedDataSource] || [];
 
-        // 数据清洗和类型转换
-        const cleanedData = {}
-        Object.entries(vizData).forEach(([key, value]) => {
-          cleanedData[key] = typeof value === 'string' ?
-              parseFloat(value) || 0 :
-              Number(value) || 0
-        })
+      return sourceData
+          .filter(task =>
+              task?.task_id !== undefined &&
+              task?.data?.[vizConfig.id] !== undefined
+          )
+          .map(task => {
+            const vizData = task.data[vizConfig.id] || {};
+            const cleanedData = {};
 
-        return {
-          taskId: task.task_id.toString(),
-          ...cleanedData
-        }
-      })
+            Object.entries(vizData).forEach(([key, value]) => {
+              cleanedData[key] = typeof value === 'number' ? value :
+                  typeof value === 'string' ? parseFloat(value) || 0 : 0;
+            });
+
+            return {
+              taskId: String(task.task_id),
+              ...cleanedData
+            };
+          });
     },
 
     updateVariableStates(vizId, newStates) {

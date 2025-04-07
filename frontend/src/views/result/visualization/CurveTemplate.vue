@@ -2,23 +2,25 @@
   <div class="chart-container">
     <div ref="container" class="chart-wrapper"></div>
     <div v-if="showEmptyState" class="empty-state">
-      <el-icon :size="40"><PieChart /></el-icon>
+      <el-icon :size="40">
+        <PieChart/>
+      </el-icon>
       <p>{{ emptyMessage }}</p>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import {ref, computed, onMounted, onBeforeUnmount, watch, nextTick} from 'vue'
 import * as echarts from 'echarts'
-import { PieChart } from '@element-plus/icons-vue'
+import {PieChart} from '@element-plus/icons-vue'
 import mitt from 'mitt'
 
 const emitter = mitt()
 
 export default {
   name: 'CurveTemplate',
-  components: { PieChart },
+  components: {PieChart},
   props: {
     config: {
       type: Object,
@@ -55,13 +57,13 @@ export default {
 
     const availableVariables = computed(() => {
       return safeData.value[0]
-        ? Object.keys(safeData.value[0]).filter(k => k !== 'taskId')
-        : []
+          ? Object.keys(safeData.value[0]).filter(k => k !== 'taskId')
+          : []
     })
 
     const activeVariables = computed(() => {
       return availableVariables.value.filter(
-        k => props.variableStates?.[k] !== false
+          k => props.variableStates?.[k] !== false
       )
     })
 
@@ -77,34 +79,27 @@ export default {
 
     // Methods
     const initChart = async () => {
-      try {
-        await nextTick()
-        if (!container.value) {
-          console.warn('Chart container not found')
-          return
-        }
+      await nextTick();
 
-        if (chart.value) {
-          chart.value.dispose()
-          chart.value = null
-        }
-
-        chart.value = echarts.init(container.value)
-        initialized.value = true
-        console.log(`[ECharts] Initialized chart for ${props.config.id || 'unknown'}`)
-
-        // Setup resize observer
-        resizeObserver.value = new ResizeObserver(() => {
-          chart.value?.resize()
-        })
-        resizeObserver.value.observe(container.value)
-
-        renderChart()
-      } catch (e) {
-        console.error('Chart initialization failed:', e)
-        initialized.value = false
+      if (!container.value || !props.data?.length) {
+        setTimeout(initChart, 100); // 自动重试机制
+        return;
       }
-    }
+
+      // 销毁旧实例
+      if (chart.value) {
+        chart.value.dispose();
+        chart.value = null;
+      }
+
+      try {
+        chart.value = echarts.init(container.value);
+        chart.value.setOption(option);
+      } catch (e) {
+        console.error('ECharts init retrying...');
+        setTimeout(initChart, 300);
+      }
+    };
 
     const renderChart = () => {
       if (!chart.value || !initialized.value) return
@@ -123,60 +118,36 @@ export default {
         if (lastRenderData.value === currentDataKey) return
         lastRenderData.value = currentDataKey
 
+// CurveTemplate.vue 中的 option 配置
         const option = {
-          animation: false,
-          tooltip: {
-            trigger: 'axis',
-            formatter: params => {
-              return `${params[0].axisValue}<br/>` +
-                params.map(p =>
-                  `${p.marker} ${p.seriesName}: ${Number(p.value).toFixed(2)}`
-                ).join('<br>')
-            }
-          },
-          legend: {
-            data: activeVariables.value
-          },
-          grid: {
-            left: '3%',
-            right: '4%',
-            bottom: '10%',
-            containLabel: true
-          },
+          // 强制定义坐标轴类型
           xAxis: {
             type: 'category',
-            data: safeData.value.map(d => String(d.taskId || '')),
-            axisLabel: {
-              rotate: 45,
-              formatter: value => value.length > 6 ? `${value.slice(0,6)}...` : value
-            }
+            axisPointer: {
+              type: 'shadow' // 添加默认指针类型
+            },
+            data: safeData.value.map(d => d.taskId)
           },
           yAxis: {
             type: 'value',
-            axisLabel: {
-              formatter: value => Number(value).toFixed(2)
-            }
+            axisLine: {show: true}, // 显式定义轴线
+            axisTick: {show: true}  // 显式定义刻度
           },
           series: activeVariables.value.map(varName => ({
             name: varName,
             type: 'line',
-            data: safeData.value.map(d => {
-              const val = d[varName]
-              return typeof val === 'number' ? val :
-                typeof val === 'string' ? parseFloat(val) || 0 : 0
-            }),
-            smooth: true,
-            showSymbol: safeData.value.length < 20,
+            connectNulls: true, // 处理空值
+            symbol: 'circle',   // 明确符号类型
+            data: safeData.value.map(d => d[varName]),
+            // 添加空数据保护
             lineStyle: {
-              width: 2
+              type: 'solid'
             },
             emphasis: {
-              lineStyle: {
-                width: 3
-              }
+              disabled: false // 启用高亮状态
             }
           }))
-        }
+        };
 
         chart.value.setOption(option, {
           notMerge: true,
@@ -204,15 +175,15 @@ export default {
 
     // Watchers
     watch(
-      () => [safeData.value, activeVariables.value],
-      () => {
-        if (initialized.value) {
-          renderChart()
-        } else {
-          initChart()
-        }
-      },
-      { deep: true }
+        () => [safeData.value, activeVariables.value],
+        () => {
+          if (initialized.value) {
+            renderChart()
+          } else {
+            initChart()
+          }
+        },
+        {deep: true}
     )
 
     return {
