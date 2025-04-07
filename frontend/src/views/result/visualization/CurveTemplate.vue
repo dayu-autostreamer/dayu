@@ -5,7 +5,7 @@
 </template>
 
 <script>
-import {onMounted, onBeforeUnmount, watch} from 'vue'
+import {onMounted, onBeforeUnmount, watch, ref} from 'vue'
 import * as echarts from 'echarts'
 
 export default {
