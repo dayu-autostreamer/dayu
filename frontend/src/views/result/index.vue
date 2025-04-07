@@ -141,17 +141,39 @@ export default {
         const modules = import.meta.glob('./visualization/*Template.vue')
         const controls = import.meta.glob('./visualization/*Controls.vue')
 
-        for (const path in modules) {
-          const type = path.split('/').pop().replace('Template.vue', '').toLowerCase()
-          this.visualizationComponents[type] = markRaw(defineAsyncComponent(() => modules[path]()))
-        }
+        this.visualizationComponents = {}
+        this.vizControls = {}
 
-        for (const path in controls) {
-          const type = path.split('/').pop().replace('Controls.vue', '').toLowerCase()
-          this.vizControls[type] = markRaw(defineAsyncComponent(() => controls[path]()))
-        }
+        await Promise.all([
+          ...Object.entries(modules).map(async ([path, loader]) => {
+            const type = path.split('/').pop()
+                .replace('Template.vue', '')
+                .toLowerCase()
+
+            try {
+              const comp = await loader()
+              this.visualizationComponents[type] = markRaw(comp.default)
+              console.log('Successfully registered:', type)
+            } catch (e) {
+              console.error(`Failed to load ${type} template:`, e)
+            }
+          }),
+          ...Object.entries(controls).map(async ([path, loader]) => {
+            const type = path.split('/').pop()
+                .replace('Controls.vue', '')
+                .toLowerCase()
+
+            try {
+              const comp = await loader()
+              this.vizControls[type] = markRaw(comp.default)
+              console.log('Successfully registered control:', type)
+            } catch (e) {
+              console.error(`Failed to load ${type} control:`, e)
+            }
+          })
+        ])
       } catch (error) {
-        console.error('Component auto-registration failed:', error)
+        console.error('Component registration failed:', error)
       }
     },
 
