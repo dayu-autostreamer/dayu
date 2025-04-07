@@ -5,90 +5,76 @@
 </template>
 
 <script>
-import {onMounted, onBeforeUnmount, watch, ref} from 'vue'
+import {onMounted, onBeforeUnmount, watch, ref, nextTick} from 'vue'
 import * as echarts from 'echarts'
 
 export default {
   props: ['config', 'data', 'variableStates'],
 
   setup(props) {
-    let chart = null
+    const chart = ref(null)
+    const container = ref(null)
+    let observer = null
 
-    const containerRef = ref(null)
 
     const initChart = async () => {
       await nextTick()
 
-      if (!containerRef.value) return
-      if (chart) chart.dispose()
+      if (!container.value) return
+      if (chart.value) chart.value.dispose()
 
-      chart = echarts.init(containerRef.value)
+      chart.value = echarts.init(container.value)
       renderChart()
 
-      window.addEventListener('resize', () => {
-        chart?.resize()
+      observer = new ResizeObserver(() => {
+        chart.value?.resize()
       })
+      observer.observe(container.value)
     }
 
 
     const renderChart = () => {
-      if (!chart || !props.data?.length) return
+      if (!chart.value || !props.data?.length) return
 
-      console.log('ECharts Render Data:', {
-        taskIds: props.data?.map(d => d.taskId),
-        seriesData: props.data?.map(d =>
-            Object.fromEntries(
-                Object.entries(d).filter(([k]) => k !== 'taskId')
-            ))
-      })
+      try {
+        const option = {
+          xAxis: {
+            type: 'category',
+            data: props.data.map(d => d.taskId)
+          },
+          yAxis: {type: 'value'},
+          series: Object.keys(props.data[0])
+              .filter(k => k !== 'taskId')
+              .map(varName => ({
+                name: varName,
+                type: 'line',
+                data: props.data.map(d => d[varName]),
+                showSymbol: false
+              }))
+        }
 
-      const option = {
-        tooltip: {
-          trigger: 'axis'
-        },
-        legend: {
-          data: Object.keys(props.data[0]).filter(k => k !== 'taskId')
-        },
-        grid: {
-          left: '3%',
-          right: '4%',
-          bottom: '3%',
-          containLabel: true
-        },
-        xAxis: {
-          type: 'category',
-          boundaryGap: false,
-          data: props.data.map(d => d.taskId)
-        },
-        yAxis: {
-          type: 'value'
-        },
-
-        series: props.data[0]
-            ? Object.keys(props.data[0])
-                .filter(k => k !== 'taskId')
-                .map(varName => ({
-                  name: varName,
-                  type: 'line',
-                  data: props.data.map(d => d[varName]),
-                }))
-            : []
+        chart.value.setOption(option, true)
+        console.log('[ECharts] Render success')
+      } catch (e) {
+        console.error('[ECharts] Render error:', e)
       }
-
-      chart?.setOption(option, true)
     }
 
-    onMounted(initChart)
-    onBeforeUnmount(() => {
-      window.removeEventListener('resize', () => chart?.resize())
-      chart?.dispose()
+    onMounted(async () => {
+      await initChart()
+      if (!chart.value) setTimeout(initChart, 100)
     })
 
-    watch(() => [props.data, props.variableStates], () => {
+    onBeforeUnmount(() => {
+      observer?.disconnect()
+      chart.value?.dispose()
+    })
+
+    watch(() => props.data, () => {
       renderChart()
     }, {deep: true})
 
-    return {containerRef}
+    return {container}
   }
 }
 </script>

@@ -64,7 +64,7 @@
           v-for="viz in visualizationConfig"
           :key="viz.id"
           :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
-          v-show="activeVisualizations.has(viz.id)"
+          v-show="componentsLoaded && activeVisualizations.has(viz.id)"
       >
         <div class="home-card-item viz-module">
           <div class="viz-module-header">
@@ -72,6 +72,7 @@
             <component
                 :is="vizControls[viz.type]"
                 v-if="vizControls[viz.type]"
+                v-show="componentsLoaded"
                 :config="viz"
                 :variable-states="variableStates[viz.id]"
                 @update:variable-states="updateVariableStates(viz.id, $event)"
@@ -80,7 +81,7 @@
 
           <component
               :is="visualizationComponents[viz.type]"
-              v-if="visualizationComponents[viz.type] && processedData[viz.id]"
+              v-if="componentsLoaded && visualizationComponents[viz.type] && processedData[viz.id]"
               :key="viz.id + selectedDataSource"
               :config="viz"
               :data="processedData[viz.id]"
@@ -98,6 +99,8 @@ import {defineAsyncComponent, reactive, markRaw, shallowRef} from 'vue'
 export default {
   data() {
     return {
+      componentsLoaded: false,
+
       selectedDataSource: null,
       dataSourceList: [],
       bufferedTaskCache: {},
@@ -131,6 +134,8 @@ export default {
   },
   async created() {
     await this.autoRegisterComponents()
+    this.componentsLoaded = true
+
     await this.fetchDataSourceList()
     await this.fetchVisualizationConfig()
     this.setupDataPolling()
@@ -143,7 +148,6 @@ export default {
 
         this.visualizationComponents = {}
         this.vizControls = {}
-
         await Promise.all([
           ...Object.entries(modules).map(async ([path, loader]) => {
             const type = path.split('/').pop()
@@ -178,27 +182,21 @@ export default {
     },
 
     processVizData(vizConfig) {
-      const sourceData = this.bufferedTaskCache[this.selectedDataSource] || [];
+      const sourceData = this.bufferedTaskCache[this.selectedDataSource] || []
+      console.log('[Data Flow] Raw data for viz', vizConfig.id, ':', JSON.parse(JSON.stringify(sourceData)))
 
-      console.log('Processed Data Structure:', {
-        vizId: vizConfig.id,
-        data: sourceData.map(task => ({
-          taskId: task.task_id,
-          variables: Object.keys(task.data[vizConfig.id] || {})
-        }))
-      })
-
-      return sourceData.map(task => {
-        const vizData = task.data[vizConfig.id] || {};
+      const processed = sourceData.map(task => {
+        const vizData = task.data[vizConfig.id] || {}
+        console.log('[Data Flow] Processing task', task.task_id, ':', vizData)
 
         return {
           taskId: task.task_id,
-          ...Object.fromEntries(
-              Object.entries(vizData)
-                  .filter(([key]) => vizConfig.variables.includes(key))
-          )
-        };
-      });
+          ...vizData
+        }
+      })
+
+      console.log('[Data Flow] Final processed data:', processed)
+      return processed
     },
 
     extractVizVariables(taskData, vizConfig) {
