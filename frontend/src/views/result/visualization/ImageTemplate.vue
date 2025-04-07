@@ -36,14 +36,6 @@ export default {
   }
 }
 
-function isValidImageUrl(url) {
-  try {
-    new URL(url)
-    return url.match(/\.(jpeg|jpg|gif|png|svg)$/) != null
-  } catch {
-    return false
-  }
-}
 </script>
 
 <style scoped>
