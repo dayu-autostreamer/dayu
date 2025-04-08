@@ -14,6 +14,12 @@
   y_axis: Delay
   variables: ["End to End Delay"]
   hook_name: e2e_delay
+- name: Delay Curve
+  type: curve
+  x_axis: Task Index
+  y_axis: Delay
+  variables: ["Delay", "Real Delay"]
+  hook_name: delay
 
 
 ######## Visualization Module Template ########
