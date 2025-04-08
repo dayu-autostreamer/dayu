@@ -67,7 +67,7 @@ export default {
 
     const animationConfig = {
       duration: 800,
-      easing: 'quarticInOut'
+      easing: 'cubicInOut'
     }
 
     // Computed Properties
