@@ -186,7 +186,7 @@ export default {
         }
         chart.value = echarts.init(container.value)
 
-
+        const option = getChartOption()
         // 智能更新策略
         if (chart.value.getOption().series.length !== option.series.length) {
           chart.value.setOption(option, true) // 全量更新
