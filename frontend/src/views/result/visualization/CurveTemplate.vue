@@ -67,7 +67,7 @@ export default {
 
     const animationConfig = {
       duration: 800,
-      easing: 'cubicInOut'
+      easing: 'quarticInOut'
     }
 
     // Computed Properties
@@ -172,31 +172,35 @@ export default {
     }
 
 
-    const renderChart = async () => {
+    const renderChart = _.debounce(async () => {
+      if (!chart.value) return
+
       try {
-        if (renderRetryCount++ > MAX_RETRIES) {
-          console.warn('Max retries reached')
-          return
+        const option = getChartOption()
+
+        // 智能更新策略
+        if (chart.value.getOption().series.length !== option.series.length) {
+          chart.value.setOption(option, true) // 全量更新
+        } else {
+          chart.value.setOption(option, {
+            replaceMerge: ['series'],
+            notMerge: false
+          })
         }
 
-        if (!(await initChart())) {
-          setTimeout(renderChart, 300 * Math.pow(2, renderRetryCount)) // 指数退避
-          return
-        }
-
-        // 强制清除旧实例
-        if (chart.value) {
-          chart.value.dispose()
-          chart.value = null
-        }
-
-        chart.value = echarts.init(container.value)
-        chart.value.setOption(getChartOption())
-        renderRetryCount = 0 // 重置计数器
+        // 添加视觉连续性
+        chart.value.dispatchAction({
+          type: 'downplay',
+          seriesIndex: 'all'
+        })
+        chart.value.dispatchAction({
+          type: 'highlight',
+          seriesIndex: 0
+        })
       } catch (e) {
         console.error('Render failed:', e)
       }
-    }
+    }, 300) // 300ms防抖
 
     const observer = new MutationObserver(() => {
       forceUpdate.value++
