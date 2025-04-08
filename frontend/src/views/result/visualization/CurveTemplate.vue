@@ -87,15 +87,19 @@ export default {
 
 
     const showEmptyState = computed(() => {
-      // 显示调试信息
-      console.log('[DEBUG] Active variables:', activeVariables.value)
-      console.log('[DEBUG] Data validity:', safeData.value.length > 0)
+      const hasData = safeData.value.length > 0
+      const hasActiveVars = activeVariables.value.length > 0
+      const hasValidData = hasData && activeVariables.value.some(v =>
+          safeData.value.some(d => d[v] !== undefined)
+      )
 
-      return !safeData.value.length ||
-          activeVariables.value.length === 0 ||
-          !activeVariables.value.some(v =>
-              safeData.value.some(d => d[v] !== undefined)
-          )
+      console.log('Empty State Check:', {
+        hasData,
+        hasActiveVars,
+        hasValidData
+      })
+
+      return !hasValidData
     })
 
     const emptyMessage = computed(() => {
@@ -184,6 +188,53 @@ export default {
     }
 
     const getChartOption = () => {
+      if (activeVariables.value.length === 0 || safeData.value.length === 0) {
+        return {}
+      }
+
+      const inferAxisType = (values) => {
+        const sample = values[0]
+        return typeof sample === 'string' ? 'category' : 'value'
+      }
+
+      const yAxisConfig = activeVariables.value.map(varName => ({
+        type: inferAxisType(safeData.value.map(d => d[varName])),
+        name: varName,
+        alignTicks: true,
+        axisLabel: {
+          formatter: value => {
+            if (valueTypes.value[varName] === 'string') {
+              const entry = Object.entries(discreteValueMap.value[varName])
+                  .find(([k, v]) => v === value)
+              return entry ? entry[0] : value
+            }
+            return Number(value).toFixed(2)
+          }
+        }
+      }))
+
+      const seriesConfig = activeVariables.value.map(varName => {
+        const values = safeData.value.map(d => d[varName])
+
+        return {
+          name: varName,
+          type: 'line',
+          yAxisIndex: activeVariables.value.indexOf(varName),
+          data: values.map(v => {
+            if (v === undefined) return null
+            return valueTypes.value[varName] === 'string'
+                ? getDiscreteValue(varName, v)
+                : Number(v)
+          }),
+          // 新增：空数据跳过渲染
+          connectNulls: false,
+          // 新增：优化渲染性能
+          progressive: 200,
+          animation: values.length < 100
+        }
+      })
+
+
       return {
         // 新增动画配置
         animation: true,
@@ -222,59 +273,8 @@ export default {
           axisLine: {show: true},
           axisTick: {show: true}
         },
-        yAxis: {
-          type: 'value',
-          axisLabel: {
-            formatter: value => {
-              // 查找反向映射
-              const varName = activeVariables.value.find(v =>
-                  valueTypes.value[v] === 'string'
-              )
-              if (!varName) return Number(value).toFixed(2)
-
-              const map = discreteValueMap.value[varName]
-              const entry = Object.entries(map).find(([k, v]) => v === value)
-              return entry ? entry[0] : value
-            }
-          }
-        },
-        series: activeVariables.value.map(varName => ({
-          name: varName,
-          type: 'line',
-          data: safeData.value.map(d => {
-            const rawValue = d[varName]
-            if (valueTypes.value[varName] === 'string') {
-              return getDiscreteValue(varName, rawValue)
-            }
-            return typeof rawValue === 'number' ? rawValue :
-                typeof rawValue === 'string' ? parseFloat(rawValue) || 0 : 0
-          }),
-          // 新增平滑配置
-          smooth: true,
-          symbol: 'emptyCircle',
-          symbolSize: 8,
-          showSymbol: safeData.value.length < 50,
-          connectNulls: true,
-          lineStyle: {
-            width: 2,
-            shadowColor: 'rgba(0, 0, 0, 0.2)',
-            shadowBlur: 8,
-            shadowOffsetY: 5
-          },
-          areaStyle: {
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              {offset: 0, color: 'rgba(64, 158, 255, 0.6)'},
-              {offset: 1, color: 'rgba(64, 158, 255, 0.02)'}
-            ])
-          },
-          emphasis: {
-            lineStyle: {
-              width: 3
-            }
-          },
-          animationEasing: 'cubicOut',
-          animationDurationUpdate: animationConfig.duration
-        }))
+        yAxis: yAxisConfig,
+        series: seriesConfig
       }
     }
 
@@ -314,6 +314,18 @@ export default {
         renderChart()
       }
     }, {deep: true, flush: 'post'})
+
+    watch(activeVariables, (newVal) => {
+      console.log('Active Variables Changed:', newVal)
+      console.log('Current Variable States:', toRaw(props.variableStates))
+    }, {deep: true})
+
+    watch(safeData, (newVal) => {
+      console.log('Chart Data Updated:', {
+        data: newVal,
+        keys: newVal.length > 0 ? Object.keys(newVal[0]) : []
+      })
+    }, {deep: true})
 
     return {
       container,

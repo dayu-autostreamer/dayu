@@ -222,7 +222,21 @@ export default {
           })
 
       console.log(`[RESULT] Processed data for ${vizConfig.id}:`, filteredData)
-      return filteredData
+
+      return filteredData.map(item => {
+        // 保留所有原始字段
+        const dataItem = {taskId: item.taskId}
+
+        // 只过滤未激活的字段
+        vizConfig.variables?.forEach(varName => {
+          if (this.variableStates[vizConfig.id][varName] !== false) {
+            dataItem[varName] = item[varName]
+          }
+        })
+
+        console.log(`Processed Item for ${vizConfig.id}:`, dataItem)
+        return dataItem
+      })
     },
 
     updateVariableStates(vizId, newStates) {
