@@ -135,7 +135,13 @@ export default {
       }
 
       if (showEmptyState.value) {
-        chart.value.clear()
+        if (chart.value) {
+          try {
+            chart.value.clear()
+          } catch (clearError) {
+            console.warn('Chart clear error:', clearError)
+          }
+        }
         return
       }
 
