@@ -7,7 +7,6 @@
       </el-icon>
       <p>{{ emptyMessage }}</p>
     </div>
-    <div :key="forceUpdate" style="display: none"></div>
   </div>
 </template>
 
@@ -34,11 +33,9 @@ export default {
       type: Array,
       required: true,
       validator: value => {
-        const isValid = Array.isArray(value) && value.every(item =>
-            typeof item.taskId !== 'undefined'
+        return Array.isArray(value) && value.every(item =>
+            item.taskId !== undefined
         )
-        console.log('[CURVE] Data validation:', isValid)
-        return isValid
       }
     },
     variableStates: {
@@ -66,6 +63,7 @@ export default {
     const forceUpdate = ref(0)
 
     let renderRetryCount = 0
+    const MAX_RETRIES = 8
 
     const animationConfig = {
       duration: 800,
@@ -74,15 +72,18 @@ export default {
 
     // Computed Properties
     const safeData = computed(() => {
-      const processed = (props.data || []).map(item => {
+      return (props.data || []).map(item => {
         const cleanItem = {taskId: item.taskId}
+
         props.config.variables?.forEach(varName => {
-          cleanItem[varName] = item[varName] ?? null
+          const rawValue = item[varName]
+          // 转换无效值为0
+          cleanItem[varName] = rawValue !== null && rawValue !== undefined ?
+              rawValue : 0
         })
+
         return cleanItem
       })
-      console.log('Processed SafeData:', processed)
-      return processed
     })
 
     const availableVariables = computed(() => {
@@ -125,11 +126,21 @@ export default {
       try {
         // 三重等待确保 DOM 就绪
         await nextTick()
-        await new Promise(resolve => setTimeout(resolve, 50))
-        await new Promise(resolve => requestAnimationFrame(resolve))
+        if (!container.value) return false
 
-        if (!container.value) {
-          console.warn('Chart container element not found')
+        const isVisible = () => {
+          const rect = container.value.getBoundingClientRect()
+          return !(rect.width === 0 || rect.height === 0)
+        }
+        let checks = 0
+        while (checks < 10) {
+          if (isVisible()) break
+          await new Promise(r => setTimeout(r, 50))
+          checks++
+        }
+
+        if (!isVisible()) {
+          console.warn('Container remains invisible after retries')
           return false
         }
 
@@ -160,33 +171,30 @@ export default {
       }
     }
 
+
     const renderChart = async () => {
       try {
-        if (++renderRetryCount > 5) {
-          console.error('Max retries exceeded')
+        if (renderRetryCount++ > MAX_RETRIES) {
+          console.warn('Max retries reached')
           return
         }
 
-        if (!container.value || container.value.offsetWidth === 0) {
-          console.log('Container not ready, retrying...')
-          setTimeout(renderChart, 300)
+        if (!(await initChart())) {
+          setTimeout(renderChart, 300 * Math.pow(2, renderRetryCount)) // 指数退避
           return
         }
 
-        if (!chart.value) {
-          if (!await initChart()) {
-            setTimeout(renderChart, 500)
-            return
-          }
+        // 强制清除旧实例
+        if (chart.value) {
+          chart.value.dispose()
+          chart.value = null
         }
 
-        const option = getChartOption()
-        if (Object.keys(option).length === 0) return
-
-        chart.value.setOption(option, true)
-        renderRetryCount = 0
+        chart.value = echarts.init(container.value)
+        chart.value.setOption(getChartOption())
+        renderRetryCount = 0 // 重置计数器
       } catch (e) {
-        console.error('Render error:', e)
+        console.error('Render failed:', e)
       }
     }
 
