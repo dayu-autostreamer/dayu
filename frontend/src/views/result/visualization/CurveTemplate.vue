@@ -173,13 +173,12 @@ export default {
 
 
     const renderChart = async () => {
-      if (!chart.value) return
-
       try {
         if (renderRetryCount++ > MAX_RETRIES) {
           console.warn('Max retries reached')
           return
         }
+
         if (!(await initChart())) {
           setTimeout(renderChart, 300 * Math.pow(2, renderRetryCount)) // 指数退避
           return
@@ -193,18 +192,6 @@ export default {
 
         chart.value = echarts.init(container.value)
         chart.value.setOption(getChartOption())
-
-
-        // // 添加视觉连续性
-        // chart.value.dispatchAction({
-        //   type: 'downplay',
-        //   seriesIndex: 'all'
-        // })
-        // chart.value.dispatchAction({
-        //   type: 'highlight',
-        //   seriesIndex: 0
-        // })
-
         renderRetryCount = 0 // 重置计数器
       } catch (e) {
         console.error('Render failed:', e)
