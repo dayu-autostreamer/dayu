@@ -202,39 +202,22 @@ export default {
       }
     },
 
+
     processVizData(vizConfig) {
       if (!this.selectedDataSource || !this.bufferedTaskCache[this.selectedDataSource]) {
-        console.warn(`Invalid data source: ${this.selectedDataSource}`)
         return []
       }
 
       const rawData = this.bufferedTaskCache[this.selectedDataSource]
-      console.log(`[DEBUG] Raw data for ${vizConfig.id}:`, JSON.parse(JSON.stringify(rawData)))
-
       const filteredData = rawData
           .filter(task => {
-            const hasValidItem = task.data?.some?.(item => {
-              const isMatch = item?.id === vizConfig.id
-              console.log(`[MATCH] ${item?.id} vs ${vizConfig.id} => ${isMatch}`)
-              return isMatch
-            })
-            return hasValidItem
+            return task.data?.some(item => String(item.id) === String(vizConfig.id))
           })
           .map(task => {
-            const vizDataItem = task.data.find(item => item.id === vizConfig.id)
-            console.log(`[DATA] Processing item for ${vizConfig.id}:`, vizDataItem)
-
-            // 添加变量值存在性检查
-            const cleanedData = {}
-            vizConfig.variables?.forEach(varName => {
-              const rawValue = vizDataItem?.data?.[varName] ?? null
-              console.log(`[VAR] ${varName} value:`, rawValue)
-              cleanedData[varName] = Number(rawValue) || 0
-            })
-
+            const vizDataItem = task.data.find(item => String(item.id) === String(vizConfig.id))
             return {
               taskId: String(task.task_id),
-              ...cleanedData
+              ...(vizDataItem?.data || {}) // 透传原始数据
             }
           })
 
@@ -270,7 +253,12 @@ export default {
     async fetchVisualizationConfig() {
       try {
         const response = await fetch('/api/visualization_config')
-        this.visualizationConfig = await response.json()
+        const data = await response.json()
+
+        this.visualizationConfig = data.map(viz => ({
+          ...viz,
+          id: String(viz.id),
+        }));
 
         this.visualizationConfig.forEach(viz => {
           this.activeVisualizations.add(viz.id)
@@ -312,7 +300,7 @@ export default {
               .map(task => ({
                 task_id: task.task_id,
                 data: task.data.map(item => ({
-                  id: item.id || 'unknown',
+                  id: String(item.id) || 'unknown',
                   data: item.data || {}
                 }))
               }))

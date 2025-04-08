@@ -162,6 +162,27 @@ export default {
       }
     }
 
+    const valueTypes = computed(() => {
+      const types = {}
+      activeVariables.value.forEach(varName => {
+        const sampleValue = safeData.value[0]?.[varName]
+        types[varName] = typeof sampleValue
+      })
+      return types
+    })
+
+    const discreteValueMap = ref({})
+    const getDiscreteValue = (varName, value) => {
+      if (!discreteValueMap.value[varName]) {
+        discreteValueMap.value[varName] = {}
+      }
+      const map = discreteValueMap.value[varName]
+      if (!(value in map)) {
+        map[value] = Object.keys(map).length
+      }
+      return map[value]
+    }
+
     const getChartOption = () => {
       return {
         // 新增动画配置
@@ -204,13 +225,16 @@ export default {
         yAxis: {
           type: 'value',
           axisLabel: {
-            formatter: value => Number(value).toFixed(2)
-          },
-          axisLine: {show: true},
-          axisTick: {show: true},
-          splitLine: {
-            lineStyle: {
-              type: 'dashed'
+            formatter: value => {
+              // 查找反向映射
+              const varName = activeVariables.value.find(v =>
+                  valueTypes.value[v] === 'string'
+              )
+              if (!varName) return Number(value).toFixed(2)
+
+              const map = discreteValueMap.value[varName]
+              const entry = Object.entries(map).find(([k, v]) => v === value)
+              return entry ? entry[0] : value
             }
           }
         },
@@ -218,9 +242,12 @@ export default {
           name: varName,
           type: 'line',
           data: safeData.value.map(d => {
-            const val = d[varName]
-            return typeof val === 'number' ? val :
-                typeof val === 'string' ? parseFloat(val) || 0 : 0
+            const rawValue = d[varName]
+            if (valueTypes.value[varName] === 'string') {
+              return getDiscreteValue(varName, rawValue)
+            }
+            return typeof rawValue === 'number' ? rawValue :
+                typeof rawValue === 'string' ? parseFloat(rawValue) || 0 : 0
           }),
           // 新增平滑配置
           smooth: true,
