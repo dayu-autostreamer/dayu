@@ -1,7 +1,7 @@
 <template>
   <div class="image-controls">
     <el-tag type="info" size="small" effect="plain">
-      Auto-Refresh
+      Frame with Regions of Interest
     </el-tag>
   </div>
 </template>

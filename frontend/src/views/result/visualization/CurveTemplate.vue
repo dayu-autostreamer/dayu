@@ -176,7 +176,16 @@ export default {
       if (!chart.value) return
 
       try {
-        const option = getChartOption()
+        if (renderRetryCount++ > MAX_RETRIES) {
+          console.warn('Max retries reached')
+          return
+        }
+        if (!(await initChart())) {
+          setTimeout(renderChart, 300 * Math.pow(2, renderRetryCount)) // 指数退避
+          return
+        }
+        chart.value = echarts.init(container.value)
+
 
         // 智能更新策略
         if (chart.value.getOption().series.length !== option.series.length) {
@@ -197,6 +206,8 @@ export default {
           type: 'highlight',
           seriesIndex: 0
         })
+
+        renderRetryCount = 0 // 重置计数器
       } catch (e) {
         console.error('Render failed:', e)
       }
