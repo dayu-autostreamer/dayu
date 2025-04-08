@@ -36,13 +36,13 @@
 
 <script>
 import {ref, watch} from 'vue'
-import {Picture} from '@element-plus/icons-vue'
+import {Picture, Warning, Loading} from '@element-plus/icons-vue'
 
 // Base64 前缀检测正则
 const BASE64_REGEX = /^data:image\/(\w+);base64,/
 
 export default {
-  components: {Picture},
+  components: {Picture, Warning, Loading},
   props: ['config', 'data'],
   setup(props) {
     const currentImage = ref(null)
@@ -94,8 +94,15 @@ export default {
 
 <style scoped>
 .image-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f5f7fa;
+  border-radius: 4px;
+  overflow: hidden;
   position: relative;
-  min-height: 300px;
 }
 
 .loading-overlay {
@@ -138,7 +145,6 @@ export default {
   max-width: 100%;
   max-height: 80vh;
   object-fit: contain;
-  background: repeating-conic-gradient(#f5f5f5 0% 25%, #fff 0% 50%) 50% / 20px 20px;
 }
 
 .image-placeholder {
