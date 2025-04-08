@@ -96,10 +96,10 @@ export default {
 .image-container {
   width: 100%;
   height: 100%;
+  min-height: 300px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f5f7fa;
   border-radius: 4px;
   overflow: hidden;
   position: relative;
