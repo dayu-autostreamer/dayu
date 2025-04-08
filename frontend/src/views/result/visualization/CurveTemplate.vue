@@ -172,7 +172,7 @@ export default {
     }
 
 
-    const renderChart = _.debounce(async () => {
+    const renderChart = async () => {
       if (!chart.value) return
 
       try {
@@ -200,7 +200,7 @@ export default {
       } catch (e) {
         console.error('Render failed:', e)
       }
-    }, 300) // 300ms防抖
+    }
 
     const observer = new MutationObserver(() => {
       forceUpdate.value++
