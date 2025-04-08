@@ -205,15 +205,15 @@ export default {
           })
         }
 
-        // 添加视觉连续性
-        chart.value.dispatchAction({
-          type: 'downplay',
-          seriesIndex: 'all'
-        })
-        chart.value.dispatchAction({
-          type: 'highlight',
-          seriesIndex: 0
-        })
+        // // 添加视觉连续性
+        // chart.value.dispatchAction({
+        //   type: 'downplay',
+        //   seriesIndex: 'all'
+        // })
+        // chart.value.dispatchAction({
+        //   type: 'highlight',
+        //   seriesIndex: 0
+        // })
 
         renderRetryCount = 0 // 重置计数器
       } catch (e) {
