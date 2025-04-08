@@ -55,6 +55,7 @@ export default {
     const initialized = ref(false)
     const lastRenderTime = ref(0)
     const resizeObserver = ref(null)
+    const isMounted = ref(true)
 
     const animationConfig = {
       duration: 800,
@@ -106,67 +107,58 @@ export default {
     // Methods
     const initChart = async () => {
       try {
-        await nextTick() // 等待 DOM 更新
+        // 双重等待确保 DOM 就绪
+        await nextTick()
+        await new Promise(resolve => requestAnimationFrame(resolve))
 
-        if (!container.value) {
-          console.error('Chart container element not found')
+        if (!container.value || !container.value.offsetParent) {
+          console.warn('Chart container not ready')
           return false
         }
 
-        // 确保容器可见
-        if (container.value.offsetParent === null) {
-          console.warn('Chart container is hidden')
-          return false
+        // 清理旧实例
+        if (chart.value) {
+          chart.value.dispose()
+          chart.value = null
         }
 
-        chart.value = echarts.init(container.value)
+        // 防止重复初始化
+        if (container.value._echarts_instance) {
+          console.log('Reusing existing chart instance')
+          chart.value = echarts.getInstanceByDom(container.value)
+          return true
+        }
+
+        chart.value = echarts.init(container.value, null, {
+          renderer: 'canvas',
+          useDirtyRect: true // 启用脏矩形优化
+        })
         initialized.value = true
         return true
       } catch (e) {
-        console.error('ECharts initialization failed:', e)
+        console.error('Init failed:', e)
         return false
       }
     }
 
     const renderChart = async () => {
-      if (!initialized.value) {
-        const success = await initChart()
-        if (!success) {
-          console.warn('Chart initialization failed, retrying...')
-          setTimeout(renderChart, 500) // 自动重试
-          return
-        }
-      }
-
-      if (!chart.value || !initialized.value) {
-        if (!await initChart()) return
-      }
-
-      if (showEmptyState.value) {
-        if (chart.value) {
-          try {
-            chart.value.clear()
-          } catch (clearError) {
-            console.warn('Chart clear error:', clearError)
-          }
-        }
-        return
-      }
+      if (!container.value) return
 
       try {
-        const option = getChartOption()
-        // 修改：优化setOption参数
-        if (chart.value.getOption()) {
-          chart.value.setOption(option, {
-            replaceMerge: ['series', 'xAxis', 'yAxis'],
-            notMerge: false
-          })
-        } else {
-          chart.value.setOption(option)
+        let retries = 0
+        while (retries < 3) {
+          if (await initChart()) break
+          await new Promise(r => setTimeout(r, 300 * (retries + 1)))
+          retries++
         }
-        lastRenderTime.value = Date.now()
+
+        if (!chart.value) return
+
+        // 强制清理旧配置
+        chart.value.clear()
+        chart.value.setOption(getChartOption())
       } catch (e) {
-        console.error('Chart render error:', e)
+        console.error('Render failed:', e)
       }
     }
 
@@ -299,34 +291,29 @@ export default {
     }
 
     // Lifecycle Hooks
-    onMounted(async () => {
-      await initChart()
-      renderChart()
+    onMounted(() => {
+      isMounted.value = true
+      // 延迟初始化确保容器存在
+      setTimeout(renderChart, 100)
     })
 
     onBeforeUnmount(() => {
-      if (resizeObserver.value) {
-        resizeObserver.value.disconnect()
-      }
+      isMounted.value = false
       if (chart.value) {
         chart.value.dispose()
         chart.value = null
       }
+      if (resizeObserver.value) {
+        resizeObserver.value.disconnect()
+      }
     })
 
     // Watchers
-    watch(
-        () => props.data,
-        (newVal, oldVal) => {
-          if (JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
-            console.log('Curve data changed:', newVal)
-            nextTick().then(() => {
-              renderChart()
-            })
-          }
-        },
-        {deep: true, immediate: true}
-    )
+    watch(() => props.data, () => {
+      if (isMounted.value) {
+        renderChart()
+      }
+    }, {deep: true, flush: 'post'})
 
     return {
       container,
