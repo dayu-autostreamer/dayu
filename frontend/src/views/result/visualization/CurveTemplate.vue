@@ -185,17 +185,8 @@ export default {
           return
         }
         chart.value = echarts.init(container.value)
+        chart.value.setOption(getChartOption())
 
-        const option = getChartOption()
-        // 智能更新策略
-        if (chart.value.getOption().series.length !== option.series.length) {
-          chart.value.setOption(option, true) // 全量更新
-        } else {
-          chart.value.setOption(option, {
-            replaceMerge: ['series'],
-            notMerge: false
-          })
-        }
 
         // 添加视觉连续性
         chart.value.dispatchAction({
