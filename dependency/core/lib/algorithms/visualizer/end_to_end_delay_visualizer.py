@@ -13,4 +13,4 @@ class EndToEndDelayVisualizer(CurveVisualizer, abc.ABC):
         pass
 
     def __call__(self, task: Task):
-        return {'delay':task.calculate_total_time()}
+        return {'End to End Delay':task.calculate_total_time()}
