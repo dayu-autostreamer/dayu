@@ -3,14 +3,14 @@
     <div class="variable-group">
       <span class="variable-title">Display Variables:</span>
       <el-checkbox-group
-        v-model="selectedVariables"
-        @change="handleVariableChange"
+          v-model="selectedVariables"
+          @change="handleVariableChange"
       >
         <el-checkbox
-          v-for="varName in config.variables"
-          :key="varName"
-          :label="varName"
-          class="variable-checkbox"
+            v-for="varName in config.variables"
+            :key="varName"
+            :label="varName"
+            class="variable-checkbox"
         />
       </el-checkbox-group>
     </div>
@@ -18,7 +18,7 @@
 </template>
 
 <script>
-import { ref, watch } from 'vue'
+import {ref, watch, toRefs} from 'vue'
 
 export default {
   props: {
@@ -33,10 +33,13 @@ export default {
   },
   emits: ['update:variable-states'],
 
-  setup(props, { emit }) {
-    const selectedVariables = ref(
-      Object.keys(props.variableStates).filter(k => props.variableStates[k])
-    )
+  setup(props, {emit}) {
+    const {variableStates} = toRefs(props)
+    const selectedVariables = ref([])
+
+    // 初始化时同步状态
+    selectedVariables.value = Object.keys(variableStates.value)
+        .filter(k => variableStates.value[k])
 
     const handleVariableChange = () => {
       const newStates = {}
@@ -48,9 +51,9 @@ export default {
 
     watch(() => props.variableStates, (newVal) => {
       selectedVariables.value = Object.keys(newVal).filter(k => newVal[k])
-    }, { deep: true })
+    }, {deep: true})
 
-    return { selectedVariables, handleVariableChange }
+    return {selectedVariables, handleVariableChange}
   }
 }
 </script>
@@ -76,6 +79,7 @@ export default {
 .variable-checkbox {
   margin-right: 8px;
 }
+
 .variable-checkbox ::v-deep .el-checkbox__label {
   font-size: 0.85em;
 }

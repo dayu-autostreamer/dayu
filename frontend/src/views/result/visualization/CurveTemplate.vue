@@ -84,8 +84,17 @@ export default {
       )
     })
 
+
     const showEmptyState = computed(() => {
-      return !safeData.value.length || !activeVariables.value.length
+      // 显示调试信息
+      console.log('[DEBUG] Active variables:', activeVariables.value)
+      console.log('[DEBUG] Data validity:', safeData.value.length > 0)
+
+      return !safeData.value.length ||
+          activeVariables.value.length === 0 ||
+          !activeVariables.value.some(v =>
+              safeData.value.some(d => d[v] !== undefined)
+          )
     })
 
     const emptyMessage = computed(() => {
@@ -97,39 +106,38 @@ export default {
     // Methods
     const initChart = async () => {
       try {
-        await nextTick()
+        await nextTick() // 等待 DOM 更新
 
         if (!container.value) {
-          console.warn('Chart container element not found')
+          console.error('Chart container element not found')
           return false
-        } else {
-          container.value.style.height = '100%'
-          container.value.style.width = '100%'
         }
 
-        if (chart.value) {
-          chart.value.dispose()
-          chart.value = null
+        // 确保容器可见
+        if (container.value.offsetParent === null) {
+          console.warn('Chart container is hidden')
+          return false
         }
 
         chart.value = echarts.init(container.value)
         initialized.value = true
-
-        // 修改：添加带动画的resize
-        resizeObserver.value = new ResizeObserver(() => {
-          chart.value?.resize({animation: animationConfig})
-        })
-        resizeObserver.value.observe(container.value)
-
         return true
       } catch (e) {
         console.error('ECharts initialization failed:', e)
-        initialized.value = false
         return false
       }
     }
 
     const renderChart = async () => {
+      if (!initialized.value) {
+        const success = await initChart()
+        if (!success) {
+          console.warn('Chart initialization failed, retrying...')
+          setTimeout(renderChart, 500) // 自动重试
+          return
+        }
+      }
+
       if (!chart.value || !initialized.value) {
         if (!await initChart()) return
       }

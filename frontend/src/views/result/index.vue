@@ -258,26 +258,22 @@ export default {
         this.visualizationConfig = data.map(viz => ({
           ...viz,
           id: String(viz.id),
+          variables: viz.variables || []
         }));
 
         this.visualizationConfig.forEach(viz => {
           this.activeVisualizations.add(viz.id)
 
-          if (!this.variableStates[viz.id]) {
-            this.variableStates[viz.id] = reactive({})
-          }
-          viz.variables?.forEach(varName => {
-            if (this.variableStates[viz.id][varName] === undefined) {
-              this.variableStates[viz.id][varName] = true
-            }
-          })
+          this.variableStates[viz.id] = reactive(
+              viz.variables.reduce((acc, varName) => {
+                acc[varName] = true  // 默认选中所有变量
+                return acc
+              }, {})
+          )
+
         })
 
-        this.visualizationConfig = [...this.visualizationConfig]
-        console.log('Visualization config initialized:', {
-          config: toRaw(this.visualizationConfig),
-          variables: toRaw(this.variableStates)
-        })
+        console.log('Initialized variable states:', toRaw(this.variableStates))
       } catch (error) {
         console.error('Failed to fetch visualization config:', error)
       }
