@@ -631,7 +631,6 @@ class BackendServer:
         for source in source_config['source_list']:
             source_id = source['id']
             ans[source_id] = self.server.task_results[source_id].get_all()
-        LOGGER.debug(f'[GET TASK RESULT] {ans}')
 
         return ans
 
