@@ -7,11 +7,12 @@
       </el-icon>
       <p>{{ emptyMessage }}</p>
     </div>
+    <div :key="forceUpdate" style="display: none"></div>
   </div>
 </template>
 
 <script>
-import {ref, computed, onMounted, onBeforeUnmount, watch, nextTick} from 'vue'
+import {ref, computed, onMounted, onBeforeUnmount, watch, nextTick, toRaw} from 'vue'
 import * as echarts from 'echarts'
 import {PieChart} from '@element-plus/icons-vue'
 
@@ -33,11 +34,10 @@ export default {
       type: Array,
       required: true,
       validator: value => {
-        const isValid = Array.isArray(value) && value.every(item => {
-          return typeof item.taskId !== 'undefined' &&
-              Object.values(item).some(v => typeof v === 'number')
-        })
-        console.log('[CURVE] Data validation:', isValid, value)
+        const isValid = Array.isArray(value) && value.every(item =>
+            typeof item.taskId !== 'undefined'
+        )
+        console.log('[CURVE] Data validation:', isValid)
         return isValid
       }
     },
@@ -49,6 +49,13 @@ export default {
   },
 
   setup(props) {
+
+    console.log('CurveTemplate Mounted:', {
+      config: toRaw(props.config),
+      variables: toRaw(props.variableStates),
+      initialData: toRaw(props.data)
+    })
+
     // Refs
     const chart = ref(null)
     const container = ref(null)
@@ -56,6 +63,9 @@ export default {
     const lastRenderTime = ref(0)
     const resizeObserver = ref(null)
     const isMounted = ref(true)
+    const forceUpdate = ref(0)
+
+    let renderRetryCount = 0
 
     const animationConfig = {
       duration: 800,
@@ -64,13 +74,15 @@ export default {
 
     // Computed Properties
     const safeData = computed(() => {
-      console.log('[DEBUG] Curve received data:', props.data)
-      return (props.data || []).map(item => ({
-        taskId: item.taskId || 'unknown',
-        ...Object.fromEntries(
-            Object.entries(item).filter(([k]) => k !== 'taskId')
-        )
-      }))
+      const processed = (props.data || []).map(item => {
+        const cleanItem = {taskId: item.taskId}
+        props.config.variables?.forEach(varName => {
+          cleanItem[varName] = item[varName] ?? null
+        })
+        return cleanItem
+      })
+      console.log('Processed SafeData:', processed)
+      return processed
     })
 
     const availableVariables = computed(() => {
@@ -80,9 +92,9 @@ export default {
     })
 
     const activeVariables = computed(() => {
-      return availableVariables.value.filter(
-          k => props.variableStates[k] !== false
-      )
+      return props.config.variables?.filter(varName =>
+          props.variableStates[varName] !== false
+      ) || []
     })
 
 
@@ -111,12 +123,20 @@ export default {
     // Methods
     const initChart = async () => {
       try {
-        // 双重等待确保 DOM 就绪
+        // 三重等待确保 DOM 就绪
         await nextTick()
+        await new Promise(resolve => setTimeout(resolve, 50))
         await new Promise(resolve => requestAnimationFrame(resolve))
 
-        if (!container.value || !container.value.offsetParent) {
-          console.warn('Chart container not ready')
+        if (!container.value) {
+          console.warn('Chart container element not found')
+          return false
+        }
+
+        // 检查容器可见性
+        const style = window.getComputedStyle(container.value)
+        if (style.display === 'none' || style.visibility === 'hidden') {
+          console.warn('Chart container is hidden')
           return false
         }
 
@@ -126,45 +146,54 @@ export default {
           chart.value = null
         }
 
-        // 防止重复初始化
-        if (container.value._echarts_instance) {
-          console.log('Reusing existing chart instance')
-          chart.value = echarts.getInstanceByDom(container.value)
-          return true
-        }
-
         chart.value = echarts.init(container.value, null, {
           renderer: 'canvas',
-          useDirtyRect: true // 启用脏矩形优化
+          useDirtyRect: true
         })
-        initialized.value = true
+
+        // 标记容器状态
+        container.value.dataset.chartReady = 'true'
         return true
       } catch (e) {
-        console.error('Init failed:', e)
+        console.error('Chart init failed:', e)
         return false
       }
     }
 
     const renderChart = async () => {
-      if (!container.value) return
-
       try {
-        let retries = 0
-        while (retries < 3) {
-          if (await initChart()) break
-          await new Promise(r => setTimeout(r, 300 * (retries + 1)))
-          retries++
+        if (++renderRetryCount > 5) {
+          console.error('Max retries exceeded')
+          return
         }
 
-        if (!chart.value) return
+        if (!container.value || container.value.offsetWidth === 0) {
+          console.log('Container not ready, retrying...')
+          setTimeout(renderChart, 300)
+          return
+        }
 
-        // 强制清理旧配置
-        chart.value.clear()
-        chart.value.setOption(getChartOption())
+        if (!chart.value) {
+          if (!await initChart()) {
+            setTimeout(renderChart, 500)
+            return
+          }
+        }
+
+        const option = getChartOption()
+        if (Object.keys(option).length === 0) return
+
+        chart.value.setOption(option, true)
+        renderRetryCount = 0
       } catch (e) {
-        console.error('Render failed:', e)
+        console.error('Render error:', e)
       }
     }
+
+    const observer = new MutationObserver(() => {
+      forceUpdate.value++
+    })
+
 
     const valueTypes = computed(() => {
       const types = {}
@@ -292,9 +321,13 @@ export default {
 
     // Lifecycle Hooks
     onMounted(() => {
-      isMounted.value = true
-      // 延迟初始化确保容器存在
-      setTimeout(renderChart, 100)
+      if (container.value) {
+        observer.observe(container.value, {
+          attributes: true,
+          attributeFilter: ['style', 'class']
+        })
+      }
+      setTimeout(renderChart, 300)
     })
 
     onBeforeUnmount(() => {
@@ -325,6 +358,10 @@ export default {
         data: newVal,
         keys: newVal.length > 0 ? Object.keys(newVal[0]) : []
       })
+    }, {deep: true})
+
+    watch(() => props.variableStates, () => {
+      console.log('VariableStates Changed:', toRaw(props.variableStates))
     }, {deep: true})
 
     return {
