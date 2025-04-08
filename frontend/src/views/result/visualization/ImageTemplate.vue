@@ -140,4 +140,11 @@ export default {
   object-fit: contain;
   background: repeating-conic-gradient(#f5f5f5 0% 25%, #fff 0% 50%) 50% / 20px 20px;
 }
+
+.image-placeholder {
+  color: #999;
+  font-size: 0.9em;
+  text-align: center;
+  padding: 20px;
+}
 </style>
