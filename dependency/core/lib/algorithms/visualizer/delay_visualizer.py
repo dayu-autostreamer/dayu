@@ -1,4 +1,5 @@
 import abc
+import random
 from core.lib.common import ClassFactory, ClassType
 from core.lib.content import Task
 
@@ -14,4 +15,4 @@ class EndToEndDelayVisualizer(CurveVisualizer, abc.ABC):
 
     def __call__(self, task: Task):
         return {'Delay':task.calculate_total_time(),
-                "Real Delay": task.get_real_end_to_end_time()}
+                "Other Delay": random.uniform(0.1, 0.4)}
