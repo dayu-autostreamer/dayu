@@ -9,8 +9,8 @@ __all__ = ('EndToEndDelayVisualizer',)
 
 @ClassFactory.register(ClassType.VISUALIZER, alias='e2e_delay')
 class EndToEndDelayVisualizer(CurveVisualizer, abc.ABC):
-    def __init__(self):
-        pass
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def __call__(self, task: Task):
-        return {'End to End Delay':task.calculate_total_time()}
+        return {self.variables[0]: task.calculate_total_time()}

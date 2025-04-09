@@ -11,8 +11,8 @@ __all__ = ('ObjectNumberVisualizer',)
 
 @ClassFactory.register(ClassType.VISUALIZER, alias='obj_num')
 class ObjectNumberVisualizer(CurveVisualizer, abc.ABC):
-    def __init__(self):
-        pass
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def __call__(self, task: Task):
         task_result = float(np.mean(task.get_scenario_data()['obj_num']))

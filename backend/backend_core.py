@@ -301,7 +301,8 @@ class BackendCore:
         visualization_data = []
         for idx, vf in enumerate(self.visualizations):
             al_name = vf['hook_name']
-            al_params = eval(vf['params']) if 'params' in vf else {}
+            al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
+            al_params.update({'variables':vf['variables']})
             vf_func = Context.get_algorithm('VISUALIZER', al_name=al_name, **al_params)
             visualization_data.append({"id": idx, "data": vf_func(task)})
 

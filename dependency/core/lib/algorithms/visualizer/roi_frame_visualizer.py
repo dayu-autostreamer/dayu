@@ -11,10 +11,9 @@ __all__ = ('ROIFrameVisualizer',)
 
 @ClassFactory.register(ClassType.VISUALIZER, alias='roi_frame')
 class ROIFrameVisualizer(ImageVisualizer, abc.ABC):
-    def __init__(self, bbox_node: str = None):
-        super().__init__()
-
-        self.bbox_node = bbox_node
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.bbox_node = kwargs.get('bbox_node', None)
 
     def __call__(self, task: Task):
         try:

@@ -11,8 +11,8 @@ __all__ = ('FrameVisualizer',)
 
 @ClassFactory.register(ClassType.VISUALIZER, alias='frame')
 class FrameVisualizer(ImageVisualizer, abc.ABC):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def __call__(self, task: Task):
         file_path = task.get_file_path()
