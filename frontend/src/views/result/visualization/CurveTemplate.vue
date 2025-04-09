@@ -1,7 +1,6 @@
 <template>
   <div class="chart-container">
     <div ref="container" class="chart-wrapper"></div>
-    <div v-if="!showEmptyState" ref="container" class="chart-wrapper"></div>
     <div v-if="showEmptyState" class="empty-state">
       <el-icon :size="40">
         <PieChart/>
@@ -338,6 +337,9 @@ export default {
 
     // Lifecycle Hooks
     onMounted(() => {
+      if (!showEmptyState.value) {
+        renderChart()
+      }
       if (container.value) {
         observer.observe(container.value, {
           attributes: true,
