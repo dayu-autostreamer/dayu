@@ -239,6 +239,8 @@ export default {
       const yAxisConfig = activeVariables.value.map(varName => ({
         type: inferAxisType(safeData.value.map(d => d[varName])),
         name: props.config.y_axis,
+        nameLocation: 'end',
+        nameGap: 20,
         alignTicks: true,
         axisLabel: {
           formatter: value => {
@@ -302,9 +304,10 @@ export default {
         xAxis: {
           type: 'category',
           name: props.config.x_axis,
+          nameLocation: 'center',
+          nameGap: 20,
           data: safeData.value.map(d => d.taskId),
           axisLabel: {
-            rotate: 45,
             formatter: value => value.length > 8 ? `${value.slice(0, 8)}...` : value
           },
           axisPointer: {
