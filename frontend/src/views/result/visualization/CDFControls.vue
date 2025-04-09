@@ -1,4 +1,3 @@
-<!-- visualization/CDFControls.vue -->
 <template>
   <div class="cdf-controls">
     <div class="variable-group">

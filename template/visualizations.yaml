@@ -18,7 +18,7 @@
   hook_name: e2e_delay
   size: 1
 - name: End to End Delay CDF
-  type: curve
+  type: cdf
   x_axis: Task Index
   y_axis: CDF
   variables: ["End to End Delay"]
