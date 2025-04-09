@@ -82,10 +82,16 @@ export default {
 
       const vizId = props.config.id
 
-      const currentVariableStates = props.variableStates[vizId] || {}
+      const currentVariableStates = props.variableStates[vizId.value] || {}
+
+      if (!props.config.variables?.length) {
+        console.warn('No variables defined in config')
+        return result
+      }
+
 
       props.config.variables?.forEach(varName => {
-        if (!currentVariableStates[varName]) return
+        if (currentVariableStates[varName] !== true) return
 
         console.log(`Processing variable: ${varName}`, {
           rawData: toRaw(props.data),
@@ -96,6 +102,7 @@ export default {
         const allValues = props.data
             .map(d => d[varName])
             .filter(v => v !== undefined && v !== null && !isNaN(v))
+            .map(Number)
             .sort((a, b) => a - b)
         if (allValues.length === 0) return
 
@@ -104,17 +111,14 @@ export default {
         if (allValues.length === 0) return
 
         // 生成CDF点
-        const cdfPoints = []
+
         const n = allValues.length
 
         const uniqueValues = [...new Set(allValues)]
-        uniqueValues.forEach(value => {
-          const count = allValues.filter(v => v <= value).length
-          cdfPoints.push({
-            value: Number(value),
-            probability: count / n
-          })
-        })
+        const cdfPoints = uniqueValues.map(value => ({
+          value,
+          probability: allValues.filter(v => v <= value).length / n
+        }))
 
         console.log(`CDF points for ${varName}:`, cdfPoints)
         result[varName] = cdfPoints
@@ -138,16 +142,9 @@ export default {
 
 
     const showEmptyState = computed(() => {
-      const hasVariables = Object.keys(safeData.value).length > 0
-      const hasDataPoints = Object.values(safeData.value).some(arr => arr.length > 0)
-
-      console.log('Empty state check:', {
-        hasVariables,
-        hasDataPoints,
-        finalState: !(hasVariables && hasDataPoints)
-      })
-
-      return !(hasVariables && hasDataPoints)
+      const hasData = Object.values(safeData.value).some(arr => arr?.length > 0)
+      console.log('[DEBUG] Empty check - hasData:', hasData)
+      return !hasData
     })
 
     const emptyMessage = computed(() => {
