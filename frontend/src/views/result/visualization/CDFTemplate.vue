@@ -253,8 +253,6 @@ export default {
           name: varName,
           type: 'line',
           data: points.map(p => [p.value, p.probability]),
-          symbol: 'circle',
-          symbolSize: 4,
           smooth: true,
           areaStyle: {
             opacity: 0.1
@@ -273,6 +271,7 @@ export default {
         },
         xAxis: {
           name: props.config.x_axis,
+          nameLocation: 'center',
           type: 'value',
           min: 'dataMin',
           max: 'dataMax'
