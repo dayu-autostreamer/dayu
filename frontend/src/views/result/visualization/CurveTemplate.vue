@@ -174,22 +174,6 @@ export default {
 
     const renderChart = async () => {
       try {
-        if (renderRetryCount++ > MAX_RETRIES) {
-          console.warn('Max retries reached')
-          return
-        }
-
-        if (!(await initChart())) {
-          setTimeout(renderChart, 300 * Math.pow(2, renderRetryCount)) // 指数退避
-          return
-        }
-
-        // 强制清除旧实例
-        if (chart.value) {
-          chart.value.dispose()
-          chart.value = null
-        }
-
         chart.value = echarts.init(container.value)
         chart.value.setOption(getChartOption())
 
