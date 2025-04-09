@@ -78,36 +78,37 @@ export default {
 
     // Computed Properties
     const safeData = computed(() => {
-      const rawData = (props.data || []).map(item => {
-        const cleanItem = {taskId: item.taskId}
-        props.config.variables?.forEach(varName => {
-          const rawValue = item[varName]
-          cleanItem[varName] = rawValue !== null && rawValue !== undefined ? rawValue : 0
+      const result = {}
+
+      props.config.variables?.forEach(varName => {
+        if (!props.variableStates[varName]) return
+
+        // 收集所有有效数值
+        const allValues = props.data
+            .flatMap(d => d[varName] !== undefined ? [Number(d[varName])] : [])
+            .filter(v => !isNaN(v))
+            .sort((a, b) => a - b)
+
+        if (allValues.length === 0) return
+
+        // 生成CDF点
+        const cdfPoints = []
+        const n = allValues.length
+
+        allValues.forEach((value, index) => {
+          // 处理重复值
+          if (index > 0 && value === allValues[index - 1]) return
+
+          cdfPoints.push({
+            value: value,
+            probability: (index + 1) / n // P(X ≤ value)
+          })
         })
-        return cleanItem
+
+        result[varName] = cdfPoints
       })
 
-      // CDF数据转换
-      return rawData.map(item => {
-        const cdfItem = {taskId: item.taskId}
-        props.config.variables?.forEach(varName => {
-          const allValues = rawData
-              .map(d => d[varName])
-              .filter(v => !isNaN(v))
-              .sort((a, b) => a - b)
-
-          if (allValues.length === 0) {
-            cdfItem[varName] = 0
-            return
-          }
-
-          // 计算累积概率
-          const value = item[varName]
-          const count = allValues.filter(v => v <= value).length
-          cdfItem[varName] = count / allValues.length
-        })
-        return cdfItem
-      })
+      return result
     })
 
     const availableVariables = computed(() => {
@@ -245,97 +246,50 @@ export default {
     }
 
     const getChartOption = () => {
-      if (activeVariables.value.length === 0 || safeData.value.length === 0) {
-        return {}
-      }
+      const series = []
 
-      const inferAxisType = (values) => {
-        const sample = values[0]
-        return typeof sample === 'string' ? 'category' : 'value'
-      }
-
-      const yAxisConfig = activeVariables.value.map(varName => ({
-        type: inferAxisType(safeData.value.map(d => d[varName])),
-        name: props.config.y_axis,
-        nameLocation: 'end',
-        nameGap: 20,
-        alignTicks: true,
-        axisLabel: {
-          formatter: value => {
-            if (valueTypes.value[varName] === 'string') {
-              const entry = Object.entries(discreteValueMap.value[varName])
-                  .find(([k, v]) => v === value)
-              return entry ? entry[0] : value
-            }
-            return Number(value).toFixed(2)
-          }
-        }
-      }))
-
-      const seriesConfig = activeVariables.value.map(varName => {
-        const values = safeData.value.map(d => d[varName])
-
-        return {
+      Object.entries(safeData.value).forEach(([varName, points]) => {
+        series.push({
           name: varName,
           type: 'line',
-          yAxisIndex: activeVariables.value.indexOf(varName),
-          data: values.map(v => {
-            if (v === undefined) return null
-            return valueTypes.value[varName] === 'string'
-                ? getDiscreteValue(varName, v)
-                : Number(v)
-          }),
-          // 新增：空数据跳过渲染
-          connectNulls: false,
-          // 新增：优化渲染性能
-          progressive: 200,
-          animation: values.length < 100
-        }
+          data: points.map(p => [p.value, p.probability]),
+          symbol: 'circle',
+          symbolSize: 4,
+          smooth: true,
+          areaStyle: {
+            opacity: 0.1
+          }
+        })
       })
 
-
       return {
-        // 新增动画配置
-        animation: true,
-        animationDuration: animationConfig.duration,
-        animationEasing: animationConfig.easing,
         tooltip: {
-          trigger: 'axis',
+          trigger: 'item',
           formatter: params => {
-            if (!params || !params.length) return ''
-            return `${params[0].axisValue}<br/>` +
-                params.map(p =>
-                    `${p.marker} ${p.seriesName}: ${Number(p.value).toFixed(2)}`
-                ).join('<br>')
+            return `${params.seriesName}<br/>
+            Value: ${params.value[0].toFixed(2)}<br/>
+            Probability: ${(params.value[1] * 100).toFixed(1)}%`
           }
         },
-        legend: {
-          data: activeVariables.value,
-          type: 'scroll'
-        },
-        grid: {
-          left: '3%',
-          right: '4%',
-          bottom: '15%',
-          containLabel: true
-        },
         xAxis: {
-          type: 'category',
           name: props.config.x_axis,
-          nameLocation: 'center',
-          nameGap: 25,
-          data: safeData.value.map(d => d.taskId),
-          axisLabel: {
-            formatter: value => value.length > 8 ? `${value.slice(0, 8)}...` : value
-          },
-          axisPointer: {
-            type: 'shadow'
-          },
-          axisLine: {show: true},
-          axisTick: {show: true}
+          type: 'value',
+          min: 'dataMin',
+          max: 'dataMax'
         },
-        yAxis: yAxisConfig,
-        series: seriesConfig
+        yAxis: {
+          name: props.config.y_axis,
+          type: 'value',
+          min: 0,
+          max: 1,
+          axisLabel: {
+            formatter: value => `${(value * 100).toFixed(0)}%`
+          }
+        },
+        series,
+        legend: {
+          data: Object.keys(safeData.value)
+        }
       }
     }
 
