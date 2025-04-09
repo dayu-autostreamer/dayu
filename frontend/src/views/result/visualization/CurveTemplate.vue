@@ -183,10 +183,10 @@ export default {
     const renderChart = async () => {
       try {
 
-        if (showEmptyState.value){
-          cleanChart()
-          return
-        }
+        // if (showEmptyState.value){
+        //   cleanChart()
+        //   return
+        // }
 
         chart.value = echarts.init(container.value)
         chart.value.setOption(getChartOption())
@@ -360,7 +360,7 @@ export default {
 
     // Watchers
     watch(() => props.data, () => {
-      if (isMounted.value) {
+      if (isMounted.value && !showEmptyState.value) {
         renderChart()
       }
     }, {deep: true, flush: 'post'})
