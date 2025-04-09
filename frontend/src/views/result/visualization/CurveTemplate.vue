@@ -26,7 +26,9 @@ export default {
         id: '',
         name: '',
         type: 'curve',
-        variables: []
+        variables: [],
+        x_axis: 'Task Index',
+        y_axis: ''
       })
     },
     data: {
@@ -56,14 +58,11 @@ export default {
     // Refs
     const chart = ref(null)
     const container = ref(null)
-    const initialized = ref(false)
-    const lastRenderTime = ref(0)
     const resizeObserver = ref(null)
     const isMounted = ref(true)
     const forceUpdate = ref(0)
 
     let renderRetryCount = 0
-    const MAX_RETRIES = 8
 
     const animationConfig = {
       duration: 800,
@@ -182,11 +181,6 @@ export default {
     const renderChart = async () => {
       try {
 
-        // if (showEmptyState.value){
-        //   cleanChart()
-        //   return
-        // }
-
         chart.value = echarts.init(container.value)
         chart.value.setOption(getChartOption())
 
@@ -244,7 +238,7 @@ export default {
 
       const yAxisConfig = activeVariables.value.map(varName => ({
         type: inferAxisType(safeData.value.map(d => d[varName])),
-        name: varName,
+        name: props.config.y_axis,
         alignTicks: true,
         axisLabel: {
           formatter: value => {
@@ -307,6 +301,7 @@ export default {
         },
         xAxis: {
           type: 'category',
+          name: props.config.x_axis,
           data: safeData.value.map(d => d.taskId),
           axisLabel: {
             rotate: 45,
