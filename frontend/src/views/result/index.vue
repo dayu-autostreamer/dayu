@@ -80,7 +80,7 @@
           <component
               :is="visualizationComponents[viz.type]"
               v-if="componentsLoaded && visualizationComponents[viz.type]"
-              :key="`${viz.type}-${selectedDataSource}-${viz.id}-${Date.now()}`"
+              :key="`${viz.type}-${selectedDataSource}-${viz.id}`"
               :config="viz"
               :data="processedData[viz.id]"
               :variable-states="variableStates[viz.id]"
