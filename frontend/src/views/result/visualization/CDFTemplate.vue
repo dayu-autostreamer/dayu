@@ -25,9 +25,9 @@ export default {
       default: () => ({
         id: '',
         name: '',
-        type: 'curve',
+        type: 'cdf',
         variables: [],
-        x_axis: 'Task Index',
+        x_axis: '',
         y_axis: ''
       })
     },
@@ -80,25 +80,7 @@ export default {
     const safeData = computed(() => {
       const result = {}
 
-      const vizId = props.config.id
-
-      const currentVariableStates = props.variableStates[vizId.value] || {}
-      console.log('currentVariableStates: ', currentVariableStates)
-      console.log('props.variableStates: ', props.variableStates)
-
-      if (!props.config.variables?.length) {
-        console.warn('No variables defined in config')
-        return result
-      }
-
-
       props.config.variables?.forEach(varName => {
-        if (currentVariableStates[varName] !== true) return
-
-        console.log(`Processing variable: ${varName}`, {
-          rawData: toRaw(props.data),
-          variableStates: toRaw(currentVariableStates)
-        })
 
         // 收集所有有效数值
         const allValues = props.data
