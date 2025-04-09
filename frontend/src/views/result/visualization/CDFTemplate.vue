@@ -83,6 +83,8 @@ export default {
       const vizId = props.config.id
 
       const currentVariableStates = props.variableStates[vizId.value] || {}
+      console.log('currentVariableStates: ', currentVariableStates)
+      console.log('props.variableStates: ', props.variableStates)
 
       if (!props.config.variables?.length) {
         console.warn('No variables defined in config')
