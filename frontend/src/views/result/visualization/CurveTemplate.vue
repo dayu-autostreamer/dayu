@@ -1,6 +1,7 @@
 <template>
   <div class="chart-container">
     <div ref="container" class="chart-wrapper"></div>
+    <div v-if="!showEmptyState" ref="container" class="chart-wrapper"></div>
     <div v-if="showEmptyState" class="empty-state">
       <el-icon :size="40">
         <PieChart/>
@@ -68,6 +69,13 @@ export default {
     const animationConfig = {
       duration: 800,
       easing: 'quarticInOut'
+    }
+
+    const cleanChart = () => {
+      if (chart.value) {
+        chart.value.dispose()
+        chart.value = null
+      }
     }
 
     // Computed Properties
@@ -174,6 +182,12 @@ export default {
 
     const renderChart = async () => {
       try {
+
+        if (showEmptyState.value){
+          cleanChart()
+          return
+        }
+
         chart.value = echarts.init(container.value)
         chart.value.setOption(getChartOption())
 
