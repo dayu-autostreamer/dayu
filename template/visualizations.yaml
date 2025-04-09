@@ -2,18 +2,21 @@
   type: image
   variables: ["Frame with Regions of Interest"]
   hook_name: roi_frame
+  size: 2
 - name: Object Number Curve
   type: curve
   x_axis: Task Index
   y_axis: Number
   variables: ["Object Number"]
   hook_name: obj_num
+  size: 1
 - name: End to End Delay Curve
   type: curve
   x_axis: Task Index
   y_axis: Delay
   variables: ["End to End Delay"]
   hook_name: e2e_delay
+  size: 1
 #- name: Delay Curve
 #  type: curve
 #  x_axis: Task Index

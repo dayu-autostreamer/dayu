@@ -62,7 +62,11 @@
       <el-col
           v-for="viz in visualizationConfig"
           :key="viz.id"
-          :xs="24" :sm="24" :md="8" :lg="8" :xl="8"
+          :xs="24"
+          :sm="24"
+          :md="getVisualizationSpan(viz.size, 'md')"
+          :lg="getVisualizationSpan(viz.size, 'lg')"
+          :xl="getVisualizationSpan(viz.size, 'xl')"
           v-show="componentsLoaded && activeVisualizations.has(viz.id)"
       >
         <div class="home-card-item viz-module">
@@ -170,6 +174,18 @@ export default {
 
   },
   methods: {
+    getVisualizationSpan(size, breakpoint) {
+      const baseSize = size || 1
+      // 大屏显示完整尺寸，中小屏自动调整
+      switch (breakpoint) {
+        case 'xl':
+          return Math.min(24, baseSize * 8)
+        case 'lg':
+          return Math.min(24, (baseSize > 2 ? 24 : baseSize * 8))
+        default: // md及以下
+          return baseSize > 1 ? 24 : 8
+      }
+    },
     async autoRegisterComponents() {
       try {
         const modules = import.meta.glob('./visualization/*Template.vue')
@@ -258,7 +274,8 @@ export default {
         this.visualizationConfig = data.map(viz => ({
           ...viz,
           id: String(viz.id),
-          variables: viz.variables || []
+          variables: viz.variables || [],
+          size: Math.min(3, Math.max(1, parseInt(viz.size) || 1))
         }));
 
         this.visualizationConfig.forEach(viz => {

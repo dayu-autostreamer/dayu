@@ -305,7 +305,7 @@ export default {
           type: 'category',
           name: props.config.x_axis,
           nameLocation: 'center',
-          nameGap: 20,
+          nameGap: 25,
           data: safeData.value.map(d => d.taskId),
           axisLabel: {
             formatter: value => value.length > 8 ? `${value.slice(0, 8)}...` : value
