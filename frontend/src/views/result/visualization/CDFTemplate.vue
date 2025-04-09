@@ -80,14 +80,26 @@ export default {
     const safeData = computed(() => {
       const result = {}
 
+      const vizId = props.config.id
+
+      const currentVariableStates = props.variableStates[vizId] || {}
+
       props.config.variables?.forEach(varName => {
-        if (!props.variableStates[varName]) return
+        if (!currentVariableStates[varName]) return
+
+        console.log(`Processing variable: ${varName}`, {
+          rawData: toRaw(props.data),
+          variableStates: toRaw(currentVariableStates)
+        })
 
         // 收集所有有效数值
         const allValues = props.data
-            .flatMap(d => d[varName] !== undefined ? [Number(d[varName])] : [])
-            .filter(v => !isNaN(v))
+            .map(d => d[varName])
+            .filter(v => v !== undefined && v !== null && !isNaN(v))
             .sort((a, b) => a - b)
+        if (allValues.length === 0) return
+
+        console.log(`Raw values for ${varName}:`, allValues)
 
         if (allValues.length === 0) return
 
@@ -95,19 +107,20 @@ export default {
         const cdfPoints = []
         const n = allValues.length
 
-        allValues.forEach((value, index) => {
-          // 处理重复值
-          if (index > 0 && value === allValues[index - 1]) return
-
+        const uniqueValues = [...new Set(allValues)]
+        uniqueValues.forEach(value => {
+          const count = allValues.filter(v => v <= value).length
           cdfPoints.push({
-            value: value,
-            probability: (index + 1) / n // P(X ≤ value)
+            value: Number(value),
+            probability: count / n
           })
         })
 
+        console.log(`CDF points for ${varName}:`, cdfPoints)
         result[varName] = cdfPoints
       })
 
+      console.log('Final safeData:', toRaw(result))
       return result
     })
 
@@ -125,25 +138,24 @@ export default {
 
 
     const showEmptyState = computed(() => {
-      const hasData = safeData.value.length > 0
-      const hasActiveVars = activeVariables.value.length > 0
-      const hasValidData = hasData && activeVariables.value.some(v =>
-          safeData.value.some(d => d[v] !== undefined)
-      )
+      const hasVariables = Object.keys(safeData.value).length > 0
+      const hasDataPoints = Object.values(safeData.value).some(arr => arr.length > 0)
 
-      console.log('Empty State Check:', {
-        hasData,
-        hasActiveVars,
-        hasValidData
+      console.log('Empty state check:', {
+        hasVariables,
+        hasDataPoints,
+        finalState: !(hasVariables && hasDataPoints)
       })
 
-      return !hasValidData
+      return !(hasVariables && hasDataPoints)
     })
 
     const emptyMessage = computed(() => {
-      if (!safeData.value.length) return 'No data available'
-      if (!activeVariables.value.length) return 'No active variables selected'
-      return ''
+      if (props.data.length === 0) return 'No data available'
+      if (activeVariables.value.length === 0) return 'No active variables selected'
+
+      const hasInvalidData = Object.values(safeData.value).every(arr => arr.length === 0)
+      return hasInvalidData ? 'No valid numeric data available' : ''
     })
 
     // Methods
