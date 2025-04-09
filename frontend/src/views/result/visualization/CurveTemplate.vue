@@ -361,6 +361,15 @@ export default {
     })
 
     // Watchers
+    watch(showEmptyState, (newVal) => {
+      if (newVal) {
+        cleanChart()
+      } else {
+        renderChart()
+      }
+    })
+
+
     watch(() => props.data, () => {
       if (isMounted.value && !showEmptyState.value) {
         renderChart()
