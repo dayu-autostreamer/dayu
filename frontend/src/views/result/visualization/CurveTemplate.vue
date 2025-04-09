@@ -173,7 +173,6 @@ export default {
 
 
     const renderChart = async () => {
-      if (!chart.value) return
       try {
         chart.value = echarts.init(container.value)
         chart.value.setOption(getChartOption())
