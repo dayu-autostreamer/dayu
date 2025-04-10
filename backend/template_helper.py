@@ -239,6 +239,8 @@ class TemplateHelper:
 
         yaml_doc['spec']['edgeWorker'] = list(edge_workers_dict.values())
 
+        LOGGER.debug(f'generator yaml doc: {yaml_doc}')
+
         return yaml_doc
 
     def finetune_controller_yaml(self, yaml_doc, edge_nodes, cloud_node):
