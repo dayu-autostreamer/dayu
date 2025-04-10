@@ -69,7 +69,7 @@ export default {
       const maxLineLength = Math.max(...lines.map(line => line.length))
       const width = Math.min(300, Math.max(140, maxLineLength * 12)) // 每个字符按12px估算
       const height = Math.max(80, lines.length * 28) // 每行按28px估算
-      return [width + 40, height + 20] // 添加内边距
+      return [width + 10, height + 5] // 添加内边距
     }
 
     // 处理拓扑数据
@@ -97,8 +97,8 @@ export default {
             itemStyle: {
               color: bgColor,
               borderColor: '#2c3e50',
-              borderWidth: 2,
-              borderRadius: 8
+              borderWidth: 0,
+              borderRadius: 4
             },
             label: {
               formatter: `{title|${service_name}}\n{divider|─}\n{content|${data}}`,
