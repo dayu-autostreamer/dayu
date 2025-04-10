@@ -71,6 +71,7 @@ export default {
         const edges = []
         const nodeMap = new Map()
 
+        console.log('topology data: ', latestData)
         // 创建节点并生成颜色
         Object.entries(latestData).forEach(([nodeId, nodeInfo]) => {
           const nodeData = nodeInfo.service.data
