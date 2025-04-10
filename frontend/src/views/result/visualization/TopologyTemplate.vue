@@ -38,37 +38,15 @@ export default {
   setup(props) {
     const chartRef = ref(null)
     const chartInstance = ref(null)
-    const showEmptyState = ref(true) // 默认显示空状态
+    const showEmptyState = ref(true)
     const emptyMessage = ref('No topology data available')
     const colorMap = ref(new Map())
 
-    // 优化后的配色方案（保证对比度）
+    // 优化的配色方案（保证文字可读性）
     const COLOR_PALETTE = [
-      '#2C3E50', '#34495E', '#16A085', '#27AE60',
-      '#2980B9', '#8E44AD', '#2C3E50', '#D35400',
-      '#C0392B', '#7F8C8D', '#F39C12', '#BDC3C7'
+      '#E6F4FF', '#F0F5FF', '#F6FFED', '#FFF7E6',
+      '#FFF2F0', '#F9F0FF', '#E6FFFB', '#F0F0F0'
     ]
-
-    // 根据背景色计算最佳文字颜色（YIQ对比度算法）
-    const getContrastColor = (hexColor) => {
-      const r = parseInt(hexColor.substr(1, 2), 16)
-      const g = parseInt(hexColor.substr(3, 2), 16)
-      const b = parseInt(hexColor.substr(5, 2), 16)
-      const yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000
-      return yiq >= 128 ? '#2c3e50' : '#ecf0f1'
-    }
-
-    // 生成颜色并自动计算文字颜色
-    const generateStyle = (data) => {
-      if (!colorMap.value.has(data)) {
-        const color = COLOR_PALETTE[colorMap.value.size % COLOR_PALETTE.length]
-        colorMap.value.set(data, {
-          bgColor: color,
-          textColor: getContrastColor(color)
-        })
-      }
-      return colorMap.value.get(data)
-    }
 
     // 处理拓扑数据
     const topologyData = computed(() => {
@@ -82,17 +60,14 @@ export default {
 
         Object.entries(latestData).forEach(([nodeId, nodeInfo]) => {
           const { service_name, data } = nodeInfo.service
-          const { bgColor, textColor } = generateStyle(data)
-
-          const labelText = `{title|${service_name}}\n{divider|─}\n{content|${data}}`
-          const { width, height } = calculateTextSize(`${service_name}\n${data}`)
+          const bgColor = COLOR_PALETTE[nodes.length % COLOR_PALETTE.length]
 
           nodes.push({
             id: nodeId,
             name: service_name,
             data: data,
             symbol: 'rect',
-            symbolSize: [Math.max(140, width + 40), Math.max(90, height + 30)],
+            symbolSize: [160, 80],
             itemStyle: {
               color: bgColor,
               borderColor: '#2c3e50',
@@ -100,63 +75,169 @@ export default {
               borderRadius: 8
             },
             label: {
-              formatter: labelText,
+              formatter: `{title|${service_name}}\n{divider|─}\n{content|${data}}`,
               rich: {
                 title: {
                   fontSize: 16,
                   fontWeight: 'bold',
-                  color: textColor,
+                  color: '#2c3e50',
                   padding: [5, 0]
                 },
                 divider: {
                   fontSize: 18,
-                  color: textColor,
+                  color: '#95a5a6',
                   lineHeight: 18
                 },
                 content: {
                   fontSize: 14,
-                  color: textColor,
+                  color: '#34495e',
                   fontWeight: 500,
                   padding: [5, 0]
                 }
               }
             }
           })
+
+          // 创建边
+          nodeInfo.next_nodes.forEach(nextNodeId => {
+            edges.push({
+              source: nodeId,
+              target: nextNodeId,
+              lineStyle: {
+                color: '#95a5a6',
+                width: 2,
+                curveness: 0.2
+              },
+              arrow: {
+                type: 'triangle',
+                width: 10,
+                length: 10
+              }
+            })
+          })
         })
 
-        // 边创建逻辑保持不变...
+        // 自动布局
+        const g = new graphlib.Graph()
+        g.setGraph({
+          rankdir: 'LR',
+          nodesep: 80,
+          ranksep: 60,
+          marginx: 40,
+          marginy: 40
+        })
+        g.setDefaultEdgeLabel(() => ({}))
+
+        nodes.forEach(node => {
+          g.setNode(node.id, {
+            width: node.symbolSize[0],
+            height: node.symbolSize[1]
+          })
+        })
+
+        edges.forEach(edge => g.setEdge(edge.source, edge.target))
+        dagreLayout(g)
+
+        // 应用坐标
+        nodes.forEach(node => {
+          const pos = g.node(node.id)
+          node.x = pos?.x || 0
+          node.y = pos?.y || 0
+        })
+
         return { nodes, edges }
       } catch (e) {
+        console.error('Process topology data failed:', e)
         return null
       }
     })
-
-    // 计算文本尺寸（保持不变）...
 
     // 初始化图表
     const initChart = () => {
       if (!chartRef.value) return
       chartInstance.value = echarts.init(chartRef.value)
       window.addEventListener('resize', handleResize)
-      updateChart() // 初始化时立即更新
     }
 
-    // 更新图表逻辑保持不变...
+    // 更新图表
+    const updateChart = () => {
+      if (!chartInstance.value || !topologyData.value) return
 
-    // 空状态处理增强
+      chartInstance.value.setOption({
+        tooltip: {
+          backgroundColor: 'rgba(255,255,255,0.95)',
+          formatter: params => {
+            if (params.dataType === 'node') {
+              return `
+                <div style="max-width: 250px">
+                  <div style="font-size:16px;font-weight:bold;color:#2c3e50;margin-bottom:8px">
+                    ${params.data.name}
+                  </div>
+                  <div style="color:#7f8c8d">
+                    Location: <span style="color:#2c3e50;font-weight:500">${params.data.data}</span>
+                  </div>
+                </div>
+              `
+            }
+            return `
+              <div style="color:#7f8c8d">
+                Connection:
+                <span style="color:#2c3e50;font-weight:500">
+                  ${params.source} → ${params.target}
+                </span>
+              </div>
+            `
+          }
+        },
+        series: [{
+          type: 'graph',
+          layout: 'none',
+          draggable: true,
+          zoom: 0.9,
+          roam: true,
+          edgeSymbol: ['none', 'arrow'],
+          edgeSymbolSize: [0, 10],
+          label: {
+            position: 'inside',
+            show: true
+          },
+          lineStyle: {
+            color: '#bdc3c7'
+          },
+          emphasis: {
+            itemStyle: {
+              borderColor: '#2c3e50',
+              borderWidth: 3
+            }
+          },
+          nodes: topologyData.value.nodes,
+          edges: topologyData.value.edges
+        }]
+      })
+    }
+
+    const handleResize = () => chartInstance.value?.resize()
+
+    // 空状态处理
     watch(topologyData, (newVal) => {
       showEmptyState.value = !newVal?.nodes?.length
       if (!showEmptyState.value) {
-        nextTick(() => {
-          updateChart()
-          chartRef.value.style.background = 'none' // 移除默认背景
-        })
-      } else {
-        chartRef.value.style.background = '#f5f6fa'
+        nextTick(() => updateChart())
       }
     })
 
-    // 生命周期和样式保持不变...
+    onMounted(() => {
+      initChart()
+      // 初始数据加载检查
+      if (props.data.length > 0) {
+        updateChart()
+      }
+    })
+
+    onBeforeUnmount(() => {
+      window.removeEventListener('resize', handleResize)
+      chartInstance.value?.dispose()
+    })
 
     return { chart: chartRef, showEmptyState, emptyMessage }
   }
@@ -167,15 +248,14 @@ export default {
 .topology-container {
   width: 100%;
   height: 100%;
-  min-height: 600px;
+  min-height: 500px;
   position: relative;
 }
 
 .topology-chart {
   width: 100%;
   height: 100%;
-  min-height: 600px;
-  background: #fff; /* 改为白色背景 */
+  min-height: 500px;
 }
 
 .empty-state {
@@ -184,21 +264,16 @@ export default {
   left: 50%;
   transform: translate(-50%, -50%);
   text-align: center;
-  z-index: 10; /* 确保在最上层 */
-  background: rgba(255,255,255,0.9);
-  padding: 30px 50px;
-  border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  z-index: 10;
 }
 
 .empty-state p {
-  margin-top: 15px;
-  font-size: 16px;
-  color: #7f8c8d;
-  font-weight: 500;
+  margin-top: 10px;
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
 }
 
 .empty-state .el-icon {
-  color: #bdc3c7;
+  color: var(--el-text-color-secondary);
 }
 </style>
