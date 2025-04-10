@@ -14,8 +14,10 @@ class DAGOffloadingTopologyVisualizer(TopologyVisualizer, abc.ABC):
         super().__init__(**kwargs)
 
     def __call__(self, task: Task):
-
         task.get_dag().get_start_node().service.set_execute_device(task.get_source_device())
         task.get_dag().get_end_node().service.set_execute_device(NodeInfo.get_cloud_node())
         result = task.get_dag_deployment_info()
-        print(f'dag: {result}')
+        for node_info in result.values():
+            node_info['service']['execute_device'] = 'data'
+
+        return {'topology': result}
