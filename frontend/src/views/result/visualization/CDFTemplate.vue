@@ -80,7 +80,18 @@ export default {
     const safeData = computed(() => {
       const result = {}
 
+      const currentVariableStates = props.variableStates || {}
+      console.log('currentVariableStates: ', currentVariableStates)
+      console.log('props.variableStates: ', props.variableStates)
+
+      if (!props.config.variables?.length) {
+        console.warn('No variables defined in config')
+        return result
+      }
+
+
       props.config.variables?.forEach(varName => {
+        if (currentVariableStates[varName] !== true) return
 
         // 收集所有有效数值
         const allValues = props.data
@@ -265,6 +276,7 @@ export default {
         xAxis: {
           name: props.config.x_axis,
           nameLocation: 'center',
+          nameGap: 25,
           type: 'value',
           min: 'dataMin',
           max: 'dataMax'
