@@ -24,13 +24,13 @@
   variables: ["End to End Delay"]
   hook_name: e2e_delay
   size: 1
-#- name: Delay Curve
-#  type: curve
-#  x_axis: Task Index
-#  y_axis: Delay
-#  variables: ["Delay", "Real Delay"]
-#  hook_name: delay
-#  hook_parameters:
+- name: Service Processing Delay Curve
+  type: curve
+  x_axis: Task Index
+  y_axis: Delay
+  variables: ["car-detection"]
+  hook_name: service_processing_delay
+  hook_parameters:
 
 
 ######## Visualization Module Template ########
