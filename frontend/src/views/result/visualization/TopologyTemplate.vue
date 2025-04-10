@@ -12,14 +12,14 @@
 </template>
 
 <script>
-import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick } from 'vue'
+import {ref, watch, onMounted, onBeforeUnmount, computed, nextTick} from 'vue'
 import * as echarts from 'echarts'
-import { PieChart } from '@element-plus/icons-vue'
-import { graphlib, layout as dagreLayout } from '@dagrejs/dagre'
+import {PieChart} from '@element-plus/icons-vue'
+import {graphlib, layout as dagreLayout} from '@dagrejs/dagre'
 
 export default {
   name: 'TopologyTemplate',
-  components: { PieChart },
+  components: {PieChart},
   props: {
     config: {
       type: Object,
@@ -42,11 +42,35 @@ export default {
     const emptyMessage = ref('No topology data available')
     const colorMap = ref(new Map())
 
-    // 优化的配色方案（保证文字可读性）
+    // 优化的颜色调色板（12种容易区分的颜色）
     const COLOR_PALETTE = [
-      '#E6F4FF', '#F0F5FF', '#F6FFED', '#FFF7E6',
-      '#FFF2F0', '#F9F0FF', '#E6FFFB', '#F0F0F0'
+      '#5470c6', '#91cc75', '#fac858', '#ee6666',
+      '#73c0de', '#3ba272', '#fc8452', '#9a60b4',
+      '#ea7ccc', '#17b3a3', '#b7a4f3', '#ff88aa'
     ]
+
+    // 根据数据内容生成稳定颜色
+    const generateColor = (data) => {
+      if (!colorMap.value.has(data)) {
+        // 通过哈希算法生成稳定颜色索引
+        let hash = 0
+        for (let i = 0; i < data.length; i++) {
+          hash = data.charCodeAt(i) + ((hash << 5) - hash)
+        }
+        const index = Math.abs(hash) % COLOR_PALETTE.length
+        colorMap.value.set(data, COLOR_PALETTE[index])
+      }
+      return colorMap.value.get(data)
+    }
+
+    // 计算文本所需尺寸
+    const calculateNodeSize = (text) => {
+      const lines = text.split('\n')
+      const maxLineLength = Math.max(...lines.map(line => line.length))
+      const width = Math.min(300, Math.max(140, maxLineLength * 12)) // 每个字符按12px估算
+      const height = Math.max(80, lines.length * 28) // 每行按28px估算
+      return [width + 40, height + 20] // 添加内边距
+    }
 
     // 处理拓扑数据
     const topologyData = computed(() => {
@@ -59,15 +83,17 @@ export default {
         const edges = []
 
         Object.entries(latestData).forEach(([nodeId, nodeInfo]) => {
-          const { service_name, data } = nodeInfo.service
-          const bgColor = COLOR_PALETTE[nodes.length % COLOR_PALETTE.length]
+          const {service_name, data} = nodeInfo.service
+          const labelText = `${service_name}\n${data}`
+          const [width, height] = calculateNodeSize(labelText)
+          const bgColor = generateColor(data)
 
           nodes.push({
             id: nodeId,
             name: service_name,
             data: data,
-            symbol: 'rect',
-            symbolSize: [160, 80],
+            symbol: 'roundRect',
+            symbolSize: [width, height],
             itemStyle: {
               color: bgColor,
               borderColor: '#2c3e50',
@@ -80,17 +106,17 @@ export default {
                 title: {
                   fontSize: 16,
                   fontWeight: 'bold',
-                  color: '#2c3e50',
+                  color: getContrastColor(bgColor),
                   padding: [5, 0]
                 },
                 divider: {
                   fontSize: 18,
-                  color: '#95a5a6',
+                  color: getContrastColor(bgColor, 0.6),
                   lineHeight: 18
                 },
                 content: {
                   fontSize: 14,
-                  color: '#34495e',
+                  color: getContrastColor(bgColor),
                   fontWeight: 500,
                   padding: [5, 0]
                 }
@@ -121,7 +147,7 @@ export default {
         const g = new graphlib.Graph()
         g.setGraph({
           rankdir: 'LR',
-          nodesep: 80,
+          nodesep: 40,
           ranksep: 60,
           marginx: 40,
           marginy: 40
@@ -145,12 +171,23 @@ export default {
           node.y = pos?.y || 0
         })
 
-        return { nodes, edges }
+        return {nodes, edges}
       } catch (e) {
         console.error('Process topology data failed:', e)
         return null
       }
     })
+
+    // 根据背景色获取对比色
+    const getContrastColor = (hex, opacity = 1) => {
+      const r = parseInt(hex.slice(1, 3), 16)
+      const g = parseInt(hex.slice(3, 5), 16)
+      const b = parseInt(hex.slice(5, 7), 16)
+      const brightness = (r * 299 + g * 587 + b * 114) / 1000
+      return brightness > 150
+          ? `rgba(44, 62, 80, ${opacity})`  // 深色文字
+          : `rgba(236, 240, 241, ${opacity})` // 浅色文字
+    }
 
     // 初始化图表
     const initChart = () => {
@@ -169,12 +206,15 @@ export default {
           formatter: params => {
             if (params.dataType === 'node') {
               return `
-                <div style="max-width: 250px">
+                <div style="max-width: 300px">
                   <div style="font-size:16px;font-weight:bold;color:#2c3e50;margin-bottom:8px">
                     ${params.data.name}
                   </div>
                   <div style="color:#7f8c8d">
-                    Location: <span style="color:#2c3e50;font-weight:500">${params.data.data}</span>
+                    Location:
+                    <span style="color:${params.data.itemStyle.color};font-weight:500">
+                      ${params.data.data}
+                    </span>
                   </div>
                 </div>
               `
@@ -228,10 +268,7 @@ export default {
 
     onMounted(() => {
       initChart()
-      // 初始数据加载检查
-      if (props.data.length > 0) {
-        updateChart()
-      }
+      if (props.data.length > 0) updateChart()
     })
 
     onBeforeUnmount(() => {
@@ -239,7 +276,7 @@ export default {
       chartInstance.value?.dispose()
     })
 
-    return { chart: chartRef, showEmptyState, emptyMessage }
+    return {chart: chartRef, showEmptyState, emptyMessage}
   }
 }
 </script>
