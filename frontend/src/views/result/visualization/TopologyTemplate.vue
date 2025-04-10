@@ -15,7 +15,7 @@
 import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import * as echarts from 'echarts'
 import { PieChart } from '@element-plus/icons-vue'
-import dagre from 'dagre'
+import { graphlib, layout as dagreLayout } from '@dagrejs/dagre'
 
 export default {
   name: 'TopologyTemplate',
@@ -40,6 +40,22 @@ export default {
     const chartInstance = ref(null)
     const showEmptyState = ref(false)
     const emptyMessage = ref('No topology data available')
+    const colorMap = ref(new Map()) // 存储颜色映射关系
+
+    // 生成基于字符串的稳定颜色哈希
+    const stringToColor = (str) => {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+        hash = str.charCodeAt(i) + ((hash << 5) - hash);
+      }
+
+      // 使用HSL颜色空间生成更柔和的颜色
+      const h = Math.abs(hash % 360);       // 色相 (0-360)
+      const s = 70 + Math.abs(hash % 15);   // 饱和度 (70-85%)
+      const l = 50 + Math.abs(hash % 10);   // 亮度 (50-60%)
+
+      return `hsl(${h}, ${s}%, ${l}%)`;
+    }
 
     // 处理拓扑数据
     const topologyData = computed(() => {
@@ -47,20 +63,35 @@ export default {
         const latestData = props.data[props.data.length - 1]?.topology
         if (!latestData) return null
 
+        // 重置颜色映射
+        colorMap.value.clear()
+
         // 转换数据结构
         const nodes = []
         const edges = []
         const nodeMap = new Map()
 
-        // 创建节点
+        // 创建节点并生成颜色
         Object.entries(latestData).forEach(([nodeId, nodeInfo]) => {
+          const nodeData = nodeInfo.service.data
+
+          // 生成或获取颜色
+          if (!colorMap.value.has(nodeData)) {
+            colorMap.value.set(nodeData, stringToColor(nodeData))
+          }
+
           nodes.push({
             id: nodeId,
             name: nodeInfo.service.service_name,
-            data: nodeInfo.service.data,
-            symbolSize: 50,
+            data: nodeData,
+            symbolSize: 60,
             itemStyle: {
-              color: getNodeColor(nodeInfo.service.data)
+              color: colorMap.value.get(nodeData),
+              borderColor: '#333',
+              borderWidth: 1
+            },
+            label: {
+              color: '#333' // 固定文字颜色保证可读性
             }
           })
           nodeMap.set(nodeId, nodeInfo)
@@ -73,32 +104,41 @@ export default {
               source: nodeId,
               target: nextNodeId,
               lineStyle: {
-                type: 'solid',
+                color: '#666',
+                width: 1.5,
                 curveness: 0.2
               },
               arrow: {
                 type: 'triangle',
-                width: 8
+                width: 8,
+                length: 8
               }
             })
           })
         })
 
         // 使用dagre进行自动布局
-        const g = new dagre.graphlib.Graph()
-        g.setGraph({ rankdir: 'LR', align: 'UL', nodesep: 50, ranksep: 70 })
+        const g = new graphlib.Graph()
+        g.setGraph({
+          rankdir: 'LR',
+          align: 'UL',
+          nodesep: 60,
+          ranksep: 80,
+          marginx: 30,
+          marginy: 30
+        })
         g.setDefaultEdgeLabel(() => ({}))
 
-        nodes.forEach(node => g.setNode(node.id, { width: 120, height: 60 }))
+        nodes.forEach(node => g.setNode(node.id, { width: 140, height: 80 }))
         edges.forEach(edge => g.setEdge(edge.source, edge.target))
 
-        dagre.layout(g)
+        dagreLayout(g)
 
         // 应用布局坐标
         nodes.forEach(node => {
           const pos = g.node(node.id)
-          node.x = pos.x
-          node.y = pos.y
+          node.x = pos?.x || 0
+          node.y = pos?.y || 0
         })
 
         return { nodes, edges }
@@ -107,13 +147,6 @@ export default {
         return null
       }
     })
-
-    const getNodeColor = (nodeData) => {
-      // 根据节点数据设置不同颜色
-      if (nodeData.includes('edge')) return '#91cc75'
-      if (nodeData.includes('cloud')) return '#5470c6'
-      return '#73c0de'
-    }
 
     // 初始化图表
     const initChart = () => {
@@ -131,7 +164,13 @@ export default {
         tooltip: {
           formatter: params => {
             if (params.dataType === 'node') {
-              return `${params.data.name}<br/>Location: ${params.data.data}`
+              return `
+                <div style="text-align: left">
+                  <strong>${params.data.name}</strong><br/>
+                  <span>Location: ${params.data.data}</span><br/>
+                  <span>Color: ${colorMap.value.get(params.data.data)}</span>
+                </div>
+              `
             }
             return `${params.source} → ${params.target}`
           }
