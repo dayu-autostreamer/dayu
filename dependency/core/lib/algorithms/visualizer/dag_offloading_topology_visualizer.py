@@ -18,6 +18,7 @@ class DAGOffloadingTopologyVisualizer(TopologyVisualizer, abc.ABC):
         task.get_dag().get_end_node().service.set_execute_device(NodeInfo.get_cloud_node())
         result = task.get_dag_deployment_info()
         for node_info in result.values():
-            node_info['service']['execute_device'] = 'data'
+            service = node_info["service"]
+            service["data"] = service.pop("execute_device")
 
         return {'topology': result}
