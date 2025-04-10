@@ -2,6 +2,8 @@ import copy
 import json
 import os
 import re
+import uuid
+
 from kube_helper import KubeHelper
 
 from core.lib.common import YamlOps, LOGGER, SystemConstant
@@ -187,7 +189,7 @@ class TemplateHelper:
             selection_plan = None
         else:
             selection_plan = response['plan']
-            selection_plan = {int(k):v for k, v in selection_plan.items()}
+            selection_plan = {int(k): v for k, v in selection_plan.items()}
 
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
@@ -211,6 +213,8 @@ class TemplateHelper:
             new_edge_worker['template']['spec']['nodeName'] = node
 
             container = new_edge_worker['template']['spec']['containers'][0]
+
+            container['name'] += str(uuid.uuid4())
 
             DAG_ENV = {}
             for key in dag.keys():
