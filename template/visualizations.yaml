@@ -7,7 +7,7 @@
   type: topology
   variables: [ "Realtime DAG Service Offloading State" ]
   hook_name: dag_offloading
-  size: 1
+  size: 2
 - name: End to End Delay Curve
   type: curve
   x_axis: Task Index

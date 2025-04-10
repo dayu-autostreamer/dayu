@@ -12,14 +12,14 @@
 </template>
 
 <script>
-import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
+import {ref, watch, onMounted, onBeforeUnmount, computed} from 'vue'
 import * as echarts from 'echarts'
-import { PieChart } from '@element-plus/icons-vue'
-import { graphlib, layout as dagreLayout } from '@dagrejs/dagre'
+import {PieChart} from '@element-plus/icons-vue'
+import {graphlib, layout as dagreLayout} from '@dagrejs/dagre'
 
 export default {
   name: 'TopologyTemplate',
-  components: { PieChart },
+  components: {PieChart},
   props: {
     config: {
       type: Object,
@@ -40,21 +40,32 @@ export default {
     const chartInstance = ref(null)
     const showEmptyState = ref(false)
     const emptyMessage = ref('No topology data available')
-    const colorMap = ref(new Map()) // 存储颜色映射关系
+    const colorMap = ref(new Map())
 
-    // 生成基于字符串的稳定颜色哈希
-    const stringToColor = (str) => {
-      let hash = 0;
+    // 现代感配色方案
+    const COLOR_PALETTE = [
+      '#6C5B7B', '#C06C84', '#F67280', '#F8B195', // 紫色系
+      '#4B8BBE', '#306998', '#FFE873', '#646464', // 蓝色/金色系
+      '#2F9599', '#F7DB4F', '#FF6F61', '#A7226E'  // 绿/黄/红系
+    ]
+
+    // 生成协调颜色
+    const generateColor = (str) => {
+      let hash = 0
       for (let i = 0; i < str.length; i++) {
-        hash = str.charCodeAt(i) + ((hash << 5) - hash);
+        hash = str.charCodeAt(i) + ((hash << 5) - hash)
       }
+      return COLOR_PALETTE[Math.abs(hash) % COLOR_PALETTE.length]
+    }
 
-      // 使用HSL颜色空间生成更柔和的颜色
-      const h = Math.abs(hash % 360);       // 色相 (0-360)
-      const s = 70 + Math.abs(hash % 15);   // 饱和度 (70-85%)
-      const l = 50 + Math.abs(hash % 10);   // 亮度 (50-60%)
-
-      return `hsl(${h}, ${s}%, ${l}%)`;
+    // 计算文本尺寸
+    const calculateTextSize = (text, fontSize = 12) => {
+      const lineCount = text.split('\n').length
+      const maxLength = Math.max(...text.split('\n').map(l => l.length))
+      return {
+        width: Math.min(200, maxLength * fontSize * 0.6),
+        height: lineCount * fontSize * 1.5
+      }
     }
 
     // 处理拓扑数据
@@ -63,39 +74,63 @@ export default {
         const latestData = props.data[props.data.length - 1]?.topology
         if (!latestData) return null
 
-        // 重置颜色映射
         colorMap.value.clear()
-
-        // 转换数据结构
         const nodes = []
         const edges = []
-        const nodeMap = new Map()
 
-        console.log('topology data: ', latestData)
-        // 创建节点并生成颜色
+        // 创建节点
         Object.entries(latestData).forEach(([nodeId, nodeInfo]) => {
-          const nodeData = nodeInfo.service.data
+          const {service_name, data} = nodeInfo.service
+          const labelText = `{title|${service_name}}\n{divider|─}\n{content|${data}}`
 
-          // 生成或获取颜色
-          if (!colorMap.value.has(nodeData)) {
-            colorMap.value.set(nodeData, stringToColor(nodeData))
+          // 计算节点尺寸
+          const {width, height} = calculateTextSize(`${service_name}\n${data}`, 14)
+          const nodeWidth = Math.max(120, width + 40)
+          const nodeHeight = Math.max(80, height + 30)
+
+          // 生成颜色
+          if (!colorMap.value.has(data)) {
+            colorMap.value.set(data, generateColor(data))
           }
 
           nodes.push({
             id: nodeId,
-            name: nodeInfo.service.service_name,
-            data: nodeData,
-            symbolSize: 60,
+            name: service_name,
+            data: data,
+            symbol: 'rect',
+            symbolSize: [nodeWidth, nodeHeight],
             itemStyle: {
-              color: colorMap.value.get(nodeData),
-              borderColor: '#333',
-              borderWidth: 1
+              color: colorMap.value.get(data),
+              borderColor: '#2c3e50',
+              borderWidth: 2,
+              borderRadius: 8
             },
             label: {
-              color: '#333' // 固定文字颜色保证可读性
+              formatter: labelText,
+              rich: {
+                title: {
+                  fontSize: 16,
+                  fontWeight: 'bold',
+                  color: '#2c3e50',
+                  padding: [5, 0],
+                  align: 'center'
+                },
+                divider: {
+                  fontSize: 18,
+                  color: '#2c3e50',
+                  align: 'center',
+                  lineHeight: 18
+                },
+                content: {
+                  fontSize: 14,
+                  color: '#34495e',
+                  fontWeight: 500,
+                  align: 'center',
+                  padding: [5, 0]
+                }
+              }
             }
           })
-          nodeMap.set(nodeId, nodeInfo)
         })
 
         // 创建边
@@ -105,44 +140,51 @@ export default {
               source: nodeId,
               target: nextNodeId,
               lineStyle: {
-                color: '#666',
-                width: 1.5,
+                color: '#95a5a6',
+                width: 2,
                 curveness: 0.2
               },
               arrow: {
                 type: 'triangle',
-                width: 8,
-                length: 8
+                width: 10,
+                length: 10,
+                itemStyle: {
+                  color: '#95a5a6'
+                }
               }
             })
           })
         })
 
-        // 使用dagre进行自动布局
+        // 自动布局
         const g = new graphlib.Graph()
         g.setGraph({
           rankdir: 'LR',
-          align: 'UL',
-          nodesep: 60,
-          ranksep: 80,
-          marginx: 30,
-          marginy: 30
+          nodesep: 80,
+          ranksep: 60,
+          marginx: 40,
+          marginy: 40
         })
         g.setDefaultEdgeLabel(() => ({}))
 
-        nodes.forEach(node => g.setNode(node.id, { width: 140, height: 80 }))
-        edges.forEach(edge => g.setEdge(edge.source, edge.target))
+        nodes.forEach(node => {
+          g.setNode(node.id, {
+            width: node.symbolSize[0],
+            height: node.symbolSize[1]
+          })
+        })
 
+        edges.forEach(edge => g.setEdge(edge.source, edge.target))
         dagreLayout(g)
 
-        // 应用布局坐标
+        // 应用坐标
         nodes.forEach(node => {
           const pos = g.node(node.id)
           node.x = pos?.x || 0
           node.y = pos?.y || 0
         })
 
-        return { nodes, edges }
+        return {nodes, edges}
       } catch (e) {
         console.error('Process topology data failed:', e)
         return null
@@ -152,7 +194,6 @@ export default {
     // 初始化图表
     const initChart = () => {
       if (!chartRef.value) return
-
       chartInstance.value = echarts.init(chartRef.value)
       window.addEventListener('resize', handleResize)
     }
@@ -163,57 +204,63 @@ export default {
 
       const option = {
         tooltip: {
+          backgroundColor: 'rgba(255,255,255,0.95)',
+          borderColor: '#ddd',
+          borderWidth: 1,
+          textStyle: {
+            color: '#2c3e50',
+            fontSize: 14
+          },
           formatter: params => {
             if (params.dataType === 'node') {
               return `
-                <div style="text-align: left">
-                  <strong>${params.data.name}</strong><br/>
-                  <span>Location: ${params.data.data}</span><br/>
-                  <span>Color: ${colorMap.value.get(params.data.data)}</span>
+                <div style="max-width: 250px">
+                  <div style="font-size:16px;font-weight:bold;color:#2c3e50;margin-bottom:8px">
+                    ${params.data.name}
+                  </div>
+                  <div style="display:flex;align-items:center;margin-bottom:6px">
+                    <div style="width:12px;height:12px;background:${params.data.itemStyle.color};
+                      margin-right:8px;border-radius:2px"></div>
+                    <span style="color:#7f8c8d">Location:</span>
+                    <span style="margin-left:6px;font-weight:500">${params.data.data}</span>
+                  </div>
                 </div>
               `
             }
-            return `${params.source} → ${params.target}`
+            return `
+              <div style="color:#7f8c8d">
+                Connection:
+                <span style="color:#2c3e50;font-weight:500">
+                  ${params.source} → ${params.target}
+                </span>
+              </div>
+            `
           }
         },
         series: [{
           type: 'graph',
           layout: 'none',
           draggable: true,
-          zoom: 0.8,
+          zoom: 0.9,
           roam: true,
           focusNodeAdjacency: true,
           edgeSymbol: ['none', 'arrow'],
+          edgeSymbolSize: [0, 10],
           label: {
+            position: 'inside',
             show: true,
-            formatter: ({ data }) =>
-              `{name|${data.name}}\n{data|${data.data}}`,
-            rich: {
-              name: {
-                fontWeight: 'bold',
-                fontSize: 14,
-                color: '#333'
-              },
-              data: {
-                fontSize: 12,
-                color: '#666',
-                padding: [5, 0]
-              }
-            }
-          },
-          edgeLabel: {
-            show: false
+            fontSize: 14
           },
           lineStyle: {
-            color: '#aaa',
-            width: 1.5
+            color: '#bdc3c7'
           },
           emphasis: {
             label: {
               show: true
             },
-            lineStyle: {
-              width: 2.5
+            itemStyle: {
+              borderColor: '#2c3e50',
+              borderWidth: 3
             }
           },
           nodes: topologyData.value.nodes,
@@ -225,16 +272,11 @@ export default {
       showEmptyState.value = false
     }
 
-    const handleResize = () => {
-      chartInstance.value?.resize()
-    }
+    const handleResize = () => chartInstance.value?.resize()
 
-    // 空状态检查
     watch(topologyData, (newVal) => {
       showEmptyState.value = !newVal?.nodes?.length
-      if (!showEmptyState.value) {
-        nextTick(() => updateChart())
-      }
+      if (!showEmptyState.value) updateChart()
     })
 
     onMounted(() => {
@@ -247,11 +289,7 @@ export default {
       chartInstance.value?.dispose()
     })
 
-    return {
-      chart: chartRef,
-      showEmptyState,
-      emptyMessage
-    }
+    return {chart: chartRef, showEmptyState, emptyMessage}
   }
 }
 </script>
@@ -260,13 +298,17 @@ export default {
 .topology-container {
   width: 100%;
   height: 100%;
-  min-height: 500px;
+  min-height: 600px;
   position: relative;
+  background: #f5f6fa;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .topology-chart {
   width: 100%;
   height: 100%;
+  min-height: 600px;
 }
 
 .empty-state {
@@ -275,12 +317,15 @@ export default {
   left: 50%;
   transform: translate(-50%, -50%);
   text-align: center;
-  color: var(--el-text-color-secondary);
-  z-index: 10;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 20px 40px;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
 }
 
 .empty-state p {
   margin-top: 10px;
-  font-size: 14px;
+  font-size: 16px;
+  color: #7f8c8d;
 }
 </style>
