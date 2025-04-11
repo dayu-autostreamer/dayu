@@ -15,6 +15,11 @@
   variables: [ "End to End Delay" ]
   hook_name: e2e_delay
   size: 1
+- name: DAG Service Deployment
+  type: topology
+  variables: [ "Realtime DAG Service Deployment State" ]
+  hook_name: dag_deployment
+  size: 2
 - name: Object Number Curve
   type: curve
   x_axis: Task Index
