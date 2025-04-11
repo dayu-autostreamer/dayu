@@ -92,7 +92,7 @@ export default {
             id: nodeId,
             name: service_name,
             data: data,
-            symbol: 'roundRect',
+            symbol: 'Rect',
             symbolSize: [width, height],
             itemStyle: {
               color: bgColor,
