@@ -26,6 +26,7 @@ RUN ARCH=$(echo ${TARGETPLATFORM} | cut -d'/' -f2) && \
 RUN sed -i 's/rtspAddress: :8554/rtspAddress: :8000/' mediamtx.yml \
  && sed -i 's/rtpAddress: :8000/rtpAddress: :7000/' mediamtx.yml \
  && sed -i 's/rtcpAddress: :8001/rtcpAddress: :7001/' mediamtx.yml \
- && sed -i 's/writeQueueSize: 512/writeQueueSize: 2048/' mediamtx.yml
+ && sed -i 's/writeQueueSize: 512/writeQueueSize: 8192/' mediamtx.yml \
+ && echo -e "paths:\n  video0:\n    source: any\n    sourceProtocol: udp\n    protocol: udp" >> mediamtx.yml
 
 CMD ["/bin/bash"]
