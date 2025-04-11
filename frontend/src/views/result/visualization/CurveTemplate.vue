@@ -236,6 +236,7 @@ export default {
         return typeof sample === 'string' ? 'category' : 'value'
       }
 
+      console.log('valueTypes.value[activeVariables.value[0]]: ', valueTypes.value[activeVariables.value[0]])
 
       const yAxisConfig = {
         type: valueTypes.value[activeVariables.value[0]],
