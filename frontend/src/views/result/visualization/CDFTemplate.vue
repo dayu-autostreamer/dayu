@@ -197,7 +197,6 @@ export default {
           if (!success) return
         }
 
-        chart.value = echarts.init(container.value)
         chart.value.setOption(getChartOption())
 
         // 添加视觉连续性
@@ -218,16 +217,6 @@ export default {
 
     const observer = new MutationObserver(() => {
       forceUpdate.value++
-    })
-
-
-    const valueTypes = computed(() => {
-      const types = {}
-      activeVariables.value.forEach(varName => {
-        const sampleValue = safeData.value[0]?.[varName]
-        types[varName] = typeof sampleValue
-      })
-      return types
     })
 
     const discreteValueMap = ref({})

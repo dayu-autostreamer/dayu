@@ -169,7 +169,10 @@ export default {
     const renderChart = async () => {
       try {
 
-        chart.value = echarts.init(container.value)
+        if (!chart.value) {
+          const success = await initChart()
+          if (!success) return
+        }
         chart.value.setOption(getChartOption())
 
         // 添加视觉连续性
@@ -217,11 +220,6 @@ export default {
     const getChartOption = () => {
       if (activeVariables.value.length === 0 || safeData.value.length === 0) {
         return {}
-      }
-
-      const inferAxisType = (values) => {
-        const sample = values[0]
-        return typeof sample === 'string' ? 'category' : 'value'
       }
 
       const yAxisConfig = {
