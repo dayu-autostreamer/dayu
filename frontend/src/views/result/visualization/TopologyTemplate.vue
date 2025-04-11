@@ -211,7 +211,7 @@ export default {
                     ${params.data.name}
                   </div>
                   <div style="color:#7f8c8d">
-                    Location:
+                    Data:
                     <span style="color:${params.data.itemStyle.color};font-weight:500">
                       ${params.data.data}
                     </span>
@@ -219,14 +219,6 @@ export default {
                 </div>
               `
             }
-            return `
-              <div style="color:#7f8c8d">
-                Connection:
-                <span style="color:#2c3e50;font-weight:500">
-                  ${params.source} → ${params.target}
-                </span>
-              </div>
-            `
           }
         },
         series: [{

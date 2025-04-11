@@ -236,23 +236,25 @@ export default {
         return typeof sample === 'string' ? 'category' : 'value'
       }
 
-      const yAxisConfig = activeVariables.value.map(varName => ({
-        type: inferAxisType(safeData.value.map(d => d[varName])),
+
+      const yAxisConfig = {
+        type: valueTypes.value[activeVariables.value[0]],
         name: props.config.y_axis,
         nameLocation: 'end',
         nameGap: 20,
         alignTicks: true,
         axisLabel: {
           formatter: value => {
-            if (valueTypes.value[varName] === 'string') {
-              const entry = Object.entries(discreteValueMap.value[varName])
+            // 处理字符串类型数据
+            if (valueTypes.value[activeVariables.value[0]] === 'string') {
+              const entry = Object.entries(discreteValueMap.value[activeVariables.value[0]])
                   .find(([k, v]) => v === value)
               return entry ? entry[0] : value
             }
             return Number(value).toFixed(2)
           }
         }
-      }))
+      }
 
       const seriesConfig = activeVariables.value.map(varName => {
         const values = safeData.value.map(d => d[varName])
