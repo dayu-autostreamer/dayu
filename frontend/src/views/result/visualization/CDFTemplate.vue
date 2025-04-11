@@ -258,8 +258,21 @@ export default {
     }
 
     const getChartOption = () => {
+      const hasData = Object.values(safeData.value).some(arr => arr?.length > 0)
+      if (!hasData) {
+        // 返回完全空配置清除坐标轴
+        return {
+          xAxis: {show: false},
+          yAxis: {show: false},
+          series: []
+        }
+      }
       if (activeVariables.value.length === 0 || safeData.value.length === 0) {
-        return {}
+        return {
+          xAxis: {show: false},
+          yAxis: {show: false},
+          series: []
+        }
       }
 
       const series = []
