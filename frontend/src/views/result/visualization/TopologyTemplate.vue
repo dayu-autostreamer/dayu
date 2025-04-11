@@ -104,7 +104,7 @@ export default {
               formatter: `{title|${service_name}}\n{divider|─}\n{content|${data}}`,
               rich: {
                 title: {
-                  fontSize: 16,
+                  fontSize: 14,
                   fontWeight: 'bold',
                   color: getContrastColor(bgColor),
                   padding: [5, 0]
