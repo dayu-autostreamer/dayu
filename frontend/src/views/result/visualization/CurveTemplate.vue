@@ -209,7 +209,7 @@ export default {
       const types = {}
       activeVariables.value.forEach(varName => {
         const sampleValue = safeData.value[0]?.[varName]
-        types[varName] = typeof sampleValue
+        types[varName] = typeof sampleValue === 'number' ? 'value' : 'category';
       })
       return types
     })
@@ -237,7 +237,7 @@ export default {
       }
 
       const yAxisConfig = {
-        type: inferAxisType(valueTypes.value[activeVariables.value[0]]),
+        type: valueTypes.value[activeVariables.value[0]],
         name: props.config.y_axis,
         nameLocation: 'end',
         nameGap: 20,
