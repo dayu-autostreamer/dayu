@@ -260,9 +260,6 @@ export default {
     }
 
     const getChartOption = () => {
-      if (activeVariables.value.length === 0 || safeData.value.length === 0) {
-        return {}
-      }
 
       const series = []
 
