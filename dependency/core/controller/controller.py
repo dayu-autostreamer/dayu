@@ -66,6 +66,11 @@ class Controller:
                                         path=NetworkAPIPath.PROCESSOR_PROCESS
                                         )
 
+        if not os.path.exists(cur_task.get_file_path()):
+            LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
+                           f'task: {cur_task.get_task_id()} file: {cur_task.get_file_path()}')
+            return
+
         http_request(url=service_address,
                      method=NetworkAPIMethod.PROCESSOR_PROCESS,
                      data={'data': cur_task.serialize()},
