@@ -27,9 +27,6 @@ RUN sed -i \
   -e 's/rtspAddress: :8554/rtspAddress: :8000/' \
   -e 's/rtpAddress: :8000/rtpAddress: :7000/' \
   -e 's/rtcpAddress: :8001/rtcpAddress: :7001/'  \
-  -e 's/writeQueueSize: 512/writeQueueSize: 8192/' \
-  -e 's/rtspTransports: \[udp, multicast, tcp\]/rtspTransports: [udp]/' \
+  -e 's/writeQueueSize: 512/writeQueueSize: 32768/' \
   mediamtx.yml && \
-  echo -e "paths:\n  video0:\n    source: any\n    sourceProtocol: udp\n    protocol: udp" >> mediamtx.yml \
-
 CMD ["/bin/bash"]
