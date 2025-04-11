@@ -2,6 +2,7 @@ import copy
 import re
 from collections import deque
 from func_timeout import func_set_timeout as timeout
+import func_timeout.exceptions as timeout_exceptions
 
 import os
 import time
@@ -70,7 +71,6 @@ class BackendCore:
             return None
         return load_file_name.split('.')[0]
 
-    @timeout(60)
     def parse_and_apply_templates(self, policy, source_deploy):
         yaml_dict = {}
 
@@ -85,14 +85,32 @@ class BackendCore:
         LOGGER.info(f'[First Deployment Stage] deploy components:{first_stage_components}')
         first_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
                                                                         scopes=first_stage_components)
-        result, msg = self.install_yaml_templates(first_docs_list)
+        try:
+            result, msg = self.install_yaml_templates(first_docs_list)
+        except timeout_exceptions.FunctionTimedOut as e:
+            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            result = False
+            msg = 'first-stage install timeout after 60 seconds'
+        except Exception as e:
+            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            result = False
+            msg = 'unexpected system error, please refer to logs in backend'
         if not result:
             return False, msg
 
         LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
         second_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
                                                                          scopes=second_stage_components)
-        result, msg = self.install_yaml_templates(second_docs_list)
+        try:
+            result, msg = self.install_yaml_templates(second_docs_list)
+        except timeout_exceptions.FunctionTimedOut as e:
+            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            result = False
+            msg = 'second-stage install timeout after 60 seconds'
+        except Exception as e:
+            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            result = False
+            msg = 'unexpected system error, please refer to logs in backend'
         if not result:
             return False, msg
 
@@ -100,6 +118,30 @@ class BackendCore:
 
         return True, 'Install services successfully'
 
+    def parse_and_delete_templates(self):
+        docs = self.get_yaml_docs()
+        try:
+            result, msg = self.uninstall_yaml_templates(docs)
+        except timeout_exceptions.FunctionTimedOut as e:
+            msg = 'timeout after 120 seconds'
+            result = False
+            LOGGER.warning(f'Uninstall services failed: {msg}')
+        except Exception as e:
+            LOGGER.warning(f'Uninstall services failed: {str(e)}')
+            LOGGER.exception(e)
+            result = False
+            msg = f'unexpected system error, please refer to logs in backend'
+
+        return result, msg
+
+    @timeout(120)
+    def uninstall_yaml_templates(self, yaml_docs):
+        res = KubeHelper.delete_custom_resources(yaml_docs)
+        while KubeHelper.check_component_pods_exist(self.namespace):
+            time.sleep(1)
+        return res, '' if res else 'kubernetes api error'
+
+    @timeout(60)
     def install_yaml_templates(self, yaml_docs):
         if not yaml_docs:
             return False, 'components yaml data is empty'
@@ -302,7 +344,7 @@ class BackendCore:
         for idx, vf in enumerate(self.visualizations):
             al_name = vf['hook_name']
             al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
-            al_params.update({'variables':vf['variables']})
+            al_params.update({'variables': vf['variables']})
             vf_func = Context.get_algorithm('VISUALIZER', al_name=al_name, **al_params)
             visualization_data.append({"id": idx, "data": vf_func(task)})
 

@@ -1,9 +1,6 @@
-import time
 import json
 import threading
 from datetime import datetime
-from func_timeout import func_set_timeout as timeout
-import func_timeout.exceptions as timeout_exceptions
 
 from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks
 from fastapi.routing import APIRoute
@@ -474,10 +471,6 @@ class BackendServer:
 
         try:
             result, msg = self.server.parse_and_apply_templates(policy, source_deploy)
-        except timeout_exceptions.FunctionTimedOut as e:
-            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            result = False
-            msg = 'timeout after 60 seconds'
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             result = False
@@ -495,21 +488,9 @@ class BackendServer:
         :return:
         """
 
-        @timeout(120)
-        def stop_loop(yaml):
-            res = KubeHelper.delete_custom_resources(yaml)
-            while KubeHelper.check_component_pods_exist(self.server.namespace):
-                time.sleep(1)
-            return res, '' if res else 'kubernetes api error'
-
-        docs = self.server.get_yaml_docs()
         try:
-            result, msg = stop_loop(docs)
+            result, msg = self.server.parse_and_delete_templates()
 
-        except timeout_exceptions.FunctionTimedOut as e:
-            msg = 'timeout after 120 seconds'
-            result = False
-            LOGGER.warning(f'Uninstall services failed: {msg}')
         except Exception as e:
             LOGGER.warning(f'Uninstall services failed: {str(e)}')
             LOGGER.exception(e)
