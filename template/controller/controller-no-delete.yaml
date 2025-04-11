@@ -4,7 +4,9 @@ pod-template:
   imagePullPolicy: IfNotPresent
   env:
     - name: DISPLAY
-      value: "False"
+      value: "True"
+    - name: DELETE_TEMP_FILES
+    - value: "False"
 port-open:
   pos: both
   port: 9000

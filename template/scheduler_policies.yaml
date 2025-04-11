@@ -3,7 +3,7 @@
   yaml: fixed-policy.yaml
   dependency:
     generator: generator-base.yaml
-    controller: controller-base.yaml
+    controller: controller-no-delete.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: hei
@@ -11,7 +11,7 @@
   yaml: hei.yaml
   dependency:
     generator: generator-base.yaml
-    controller: controller-nondisplay.yaml
+    controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: hei-macro-only
@@ -19,7 +19,7 @@
   yaml: hei-macro-only.yaml
   dependency:
     generator: generator-base.yaml
-    controller: controller-nondisplay.yaml
+    controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: hei-micro-only
@@ -27,7 +27,7 @@
   yaml: hei-micro-only.yaml
   dependency:
     generator: generator-base.yaml
-    controller: controller-nondisplay.yaml
+    controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: hei-synchronous
@@ -35,7 +35,7 @@
   yaml: hei-synchronous.yaml
   dependency:
     generator: generator-base.yaml
-    controller: controller-nondisplay.yaml
+    controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: fc
@@ -43,7 +43,7 @@
   yaml: fc.yaml
   dependency:
     generator: generator-base.yaml
-    controller: controller-nondisplay.yaml
+    controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: casva
@@ -51,7 +51,7 @@
   yaml: casva.yaml
   dependency:
     generator: generator-casva.yaml
-    controller: controller-nondisplay.yaml
+    controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: cevas
@@ -59,7 +59,7 @@
   yaml: cevas.yaml
   dependency:
     generator: generator-cevas.yaml
-    controller: controller-nondisplay.yaml
+    controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: chameleon
@@ -67,6 +67,6 @@
   yaml: chameleon.yaml
   dependency:
     generator: generator-chameleon.yaml
-    controller: controller-nondisplay.yaml
+    controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
