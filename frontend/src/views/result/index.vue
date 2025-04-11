@@ -142,7 +142,7 @@ export default {
     watch(
         () => this.bufferedTaskCache,
         (newVal) => {
-          console.log('Cache updated:', newVal)
+          // console.log('Cache updated:', newVal)
         },
         {deep: true}
     )
@@ -160,17 +160,6 @@ export default {
         })
       })
     })
-
-    console.log('Data source IDs:',
-        this.dataSourceList.map(s => ({
-          id: s.id,
-          type: typeof s.id
-        })))
-    console.log('Cache keys:',
-        Object.keys(this.bufferedTaskCache).map(k => ({
-          key: k,
-          type: typeof k
-        })))
 
   },
   methods: {
@@ -236,8 +225,6 @@ export default {
               ...(vizDataItem?.data || {}) // 透传原始数据
             }
           })
-
-      console.log(`[RESULT] Processed data for ${vizConfig.id}:`, filteredData)
       return filteredData
     },
 
