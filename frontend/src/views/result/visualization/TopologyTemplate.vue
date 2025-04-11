@@ -240,7 +240,7 @@ export default {
             itemStyle: {
               borderColor: '#2c3e50',
               borderWidth: 0,
-              borderRadius: 1
+              borderRadius: 0,
             }
           },
           nodes: topologyData.value.nodes,
