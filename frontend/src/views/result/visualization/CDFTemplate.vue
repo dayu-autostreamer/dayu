@@ -138,8 +138,18 @@ export default {
 
     const showEmptyState = computed(() => {
       const hasData = Object.values(safeData.value).some(arr => arr?.length > 0)
-      console.log('[DEBUG] Empty check - hasData:', hasData)
-      return !hasData
+      const hasActiveVars = activeVariables.value.length > 0
+      const hasValidData = hasData && activeVariables.value.some(v =>
+          safeData.value.some(d => d[v] !== undefined)
+      )
+
+      console.log('Empty State Check:', {
+        hasData,
+        hasActiveVars,
+        hasValidData
+      })
+
+      return !hasValidData
     })
 
     const emptyMessage = computed(() => {
@@ -250,6 +260,10 @@ export default {
     }
 
     const getChartOption = () => {
+      if (activeVariables.value.length === 0 || safeData.value.length === 0) {
+        return {}
+      }
+
       const series = []
 
       Object.entries(safeData.value).forEach(([varName, points]) => {
