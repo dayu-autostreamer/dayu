@@ -236,10 +236,8 @@ export default {
         return typeof sample === 'string' ? 'category' : 'value'
       }
 
-      console.log('valueTypes.value[activeVariables.value[0]]: ', valueTypes.value[activeVariables.value[0]])
-
       const yAxisConfig = {
-        type: valueTypes.value[activeVariables.value[0]],
+        type: inferAxisType(valueTypes.value[activeVariables.value[0]]),
         name: props.config.y_axis,
         nameLocation: 'end',
         nameGap: 20,
