@@ -98,7 +98,7 @@ export default {
               color: bgColor,
               borderColor: '#2c3e50',
               borderWidth: 0,
-              borderRadius: 1
+              borderRadius: 0
             },
             label: {
               formatter: `{title|${service_name}}\n{divider|─}\n{content|${data}}`,
@@ -239,7 +239,8 @@ export default {
           emphasis: {
             itemStyle: {
               borderColor: '#2c3e50',
-              borderWidth: 3
+              borderWidth: 0,
+              borderRadius: 1
             }
           },
           nodes: topologyData.value.nodes,
