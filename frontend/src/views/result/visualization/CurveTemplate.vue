@@ -260,7 +260,7 @@ export default {
         return {
           name: varName,
           type: 'line',
-          yAxisIndex: activeVariables.value.indexOf(varName),
+          yAxisIndex: 0,
           data: values.map(v => {
             if (v === undefined) return null
             return valueTypes.value[varName] === 'string'
