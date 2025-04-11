@@ -27,6 +27,6 @@ RUN sed -i \
   -e 's/rtspAddress: :8554/rtspAddress: :8000/' \
   -e 's/rtpAddress: :8000/rtpAddress: :7000/' \
   -e 's/rtcpAddress: :8001/rtcpAddress: :7001/'  \
-  -e 's/writeQueueSize: 512/writeQueueSize: 32768/' \
+  -e 's/writeQueueSize: 512/writeQueueSize: 8192/' \
   mediamtx.yml && \
 CMD ["/bin/bash"]
