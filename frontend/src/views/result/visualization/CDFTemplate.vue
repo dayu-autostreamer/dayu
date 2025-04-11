@@ -49,12 +49,6 @@ export default {
 
   setup(props) {
 
-    console.log('CurveTemplate Mounted:', {
-      config: toRaw(props.config),
-      variables: toRaw(props.variableStates),
-      initialData: toRaw(props.data)
-    })
-
     // Refs
     const chart = ref(null)
     const container = ref(null)
@@ -81,8 +75,6 @@ export default {
       const result = {}
 
       const currentVariableStates = props.variableStates || {}
-      console.log('currentVariableStates: ', currentVariableStates)
-      console.log('props.variableStates: ', props.variableStates)
 
       if (!props.config.variables?.length) {
         console.warn('No variables defined in config')
@@ -101,10 +93,6 @@ export default {
             .sort((a, b) => a - b)
         if (allValues.length === 0) return
 
-        console.log(`Raw values for ${varName}:`, allValues)
-
-        if (allValues.length === 0) return
-
         // 生成CDF点
 
         const n = allValues.length
@@ -115,11 +103,9 @@ export default {
           probability: allValues.filter(v => v <= value).length / n
         }))
 
-        console.log(`CDF points for ${varName}:`, cdfPoints)
         result[varName] = cdfPoints
       })
 
-      console.log('Final safeData:', toRaw(result))
       return result
     })
 
@@ -140,12 +126,6 @@ export default {
       const hasData = Object.values(safeData.value).some(arr => arr?.length > 0)
       const hasActiveVars = activeVariables.value.length > 0
       const hasValidData = hasData && activeVariables
-
-      console.log('Empty State Check:', {
-        hasData,
-        hasActiveVars,
-        hasValidData
-      })
 
       return !hasValidData
     })
@@ -379,22 +359,6 @@ export default {
         renderChart()
       }
     }, {deep: true, flush: 'post'})
-
-    watch(activeVariables, (newVal) => {
-      console.log('Active Variables Changed:', newVal)
-      console.log('Current Variable States:', toRaw(props.variableStates))
-    }, {deep: true})
-
-    watch(safeData, (newVal) => {
-      console.log('Chart Data Updated:', {
-        data: newVal,
-        keys: newVal.length > 0 ? Object.keys(newVal[0]) : []
-      })
-    }, {deep: true})
-
-    watch(() => props.variableStates, () => {
-      console.log('VariableStates Changed:', toRaw(props.variableStates))
-    }, {deep: true})
 
     return {
       container,

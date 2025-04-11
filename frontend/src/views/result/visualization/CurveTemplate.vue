@@ -49,12 +49,6 @@ export default {
 
   setup(props) {
 
-    console.log('CurveTemplate Mounted:', {
-      config: toRaw(props.config),
-      variables: toRaw(props.variableStates),
-      initialData: toRaw(props.data)
-    })
-
     // Refs
     const chart = ref(null)
     const container = ref(null)
@@ -111,12 +105,6 @@ export default {
       const hasValidData = hasData && activeVariables.value.some(v =>
           safeData.value.some(d => d[v] !== undefined)
       )
-
-      console.log('Empty State Check:', {
-        hasData,
-        hasActiveVars,
-        hasValidData
-      })
 
       return !hasValidData
     })
@@ -374,22 +362,6 @@ export default {
         renderChart()
       }
     }, {deep: true, flush: 'post'})
-
-    watch(activeVariables, (newVal) => {
-      console.log('Active Variables Changed:', newVal)
-      console.log('Current Variable States:', toRaw(props.variableStates))
-    }, {deep: true})
-
-    watch(safeData, (newVal) => {
-      console.log('Chart Data Updated:', {
-        data: newVal,
-        keys: newVal.length > 0 ? Object.keys(newVal[0]) : []
-      })
-    }, {deep: true})
-
-    watch(() => props.variableStates, () => {
-      console.log('VariableStates Changed:', toRaw(props.variableStates))
-    }, {deep: true})
 
     return {
       container,
