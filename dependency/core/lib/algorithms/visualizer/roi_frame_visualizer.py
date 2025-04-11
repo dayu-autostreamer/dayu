@@ -1,5 +1,4 @@
 import abc
-import cv2
 
 from core.lib.common import ClassFactory, ClassType, EncodeOps, LOGGER
 from core.lib.content import Task
@@ -31,6 +30,7 @@ class ROIFrameVisualizer(ImageVisualizer, abc.ABC):
 
             base64_data = EncodeOps.encode_image(image)
         except Exception as e:
+            import cv2
             base64_data = EncodeOps.encode_image(
                 cv2.imread(self.default_visualization_image)
             )

@@ -1,5 +1,4 @@
 import abc
-import cv2
 
 from core.lib.common import ClassFactory, ClassType, EncodeOps, LOGGER
 from core.lib.content import Task
@@ -21,6 +20,7 @@ class FrameVisualizer(ImageVisualizer, abc.ABC):
             image = self.get_first_frame_from_video(file_path)
             base64_data = EncodeOps.encode_image(image)
         except Exception as e:
+            import cv2
             base64_data = EncodeOps.encode_image(
                 cv2.imread(self.default_visualization_image)
             )

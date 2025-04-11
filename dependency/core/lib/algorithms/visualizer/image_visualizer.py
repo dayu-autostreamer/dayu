@@ -1,6 +1,4 @@
 import abc
-import cv2
-import numpy as np
 
 from core.lib.content import Task
 
@@ -9,7 +7,6 @@ from .base_visualizer import BaseVisualizer
 
 class ImageVisualizer(BaseVisualizer, abc.ABC):
     default_visualization_image = 'default_visualization.png'
-
 
     def __call__(self, task: Task):
         raise NotImplementedError
@@ -30,6 +27,7 @@ class ImageVisualizer(BaseVisualizer, abc.ABC):
             FileNotFoundError: If the video file does not exist.
             ValueError: If the video cannot be opened or the first frame cannot be read.
         """
+        import cv2
         # Check if the file exists
         if not isinstance(video_path, str) or not video_path:
             raise ValueError("The video path must be a valid, non-empty string.")
@@ -64,6 +62,8 @@ class ImageVisualizer(BaseVisualizer, abc.ABC):
         Raises:
             ValueError: If `frame` is not a numpy array or if `bboxes` is not a list of valid tuples.
         """
+        import cv2
+        import numpy as np
         if not isinstance(frame, np.ndarray):
             raise ValueError("Input frame must be a numpy array.")
 

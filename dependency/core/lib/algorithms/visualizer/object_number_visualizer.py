@@ -1,5 +1,4 @@
 import abc
-import numpy as np
 
 from core.lib.common import ClassFactory, ClassType
 from core.lib.content import Task
@@ -15,5 +14,6 @@ class ObjectNumberVisualizer(CurveVisualizer, abc.ABC):
         super().__init__(**kwargs)
 
     def __call__(self, task: Task):
+        import numpy as np
         task_result = float(np.mean(task.get_scenario_data()['obj_num']))
         return {'Object Number': task_result}

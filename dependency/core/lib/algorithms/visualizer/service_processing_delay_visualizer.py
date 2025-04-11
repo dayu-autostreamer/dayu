@@ -1,5 +1,4 @@
 import abc
-import random
 from core.lib.common import ClassFactory, ClassType
 from core.lib.content import Task
 
