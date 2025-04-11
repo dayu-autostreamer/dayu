@@ -23,10 +23,13 @@ RUN ARCH=$(echo ${TARGETPLATFORM} | cut -d'/' -f2) && \
     wget -O mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/download/v1.9.3/mediamtx_v1.9.3_${ARCH_TYPE}.tar.gz && \
     tar -zxvf mediamtx.tar.gz
 
-RUN sed -i 's/rtspAddress: :8554/rtspAddress: :8000/' mediamtx.yml \
- && sed -i 's/rtpAddress: :8000/rtpAddress: :7000/' mediamtx.yml \
- && sed -i 's/rtcpAddress: :8001/rtcpAddress: :7001/' mediamtx.yml \
- && sed -i 's/writeQueueSize: 512/writeQueueSize: 8192/' mediamtx.yml \
- && echo -e "paths:\n  video0:\n    source: any\n    sourceProtocol: udp\n    protocol: udp" >> mediamtx.yml
+RUN sed -i \
+  -e 's/rtspAddress: :8554/rtspAddress: :8000/' \
+  -e 's/rtpAddress: :8000/rtpAddress: :7000/' \
+  -e 's/rtcpAddress: :8001/rtcpAddress: :7001/'  \
+  -e 's/writeQueueSize: 512/writeQueueSize: 8192/' \
+  -e 's/rtspTransports: \[udp, multicast, tcp\]/rtspTransports: [udp]/' \
+  mediamtx.yml && \
+  echo -e "paths:\n  video0:\n    source: any\n    sourceProtocol: udp\n    protocol: udp" >> mediamtx.yml \
 
 CMD ["/bin/bash"]
