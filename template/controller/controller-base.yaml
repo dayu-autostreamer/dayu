@@ -8,7 +8,7 @@ pod-template:
       value: "True"
     # whether delete temporary raw data files
     - name: DELETE_TEMP_FILES
-    - value: "False"
+      value: "False"
 port-open:
   pos: both
   port: 9000
