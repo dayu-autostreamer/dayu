@@ -3,7 +3,7 @@ class Counter:
     _counts = {}
 
     def __new__(cls, *args, **kwargs):
-        raise RuntimeError("This is a utility class and cannot be instantiated.")
+        raise RuntimeError("Counter is a utility class and cannot be instantiated.")
 
     @classmethod
     def get_count(cls, name: str = 'default') -> int:
