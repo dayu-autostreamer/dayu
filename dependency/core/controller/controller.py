@@ -161,8 +161,7 @@ class Controller:
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
-            task, duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='transmit')
-            cur_task = task
+            duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='transmit')
         except Exception as e:
             LOGGER.warning(f'Time record failed: {str(e)}')
             duration = 0
@@ -177,8 +176,7 @@ class Controller:
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
-            task, duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='execute')
-            cur_task = task
+            duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='execute')
         except Exception as e:
             LOGGER.warning(f'Time record failed: {str(e)}')
             duration = 0
