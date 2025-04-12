@@ -24,5 +24,4 @@ class Counter:
 
     @classmethod
     def get_all_counts(cls) -> dict:
-        """获取所有计数器副本"""
         return cls._counts.copy()
