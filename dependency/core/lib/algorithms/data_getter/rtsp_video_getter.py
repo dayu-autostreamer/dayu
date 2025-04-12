@@ -86,6 +86,6 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
                                copy.deepcopy(self.frame_buffer),
                                new_task_id,
                                copy.deepcopy(system.task_dag),
-                               copy.deepcopy(meta_data),)).start()
+                               copy.deepcopy(system.meta_data),)).start()
 
         self.frame_buffer = []
