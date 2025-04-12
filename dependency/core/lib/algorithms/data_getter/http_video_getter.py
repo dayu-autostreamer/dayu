@@ -62,7 +62,7 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
         LOGGER.info(f'[Camera Simulation] source {system.source_id}: sleep {sleep_time}s')
         time.sleep(sleep_time)
 
-        new_task = system.generate_task(new_task_id, self.file_name, self.hash_codes)
+        new_task = system.generate_task(new_task_id, system.task_dag, system.meta_data, self.file_name, self.hash_codes)
         system.submit_task_to_controller(new_task)
 
         FileOps.remove_file(self.file_name)
