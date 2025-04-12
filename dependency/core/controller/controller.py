@@ -17,8 +17,6 @@ class Controller:
     def __init__(self):
         self.task_coordinator = TaskCoordinator()
 
-        self.cur_task = None
-
         self.is_display = Context.get_parameter('DISPLAY', direct=False)
 
         self.service_ports_dict = None
@@ -31,12 +29,8 @@ class Controller:
 
         self.local_device = NodeInfo.get_local_device()
 
-    def set_current_task(self, task: Task):
-        self.cur_task = task
-
-    def send_task_to_other_device(self, task: Task = None, device: str = ''):
-        cur_task = task or self.cur_task
-        self.record_transmit_ts(task=cur_task, is_end=False)
+    def send_task_to_other_device(self, cur_task: Task = None, device: str = ''):
+        self.record_transmit_ts(cur_task=cur_task, is_end=False)
         controller_address = merge_address(NodeInfo.hostname2ip(device),
                                            port=self.controller_port,
                                            path=NetworkAPIPath.CONTROLLER_TASK)
@@ -46,15 +40,13 @@ class Controller:
                      data={'data': cur_task.serialize()},
                      files={'file': (cur_task.get_file_path(),
                                      open(cur_task.get_file_path(), 'rb'),
-                                     'multipart/form-data')}
-                     )
+                                     'multipart/form-data')})
 
         LOGGER.info(f'[To Device {device}] source: {cur_task.get_source_id()}  '
                     f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
 
-    def send_task_to_service(self, task: Task = None, service: str = ''):
-        cur_task = task or self.cur_task
-        self.record_execute_ts(task=cur_task, is_end=False)
+    def send_task_to_service(self, cur_task: Task = None, service: str = ''):
+        self.record_execute_ts(cur_task=cur_task, is_end=False)
 
         self.service_ports_dict = PortInfo.get_service_ports_dict()
         if service not in self.service_ports_dict:
@@ -63,8 +55,7 @@ class Controller:
 
         service_address = merge_address(NodeInfo.hostname2ip(self.local_device),
                                         port=self.service_ports_dict[service],
-                                        path=NetworkAPIPath.PROCESSOR_PROCESS
-                                        )
+                                        path=NetworkAPIPath.PROCESSOR_PROCESS)
 
         if not os.path.exists(cur_task.get_file_path()):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
@@ -82,10 +73,8 @@ class Controller:
         LOGGER.info(f'[To Service {service}] source: {cur_task.get_source_id()}  '
                     f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
 
-    def send_task_to_distributor(self, task: Task = None):
-        cur_task = task or self.cur_task
-
-        self.record_transmit_ts(task=cur_task, is_end=False)
+    def send_task_to_distributor(self, cur_task: Task = None):
+        self.record_transmit_ts(cur_task=cur_task, is_end=False)
         if not os.path.exists(cur_task.get_file_path()):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
                            f'task: {cur_task.get_task_id()} file: {cur_task.get_file_path()}')
@@ -95,16 +84,14 @@ class Controller:
         http_request(url=self.distribute_address,
                      method=NetworkAPIMethod.DISTRIBUTOR_DISTRIBUTE,
                      files={'file': (cur_task.get_file_path(), file_content, 'multipart/form-data')},
-                     data={'data': cur_task.serialize()}
-                     )
+                     data={'data': cur_task.serialize()})
 
         LOGGER.info(f'[To Distributor] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
                     f'current service: {cur_task.get_flow_index()}')
 
-    def submit_task(self, task: Task = None):
-        cur_task = task or self.cur_task
+    def submit_task(self, cur_task: Task = None):
         if not cur_task:
-            LOGGER.warning('Current task of controller is NOT set!')
+            LOGGER.warning('Current task is None')
             return
 
         LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
@@ -114,33 +101,34 @@ class Controller:
         dst_device = cur_task.get_current_stage_device()
 
         if service_name == 'start':
-            next_tasks = self.cur_task.step_to_next_stage()
+            next_tasks = cur_task.step_to_next_stage()
             actions = [self.submit_task(new_task) for new_task in next_tasks]
             action = 'execute' if 'execute' in actions else 'transmit'
         elif service_name == 'end':
-            self.send_task_to_distributor(task)
+            self.send_task_to_distributor(cur_task)
             action = 'transmit'
         elif dst_device != self.local_device:
-            self.send_task_to_other_device(task, dst_device)
+            self.send_task_to_other_device(cur_task, dst_device)
             action = 'transmit'
         else:
-            self.send_task_to_service(task, service_name)
+            self.send_task_to_service(cur_task, service_name)
             action = 'execute'
 
         return action
 
-    def process_return(self):
+    def process_return(self, cur_task):
         """step to next step and submit task"""
-        assert self.cur_task, 'Current task of controller is NOT set!'
-        LOGGER.info(f'[Process Return] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
+        assert cur_task, 'Current task is None'
+
+        LOGGER.info(f'[Process Return] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 
         actions = []
-        parallel_joints = self.cur_task.get_parallel_info_for_merge()
+        parallel_joints = cur_task.get_parallel_info_for_merge()
         for parallel_joint in parallel_joints:
             joint_service_name = parallel_joint['joint_service']
             parallel_service_names = parallel_joint['parallel_services']
             required_parallel_task_count = len(parallel_service_names)
-            new_task = self.cur_task.fork_task(joint_service_name)
+            new_task = cur_task.fork_task(joint_service_name)
 
             # node with parallel nodes should merge before step to next stage
             if required_parallel_task_count > 1:
@@ -168,8 +156,8 @@ class Controller:
 
         return actions
 
-    def record_transmit_ts(self, task: Task = None, is_end: bool = False):
-        cur_task = task or self.cur_task
+    @staticmethod
+    def record_transmit_ts(cur_task: Task = None, is_end: bool = False):
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
@@ -184,8 +172,8 @@ class Controller:
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'record transmit time of stage {cur_task.get_flow_index()}: {duration:.3f}s')
 
-    def record_execute_ts(self, task: Task = None, is_end: bool = False):
-        cur_task = task or self.cur_task
+    @staticmethod
+    def record_execute_ts(cur_task: Task = None, is_end: bool = False):
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
@@ -202,8 +190,8 @@ class Controller:
 
     def record_ts(self, task: Task = None, is_end: bool = False, action: str = ''):
         if action == 'transmit':
-            self.record_transmit_ts(task=task, is_end=is_end)
+            self.record_transmit_ts(cur_task=task, is_end=is_end)
         elif action == 'execute':
-            self.record_execute_ts(task=task, is_end=is_end)
+            self.record_execute_ts(cur_task=task, is_end=is_end)
         else:
             raise ValueError(f'Action {action} not supported, only "transmit" and "execute" are supported."')

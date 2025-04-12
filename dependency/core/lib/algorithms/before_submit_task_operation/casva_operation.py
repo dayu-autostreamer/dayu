@@ -116,7 +116,7 @@ class CASVABSTOperation(BaseBSTOperation, abc.ABC):
 
         return raw_size * (resolution[0] / raw_resolution[0]) * (fps / raw_fps)
 
-    def __call__(self, system, compressed_file, hash_codes):
+    def __call__(self, system, new_task:Task):
         task = system.current_task
 
         tmp_data = task.get_tmp_data()
@@ -124,6 +124,7 @@ class CASVABSTOperation(BaseBSTOperation, abc.ABC):
 
         # self.modify_file_qp(meta_data, compressed_file)
 
+        compressed_file = new_task.get_file_path()
         file_size = os.path.getsize(compressed_file) / 1024 / 1024
         tmp_data['file_size'] = file_size
 

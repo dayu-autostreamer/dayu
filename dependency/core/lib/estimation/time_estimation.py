@@ -1,6 +1,6 @@
 import time
 from core.lib.content import Task
-from core.lib.common import LOGGER
+from core.lib.common import LOGGER, NameMaintainer
 
 
 class Timer:
@@ -35,11 +35,11 @@ class TimeEstimator:
                  duration: time estimation result
 
         """
-        data, duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                                 f'dayu:{task.get_root_uuid()}:{sub_tag}_time_{task.get_flow_index()}',
-                                                 is_end=is_end)
-        task.set_tmp_data(data)
-        return task, duration
+        prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
+        duration = TimeEstimator.record_ts(task.get_tmp_data(),
+                                           f'{prefix}:{sub_tag}_time_{task.get_flow_index()}',
+                                           is_end=is_end)
+        return duration
 
     @staticmethod
     def record_task_ts(task: Task, tag: str, is_end: bool = False) -> (Task, float):
@@ -52,11 +52,11 @@ class TimeEstimator:
                  duration: time estimation result
         """
 
-        data, duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                                 tag=f'dayu:{task.get_root_uuid()}:{tag}',
-                                                 is_end=is_end)
-        task.set_tmp_data(data)
-        return task, duration
+        prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
+        duration = TimeEstimator.record_ts(task.get_tmp_data(),
+                                           tag=f'{prefix}:{tag}',
+                                           is_end=is_end)
+        return duration
 
     @staticmethod
     def record_ts(data: dict, tag: str, is_end: bool = False) -> (dict, float):
@@ -81,7 +81,7 @@ class TimeEstimator:
             data[tag] = time.time()
             duration = 0
 
-        return data, duration
+        return duration
 
     @staticmethod
     def estimate_duration_time(func):
@@ -104,3 +104,4 @@ class TimeEstimator:
             print('function {} cost time {:.2f}s'.format(func.__name__, end - start))
 
         return wrapper
+

@@ -4,7 +4,7 @@ import time
 
 from .base_getter import BaseDataGetter
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
+from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, Counter, NameMaintainer
 from core.lib.network import http_request
 from core.lib.estimation import TimeEstimator
 
@@ -22,11 +22,13 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
         self.file_name = None
         self.hash_codes = None
 
+        self.file_suffix = '.mp4'
+
     @TimeEstimator.estimate_duration_time
-    def request_source_data(self, system):
+    def request_source_data(self, system, task_id):
         data = {
             'source_id': system.source_id,
-            'task_id': system.task_id,
+            'task_id': task_id,
             'meta_data': system.meta_data,
             'raw_meta_data': system.raw_meta_data,
             'gen_filter_name': Context.get_parameter('GEN_FILTER_NAME'),
@@ -43,7 +45,7 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
             if self.hash_codes:
                 response = http_request(system.video_data_source + '/file', method='GET', no_decode=True)
 
-        self.file_name = f'video_source_{system.source_id}_task_{system.task_id}.mp4'
+        self.file_name = NameMaintainer.get_task_data_file_name(system.source_id, task_id, self.file_suffix)
 
         with open(self.file_name, 'wb') as f:
             f.write(response.content)
@@ -53,12 +55,14 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
         return max(1 / system.meta_data['fps'] * system.meta_data['buffer_size'] - cost, 0)
 
     def __call__(self, system):
-        delay = self.request_source_data(system)
+        new_task_id = Counter.get_count('task_id')
+        delay = self.request_source_data(system, new_task_id)
 
         sleep_time = self.compute_cost_time(system, delay)
         LOGGER.info(f'[Camera Simulation] source {system.source_id}: sleep {sleep_time}s')
         time.sleep(sleep_time)
 
-        system.submit_task_to_controller(self.file_name, self.hash_codes)
+        new_task = system.generate_task(new_task_id, self.file_name, self.hash_codes)
+        system.submit_task_to_controller(new_task)
 
         FileOps.remove_file(self.file_name)
