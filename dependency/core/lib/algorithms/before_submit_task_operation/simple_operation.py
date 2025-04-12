@@ -13,5 +13,5 @@ class SimpleBSTOperation(BaseBSTOperation, abc.ABC):
     def __init__(self):
         pass
 
-    def __call__(self, system):
+    def __call__(self, system, new_task):
         pass
