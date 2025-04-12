@@ -273,7 +273,7 @@ class BackendServer:
         state, msg = self.server.check_dag(dag)
         if state:
             self.server.dags.append({
-                'dag_id': Counter().get_count('dag_id'),
+                'dag_id': Counter.get_count('dag_id'),
                 'dag_name': dag_name,
                 'dag': dag
             })

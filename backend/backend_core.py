@@ -218,7 +218,7 @@ class BackendCore:
         return None
 
     def fill_datasource_config(self, config):
-        config['source_label'] = f'source_config_{Counter().get_count("source_label")}'
+        config['source_label'] = f'source_config_{Counter.get_count("source_label")}'
         source_list = config['source_list']
         for index, source in enumerate(source_list):
             source['id'] = index

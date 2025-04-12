@@ -1,24 +1,28 @@
-from .utils import singleton
-
-@singleton
 class Counter:
 
-    def __init__(self):
-        self.counts = {}
+    _counts = {}
 
-    def get_count(self, name='default'):
-        if name in self.counts:
-            self.counts[name] += 1
+    def __new__(cls, *args, **kwargs):
+        raise RuntimeError("This is a utility class and cannot be instantiated.")
+
+    @classmethod
+    def get_count(cls, name: str = 'default') -> int:
+        if name in cls._counts:
+            cls._counts[name] += 1
         else:
-            self.counts[name] = 0
-        return self.counts[name]
+            cls._counts[name] = 0
+        return cls._counts[name]
 
-    def reset_count(self, name='default'):
-        if name in self.counts:
-            del self.counts[name]
+    @classmethod
+    def reset_count(cls, name: str = 'default') -> None:
+        if name in cls._counts:
+            del cls._counts[name]
 
-    def reset_all_counts(self):
-        self.counts = {}
+    @classmethod
+    def reset_all_counts(cls) -> None:
+        cls._counts.clear()
 
-    def get_all_counts(self):
-        return self.counts
+    @classmethod
+    def get_all_counts(cls) -> dict:
+        """获取所有计数器副本"""
+        return cls._counts.copy()
