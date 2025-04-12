@@ -6,6 +6,7 @@ from .service import Service
 from .dag import DAG
 
 from core.lib.solver import LCASolver, IntermediateNodeSolver, PathSolver
+from core.lib.common import NameMaintainer
 
 
 class Task:
@@ -283,13 +284,14 @@ class Task:
 
     def get_real_end_to_end_time(self):
         """get real end to end time of task: from generator to distributor by estimation"""
-        if f'dayu:{self.__root_uuid}:total_start_time' not in self.__tmp_data:
-            raise ValueError(f'Timestamp of task starting lacks: dayu:{self.__root_uuid}:total_start_time')
-        if f'dayu:{self.__root_uuid}:total_start_time' not in self.__tmp_data:
-            raise ValueError(f'Timestamp of task ending lacks: dayu:{self.__root_uuid}:total_end_time')
+        tag_prefix = NameMaintainer.get_time_ticket_tag_prefix(self)
+        if f'{tag_prefix}:total_start_time' not in self.__tmp_data:
+            raise ValueError(f'Timestamp of task starting lacks: "{tag_prefix}:total_start_time"')
+        if f'{tag_prefix}:total_start_time' not in self.__tmp_data:
+            raise ValueError(f'Timestamp of task ending lacks: "{tag_prefix}:total_end_time"')
 
-        return (self.__tmp_data[f'dayu:{self.__root_uuid}:total_end_time'] -
-                self.__tmp_data[f'dayu:{self.__root_uuid}:total_start_time'])
+        return (self.__tmp_data[f'{tag_prefix}:total_end_time'] -
+                self.__tmp_data[f'{tag_prefix}:total_start_time'])
 
     def calculate_total_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
