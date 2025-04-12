@@ -47,9 +47,9 @@ class ControllerServer:
         cur_task = Task.deserialize(data)
         FileOps.save_data_file(cur_task, file_data)
         # record end time of transmitting
-        self.controller.record_transmit_ts(is_end=True)
+        self.controller.record_transmit_ts(cur_task, is_end=True)
 
-        action = self.controller.submit_task()
+        action = self.controller.submit_task(cur_task)
 
         # for execute action, the file is remained
         # so that task returned from processor don't need to carry with file.
@@ -60,7 +60,7 @@ class ControllerServer:
         """deal with tasks returned by the processor"""
         cur_task = Task.deserialize(data)
         # record end time of executing
-        self.controller.record_execute_ts(is_end=True)
+        self.controller.record_execute_ts(cur_task, is_end=True)
 
         actions = self.controller.process_return(cur_task)
 

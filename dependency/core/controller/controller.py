@@ -29,7 +29,7 @@ class Controller:
 
         self.local_device = NodeInfo.get_local_device()
 
-    def send_task_to_other_device(self, cur_task: Task = None, device: str = ''):
+    def send_task_to_other_device(self, cur_task: Task, device: str = ''):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
         controller_address = merge_address(NodeInfo.hostname2ip(device),
                                            port=self.controller_port,
@@ -45,7 +45,7 @@ class Controller:
         LOGGER.info(f'[To Device {device}] source: {cur_task.get_source_id()}  '
                     f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
 
-    def send_task_to_service(self, cur_task: Task = None, service: str = ''):
+    def send_task_to_service(self, cur_task: Task, service: str = ''):
         self.record_execute_ts(cur_task=cur_task, is_end=False)
 
         self.service_ports_dict = PortInfo.get_service_ports_dict()
@@ -73,7 +73,7 @@ class Controller:
         LOGGER.info(f'[To Service {service}] source: {cur_task.get_source_id()}  '
                     f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
 
-    def send_task_to_distributor(self, cur_task: Task = None):
+    def send_task_to_distributor(self, cur_task: Task):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
         if not os.path.exists(cur_task.get_file_path()):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
@@ -89,7 +89,7 @@ class Controller:
         LOGGER.info(f'[To Distributor] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
                     f'current service: {cur_task.get_flow_index()}')
 
-    def submit_task(self, cur_task: Task = None):
+    def submit_task(self, cur_task: Task):
         if not cur_task:
             LOGGER.warning('Current task is None')
             return
@@ -157,7 +157,7 @@ class Controller:
         return actions
 
     @staticmethod
-    def record_transmit_ts(cur_task: Task = None, is_end: bool = False):
+    def record_transmit_ts(cur_task: Task, is_end: bool = False):
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
@@ -173,7 +173,7 @@ class Controller:
                         f'record transmit time of stage {cur_task.get_flow_index()}: {duration:.3f}s')
 
     @staticmethod
-    def record_execute_ts(cur_task: Task = None, is_end: bool = False):
+    def record_execute_ts(cur_task: Task, is_end: bool = False):
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
@@ -188,7 +188,7 @@ class Controller:
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'record execute time of stage {cur_task.get_flow_index()}: {duration:.3f}s')
 
-    def record_ts(self, task: Task = None, is_end: bool = False, action: str = ''):
+    def record_ts(self, task: Task, is_end: bool = False, action: str = ''):
         if action == 'transmit':
             self.record_transmit_ts(cur_task=task, is_end=is_end)
         elif action == 'execute':
