@@ -9,7 +9,7 @@ import tensorrt as trt
 from core.lib.common import Context, LOGGER
 
 
-class GenderClassification:
+class AgeClassification:
     def __init__(self, weights, device=0):
         self.weights = Context.get_file_path(weights)
 
@@ -58,7 +58,7 @@ class GenderClassification:
 
         self.warm_up_turns = 5
 
-        self.classes = ['Male', 'Female']
+        self.classes = ['0-10', '11-20', '21-30', '31-40', '41-50', '51-60', '61-70', '71-80', '81-90']
 
         self.warm_up()
 
@@ -154,9 +154,9 @@ class GenderClassification:
         self.ctx.pop()
         # Here we use the first row of output in that batch_size = 1
         output = host_outputs[0]
-        gender_output = np.argmax(output)
+        age_output = np.argmax(output)
 
-        return self.classes[gender_output]
+        return self.classes[age_output]
 
     def __call__(self, faces: List[np.ndarray]):
         output = []
