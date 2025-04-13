@@ -29,7 +29,7 @@ class FixedDeploymentPolicy(BaseDeploymentPolicy, abc.ABC):
         all_services = list(dag.keys())
         for service in all_services:
             if service in self.fixed_policy:
-                intersection_nodes = list(set(self.fixed_policy[service]) & node_set)
+                intersection_nodes = list(set(self.fixed_policy[service]) & set(node_set))
                 self.fixed_policy[service] = intersection_nodes if intersection_nodes else list(node_set)
             else:
                 self.fixed_policy[service] = list(node_set)
