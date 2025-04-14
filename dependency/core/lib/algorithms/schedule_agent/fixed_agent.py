@@ -49,6 +49,8 @@ class FixedAgent(BaseAgent, abc.ABC):
             if service_name in service_info and service_name in self.fixed_offloading \
                     and self.fixed_offloading[service_name] in all_devices:
                 dag[service_name]['service']['execute_device'] = self.fixed_offloading[service_name]
+            elif service_name == 'start':
+                dag[service_name]['service']['execute_device'] = source_edge_device
             else:
                 dag[service_name]['service']['execute_device'] = cloud_device
 
