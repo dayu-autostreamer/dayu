@@ -393,7 +393,7 @@ class Task:
     def fork_task(self, new_flow_index: str = None) -> 'Task':
         new_task = copy.deepcopy(self)
         if new_flow_index and new_flow_index != self.__cur_flow_index:
-            self.__past_flow_index = self.__cur_flow_index
+            new_task.set_past_flow_index(self.__cur_flow_index)
             new_task.set_flow_index(new_flow_index)
         new_task.set_task_uuid(str(uuid.uuid4()))
         new_task.set_parent_uuid(self.__task_uuid)
