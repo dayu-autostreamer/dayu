@@ -38,7 +38,7 @@ class ClassifierProcessor(Processor):
                         result = self.classifier(faces)
                 else:
                     result = []
-                content_output.append([bbox, prob, class_id, result])
+                content_output.append([result])
         except Exception as e:
             pass
 
