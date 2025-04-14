@@ -1,3 +1,4 @@
+import copy
 import json
 from typing import List
 
@@ -65,7 +66,7 @@ class DAG:
         return self.nodes[service_name]
 
     def set_node_service(self, service_name: str, service: Service):
-        self.get_node(service_name).service = service
+        self.get_node(service_name).service = copy.deepcopy(service)
 
     def get_next_nodes(self, service_name: str) -> List[Service]:
         if service_name not in self.nodes:

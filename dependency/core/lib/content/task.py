@@ -414,6 +414,8 @@ class Task:
                                                                                     other_task.get_past_flow_index())
         nodes_for_merge.add(other_task.get_past_flow_index())
 
+        print(f'nodes for merge: {nodes_for_merge}')
+
         for node in nodes_for_merge:
             merged_dag.set_node_service(node, other_dag.get_node(node).service)
 
