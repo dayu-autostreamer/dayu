@@ -268,6 +268,13 @@ class Task:
         # return one of first non-empty content
         return next((content for content in first_contents if content is not None), None)
 
+    def get_last_content(self):
+        last_service_names = self.__dag_flow.get_prev_nodes('end')
+        last_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
+                          for service_name in last_service_names]
+        # return one of first non-empty content
+        return next((content for content in last_contents if content is not None), None)
+
     def set_current_content(self, content):
         self.__dag_flow.get_node(self.__cur_flow_index).service.set_content_data(content)
 
