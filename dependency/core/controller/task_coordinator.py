@@ -97,7 +97,7 @@ class TaskCoordinator:
                     return None
 
                 LOGGER.debug(f"Retrieve {len(parsed_tasks)} tasks from {storage_key}, "
-                             f"past services:{cur_task_services}, current joint service:{list(cur_task_services)[0]}")
+                             f"past services:{past_task_services}, current joint service:{list(cur_task_services)[0]}")
                 return parsed_tasks
         except Exception as e:
             LOGGER.warning(f'Redis operation failed in retrieve tasks: {str(e)}')

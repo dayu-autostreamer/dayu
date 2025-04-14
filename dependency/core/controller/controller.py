@@ -149,7 +149,7 @@ class Controller:
                 # merge parallel tasks
                 for task in tasks:
                     new_task.merge_task(task)
-                LOGGER.debug(f"Merge task with services {[task.get_flow_index() for task in tasks]} "
+                LOGGER.debug(f"Merge task with services {[task.get_past_flow_index() for task in tasks]} "
                              f"into task with service '{joint_service_name}'")
 
             actions.append(self.submit_task(new_task))

@@ -402,10 +402,7 @@ class Task:
     def merge_task(self, other_task: 'Task'):
         lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_past_flow_index(), other_task.get_past_flow_index())
 
-        merged_task = copy.deepcopy(self)
-        merged_task.set_task_uuid(str(uuid.uuid4()))
-
-        merged_dag = merged_task.get_dag()
+        merged_dag = self.get_dag()
         other_dag = other_task.get_dag()
 
         # Complete missing part of merged_task with other_task
@@ -414,12 +411,10 @@ class Task:
                                                                                     other_task.get_past_flow_index())
         nodes_for_merge.add(other_task.get_past_flow_index())
 
-        print(f'nodes for merge: {nodes_for_merge}')
-
         for node in nodes_for_merge:
             merged_dag.set_node_service(node, other_dag.get_node(node).service)
 
-        merged_task.set_dag(merged_dag)
+        self.set_dag(merged_dag)
 
     def to_dict(self):
         return {
