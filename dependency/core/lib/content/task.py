@@ -17,6 +17,7 @@ class Task:
                  all_edge_devices: list,
                  dag: DAG = None,
                  flow_index: str = 'start',
+                 past_flow_index: str = None,
                  metadata: dict = None,
                  raw_metadata: dict = None,
                  scenario: dict = None,
@@ -54,6 +55,8 @@ class Task:
 
         # current service name in dag (work as pointer)
         self.__cur_flow_index = flow_index
+        # past service name in dag
+        self.__past_flow_index = past_flow_index
 
         # scenario data extracted from processing
         self.__scenario_data = scenario if scenario else {}
@@ -181,6 +184,12 @@ class Task:
 
     def set_flow_index(self, flow_index):
         self.__cur_flow_index = flow_index
+
+    def get_past_flow_index(self):
+        return self.__past_flow_index
+
+    def set_past_flow_index(self, past_flow_index):
+        self.__past_flow_index = past_flow_index
 
     def get_metadata(self):
         return self.__metadata
@@ -376,7 +385,8 @@ class Task:
 
     def fork_task(self, new_flow_index: str = None) -> 'Task':
         new_task = copy.deepcopy(self)
-        if new_flow_index:
+        if new_flow_index and new_flow_index != self.__cur_flow_index:
+            self.__past_flow_index = self.__cur_flow_index
             new_task.set_flow_index(new_flow_index)
         new_task.set_task_uuid(str(uuid.uuid4()))
         new_task.set_parent_uuid(self.__task_uuid)
@@ -411,6 +421,7 @@ class Task:
             'all_edge_devices': self.get_all_edge_devices(),
             'dag': self.get_dag().to_dict() if self.get_dag() else None,
             'cur_flow_index': self.get_flow_index(),
+            'past_flow_index': self.get_past_flow_index(),
             'meta_data': self.get_metadata(),
             'raw_meta_data': self.get_raw_metadata(),
             'scenario_data': self.get_scenario_data(),
@@ -431,6 +442,7 @@ class Task:
 
         task.set_dag(DAG.from_dict(dag_dict['dag'])) if 'dag' in dag_dict and dag_dict['dag'] else None
         task.set_flow_index(dag_dict['cur_flow_index']) if 'cur_flow_index' in dag_dict else None
+        task.set_past_flow_index(dag_dict['past_flow_index']) if 'past_flow_index' in dag_dict else None
         task.set_metadata(dag_dict['meta_data']) if 'meta_data' in dag_dict else None
         task.set_raw_metadata(dag_dict['raw_meta_data']) if 'raw_meta_data' in dag_dict else None
         task.set_scenario_data(dag_dict['scenario_data']) if 'scenario_data' in dag_dict else None

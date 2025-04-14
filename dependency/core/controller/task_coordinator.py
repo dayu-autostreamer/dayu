@@ -78,14 +78,26 @@ class TaskCoordinator:
                     for i in range(0, len(result), 2)
                 ]
 
-                # check if same branch exists
                 cur_task_services = set([task.get_flow_index() for task in parsed_tasks])
-                if len(cur_task_services) != required_count:
+                past_task_services = set([task.get_past_flow_index() for task in parsed_tasks])
+
+                # check if joint service merged from same parallel branch (e.g., [a->c, a->c, b->c])
+                if len(past_task_services) != required_count:
                     LOGGER.warning(f"Same branch exists for parallel services: require {required_count} "
-                                   f"get {len(cur_task_services)}, current services: {cur_task_services}")
+                                   f"get {len(past_task_services)}, past services: {past_task_services}, "
+                                   f"current joint service: {list(cur_task_services)[0]}")
                     return None
 
-                LOGGER.debug(f"Retrieve {len(parsed_tasks)} tasks from {storage_key}, services:{cur_task_services}")
+                # check if joint service of parallel branches are different (e.g., [a->c, b->d])
+                if len(cur_task_services) != 1:
+                    LOGGER.warning(f"Joint service for parallel branches conflict:"
+                                   f" require 1 get {len(cur_task_services)}, "
+                                   f"past services: {past_task_services}, "
+                                   f"current joint service: {list(cur_task_services)[0]}")
+                    return None
+
+                LOGGER.debug(f"Retrieve {len(parsed_tasks)} tasks from {storage_key}, "
+                             f"past services:{cur_task_services}, current joint service:{list(cur_task_services)[0]}")
                 return parsed_tasks
         except Exception as e:
             LOGGER.warning(f'Redis operation failed in retrieve tasks: {str(e)}')
