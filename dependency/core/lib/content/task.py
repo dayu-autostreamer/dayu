@@ -400,10 +400,9 @@ class Task:
         return new_task
 
     def merge_task(self, other_task: 'Task'):
-        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_flow_index(), other_task.get_flow_index())
+        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_past_flow_index(), other_task.get_past_flow_index())
 
         merged_task = copy.deepcopy(self)
-        merged_task.set_flow_index(lca_service_name)
         merged_task.set_task_uuid(str(uuid.uuid4()))
 
         merged_dag = merged_task.get_dag()
@@ -412,8 +411,8 @@ class Task:
         # Complete missing part of merged_task with other_task
         # missing part contains intermediate nodes between "LCA" and "current node of other_task" (including latter)
         nodes_for_merge = IntermediateNodeSolver(merged_dag).get_intermediate_nodes(lca_service_name,
-                                                                                    other_task.get_flow_index())
-        nodes_for_merge.add(other_task.get_flow_index())
+                                                                                    other_task.get_past_flow_index())
+        nodes_for_merge.add(other_task.get_past_flow_index())
 
         for node in nodes_for_merge:
             merged_dag.set_node_service(node, other_dag.get_node(node).service)
