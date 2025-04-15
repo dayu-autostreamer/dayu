@@ -22,7 +22,7 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
         self.file_name = None
         self.hash_codes = None
 
-        self.file_suffix = '.mp4'
+        self.file_suffix = 'mp4'
 
     @TimeEstimator.estimate_duration_time
     def request_source_data(self, system, task_id):

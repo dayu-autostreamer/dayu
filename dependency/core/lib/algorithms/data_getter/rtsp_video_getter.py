@@ -19,7 +19,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
     def __init__(self):
         self.data_source_capture = None
         self.frame_buffer = []
-        self.file_suffix = '.mp4'
+        self.file_suffix = 'mp4'
 
     @staticmethod
     def filter_frame(system, frame):

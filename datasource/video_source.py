@@ -52,7 +52,7 @@ class VideoSource:
         self.frame_process = None
         self.frame_compress = None
 
-        self.file_suffix = '.mp4'
+        self.file_suffix = 'mp4'
 
     def get_one_frame(self):
         frame = cv2.imread(os.path.join(self.data_dir, f'{self.frame_count}.jpg'))
