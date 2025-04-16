@@ -14,6 +14,7 @@ from .error import *
 from .kube import KubeConfig
 from .name import NameMaintainer
 from .counter import Counter
+from .lazy_module import LazyModule
 
 
 

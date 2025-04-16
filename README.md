@@ -135,3 +135,20 @@ docker buildx ls
 docker buildx stop dayu-buildx
 docker buildx rm dayu-buildx
 ```
+
+
+core/
+  __init__.py
+  lib/
+    __init__.py
+    common/
+      __init__.py
+      class_factory.py
+      ......
+    algorithms/
+      __init__.py
+      schedule_agent/
+        __init__.py
+        base_agent.py
+        fixed_agent.py
+        ......
