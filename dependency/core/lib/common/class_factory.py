@@ -140,6 +140,7 @@ class ClassFactory(object):
         :return: t_cls
         """
         if not cls.is_exists(type_name, t_cls_name):
+            print(cls.__type_module_map__)
             module_path = cls.__type_module_map__.get(type_name)
             if module_path:
                 try:
