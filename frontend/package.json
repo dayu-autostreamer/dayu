@@ -87,7 +87,7 @@
     "next-admin"
   ],
   "repository": {
-    "type": "git",
-    "url": "https://gitee.com/lyt-top/vue-next-admin.git"
+    "type": "github",
+    "url": "https://dayu-autostreamer.github.io/"
   }
 }

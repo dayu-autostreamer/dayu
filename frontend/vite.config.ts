@@ -12,21 +12,13 @@ const pathResolve = (dir: string) => {
 
 const alias: Record<string, string> = {
   "/@": pathResolve("./src/"),
+  '/images': path.resolve("./src/assets/"),
   "vue-i18n": "vue-i18n/dist/vue-i18n.cjs.js",
 };
 
 // 之前使用loadEnv获取环境变量 现在使用node自带的process对象配置环境变量
 const viteConfig = defineConfig((mode: ConfigEnv) => {
-  // const dealDefaultEnv = () => {
-  //   console.log("没有找到环境变量文件，使用默认值");
-  //   process.env.VITE_BACKEND_ADDRESS = "http://$CLOUD_IP:$BACKEND_PORT";
-  //   process.env.VITE_PORT = "8000";
-  //   process.env.VITE_OPEN = "false";
-  //   process.env.VITE_OPEN_CDN = "false";
-  //   process.env.VITE_PUBLIC_PATH = "/vue-next-admin-preview/";
-  // };
-  // //   如果没有环境变量的话就用这里替代
-  // dealDefaultEnv();
+
   return {
     plugins: [
       vue(),
