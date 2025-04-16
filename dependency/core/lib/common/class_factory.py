@@ -152,7 +152,6 @@ class ClassFactory(object):
             raise ValueError(f"Can't find class type {type_name} class name {t_cls_name} in class registry")
         # create instance without configs
         if t_cls_name is None:
-            raise ValueError(
-                "can't find class. class type={}".format(type_name))
+            raise ValueError(f"Can't find class. class type={type_name}")
         t_cls = cls.__registry__.get(type_name).get(t_cls_name)
         return t_cls
