@@ -95,6 +95,8 @@ class BackendCore:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
+        finally:
+            self.save_component_yaml(first_docs_list)
         if not result:
             return False, msg
 
@@ -111,10 +113,10 @@ class BackendCore:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
+        finally:
+            self.save_component_yaml(first_docs_list + second_docs_list)
         if not result:
             return False, msg
-
-        self.save_component_yaml(first_docs_list + second_docs_list)
 
         return True, 'Install services successfully'
 
