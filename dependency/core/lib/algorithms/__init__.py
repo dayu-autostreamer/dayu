@@ -1,7 +1,11 @@
-import sys
-from pathlib import Path
-from core.lib.common import LazyModule
+import pkgutil
+import importlib
+
+__all__ = []
 
 
-_path = [str(Path(__file__).parent.resolve())]
-sys.modules[__name__] = LazyModule(__name__, _path)
+for _, name, is_pkg in pkgutil.iter_modules(__path__):
+    if is_pkg:
+        module = importlib.import_module(f'.{name}', __name__)
+        globals()[name] = module
+        __all__.append(name)

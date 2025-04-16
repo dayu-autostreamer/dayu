@@ -3,8 +3,7 @@ Management class registration and bind configuration properties,
 provides the type of class supported.
 """
 
-from inspect import isfunction, isclass, getmodule
-import importlib
+from inspect import isfunction, isclass
 
 
 class ClassType:
@@ -47,7 +46,6 @@ class ClassFactory(object):
     """
 
     __registry__ = {}
-    __type_module_map__ = {}
 
     @classmethod
     def register(cls, type_name=ClassType.GENERAL, alias=None):
@@ -64,12 +62,7 @@ class ClassFactory(object):
             :param t_cls: class need to register
             :return: wrapper of t_cls
             """
-            module = getmodule(t_cls)
-            if module:
-                module_path = module.__name__
-                cls.__type_module_map__[type_name] = module_path
-
-            t_cls_name = alias or t_cls.__name__
+            t_cls_name = alias if alias is not None else t_cls.__name__
             if type_name not in cls.__registry__:
                 cls.__registry__[type_name] = {t_cls_name: t_cls}
             else:
@@ -140,18 +133,12 @@ class ClassFactory(object):
         :return: t_cls
         """
         if not cls.is_exists(type_name, t_cls_name):
-            print(cls.__type_module_map__)
-            module_path = cls.__type_module_map__.get(type_name)
-            if module_path:
-                try:
-                    importlib.import_module(module_path)
-                except ImportError as e:
-                    raise RuntimeError(f"Auto-import failed for {type_name}: {e}")
-
-        if not cls.is_exists(type_name, t_cls_name):
-            raise ValueError(f"Can't find class type {type_name} class name {t_cls_name} in class registry")
+            raise ValueError(
+                f"can't find class type {type_name} class name"
+                f" {t_cls_name} in class registry")
         # create instance without configs
         if t_cls_name is None:
-            raise ValueError(f"Can't find class. class type={type_name}")
+            raise ValueError(
+                "can't find class. class type={}".format(type_name))
         t_cls = cls.__registry__.get(type_name).get(t_cls_name)
         return t_cls
