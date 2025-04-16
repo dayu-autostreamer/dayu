@@ -19,6 +19,7 @@ class LazyModule(ModuleType):
 
     def _scan_modules(self):
         for _, name, is_pkg in pkgutil.iter_modules(self.__package_path__):
+            print(f'scan_modules name: {name}')
             if is_pkg:
                 self.__submodules__.add(name)
             else:
