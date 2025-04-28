@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 COPY pdk_files /pdk_files
 
 # Install requried libraries
-RUN apt-get install -y dirmngr gnupg2 && \
+RUN apt-get install -y dirmngr&& \
     apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 1A127079A92F09ED && \
     apt-get update && \
     apt-get install -y software-properties-common && \
