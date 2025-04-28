@@ -1,4 +1,4 @@
 opencv-python-headless==4.9.0.80
 imagehash
-numpy==1.26.4
+numpy
 scikit-image
