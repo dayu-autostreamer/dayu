@@ -1,5 +1,16 @@
 # Dayu Release Notes
 
+## v1.1
+
+### Features
+- A more flexible visualization module in frontend to display customized visualization views.
+
+### Bug Fix
+
+- Fix write queue full in rtsp datasource server (`datasource`).
+- Fix possible task loss in system (`controller`/`distributor`).
+- Add cloud and edge template supplementary to support heterogeneous parameters (`backend`).
+
 ## v1.0
 
 ### Features
@@ -8,12 +19,3 @@
 - Easy to deploy on distributed systems and scalable to heterogeneous devices based on KubeEdge.
 - Support different scheduling methods, including our latest work: hierarchical-EI.
 
-## v1.1
-
-### Features
-
-
-### Bug Fix
-
-- fix write queue full in rtsp server of `datasource`
-- fix possible task loss in system
