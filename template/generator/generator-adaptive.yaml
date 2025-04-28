@@ -1,0 +1,22 @@
+position: edge
+pod-template:
+  image: repo:5000/adayoung/gen-tx2:v0.4
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: GEN_FILTER_NAME
+      value: simple
+    - name: GEN_GETTER_FILTER_NAME
+      value: simple
+    - name: GEN_PROCESS_NAME
+      value: adaptive
+    - name: GEN_COMPRESS_NAME
+      value: adaptive
+    - name: GEN_BSO_NAME
+      value: simple
+    - name: GEN_BSTO_NAME
+      value: simple
+    - name: GEN_ASO_NAME
+      value: simple
+file-mount:
+  - pos: edge
+    path: 'generator/adaptive/'

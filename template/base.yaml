@@ -18,6 +18,14 @@ datasource:
   data-root: "/data/datasource/"
   play-mode: non-cycle
 scheduler-policies:
+  - id: adaptive
+    name: Adaptive Video Encoding
+    yaml: adaptive.yaml
+    dependency:
+      generator: generator-adaptive.yaml
+      controller: controller-base.yaml
+      distributor: distributor-base.yaml
+      monitor: monitor-base.yaml
   - id: fixed
     name: Fixed Policy
     yaml: fixed-policy.yaml
@@ -133,4 +141,3 @@ services:
     input: bbox
     output: text
     yaml: age-classification.yaml
-
