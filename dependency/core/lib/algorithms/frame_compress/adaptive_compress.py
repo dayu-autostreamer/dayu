@@ -13,7 +13,6 @@ import os
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
 from .base_compress import BaseCompress
 import cv2
-from skimage.feature import graycomatrix, graycoprops
 import pickle
 
 __all__ = ('AdaptiveCompress',)
@@ -22,7 +21,7 @@ __all__ = ('AdaptiveCompress',)
 @ClassFactory.register(ClassType.GEN_COMPRESS, alias='adaptive')
 class AdaptiveCompress(BaseCompress, abc.ABC):
     def __init__(self):
-        # TODO: 多任务可能存在问题
+        # 多任务可能存在问题
         self.past_acc = 0
         self.past_latency = 0
         self.past_qp = 45
@@ -68,22 +67,6 @@ class AdaptiveCompress(BaseCompress, abc.ABC):
         import subprocess
 
         assert frame_buffer, 'frame buffer is empty!'
-        
-        # fourcc = cv2.VideoWriter_fourcc(*system.meta_data['encoding'])
-        # height, width, _ = frame_buffer[0].shape
-        # buffer_tmp_path = self.generate_file_temp_path(source_id, task_id)
-        # out = cv2.VideoWriter(buffer_tmp_path, fourcc, 30, (width, height))
-        # for frame in frame_buffer:
-        #     out.write(frame)
-        # out.release()
-
-        # buffer_path = self.generate_file_path(source_id, task_id)
-        # if 'qp' in system.meta_data:
-        #     qp = system.meta_data['qp']
-        #     os.system(f'ffmpeg -i {buffer_tmp_path} -c:v libx264 -crf {qp} {buffer_path}')
-        #     LOGGER.debug(f'[Generator Compress] compress {buffer_path} into qp of {qp}')
-
-        # FileOps.remove_file(buffer_tmp_path)
 
         frames = [data[0] for data in frame_buffer]
         rois = [data[1] for data in frame_buffer]
@@ -119,6 +102,7 @@ class AdaptiveCompress(BaseCompress, abc.ABC):
 
         return h264_path
 
+    @staticmethod
     def load_model(filename='agent_model.pkl'):
         with open(filename, 'rb') as f:
             agent = pickle.load(f)
@@ -138,6 +122,7 @@ class AdaptiveCompress(BaseCompress, abc.ABC):
     
     @staticmethod
     def calculate_texture_complexity(frame, roi=None):
+        from skimage.feature import graycomatrix, graycoprops
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if roi is not None:
             gray = gray[roi[1]:roi[3], roi[0]:roi[2]]
@@ -274,9 +259,7 @@ class AdaptiveCompress(BaseCompress, abc.ABC):
         except ValueError as e:
             LOGGER.error(f"选择状态失败: {e}")
         return chosen_qp
-   
-import numpy as np
-import random
+
 import torch
 import torch.nn as nn
 import torch.optim as optim

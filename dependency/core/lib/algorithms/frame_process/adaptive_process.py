@@ -5,7 +5,6 @@ from typing import List, Tuple
 
 from core.lib.common import ClassFactory, ClassType
 from core.lib.common import VideoOps
-from core.lib.common import FileOps
 from .base_process import BaseProcess
 
 __all__ = ('AdaptiveProcess',)
