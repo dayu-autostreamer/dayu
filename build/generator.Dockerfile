@@ -14,24 +14,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 ENV TZ=Asia/Shanghai
 
-# Install python3
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      ffmpeg \
-      python3 \
-      python3-pip \
-      python3-dev \
-      python3-wheel &&\
-    cd /usr/local/bin &&\
-    ln -s /usr/bin/python3 python &&\
-    ln -s /usr/bin/pip3 pip
-
 COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
 COPY ${base_dir}/requirements.txt ./base_requirements.txt
 
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install -r lib_requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip install -r base_requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN apt-get remove -y python3-yaml && \
+    pip3 install --upgrade pip setuptools wheel && \
+    pip3 install -r lib_requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip3 install -r base_requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 
 
