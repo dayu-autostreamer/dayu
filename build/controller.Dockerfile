@@ -14,6 +14,7 @@ COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
 COPY ${base_dir}/requirements.txt ./base_requirements.txt
 
 RUN pip3 install --upgrade pip && \
+    pip3 install --ignore-installed PyYAML==6.0.2 && \
     pip install -r lib_requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip install -r base_requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
