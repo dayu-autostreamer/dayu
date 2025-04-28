@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM ${REG}/diegofpsouza/numpy:0.0.1
+FROM ${REG}/dayuhub/tensorrt:trt8
 
 LABEL authors="Wenhui Zhou"
 

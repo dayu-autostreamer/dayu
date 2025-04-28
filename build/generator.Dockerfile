@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM ${REG}/gocv/opencv:latest
+FROM ${REG}/dayuhub/tensorrt:trt8
 
 
 LABEL authors="Wenhui Zhou"

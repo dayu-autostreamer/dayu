@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM ${REG}/python:3.6
+FROM ${REG}/dayuhub/tensorrt:trt8
 
 LABEL authors="Wenhui Zhou"
 
