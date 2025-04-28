@@ -8,7 +8,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 COPY pdk_files /pdk_files
 
 # Install requried libraries
-RUN apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 1A127079A92F09ED && \
+RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
+    gpg --dearmor - | \
+    tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null && \
+    echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main" | \
+    tee /etc/apt/sources.list.d/kitware.list >/dev/null && \
+    #
+    apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 1A127079A92F09ED && \
     apt-get update && \
     apt-get install -y software-properties-common && \
     add-apt-repository ppa:ubuntu-toolchain-r/test
