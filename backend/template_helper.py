@@ -6,7 +6,7 @@ import uuid
 
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps, LOGGER, SystemConstant
+from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge
 from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
@@ -80,11 +80,22 @@ class TemplateHelper:
             ])
             template['ports'] = [{'containerPort': node_port['port']}]
 
-        template = {
+        cloud_template = deep_merge(copy.deepcopy(template), yaml_doc['cloud-pod-template']) \
+            if 'cloud-pod-template' in yaml_doc else copy.deepcopy(template)
+        edge_template = deep_merge(copy.deepcopy(template), yaml_doc['edge-pod-template']) \
+            if 'edge-pod-template' in yaml_doc else copy.deepcopy(template)
+
+        cloud_template = {
             'serviceAccountName': service_account,
             'nodeName': '',
             'dnsPolicy': 'ClusterFirstWithHostNet',
-            'containers': [template]
+            'containers': [cloud_template]
+        }
+        edge_template = {
+            'serviceAccountName': service_account,
+            'nodeName': '',
+            'dnsPolicy': 'ClusterFirstWithHostNet',
+            'containers': [edge_template]
         }
 
         if pos == 'cloud':
@@ -94,7 +105,7 @@ class TemplateHelper:
 
             template_doc['spec'].update({
                 'cloudWorker': {
-                    'template': {'spec': copy.deepcopy(template)},
+                    'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
                     **({'file': {'paths': files_cloud}} if files_cloud else {}),
                 }
@@ -106,7 +117,7 @@ class TemplateHelper:
 
             template_doc['spec'].update({
                 'edgeWorker': [{
-                    'template': {'spec': copy.deepcopy(template)},
+                    'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
                     **({'file': {'paths': files_edge}} if files_edge else {}),
                 }]
@@ -121,12 +132,12 @@ class TemplateHelper:
 
             template_doc['spec'].update({
                 'edgeWorker': [{
-                    'template': {'spec': copy.deepcopy(template)},
+                    'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
                     **({'file': {'paths': files_edge}} if files_edge else {}),
                 }],
                 'cloudWorker': {
-                    'template': {'spec': copy.deepcopy(template)},
+                    'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
                     **({'file': {'paths': files_cloud}} if files_cloud else {}),
                 }
