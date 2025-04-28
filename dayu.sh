@@ -414,19 +414,21 @@ preprocess_yaml() {
 
   while grep -q '!include' "$output_file"; do
     include_line=$(grep -m1 '!include' "$output_file")
-    include_file=$(echo "$include_line" | sed -E 's/.*!include[[:space:]]+["'\'']?([^"'\'']+)["'\'']?.*/\1/')
+    include_file=$(echo "$include_line" | tr -d '\r' | sed -E 's/.*!include[[:space:]]+["'\'']?([^"'\'']+)["'\'']?.*/\1/')
 
-    include_content=$(sed -e 's/^/  /' "${current_dir}/${include_file}")
+    local include_path="${current_dir}/${include_file}"
+    if [ ! -f "$include_path" ]; then
+      echo "Error: Include file '$include_path' not found." >&2
+      exit 1
+    fi
 
-    awk -v include_line="$include_line" -v include_content="$include_content" '
+    include_content=$(sed -e 's/^/  /' "$include_path")
+
+    awk -v include_line="${include_line//\\r/}" -v include_content="$include_content" '
       $0 == include_line { print include_content; found=1; next }
       { print }
-    ' "$output_file" > "${output_file}.tmp"
-
-    mv "${output_file}.tmp" "$output_file"
+    ' "$output_file" > "${output_file}.tmp" && mv "${output_file}.tmp" "$output_file"
   done
-
-
 }
 
 get_master_details() {
