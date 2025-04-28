@@ -50,10 +50,9 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
             {
                 path: '/home',
                 name: 'home',
-                component: () => import('/@/views/home/index.vue'),
                 meta: {
                     title: 'message.router.home',
-                    isLink: '',
+                    isLink: 'https://dayu-autostreamer.github.io/',
                     isHide: false,
                     isKeepAlive: true,
                     isAffix: true,
