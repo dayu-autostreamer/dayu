@@ -284,22 +284,15 @@ class BackendCore:
     def check_simulation_datasource(self):
         return KubeHelper.check_pod_name('datasource', namespace=self.namespace)
 
-    def check_dag(self, dag, modal='frame'):
+    def check_dag(self, dag):
 
-        def topo_sort(graph, modal):
+        def topo_sort(graph):
             in_degree = {}
             for node in graph.keys():
                 if node != '_start':
                     in_degree[node] = len(graph[node]['prev'])
             queue = copy.deepcopy(graph['_start'])
             topo_order = []
-
-            for node in queue:
-                node_service = self.find_service_by_id(node)
-                if node_service['input'] != modal:
-                    error_msg = f"Node '{node}' has invalid input mode, expected '{modal}' got '{node_service['input']}'"
-                    LOGGER.warning(f"DAG Validation Error: {error_msg}")
-                    return False, error_msg
 
             while queue:
                 parent = queue.pop(0)
@@ -329,7 +322,7 @@ class BackendCore:
 
             return True, "DAG validation passed"
 
-        return topo_sort(dag.copy(), modal)
+        return topo_sort(dag.copy())
 
     def get_source_ids(self):
         source_ids = []

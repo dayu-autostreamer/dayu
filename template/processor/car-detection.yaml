@@ -11,6 +11,14 @@ pod-template:
       value: "['obj_num', 'obj_size']"
     - name: PRO_QUEUE_NAME
       value: "simple"
+cloud-pod-template:
+  env:
+    - name: DETECTOR_PARAMETERS
+      value: "{'weights':'yolov5s.engine', 'plugin_library':'libmyplugins.so', 'device':1}"
+edge-pod-template:
+  env:
+    - name: DETECTOR_PARAMETERS
+      value: "{'weights':'yolov5s.engine', 'plugin_library':'libmyplugins.so', 'device':0}"
 port-open:
   pos: both
   port: 9000
