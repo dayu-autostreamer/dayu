@@ -1,4 +1,4 @@
-namespace: yby
+namespace: dayu
 log-level: DEBUG
 log-file-name:
 pod-permission:
@@ -10,13 +10,13 @@ crd-meta:
 default-image-meta:
   registry: repo:5000
   repository: dayuhub
-  tag: v1.0
+  tag: v1.1
 default-file-mount-prefix: "/data/dayu-files"
 datasource:
   use-simulation: true
   node: edgex1
   data-root: "/data/datasource/"
-  play-mode: cycle
+  play-mode: non-cycle
 scheduler-policies:
   - id: adaptive
     name: Adaptive Video Encoding
@@ -141,4 +141,3 @@ services:
     input: bbox
     output: text
     yaml: age-classification.yaml
-

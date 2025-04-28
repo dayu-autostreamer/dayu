@@ -303,15 +303,17 @@ class TemplateHelper:
         default_tag = image_meta['tag']
 
         pattern = re.compile(
-            r"^(?:(?P<registry>[^/]+?)/)?"
-            r"(?:(?P<repository>[^/:]+?)/)?"
-            r"(?P<image>[^:]+)"
-            r"(?:[:](?P<tag>[^:]+))?$"
+            r"^(?:(?P<registry>[^/]+)/"  # match registry with '/'
+            r"(?=.*/)"  # forward pre-check to make sure there is a '/' followed
+            r")?"  # registry is optional
+            r"(?:(?P<repository>[^/:]+)/)?"  # match repository
+            r"(?P<image>[^:]+)"  # match image
+            r"(?::(?P<tag>[^:]+))?$"  # match tag
         )
 
         match = pattern.match(image)
         if not match:
-            raise ValueError(f'format of input image "{image}" is illegal')
+            raise ValueError(f'Format of input image "{image}" is illegal')
 
         registry = match.group("registry") or default_registry
         repository = match.group("repository") or default_repository

@@ -7,6 +7,8 @@ pod-template:
       value: "detector_processor"
     - name: DETECTOR_PARAMETERS
       value: "{'weights':'yolov5s.engine', 'plugin_library':'libmyplugins.so'}"
+    - name: SCENARIOS_EXTRACTORS
+      value: "['obj_num', 'obj_size']"
     - name: PRO_QUEUE_NAME
       value: "simple"
 port-open:
