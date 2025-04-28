@@ -70,3 +70,11 @@
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
+- id: crave
+  name: Adaptive Video Encoding
+  yaml: crave.yaml
+  dependency:
+    generator: generator-adaptive.yaml
+    controller: controller-base.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
