@@ -9,6 +9,5 @@ gunicorn
 joblib
 imagehash
 pillow
-annoy
 func_timeout
 
