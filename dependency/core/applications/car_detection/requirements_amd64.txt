@@ -1,6 +1,4 @@
-
 pycuda==2023.1
-opencv-python-headless
 tensorrt
 numpy==1.23.1
 

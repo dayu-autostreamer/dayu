@@ -1,6 +1,5 @@
 pycuda==2023.1
 typing_extensions
-opencv-python-headless
 tensorrt
 numpy==1.23.1
 
