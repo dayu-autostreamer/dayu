@@ -2,14 +2,19 @@
 
 ## v1.1
 
+### Breaking Changes
+The basic structure of task in dayu is updated from linear pipeline to topological dag (directed acyclic graph) to support more complicated application scenarios.
+
 ### Features
-- A more flexible visualization module in frontend to display customized visualization views.
+- A more flexible visualization module in frontend to display customized visualization views for system analysis.
 
 ### Bug Fix
-
 - Fix write queue full in rtsp datasource server (`datasource`).
 - Fix possible task loss in system (`controller`/`distributor`).
+
+### Minor Update
 - Add cloud and edge template supplementary to support heterogeneous parameters (`backend`).
+- beatify frontend pages (`frontend`).
 
 ## v1.0
 
