@@ -28,7 +28,7 @@ declare -A PLATFORMS=(
 
 # Images requiring special treatment, their platforms, and Dockerfiles
 declare -A SPECIAL_BUILD=(
-    [tensorrt]="linux/amd64:templates/dockerfile/tensorrt_amd64.Dockerfile,linux/arm64:templates/dockerfile/tensorrt_arm64.Dockerfile"
+    [tensorrt]="linux/amd64:build/tensorrt_amd64.Dockerfile,linux/arm64:build/tensorrt_arm64.Dockerfile"
 
 )
 
