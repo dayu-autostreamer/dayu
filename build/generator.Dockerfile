@@ -20,18 +20,6 @@ COPY ${base_dir}/requirements.txt ./base_requirements.txt
 ENV LANG=en_US.UTF-8
 
 # scikit-image
-
-RUN wget https://github.com/scipy/scipy/releases/download/v1.3.3/scipy-1.3.3.tar.gz && \
-    tar -xzvf scipy-1.3.3.tar.gz scipy-1.3.3 && \
-    python3 scipy-1.3.3/setup.py install --user && \
-    wget https://download.osgeo.org/libtiff/tiff-4.1.0.tar.gz && \
-    tar -xzvf tiff-4.1.0.tar.gz && \
-    cd tiff-4.1.0/ && \
-    ./configure && \
-    make && \
-    make install
-
-
 RUN apt-get update && \
     apt-get remove -y python3-yaml && \
     pip3 install --upgrade pip && \
