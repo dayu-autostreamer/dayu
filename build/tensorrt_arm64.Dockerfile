@@ -12,7 +12,7 @@ RUN apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 1A127079A92F09ED &&
     apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 16FAAD7AF99A65E2 && \
     apt-get update && \
     apt-get install -y software-properties-common && \
-    add-apt-repository ppa:ubuntu-toolchain-r/test \
+    add-apt-repository ppa:ubuntu-toolchain-r/test
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
