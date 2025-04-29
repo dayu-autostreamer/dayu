@@ -12,7 +12,10 @@ RUN apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 1A127079A92F09ED &&
     apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 16FAAD7AF99A65E2 && \
     apt-get update && \
     apt-get install -y software-properties-common && \
-    add-apt-repository ppa:ubuntu-toolchain-r/test
+    add-apt-repository ppa:ubuntu-toolchain-r/test \
+
+RUN apt-get --purge remove  -y cuda* 2>/dev/null || true && \
+    rm -rf /usr/local/cuda*
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -47,8 +50,7 @@ RUN apt-get update && \
         libgif-dev libopenjp2-7-dev liblcms2-dev libjpeg-dev libjxr-dev liblz4-dev liblzma-dev libpng-dev libsnappy-dev libwebp-dev libzopfli-dev libzstd-dev \
 &&  rm -rf /var/lib/apt/lists/*
 
-RUN apt-get --purge remove  cuda* && \
-    rm -rf /usr/local/cuda*
+
 
 RUN dpkg -i /pdk_files/cuda-repo-l4t-10-2-local_10.2.460-1_arm64.deb && \
     apt-key add /var/cuda-repo*/*.pub \
