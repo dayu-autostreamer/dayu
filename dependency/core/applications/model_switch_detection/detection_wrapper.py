@@ -1,7 +1,14 @@
-# This file is the wrapper for the detection. 
-# It implements the detection interface and uses the model switch to switch between the models.
+"""
 
-# deal with different context, either main or module
+Author: Wenyi Dai
+
+Description:    
+    This file is the wrapper for the self-adpative detection module.
+    It implements the detection interface and uses the model switch submodule to switch between the models.
+
+"""
+
+
 def _import_random_switch_module():
     if __name__ == '__main__':
         from switch_module.random_switch import RandomSwitch
