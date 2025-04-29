@@ -36,24 +36,27 @@ RUN apt-get update && \
         libopenblas-base \
         libopenmpi-dev \
         libomp-dev \
-        libjpeg-dev \
         zlib1g-dev \
         libpython3-dev \
         libopenblas-dev \
         libavcodec-dev \
         libavformat-dev \
-        libswscale-dev
+        libswscale-dev \
+        libatlas-base-dev \
+        libaec-dev libblosc-dev libffi-dev libbrotli-dev libboost-all-dev libbz2-dev \
+        libgif-dev libopenjp2-7-dev liblcms2-dev libjpeg-dev libjxr-dev liblz4-dev liblzma-dev libpng-dev libsnappy-dev libwebp-dev libzopfli-dev libzstd-dev \
+&&  rm -rf /var/lib/apt/lists/* && \
+    apt-get remove -y python3-yaml &&
 
-RUN apt-get --purge remove  cuda*
-RUN rm -rf /usr/local/cuda*
+RUN apt-get --purge remove  cuda* && \
+    rm -rf /usr/local/cuda*
 
-RUN dpkg -i /pdk_files/cuda-repo-l4t-10-2-local_10.2.460-1_arm64.deb
-RUN apt-key add /var/cuda-repo*/*.pub \
+RUN dpkg -i /pdk_files/cuda-repo-l4t-10-2-local_10.2.460-1_arm64.deb && \
+    apt-key add /var/cuda-repo*/*.pub \
     && apt-get -y update \
     && apt-get -y install -f cuda-cudart-dev-10-2 \
-    && apt-get -y install -f cuda-toolkit-10-2
-
-RUN     dpkg -i /pdk_files/libcudnn8_8.2.1.32-1+cuda10.2_arm64.deb \
+    && apt-get -y install -f cuda-toolkit-10-2 \
+     && dpkg -i /pdk_files/libcudnn8_8.2.1.32-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/libcudnn8-dev_8.2.1.32-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/libcudnn8-samples_8.2.1.32-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/libnvinfer8_8.2.1-1+cuda10.2_arm64.deb  \
@@ -71,14 +74,18 @@ RUN     dpkg -i /pdk_files/libcudnn8_8.2.1.32-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/uff-converter-tf_8.2.1-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/python3-libnvinfer_8.2.1-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/python3-libnvinfer-dev_8.2.1-1+cuda10.2_arm64.deb \
-     && dpkg -i /pdk_files/tensorrt_8.2.1.9-1+cuda10.2_arm64.deb
-
-RUN apt-get -y update && apt-get -y -f install \
+     && dpkg -i /pdk_files/tensorrt_8.2.1.9-1+cuda10.2_arm64.deb \
+     && apt-get -y update && apt-get -y -f install \
      && apt-get install -y  /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-libs.deb \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-dev.deb \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-samples.deb  \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-licenses.deb \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-python.deb
+
+RUN pip3 install --upgrade pip && \
+    pip3 install -y --no-cache-dir  numpy && \
+    pip3 install -y --no-chache-dir python3-sklearn && \
+    pip3 install -y --no-chache-dir scipy tiff imagecodecs scikit-image
 
 
 WORKDIR /
