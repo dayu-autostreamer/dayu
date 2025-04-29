@@ -1,2 +1,2 @@
 numpy
-scikit-image
+scikit-image==0.17.2
