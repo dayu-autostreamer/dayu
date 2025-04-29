@@ -17,6 +17,8 @@ ENV TZ=Asia/Shanghai
 COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
 COPY ${base_dir}/requirements.txt ./base_requirements.txt
 
+ENV LANG=en_US.UTF-8
+
 # scikit-image
 RUN apt-get update && \
     apt-get install -y python3-sklearn && \
