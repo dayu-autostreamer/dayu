@@ -82,9 +82,9 @@ RUN dpkg -i /pdk_files/cuda-repo-l4t-10-2-local_10.2.460-1_arm64.deb && \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-python.deb
 
 RUN pip3 install --upgrade pip && \
-    pip3 install -y --no-cache-dir  numpy && \
-    pip3 install -y --no-chache-dir python3-sklearn && \
-    pip3 install -y --no-chache-dir scipy tiff imagecodecs scikit-image
+    pip3 install  --no-cache-dir  numpy && \
+    pip3 install  --no-chache-dir python3-sklearn && \
+    pip3 install  --no-chache-dir scipy tiff imagecodecs scikit-image
 
 
 WORKDIR /
