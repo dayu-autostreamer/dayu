@@ -5,6 +5,8 @@ LABEL authors="Wenhui Zhou"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+ENV LANG=en_US.UTF-8
+
 COPY pdk_files /pdk_files
 
 # Install requried libraries
@@ -43,6 +45,7 @@ RUN apt-get update && \
         libavformat-dev \
         libswscale-dev \
         libatlas-base-dev \
+        libgdal-dev \
         libaec-dev libblosc-dev libffi-dev libbrotli-dev libboost-all-dev libbz2-dev \
         libgif-dev libopenjp2-7-dev liblcms2-dev libjpeg-dev libjxr-dev liblz4-dev liblzma-dev libpng-dev libsnappy-dev libwebp-dev libzopfli-dev libzstd-dev \
 &&  rm -rf /var/lib/apt/lists/*
