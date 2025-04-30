@@ -46,7 +46,7 @@ RUN apt-get update && \
         libswscale-dev \
         libatlas-base-dev \
         libgdal-dev \
-        libopenjpeg-dev \
+        libopenjp2-7-dev \
         libaec-dev libblosc-dev libffi-dev libbrotli-dev libboost-all-dev libbz2-dev \
         libgif-dev libopenjp2-7-dev liblcms2-dev libjpeg-dev libjxr-dev liblz4-dev liblzma-dev libpng-dev libsnappy-dev libwebp-dev libzopfli-dev libzstd-dev \
 &&  rm -rf /var/lib/apt/lists/*
