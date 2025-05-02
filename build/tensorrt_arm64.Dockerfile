@@ -96,7 +96,11 @@ ENV LANG=en_US.UTF-8
 ENV CFLAGS="-I/usr/include/openjpeg-2.3 -I/usr/include/jxrlib"
 
 # Building libtiff (to allow imagecodecs to compile)
-RUN mkdir -p /usr/local/src/libtiff \
+RUN apt-get install -y \
+    autoconf \
+    automake \
+    libtool && \
+  mkdir -p /usr/local/src/libtiff \
   && wget -q --no-check-certificate -c https://gitlab.com/libtiff/libtiff/-/archive/v4.3.0/libtiff-v4.3.0.tar.bz2 -O - | tar --strip-components=1 -xj -C /usr/local/src/libtiff \
   && cd /usr/local/src/libtiff \
   && ./autogen.sh \
