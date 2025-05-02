@@ -110,13 +110,10 @@ ENV LANG=en_US.UTF-8
 ENV CFLAGS="-I/usr/include/openjpeg-2.3 -I/usr/include/jxrlib"
 
 # Building libtiff (to allow imagecodecs to compile)
-RUN mkdir -p /usr/local/src/libtiff \
-  && tar --strip-components=1 -xj -C /usr/local/src/libtiff -f /pdk_files/libtiff-v4.3.0.tar.bz2 \
-  && cd /usr/local/src/libtiff \
+RUN cd /pdk_files/libtiff \
   && ./autogen.sh \
   && ./configure \
-  && make install \
-  && rm -rf /usr/local/src/libtiff
+  && make install
 
 # brunsli (for imagecodecs)
 RUN cd /tmp \
