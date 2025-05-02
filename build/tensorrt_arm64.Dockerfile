@@ -16,6 +16,10 @@ RUN apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 1A127079A92F09ED &&
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        libtool \
+        cmake  \
         libcurl4-openssl-dev \
         wget \
         git \
@@ -46,11 +50,21 @@ RUN apt-get update && \
         libgdal-dev \
         liblapack-dev \
         libblas-dev \
+        libjpeg8-dev \
+        libjpeg-turbo8-dev \
         gfortran \
         libopenjp2-7 libopenjp2-tools \
         libaec-dev libblosc-dev libffi-dev libbrotli-dev libboost-all-dev libbz2-dev \
         libgif-dev libopenjp2-7-dev liblcms2-dev libjpeg-dev libjxr-dev liblz4-dev liblzma-dev libpng-dev libsnappy-dev libwebp-dev libzopfli-dev libzstd-dev \
-&&  rm -rf /var/lib/apt/lists/*
+&&  rm -rf /var/lib/apt/lists/* \
+
+# More recent cmake
+RUN apt-get update -y  \
+  && apt-get install -y build-essential libssl-dev gpg wget \
+  && wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null \
+  && echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ bionic main' | tee /etc/apt/sources.list.d/kitware.list >/dev/null\
+  && apt-get update \
+  && apt-get install -y --only-upgrade cmake
 
 RUN apt-get --purge remove  -y cuda* 2>/dev/null || true && \
     rm -rf /usr/local/cuda*
@@ -96,11 +110,7 @@ ENV LANG=en_US.UTF-8
 ENV CFLAGS="-I/usr/include/openjpeg-2.3 -I/usr/include/jxrlib"
 
 # Building libtiff (to allow imagecodecs to compile)
-RUN apt-get install -y \
-    autoconf \
-    automake \
-    libtool && \
-  mkdir -p /usr/local/src/libtiff \
+RUN mkdir -p /usr/local/src/libtiff \
   && tar --strip-components=1 -xj -C /usr/local/src/libtiff /pdk_files/libtiff-v4.3.0.tar.bz2 \
   && cd /usr/local/src/libtiff \
   && ./autogen.sh \
