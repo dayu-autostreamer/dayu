@@ -5,8 +5,6 @@ LABEL authors="Wenhui Zhou"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-ENV LANG=en_US.UTF-8
-
 COPY pdk_files /pdk_files
 
 # Install requried libraries
@@ -92,7 +90,7 @@ RUN dpkg -i /pdk_files/cuda-repo-l4t-10-2-local_10.2.460-1_arm64.deb && \
 RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
     && dpkg-reconfigure locales \
     && update-locale LANG=en_US.UTF-8
-ENV LANG en_US.UTF-8
+ENV LANG=en_US.UTF-8
 
 # CFLAGS (for imagecodecs)
 ENV CFLAGS="-I/usr/include/openjpeg-2.3 -I/usr/include/jxrlib"
