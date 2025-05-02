@@ -101,7 +101,8 @@ RUN apt-get install -y \
     automake \
     libtool && \
   mkdir -p /usr/local/src/libtiff \
-  && wget -q --no-check-certificate -c https://download.osgeo.org/libtiff/tiff-4.3.0.tar.gz -O - | tar --strip-components=1 -xz -C /usr/local/src/libtiff \
+  && tar --strip-components=1 -xj -C /usr/local/src/libtiff /pdk_files/libtiff-v4.3.0.tar.bz2 \
+  && cd /usr/local/src/libtiff \
   && ./autogen.sh \
   && ./configure \
   && make install \
