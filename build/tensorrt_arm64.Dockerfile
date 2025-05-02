@@ -91,7 +91,7 @@ RUN dpkg -i /pdk_files/cuda-repo-l4t-10-2-local_10.2.460-1_arm64.deb && \
 RUN pip3 install --upgrade pip && \
     pip3 install numpy && \
     apt-get install -y python3-sklearn && \
-    pip3 install scipy tiff imagecodecs scikit-image
+    pip3 install scipy tiff imagecodecs-lite scikit-image
 
 
 WORKDIR /
