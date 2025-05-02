@@ -88,10 +88,39 @@ RUN dpkg -i /pdk_files/cuda-repo-l4t-10-2-local_10.2.460-1_arm64.deb && \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-licenses.deb \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-python.deb
 
+# Set locale to UTF-8; seems to be ANSI_X3.4-1968 by default (to allow scikit-image to compile)
+RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+    && dpkg-reconfigure locales \
+    && update-locale LANG=en_US.UTF-8
+ENV LANG en_US.UTF-8
+
+# CFLAGS (for imagecodecs)
+ENV CFLAGS="-I/usr/include/openjpeg-2.3 -I/usr/include/jxrlib"
+
+# Building libtiff (to allow imagecodecs to compile)
+RUN mkdir -p /usr/local/src/libtiff \
+  && wget -q --no-check-certificate -c https://gitlab.com/libtiff/libtiff/-/archive/v4.3.0/libtiff-v4.3.0.tar.bz2 -O - | tar --strip-components=1 -xj -C /usr/local/src/libtiff \
+  && cd /usr/local/src/libtiff \
+  && ./autogen.sh \
+  && ./configure \
+  && make install \
+  && rm -rf /usr/local/src/libtiff
+
+# brunsli (for imagecodecs)
+RUN cd /tmp \
+  && git clone --depth=1 https://github.com/google/brunsli.git \
+  && cd brunsli \
+  && git submodule update --init --recursive \
+  && cmake -DCMAKE_BUILD_TYPE=Release \
+  && make install
+
+
 RUN pip3 install --upgrade pip && \
     pip3 install numpy && \
     apt-get install -y python3-sklearn && \
-    pip3 install scipy tiff imagecodecs-lite scikit-image
+    pip3 install --no-cache-dir scipy && \
+    pip3 install --no-cache-dir imagecodecs  && \
+    pip3 install --no-cache-dir scikit-image
 
 
 WORKDIR /
