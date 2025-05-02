@@ -56,7 +56,7 @@ RUN apt-get update && \
         libopenjp2-7 libopenjp2-tools \
         libaec-dev libblosc-dev libffi-dev libbrotli-dev libboost-all-dev libbz2-dev \
         libgif-dev libopenjp2-7-dev liblcms2-dev libjpeg-dev libjxr-dev liblz4-dev liblzma-dev libpng-dev libsnappy-dev libwebp-dev libzopfli-dev libzstd-dev \
-&&  rm -rf /var/lib/apt/lists/* \
+&&  rm -rf /var/lib/apt/lists/*
 
 # More recent cmake
 RUN apt-get update  \
