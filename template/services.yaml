@@ -12,6 +12,7 @@
   input: frame
   output: bbox
   yaml: car-detection-pure.yaml
+# unimplemented
 - id: lane-detection
   service: lane-detection
   name: lane detection
@@ -32,30 +33,35 @@
   input: frame
   output: bbox
   yaml: face-detection-pure.yaml
+# unimplemented
 - id: human-detection
   service: human-detection
   name: human detection
   description: human detection
   input: frame
   output: bbox
+# unimplemented
 - id: driveable-area-segmentation
   service: driveable-area-segmentation
   name: driveable area segmentation
   description: driveable area segmentation
   input: frame
   output: mask
+# unimplemented
 - id: license-plate-detection
   service: license-plate-detection
   name: license plate detection
   description: license plate detection
   input: bbox
   output: bbox
+# unimplemented
 - id: license-plate-text-recognition
   service: license-plate-text-recognition
   name: license plate text recognition
   description: license plate text recognition
   input: bbox
   output: text
+# unimplemented
 - id: road-danger-identification
   service: road-danger-identification
   name: road danger identification
@@ -76,6 +82,7 @@
   input: bbox
   output: text
   yaml: age-classification.yaml
+# unimplemented
 - id: human-exposure-identification
   service: human-exposure-identification
   name: human exposure identification
