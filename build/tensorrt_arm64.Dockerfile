@@ -109,6 +109,12 @@ ENV LANG=en_US.UTF-8
 # CFLAGS (for imagecodecs)
 ENV CFLAGS="-I/usr/include/openjpeg-2.3 -I/usr/include/jxrlib"
 
+# Building libtiff (to allow imagecodecs to compile)
+RUN cd /pdk_files/libtiff \
+  && ./autogen.sh \
+  && ./configure \
+  && make install
+
 # brunsli (for imagecodecs)
 RUN cd /tmp \
   && git clone --depth=1 https://github.com/google/brunsli.git \
