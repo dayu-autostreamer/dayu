@@ -1,0 +1,36 @@
+position: both
+pod-template:
+  image: model-switch-detection
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "detector_processor"
+    - name: DETECTOR_PARAMETERS 
+      value: >
+        {
+          'model_type':'yolo', 
+          'switch_type':'ac', 
+          'decision_interval':10, 
+          'weights_dir':'yolov5_weights', 
+          'model_names': ['yolov5n', 'yolov5s', 'yolov5m', 'yolov5l', 'yolov5x'], 
+          'model_accuracy': [28.0, 37.4, 45.4, 49.0, 50.7]
+        }
+      # value: >
+      #   {
+      #     'model_type':'ofa', 
+      #     'switch_type':'random', 
+      #     'decision_interval':10,
+      #     'ofa_det_type':'mbv3_faster_rcnn',
+      #     'subnet_nums':7,
+      #     'subnet_archs':[{'ks': [5,3,7,3,5,5,5,3,3,3,5,7,3,3,5,7,3,5,5,7], 'e': [6,6,6,3,4,6,4,3,4,6,4,3,6,4,6,4,6,4,4,4], 'd': [2,2,2,3,2]}, {'ks': [7,3,7,5,3,7,7,7,5,7,3,3,5,3,3,7,5,7,3,5], 'e': [4,3,3,6,3,6,6,4,6,6,3,4,6,6,3,6,4,6,3,4], 'd': [4,2,2,2,2]}, {'ks': [7,3,5,7,5,7,5,7,7,7,5,3,5,5,5,7,7,5,7,5], 'e': [6,4,4,6,4,6,4,6,6,3,3,4,6,6,4,3,4,3,3,6], 'd': [3,2,2,3,2]}, {'ks': [3,3,3,3,5,7,3,7,3,7,7,7,3,7,7,5,3,5,3,3], 'e': [6,4,6,6,6,4,6,4,6,6,6,6,6,6,6,3,6,3,6,3], 'd': [3,4,2,2,3]}, {'ks': [5,3,5,5,5,3,3,5,7,3,3,5,3,3,7,3,3,7,5,3], 'e': [6,6,4,4,4,6,3,4,6,4,3,6,3,3,3,4,6,6,4,6], 'd': [3,2,4,3,3]}, {'ks': [3,5,7,3,3,7,3,7,7,3,3,7,5,7,3,3,5,3,5,7], 'e': [3,4,3,6,4,6,3,6,4,3,4,6,6,6,4,3,4,4,6,4], 'd': [3,4,3,2,2]}, {'ks': [3,3,7,3,5,5,3,7,5,5,7,7,5,3,3,7,7,3,3,7], 'e': [3,4,3,3,3,6,3,4,4,6,3,3,4,4,4,3,4,3,3,4], 'd': [4,3,3,3,3]}],
+      #     'subnet_accuracy':[18.1, 18.7, 18.9, 19.4, 20.0, 20.1, 20.8],
+      #     'weights_dir':'ofa_weights'
+      #   }
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/model-switch-detection/"

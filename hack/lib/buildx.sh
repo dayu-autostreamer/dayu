@@ -77,7 +77,7 @@ dayu::buildx::import_docker_info() {
       [face-detection]="build/face_detection.Dockerfile"
       [gender-classification]="build/gender_classification.Dockerfile"
       [age-classification]="build/age_classification.Dockerfile"
-
+      [model-switch-detection]="build/model_switch_detection.Dockerfile"
   )
   # Corresponding platforms
   declare -g -A PLATFORMS=(
@@ -94,6 +94,7 @@ dayu::buildx::import_docker_info() {
       [face-detection]="linux/amd64,linux/arm64"
       [gender-classification]="linux/amd64,linux/arm64"
       [age-classification]="linux/amd64,linux/arm64"
+      [model-switch-detection]="linux/amd64,linux/arm64"
   )
   # Images requiring special treatment, their platforms, and Dockerfiles
   declare -g -A SPECIAL_BUILD=(
@@ -101,7 +102,7 @@ dayu::buildx::import_docker_info() {
       [face-detection]="linux/amd64:build/face_detection_amd64.Dockerfile,linux/arm64:build/face_detection_arm64.Dockerfile"
       [gender-classification]="linux/amd64:build/gender_classification_amd64.Dockerfile,linux/arm64:build/gender_classification_arm64.Dockerfile"
       [age-classification]="linux/amd64:build/age_classification_amd64.Dockerfile,linux/arm64:build/age_classification_arm64.Dockerfile"
-
+      [model-switch-detection]="linux/amd64:build/model_switch_detection_amd64.Dockerfile,linux/arm64:build/model_switch_detection_arm64.Dockerfile"
   )
 }
 
