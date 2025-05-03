@@ -78,3 +78,11 @@
     controller: controller-base.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
+- id: model-switch
+  name: Adaptive Model Switch
+  yaml: model-switch.yaml
+  dependency:
+    generator: generator-for-model-switch.yaml
+    controller: controller-base.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
