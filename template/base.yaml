@@ -141,3 +141,10 @@ services:
     input: bbox
     output: text
     yaml: age-classification.yaml
+  - id: model-switch-detection
+    service: model-switch-detection
+    name: model switch detection
+    description: model switch detection
+    input: frame
+    output: bbox
+    yaml: model-switch-detection.yaml
