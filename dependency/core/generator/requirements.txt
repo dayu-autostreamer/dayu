@@ -1,2 +1,8 @@
-numpy
-scikit-image==0.17.2
+
+# The following packages has been pre-installed in the  base image
+# opencv-python
+# numpy
+# torch
+# torchvision
+# scikit-learn
+# scikit-image

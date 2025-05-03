@@ -1,4 +1,2 @@
 pycuda==2023.1
-typing_extensions
 tensorrt
-numpy==1.23.1
