@@ -1,2 +1,2 @@
-pycuda==2023.1
+pycuda
 tensorrt
