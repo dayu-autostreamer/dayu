@@ -109,12 +109,6 @@ ENV LANG=en_US.UTF-8
 # CFLAGS (for imagecodecs)
 ENV CFLAGS="-I/usr/include/openjpeg-2.3 -I/usr/include/jxrlib"
 
-# Building libtiff (to allow imagecodecs to compile)
-RUN cd /pdk_files/libtiff \
-  && ./autogen.sh \
-  && ./configure \
-  && make install
-
 # brunsli (for imagecodecs)
 RUN cd /tmp \
   && git clone --depth=1 https://github.com/google/brunsli.git \
@@ -128,6 +122,7 @@ RUN pip3 install --upgrade pip && \
     pip3 install numpy && \
     apt-get install -y python3-sklearn && \
     pip3 install --no-cache-dir scipy && \
+    pip3 install --no-cache-dir tiff && \
     pip3 install --no-cache-dir imagecodecs  && \
     pip3 install --no-cache-dir scikit-image
 
