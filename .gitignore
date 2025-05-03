@@ -738,11 +738,6 @@ resource_data
 data_record*
 ../../ResultAnalysis/pythonProject/test/
 ../../ResultAnalysis/pythonProject/results/
-.code2pdf
 
 
 # End of https://www.toptal.com/developers/gitignore/api/pycharm,python,vs,macos,windows,linux,vue,vuejs
-
-yolov5_weights/
-ofa_weights/
-test_data/

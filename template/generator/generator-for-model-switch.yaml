@@ -4,7 +4,7 @@ pod-template:
   imagePullPolicy: IfNotPresent
   env:
     - name: GEN_FILTER_NAME
-      value: simple
+      value: dynamic
     - name: GEN_GETTER_FILTER_NAME
       value: simple
     - name: GEN_PROCESS_NAME
