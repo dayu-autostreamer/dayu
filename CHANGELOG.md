@@ -21,6 +21,7 @@ The basic structure of tasks in dayu is updated from linear pipeline to topologi
 - Beatify frontend pages (`frontend`).
 - Refactor template directory to simplify file structure.
 - Unify the base image for system components. 
+- Add application of age classification. (Current available applications: car-detection, face-detection, gender-classification, age-classification)
 
 
 ## v1.0
