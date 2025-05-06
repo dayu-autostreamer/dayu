@@ -15,7 +15,8 @@ COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
 COPY ${base_dir}/requirements.txt ./base_requirements.txt
 COPY ${app_dir}/requirements_arm64.txt ./app_requirements.txt
 
-RUN apt-get update && \
+RUN mv /etc/apt/sources.list.d/cuda.list /etc/apt/sources.list.d/cuda.disabled && \
+    apt-get update && \
     apt-get install -y build-essential python3-dev && \
     rm -rf /var/lib/apt/lists/*
 
