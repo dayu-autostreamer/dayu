@@ -13,8 +13,9 @@ class SimpleProcess(BaseProcess, abc.ABC):
     def __init__(self):
         pass
 
-    def __call__(self, system, frame):
+    def __call__(self, system, frame, source_resolution, target_resolution):
         import cv2
-
-        resolution = VideoOps.text2resolution(system.meta_data['resolution'])
-        return cv2.resize(frame, resolution)
+        if source_resolution == target_resolution:
+            return frame
+        else:
+            return cv2.resize(frame, VideoOps.text2resolution(target_resolution))

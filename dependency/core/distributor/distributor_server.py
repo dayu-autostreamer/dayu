@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.common import FileOps
+from core.lib.content import Task
 from .distributor import Distributor
 
 
@@ -61,10 +62,10 @@ class DistributorServer:
         backtask.add_task(self.distribute_data_background, data, file_data)
 
     def distribute_data_background(self, data, file_data):
-        self.distributor.set_current_task(data)
-        FileOps.save_data_file(self.distributor.cur_task, file_data)
-        self.distributor.record_transmit_ts()
-        self.distributor.distribute_data()
+        cur_task = Task.deserialize(data)
+        FileOps.save_data_file(cur_task, file_data)
+        self.distributor.record_transmit_ts(cur_task)
+        self.distributor.distribute_data(cur_task)
 
     async def query_result(self, request: Request):
         data = await request.json()

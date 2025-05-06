@@ -3,6 +3,7 @@ import time
 import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, Context, LOGGER
+from core.lib.content import Task
 from core.lib.estimation import OverheadEstimator
 
 from .base_agent import BaseAgent
@@ -24,6 +25,8 @@ Zhang M, Wang F, Zhu Y, et al. Towards cloud-edge collaborative online video ana
 class CEVASAgent(BaseAgent, abc.ABC):
 
     def __init__(self, system, agent_id: int, fixed_policy: dict = None, time_slot: int = 3):
+        super().__init__()
+
         import torch
         from .cevas.mlp import MLP
         self.agent_id = agent_id
@@ -53,11 +56,11 @@ class CEVASAgent(BaseAgent, abc.ABC):
         edge_device = info['device']
         cloud_device = self.cloud_device
         pipe_seg = self.pipe_seg
-        pipeline = info['pipeline']
+        pipeline = Task.extract_pipeline_deployment_from_dag_deployment(info['dag'])
         pipeline = [{**p, 'execute_device': edge_device} for p in pipeline[:pipe_seg]] + \
                    [{**p, 'execute_device': cloud_device} for p in pipeline[pipe_seg:]]
 
-        policy.update({'pipeline': pipeline})
+        policy.update({'dag': Task.extract_dag_deployment_from_pipeline_deployment(pipeline)})
         return policy
 
     # 最优化目标

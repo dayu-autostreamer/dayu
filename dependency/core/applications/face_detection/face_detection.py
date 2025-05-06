@@ -34,7 +34,6 @@ class FaceDetection:
         bindings = []
 
         for binding in engine:
-            # print('bingding:', binding, engine.get_binding_shape(binding))
             size = trt.volume(engine.get_binding_shape(binding)) * engine.max_batch_size
             dtype = trt.nptype(engine.get_binding_dtype(binding))
             # Allocate host and device buffers

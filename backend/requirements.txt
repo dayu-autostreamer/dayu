@@ -1,3 +1,10 @@
-opencv-python-headless
 psutil
 pytz
+
+# The following packages has been pre-installed in the  base image
+# opencv-python
+# numpy
+# torch
+# torchvision
+# scikit-learn
+# scikit-image

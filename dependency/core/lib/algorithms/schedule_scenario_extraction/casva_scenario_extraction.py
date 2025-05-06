@@ -6,7 +6,7 @@ from .base_scenario_extraction import BaseScenarioExtraction
 __all__ = ('CASVAScenarioExtraction',)
 
 
-@ClassFactory.register(ClassType.SCH_SCENARIO, alias='casva')
+@ClassFactory.register(ClassType.SCH_SCENARIO_EXTRACTION, alias='casva')
 class CASVAScenarioExtraction(BaseScenarioExtraction, abc.ABC):
     def __call__(self, task):
         scenario = task.get_scenario_data()

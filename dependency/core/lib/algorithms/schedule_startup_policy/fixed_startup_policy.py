@@ -6,7 +6,7 @@ from .base_startup_policy import BaseStartupPolicy
 __all__ = ('FixedStartupPolicy',)
 
 
-@ClassFactory.register(ClassType.SCH_STARTUP, alias='fixed')
+@ClassFactory.register(ClassType.SCH_STARTUP_POLICY, alias='fixed')
 class FixedStartupPolicy(BaseStartupPolicy, abc.ABC):
     def __call__(self, info):
         return {
@@ -14,5 +14,5 @@ class FixedStartupPolicy(BaseStartupPolicy, abc.ABC):
             'fps': 5,
             'encoding': 'mp4v',
             'buffer_size': 4,
-            'pipeline': info['pipeline']
+            'dag': info['dag']
         }

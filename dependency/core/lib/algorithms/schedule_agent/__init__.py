@@ -1,10 +1,12 @@
-from . import fixed_agent
-from . import hei_agent
-from . import fc_agent
-from . import chameleon_agent
-from . import casva_agent
-from . import cevas_agent
-from . import hei_synchronous_agent
-from . import hei_drl_agent
-from . import hei_nf_agent
+import pkgutil
+import importlib
 
+__all__ = []
+
+for _, module_name, is_pkg in pkgutil.iter_modules(__path__):
+    if not is_pkg:
+        module = importlib.import_module(f'.{module_name}', __name__)
+        if hasattr(module, '__all__'):
+            for item in module.__all__:
+                globals()[item] = getattr(module, item)
+                __all__.append(item)

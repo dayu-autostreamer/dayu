@@ -1,7 +1,7 @@
 import logging
 import colorlog
 from .constant import SystemConstant
-from .config import Context
+from .context import Context
 
 
 class Logger:

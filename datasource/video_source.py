@@ -9,7 +9,7 @@ from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.lib.common import FileOps, LOGGER, Context
+from core.lib.common import FileOps, LOGGER, Context, NameMaintainer
 
 
 class VideoSource:
@@ -43,12 +43,16 @@ class VideoSource:
 
         self.file_name = None
 
+        self.source_id = None
+        self.task_id = None
         self.meta_data = None
         self.raw_meta_data = None
 
         self.frame_filter = None
         self.frame_process = None
         self.frame_compress = None
+
+        self.file_suffix = 'mp4'
 
     def get_one_frame(self):
         frame = cv2.imread(os.path.join(self.data_dir, f'{self.frame_count}.jpg'))
@@ -69,8 +73,8 @@ class VideoSource:
 
         data = json.loads(data)
 
-        source_id = data['source_id']
-        task_id = data['task_id']
+        self.source_id = data['source_id']
+        self.task_id = data['task_id']
         self.meta_data = data['meta_data']
         self.raw_meta_data = data['raw_meta_data']
 
@@ -80,9 +84,12 @@ class VideoSource:
 
         buffer_size = self.meta_data['buffer_size']
 
-        self.frame_filter = Context.get_algorithm('GEN_FILTER', al_name=frame_filter_name)
-        self.frame_process = Context.get_algorithm('GEN_PROCESS', al_name=frame_process_name)
-        self.frame_compress = Context.get_algorithm('GEN_COMPRESS', al_name=frame_compress_name)
+        self.frame_filter = Context.get_algorithm('GEN_FILTER', al_name=frame_filter_name) \
+            if self.frame_filter is None else self.frame_filter
+        self.frame_process = Context.get_algorithm('GEN_PROCESS', al_name=frame_process_name) \
+            if self.frame_process is None else self.frame_process
+        self.frame_compress = Context.get_algorithm('GEN_COMPRESS', al_name=frame_compress_name) \
+            if self.frame_compress is None else self.frame_compress
 
         frames_index = []
         frames_buffer = []
@@ -92,8 +99,13 @@ class VideoSource:
                 frames_buffer.append(frame)
                 frames_index.append(self.frame_count)
 
-        frames_buffer = [self.frame_process(self, frame) for frame in frames_buffer]
-        self.file_name = self.frame_compress(self, frames_buffer, source_id, task_id)
+        frames_buffer = [
+            self.frame_process(self, frame, self.raw_meta_data['resolution'], self.meta_data['resolution'])
+            for frame in frames_buffer
+        ]
+
+        self.file_name = NameMaintainer.get_task_data_file_name(self.source_id, self.task_id, file_suffix=self.file_suffix)
+        self.frame_compress(self, frames_buffer, self.file_name)
 
         return frames_index
 

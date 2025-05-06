@@ -37,7 +37,7 @@ class DetectorTrackerProcessor(Processor):
             return None
         result = self.infer(image_list)
         task = self.get_scenario(result, task)
-        task.set_content(convert_ndarray_to_list(result))
+        task.set_current_content(convert_ndarray_to_list(result))
 
         return task
 
@@ -56,19 +56,3 @@ class DetectorTrackerProcessor(Processor):
         process_output = tracking_output
 
         return process_output
-
-    def get_scenario(self, result, task):
-        obj_num = []
-        obj_size = []
-        for frame_result in result:
-            bboxes = frame_result[0]
-            boxes_num = len(bboxes)
-            boxes_size = 0 if boxes_num == 0 else \
-                np.mean([((box[2] - box[0]) * (box[3] - box[1]))
-                         / (self.frame_size[0] * self.frame_size[1]) for box in bboxes])
-            obj_num.append(boxes_num)
-            obj_size.append(boxes_size)
-
-        task.add_scenario({'obj_num': obj_num, 'obj_size': obj_size})
-
-        return task

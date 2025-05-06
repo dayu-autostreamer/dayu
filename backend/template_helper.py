@@ -1,10 +1,13 @@
 import copy
+import json
 import os
 import re
+import uuid
+
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps
-from core.lib.network import NodeInfo
+from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge
+from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
 class TemplateHelper:
@@ -77,11 +80,22 @@ class TemplateHelper:
             ])
             template['ports'] = [{'containerPort': node_port['port']}]
 
-        template = {
+        cloud_template = deep_merge(copy.deepcopy(template), yaml_doc['cloud-pod-template']) \
+            if 'cloud-pod-template' in yaml_doc else copy.deepcopy(template)
+        edge_template = deep_merge(copy.deepcopy(template), yaml_doc['edge-pod-template']) \
+            if 'edge-pod-template' in yaml_doc else copy.deepcopy(template)
+
+        cloud_template = {
             'serviceAccountName': service_account,
             'nodeName': '',
             'dnsPolicy': 'ClusterFirstWithHostNet',
-            'containers': [template]
+            'containers': [cloud_template]
+        }
+        edge_template = {
+            'serviceAccountName': service_account,
+            'nodeName': '',
+            'dnsPolicy': 'ClusterFirstWithHostNet',
+            'containers': [edge_template]
         }
 
         if pos == 'cloud':
@@ -91,7 +105,7 @@ class TemplateHelper:
 
             template_doc['spec'].update({
                 'cloudWorker': {
-                    'template': {'spec': copy.deepcopy(template)},
+                    'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
                     **({'file': {'paths': files_cloud}} if files_cloud else {}),
                 }
@@ -103,7 +117,7 @@ class TemplateHelper:
 
             template_doc['spec'].update({
                 'edgeWorker': [{
-                    'template': {'spec': copy.deepcopy(template)},
+                    'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
                     **({'file': {'paths': files_edge}} if files_edge else {}),
                 }]
@@ -118,12 +132,12 @@ class TemplateHelper:
 
             template_doc['spec'].update({
                 'edgeWorker': [{
-                    'template': {'spec': copy.deepcopy(template)},
+                    'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
                     **({'file': {'paths': files_edge}} if files_edge else {}),
                 }],
                 'cloudWorker': {
-                    'template': {'spec': copy.deepcopy(template)},
+                    'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
                     **({'file': {'paths': files_cloud}} if files_cloud else {}),
                 }
@@ -133,22 +147,61 @@ class TemplateHelper:
 
         return template_doc
 
-    def finetune_yaml_parameters(self, yaml_dict, source_deploy):
+    def finetune_yaml_parameters(self, yaml_dict, source_deploy, scopes=None):
         edge_nodes = self.get_all_selected_edge_nodes(yaml_dict)
         cloud_node = NodeInfo.get_cloud_node()
 
-        docs_list = [
-            self.finetune_generator_yaml(yaml_dict['generator'], source_deploy),
-            self.finetune_controller_yaml(yaml_dict['controller'], edge_nodes, cloud_node),
-            self.finetune_distributor_yaml(yaml_dict['distributor'], cloud_node),
-            self.finetune_scheduler_yaml(yaml_dict['scheduler'], cloud_node),
-            self.finetune_monitor_yaml(yaml_dict['monitor'], edge_nodes, cloud_node),
-            *self.finetune_processor_yaml(yaml_dict['processor'], cloud_node)
-        ]
+        docs_list = []
+        if not scopes or 'generator' in scopes:
+            docs_list.append(self.finetune_generator_yaml(yaml_dict['generator'], source_deploy))
+        if not scopes or 'controller' in scopes:
+            docs_list.append(self.finetune_controller_yaml(yaml_dict['controller'], edge_nodes, cloud_node))
+        if not scopes or 'distributor' in scopes:
+            docs_list.append(self.finetune_distributor_yaml(yaml_dict['distributor'], cloud_node))
+        if not scopes or 'scheduler' in scopes:
+            docs_list.append(self.finetune_scheduler_yaml(yaml_dict['scheduler'], cloud_node))
+        if not scopes or 'monitor' in scopes:
+            docs_list.append(self.finetune_monitor_yaml(yaml_dict['monitor'], edge_nodes, cloud_node))
+        if not scopes or 'processor' in scopes:
+            docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node, source_deploy))
 
         return docs_list
 
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
+        scheduler_hostname = NodeInfo.get_cloud_node()
+        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
+        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                          port=scheduler_port,
+                                          path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE)
+
+        params = []
+
+        for source_info in source_deploy:
+            SOURCE_ENV = source_info['source']
+            NODE_SET_ENV = source_info['node_set']
+            DAG_ENV = {}
+            dag = source_info['dag']
+
+            for key in dag.keys():
+                temp_node = {}
+                if key != '_start':
+                    temp_node['service'] = {'service_name': key}
+                    temp_node['next_nodes'] = dag[key]['succ']
+                    DAG_ENV[key] = temp_node
+            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
+
+        response = http_request(url=scheduler_address,
+                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE,
+                                data={'data': json.dumps(params)},
+                                )
+
+        if response is None:
+            LOGGER.warning('[Source Node Selection] No response from scheduler.')
+            selection_plan = None
+        else:
+            selection_plan = response['plan']
+            selection_plan = {int(k): v for k, v in selection_plan.items()}
+
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
         edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
@@ -156,12 +209,31 @@ class TemplateHelper:
         for source_info in source_deploy:
             new_edge_worker = copy.deepcopy(edge_worker_template)
             source = source_info['source']
-            node = source_info['node']
-            pipeline = source_info['pipeline']
+            node_set = source_info['node_set']
+
+            if selection_plan is not None and selection_plan[source['id']] is not None:
+                node = selection_plan[source['id']]
+            else:
+                LOGGER.warning("Using default selection plan.")
+                node = node_set[0]
+
+            source_info['source'].update({'deploy_node': node})
+
+            dag = source_info['dag']
 
             new_edge_worker['template']['spec']['nodeName'] = node
 
             container = new_edge_worker['template']['spec']['containers'][0]
+
+            container['name'] += str(uuid.uuid4())
+
+            DAG_ENV = {}
+            for key in dag.keys():
+                temp_node = {}
+                if key != '_start':
+                    temp_node['service'] = {'service_name': key}
+                    temp_node['next_nodes'] = dag[key]['succ']
+                    DAG_ENV[key] = temp_node
 
             container['env'].extend(
                 [
@@ -170,8 +242,8 @@ class TemplateHelper:
                     {'name': 'SOURCE_TYPE', 'value': str(source['source_type'])},
                     {'name': 'SOURCE_ID', 'value': str(source['id'])},
                     {'name': 'SOURCE_METADATA', 'value': str(source['metadata'])},
-                    {'name': 'PIPELINE', 'value': str([{'service_name': service['service']} for service in pipeline])},
-
+                    {'name': 'ALL_EDGE_DEVICES', 'value': str(node_set)},
+                    {'name': 'DAG', 'value': str(DAG_ENV)},
                 ])
 
             if node in edge_workers_dict:
@@ -256,7 +328,44 @@ class TemplateHelper:
 
         return yaml_doc
 
-    def finetune_processor_yaml(self, service_dict, cloud_node):
+    def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy):
+        scheduler_hostname = NodeInfo.get_cloud_node()
+        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
+        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                          port=scheduler_port,
+                                          path=NetworkAPIPath.SCHEDULER_INITIAL_DEPLOYMENT)
+
+        params = []
+        for source_info in source_deploy:
+            SOURCE_ENV = source_info['source']
+            NODE_SET_ENV = source_info['node_set']
+            DAG_ENV = {}
+            dag = source_info['dag']
+
+            for key in dag.keys():
+                temp_node = {}
+                if key != '_start':
+                    temp_node['service'] = {'service_name': key}
+                    temp_node['next_nodes'] = dag[key]['succ']
+                    DAG_ENV[key] = temp_node
+            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
+
+        response = http_request(url=scheduler_address,
+                                method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
+                                data={'data': json.dumps(params)},
+                                )
+        if response is None:
+            LOGGER.warning('[Service Deployment] No response from scheduler.')
+            invert_deployment_plan = {}
+        else:
+            deployment_plan = response['plan']
+            invert_deployment_plan = {}
+            for node, services in deployment_plan.items():
+                for service in services:
+                    if service in invert_deployment_plan:
+                        invert_deployment_plan[service].append(node)
+                    else:
+                        invert_deployment_plan[service] = [node]
 
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
@@ -265,6 +374,11 @@ class TemplateHelper:
             yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
             edge_nodes = service_dict[service_id]['node']
+            if (service_id in invert_deployment_plan and
+                    (set(invert_deployment_plan[service_id]) - set(edge_nodes) is not None)):
+                edge_nodes = list(set(invert_deployment_plan[service_id]) & set(edge_nodes))
+            else:
+                LOGGER.warning("Using default service plan.")
 
             edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
             cloud_worker_template = yaml_doc['spec']['cloudWorker']
@@ -286,7 +400,6 @@ class TemplateHelper:
         return yaml_docs
 
     def process_image(self, image: str) -> str:
-
         """
             legal input:
                 - registry/repository/image:tag
@@ -303,15 +416,17 @@ class TemplateHelper:
         default_tag = image_meta['tag']
 
         pattern = re.compile(
-            r"^(?:(?P<registry>[^/]+?)/)?"
-            r"(?:(?P<repository>[^/:]+?)/)?"
-            r"(?P<image>[^:]+)"
-            r"(?:[:](?P<tag>[^:]+))?$"
+            r"^(?:(?P<registry>[^/]+)/"  # match registry with '/'
+            r"(?=.*/)"  # forward pre-check to make sure there is a '/' followed
+            r")?"  # registry is optional
+            r"(?:(?P<repository>[^/:]+)/)?"  # match repository
+            r"(?P<image>[^:]+)"  # match image
+            r"(?::(?P<tag>[^:]+))?$"  # match tag
         )
 
         match = pattern.match(image)
         if not match:
-            raise ValueError(f'format of input image "{image}" is illegal')
+            raise ValueError(f'Format of input image "{image}" is illegal')
 
         registry = match.group("registry") or default_registry
         repository = match.group("repository") or default_repository

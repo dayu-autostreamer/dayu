@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 from core.lib.content import Task
+from core.lib.common import LOGGER
 
 from .scheduler import Scheduler
 
@@ -34,6 +35,15 @@ class SchedulerServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_GET_RESOURCE]
                      ),
+            APIRoute(NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE,
+                     self.generate_source_nodes_selection_plan,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE]
+                     ),
+            APIRoute(NetworkAPIPath.SCHEDULER_INITIAL_DEPLOYMENT,
+                     self.generate_initial_deployment_plan,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT]),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -64,3 +74,32 @@ class SchedulerServer:
 
     async def get_resource_state(self):
         return self.scheduler.get_scheduler_resource()
+
+    async def generate_source_nodes_selection_plan(self, data: str = Form(...)):
+        data = json.loads(data)
+
+        plan = {}
+        for source_data in data:
+            source_id = int(source_data['source']['id'])
+            self.scheduler.register_schedule_table(source_id=source_id)
+            source_plan = self.scheduler.get_source_node_selection_plan(source_id, source_data)
+            plan[source_id] = source_plan
+
+        LOGGER.info(f'[Source Node Selection] (all sources) Selection policy: {plan}')
+        return {'plan': plan}
+
+    async def generate_initial_deployment_plan(self, data: str = Form(...)):
+        data = json.loads(data)
+
+        plan = {}
+        for source_data in data:
+            source_id = source_data['source']['id']
+            self.scheduler.register_schedule_table(source_id=source_id)
+            source_plan = self.scheduler.get_deployment_plan(source_id, source_data)
+            plan.update(
+                {node: list(set(plan[node] + source_plan[node])) if node in plan else source_plan[node]
+                 for node in source_plan}
+            )
+
+        LOGGER.info(f'[Deployment] (all sources) Deploy policy: {plan}')
+        return {'plan': plan}

@@ -2,7 +2,7 @@ import os
 import time
 import re
 
-from core.lib.network import NetworkAPIPath, NetworkAPIMethod, http_request, NodeInfo, PortInfo, get_merge_address
+from core.lib.network import NetworkAPIPath, NetworkAPIMethod, http_request, NodeInfo, PortInfo, merge_address
 from core.lib.common import LOGGER, Context, SystemConstant
 from script_helper import ScriptHelper
 
@@ -22,9 +22,9 @@ class DataSource:
 
         self.backend_hostname = NodeInfo.get_cloud_node()
         self.backend_port = PortInfo.get_component_port(SystemConstant.BACKEND.value)
-        self.backend_address = get_merge_address(NodeInfo.hostname2ip(self.backend_hostname),
-                                                 port=self.backend_port,
-                                                 path=NetworkAPIPath.BACKEND_DATASOURCE_STATE)
+        self.backend_address = merge_address(NodeInfo.hostname2ip(self.backend_hostname),
+                                             port=self.backend_port,
+                                             path=NetworkAPIPath.BACKEND_DATASOURCE_STATE)
 
         self.inner_port = Context.get_parameter('GUNICORN_PORT')
 

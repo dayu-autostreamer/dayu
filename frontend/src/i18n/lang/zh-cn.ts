@@ -3,7 +3,7 @@ export default {
 	router: {
 		home: 'Home',
 		install:'Application Installation',
-		pipeline: 'Pipeline Orchestration',
+		dag: 'DAG Orchestration',
 		datasource: 'Source Configuration',
 		result:'Result Display'
 	},

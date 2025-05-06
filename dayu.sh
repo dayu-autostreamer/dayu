@@ -55,6 +55,38 @@ create_service_account() {
     fi
 }
 
+create_redis() {
+  echo "$(green_text [DAYU]) Creating redis ..."
+      kubectl -n "$NAMESPACE" apply -f - <<EOF
+apiVersion: $API_VERSION
+kind: $KIND
+metadata:
+  name: redis
+  namespace: $NAMESPACE
+spec:
+  cloudWorker:
+    logLevel:
+      level: "DEBUG"
+    template:
+      spec:
+        containers:
+          - image: $REGISTRY/redis:latest
+            imagePullPolicy: IfNotPresent
+            name: redis
+            ports:
+              - containerPort: 6379
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: $CLOUD_NODE
+        serviceAccountName: $SERVICE_ACCOUNT
+  serviceConfig:
+    port: 6379
+    pos: cloud
+    targetPort: 6379
+EOF
+
+
+}
+
 create_datasource() {
   if [ "$DATASOURCE_USE_SIMULATION" = "true" ]; then
     echo "$(green_text [DAYU]) Creating datasource ..."
@@ -221,6 +253,7 @@ start_system() {
     echo "$(green_text [DAYU]) Starting DAYU system in namespace $NAMESPACE..."
     check_and_create_namespace
     create_service_account
+    create_redis
     create_backend
     create_frontend
     create_datasource
@@ -345,27 +378,57 @@ check_official_namespace() {
 
 import_config() {
     CONFIG_FILE="$TEMPLATE/base.yaml"
+    TMP_FILE="$TEMPLATE/tmp_preprocessed_base.yaml"
+    preprocess_yaml "$CONFIG_FILE" "$TMP_FILE"
 
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo "Configuration file not found at $(red_text "$CONFIG_FILE")"
+    if [ ! -f "$TMP_FILE" ]; then
+        echo "Configuration file not found at $(red_text "$TMP_FILE")"
         exit 1
     fi
 
-    NAMESPACE=$(yq e '.namespace' "$CONFIG_FILE")
-    LOG_LEVEL=$(yq e '.log-level' "$CONFIG_FILE")
-    SERVICE_ACCOUNT=$(yq e '.pod-permission.service-account' "$CONFIG_FILE")
-    CLUSTER_ROLE_BINDING=$(yq e '.pod-permission.cluster-role-binding' "$CONFIG_FILE")
-    API_VERSION=$(yq e '.crd-meta.api-version' "$CONFIG_FILE")
-    KIND=$(yq e '.crd-meta.kind' "$CONFIG_FILE")
-    REGISTRY=$(yq e '.default-image-meta.registry' "$CONFIG_FILE")
-    REPOSITORY=$(yq e '.default-image-meta.repository' "$CONFIG_FILE")
-    TAG=$(yq e '.default-image-meta.tag' "$CONFIG_FILE")
-    DATASOURCE_USE_SIMULATION=$(yq e '.datasource.use-simulation' "$CONFIG_FILE")
-    DATASOURCE_DATA_ROOT=$(yq e '.datasource.data-root' "$CONFIG_FILE")
-    DATASOURCE_NODE=$(yq e '.datasource.node' "$CONFIG_FILE")
-    DATASOURCE_PLAY_MODE=$(yq e '.datasource.play-mode' "$CONFIG_FILE")
+    NAMESPACE=$(yq e '.namespace' "$TMP_FILE")
+    LOG_LEVEL=$(yq e '.log-level' "$TMP_FILE")
+    SERVICE_ACCOUNT=$(yq e '.pod-permission.service-account' "$TMP_FILE")
+    CLUSTER_ROLE_BINDING=$(yq e '.pod-permission.cluster-role-binding' "$TMP_FILE")
+    API_VERSION=$(yq e '.crd-meta.api-version' "$TMP_FILE")
+    KIND=$(yq e '.crd-meta.kind' "$TMP_FILE")
+    REGISTRY=$(yq e '.default-image-meta.registry' "$TMP_FILE")
+    REPOSITORY=$(yq e '.default-image-meta.repository' "$TMP_FILE")
+    TAG=$(yq e '.default-image-meta.tag' "$TMP_FILE")
+    DATASOURCE_USE_SIMULATION=$(yq e '.datasource.use-simulation' "$TMP_FILE")
+    DATASOURCE_DATA_ROOT=$(yq e '.datasource.data-root' "$TMP_FILE")
+    DATASOURCE_NODE=$(yq e '.datasource.node' "$TMP_FILE")
+    DATASOURCE_PLAY_MODE=$(yq e '.datasource.play-mode' "$TMP_FILE")
 
+    rm "$TMP_FILE"
 
+}
+
+preprocess_yaml() {
+  local input_file="$1"
+  local output_file="$2"
+
+  cp "$input_file" "$output_file"
+
+  local current_dir=$(dirname "$output_file")
+
+  while grep -q '!include' "$output_file"; do
+    include_line=$(grep -m1 '!include' "$output_file")
+    include_file=$(echo "$include_line" | tr -d '\r' | sed -E 's/.*!include[[:space:]]+["'\'']?([^"'\'']+)["'\'']?.*/\1/')
+
+    local include_path="${current_dir}/${include_file}"
+    if [ ! -f "$include_path" ]; then
+      echo "Error: Include file '$include_path' not found." >&2
+      exit 1
+    fi
+
+    include_content=$(sed -e 's/^/  /' "$include_path")
+
+    awk -v include_line="${include_line//\\r/}" -v include_content="$include_content" '
+      $0 == include_line { print include_content; found=1; next }
+      { print }
+    ' "$output_file" > "${output_file}.tmp" && mv "${output_file}.tmp" "$output_file"
+  done
 }
 
 get_master_details() {

@@ -1,6 +1,6 @@
 import time
 from core.lib.content import Task
-from core.lib.common import LOGGER
+from core.lib.common import LOGGER, NameMaintainer
 
 
 class Timer:
@@ -24,40 +24,39 @@ class Timer:
 
 
 class TimeEstimator:
-
     @staticmethod
-    def record_pipeline_ts(task: Task, is_end: bool, sub_tag: str = 'transmit') -> (Task, float):
+    def record_dag_ts(task: Task, is_end: bool, sub_tag: str = 'transmit') -> (Task, float):
         """
-        record pipeline timestamp in system
-        :param task: pipeline task
+        record dag timestamp in system
+        :param task: dag task
         :param is_end: if recording the end of current timestamp
-        :param sub_tag: sub tag of ts record name (eg:transmit_time_1)
-        :return: task: pipeline task with recorded time
+        :param sub_tag: sub tag of ts record name (eg:transmit_time_service_1)
+        :return: task: dag task with recorded time
                  duration: time estimation result
 
         """
-        data, duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                                 f'{sub_tag}_time_{task.get_flow_index()}',
-                                                 is_end=is_end)
-        task.set_tmp_data(data)
-        return task, duration
+        prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
+        duration = TimeEstimator.record_ts(task.get_tmp_data(),
+                                           f'{prefix}:{sub_tag}_time_{task.get_flow_index()}',
+                                           is_end=is_end)
+        return duration
 
     @staticmethod
     def record_task_ts(task: Task, tag: str, is_end: bool = False) -> (Task, float):
         """
 
-        :param task: pipeline task
+        :param task: dag task
         :param tag: name of time ticket
         :param is_end: if recording the end of current timestamp
-        :return: task: pipeline task with recorded time
+        :return: task: dag task with recorded time
                  duration: time estimation result
         """
 
-        data, duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                                 tag=tag,
-                                                 is_end=is_end)
-        task.set_tmp_data(data)
-        return task, duration
+        prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
+        duration = TimeEstimator.record_ts(task.get_tmp_data(),
+                                           tag=f'{prefix}:{tag}',
+                                           is_end=is_end)
+        return duration
 
     @staticmethod
     def record_ts(data: dict, tag: str, is_end: bool = False) -> (dict, float):
@@ -82,7 +81,7 @@ class TimeEstimator:
             data[tag] = time.time()
             duration = 0
 
-        return data, duration
+        return duration
 
     @staticmethod
     def estimate_duration_time(func):
@@ -105,3 +104,4 @@ class TimeEstimator:
             print('function {} cost time {:.2f}s'.format(func.__name__, end - start))
 
         return wrapper
+

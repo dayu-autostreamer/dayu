@@ -24,12 +24,12 @@ class CASVAASOperation(BaseASOperation, abc.ABC):
         if scheduler_response is None:
             system.meta_data.update(self.default_metadata)
             default_execute_device = system.local_device
-            system.task_pipeline = Task.set_execute_device(system.task_pipeline, default_execute_device)
+            system.task_dag = Task.set_execute_device(system.task_dag, default_execute_device)
         else:
             scheduler_policy = scheduler_response['plan']
-            pipeline = scheduler_policy['pipeline']
-            system.task_pipeline = Task.extract_pipeline_from_dicts(pipeline)
-            del scheduler_policy['pipeline']
+            dag = scheduler_policy['dag']
+            system.task_dag = Task.extract_dag_from_dag_deployment(dag)
+            del scheduler_policy['dag']
             system.meta_data.update(scheduler_policy)
 
             if 'qp' not in system.meta_data:

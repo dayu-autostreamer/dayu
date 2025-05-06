@@ -6,7 +6,7 @@ from .base_scenario_extraction import BaseScenarioExtraction
 __all__ = ('SimpleScenarioExtraction',)
 
 
-@ClassFactory.register(ClassType.SCH_SCENARIO, alias='simple')
+@ClassFactory.register(ClassType.SCH_SCENARIO_EXTRACTION, alias='simple')
 class SimpleScenarioExtraction(BaseScenarioExtraction, abc.ABC):
     def __call__(self, task):
         scenario = task.get_scenario_data()

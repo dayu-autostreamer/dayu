@@ -6,7 +6,7 @@ import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
 
-from core.lib.common import Context
+from core.lib.common import Context, LOGGER
 
 
 class GenderClassification:
@@ -30,7 +30,6 @@ class GenderClassification:
         bindings = []
 
         for binding in engine:
-            # print('bingding:', binding, engine.get_binding_shape(binding))
             size = trt.volume(engine.get_binding_shape(binding)) * engine.max_batch_size
             dtype = trt.nptype(engine.get_binding_dtype(binding))
             # Allocate host and device buffers
@@ -82,44 +81,26 @@ class GenderClassification:
             h: original height
             w: original width
         """
-        image_raw = raw_bgr_image
-        h, w, c = image_raw.shape
 
-        # Calculate widht and height and paddings
-        r_w = self.input_w / w
-        r_h = self.input_h / h
-        if r_h > r_w:
-            tw = self.input_w
-            th = int(r_w * h)
-            tx1 = tx2 = 0
-            ty1 = int((self.input_h - th) / 2)
-            ty2 = self.input_h - th - ty1
-        else:
-            tw = int(r_h * w)
-            th = self.input_h
-            tx1 = int((self.input_w - tw) / 2)
-            tx2 = self.input_w - tw - tx1
-            ty1 = ty2 = 0
+        image_rgb = cv2.cvtColor(raw_bgr_image, cv2.COLOR_BGR2RGB)
 
-        # Resize the image with long side while maintaining ratio
-        image = cv2.resize(image_raw, (tw, th))
-        # Pad the short side with (128,128,128)
-        image = cv2.copyMakeBorder(
-            image, ty1, ty2, tx1, tx2, cv2.BORDER_CONSTANT, (128, 128, 128)
-        )
-        image = image.astype(np.float32)
+        image_resized = cv2.resize(image_rgb, (self.input_w, self.input_h),
+                                   interpolation=cv2.INTER_LINEAR)
 
-        # HWC to CHW format:
-        image -= (104, 117, 123)
+        image = image_resized.astype(np.float32) / 255.0
+
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        image = (image - mean) / std
+
         image = np.transpose(image, [2, 0, 1])
-        # CHW to NCHW format
         image = np.expand_dims(image, axis=0)
-        # Convert the image to row-major order, also known as "C order":
         image = np.ascontiguousarray(image)
-        return image, image_raw, h, w
+
+        return image, raw_bgr_image, image_resized.shape[0], image_resized.shape[1]
 
     def warm_up(self):
-        print('Warming up...')
+        LOGGER.info('Warming up...')
         for i in range(self.warm_up_turns):
             im = np.zeros([self.input_h, self.input_w, 3], dtype=np.uint8)
             self.infer(im)
@@ -155,7 +136,7 @@ class GenderClassification:
         self.ctx.pop()
         # Here we use the first row of output in that batch_size = 1
         output = host_outputs[0]
-        gender_output = np.argmax(output[-2:])
+        gender_output = np.argmax(output)
 
         return self.classes[gender_output]
 

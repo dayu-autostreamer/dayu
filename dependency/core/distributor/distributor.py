@@ -5,36 +5,32 @@ from datetime import datetime
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
 from core.lib.common import LOGGER, FileNameConstant, FileOps, SystemConstant
-from core.lib.network import http_request, NodeInfo, get_merge_address, NetworkAPIMethod, NetworkAPIPath, PortInfo
+from core.lib.network import http_request, NodeInfo, merge_address, NetworkAPIMethod, NetworkAPIPath, PortInfo
 
 
 class Distributor:
     def __init__(self):
-        self.cur_task = None
 
         self.scheduler_hostname = NodeInfo.get_cloud_node()
         self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        self.scheduler_address = get_merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),
-                                                   port=self.scheduler_port,
-                                                   path=NetworkAPIPath.SCHEDULER_SCENARIO)
+        self.scheduler_address = merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),
+                                               port=self.scheduler_port,
+                                               path=NetworkAPIPath.SCHEDULER_SCENARIO)
 
         self.record_path = FileNameConstant.DISTRIBUTOR_RECORD.value
 
-    def set_current_task(self, task_data):
-        self.cur_task = Task.deserialize(task_data)
+    def distribute_data(self, cur_task: Task):
+        assert cur_task, 'Current task is None'
 
-    def distribute_data(self):
-        assert self.cur_task, 'Current Task of Controller is Not set!'
+        LOGGER.info(f'[Distribute Data] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 
-        LOGGER.info(f'[Distribute Data] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
+        self.save_task_record(cur_task)
+        self.send_scenario_to_scheduler(cur_task)
 
-        self.save_task_record()
-        self.send_scenario_to_scheduler()
-
-    def save_task_record(self):
-        self.record_total_end_ts()
-        task_source_id = self.cur_task.get_source_id()
-        task_task_id = self.cur_task.get_task_id()
+    def save_task_record(self, cur_task: Task):
+        self.record_total_end_ts(cur_task)
+        task_source_id = cur_task.get_source_id()
+        task_task_id = cur_task.get_task_id()
         task_ctime = datetime.now().timestamp()
 
         conn = sqlite3.connect(self.record_path)
@@ -54,7 +50,7 @@ class Distributor:
 
         try:
             c.execute('INSERT INTO records VALUES (?, ?, ?, ?, ?)',
-                      (task_source_id, task_task_id, task_ctime, Task.serialize(self.cur_task), False))
+                      (task_source_id, task_task_id, task_ctime, cur_task.serialize(), False))
             conn.commit()
         except sqlite3.IntegrityError:
             LOGGER.warning(f'[Task Name Conflict] source_id: {task_source_id}, task_id: {task_task_id} '
@@ -62,26 +58,29 @@ class Distributor:
         finally:
             conn.close()
 
-    def record_total_end_ts(self):
-        self.cur_task, _ = TimeEstimator.record_task_ts(self.cur_task,
-                                                        'total_end_time',
-                                                        is_end=False)
+    @staticmethod
+    def record_total_end_ts(cur_task):
+        TimeEstimator.record_task_ts(cur_task,
+                                     'total_end_time',
+                                     is_end=False)
 
-    def send_scenario_to_scheduler(self):
-        LOGGER.info(f'[Send Scenario] source: {self.cur_task.get_source_id()}  task: {self.cur_task.get_task_id()}')
+    def send_scenario_to_scheduler(self, cur_task):
+        assert cur_task, 'Current task is None'
+
+        LOGGER.info(f'[Send Scenario] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
         http_request(url=self.scheduler_address,
                      method=NetworkAPIMethod.SCHEDULER_SCENARIO,
-                     data={'data': Task.serialize(self.cur_task)})
+                     data={'data': cur_task.serialize()})
 
-    def record_transmit_ts(self):
-        assert self.cur_task, 'Current Task of Distributor is Not set!'
+    @staticmethod
+    def record_transmit_ts(cur_task):
+        assert cur_task, 'Current task is None'
 
-        task, duration = TimeEstimator.record_pipeline_ts(self.cur_task, is_end=True, sub_tag='transmit')
-        self.cur_task = task
+        duration = TimeEstimator.record_dag_ts(cur_task, is_end=True, sub_tag='transmit')
 
-        self.cur_task.save_transmit_time(duration)
-        LOGGER.info(f'[Source {task.get_source_id()} / Task {task.get_task_id()}] '
-                    f'record transmit time of stage {task.get_flow_index()}: {duration:.3f}s')
+        cur_task.save_transmit_time(duration)
+        LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
+                    f'record transmit time of stage {cur_task.get_flow_index()}: {duration:.3f}s')
 
     def query_result(self, time_ticket, size):
         if self.is_database_empty():

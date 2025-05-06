@@ -36,6 +36,7 @@ class CASVAAgent(BaseAgent, abc.ABC):
                  load_model: bool = False,
                  load_model_episode: int = 0,
                  acc_gt_dir: str = ''):
+        super().__init__()
         from .casva import DualClippedPPO, RandomBuffer, Adapter, StateBuffer
 
         assert streaming_mode in ['latency_first', 'delivery_first'], \
@@ -122,11 +123,12 @@ class CASVAAgent(BaseAgent, abc.ABC):
                                    'buffer_size': math.ceil(self.fps_list[fps_index] * self.segment_length)
                                    })
 
-        pipe_seg = 0
-        pipeline = self.latest_policy['pipeline']
-        pipeline = [{**p, 'execute_device': self.edge_device} for p in pipeline[:pipe_seg]] + \
-                   [{**p, 'execute_device': self.cloud_device} for p in pipeline[pipe_seg:]]
-        self.latest_policy.update({'pipeline': pipeline})
+
+        dag = self.latest_policy['dag']
+        for service_name in dag:
+            dag[service_name]['service']['execute_device'] = self.cloud_device
+
+        self.latest_policy.update({'dag': dag})
         self.schedule_plan = self.latest_policy.copy()
 
         LOGGER.info(f'[CASVA Decision] (agent {self.agent_id}) Action: {action}   '
@@ -166,8 +168,8 @@ class CASVAAgent(BaseAgent, abc.ABC):
         for task in evaluation_info:
             meta_data = task.get_metadata()
             raw_metadata = task.get_raw_metadata()
-            content = task.get_content()
-            pipeline = task.get_pipeline()
+            content = task.get_first_content()
+            dag = task.get_dag()
 
             hash_data = task.get_hash_data()
 
@@ -183,7 +185,7 @@ class CASVAAgent(BaseAgent, abc.ABC):
             transmit_delay_list.append(task.calculate_cloud_edge_transmit_time())
 
             if not self.acc_estimator:
-                self.create_acc_estimator(service_name=pipeline[0].get_service_name())
+                self.create_acc_estimator(service_name=dag.get_next_nodes('start')[0])
             acc = self.acc_estimator.calculate_accuracy(hash_data, content, resolution_ratio, fps_ratio)
             acc_list.append(acc)
 

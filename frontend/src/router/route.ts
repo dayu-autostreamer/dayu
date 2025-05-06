@@ -42,7 +42,7 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
         path: '/',
         name: '/',
         component: () => import('/@/layout/index.vue'),
-        redirect: '/pipeline',
+        redirect: '/dag',
         meta: {
             isKeepAlive: true,
         },
@@ -50,24 +50,20 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
             {
                 path: '/home',
                 name: 'home',
-                component: () => import('/@/views/home/index.vue'),
                 meta: {
                     title: 'message.router.home',
-                    isLink: '',
+                    isLink: 'https://dayu-autostreamer.github.io/',
                     isHide: false,
-                    isKeepAlive: true,
-                    isAffix: true,
-                    isIframe: false,
                     roles: ['admin', 'common'],
                     icon: 'iconfont icon-shouye',
                 },
             },
             {
-                path: '/pipeline',
-                name: 'pipeline',
-                component: () => import('/@/views/pipeline/index.vue'),
+                path: '/dag',
+                name: 'dag',
+                component: () => import('/@/views/dag/index.vue'),
                 meta: {
-                    title: 'message.router.pipeline',
+                    title: 'message.router.dag',
                     isLink: '',
                     isHide: false,
                     isKeepAlive: true,

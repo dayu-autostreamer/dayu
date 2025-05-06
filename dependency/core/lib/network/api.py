@@ -1,9 +1,10 @@
 class NetworkAPIPath:
     CONTROLLER_TASK = '/submit_task'
-    CONTROLLER_RETURN = '/process_return'
+    CONTROLLER_RETURN = '/process_return_task'
 
     PROCESSOR_PROCESS = '/predict'
-    PROCESSOR_PROCESS_RETURN = '/process_return'
+    PROCESSOR_PROCESS_RETURN = '/predict_and_return'
+    PROCESSOR_QUEUE_LENGTH = '/queue_length'
 
     DISTRIBUTOR_DISTRIBUTE = '/distribute'
     DISTRIBUTOR_RESULT = '/result'
@@ -16,8 +17,9 @@ class NetworkAPIPath:
     SCHEDULER_SCENARIO = '/scenario'
     SCHEDULER_POST_RESOURCE = '/resource'
     SCHEDULER_GET_RESOURCE = '/resource'
+    SCHEDULER_SELECT_SOURCE_NODE = '/source_node_selection'
+    SCHEDULER_INITIAL_DEPLOYMENT = '/initial_deployment'
 
-    BACKEND_GET_PIPELINE = '/pipeline'
     BACKEND_GET_POLICY = '/policy'
     BACKEND_INSTALL_SERVICE = '/install'
     BACKEND_UNINSTALL_SERVICE = '/stop_service'
@@ -36,6 +38,7 @@ class NetworkAPIPath:
     BACKEND_QUERY_STATE = '/query_state'
     BACKEND_SOURCE_LIST = '/source_list'
     BACKEND_TASK_RESULT = '/task_result'
+    BACKEND_VISUALIZATION_CONFIG = '/visualization_config'
     BACKEND_DOWNLOAD_LOG = '/download_log'
     BACKEND_EDGE_NODE = '/edge_node'
     BACKEND_DATASOURCE_STATE = '/datasource_state'
@@ -48,6 +51,7 @@ class NetworkAPIMethod:
 
     PROCESSOR_PROCESS = 'POST'
     PROCESSOR_PROCESS_RETURN = 'POST'
+    PROCESSOR_QUEUE_LENGTH = 'GET'
 
     DISTRIBUTOR_DISTRIBUTE = 'POST'
     DISTRIBUTOR_RESULT = 'GET'
@@ -60,8 +64,9 @@ class NetworkAPIMethod:
     SCHEDULER_SCENARIO = 'POST'
     SCHEDULER_POST_RESOURCE = 'POST'
     SCHEDULER_GET_RESOURCE = 'GET'
+    SCHEDULER_SELECT_SOURCE_NODE = 'GET'
+    SCHEDULER_INITIAL_DEPLOYMENT = 'GET'
 
-    BACKEND_GET_PIPELINE = 'GET'
     BACKEND_GET_POLICY = 'GET'
     BACKEND_INSTALL_SERVICE = 'POST'
     BACKEND_UNINSTALL_SERVICE = 'POST'
@@ -80,6 +85,7 @@ class NetworkAPIMethod:
     BACKEND_QUERY_STATE = 'GET'
     BACKEND_SOURCE_LIST = 'GET'
     BACKEND_TASK_RESULT = 'GET'
+    BACKEND_VISUALIZATION_CONFIG = 'GET'
     BACKEND_DOWNLOAD_LOG = 'GET'
     BACKEND_EDGE_NODE = 'GET'
     BACKEND_DATASOURCE_STATE = 'GET'

@@ -1,125 +1,143 @@
+import json
 import os
-from typing import Union
-
-from .class_factory import ClassFactory, ClassType
-from .error import FileNotMountedError
+import yaml
+from typing import Any, Dict, List, Optional
 
 
-class Context:
-    """The Context provides the capability of obtaining the context"""
-    parameters = os.environ
+class ConfigLoader:
+    """
+    A static utility class for loading configuration files in various formats (JSON/YAML)
+    with automatic format detection.
 
-    @classmethod
-    def get_parameter(cls, param, default=None, direct=True):
-        """get the value of the key `param` in `PARAMETERS`,
-        if not exist, the default value is returned"""
+    Features:
+    - Auto-detects file format (extension-based and content-based fallback)
+    - Handles missing or incorrect file extensions
+    - Graceful fallback when optional dependencies (PyYAML) are missing
+    - Comprehensive error reporting
+    - Can be used without instantiation (static methods only)
+    """
 
-        value = cls.parameters.get(param) or cls.parameters.get(str(param).upper())
-        value = value if value else default
+    # Class-level constant for supported parsers
+    _PARSERS = [
+        {
+            'name': 'JSON',
+            'extensions': ['json'],
+            'load': lambda c: json.loads(c),
+            'exceptions': (json.JSONDecodeError,),
+            'required': False
+        },
+        {
+            'name': 'YAML',
+            'extensions': ['yaml', 'yml'],
+            'load': lambda c: yaml.safe_load(c),
+            'exceptions': (yaml.YAMLError,),
+            'required': False
+        }
+    ]
 
-        if not direct:
-            value = eval(value)
-
-        return value
-
-    @classmethod
-    def get_file_path(cls, file_path: Union[str, int]) -> str:
+    @staticmethod
+    def _read_file_content(file_path: str) -> str:
         """
-        Returns the full mount path for a given file path or volume index.
-
-        If `file_path` is a string, the function searches for the specified file within the mounted volumes and returns
-        the full path if the file is found. If `file_path` is an integer, it returns the path to the corresponding
-        volume based on the index provided.
+        Read the content of a configuration file.
 
         Args:
-            file_path (Union[str, int]): File path (str) or volume index (int).
+            file_path: Path to the configuration file
 
         Returns:
-            str: The full path to the file within the volume or the volume path itself.
+            File content as string
 
         Raises:
-            FileNotMountedError: If the specified file is not found in any mounted volumes.
-            IndexError: If `file_path` is an integer but out of the valid volume index range.
+            ValueError: If file cannot be read
         """
-        volume_num = cls.get_parameter('VOLUME_NUM', direct=False)
-        file_prefix = os.path.normpath(cls.get_parameter('FILE_PREFIX', ''))
-        mount_prefix = os.path.normpath(cls.parameters.get('DATA_PATH_PREFIX', '/home/data'))
+        try:
+            with open(file_path, 'r') as f:
+                return f.read()
+        except FileNotFoundError:
+            raise ValueError(f"Config file {file_path} not found")
+        except IOError as e:
+            raise ValueError(f"Failed to read file {file_path}: {str(e)}")
 
-        # if input file path is integer, return corresponding volume path (volume0)
-        if isinstance(file_path, int):
-            if 0 <= file_path < volume_num:
-                return os.path.join(mount_prefix, f'volume{file_path}')
+    @staticmethod
+    def _get_file_extension(file_path: str) -> Optional[str]:
+        """
+        Extract the lowercase file extension without the dot.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            File extension (without dot) or None if no extension
+        """
+        ext = os.path.splitext(file_path)[1].lower()
+        return ext.lstrip('.') if ext else None
+
+    @staticmethod
+    def _order_parsers_by_extension(extension: Optional[str]) -> List[Dict]:
+        """
+        Order parsers based on file extension match priority.
+
+        Args:
+            extension: File extension to match against
+
+        Returns:
+            Ordered list of parsers with matching extensions first
+        """
+        if not extension:
+            return ConfigLoader._PARSERS.copy()
+
+        ordered = []
+        remaining = []
+
+        for parser in ConfigLoader._PARSERS:
+            if extension in parser['extensions']:
+                ordered.append(parser)
             else:
-                raise IndexError(f"Volume index {file_path} is out of range for {volume_num} volumes.")
+                remaining.append(parser)
 
-        file_path = os.path.normpath(file_path)
-        if volume_num <= 0:
-            raise FileNotMountedError('No file directory is mounted')
-        elif volume_num == 1:
-            raw_file_path = cls.get_parameter(f'VOLUME_0')
-            related_raw_dir = str(os.path.relpath(raw_file_path, file_prefix)) \
-                if raw_file_path.startswith(file_prefix) else ''
-            if file_path.startswith(raw_file_path):
-                file_name = os.path.relpath(file_path, raw_file_path)
-            elif file_path.startswith(related_raw_dir):
-                file_name = os.path.relpath(file_path, related_raw_dir)
-            elif not os.path.isabs(file_path):
-                file_name = file_path
-            else:
-                raise FileNotMountedError(f"File '{file_path}' is not mounted.")
-            return os.path.join(mount_prefix, 'volume0', file_name)
-        else:
-            for index in range(volume_num):
-                raw_file_path = cls.get_parameter(f'VOLUME_{index}')
-                related_raw_dir = str(os.path.relpath(raw_file_path, file_prefix)) \
-                    if raw_file_path.startswith(file_prefix) else ''
-                if file_path.startswith(raw_file_path):
-                    file_name = os.path.relpath(file_path, raw_file_path)
-                elif file_path.startswith(related_raw_dir):
-                    file_name = os.path.relpath(file_path, related_raw_dir)
-                else:
-                    continue
-                return os.path.join(mount_prefix, f'volume{index}', file_name)
+        return ordered + remaining
 
-            raise FileNotMountedError(f"File '{file_path}' is not mounted.")
+    @staticmethod
+    def get_supported_formats() -> List[str]:
+        """
+        Get list of supported configuration formats.
 
-    @classmethod
-    def get_algorithm(cls, algorithm, al_name=None, **al_params):
-        algorithm = algorithm.upper()
+        Returns:
+            List of format names (e.g., ['JSON', 'YAML'])
+        """
+        return [p['name'] for p in ConfigLoader._PARSERS]
 
-        algorithm_dict = Context.get_algorithm_info(algorithm, al_name, **al_params)
-        if not algorithm_dict:
-            return None
-        return ClassFactory.get_cls(
-            eval(f'ClassType.{algorithm}'),
-            algorithm_dict['method']
-        )(**algorithm_dict['param'])
+    @staticmethod
+    def load(file_path: str) -> Any:
+        """
+        Load configuration from a file with automatic format detection.
 
-    @classmethod
-    def get_algorithm_info(cls, algorithm, name, **param):
-        al_name = cls.get_parameter(f'{algorithm}_NAME') if name is None else name
-        al_params = cls.get_parameter(f'{algorithm}_PARAMETERS', default='{}', direct=False)
+        Args:
+            file_path: Path to the configuration file
 
-        if not al_name:
-            return None
+        Returns:
+            Parsed configuration content (typically dict)
 
-        al_params.update(**param)
+        Raises:
+            ValueError: When file cannot be parsed by any available parser
+        """
+        content = ConfigLoader._read_file_content(file_path)
+        extension = ConfigLoader._get_file_extension(file_path)
+        ordered_parsers = ConfigLoader._order_parsers_by_extension(extension)
 
-        algorithm_dict = {
-            'method': al_name,
-            'param': al_params
-        }
+        # Try each parser in order
+        for parser in ordered_parsers:
+            try:
+                config = parser['load'](content)
+                if config is not None:  # Basic validation
+                    return config
+            except parser['exceptions']:
+                continue
+            except Exception:
+                continue
 
-        return algorithm_dict
-
-    @classmethod
-    def get_instance(cls, class_name, **instance_params):
-        if class_name in globals():
-            params = cls.get_parameter(f'{class_name.upper()}_PARAMETERS', default='{}', direct=False)
-            instance_params.update(params)
-            instance = globals()[class_name](**instance_params)
-            return instance
-        else:
-            assert None, f"Class '{class_name}' is not defined or imported."
-
-
+        # All parsers failed
+        raise ValueError(
+            f"Failed to parse config file {file_path}\n"
+            f"Supported formats: {', '.join(ConfigLoader.get_supported_formats())}\n"
+            f"File extension: {extension or 'none'}"
+        )

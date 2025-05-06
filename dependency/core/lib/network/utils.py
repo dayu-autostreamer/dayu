@@ -2,9 +2,9 @@ import re
 from typing import Union
 
 
-def get_merge_address(ip: str, protocal: str = 'http', port: Union[int, str] = None, path: str = None):
+def merge_address(ip: str, protocol: str = 'http', port: Union[int, str] = None, path: str = None):
     """
-    merge address from {protocal, ip, port, path}
+    merge address from {protocol, ip, port, path}
     eg: http://127.0.0.1:9000/submit
     """
 
@@ -16,7 +16,7 @@ def get_merge_address(ip: str, protocal: str = 'http', port: Union[int, str] = N
     port = '' if port is None else port
     path = '' if path is None else path
 
-    return f'{protocal}://{ip}{port_divider}{port}{path_divider}{path}'
+    return f'{protocol}://{ip}{port_divider}{port}{path_divider}{path}'
 
 
 def find_all_ips(text: str) -> list:

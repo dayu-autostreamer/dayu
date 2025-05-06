@@ -1,0 +1,88 @@
+- id: fixed
+  name: Fixed Policy
+  yaml: fixed-policy.yaml
+  dependency:
+    generator: generator-base.yaml
+    controller: controller-no-delete.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hei
+  name: Hierarchical Embodied Intelligence
+  yaml: hei.yaml
+  dependency:
+    generator: generator-base.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hei-macro-only
+  name: Hierarchical Embodied Intelligence (Macro Only)
+  yaml: hei-macro-only.yaml
+  dependency:
+    generator: generator-base.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hei-micro-only
+  name: Hierarchical Embodied Intelligence (Micro Only)
+  yaml: hei-micro-only.yaml
+  dependency:
+    generator: generator-base.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hei-synchronous
+  name: Hierarchical Embodied Intelligence (Synchronous)
+  yaml: hei-synchronous.yaml
+  dependency:
+    generator: generator-base.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: fc
+  name: Feedback Controlling
+  yaml: fc.yaml
+  dependency:
+    generator: generator-base.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: casva
+  name: CASVA
+  yaml: casva.yaml
+  dependency:
+    generator: generator-casva.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: cevas
+  name: CEVAS
+  yaml: cevas.yaml
+  dependency:
+    generator: generator-cevas.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: chameleon
+  name: Chameleon
+  yaml: chameleon.yaml
+  dependency:
+    generator: generator-chameleon.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: crave
+  name: Adaptive Video Encoding
+  yaml: crave.yaml
+  dependency:
+    generator: generator-adaptive.yaml
+    controller: controller-base.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: model-switch
+  name: Adaptive Model Switch
+  yaml: model-switch.yaml
+  dependency:
+    generator: generator-for-model-switch.yaml
+    controller: controller-base.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml

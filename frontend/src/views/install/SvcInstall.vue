@@ -1,115 +1,130 @@
 <template xmlns="http://www.w3.org/1999/html">
-  <!-- <el-card class="box-card"> -->
-  <form @submit.prevent="submitService">
-
-
+  <div>
     <div>
-      <div>
-        <h3>Scheduler Policy</h3>
-      </div>
-      <div>
-
-        <el-select style="width: 100%;" v-model="selectedPolicyIndex"
-                   placeholder="Please choose scheduler policy">
-          <el-option v-for="(option, index) in policyOptions" :key="index" :label="option.policy_name"
-                     :value="index"></el-option>
-        </el-select>
-
-      </div>
+      <h3>Scheduler Policy</h3>
     </div>
-
-    <br>
-
-
     <div>
-      <div>
-        <h3>DataSource Configuration</h3>
-      </div>
-      <div>
-        <div>
-          <el-select style="width: 100%;" v-model="selectedDatasourceIndex"
-                     @change="handleDatasourceChange" placeholder="Please choose datasource config">
-            <el-option v-for="(option, index) in datasourceOptions" :key="index" :label="option.source_name"
-                       :value="index"></el-option>
-          </el-select>
-        </div>
-      </div>
+      <el-select
+        style="width: 100%"
+        v-model="selectedPolicyIndex"
+        placeholder="Please choose scheduler policy"
+      >
+        <el-option
+          v-for="(option, index) in policyOptions"
+          :key="index"
+          :label="option.policy_name"
+          :value="index"
+        ></el-option>
+      </el-select>
     </div>
+  </div>
 
-    <br>
+  <br />
 
-
+  <div>
     <div>
-
-      <div v-for="(source, index) in selectedSources" :key="index" style="margin-top: 10px;">
-        <div>
-          <h2> source {{ source.id }}: {{source.name}}</h2>
-        </div>
-        <el-select style="width: 48%;margin-top: 20px" v-model="source.pipeline_selected"
-                   @change="updatePipelineSelection(index, source, source.pipeline_selected)"
-                   placeholder="Please assign pipeline">
+      <h3>DataSource Configuration</h3>
+    </div>
+    <div>
+      <div>
+        <el-select
+          style="width: 100%"
+          v-model="selectedDatasourceIndex"
+          @change="handleDatasourceChange"
+          placeholder="Please choose datasource config"
+        >
           <el-option
-              v-for="(option,index) in pipelineOptions"
-              :key="index"
-              :label="option.dag_name"
-              :value="option.dag_id"
+            v-for="(option, index) in datasourceOptions"
+            :key="index"
+            :label="option.source_name"
+            :value="index"
           ></el-option>
         </el-select>
-
-        <el-select style="width: 48%;margin-top: 20px;margin-left: 4%" v-model="source.node_selected"
-                   @change="updateNodeSelection(index, source, source.node_selected)"
-                   placeholder="Please bind edge node">
-          <el-option
-              v-for="(option,index) in nodeOptions"
-              :key="index"
-              :label="option.name"
-              :value="option.name"
-          ></el-option>
-        </el-select>
-
-
       </div>
     </div>
+  </div>
 
+  <br />
 
-    <!-- :loading="loading" :disabled="installed === 'install'" -->
-    <div style="text-align: center">
-      <el-button type="primary" round native-type="submit"
-                 :loading="loading" :disabled="installed === 'install'"
-                 style="margin-top: 25px;"
+  <div>
+    <div
+      v-for="(source, index) in selectedSources"
+      :key="index"
+      style="margin-top: 10px"
+    >
+      <div>
+        <h2>source {{ source.id }}: {{ source.name }}</h2>
+      </div>
+      <el-select
+        style="width: 38%; margin-top: 20px"
+        v-model="source.dag_selected"
+        @change="updateDagSelection(index, source, source.dag_selected)"
+        placeholder="Assign dag"
+      >
+        <el-option
+          v-for="(option, index) in dagOptions"
+          :key="index"
+          :label="option.dag_name"
+          :value="option.dag_id"
+        ></el-option>
+      </el-select>
+
+      <el-select
+        style="width: 58%; margin-top: 20px; margin-left: 4%"
+        v-model="source.node_selected"
+        @change="updateNodeSelection(index, source, source.node_selected)"
+        placeholder="Bind edge nodes (default all nodes)"
+        multiple
+      >
+        <el-option
+          v-for="(option, index) in nodeOptions"
+          :key="index"
+          :label="option.name"
+          :value="option.name"
+        ></el-option>
+      </el-select>
+    </div>
+  </div>
+
+  <div style="text-align: center">
+    <el-button
+      type="primary"
+      round
+      native-type="submit"
+      :loading="loading"
+      :disabled="installed === 'install'"
+      style="margin-top: 25px"
+      @click="submitService"
       >Install Services
-      </el-button>
-    </div>
-  </form>
+    </el-button>
+  </div>
 </template>
 
 <script>
-import {ElButton} from "element-plus";
-import {ElMessage} from "element-plus";
+import { ElButton } from "element-plus";
+import { ElMessage } from "element-plus";
 
-import axios from 'axios';
-import {useInstallStateStore} from '/@/stores/installState';
-import {ref, watch, onMounted} from 'vue';
-// const install_state = useInstallStateStore()
+import axios from "axios";
+import { useInstallStateStore } from "/@/stores/installState";
+import { ref, watch, onMounted } from "vue";
 export default {
   components: {
     ElButton,
   },
   data() {
     return {
-      selectedSources: [],
-      selectedPipelines: [],
-      selectedNodes: [],
+      selectedSources: [
+        // { id: 0, name: "s1", dag_selected: "", node_selected: [] },
+      ],
       // imageList: [],
       selectedDatasourceIndex: null,
       selectedPolicyIndex: null,
 
-
       selectedUrls: {},
-      successMessage: '',
-      // installed: install_state.status, // install:已安装, uninstall:未安装
+      successMessage: "",
+      // installed: install_state.status
       stageMessage: null,
-      loading: false
+      loading: false,
     };
   },
   setup() {
@@ -117,55 +132,56 @@ export default {
     const installed = ref(null);
     const policyOptions = ref(null);
     const datasourceOptions = ref(null);
-    const pipelineOptions = ref(null);
-    const nodeOptions = ref(null);
+    const dagOptions = ref([
+      // { dag_name: "233dag", dag_id: "233dag" },
+    ]);
+    const nodeOptions = ref([]);
     const getTask = async () => {
-
-
       try {
-        const response = await axios.get('/api/policy');
+        const response = await axios.get("/api/policy");
         if (response.data !== null) {
           policyOptions.value = response.data;
         }
       } catch (error) {
-        console.error('Failed to fetch policy options', error);
-        ElMessage.error("System Error")
+        console.error("Failed to fetch policy options", error);
+        ElMessage.error("System Error");
       }
 
       try {
-        const response = await axios.get('/api/datasource');
+        const response = await axios.get("/api/datasource");
         if (response.data !== null) {
           datasourceOptions.value = response.data;
+          console.log(datasourceOptions.value);
         }
       } catch (error) {
-        console.error('Failed to fetch datasource options', error);
-        ElMessage.error("System Error")
+        console.error("Failed to fetch datasource options", error);
+        ElMessage.error("System Error");
       }
 
       try {
-        const response = await axios.get('/api/pipeline');
+        const response = await axios.get("/api/dag_workflow");
         if (response.data !== null) {
-          pipelineOptions.value = response.data;
+          dagOptions.value = response.data;
         }
       } catch (error) {
-        console.error('Failed to fetch pipeline options', error);
-        ElMessage.error("System Error")
+        console.error("Failed to fetch dag options", error);
+        ElMessage.error("System Error");
       }
 
       try {
-        const response = await axios.get('/api/edge_node');
+        const response = await axios.get("/api/edge_node");
         if (response.data !== null) {
           nodeOptions.value = response.data;
         }
       } catch (error) {
-        console.error('Failed to fetch node options', error);
-        ElMessage.error("System Error")
+        console.error("Failed to fetch node options", error);
+        ElMessage.error("System Error");
       }
 
       try {
-        const response = await axios.get('/api/install_state');
-        installed.value = response.data['state'];
-        if (installed.value === 'install') {
+        const response = await axios.get("/api/install_state");
+        installed.value = response.data["state"];
+        if (installed.value === "install") {
           install_state.install();
         } else {
           install_state.uninstall();
@@ -173,11 +189,14 @@ export default {
       } catch (error) {
         console.error("query state error");
       }
-    }
+    };
 
-    watch(() => install_state.status, (newValue, oldValue) => {
-      installed.value = newValue;
-    });
+    watch(
+      () => install_state.status,
+      (newValue, oldValue) => {
+        installed.value = newValue;
+      }
+    );
 
     onMounted(async () => {
       getTask();
@@ -188,127 +207,124 @@ export default {
       install_state,
       policyOptions,
       datasourceOptions,
-      pipelineOptions,
+      dagOptions,
       nodeOptions,
-      getTask
+      getTask,
     };
   },
   methods: {
-    async updatePipelineSelection(index, source, selected) {
-      this.selectedPipelines[index] = selected;
-      console.log(selected)
+    async updateDagSelection(index, source, selected) {
+      this.selectedSources[index].dag_selected = selected;
     },
     async updateNodeSelection(index, source, selected) {
-      this.selectedNodes[index] = selected;
-      console.log(selected)
+      this.selectedSources[index].node_selected = selected;
     },
     async handleDatasourceChange() {
-      this.successMessage = '';
+      this.successMessage = "";
       this.selectedSources = [];
-      this.selectedPipelines = [];
-      this.selectedNodes = [];
 
       try {
         const index = this.selectedDatasourceIndex;
-        if (index !== null && index >= 0 && index < this.datasourceOptions.length) {
-          const datasource = this.datasourceOptions[index]
-          // console.log(englishLabel);
-          // console.log(data.length)
+        if (
+          index !== null &&
+          index >= 0 &&
+          index < this.datasourceOptions.length
+        ) {
+          console.log(this.datasourceOptions);
+          const datasource = this.datasourceOptions[index];
           for (var i = 0; i < datasource.source_list.length; i++) {
             this.selectedSources.push(datasource.source_list[i]);
-            this.selectedPipelines.push('')
-            this.selectedNodes.push('')
+            this.selectedSources[i].node_selected = [];
+            this.selectedSources[i].dag_selected = "";
           }
         } else {
-          console.error('Invalid selected index.');
+          console.error("Invalid selected index.");
         }
       } catch (error) {
-        console.error('Submission failed', error);
+        console.error("Submission failed", error);
       }
     },
 
     submitService() {
-
       const policy_index = this.selectedPolicyIndex;
-      if (policy_index === null || policy_index < 0 || policy_index >= this.policyOptions.length) {
-        ElMessage.error('Please choose scheduler policy');
+      if (
+        policy_index === null ||
+        policy_index < 0 ||
+        policy_index >= this.policyOptions.length
+      ) {
+        ElMessage.error("Please choose scheduler policy");
         return;
       }
 
       const source_index = this.selectedDatasourceIndex;
-      if (source_index === null || source_index < 0 || source_index >= this.datasourceOptions.length) {
-        ElMessage.error('Please choose datasource configuration');
+      if (
+        source_index === null ||
+        source_index < 0 ||
+        source_index >= this.datasourceOptions.length
+      ) {
+        ElMessage.error("Please choose datasource configuration");
         return;
       }
 
+      const source_config_label =
+        this.datasourceOptions[source_index].source_label;
+      const policy_id = this.policyOptions[policy_index].policy_id;
 
-      const source_config_label = this.datasourceOptions[source_index].source_label;
-      const policy_id = this.policyOptions[policy_index].policy_id
-
-      const pipeline_list = Object.values(this.selectedPipelines);
-      if (pipeline_list.includes('')) {
-        ElMessage.error('Please assign pipeline for all sources');
-        return;
+      console.log(this.selectedSources);
+      // if user assigned none then add all.
+      for (let i = 0; i < this.selectedSources.length; i++) {
+        if (this.selectedSources[i].node_selected.length === 0) {
+          this.selectedSources.node_selected = nodeOptions;
+        }
       }
 
-      const node_list = Object.values(this.selectedNodes);
-      if (node_list.includes('')) {
-        ElMessage.error('Please bind edge node for all sources');
-        return;
-      }
-
-
-      // console.log(image_list);
+      // selectedSources contains all map info
       const content = {
-        'source_config_label': source_config_label,
-        'policy_id': policy_id,
-        'pipeline_list':pipeline_list,
-        'node_list':node_list
-      }
+        source_config_label: source_config_label,
+        policy_id: policy_id,
+        source: this.selectedSources,
+      };
       let task_info = JSON.stringify(content);
 
       // console.log(JSON.stringify(content));
       this.loading = true;
-      fetch('/api/install', {
+      fetch("/api/install", {
         method: "POST",
-        body: task_info
-      }).then((response) => response.json())
-          .then((data) => {
-            const state = data.state;
-            let msg = data.msg;
-            this.loading = false;
-            if (state === 'success') {
-              this.install_state.install();
-              // this.installed = 'install';
-              // console.log(this.install_state.status);
-              msg += ". Refreshing.."
-              ElMessage({
-                message: msg,
-                showClose: true,
-                type: "success",
-                duration: 3000,
-              });
-              setTimeout(() => {
-                location.reload();
-              }, 3000);
-            } else {
-              ElMessage({
-                message: msg,
-                showClose: true,
-                type: "error",
-                duration: 3000,
-              });
-            }
+        body: task_info,
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          const state = data.state;
+          let msg = data.msg;
+          this.loading = false;
+          if (state === "success") {
+            this.install_state.install();
 
-          }).catch((error) => {
-        this.loading = false;
-        // console.error(error);
-        ElMessage.error("Network Error", 3000);
-      });
-
-
+            msg += ". Refreshing..";
+            ElMessage({
+              message: msg,
+              showClose: true,
+              type: "success",
+              duration: 3000,
+            });
+            setTimeout(() => {
+              location.reload();
+            }, 3000);
+          } else {
+            ElMessage({
+              message: msg,
+              showClose: true,
+              type: "error",
+              duration: 3000,
+            });
+          }
+        })
+        .catch((error) => {
+          this.loading = false;
+          // console.error(error);
+          ElMessage.error("Network Error", 3000);
+        });
     },
-
   },
 };
 </script>
@@ -338,7 +354,6 @@ h3 {
   margin-bottom: 20px;
 }
 
-
 .el-button {
   font-size: 16px;
   margin-right: 10px;
@@ -346,10 +361,5 @@ h3 {
 
 .el-button:first-child {
   margin-left: 0;
-
 }
 </style>
-
-  
-  
-  

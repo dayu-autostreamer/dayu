@@ -3,18 +3,24 @@ pod-template:
   image: scheduler
   imagePullPolicy: IfNotPresent
   env:
-    - name: SCH_CONFIG_NAME
+    - name: SCH_CONFIG_EXTRACTION_NAME
       value: simple
-    - name: SCH_SCENARIO_NAME
+    - name: SCH_SCENARIO_EXTRACTION_NAME
       value: simple
-    - name: SCH_STARTUP_NAME
+    - name: SCH_STARTUP_POLICY_NAME
       value: fixed
-    - name: SCH_POLICY_NAME
+    - name: SCH_POLICY_EXTRACTION_NAME
       value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: "{'fixed_value':0, 'fixed_type':'position'}"
+    - name: SCH_DEPLOYMENT_POLICY_NAME
+      value: full
     - name: SCH_AGENT_NAME
       value: fc
     - name: SCH_AGENT_PARAMETERS
-      value: "{'reference_policy':{'resolution': '720p','fps': 5,'encoding': 'mp4v','buffer_size': 1,'pipeline':0},'window_length':20,'delay_constraint':0.3,'theta':0.5}"
+      value: "{'reference_policy':{'resolution': '720p','fps': 5,'encoding': 'mp4v','buffer_size': 1},'window_length':20,'delay_constraint':0.3,'theta':0.5}"
 port-open:
   pos: cloud
   port: 9000

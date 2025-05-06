@@ -5,7 +5,7 @@ from core.lib.common import ClassFactory, ClassType, Context, LOGGER, EncodeOps
 from core.lib.common import VideoOps
 from core.lib.estimation import AccEstimator, OverheadEstimator
 from core.lib.common import Queue, FileOps
-from core.lib.network import NodeInfo, get_merge_address, NetworkAPIPath, NetworkAPIMethod, PortInfo, http_request
+from core.lib.network import NodeInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, PortInfo, http_request
 from core.lib.content import Task
 
 from .base_agent import BaseAgent
@@ -30,6 +30,8 @@ class ChameleonAgent(BaseAgent, abc.ABC):
     def __init__(self, system, agent_id: int, fixed_policy: dict, acc_gt_dir: str,
                  best_num: int = 5, threshold=0.1,
                  profile_window=16, segment_size=4, calculate_time=1):
+        super().__init__()
+
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
         self.schedule_plan = None
@@ -70,7 +72,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         self.profiling_frames = []
 
-        self.task_pipeline = None
+        self.task_dag = None
 
         self.current_analytics = ''
 
@@ -220,17 +222,17 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         if not self.processor_address:
             processor_hostname = NodeInfo.get_cloud_node()
             processor_port = PortInfo.get_service_port(self.current_analytics)
-            self.processor_address = get_merge_address(NodeInfo.hostname2ip(processor_hostname),
-                                                       port=processor_port,
-                                                       path=NetworkAPIPath.PROCESSOR_PROCESS_RETURN)
+            self.processor_address = merge_address(NodeInfo.hostname2ip(processor_hostname),
+                                                   port=processor_port,
+                                                   path=NetworkAPIPath.PROCESSOR_PROCESS_RETURN)
 
         cur_path = self.compress_video(frames)
 
-        tmp_task = Task(source_id=0, task_id=0, source_device='', pipeline=self.task_pipeline)
+        tmp_task = Task(source_id=0, task_id=0, source_device='', all_edge_devices=[], dag=self.task_dag)
         tmp_task.set_file_path(cur_path)
         response = http_request(url=self.processor_address,
                                 method=NetworkAPIMethod.PROCESSOR_PROCESS_RETURN,
-                                data={'data': Task.serialize(tmp_task)},
+                                data={'data': tmp_task.serialize()},
                                 files={'file': (tmp_task.get_file_path(),
                                                 open(tmp_task.get_file_path(), 'rb'),
                                                 'multipart/form-data')}
@@ -238,7 +240,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         FileOps.remove_data_file(tmp_task)
         if response:
             task = Task.deserialize(response)
-            return task.get_content()
+            return task.get_first_content()
         else:
             return None
 
@@ -273,9 +275,9 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         frame_encoded = info['frame']
         frame_hash_code = info['hash_code']
-        pipeline = info['pipeline']
+        dag = info['dag']
 
-        self.task_pipeline = Task.extract_pipeline_from_dicts(pipeline)
+        self.task_dag = Task.extract_dag_from_dag_deployment(dag)
 
         if frame_encoded:
             self.raw_frames.put((EncodeOps.decode_image(frame_encoded), frame_hash_code))
@@ -286,14 +288,13 @@ class ChameleonAgent(BaseAgent, abc.ABC):
             return None
 
         policy = self.fixed_policy.copy()
-        edge_device = info['device']
         cloud_device = self.cloud_device
-        pipe_seg = policy['pipeline']
-        pipeline = info['pipeline']
-        self.current_analytics = pipeline[0]['service_name']
-        pipeline = [{**p, 'execute_device': edge_device} for p in pipeline[:pipe_seg]] + \
-                   [{**p, 'execute_device': cloud_device} for p in pipeline[pipe_seg:]]
-        policy.update({'pipeline': pipeline})
+
+        self.current_analytics = self.task_dag.get_next_nodes('start')[0]
+        for service_name in dag:
+            dag[service_name]['service']['execute_device'] = cloud_device
+
+        policy.update({'dag': dag})
 
         best_config = self.best_config_list[0]
 

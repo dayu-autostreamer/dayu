@@ -133,5 +133,5 @@ export function formatAxis(param: Date): string {
 	else if (hour < 17) return '下午好';
 	else if (hour < 19) return '傍晚好';
 	else if (hour < 22) return '晚上好';
-	else return '夜里好';
+	else return '夜间安康';
 }

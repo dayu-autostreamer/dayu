@@ -125,7 +125,8 @@ build specified images
 make build WHAT=xxx,yyy,zzz...
 ```
 
-if you change configuration files (buildkitd.toml/driver_opts.toml), you should delete buildx creator before make.
+If you change configuration files (buildkitd.toml/driver_opts.toml), you should delete buildx creator before make.
+You are also recommended to try to delete buildx creator when you encounter error in docker building to fix the error.
 ```bash
 # view all buildx creator.
 docker buildx ls
@@ -134,3 +135,20 @@ docker buildx ls
 docker buildx stop dayu-buildx
 docker buildx rm dayu-buildx
 ```
+
+
+core/
+  __init__.py
+  lib/
+    __init__.py
+    common/
+      __init__.py
+      class_factory.py
+      ......
+    algorithms/
+      __init__.py
+      schedule_agent/
+        __init__.py
+        base_agent.py
+        fixed_agent.py
+        ......

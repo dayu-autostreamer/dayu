@@ -1,5 +1,2 @@
-numpy
 pycuda
 tensorrt
-
-

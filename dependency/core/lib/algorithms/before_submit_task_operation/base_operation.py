@@ -2,5 +2,5 @@ import abc
 
 
 class BaseBSTOperation(metaclass=abc.ABCMeta):
-    def __call__(self, system, compressed_file, hash_codes):
+    def __call__(self, system, new_task):
         raise NotImplementedError

@@ -41,7 +41,6 @@ class StateBuffer:
 
     def get_state_buffer(self):
 
-        # TODO: normalization the state ?
         resources = self.resources.copy()
 
         delay = self.delay.copy()

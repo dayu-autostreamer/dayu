@@ -1,8 +1,6 @@
-import time
 import json
 import threading
 from datetime import datetime
-from func_timeout import func_set_timeout as timeout
 
 from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks
 from fastapi.routing import APIRoute
@@ -23,11 +21,6 @@ class BackendServer:
         self.server = BackendCore()
 
         self.app = FastAPI(routes=[
-            APIRoute(NetworkAPIPath.BACKEND_GET_PIPELINE,
-                     self.get_all_pipelines,
-                     response_class=JSONResponse,
-                     methods=[NetworkAPIMethod.BACKEND_GET_PIPELINE]
-                     ),
             APIRoute(NetworkAPIPath.BACKEND_GET_POLICY,
                      self.get_all_schedule_policies,
                      response_class=JSONResponse,
@@ -117,6 +110,11 @@ class BackendServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.BACKEND_TASK_RESULT]
                      ),
+            APIRoute(NetworkAPIPath.BACKEND_VISUALIZATION_CONFIG,
+                     self.get_visualization_config,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.BACKEND_VISUALIZATION_CONFIG]
+                     ),
             APIRoute(NetworkAPIPath.BACKEND_DOWNLOAD_LOG,
                      self.download_log,
                      response_class=FileResponse,
@@ -144,28 +142,14 @@ class BackendServer:
             allow_methods=["*"], allow_headers=["*"],
         )
 
-    async def get_all_pipelines(self):
-        """
-        :return:
-        display all pipelines
-        {
-            dag_id:id,
-            dag_name：name}
-        """
-        cur_pipelines = []
-        for pipeline in self.server.pipelines:
-            cur_pipelines.append(
-                {'dag_id': pipeline['dag_id'],
-                 'dag_name': pipeline['dag_name']})
-        return cur_pipelines
-
     async def get_all_schedule_policies(self):
         """
         :return:
         display all scheduled policies
         {
             policy_id:id,
-            policy_name：name}
+            policy_name：name
+        }
         """
         self.server.parse_base_info()
         cur_policy = []
@@ -192,29 +176,49 @@ class BackendServer:
 
     async def get_dag_workflows(self):
         """
-        get current dag workflows (pipelines)
+        get current dag workflows
         [
                     {
                         "dag_id":1,
                         "dag_name":"headup",
-                        "dag":["face_detection","face_alignment"]
+                        "dag":{
+                            "node_id_A":{
+                                "id" : "skyrim's node",
+                                "prev" : [],
+                                "succ" : ["node_id_B", ...],
+                                "service_id" : "car_detection"
+                            },
+                            "node_id_B":{
+                                "id" : "skyrim's node",
+                                "prev" : ["node_id_A"],
+                                "succ" : [],
+                                "service_id" : "plate_recognition"
+                            }
+                        }
                     },
                     {
-                        "dag_id":1,
-                        "dag_name":"traffic",
-                        "dag":["car_detection","plate_recognition"]
-                    },
-                    {
-                        "dag_id":1,
-                        "dag_name":"ixpe",
-                        "dag":["ixpe_preprocess","ixpe_sr_and_pc","ixpe_edge_observe"]
+                        "dag_id":2,
+                        "dag_name":"headup",
+                        "dag":{
+                            "node_id_A":{
+                                "id" : "skyrim's node",
+                                "prev" : [],
+                                "succ" : ["node_id_B", ...],
+                                "service_id" : car_detection
+                            },
+                            "node_id_B":{
+                                "id" : "skyrim's node",
+                                "prev" : ["node_id_A"],
+                                "succ" : [],
+                                "service_id" : plate_recognition
+                            }
+                        }
                     }
-
                 ],
         :return:
         """
 
-        return self.server.pipelines
+        return self.server.dags
 
     async def get_all_services(self):
         """
@@ -233,39 +237,54 @@ class BackendServer:
         :return:
         """
         self.server.parse_base_info()
+        service_dict = {}
         services = self.server.services
         for service in services:
             service['description'] = (service['description'] + ' (in:' + service['input']
                                       + ', out: ' + service['output'] + ')')
-        return self.server.services
+            service_dict[service['id']] = service if service['id'] not in service_dict else service_dict[service['id']]
+        return [service_dict[service_id] for service_id in service_dict]
 
     async def update_dag_workflows(self, data=Body(...)):
         """
-        add new dag workflows (pipelines)
+        add new dag workflows
         body
         {
             "dag_name":"headup",
-            "dag":["face_detection","face_alignment"]
+            "dag":{
+                "_start" : [node_id_A...],//需要是一个列表 支持多个begin
+                "service_id":{
+                    "prev" : [],
+                    "succ" : ["node_id_B", ...],
+                    "service_id" : car_detection
+                },
+                "service_id":{
+                    "prev" : ["node_id_A"],
+                    "succ" : [],
+                    "service_id" : plate_recognition
+                }
+            }
         },
         :return:
             {'state':success/fail, 'msg':'...'}
         """
-        pipeline_name = data['dag_name']
-        pipeline = data['dag']
-
-        if self.server.check_pipeline(pipeline):
-            self.server.pipelines.append({
-                'dag_id': Counter().get_count('dag_id'),
-                'dag_name': pipeline_name,
-                'dag': pipeline
+        dag_name = data['dag_name']
+        dag = data['dag']
+        state, msg = self.server.check_dag(dag)
+        if state:
+            self.server.dags.append({
+                'dag_id': Counter.get_count('dag_id'),
+                'dag_name': dag_name,
+                'dag': dag
             })
-            return {'state': 'success', 'msg': 'Add new pipeline Successfully'}
+
+            return {'state': 'success', 'msg': 'Add new dag Successfully'}
         else:
-            return {'state': 'fail', 'msg': 'Add new pipeline failed: illegal pipeline'}
+            return {'state': 'fail', 'msg': f'Add new dag failed: {msg}'}
 
     async def delete_dag_workflow(self, data=Body(...)):
         """
-        delete dag workflow (pipeline)
+        delete dag workflow
         body:
         {
             "dag_id":1
@@ -276,12 +295,12 @@ class BackendServer:
 
         data = json.loads(str(data, encoding='utf-8'))
         dag_id = int(data['dag_id'])
-        for index, pipeline in enumerate(self.server.pipelines):
-            if pipeline['dag_id'] == dag_id:
-                del self.server.pipelines[index]
-                return {'state': 'success', 'msg': 'Delete pipeline successfully'}
+        for index, dag in enumerate(self.server.dags):
+            if dag['dag_id'] == dag_id:
+                del self.server.dags[index]
+                return {'state': 'success', 'msg': 'Delete dag successfully'}
 
-        return {'state': 'fail', 'msg': 'Delete pipeline failed: pipeline not exists'}
+        return {'state': 'fail', 'msg': 'Delete dag failed: dag not exists'}
 
     async def get_service_info(self, service):
         """
@@ -391,32 +410,37 @@ class BackendServer:
 
     async def install_service(self, data=Body(...)):
         """
-        install system components to prepare for executing pipelines
+        install system components to prepare for executing dags
         body
         {
             "dag_id": (id),
             "policy_id": (id)
         }
+
+        content = {
+            source_config_label: source_config_label,
+            policy_id: policy_id,
+            source: this.selectedSources,
+        };
+
+        source = [
+            { id: 0, name: "s1", dag_selected: "", node_selected: [] },
+            { id: 1, name: "s2", dag_selected: "", node_selected: [] }...
+        ],
+
         :return:
         {'msg': 'service start successfully'}
         {'msg': 'Invalid service name!'}
         """
 
-        @timeout(60)
-        def install_loop(yaml_docs):
-            if not yaml_docs:
-                return False
-            _result = KubeHelper.apply_custom_resources(yaml_docs)
-            while not KubeHelper.check_pods_running(self.server.namespace):
-                time.sleep(1)
-            return _result
-
         data = json.loads(str(data, encoding='utf-8'))
 
         source_label = data['source_config_label']
         policy_id = data['policy_id']
-        pipeline_list = data['pipeline_list']
-        node_list = data['node_list']
+        source_map_list = data['source']
+
+        dag_list = [x['dag_selected'] for x in source_map_list]
+        node_set_list = [x['node_selected'] for x in source_map_list]
 
         source_deploy = []
 
@@ -428,38 +452,34 @@ class BackendServer:
         if source_config is None:
             return {'state': 'fail', 'msg': 'Install services failed: datasource configuration not exists'}
 
-        if len(source_config) != len(pipeline_list) != len(node_list):
+        if len(source_config) != len(dag_list) != len(node_set_list):
             return {'state': 'fail', 'msg': 'Install services failed: datasource mapping failed'}
 
-        for source, pipeline_id, node in zip(source_config['source_list'], pipeline_list, node_list):
+        for source, dag_id, node_set in zip(source_config['source_list'], dag_list, node_set_list):
 
-            pipeline = self.server.find_pipeline_by_id(pipeline_id)
-            if pipeline is None:
-                return {'state': 'fail', 'msg': 'Install services failed: pipeline not exists'}
+            dag = self.server.find_dag_by_id(dag_id)
+            if dag is None:
+                return {'state': 'fail', 'msg': 'Install services failed: dag not exists'}
 
-            if not self.server.check_node_exist(node):
-                return {'state': 'fail', 'msg': f'Install services failed: edge node "{node}" not exists'}
+            for node in node_set:
+                if not self.server.check_node_exist(node):
+                    return {'state': 'fail', 'msg': f'Install services failed: edge node "{node}" not exists'}
 
             source.update({'source_type': source_config['source_type'], 'source_mode': source_config['source_mode']})
 
-            source_deploy.append({'source': source, 'pipeline': pipeline, 'node': node})
+            source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
         try:
-            yaml = self.server.parse_apply_templates(policy, source_deploy)
+            result, msg = self.server.parse_and_apply_templates(policy, source_deploy)
         except Exception as e:
-            LOGGER.warning(f'Parse templates failed: {str(e)}')
-            LOGGER.exception(e)
-            yaml = None
-        try:
-            result = install_loop(yaml)
-        except Exception as e:
-            LOGGER.exception(e)
+            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             result = False
+            msg = 'unexpected system error, please refer to logs in backend'
 
         if result:
             return {'state': 'success', 'msg': 'Install services successfully'}
         else:
-            return {'state': 'fail', 'msg': 'Install services failed: system error'}
+            return {'state': 'fail', 'msg': f'Install services failed: {msg}'}
 
     async def uninstall_service(self):
         """
@@ -468,27 +488,21 @@ class BackendServer:
         :return:
         """
 
-        @timeout(120)
-        def stop_loop(yaml):
-            res = KubeHelper.delete_custom_resources(yaml)
-            while KubeHelper.check_component_pods_exist(self.server.namespace):
-                time.sleep(1)
-            return res
-
-        docs = self.server.get_yaml_docs()
         try:
-            result = stop_loop(docs)
+            result, msg = self.server.parse_and_delete_templates()
 
         except Exception as e:
+            LOGGER.warning(f'Uninstall services failed: {str(e)}')
             LOGGER.exception(e)
             result = False
+            msg = f'unexpected system error, please refer to logs in backend'
 
         self.server.clear_yaml_docs()
 
         if result:
             return {'state': 'success', 'msg': 'Uninstall services successfully'}
         else:
-            return {'state': 'fail', 'msg': 'Uninstall services failed: system error'}
+            return {'state': 'fail', 'msg': f'Uninstall services failed: {msg}'}
 
     async def get_install_state(self):
         """
@@ -583,10 +597,8 @@ class BackendServer:
         10 lasted results
         {
         'datasource1':[
-            taskId: 12,
-            result: 23 ,
-            delay: 0.6,
-            visualize: "" (base64 image)
+            task_id: 12,
+            data: {0:{"delay":"0.5"},1:{"image":"xxx"}}
 
         ],
         'datasource2':[]
@@ -602,6 +614,12 @@ class BackendServer:
             ans[source_id] = self.server.task_results[source_id].get_all()
 
         return ans
+
+    async def get_visualization_config(self):
+        """
+        get visualization configuration
+        """
+        return self.server.get_visualization_config()
 
     async def get_datasource_state(self):
         state = 'open' if self.server.source_open else 'close'

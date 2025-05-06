@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM ${REG}/python:3.8
+FROM ${REG}/dayuhub/tensorrt:trt8
 
 LABEL authors="skyrim"
 
@@ -23,9 +23,12 @@ RUN ARCH=$(echo ${TARGETPLATFORM} | cut -d'/' -f2) && \
     wget -O mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/download/v1.9.3/mediamtx_v1.9.3_${ARCH_TYPE}.tar.gz && \
     tar -zxvf mediamtx.tar.gz
 
-RUN sed -i 's/rtspAddress: :8554/rtspAddress: :8000/' mediamtx.yml \
- && sed -i 's/rtpAddress: :8000/rtpAddress: :7000/' mediamtx.yml \
- && sed -i 's/rtcpAddress: :8001/rtcpAddress: :7001/' mediamtx.yml \
- && sed -i 's/writeQueueSize: 512/writeQueueSize: 2048/' mediamtx.yml
+RUN sed -i \
+  -e 's/rtspAddress: :8554/rtspAddress: :8000/' \
+  -e 's/rtpAddress: :8000/rtpAddress: :7000/' \
+  -e 's/rtcpAddress: :8001/rtcpAddress: :7001/'  \
+  -e 's/writeQueueSize: 512/writeQueueSize: 32768/' \
+  mediamtx.yml
+
 
 CMD ["/bin/bash"]

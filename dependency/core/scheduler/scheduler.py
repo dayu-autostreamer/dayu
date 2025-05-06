@@ -11,10 +11,10 @@ class Scheduler:
 
         self.cloud_device = NodeInfo.get_cloud_node()
 
-        self.config_extraction = Context.get_algorithm('SCH_CONFIG')
-        self.scenario_extraction = Context.get_algorithm('SCH_SCENARIO')
-        self.policy_extraction = Context.get_algorithm('SCH_POLICY')
-        self.startup_policy = Context.get_algorithm('SCH_STARTUP')
+        self.config_extraction = Context.get_algorithm('SCH_CONFIG_EXTRACTION')
+        self.scenario_extraction = Context.get_algorithm('SCH_SCENARIO_EXTRACTION')
+        self.policy_extraction = Context.get_algorithm('SCH_POLICY_EXTRACTION')
+        self.startup_policy = Context.get_algorithm('SCH_STARTUP_POLICY')
 
         self.extract_configuration()
 
@@ -45,7 +45,7 @@ class Scheduler:
 
         if plan is None:
             LOGGER.debug('No schedule plan, use startup policy')
-            plan = self.startup_policy(info)
+            plan = self.get_startup_policy(info)
 
         LOGGER.info(f'[Schedule Plan] Source {source_id}: {plan}')
 
@@ -82,3 +82,13 @@ class Scheduler:
 
     def get_scheduler_resource(self):
         return self.resource_table
+
+    def get_source_node_selection_plan(self, source_id, data):
+        agent = self.schedule_table[source_id]
+        plan = agent.get_source_selection_plan(data)
+        return plan
+
+    def get_deployment_plan(self, source_id, data):
+        agent = self.schedule_table[source_id]
+        plan = agent.get_service_deployment_plan(data)
+        return plan

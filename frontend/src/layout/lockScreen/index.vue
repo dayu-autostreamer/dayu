@@ -28,7 +28,7 @@
 				<div v-show="state.isShowLoockLogin" class="layout-lock-screen-login">
 					<div class="layout-lock-screen-login-box">
 						<div class="layout-lock-screen-login-box-img">
-							<img src="https://img2.baidu.com/it/u=1978192862,2048448374&fm=253&fmt=auto&app=138&f=JPEG?w=504&h=500" />
+							<img src="@/assets/images/avatar.jpg" />
 						</div>
 						<div class="layout-lock-screen-login-box-name">Administrator</div>
 						<div class="layout-lock-screen-login-box-value">

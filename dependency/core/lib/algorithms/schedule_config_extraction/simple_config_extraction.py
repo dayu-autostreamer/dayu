@@ -6,7 +6,7 @@ from .base_config_extraction import BaseConfigExtraction
 __all__ = ('SimpleConfigExtraction',)
 
 
-@ClassFactory.register(ClassType.SCH_CONFIG, alias='simple')
+@ClassFactory.register(ClassType.SCH_CONFIG_EXTRACTION, alias='simple')
 class SimpleConfigExtraction(BaseConfigExtraction, abc.ABC):
     def __call__(self, scheduler):
         config_path = Context.get_file_path(FileNameConstant.SCHEDULE_CONFIG.value)

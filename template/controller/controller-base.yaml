@@ -3,8 +3,12 @@ pod-template:
   image: controller
   imagePullPolicy: IfNotPresent
   env:
+    # whether display raw data on frontend (transmit files to cloud)
     - name: DISPLAY
       value: "True"
+    # whether delete temporary raw data files
+    - name: DELETE_TEMP_FILES
+      value: "False"
 port-open:
   pos: both
   port: 9000

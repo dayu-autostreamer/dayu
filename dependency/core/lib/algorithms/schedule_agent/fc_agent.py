@@ -24,6 +24,8 @@ class FCAgent(BaseAgent, abc.ABC):
                  window_length: int = 20,
                  delay_constraint: float = 0.2,
                  theta: float = 3):
+        super().__init__()
+
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
 
@@ -58,10 +60,11 @@ class FCAgent(BaseAgent, abc.ABC):
 
         policy.update({'resolution': self.resolution_list[updated_resolution_index]})
         cloud_device = self.cloud_device
-        pipeline = info['pipeline']
-        pipeline = [{**p, 'execute_device': cloud_device} for p in pipeline]
+        dag = info['dag']
+        for service_name in dag:
+            dag[service_name]['service']['execute_device'] = cloud_device
 
-        policy.update({'pipeline': pipeline})
+        policy.update({'dag': dag})
         return policy
 
     def calculate_delay_error(self, delay):

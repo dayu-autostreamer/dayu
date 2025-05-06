@@ -1,5 +1,8 @@
 #!/bin/bash
 
+
+# This file has been deprecated
+
 # Function: Display help information
 show_help() {
 cat << EOF

@@ -9,12 +9,17 @@ COPY pdk_files /pdk_files
 
 # Install requried libraries
 RUN apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 1A127079A92F09ED && \
+    apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 16FAAD7AF99A65E2 && \
     apt-get update && \
     apt-get install -y software-properties-common && \
     add-apt-repository ppa:ubuntu-toolchain-r/test
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        libtool \
+        cmake  \
         libcurl4-openssl-dev \
         wget \
         git \
@@ -35,24 +40,41 @@ RUN apt-get update && \
         libopenblas-base \
         libopenmpi-dev \
         libomp-dev \
-        libjpeg-dev \
         zlib1g-dev \
         libpython3-dev \
         libopenblas-dev \
         libavcodec-dev \
         libavformat-dev \
-        libswscale-dev
+        libswscale-dev \
+        libatlas-base-dev \
+        libgdal-dev \
+        liblapack-dev \
+        libblas-dev \
+        libjpeg8-dev \
+        libjpeg-turbo8-dev \
+        gfortran \
+        libopenjp2-7 libopenjp2-tools \
+        libaec-dev libblosc-dev libffi-dev libbrotli-dev libboost-all-dev libbz2-dev \
+        libgif-dev libopenjp2-7-dev liblcms2-dev libjpeg-dev libjxr-dev liblz4-dev liblzma-dev libpng-dev libsnappy-dev libwebp-dev libzopfli-dev libzstd-dev \
+&&  rm -rf /var/lib/apt/lists/*
 
-RUN apt-get --purge remove  cuda*
-RUN rm -rf /usr/local/cuda*
+# More recent cmake
+RUN apt-get update  \
+  && apt-get install -y build-essential libssl-dev gpg wget \
+  && wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null \
+  && echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ bionic main' | tee /etc/apt/sources.list.d/kitware.list >/dev/null\
+  && apt-get update \
+  && apt-get install -y --only-upgrade cmake
 
-RUN dpkg -i /pdk_files/cuda-repo-l4t-10-2-local_10.2.460-1_arm64.deb
-RUN apt-key add /var/cuda-repo*/*.pub \
+RUN apt-get --purge remove  -y cuda* 2>/dev/null || true && \
+    rm -rf /usr/local/cuda*
+
+RUN dpkg -i /pdk_files/cuda-repo-l4t-10-2-local_10.2.460-1_arm64.deb && \
+    apt-key add /var/cuda-repo*/*.pub \
     && apt-get -y update \
     && apt-get -y install -f cuda-cudart-dev-10-2 \
-    && apt-get -y install -f cuda-toolkit-10-2
-
-RUN     dpkg -i /pdk_files/libcudnn8_8.2.1.32-1+cuda10.2_arm64.deb \
+    && apt-get -y install -f cuda-toolkit-10-2 \
+     && dpkg -i /pdk_files/libcudnn8_8.2.1.32-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/libcudnn8-dev_8.2.1.32-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/libcudnn8-samples_8.2.1.32-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/libnvinfer8_8.2.1-1+cuda10.2_arm64.deb  \
@@ -70,14 +92,45 @@ RUN     dpkg -i /pdk_files/libcudnn8_8.2.1.32-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/uff-converter-tf_8.2.1-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/python3-libnvinfer_8.2.1-1+cuda10.2_arm64.deb \
      && dpkg -i /pdk_files/python3-libnvinfer-dev_8.2.1-1+cuda10.2_arm64.deb \
-     && dpkg -i /pdk_files/tensorrt_8.2.1.9-1+cuda10.2_arm64.deb
-
-RUN apt-get -y update && apt-get -y -f install \
+     && dpkg -i /pdk_files/tensorrt_8.2.1.9-1+cuda10.2_arm64.deb \
+     && apt-get -y update && apt-get -y -f install \
      && apt-get install -y  /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-libs.deb \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-dev.deb \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-samples.deb  \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-licenses.deb \
      && apt-get install -y /pdk_files/OpenCV-4.1.1-2-gd5a58aa75-aarch64-python.deb
+
+# Set locale to UTF-8; seems to be ANSI_X3.4-1968 by default (to allow scikit-image to compile)
+RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+    && dpkg-reconfigure locales \
+    && update-locale LANG=en_US.UTF-8
+ENV LANG=en_US.UTF-8
+
+# CFLAGS (for imagecodecs)
+ENV CFLAGS="-I/usr/include/openjpeg-2.3 -I/usr/include/jxrlib"
+
+# Building libtiff (to allow imagecodecs to compile)
+RUN cd /pdk_files/libtiff \
+  && ./autogen.sh \
+  && ./configure \
+  && make install
+
+# brunsli (for imagecodecs)
+RUN cd /tmp \
+  && git clone --depth=1 https://github.com/google/brunsli.git \
+  && cd brunsli \
+  && git submodule update --init --recursive \
+  && cmake -DCMAKE_BUILD_TYPE=Release \
+  && make install
+
+
+RUN pip3 install --upgrade pip && \
+    pip3 install numpy && \
+    apt-get install -y python3-sklearn && \
+    pip3 install --no-cache-dir scipy && \
+    pip3 install --no-cache-dir tiff && \
+    pip3 install --no-cache-dir imagecodecs  && \
+    pip3 install --no-cache-dir scikit-image
 
 
 WORKDIR /
