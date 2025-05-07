@@ -8,35 +8,35 @@ To be noted, usually we take server with NVIDIA GPU for cloud (which is amd64 ar
 
 ## Basic Source
 
-Here list basic docker images used in Dayu system. Our own images can be built by dockerfiles in [this folder](../dockerfile).
+Here list basic docker images used in the dayu system. Our own images can be built by dockerfiles in [this folder](../dockerfile).
 
 **Tips**: If you have difficulty visiting [dockerhub](https://hub.docker.com/), constructing a private docker registry is recommended. Then you can replace `docker.io` as your registry address. **[Here](../../instructions/private_docker_registry.md) is a short instruction you can refer to.** 
 
 
 ```
 # From others
-nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3  (arm64)
-docker.io/yuefan2022/tensorrt-ubuntu20.04-cuda11.6  (amd64)
-docker.io/pytorch/pytorch:2.0.0-cuda11.7-cudnn8-devel  (amd64)
-docker.io/diegofpsouza/numpy:0.0.1  (amd64/arm64)
-docker.io/gocv/opencv:latest  (amd64/arm64)
-docker.io/python:3.6  (amd64/arm64)
+docker.io/ultralytics/ultralytics:latest (amd64)
+docker.io/ultralytics/ultralytics:latest-jetson-jetpack4 (arm64)
+docker.io/redis:latest (amd64)
 
 
 # Our own images
 docker.io/dayuhub/tensorrt:trt8  (amd64/arm64)
+
+docker.io/dayuhub/backend:{VERSION} (amd64)
+docker.io/dayuhub/frontend:{VERSION} (amd64)
+docker.io/dayuhub/datasource:{VERSION} (arm64)
 
 docker.io/dayuhub/generator:{VERSION} (arm64)
 docker.io/dayuhub/controller:{VERSION}  (amd64/arm64)
 docker.io/dayuhub/dsitributor:{VERSION}  (amd64)
 docker.io/dayuhub/scheduler:{VERSION}  (amd64)
 docker.io/dayuhub/monitor:{VERSION}  (amd64/arm64)
+
 docker.io/dayuhub/car-detection:{VERSION}  (amd64/arm64)
 docker.io/dayuhub/face-detection:{VERSION}  (amd64/arm64)
 docker.io/dayuhub/gender-classification:{VERSION}  (amd64/arm64)
-docker.io/dayuhub/backend:{VERSION} (amd64)
-docker.io/dayuhub/frontend:{VERSION} (amd64)
-docker.io/dayuhub/datasource:{VERSION} (arm64)
+docker.io/dayuhub/age-classification:{VERSION}  (amd64/arm64)
 
 ```
 
