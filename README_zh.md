@@ -78,15 +78,11 @@
 - **支持细粒度实时调度**：平台根据工作条件和资源情况实时生成任务数据配置和任务卸载决策，从而完成任务的细粒度实时调度。
 - **支持多数据流的并行处理**：平台支持多数据流的并行处理（例如，不同路口的摄像头同时处理交通流量任务），这些任务在处理阶段不区分数据流，等效处理。
 
-## 快速开始
+## 使用
 
 请参照我们的[快速开始教程](ttps://dayu-autostreamer.github.io/docs/getting-start/quick-start)来快速尝试大禹系统。
 
-## 如何开发
-
-如果你需要进一步开发大禹系统来适应你的需求，请参照我们的[开发教程](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop)
-
-## 文档
+如果你需要进一步开发大禹系统来适应你的需求，请参照我们的[开发教程](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop)。
 
 要获取关于大禹系统的详细说明，请参阅[项目主页](https://dayu-autostreamer.github.io/)上的文档。
 

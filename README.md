@@ -81,19 +81,13 @@ Meanwhile, `processor` can be equipped with user-defined application services of
 - **Support parallel processing of multiple data streams**: The platform supports parallel processing of multiple data streams (for example, cameras at different intersections process traffic flow tasks at the same time). These tasks do not distinguish between data streams during the processing stage and are processed equivalently.
 
 
-## Quick Start
-
-Please refer to our [quick start tutorial](https://dayu-autostreamer.github.io/docs/getting-start/quick-start) for a quick start of the dayu system.
-
-
-## How to Develop
-
-If you want to try to further develop dayu for your needs, please refer to our [development tutorial](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop).
-
-## Documentation
+## Guides
 
 To get detailed instructions about our dayu system, please refer to the documentation on the [homepage](https://dayu-autostreamer.github.io/).
 
+Please refer to our [quick start tutorial](https://dayu-autostreamer.github.io/docs/getting-start/quick-start) for a quick start of the dayu system.
+
+If you want to further develop dayu for your needs, please refer to our [development tutorial](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop).
 
 ## Contact
 
