@@ -2,19 +2,26 @@ English | [简体中文](./README_zh.md)
 
 # Dayu
 
+[![Version](https://img.shields.io/github/release/dayu-autostreamer/dayu)](https://github.com/dayu-autostreamer/dayu/releases)
+[![Licence](https://img.shields.io/github/license/dayu-autostreamer/dayu.svg)](https://github.com/dayu-autostreamer/dayu/blob/main/LICENSE)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10523/badge)](https://www.bestpractices.dev/projects/10523)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
+[![Stars](https://img.shields.io/github/stars/dayu-autostreamer/dayu)](https://github.com/dayu-autostreamer/dayu)
+
 ![](pics/dayu_logo.png)
 
 
 ## Brief Introduction
 
 
-Dayu is an automated scheduling system for edge computing in stream data processing. Dayu supports pipeline service processing of multi data stream and focus on the scheduling policy in edge computing. It's developed based on KubeEdge and can be easily migrated.
+Dayu is an automated scheduling system for edge computing in stream data processing. Dayu supports dag service processing of multi data stream and focus on the scheduling policy in edge computing. It's developed based on KubeEdge and can be easily migrated.
 
 ## Related Framework
 - [Docker Container](https://github.com/docker/docker-ce)
 - [Kubernetes](https://github.com/kubernetes/kubernetes)
 - [KubeEdge](https://github.com/kubeedge/kubeedge)
 - [Sedna](https://github.com/kubeedge/sedna)
+- [EdgeMesh](https://github.com/kubeedge/edgemesh)
 - [TensorRT](https://github.com/NVIDIA/TensorRT)
 
 ## Architecture
@@ -27,10 +34,9 @@ Dayu is composed of five layers:
 - **Collaboration Scheduling Layer**: This layer is composed of functional components independently developed by us to complete functions such as pipeline task execution and scheduling collaboration.
 - **Application Service Layer**: This layer accepts user-defined service applications. As long as the user develops service according to the interface requirements defined by the platform, it can be embedded in the platform as a container and complete execution across cloud-edge nodes.
 
+![](pics/dayu-layer-structure.png)
+
 ### Basic System Layer & Intermediate Interface Layer
-
-![](pics/base_framework.png)
-
 
 - Basic System Layer 
   - `KubeEdge` use CloudCore and EdgeCore to complete containerized application orchestration and device management among cloud-edge environment.
@@ -39,6 +45,8 @@ Dayu is composed of five layers:
   - `Edgemesh` offers an efficient way for network communication between pods in system. According to the requirements of dayu, we modify the balance policy of `Edgemesh` ([link](https://github.com/dayu-autostreamer/dayu-edgemesh)).
 
 *NOTE: For better understanding, we transform 'Local Controller' of `Sedna` as 'Local Manager' in the structure*
+
+![](pics/dayu-lower-layer-structure.png)
 
 ### System Support Layer
 
@@ -52,9 +60,6 @@ It is composed of **backend**, **frontend** and **datasource**.
 
 Components in Collaboration Scheduling Layer and Application Service Layer work as Workers in Intermediate Interface Layer.
 
-![](pics/structure.png)
-
-
 - `generator`: bind to a data stream and complete the segmentation of data package based on schedule policy from scheduler. 
 - `controller`: control the whole process of data dealing and forwarding among cloud and edge devices.
 - `processor`: process data with AI algorithms, a service pipeline may include more than one stage processor.
@@ -66,6 +71,8 @@ Among these components, `generator`,`controller`,`distributor`,`scheduler` and `
 
 Meanwhile, `processor` can be equipped with user-defined application services of single-stage or multi-stage (pipeline). It makes up of Application Service Layer.
 
+![](pics/dayu-upper-layer-structure.png)
+
 
 ## Features
 - **Make application services as stateless microservices**: User application services on the platform are all in the form of stateless microservices. Services have nothing to do with the data flow status and system status. They are automatically deployed in containers by the framework and have no node environment dependencies.
@@ -75,80 +82,30 @@ Meanwhile, `processor` can be equipped with user-defined application services of
 
 
 ## Quick Start
-- Install KubeEdge system on your devices ([instruction](https://box.nju.edu.cn/f/63e12c4ea0794718b16c/)). Our dayu system is based on KubeEdge.
 
-- Modify template files in template directory '[template](template)'
-
-- Deploy files on devices as setting in templates. The demo deploy files are placed [here](https://box.nju.edu.cn/d/0dcaabb5362c4dfc8008/)
-
-- Install/Uninstall Dayu system.
-
-```bash
-# install dayu system
-ACTION=start TEMPLATE=template/ bash - dayu.sh
-# uninstall dayu system
-ACTION=stop TEMPLATE=template/ bash - dayu.sh 
-```
-
-## How to Build
-Components in Dayu system are dependent on docker containers. Thus, if you need to customize dayu system you should build specified images.
-
-The official images of Dayu system is at [dockerhub/dayuhub](https://hub.docker.com/u/dayuhub).
-
-set meta information of building
-```bash
-# configure buildx buildkitd (default as empty, example at hack/resource/buildkitd_template.toml)
-# http registry can be configured in buildkitd.toml
-vim hack/resource/buildkitd.toml
-
-# configure buildx driver-opt (default as empty, example at hack/resource/driver_opts_template.toml)
-# proxy can be configured in driver_opts.toml
-vim hack/resource/driver_opts.toml
-
-# set docker meta info
-# default REG is docker.io
-# default REPO is dayuhub
-# default TAG is v1.0
-export REG=xxx
-export REPO=xxx
-export TAG=xxx
-```
-
-build all images
-```bash
-make all
-```
-
-build specified images
-```bash
-# xxx/yyy/zzz/... refers to component name, you can choose components for building.
-make build WHAT=xxx,yyy,zzz...
-```
-
-If you change configuration files (buildkitd.toml/driver_opts.toml), you should delete buildx creator before make.
-You are also recommended to try to delete buildx creator when you encounter error in docker building to fix the error.
-```bash
-# view all buildx creator.
-docker buildx ls
-
-# delete dayu-buildx, it will be re-generated when make.
-docker buildx stop dayu-buildx
-docker buildx rm dayu-buildx
-```
+Please refer to our [quick start tutorial](https://dayu-autostreamer.github.io/docs/getting-start/quick-start) for a quick start of the dayu system.
 
 
-core/
-  __init__.py
-  lib/
-    __init__.py
-    common/
-      __init__.py
-      class_factory.py
-      ......
-    algorithms/
-      __init__.py
-      schedule_agent/
-        __init__.py
-        base_agent.py
-        fixed_agent.py
-        ......
+## How to Develop
+
+If you want to try to further develop dayu for your needs, please refer to our [development tutorial](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop).
+
+## Documentation
+
+To get detailed instructions about our dayu system, please refer to the documentation on the [homepage](https://dayu-autostreamer.github.io/).
+
+
+## Contact
+
+If you have questions, feel free to reach out to us in the following ways:
+
+- [Lei Xie](mailto:lxie@nju.edu.cn)
+- [Wenhui Zhou](mailto:whzhou@smail.nju.edu.cn)
+
+## Contributing
+
+If you're interested in being a contributor and want to get involved in developing the Dayu code, please see [CONTRIBUTING](CONTRIBUTING.md) for details on submitting patches and the contribution workflow.
+
+## License
+Dayu is under the Apache 2.0 license. See the [LICENSE](LICENSE) file for details.
+
