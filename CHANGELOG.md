@@ -15,6 +15,7 @@ The basic structure of tasks in dayu is updated from linear pipeline to topologi
 ### Bug Fix
 - Fix problem of write queue full in rtsp datasource server (`datasource`).
 - Fix possible task loss in the system (`controller` / `distributor`).
+- Add optional cloud/edge parameters filling in template files for flexible parameter specification in cloud-edge pods.
 
 ### Minor Update
 - Add cloud and edge template supplementary to support heterogeneous parameters (`backend`).
