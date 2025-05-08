@@ -80,9 +80,9 @@
 
 ## 使用
 
-请参照我们的[快速开始教程](ttps://dayu-autostreamer.github.io/docs/getting-start/quick-start)来快速尝试大禹系统。
+请参照我们的[快速开始教程](https://dayu-autostreamer.github.io/docs/getting-started/)来快速尝试大禹系统。
 
-如果你需要进一步开发大禹系统来适应你的需求，请参照我们的[开发教程](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop)。
+如果你需要进一步开发大禹系统来适应你的需求，请参照我们的[开发教程](https://dayu-autostreamer.github.io/docs/developer-guide/)。
 
 要获取关于大禹系统的详细说明，请参阅[项目主页](https://dayu-autostreamer.github.io/)上的文档。
 
