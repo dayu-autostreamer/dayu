@@ -36,7 +36,8 @@ dayu::buildx::read_driver_opts() {
 dayu::buildx::prepare_env() {
   # Check whether buildx exists.
   if ! docker buildx >/dev/null 2>&1; then
-    echo "ERROR: docker buildx not available. Docker 19.03 or higher is required with experimental features enabled" >&2
+    echo "ERROR: docker buildx not available. Docker 19.03 or higher is required with experimental features enabled.
+    Please refer to https://dayu-autostreamer.github.io/docs/developer-guide/how-to-build/build-preparation for buildx instructions." >&2
     exit 1
   fi
 
