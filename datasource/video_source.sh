@@ -62,7 +62,7 @@ stream_videos() {
         for video_file in "${video_files[@]}"; do
             if [[ -f "$video_file" ]]; then
                 echo "Streaming $video_file to $rtsp_url"
-                ffmpeg -re -i "$video_file" -c:v libx264 -preset ultrafast -tune zerolatency -b:v 3000k -f rtsp "$rtsp_url"
+                ffmpeg -re -i "$video_file" -c:v libx264 -b:v 3000k -f rtsp "$rtsp_url"
             fi
         done
 
