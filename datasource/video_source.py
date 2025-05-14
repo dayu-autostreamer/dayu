@@ -7,6 +7,7 @@ import socket
 import requests
 import threading
 import time
+import asyncio
 
 from fastapi import FastAPI, Form, BackgroundTasks
 from fastapi.routing import APIRoute, APIRouter
@@ -137,7 +138,12 @@ def wait_for_port(port: int, timeout=10):
 
 
 def run_server(port: int):
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    config = uvicorn.Config(app, host="0.0.0.0", port=port)
+    server = uvicorn.Server(config)
+    loop.run_until_complete(server.serve())
 
 
 def register_source(root: str, path: str, play_mode: str):
