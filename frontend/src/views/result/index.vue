@@ -82,20 +82,20 @@
               <h3 class="viz-title">{{ viz.name }}</h3>
               <component
                   :is="vizControls[viz.type]"
-                  v-if="vizControls[viz.type]"
+                  v-if="vizControls[viz.type] && selectedDataSource"
                   :config="viz"
-                  :variable-states="variableStates[viz.id]"
+                  :variable-states="variableStates[selectedDataSource]?.[viz.id] || {}"
                   @update:variable-states="updateVariableStates(viz.id, $event)"
               />
             </div>
 
             <component
                 :is="visualizationComponents[viz.type]"
-                v-if="componentsLoaded && visualizationComponents[viz.type]"
+                v-if="componentsLoaded && visualizationComponents[viz.type] && selectedDataSource"
                 :key="`${viz.type}-${selectedDataSource}-${viz.id}`"
                 :config="viz"
                 :data="processedData[viz.id]"
-                :variable-states="variableStates[viz.id]"
+                :variable-states="variableStates[selectedDataSource]?.[viz.id] || {}"
             />
           </div>
         </el-col>
@@ -335,7 +335,7 @@ export default {
         this.visualizationConfig[sourceId] = processedConfig
 
         this.activeVisualizations[sourceId] = new Set()
-        this.variableStates[sourceId] = {}
+        this.variableStates[sourceId] = reactive({})
 
         processedConfig.forEach(viz => {
           this.activeVisualizations[sourceId].add(viz.id)
