@@ -47,7 +47,7 @@ class DataSource:
 
         LOGGER.info(f'Open Datasource: {modal}/{label}..')
 
-        for index,source in enumerate(source_list):
+        for index, source in enumerate(source_list):
             datasource_dir = os.path.join(Context.get_file_path(modal), source['dir'], mode)
             if not os.path.exists(datasource_dir):
                 LOGGER.warning(f'Datasource directory "{datasource_dir}" does not exist.')

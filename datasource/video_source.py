@@ -159,10 +159,10 @@ def register_source(root: str, path: str, play_mode: str):
             f"http://127.0.0.1:{server_port}/admin/add_source",
             json={"root": root, "path": path, "play_mode": play_mode}
         )
-        LOGGER.info(f"Registered to existing server: {response.json()}")
+        LOGGER.info(f"{path} registered to existing server: {response.json()}")
 
     except Exception as e:
-        LOGGER.warning(f"Failed to register: {str(e)}")
+        LOGGER.warning(f"{path} failed to register: {str(e)}")
         LOGGER.exception(e)
 
 
