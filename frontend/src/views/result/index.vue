@@ -176,7 +176,6 @@ export default {
     await this.autoRegisterComponents()
     this.componentsLoaded = true
     await this.fetchDataSourceList()
-    await this.fetchVisualizationConfig()
     this.setupDataPolling()
 
     emitter.on('force-update-charts', () => {
