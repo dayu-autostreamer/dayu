@@ -635,6 +635,7 @@ class BackendServer:
         :return:
             {'state':success/fail, 'msg':'...'}
         """
+        source_id = int(source_id)
         file_data = await file.read()
         with open('visualization_config.yaml', 'wb') as buffer:
             buffer.write(file_data)
