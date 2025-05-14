@@ -149,7 +149,7 @@ export default {
       return this.visualizationConfig[this.selectedDataSource] || []
     },
     currentActiveVisualizations() {
-      console.log('activeVisualizations:', this.activeVisualizations[this.selectedDataSource] )
+      console.log('activeVisualizations:', this.activeVisualizations[this.selectedDataSource])
       return this.activeVisualizations[this.selectedDataSource] || new Set()
     },
     currentActiveVisualizationsArray: {
@@ -210,10 +210,6 @@ export default {
       this.isSourceLoading = true
 
       try {
-        // 先清除旧数据
-        // this.visualizationConfig = {}
-        // this.activeVisualizations = {}
-        // this.variableStates = {}
         await this.fetchVisualizationConfig(sourceId)
       } catch (e) {
         console.error('Source change failed:', e)
@@ -344,13 +340,10 @@ export default {
         processedConfig.forEach(viz => {
           this.activeVisualizations[sourceId].add(viz.id)
 
-          this.variableStates[sourceId][viz.id] = {
-            ...(this.variableStates[sourceId]?.[viz.id] || {}),
-            ...viz.variables.reduce((acc, varName) => {
-              if (!(varName in acc)) acc[varName] = true
-              return acc
-            }, {})
-          }
+          this.variableStates[sourceId][viz.id] = viz.variables.reduce((acc, varName) => {
+            acc[varName] = true
+            return acc
+          }, {})
         })
         console.log('Initialized variable states:', toRaw(this.variableStates))
       } catch (error) {
