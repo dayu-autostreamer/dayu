@@ -207,16 +207,6 @@ export default {
         return
       }
 
-      const prevSource = this.selectedDataSource
-      this.selectedDataSource = sourceId
-
-      await this.$nextTick()
-      if (prevSource) {
-        delete this.visualizationConfig[prevSource]
-        delete this.activeVisualizations[prevSource]
-        delete this.variableStates[prevSource]
-      }
-
       this.isSourceLoading = true
 
       try {
@@ -352,10 +342,7 @@ export default {
         this.variableStates[sourceId] = {}
 
         processedConfig.forEach(viz => {
-          // this.activeVisualizations[sourceId].add(viz.id)
-
-          const wasActive = this.activeVisualizations[sourceId]?.has(viz.id) ?? true
-          if (wasActive) this.activeVisualizations[sourceId].add(viz.id)
+          this.activeVisualizations[sourceId].add(viz.id)
 
           this.variableStates[sourceId][viz.id] = {
             ...(this.variableStates[sourceId]?.[viz.id] || {}),
