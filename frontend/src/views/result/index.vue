@@ -48,7 +48,7 @@
         <div class="viz-controls-panel">
           <div class="control-group">
             <h4>Active Visualizations:</h4>
-            <el-checkbox-group v-model="activeVisualizationsArray">
+            <el-checkbox-group v-model="currentActiveVisualizationsArray">
               <el-checkbox
                   v-for="viz in currentVisualizationConfig"
                   :key="viz.id"
@@ -75,7 +75,7 @@
             :md="getVisualizationSpan(viz.size, 'md')"
             :lg="getVisualizationSpan(viz.size, 'lg')"
             :xl="getVisualizationSpan(viz.size, 'xl')"
-            v-show="componentsLoaded && activeVisualizations.has(viz.id)"
+            v-show="componentsLoaded && currentActiveVisualizations.has(viz.id)"
         >
           <div class="home-card-item viz-module">
             <div class="viz-module-header">
@@ -145,21 +145,22 @@ export default {
       })
       return result
     },
-    activeVisualizationsArray: {
-      get() {
-        return Array.from(this.activeVisualizations)
-      },
-      set(newVal) {
-        this.activeVisualizations = new Set(newVal)
-      }
-    },
     currentVisualizationConfig() {
       return this.visualizationConfig[this.selectedDataSource] || []
     },
     currentActiveVisualizations() {
       return this.activeVisualizations[this.selectedDataSource] || new Set()
-    }
+    },
+    currentActiveVisualizationsArray: {
+      get() {
+        return Array.from(this.currentActiveVisualizations)
+      },
+      set(newVal) {
+        this.activeVisualizations[this.selectedDataSource] = new Set(newVal)
+      }
+    },
   },
+
   async created() {
     this.dataSourceList.forEach(source => {
       this.bufferedTaskCache[source.id] = reactive([])
@@ -180,10 +181,14 @@ export default {
 
     emitter.on('force-update-charts', () => {
       this.$nextTick(() => {
-        this.visualizationConfig.forEach(viz => {
-          this.variableStates[viz.id] = {...this.variableStates[viz.id]}
+        if (!this.selectedDataSource) return
+        this.currentVisualizationConfig.forEach(viz => {
+          this.$set(this.variableStates[this.selectedDataSource], viz.id,
+              {...this.variableStates[this.selectedDataSource][viz.id]}
+          )
         })
       })
+
     })
 
   },
@@ -196,6 +201,21 @@ export default {
   },
   methods: {
     async handleSourceChange(sourceId) {
+      if (!sourceId || !this.dataSourceList.some(s => s.id === sourceId)) {
+        console.error('Invalid source selection')
+        return
+      }
+
+      const prevSource = this.selectedDataSource
+      this.selectedDataSource = sourceId
+
+      await this.$nextTick()
+      if (prevSource) {
+        delete this.visualizationConfig[prevSource]
+        delete this.activeVisualizations[prevSource]
+        delete this.variableStates[prevSource]
+      }
+
       this.isSourceLoading = true
 
       try {
@@ -261,28 +281,48 @@ export default {
 
 
     processVizData(vizConfig) {
-      if (!this.selectedDataSource || !this.bufferedTaskCache[this.selectedDataSource]) {
-        return []
-      }
+      const sourceId = this.selectedDataSource
+      if (!sourceId || !this.bufferedTaskCache[sourceId]) return []
 
-      const rawData = this.bufferedTaskCache[this.selectedDataSource]
-      const filteredData = rawData
+      const validVizIds = new Set(this.currentVisualizationConfig.map(v => String(v.id)))
+      const filteredData = this.bufferedTaskCache[sourceId]
           .filter(task => {
-            return task.data?.some(item => String(item.id) === String(vizConfig.id))
+            return task.data?.some(item =>
+                validVizIds.has(String(item.id)) &&
+                String(item.id) === String(vizConfig.id))
           })
           .map(task => {
             const vizDataItem = task.data.find(item => String(item.id) === String(vizConfig.id))
             return {
               taskId: String(task.task_id),
-              ...(vizDataItem?.data || {}) // 透传原始数据
+              ...(vizDataItem?.data || {})
             }
           })
+
+      // const rawData = this.bufferedTaskCache[this.selectedDataSource]
+      // const filteredData = rawData
+      //     .filter(task => {
+      //       return task.data?.some(item => String(item.id) === String(vizConfig.id))
+      //     })
+      //     .map(task => {
+      //       const vizDataItem = task.data.find(item => String(item.id) === String(vizConfig.id))
+      //       return {
+      //         taskId: String(task.task_id),
+      //         ...(vizDataItem?.data || {})
+      //       }
+      //     })
       return filteredData
     },
 
     updateVariableStates(vizId, newStates) {
+      if (!this.selectedDataSource) return
+
       this.variableStates[vizId] = {
         ...this.variableStates[vizId],
+        ...newStates
+      }
+      this.variableStates[this.selectedDataSource][vizId] = {
+        ...(this.variableStates[this.selectedDataSource][vizId] || {}),
         ...newStates
       }
       emitter.emit('force-update-charts')
@@ -323,13 +363,18 @@ export default {
         this.variableStates[sourceId] = {}
 
         processedConfig.forEach(viz => {
-          this.activeVisualizations[sourceId].add(viz.id)
-          this.variableStates[sourceId][viz.id] = reactive(
-              viz.variables.reduce((acc, varName) => {
-                acc[varName] = true
-                return acc
-              }, {})
-          )
+          // this.activeVisualizations[sourceId].add(viz.id)
+
+          const wasActive = this.activeVisualizations[sourceId]?.has(viz.id) ?? true
+          if (wasActive) this.activeVisualizations[sourceId].add(viz.id)
+
+          this.variableStates[sourceId][viz.id] = {
+            ...(this.variableStates[sourceId]?.[viz.id] || {}),
+            ...viz.variables.reduce((acc, varName) => {
+              if (!(varName in acc)) acc[varName] = true
+              return acc
+            }, {})
+          }
         })
         console.log('Initialized variable states:', toRaw(this.variableStates))
       } catch (error) {
@@ -370,7 +415,7 @@ export default {
         this.bufferedTaskCache = reactive({...newCache})
 
         // 添加可视化配置刷新
-        this.visualizationConfig = this.visualizationConfig.map(cfg => ({...cfg}))
+        this.currentVisualizationConfig = this.currentVisualizationConfig.map(cfg => ({...cfg}))
 
         // 添加延迟更新确保DOM刷新
         this.$nextTick(() => {
