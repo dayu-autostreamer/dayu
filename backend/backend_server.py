@@ -1,3 +1,4 @@
+import copy
 import json
 import threading
 from datetime import datetime
@@ -110,10 +111,15 @@ class BackendServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.BACKEND_TASK_RESULT]
                      ),
-            APIRoute(NetworkAPIPath.BACKEND_VISUALIZATION_CONFIG,
+            APIRoute(NetworkAPIPath.BACKEND_GET_VISUALIZATION_CONFIG,
+                     self.upload_visualization_config,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.BACKEND_GET_VISUALIZATION_CONFIG]
+                     ),
+            APIRoute(NetworkAPIPath.BACKEND_POST_VISUALIZATION_CONFIG,
                      self.get_visualization_config,
                      response_class=JSONResponse,
-                     methods=[NetworkAPIMethod.BACKEND_VISUALIZATION_CONFIG]
+                     methods=[NetworkAPIMethod.BACKEND_POST_VISUALIZATION_CONFIG]
                      ),
             APIRoute(NetworkAPIPath.BACKEND_DOWNLOAD_LOG,
                      self.download_log,
@@ -349,11 +355,11 @@ class BackendServer:
             {'state':success/fail, 'msg':'...'}
         """
         file_data = await file.read()
-        with open('config.yaml', 'wb') as buffer:
+        with open('datasource_config.yaml', 'wb') as buffer:
             buffer.write(file_data)
 
-        config = self.server.check_datasource_config('config.yaml')
-        FileOps.remove_file('config.yaml')
+        config = self.server.check_datasource_config('datasource_config.yaml')
+        FileOps.remove_file('datasource_config.yaml')
         if config:
 
             self.server.source_configs.append(self.server.fill_datasource_config(config))
@@ -551,6 +557,7 @@ class BackendServer:
         self.server.source_label = ''
         self.server.is_get_result = False
         self.server.task_results.clear()
+        self.server.source_visualizations.clear()
 
         return {'state': 'success', 'msg': 'Datasource close successfully'}
 
@@ -621,6 +628,24 @@ class BackendServer:
         """
         source_id = int(source_id)
         return self.server.get_visualization_config(source_id)
+
+    async def upload_visualization_config(self, source_id, file: UploadFile = File(...)):
+        """
+        body: file
+        :return:
+            {'state':success/fail, 'msg':'...'}
+        """
+        file_data = await file.read()
+        with open('visualization_config.yaml', 'wb') as buffer:
+            buffer.write(file_data)
+
+        config = self.server.check_visualization_config('visualization_config.yaml')
+        FileOps.remove_file('visualization_config.yaml')
+        if config:
+            self.server.source_visualizations[source_id] = copy.deepcopy(config)
+            return {'state': 'success', 'msg': 'Visualization configured successfully'}
+        else:
+            return {'state': 'fail', 'msg': 'Visualization configured failed, please check uploading file format'}
 
     async def get_datasource_state(self):
         state = 'open' if self.server.source_open else 'close'

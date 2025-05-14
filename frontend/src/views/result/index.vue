@@ -21,6 +21,28 @@
                     :value="item.id"
                 />
               </el-select>
+
+              <el-button
+                  ref="uploadButton"
+                  type="primary"
+                  :disabled="!selectedDataSource"
+                  @click="triggerConfigUpload"
+                  style="margin-left: 15px"
+              >
+                Upload Config
+                <template #loading>
+                  <i class="el-icon-loading"></i>
+                </template>
+              </el-button>
+
+
+              <input
+                  ref="uploadInput"
+                  type="file"
+                  hidden
+                  accept=".json,application/json"
+                  @change="handleFileUpload"
+              >
             </div>
             <div v-if="isSourceLoading" class="loading-overlay">
               <i class="el-icon-loading"></i>
@@ -116,6 +138,7 @@
 <script>
 import {markRaw, reactive, toRaw, watch} from 'vue'
 import mitt from 'mitt'
+import {ElMessage} from "element-plus";
 
 const emitter = mitt()
 
@@ -135,6 +158,7 @@ export default {
       pollingInterval: null,
 
       isSourceLoading: false,
+      isUploading: false,
     }
   },
   computed: {
@@ -201,6 +225,40 @@ export default {
     }
   },
   methods: {
+    triggerConfigUpload() {
+      if (!this.selectedDataSource) return
+      this.$refs.uploadInput.value = null
+      this.$refs.uploadInput.click()
+    },
+
+    async handleFileUpload(event) {
+      const file = event.target.files[0]
+      if (!file) return
+
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+
+        this.$refs.uploadButton.loading = true
+
+        fetch(`/visualization_config/${this.selectedDataSource}`, {
+          method: 'POST',
+          body: formData
+        })
+            .then(response => response.json())
+            .then(data => {
+              const state = data['state']
+              const msg = data['msg']
+              this.fetchVisualizationConfig(this.selectedDataSource)
+              this.showMsg(state, msg);
+            })
+      } catch (error) {
+        ElMessage.error("System Error")
+        console.log(error);
+      } finally {
+        this.$refs.uploadButton.loading = false
+      }
+    },
     async handleSourceChange(sourceId) {
       if (!sourceId || !this.dataSourceList.some(s => s.id === sourceId)) {
         console.error('Invalid source selection')
@@ -421,15 +479,24 @@ export default {
           })
     },
 
-    forceChartUpdate() {
-      emitter.emit('force-update-charts')
-    }
+    showMsg(state, msg) {
+      if (state === 'success') {
+        ElMessage({
+          message: msg,
+          showClose: true,
+          type: "success",
+          duration: 3000,
+        });
+      } else {
+        ElMessage({
+          message: msg,
+          showClose: true,
+          type: "error",
+          duration: 3000,
+        });
+      }
+    },
   },
-  beforeUnmount() {
-    if (this.pollingInterval) {
-      clearInterval(this.pollingInterval)
-    }
-  }
 }
 </script>
 
@@ -619,5 +686,14 @@ export default {
 .data-source-container {
   position: relative; /* 为loading-overlay定位做准备 */
   min-height: 60px; /* 防止加载时高度塌缩 */
+}
+
+.upload-config-btn {
+  transition: opacity 0.3s ease;
+
+  &.is-disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
 }
 </style>
