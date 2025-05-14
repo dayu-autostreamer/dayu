@@ -140,7 +140,7 @@ export default {
   computed: {
     processedData() {
       const result = {}
-      this.visualizationConfig.forEach(viz => {
+      this.currentVisualizationConfig.forEach(viz => {
         result[viz.id] = this.processVizData(viz)
       })
       return result
