@@ -40,7 +40,6 @@
                   ref="uploadInput"
                   type="file"
                   hidden
-                  accept=".json,application/json"
                   @change="handleFileUpload"
               >
             </div>
@@ -241,7 +240,7 @@ export default {
 
         this.$refs.uploadButton.loading = true
 
-        fetch(`/visualization_config/${this.selectedDataSource}`, {
+        fetch(`/api/visualization_config/${this.selectedDataSource}`, {
           method: 'POST',
           body: formData
         })
