@@ -3,12 +3,14 @@
     <!-- Data Source Selection Row -->
     <el-row :gutter="15" class="home-card-two mb15">
       <el-col :xs="24" :sm="24" :md="20" :lg="20" :xl="20">
-        <div class="home-card-item data-source-container">
+        <div class="home-card-item data-source-container"
+             :class="{ 'source-loading': isSourceLoading }">
           <div class="flex-margin flex w100">
             <div class="flex-auto" style="font-weight: bold">
               Choose Datasource: &nbsp;
               <el-select
                   v-model="selectedDataSource"
+                  :disabled="isSourceLoading"
                   placeholder="Please choose datasource"
                   class="compact-select"
               >
@@ -19,6 +21,10 @@
                     :value="item.id"
                 />
               </el-select>
+            </div>
+            <div v-if="isSourceLoading" class="loading-overlay">
+              <i class="el-icon-loading"></i>
+              <span>Loading Visualizations...</span>
             </div>
           </div>
         </div>
@@ -44,7 +50,7 @@
             <h4>Active Visualizations:</h4>
             <el-checkbox-group v-model="activeVisualizationsArray">
               <el-checkbox
-                  v-for="viz in visualizationConfig"
+                  v-for="viz in currentVisualizationConfig"
                   :key="viz.id"
                   :label="viz.id"
                   class="module-checkbox"
@@ -59,38 +65,50 @@
 
     <!-- Visualization Modules Row -->
     <el-row :gutter="15" class="home-card-two mb15">
-      <el-col
-          v-for="viz in visualizationConfig"
-          :key="viz.id"
-          :xs="24"
-          :sm="24"
-          :md="getVisualizationSpan(viz.size, 'md')"
-          :lg="getVisualizationSpan(viz.size, 'lg')"
-          :xl="getVisualizationSpan(viz.size, 'xl')"
-          v-show="componentsLoaded && activeVisualizations.has(viz.id)"
-      >
-        <div class="home-card-item viz-module">
-          <div class="viz-module-header">
-            <h3 class="viz-title">{{ viz.name }}</h3>
+
+      <template v-if="!isSourceLoading">
+        <el-col
+            v-for="viz in currentVisualizationConfig"
+            :key="viz.id"
+            :xs="24"
+            :sm="24"
+            :md="getVisualizationSpan(viz.size, 'md')"
+            :lg="getVisualizationSpan(viz.size, 'lg')"
+            :xl="getVisualizationSpan(viz.size, 'xl')"
+            v-show="componentsLoaded && activeVisualizations.has(viz.id)"
+        >
+          <div class="home-card-item viz-module">
+            <div class="viz-module-header">
+              <h3 class="viz-title">{{ viz.name }}</h3>
+              <component
+                  :is="vizControls[viz.type]"
+                  v-if="vizControls[viz.type]"
+                  :config="viz"
+                  :variable-states="variableStates[viz.id]"
+                  @update:variable-states="updateVariableStates(viz.id, $event)"
+              />
+            </div>
+
             <component
-                :is="vizControls[viz.type]"
-                v-if="vizControls[viz.type]"
+                :is="visualizationComponents[viz.type]"
+                v-if="componentsLoaded && visualizationComponents[viz.type]"
+                :key="`${viz.type}-${selectedDataSource}-${viz.id}`"
                 :config="viz"
+                :data="processedData[viz.id]"
                 :variable-states="variableStates[viz.id]"
-                @update:variable-states="updateVariableStates(viz.id, $event)"
             />
           </div>
+        </el-col>
+      </template>
 
-          <component
-              :is="visualizationComponents[viz.type]"
-              v-if="componentsLoaded && visualizationComponents[viz.type]"
-              :key="`${viz.type}-${selectedDataSource}-${viz.id}`"
-              :config="viz"
-              :data="processedData[viz.id]"
-              :variable-states="variableStates[viz.id]"
-          />
-        </div>
-      </el-col>
+      <template v-else>
+        <el-col :span="24">
+          <div class="skeleton-loading">
+            <div class="skeleton-item" v-for="n in 3" :key="n"></div>
+          </div>
+        </el-col>
+      </template>
+
     </el-row>
   </div>
 </template>
@@ -109,12 +127,14 @@ export default {
       bufferedTaskCache: reactive({}),
       maxBufferedTaskCacheSize: 20,
       componentsLoaded: false,
-      visualizationConfig: [],
-      activeVisualizations: new Set(),
-      variableStates: reactive({}),
+      visualizationConfig: {},
+      activeVisualizations: {},
+      variableStates: {},
       visualizationComponents: {},
       vizControls: {},
-      pollingInterval: null
+      pollingInterval: null,
+
+      isSourceLoading: false,
     }
   },
   computed: {
@@ -132,6 +152,12 @@ export default {
       set(newVal) {
         this.activeVisualizations = new Set(newVal)
       }
+    },
+    currentVisualizationConfig() {
+      return this.visualizationConfig[this.selectedDataSource] || []
+    },
+    currentActiveVisualizations() {
+      return this.activeVisualizations[this.selectedDataSource] || new Set()
     }
   },
   async created() {
@@ -162,7 +188,34 @@ export default {
     })
 
   },
+  watch: {
+    selectedDataSource(newVal) {
+      if (newVal) {
+        this.handleSourceChange(newVal)
+      }
+    }
+  },
   methods: {
+    async handleSourceChange(sourceId) {
+      this.isSourceLoading = true
+
+      try {
+        // 先清除旧数据
+        this.visualizationConfig = {}
+        this.activeVisualizations = {}
+        this.variableStates = {}
+        await this.fetchVisualizationConfig(sourceId)
+      } catch (e) {
+        console.error('Source change failed:', e)
+      } finally {
+        this.isSourceLoading = false // 结束加载
+      }
+
+      // 强制更新视图
+      this.$nextTick(() => {
+        emitter.emit('force-update-charts')
+      })
+    },
     getVisualizationSpan(size, breakpoint) {
       const baseSize = size || 1
       // 大屏显示完整尺寸，中小屏自动调整
@@ -253,30 +306,32 @@ export default {
       }
     },
 
-    async fetchVisualizationConfig() {
+    async fetchVisualizationConfig(sourceId) {
       try {
-        const response = await fetch('/api/visualization_config')
+        const response = await fetch(`/api/visualization_config/${sourceId}`)
         const data = await response.json()
 
-        this.visualizationConfig = data.map(viz => ({
+        const processedConfig = data.map(viz => ({
           ...viz,
           id: String(viz.id),
           variables: viz.variables || [],
           size: Math.min(3, Math.max(1, parseInt(viz.size) || 1))
         }));
 
-        this.visualizationConfig.forEach(viz => {
-          this.activeVisualizations.add(viz.id)
+        this.visualizationConfig[sourceId] = processedConfig
 
-          this.variableStates[viz.id] = reactive(
+        this.activeVisualizations[sourceId] = new Set()
+        this.variableStates[sourceId] = {}
+
+        processedConfig.forEach(viz => {
+          this.activeVisualizations[sourceId].add(viz.id)
+          this.variableStates[sourceId][viz.id] = reactive(
               viz.variables.reduce((acc, varName) => {
-                acc[varName] = true  // 默认选中所有变量
+                acc[varName] = true
                 return acc
               }, {})
           )
-
         })
-
         console.log('Initialized variable states:', toRaw(this.variableStates))
       } catch (error) {
         console.error('Failed to fetch visualization config:', error)
@@ -424,6 +479,7 @@ export default {
   display: flex;
   flex-direction: column;
   margin-top: 15px;
+  transition: all 0.3s ease;
 }
 
 .viz-module-header {
@@ -457,5 +513,93 @@ export default {
   width: 100% !important;
   height: 100% !important;
   min-height: 400px !important;
+}
+
+.source-loading {
+  position: relative;
+
+  &:after {
+    content: "Loading...";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+  }
+}
+
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+
+  i {
+    font-size: 24px;
+    margin-right: 8px;
+    animation: rotating 2s linear infinite;
+  }
+
+  span {
+    color: var(--el-color-primary);
+    font-weight: 500;
+  }
+}
+
+/* 骨架屏加载动画 */
+.skeleton-loading {
+  padding: 20px;
+
+  .skeleton-item {
+    height: 200px;
+    background: #f5f7fa;
+    border-radius: 4px;
+    margin-bottom: 15px;
+    position: relative;
+    overflow: hidden;
+
+    &::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(255, 255, 255, 0.6),
+          transparent
+      );
+      animation: skeleton-flash 1.5s infinite;
+    }
+  }
+}
+
+/* 动画定义 */
+@keyframes rotating {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes skeleton-flash {
+  100% {
+    left: 100%;
+  }
+}
+
+/* 原有数据源容器添加定位 */
+.data-source-container {
+  position: relative; /* 为loading-overlay定位做准备 */
+  min-height: 60px; /* 防止加载时高度塌缩 */
 }
 </style>

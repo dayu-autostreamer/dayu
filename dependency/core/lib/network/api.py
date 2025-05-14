@@ -38,7 +38,7 @@ class NetworkAPIPath:
     BACKEND_QUERY_STATE = '/query_state'
     BACKEND_SOURCE_LIST = '/source_list'
     BACKEND_TASK_RESULT = '/task_result'
-    BACKEND_VISUALIZATION_CONFIG = '/visualization_config'
+    BACKEND_VISUALIZATION_CONFIG = '/visualization_config/{source_id}'
     BACKEND_DOWNLOAD_LOG = '/download_log'
     BACKEND_EDGE_NODE = '/edge_node'
     BACKEND_DATASOURCE_STATE = '/datasource_state'

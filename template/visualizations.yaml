@@ -20,18 +20,6 @@
   variables: [ "Realtime DAG Service Deployment State" ]
   hook_name: dag_deployment
   size: 2
-- name: Frame Visualization (Gender)
-  type: image
-  variables: [ "Frame with ROI and Gender Label" ]
-  hook_name: roi_label_frame
-  hook_params: '{"label_service": "gender-classification"}'
-  size: 1
-- name: Frame Visualization (Age)
-  type: image
-  variables: [ "Frame with ROI and Age Label" ]
-  hook_name: roi_label_frame
-  hook_params: '{"label_service": "age-classification"}'
-  size: 1
 - name: Object Number Curve
   type: curve
   x_axis: Task Index
@@ -46,15 +34,6 @@
   variables: [ "End to End Delay" ]
   hook_name: e2e_delay
   size: 1
-- name: Service Processing Delay Curve
-  type: curve
-  x_axis: Task Index
-  y_axis: Delay
-  variables: [ "face-detection","gender-classification","age-classification" ]
-  hook_name: service_processing_delay
-  size: 1
-
-
 
 ######## Visualization Module Template ########
 #- name: Frame Visualization

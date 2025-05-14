@@ -615,11 +615,12 @@ class BackendServer:
 
         return ans
 
-    async def get_visualization_config(self):
+    async def get_visualization_config(self, source_id):
         """
         get visualization configuration
         """
-        return self.server.get_visualization_config()
+        source_id = int(source_id)
+        return self.server.get_visualization_config(source_id)
 
     async def get_datasource_state(self):
         state = 'open' if self.server.source_open else 'close'

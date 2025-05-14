@@ -25,6 +25,8 @@ class BackendCore:
         self.services = None
         self.visualizations = None
 
+        self.source_visualizations = {}
+
         self.source_configs = []
 
         self.dags = []
@@ -335,8 +337,10 @@ class BackendCore:
         return source_ids
 
     def prepare_visualization_data(self, task):
+        source_id = task.get_source_id()
+        visualizations = self.source_visualizations[source_id] if source_id in self.source_visualizations else self.visualizations
         visualization_data = []
-        for idx, vf in enumerate(self.visualizations):
+        for idx, vf in enumerate(visualizations):
             al_name = vf['hook_name']
             al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
             al_params.update({'variables': vf['variables']})
@@ -493,6 +497,7 @@ class BackendCore:
 
         return results
 
-    def get_visualization_config(self):
+    def get_visualization_config(self, source_id):
         self.parse_base_info()
-        return [{'id': idx, **vf} for idx, vf in enumerate(self.visualizations)]
+        visualizations = self.source_visualizations[source_id] if source_id in self.source_visualizations else self.visualizations
+        return [{'id': idx, **vf} for idx, vf in enumerate(visualizations)]

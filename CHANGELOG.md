@@ -1,5 +1,14 @@
 # Dayu Release Notes
 
+## v1.2
+
+### Features
+
+### Bug Fix
+
+### Minor Update
+
+
 ## v1.1
 
 ### Breaking Changes
