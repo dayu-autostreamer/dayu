@@ -149,6 +149,7 @@ export default {
       return this.visualizationConfig[this.selectedDataSource] || []
     },
     currentActiveVisualizations() {
+      console.log('activeVisualizations:', this.activeVisualizations[this.selectedDataSource] )
       return this.activeVisualizations[this.selectedDataSource] || new Set()
     },
     currentActiveVisualizationsArray: {
@@ -220,9 +221,9 @@ export default {
 
       try {
         // 先清除旧数据
-        this.visualizationConfig = {}
-        this.activeVisualizations = {}
-        this.variableStates = {}
+        // this.visualizationConfig = {}
+        // this.activeVisualizations = {}
+        // this.variableStates = {}
         await this.fetchVisualizationConfig(sourceId)
       } catch (e) {
         console.error('Source change failed:', e)
@@ -299,18 +300,6 @@ export default {
             }
           })
 
-      // const rawData = this.bufferedTaskCache[this.selectedDataSource]
-      // const filteredData = rawData
-      //     .filter(task => {
-      //       return task.data?.some(item => String(item.id) === String(vizConfig.id))
-      //     })
-      //     .map(task => {
-      //       const vizDataItem = task.data.find(item => String(item.id) === String(vizConfig.id))
-      //       return {
-      //         taskId: String(task.task_id),
-      //         ...(vizDataItem?.data || {})
-      //       }
-      //     })
       return filteredData
     },
 
