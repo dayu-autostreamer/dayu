@@ -1,6 +1,7 @@
 import copy
 import json
 import threading
+import time
 from datetime import datetime
 
 from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks
@@ -538,8 +539,11 @@ class BackendServer:
 
         self.server.source_open = True
         self.server.source_label = source_label
-        for source_id in self.server.get_source_ids():
+        source_ids = self.server.get_source_ids()
+        for source_id in source_ids:
             self.server.task_results[source_id] = Queue(20)
+
+        time.sleep((len(source_ids) - 1) * 2)
 
         self.server.is_get_result = True
         threading.Thread(target=self.server.run_get_result).start()
@@ -558,6 +562,7 @@ class BackendServer:
         self.server.is_get_result = False
         self.server.task_results.clear()
         self.server.source_visualizations.clear()
+        time.sleep(1)
 
         return {'state': 'success', 'msg': 'Datasource close successfully'}
 

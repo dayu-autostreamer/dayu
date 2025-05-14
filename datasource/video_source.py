@@ -5,6 +5,8 @@ import uvicorn
 import argparse
 import socket
 import requests
+import threading
+import time
 
 from fastapi import FastAPI, Form, BackgroundTasks
 from fastapi.routing import APIRoute, APIRouter
@@ -19,11 +21,6 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 sources = {}
-
-
-def is_port_in_use(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('localhost', port)) == 0
 
 
 class VideoSource:
@@ -125,6 +122,37 @@ async def add_source(root: str, path: str, play_mode: str):
     return {"status": "success"}
 
 
+def is_port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('localhost', port)) == 0
+
+
+def wait_for_port(port: int, timeout=10):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if is_port_in_use(port):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def run_server(port: int):
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+def register_source(root: str, path: str, play_mode: str):
+    try:
+        response = requests.post(
+            f"http://127.0.0.1:{server_port}/admin/add_source",
+            json={"root": root, "path": path, "play_mode": play_mode}
+        )
+        LOGGER.info(f"Registered to existing server: {response.json()}")
+
+    except Exception as e:
+        LOGGER.warning(f"Failed to register: {str(e)}")
+        LOGGER.exception(e)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, required=True)
@@ -137,14 +165,13 @@ if __name__ == '__main__':
 
     if is_port_in_use(server_port):
         # server already in running
-        try:
-            response = requests.post(
-                f"http://127.0.0.1:{server_port}/admin/add_source",
-                json={"root": args.root, "path": server_path, "play_mode": args.play_mode}
-            )
-            LOGGER.info(f"Registered to existing server: {response.json()}")
-        except Exception as e:
-            LOGGER.warning(f"Failed to register: {str(e)}")
+        register_source(args.root, server_path, args.play_mode)
     else:
         # first run server
-        uvicorn.run(app, host='0.0.0.0', port=server_port)
+        server_thread = threading.Thread(target=run_server, args=(server_port,), daemon=True)
+        server_thread.start()
+        if wait_for_port(server_port):
+            register_source(args.root, server_path, args.play_mode)
+            server_thread.join()
+        else:
+            LOGGER.warning(f"Failed to start server on port {server_port}")
