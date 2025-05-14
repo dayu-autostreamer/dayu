@@ -111,15 +111,15 @@ class BackendServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.BACKEND_TASK_RESULT]
                      ),
-            APIRoute(NetworkAPIPath.BACKEND_GET_VISUALIZATION_CONFIG,
+            APIRoute(NetworkAPIPath.BACKEND_POST_VISUALIZATION_CONFIG,
                      self.upload_visualization_config,
                      response_class=JSONResponse,
-                     methods=[NetworkAPIMethod.BACKEND_GET_VISUALIZATION_CONFIG]
+                     methods=[NetworkAPIMethod.BACKEND_POST_VISUALIZATION_CONFIG]
                      ),
-            APIRoute(NetworkAPIPath.BACKEND_POST_VISUALIZATION_CONFIG,
+            APIRoute(NetworkAPIPath.BACKEND_GET_VISUALIZATION_CONFIG,
                      self.get_visualization_config,
                      response_class=JSONResponse,
-                     methods=[NetworkAPIMethod.BACKEND_POST_VISUALIZATION_CONFIG]
+                     methods=[NetworkAPIMethod.BACKEND_GET_VISUALIZATION_CONFIG]
                      ),
             APIRoute(NetworkAPIPath.BACKEND_DOWNLOAD_LOG,
                      self.download_log,
