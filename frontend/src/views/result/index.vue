@@ -114,7 +114,7 @@
 </template>
 
 <script>
-import {defineAsyncComponent, reactive, ref, markRaw, toRaw, watch} from 'vue'
+import {markRaw, reactive, toRaw, watch} from 'vue'
 import mitt from 'mitt'
 
 const emitter = mitt()
@@ -415,7 +415,12 @@ export default {
         this.bufferedTaskCache = reactive({...newCache})
 
         // 添加可视化配置刷新
-        this.currentVisualizationConfig = this.currentVisualizationConfig.map(cfg => ({...cfg}))
+        if (this.selectedDataSource) {
+          const sourceId = this.selectedDataSource
+          if (this.visualizationConfig[sourceId]) {
+            this.visualizationConfig [sourceId] = this.visualizationConfig[sourceId].map(cfg => ({...cfg}))
+          }
+        }
 
         // 添加延迟更新确保DOM刷新
         this.$nextTick(() => {
