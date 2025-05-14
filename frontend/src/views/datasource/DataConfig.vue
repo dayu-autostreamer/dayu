@@ -27,15 +27,19 @@
                 <li class="info-li">Source Type: {{ item.source_type }}</li>
                 <li class="info-li">Source Mode: {{ item.source_mode }}</li>
                 <li class="info-li">Source List:</li>
-                <div class="info-li" v-for="camera in item.source_list" style="display: flex; justify-content: center;">
+                <div class="info-li" v-for="source in item.source_list" style="display: flex; justify-content: center;">
                   <div style="width: 100%; display: flex; align-items: center;">
-                    <div style="margin-right: 10px;">{{ camera.name }}</div>
+                    <div style="margin-right: 10px;">{{ source.name }}</div>
                     <el-tooltip class="box-item" effect="dark" placement="right" :hide-after="10"
                                 popper-class="tooltip-width">
                       <template #content>
-                        Source URL: {{ camera.url }}<br/>
-                        <div v-if="camera.resolution">Resolution: {{ camera.resolution }}</div>
-                        <div v-if="camera.fps">FPS: {{ camera.fps }}</div>
+                        <div>Source URL: {{ source.url }}</div>
+                        <template v-for="(value, key) in source.metadata" :key="key">
+                          <div>
+                            {{ key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) }}: {{ value }}
+                          </div>
+                        </template>
+
                       </template>
                       <el-button type="" text>details</el-button>
                     </el-tooltip>
@@ -45,7 +49,7 @@
 
               </ul>
               <div style="text-align: center; margin-top: 20px;">
-                <el-button type="danger"  :loading="loading" @click="delete_source(item.source_label)"
+                <el-button type="danger" :loading="loading" @click="delete_source(item.source_label)"
                 >Delete
                 </el-button>
               </div>
@@ -421,6 +425,20 @@ input[type="file"] {
 
 .custom-file-input:hover {
   background-color: #e1e1e1;
+}
+
+.tooltip-width {
+  max-width: 300px;
+  line-height: 1.6;
+
+  div {
+    margin: 3px 0;
+
+    &:not(:last-child) {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 3px;
+    }
+  }
 }
 
 
