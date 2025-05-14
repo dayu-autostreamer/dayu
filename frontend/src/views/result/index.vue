@@ -183,9 +183,9 @@ export default {
       this.$nextTick(() => {
         if (!this.selectedDataSource) return
         this.currentVisualizationConfig.forEach(viz => {
-          this.$set(this.variableStates[this.selectedDataSource], viz.id,
+          this.variableStates[this.selectedDataSource][viz.id] =
               {...this.variableStates[this.selectedDataSource][viz.id]}
-          )
+
         })
       })
 
