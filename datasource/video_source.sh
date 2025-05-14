@@ -41,6 +41,15 @@ if [[ ! -d "$input_folder" ]]; then
     exit 1
 fi
 
+if ! pgrep -x "mediamtx" > /dev/null; then
+    echo "Starting mediamtx server..."
+    "$RTSP_PATH"/mediamtx "$RTSP_PATH"/mediamtx.yml &
+    sleep 2
+else
+    echo "mediamtx server already running."
+fi
+
+
 echo "Starting mediamtx server..."
 "$RTSP_PATH"/mediamtx  "$RTSP_PATH"/mediamtx.yml &
 
