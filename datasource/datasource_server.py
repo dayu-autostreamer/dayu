@@ -53,7 +53,7 @@ class DataSource:
                 LOGGER.warning(f'Datasource directory "{datasource_dir}" does not exist.')
                 return
             url = re.sub(r'(?<=:)\d+', str(self.inner_port), source['url'])
-            url = re.sub(r'\d+\.\d+\.\d+\.\d+', '127.0.0.1', url)
+            url = re.sub(r'\d+\.\d+\.\d+\.\d+', '0.0.0.0', url)
             command = (f'{self.command_headers[mode].replace("modal", modal)} '
                        f'--root {datasource_dir} --address {url} --play_mode {self.play_mode}')
             process = ScriptHelper.start_script(command)
