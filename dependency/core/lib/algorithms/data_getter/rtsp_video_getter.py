@@ -48,7 +48,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
                 LOGGER.warning(f'No video signal from source {system.source_id}!')
                 first_no_signal = False
             self.frame_buffer = []
-            self.data_source_capture = cv2.VideoCapture(system.video_data_source)
+            self.data_source_capture = cv2.VideoCapture(system.video_data_source, cv2.CAP_FFMPEG)
             ret, frame = self.data_source_capture.read()
 
         if not first_no_signal:
