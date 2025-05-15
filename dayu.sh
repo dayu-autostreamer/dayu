@@ -110,7 +110,7 @@ spec:
                 - name: REQUEST_INTERVAL
                   value: "2"
                 - name: START_INTERVAL
-                  value: "2"
+                  value: "4"
                 - name: PLAY_MODE
                   value: "$DATASOURCE_PLAY_MODE"
                 - name: KUBERNETES_SERVICE_HOST

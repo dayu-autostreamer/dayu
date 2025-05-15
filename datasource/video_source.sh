@@ -44,7 +44,7 @@ fi
 if ! pgrep -x "mediamtx" > /dev/null; then
     echo "Starting mediamtx server..."
     "$RTSP_PATH"/mediamtx "$RTSP_PATH"/mediamtx.yml &
-    sleep 2
+    sleep 4
 else
     echo "mediamtx server already running."
 fi
@@ -55,8 +55,16 @@ echo "Starting mediamtx server..."
 
 rtsp_url="$rtsp_address"
 
+wait_for_rtsp_server() {
+    until nc -z 127.0.0.1 554; do
+        echo "$rtsp_url waiting for RTSP server to start.."
+        sleep 1
+    done
+}
+
 # Function to stream video files once or cycle based on play_mode
 stream_videos() {
+    wait_for_rtsp_server
     local play_mode=$1
     while true; do
         # Get all video files in the folder

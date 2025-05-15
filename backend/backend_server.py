@@ -543,7 +543,7 @@ class BackendServer:
         for source_id in source_ids:
             self.server.task_results[source_id] = Queue(20)
 
-        time.sleep((len(source_ids) - 1) * 2)
+        time.sleep((len(source_ids) - 1) * 4)
 
         self.server.is_get_result = True
         threading.Thread(target=self.server.run_get_result).start()

@@ -9,6 +9,26 @@ ARG code_dir=datasource
 
 ENV TZ=Asia/Shanghai
 
+RUN apt-get update && apt-get install -y \
+    wget \
+    tar \
+    xz-utils \
+    libxext6 \
+    libsm6 \
+    libxrender1 \
+    libgl1 \
+    ffmpeg \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    gstreamer1.0-libav \
+    gstreamer1.0-tools \
+    gstreamer1.0-alsa \
+    gstreamer1.0-pulseaudio \
+    net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
 COPY ${code_dir}/requirements.txt ./code_requirements.txt
