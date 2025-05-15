@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y \
     gstreamer1.0-alsa \
     gstreamer1.0-pulseaudio \
     net-tools \
+    netcat \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
