@@ -15,7 +15,6 @@
 
 We will acknowledge your report within **3 business days** and provide a timeline for resolution.
 
----
 
 
 ## Security Update Process
@@ -35,7 +34,6 @@ We will acknowledge your report within **3 business days** and provide a timelin
 Dayu currently commits to supporting the n-1 version minor version of the current major release;
 as well as the last minor version of the previous major release.
 
----
 
 ## Disclosure Policy
 
@@ -44,10 +42,7 @@ as well as the last minor version of the previous major release.
 - **Timeline Transparency**:  
   Major vulnerabilities will have a public timeline in [GitHub Security Advisories](https://github.com/dayu-autostreamer/dayu/security/advisories).
 
----
 
 ## Acknowledgments
 
 We credit security researchers who follow responsible disclosure practices. If you wish to be acknowledged, please specify your preference (name/handle or anonymous).
-
----
