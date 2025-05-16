@@ -1,0 +1,21 @@
+source_name: "Road & Street Cameras (Two Camera HTTP)"
+source_type: "video"
+source_mode: "http_video"
+source_list:
+  - name: "road_camera_0"
+    url: ""
+    dir: "road_dense/"
+    metadata:
+      resolution: "540p"
+      fps: 30
+      encoding: "mp4v"
+      buffer_size: 4
+  - name: "street_camera_0"
+    url: ""
+    dir: "street_dense/"
+    metadata:
+      resolution: "1080p"
+      fps: 30
+      encoding: "mp4v"
+      buffer_size: 4
+
