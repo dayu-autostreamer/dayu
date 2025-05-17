@@ -2,7 +2,7 @@
 name: Question
 about: Question relating to KubeEdge.
 title: '[QUESTION]'
-labels: kind/question
+labels: question
 assignees: ''
 
 ---

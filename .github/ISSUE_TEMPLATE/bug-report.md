@@ -2,7 +2,7 @@
 name: Bug Report
 about: Report a bug encountered while operating dayu
 title: '[BUG]'
-labels: kind/bug
+labels: bug
 assignees: ''
 
 ---
