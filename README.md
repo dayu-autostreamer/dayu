@@ -4,9 +4,13 @@ English | [简体中文](./README_zh.md)
 
 [![Version](https://img.shields.io/github/release/dayu-autostreamer/dayu)](https://github.com/dayu-autostreamer/dayu/releases)
 [![Licence](https://img.shields.io/github/license/dayu-autostreamer/dayu.svg)](https://github.com/dayu-autostreamer/dayu/blob/main/LICENSE)
+[![Homepage](https://img.shields.io/website?url=https%3A%2F%2Fdayu-autostreamer.github.io%2F&label=homepage)](https://dayu-autostreamer.github.io/)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/dayu-autostreamer/dayu/badge)](https://scorecard.dev/viewer/?uri=github.com/dayu-autostreamer/dayu)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10523/badge)](https://www.bestpractices.dev/projects/10523)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
-[![Stars](https://img.shields.io/github/stars/dayu-autostreamer/dayu)](https://github.com/dayu-autostreamer/dayu)
+[![GitHub Repo stars](https://img.shields.io/github/stars/dayu-autostreamer/dayu?style=flat)](https://github.com/dayu-autostreamer/dayu)
+[![GitHub forks](https://img.shields.io/github/forks/dayu-autostreamer/dayu?style=flat)](https://github.com/dayu-autostreamer/dayu)
+
 
 ![](pics/dayu_logo.png)
 
