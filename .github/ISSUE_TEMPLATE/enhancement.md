@@ -2,7 +2,7 @@
 name: Enhancement Request
 about: Suggest an enhancement to the KubeEdge project
 title: '[FEATURES]'
-labels: kind/feature
+labels: enhancement
 assignees: ''
 ---
 <!-- Please only use this template for submitting enhancement requests -->
