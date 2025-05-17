@@ -107,8 +107,10 @@ spec:
         spec:
           containers:
             - env:
-                - name: INTERVAL
+                - name: REQUEST_INTERVAL
                   value: "2"
+                - name: START_INTERVAL
+                  value: "4"
                 - name: PLAY_MODE
                   value: "$DATASOURCE_PLAY_MODE"
                 - name: KUBERNETES_SERVICE_HOST

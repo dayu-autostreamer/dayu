@@ -3,12 +3,14 @@
     <!-- Data Source Selection Row -->
     <el-row :gutter="15" class="home-card-two mb15">
       <el-col :xs="24" :sm="24" :md="20" :lg="20" :xl="20">
-        <div class="home-card-item data-source-container">
+        <div class="home-card-item data-source-container"
+             :class="{ 'source-loading': isSourceLoading }">
           <div class="flex-margin flex w100">
             <div class="flex-auto" style="font-weight: bold">
               Choose Datasource: &nbsp;
               <el-select
                   v-model="selectedDataSource"
+                  :disabled="isSourceLoading"
                   placeholder="Please choose datasource"
                   class="compact-select"
               >
@@ -19,6 +21,31 @@
                     :value="item.id"
                 />
               </el-select>
+
+              <el-button
+                  ref="uploadButton"
+                  type="primary"
+                  :disabled="!selectedDataSource"
+                  @click="triggerConfigUpload"
+                  style="margin-left: 15px"
+              >
+                Upload Config
+                <template #loading>
+                  <i class="el-icon-loading"></i>
+                </template>
+              </el-button>
+
+
+              <input
+                  ref="uploadInput"
+                  type="file"
+                  hidden
+                  @change="handleFileUpload"
+              >
+            </div>
+            <div v-if="isSourceLoading" class="loading-overlay">
+              <i class="el-icon-loading"></i>
+              <span>Loading Visualizations...</span>
             </div>
           </div>
         </div>
@@ -42,9 +69,9 @@
         <div class="viz-controls-panel">
           <div class="control-group">
             <h4>Active Visualizations:</h4>
-            <el-checkbox-group v-model="activeVisualizationsArray">
+            <el-checkbox-group v-model="currentActiveVisualizationsArray">
               <el-checkbox
-                  v-for="viz in visualizationConfig"
+                  v-for="viz in currentVisualizationConfig"
                   :key="viz.id"
                   :label="viz.id"
                   class="module-checkbox"
@@ -59,45 +86,58 @@
 
     <!-- Visualization Modules Row -->
     <el-row :gutter="15" class="home-card-two mb15">
-      <el-col
-          v-for="viz in visualizationConfig"
-          :key="viz.id"
-          :xs="24"
-          :sm="24"
-          :md="getVisualizationSpan(viz.size, 'md')"
-          :lg="getVisualizationSpan(viz.size, 'lg')"
-          :xl="getVisualizationSpan(viz.size, 'xl')"
-          v-show="componentsLoaded && activeVisualizations.has(viz.id)"
-      >
-        <div class="home-card-item viz-module">
-          <div class="viz-module-header">
-            <h3 class="viz-title">{{ viz.name }}</h3>
+
+      <template v-if="!isSourceLoading">
+        <el-col
+            v-for="viz in currentVisualizationConfig"
+            :key="viz.id"
+            :xs="24"
+            :sm="24"
+            :md="getVisualizationSpan(viz.size, 'md')"
+            :lg="getVisualizationSpan(viz.size, 'lg')"
+            :xl="getVisualizationSpan(viz.size, 'xl')"
+            v-show="componentsLoaded && currentActiveVisualizations.has(viz.id)"
+        >
+          <div class="home-card-item viz-module">
+            <div class="viz-module-header">
+              <h3 class="viz-title">{{ viz.name }}</h3>
+              <component
+                  :is="vizControls[viz.type]"
+                  v-if="vizControls[viz.type] && selectedDataSource"
+                  :config="viz"
+                  :variable-states="variableStates[selectedDataSource]?.[viz.id] || {}"
+                  @update:variable-states="updateVariableStates(viz.id, $event)"
+              />
+            </div>
+
             <component
-                :is="vizControls[viz.type]"
-                v-if="vizControls[viz.type]"
+                :is="visualizationComponents[viz.type]"
+                v-if="componentsLoaded && visualizationComponents[viz.type] && selectedDataSource"
+                :key="`${viz.type}-${selectedDataSource}-${viz.id}`"
                 :config="viz"
-                :variable-states="variableStates[viz.id]"
-                @update:variable-states="updateVariableStates(viz.id, $event)"
+                :data="processedData[viz.id]"
+                :variable-states="variableStates[selectedDataSource]?.[viz.id] || {}"
             />
           </div>
+        </el-col>
+      </template>
 
-          <component
-              :is="visualizationComponents[viz.type]"
-              v-if="componentsLoaded && visualizationComponents[viz.type]"
-              :key="`${viz.type}-${selectedDataSource}-${viz.id}`"
-              :config="viz"
-              :data="processedData[viz.id]"
-              :variable-states="variableStates[viz.id]"
-          />
-        </div>
-      </el-col>
+      <template v-else>
+        <el-col :span="24">
+          <div class="skeleton-loading">
+            <div class="skeleton-item" v-for="n in 3" :key="n"></div>
+          </div>
+        </el-col>
+      </template>
+
     </el-row>
   </div>
 </template>
 
 <script>
-import {defineAsyncComponent, reactive, ref, markRaw, toRaw, watch} from 'vue'
+import {markRaw, reactive, toRaw, watch} from 'vue'
 import mitt from 'mitt'
+import {ElMessage} from "element-plus";
 
 const emitter = mitt()
 
@@ -109,31 +149,42 @@ export default {
       bufferedTaskCache: reactive({}),
       maxBufferedTaskCacheSize: 20,
       componentsLoaded: false,
-      visualizationConfig: [],
-      activeVisualizations: new Set(),
-      variableStates: reactive({}),
+      visualizationConfig: {},
+      activeVisualizations: {},
+      variableStates: {},
       visualizationComponents: {},
       vizControls: {},
-      pollingInterval: null
+      pollingInterval: null,
+
+      isSourceLoading: false,
+      isUploading: false,
     }
   },
   computed: {
     processedData() {
       const result = {}
-      this.visualizationConfig.forEach(viz => {
+      this.currentVisualizationConfig.forEach(viz => {
         result[viz.id] = this.processVizData(viz)
       })
       return result
     },
-    activeVisualizationsArray: {
+    currentVisualizationConfig() {
+      return this.visualizationConfig[this.selectedDataSource] || []
+    },
+    currentActiveVisualizations() {
+      console.log('activeVisualizations:', this.activeVisualizations[this.selectedDataSource])
+      return this.activeVisualizations[this.selectedDataSource] || new Set()
+    },
+    currentActiveVisualizationsArray: {
       get() {
-        return Array.from(this.activeVisualizations)
+        return Array.from(this.currentActiveVisualizations)
       },
       set(newVal) {
-        this.activeVisualizations = new Set(newVal)
+        this.activeVisualizations[this.selectedDataSource] = new Set(newVal)
       }
-    }
+    },
   },
+
   async created() {
     this.dataSourceList.forEach(source => {
       this.bufferedTaskCache[source.id] = reactive([])
@@ -150,19 +201,84 @@ export default {
     await this.autoRegisterComponents()
     this.componentsLoaded = true
     await this.fetchDataSourceList()
-    await this.fetchVisualizationConfig()
     this.setupDataPolling()
 
     emitter.on('force-update-charts', () => {
       this.$nextTick(() => {
-        this.visualizationConfig.forEach(viz => {
-          this.variableStates[viz.id] = {...this.variableStates[viz.id]}
+        if (!this.selectedDataSource) return
+        this.currentVisualizationConfig.forEach(viz => {
+          this.variableStates[this.selectedDataSource][viz.id] =
+              {...this.variableStates[this.selectedDataSource][viz.id]}
+
         })
       })
+
     })
 
   },
+  watch: {
+    selectedDataSource(newVal) {
+      if (newVal) {
+        this.handleSourceChange(newVal)
+      }
+    }
+  },
   methods: {
+    triggerConfigUpload() {
+      if (!this.selectedDataSource) return
+      this.$refs.uploadInput.value = null
+      this.$refs.uploadInput.click()
+    },
+
+    async handleFileUpload(event) {
+      const file = event.target.files[0]
+      if (!file) return
+
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+
+        this.$refs.uploadButton.loading = true
+
+        fetch(`/api/visualization_config/${this.selectedDataSource}`, {
+          method: 'POST',
+          body: formData
+        })
+            .then(response => response.json())
+            .then(data => {
+              const state = data['state']
+              const msg = data['msg']
+              this.fetchVisualizationConfig(this.selectedDataSource)
+              this.showMsg(state, msg);
+            })
+      } catch (error) {
+        ElMessage.error("System Error")
+        console.log(error);
+      } finally {
+        this.$refs.uploadButton.loading = false
+      }
+    },
+    async handleSourceChange(sourceId) {
+      if (!sourceId || !this.dataSourceList.some(s => s.id === sourceId)) {
+        console.error('Invalid source selection')
+        return
+      }
+
+      this.isSourceLoading = true
+
+      try {
+        await this.fetchVisualizationConfig(sourceId)
+      } catch (e) {
+        console.error('Source change failed:', e)
+      } finally {
+        this.isSourceLoading = false // 结束加载
+      }
+
+      // 强制更新视图
+      this.$nextTick(() => {
+        emitter.emit('force-update-charts')
+      })
+    },
     getVisualizationSpan(size, breakpoint) {
       const baseSize = size || 1
       // 大屏显示完整尺寸，中小屏自动调整
@@ -209,28 +325,36 @@ export default {
 
 
     processVizData(vizConfig) {
-      if (!this.selectedDataSource || !this.bufferedTaskCache[this.selectedDataSource]) {
-        return []
-      }
+      const sourceId = this.selectedDataSource
+      if (!sourceId || !this.bufferedTaskCache[sourceId]) return []
 
-      const rawData = this.bufferedTaskCache[this.selectedDataSource]
-      const filteredData = rawData
+      const validVizIds = new Set(this.currentVisualizationConfig.map(v => String(v.id)))
+      const filteredData = this.bufferedTaskCache[sourceId]
           .filter(task => {
-            return task.data?.some(item => String(item.id) === String(vizConfig.id))
+            return task.data?.some(item =>
+                validVizIds.has(String(item.id)) &&
+                String(item.id) === String(vizConfig.id))
           })
           .map(task => {
             const vizDataItem = task.data.find(item => String(item.id) === String(vizConfig.id))
             return {
               taskId: String(task.task_id),
-              ...(vizDataItem?.data || {}) // 透传原始数据
+              ...(vizDataItem?.data || {})
             }
           })
+
       return filteredData
     },
 
     updateVariableStates(vizId, newStates) {
+      if (!this.selectedDataSource) return
+
       this.variableStates[vizId] = {
         ...this.variableStates[vizId],
+        ...newStates
+      }
+      this.variableStates[this.selectedDataSource][vizId] = {
+        ...(this.variableStates[this.selectedDataSource][vizId] || {}),
         ...newStates
       }
       emitter.emit('force-update-charts')
@@ -253,30 +377,31 @@ export default {
       }
     },
 
-    async fetchVisualizationConfig() {
+    async fetchVisualizationConfig(sourceId) {
       try {
-        const response = await fetch('/api/visualization_config')
+        const response = await fetch(`/api/visualization_config/${sourceId}`)
         const data = await response.json()
 
-        this.visualizationConfig = data.map(viz => ({
+        const processedConfig = data.map(viz => ({
           ...viz,
           id: String(viz.id),
           variables: viz.variables || [],
           size: Math.min(3, Math.max(1, parseInt(viz.size) || 1))
         }));
 
-        this.visualizationConfig.forEach(viz => {
-          this.activeVisualizations.add(viz.id)
+        this.visualizationConfig[sourceId] = processedConfig
 
-          this.variableStates[viz.id] = reactive(
-              viz.variables.reduce((acc, varName) => {
-                acc[varName] = true  // 默认选中所有变量
-                return acc
-              }, {})
-          )
+        this.activeVisualizations[sourceId] = new Set()
+        this.variableStates[sourceId] = reactive({})
 
+        processedConfig.forEach(viz => {
+          this.activeVisualizations[sourceId].add(viz.id)
+
+          this.variableStates[sourceId][viz.id] = viz.variables.reduce((acc, varName) => {
+            acc[varName] = true
+            return acc
+          }, {})
         })
-
         console.log('Initialized variable states:', toRaw(this.variableStates))
       } catch (error) {
         console.error('Failed to fetch visualization config:', error)
@@ -316,7 +441,12 @@ export default {
         this.bufferedTaskCache = reactive({...newCache})
 
         // 添加可视化配置刷新
-        this.visualizationConfig = this.visualizationConfig.map(cfg => ({...cfg}))
+        if (this.selectedDataSource) {
+          const sourceId = this.selectedDataSource
+          if (this.visualizationConfig[sourceId]) {
+            this.visualizationConfig [sourceId] = this.visualizationConfig[sourceId].map(cfg => ({...cfg}))
+          }
+        }
 
         // 添加延迟更新确保DOM刷新
         this.$nextTick(() => {
@@ -348,15 +478,24 @@ export default {
           })
     },
 
-    forceChartUpdate() {
-      emitter.emit('force-update-charts')
-    }
+    showMsg(state, msg) {
+      if (state === 'success') {
+        ElMessage({
+          message: msg,
+          showClose: true,
+          type: "success",
+          duration: 3000,
+        });
+      } else {
+        ElMessage({
+          message: msg,
+          showClose: true,
+          type: "error",
+          duration: 3000,
+        });
+      }
+    },
   },
-  beforeUnmount() {
-    if (this.pollingInterval) {
-      clearInterval(this.pollingInterval)
-    }
-  }
 }
 </script>
 
@@ -424,6 +563,7 @@ export default {
   display: flex;
   flex-direction: column;
   margin-top: 15px;
+  transition: all 0.3s ease;
 }
 
 .viz-module-header {
@@ -457,5 +597,102 @@ export default {
   width: 100% !important;
   height: 100% !important;
   min-height: 400px !important;
+}
+
+.source-loading {
+  position: relative;
+
+  &:after {
+    content: "Loading...";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+  }
+}
+
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+
+  i {
+    font-size: 24px;
+    margin-right: 8px;
+    animation: rotating 2s linear infinite;
+  }
+
+  span {
+    color: var(--el-color-primary);
+    font-weight: 500;
+  }
+}
+
+/* 骨架屏加载动画 */
+.skeleton-loading {
+  padding: 20px;
+
+  .skeleton-item {
+    height: 200px;
+    background: #f5f7fa;
+    border-radius: 4px;
+    margin-bottom: 15px;
+    position: relative;
+    overflow: hidden;
+
+    &::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(255, 255, 255, 0.6),
+          transparent
+      );
+      animation: skeleton-flash 1.5s infinite;
+    }
+  }
+}
+
+/* 动画定义 */
+@keyframes rotating {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes skeleton-flash {
+  100% {
+    left: 100%;
+  }
+}
+
+/* 原有数据源容器添加定位 */
+.data-source-container {
+  position: relative; /* 为loading-overlay定位做准备 */
+  min-height: 60px; /* 防止加载时高度塌缩 */
+}
+
+.upload-config-btn {
+  transition: opacity 0.3s ease;
+
+  &.is-disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
 }
 </style>

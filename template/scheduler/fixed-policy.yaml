@@ -18,11 +18,11 @@ pod-template:
     - name: SCH_DEPLOYMENT_POLICY_NAME
       value: fixed
     - name: SCH_DEPLOYMENT_POLICY_PARAMETERS
-      value: "{'policy':{'face-detection':['edge1','cloud.kubeedge'],'gender-classification':['edge2','cloud.kubeedge'], 'age-classification':['edge2', 'cloud.kubeedge']}}"
+      value: "{'policy':{'face-detection':['edge1','cloud.kubeedge'],'gender-classification':['edge1','cloud.kubeedge'], 'age-classification':['edge2', 'cloud.kubeedge']}}"
     - name: SCH_AGENT_NAME
       value: fixed
     - name: SCH_AGENT_PARAMETERS
-      value: "{'configuration':{'resolution': '720p','fps': 15,'encoding': 'mp4v','buffer_size': 4},'offloading':{}}"
+      value: "{'configuration':{'resolution': '720p','fps': 15,'encoding': 'mp4v','buffer_size': 4},'offloading':{'face-detection': 'edge1', 'age-classification':'edge2', 'gender-classification':'cloud.kubeedge'}}"
 port-open:
   pos: cloud
   port: 9000

@@ -41,8 +41,13 @@ if [[ ! -d "$input_folder" ]]; then
     exit 1
 fi
 
-echo "Starting mediamtx server..."
-"$RTSP_PATH"/mediamtx  "$RTSP_PATH"/mediamtx.yml &
+if ! pgrep -x "mediamtx" > /dev/null; then
+    echo "Starting mediamtx server..."
+    "$RTSP_PATH"/mediamtx "$RTSP_PATH"/mediamtx.yml &
+    sleep 4
+else
+    echo "mediamtx server already running."
+fi
 
 rtsp_url="$rtsp_address"
 
@@ -62,7 +67,7 @@ stream_videos() {
         for video_file in "${video_files[@]}"; do
             if [[ -f "$video_file" ]]; then
                 echo "Streaming $video_file to $rtsp_url"
-                ffmpeg -re -i "$video_file" -c:v libx264 -preset ultrafast -tune zerolatency -b:v 3000k -f rtsp "$rtsp_url"
+                ffmpeg -re -i "$video_file" -c copy -b:v 3000k -f rtsp -rtsp_transport tcp "$rtsp_url"
             fi
         done
 

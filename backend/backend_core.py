@@ -25,6 +25,8 @@ class BackendCore:
         self.services = None
         self.visualizations = None
 
+        self.source_visualizations = {}
+
         self.source_configs = []
 
         self.dags = []
@@ -335,8 +337,10 @@ class BackendCore:
         return source_ids
 
     def prepare_visualization_data(self, task):
+        source_id = task.get_source_id()
+        visualizations = self.source_visualizations[source_id] if source_id in self.source_visualizations else self.visualizations
         visualization_data = []
-        for idx, vf in enumerate(self.visualizations):
+        for idx, vf in enumerate(visualizations):
             al_name = vf['hook_name']
             al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
             al_params.update({'variables': vf['variables']})
@@ -420,10 +424,43 @@ class BackendCore:
                     url = camera['url']
                 metadata = camera['metadata']
 
-        except KeyError:
+        except Exception as e:
+            LOGGER.warning(f'Datasource config file format error: {str(e)}')
+            LOGGER.exception(e)
             return None
 
         return config
+
+    def check_visualization_config(self, config_path):
+        if not YamlOps.is_yaml_file(config_path):
+            return None
+
+        config = YamlOps.read_yaml(config_path)
+
+        try:
+            for visualization in config:
+                viz_name = visualization['name']
+                assert isinstance(viz_name, str), '"name" is not a string'
+                viz_type = visualization['type']
+                assert isinstance(viz_type, str), '"type" is not a string'
+                viz_var = visualization['variables']
+                assert isinstance(viz_var, list), '"variables" is not a list'
+                viz_size = visualization['size']
+                assert isinstance(viz_size, int), '"size" is not an integer'
+                if 'hook_name' in visualization:
+                    assert isinstance(visualization['hook_name'], str), '"hook_name" is not a string'
+                if 'hook_params' in visualization:
+                    assert isinstance(visualization['hook_params'], str), '"hook_params" is not a string(dict)'
+                    assert isinstance(eval(visualization['hook_params']), dict), '"hook_params" is not a string(dict)'
+                if 'x_axis' in visualization:
+                    assert isinstance(visualization['x_axis'], str), '"x_axis" is not a string'
+                if 'y_axis' in visualization:
+                    assert isinstance(visualization['y_axis'], str), '"y_axis" is not a string'
+            return config
+        except Exception as e:
+            LOGGER.warning(f'Visualization config file format error: {str(e)}')
+            LOGGER.exception(e)
+            return None
 
     def get_resource_url(self):
         cloud_hostname = NodeInfo.get_cloud_node()
@@ -493,6 +530,7 @@ class BackendCore:
 
         return results
 
-    def get_visualization_config(self):
+    def get_visualization_config(self, source_id):
         self.parse_base_info()
-        return [{'id': idx, **vf} for idx, vf in enumerate(self.visualizations)]
+        visualizations = self.source_visualizations[source_id] if source_id in self.source_visualizations else self.visualizations
+        return [{'id': idx, **vf} for idx, vf in enumerate(visualizations)]

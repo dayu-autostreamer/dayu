@@ -28,7 +28,8 @@ class DataSource:
 
         self.inner_port = Context.get_parameter('GUNICORN_PORT')
 
-        self.request_interval = Context.get_parameter('INTERVAL', direct=False)
+        self.request_interval = Context.get_parameter('REQUEST_INTERVAL', direct=False)
+        self.start_interval = Context.get_parameter('START_INTERVAL', direct=False)
 
         self.play_mode = Context.get_parameter('PLAY_MODE')
 
@@ -46,17 +47,19 @@ class DataSource:
 
         LOGGER.info(f'Open Datasource: {modal}/{label}..')
 
-        for source in source_list:
+        for index, source in enumerate(source_list):
             datasource_dir = os.path.join(Context.get_file_path(modal), source['dir'], mode)
             if not os.path.exists(datasource_dir):
                 LOGGER.warning(f'Datasource directory "{datasource_dir}" does not exist.')
                 return
             url = re.sub(r'(?<=:)\d+', str(self.inner_port), source['url'])
-            url = re.sub(r'\d+\.\d+\.\d+\.\d+', '127.0.0.1', url)
+            url = re.sub(r'\d+\.\d+\.\d+\.\d+', '0.0.0.0', url)
             command = (f'{self.command_headers[mode].replace("modal", modal)} '
                        f'--root {datasource_dir} --address {url} --play_mode {self.play_mode}')
             process = ScriptHelper.start_script(command)
             self.process_list.append(process)
+            if index < len(source_list) - 1:
+                time.sleep(self.start_interval)
 
         self.source_label = label
         self.source_open = True

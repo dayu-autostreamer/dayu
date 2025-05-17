@@ -16,7 +16,7 @@ datasource:
   use-simulation: true
   node: edgex1
   data-root: "/data/datasource/"
-  play-mode: non-cycle
+  play-mode: cycle
 scheduler-policies:
   !include scheduler_policies.yaml
 services:

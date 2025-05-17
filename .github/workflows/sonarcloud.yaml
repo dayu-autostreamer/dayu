@@ -1,0 +1,55 @@
+name: Sonarcloud Scan
+
+on:
+  schedule:
+    # Weekly on Saturdays.
+    - cron: '20 1 * * 6'
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Declare default permissions as read only.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecards analysis
+    runs-on: ubuntu-22.04
+    permissions:
+      # Needed to upload the results to code-scanning dashboard.
+      security-events: write
+      # Used to receive a badge. (Upcoming feature)
+      id-token: write
+      # Needs for private repositories.
+      contents: read
+      actions: read
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: "Run analysis"
+        uses: ossf/scorecard-action@f49aabe0b5af0936a0987cfb85d86b75731b0186 # v2.4.1
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+          exclude_checks: "Pinned-Dependencies"
+          exclude_paths: "vendor/**"
+
+      - name: "Upload artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: "Upload to code-scanning"
+        uses: github/codeql-action/upload-sarif@5eb3ed6614230b1931d5c08df9e096e4ba524f21 # v2.22.11
+        with:
+          sarif_file: results.sarif

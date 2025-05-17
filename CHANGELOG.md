@@ -1,5 +1,16 @@
 # Dayu Release Notes
 
+## v1.2
+
+### Features
+
+### Bug Fix
+- Fix concurrency conflicts for starting up multiple streams in rtsp video and http video(`datasource`).
+
+### Minor Update
+- Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios.
+
+
 ## v1.1
 
 ### Breaking Changes
