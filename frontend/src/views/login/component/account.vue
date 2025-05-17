@@ -40,11 +40,8 @@ const { themeConfig } = storeToRefs(storesThemeConfig);
 const route = useRoute();
 const router = useRouter();
 const state = reactive({
-	isShowPassword: false,
 	ruleForm: {
-		userName: 'admin',
-		password: '123456',
-		code: '1234',
+		userName: 'dayu',
 	},
 	loading: {
 		signIn: false,
