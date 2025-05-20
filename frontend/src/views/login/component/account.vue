@@ -7,12 +7,12 @@
       </div>
     </el-form-item>
 
-    <el-form-item class="login-animation1">
+    <el-form-item class="login-animation2">
       <div class="version-info">
         <el-tag type="success">System Version: {{ dayuVersion }}</el-tag>
       </div>
     </el-form-item>
-    <el-form-item class="login-animation4">
+    <el-form-item class="login-animation3">
       <el-button type="primary" class="login-content-submit" round v-waves @click="onSignIn"
                  :loading="state.loading.signIn">
         <span>Enter Dayu System</span>
@@ -166,6 +166,8 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
     color: var(--el-color-success-dark-2);
     display: inline-flex;
     align-items: center;
+    align-content: center;
+    text-align: center;
   }
 }
 </style>

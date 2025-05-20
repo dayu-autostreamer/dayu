@@ -26,16 +26,18 @@
             </div>
           </div>
           <div :class="themeConfig.columnsAsideLayout" v-else>
-            <a :href="v.meta.isLink" target="_blank">
+            <a v-if="v.meta.isExternal" :href="v.meta.isLink" target="_blank" @click.prevent>
               <SvgIcon :name="v.meta.icon"/>
               <div class="columns-vertical-title font12">
-                {{
-                  $t(v.meta.title) && $t(v.meta.title).length >= 4
-                      ? $t(v.meta.title).substr(0, themeConfig.columnsAsideLayout === 'columns-vertical' ? 4 : 3)
-                      : $t(v.meta.title)
-                }}
+                {{ $t(v.meta.title) | truncate(themeConfig.columnsAsideLayout) }}
               </div>
             </a>
+            <router-link v-else :to="v.path">
+              <SvgIcon :name="v.meta.icon"/>
+              <div class="columns-vertical-title font12">
+                {{ $t(v.meta.title) | truncate(themeConfig.columnsAsideLayout) }}
+              </div>
+            </router-link>
           </div>
         </li>
         <div ref="columnsAsideActiveRef" :class="themeConfig.columnsAsideStyle"></div>
@@ -79,16 +81,16 @@ const setColumnsAsideMove = (k: number) => {
 };
 // 菜单高亮点击事件
 const onColumnsAsideMenuClick = async (v: RouteItem) => {
+  if (v.meta?.isExternal) {
+    window.open(v.meta.isLink, '_blank')
+    return
+  }
   let {path, redirect} = v;
   if (redirect) {
     onColumnsAsideDown(v.k);
     if (route.path.startsWith(redirect)) mittBus.emit('setSendColumnsChildren', setSendChildren(redirect));
     else router.push(redirect);
   } else {
-    if (item.meta.isLink) {
-      router.push(router.currentRoute.value.fullPath) // 保持当前路由
-      return
-    }
     if (!v.children) {
       router.push(path);
     } else {
