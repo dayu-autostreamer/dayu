@@ -26,18 +26,26 @@
             </div>
           </div>
           <div :class="themeConfig.columnsAsideLayout" v-else>
-            <span v-if="v.meta.isExternal" class="fake-link">
+            <span v-if="v.meta.isExternal">
               <SvgIcon :name="v.meta.icon"/>
               <div class="columns-vertical-title font12">
-                {{ $t(v.meta.title) | truncate(themeConfig.columnsAsideLayout) }}
+                {{
+									$t(v.meta.title) && $t(v.meta.title).length >= 4
+										? $t(v.meta.title).substr(0, themeConfig.columnsAsideLayout === 'columns-vertical' ? 4 : 3)
+										: $t(v.meta.title)
+								}}
               </div>
             </span>
-            <router-link v-else :to="v.path">
-              <SvgIcon :name="v.meta.icon"/>
-              <div class="columns-vertical-title font12">
-                {{ $t(v.meta.title) | truncate(themeConfig.columnsAsideLayout) }}
-              </div>
-            </router-link>
+            <a v-else :href="v.meta.isLink" target="_blank">
+							<SvgIcon :name="v.meta.icon" />
+							<div class="columns-vertical-title font12">
+								{{
+									$t(v.meta.title) && $t(v.meta.title).length >= 4
+										? $t(v.meta.title).substr(0, themeConfig.columnsAsideLayout === 'columns-vertical' ? 4 : 3)
+										: $t(v.meta.title)
+								}}
+							</div>
+						</a>
           </div>
         </li>
         <div ref="columnsAsideActiveRef" :class="themeConfig.columnsAsideStyle"></div>
@@ -81,10 +89,6 @@ const setColumnsAsideMove = (k: number) => {
 };
 // 菜单高亮点击事件
 const onColumnsAsideMenuClick = async (v: RouteItem) => {
-  if (v.meta?.isExternal) {
-    window.open(v.meta.isLink, '_blank')
-    return
-  }
   let {path, redirect} = v;
   if (redirect) {
     onColumnsAsideDown(v.k);
