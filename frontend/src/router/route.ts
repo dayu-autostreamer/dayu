@@ -54,9 +54,9 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
                     title: 'message.router.home',
                     isLink: 'https://dayu-autostreamer.github.io/',
                     isHide: false,
+                    isIframe: true,
                     roles: ['dayu', 'common'],
                     icon: 'iconfont icon-shouye',
-                    isExternal: true
                 },
             },
             {

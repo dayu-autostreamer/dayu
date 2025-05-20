@@ -4,8 +4,6 @@
       <div class="platform-description">
         <h3>Welcome to Dayu System</h3>
         <p>Provide infrastructure for cloud-edge collaborative stream data analysis.</p>
-      </div>
-      <div class="version-info">
         <el-tag type="success">System Version: {{ dayuVersion }}</el-tag>
       </div>
     </el-form-item>
@@ -152,13 +150,9 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
     font-size: 1.2em;
     line-height: 1.5;
   }
-}
-
-.version-info {
-  width: 100%;
 
   .el-tag {
-    font-size: 1.2em;
+    font-size: 1.1em;
     padding: 12px 20px;
     border-radius: 24px;
     background-color: var(--el-color-success-light-9);
@@ -170,4 +164,6 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
     text-align: center;
   }
 }
+
+
 </style>
