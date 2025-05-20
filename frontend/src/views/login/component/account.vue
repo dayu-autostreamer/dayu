@@ -11,7 +11,8 @@
     </el-form-item>
     <el-form-item class="login-animation3">
       <div class="version-info">
-        <span>System Version: {{ dayuVersion }}</span>
+<!--        <span>System Version: {{ dayuVersion }}</span>-->
+        <el-tag type="success">System Version: {{ dayuVersion }}</el-tag>
       </div>
     </el-form-item>
     <el-form-item class="login-animation4">
@@ -161,7 +162,7 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  //gap: 8px;
   color: var(--el-color-success-dark-2);
   font-size: 1.2em;
 }

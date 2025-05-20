@@ -20,8 +20,8 @@ import zhtwLocale from 'element-plus/es/locale/lang/zh-tw';
 
 // 定义变量内容
 const messages = {};
-const element = { en: enLocale, 'zh-cn': zhcnLocale, 'zh-tw': zhtwLocale };
-const itemize = { en: [], 'zh-cn': [], 'zh-tw': [] };
+const element = { 'en': enLocale, 'zh-cn': zhcnLocale, 'zh-tw': zhtwLocale };
+const itemize = { 'en': [], 'zh-cn': [], 'zh-tw': [] };
 const modules: Record<string, any> = import.meta.glob('./**/*.ts', { eager: true });
 
 // 对自动引入的 modules 进行分类 en、zh-cn、zh-tw

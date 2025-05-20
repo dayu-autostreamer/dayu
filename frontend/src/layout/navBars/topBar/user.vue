@@ -103,7 +103,7 @@ const { themeConfig } = storeToRefs(storesThemeConfig);
 const searchRef = ref();
 const state = reactive({
 	isScreenfull: false,
-	disabledI18n: 'zh-cn',
+	disabledI18n: 'en',
 	disabledSize: 'large',
 });
 
