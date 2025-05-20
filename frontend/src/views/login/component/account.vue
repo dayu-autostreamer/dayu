@@ -158,12 +158,17 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
 }
 
 .version-info {
-  text-align: center;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  //gap: 8px;
-  color: var(--el-color-success-dark-2);
-  font-size: 1.2em;
+  width: 100%;
+  margin: 10px 0;
+  ::v-deep .el-tag {
+    font-size: 1.2em;
+    padding: 12px 20px;
+    border-radius: 24px;
+    background-color: var(--el-color-success-light-9);
+    border-color: var(--el-color-success-light-5);
+    color: var(--el-color-success-dark-2);
+    display: inline-flex;
+    align-items: center;
+  }
 }
 </style>
