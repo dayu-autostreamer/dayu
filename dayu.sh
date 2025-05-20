@@ -197,7 +197,7 @@ spec:
       spec:
         containers:
           - env:
-            - name: DAYU_VERSION
+            - name: VITE_DAYU_VERSION
               value: $TAG
             - name: VITE_BACKEND_ADDRESS
               value: 'http://$CLOUD_IP:$BACKEND_PORT'
