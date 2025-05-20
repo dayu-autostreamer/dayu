@@ -2,7 +2,7 @@
   <el-form size="large" class="login-content-form">
     <el-form-item class="login-animation1">
       <div class="platform-description">
-        <h3>Dayu System</h3>
+        <h3>Welcome to Dayu System</h3>
       <p>Provide infrastructure for cloud-edge collaborative stream data analysis.</p>
       </div>
     </el-form-item>
@@ -12,7 +12,7 @@
     <el-form-item class="login-animation3">
       <div class="version-info">
         <span>System Version:</span>
-        <el-tag type="info" size="small">{{ dayuVersion }}}</el-tag>
+        <el-tag type="info" size="small">{{ dayuVersion }}</el-tag>
       </div>
     </el-form-item>
     <el-form-item class="login-animation4">
@@ -152,17 +152,18 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
   }
   p {
     color: var(--el-text-color-regular);
-    font-size: 0.95em;
+    font-size: 1.2em;
     line-height: 1.5;
   }
 }
 
 .version-info {
+  text-align: center;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   color: var(--el-text-color-secondary);
-  font-size: 0.9em;
+  font-size: 1.2em;
 }
 </style>
