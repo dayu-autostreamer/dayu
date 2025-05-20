@@ -26,12 +26,12 @@
             </div>
           </div>
           <div :class="themeConfig.columnsAsideLayout" v-else>
-            <a v-if="v.meta.isExternal" :href="v.meta.isLink" target="_blank" @click.prevent>
+            <span v-if="v.meta.isExternal" class="fake-link">
               <SvgIcon :name="v.meta.icon"/>
               <div class="columns-vertical-title font12">
                 {{ $t(v.meta.title) | truncate(themeConfig.columnsAsideLayout) }}
               </div>
-            </a>
+            </span>
             <router-link v-else :to="v.path">
               <SvgIcon :name="v.meta.icon"/>
               <div class="columns-vertical-title font12">

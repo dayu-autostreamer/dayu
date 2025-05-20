@@ -92,6 +92,12 @@ export function formatTwoStageRoutes(arr: any) {
 
 // 路由加载前
 router.beforeEach(async (to, from, next) => {
+	if (to.meta?.isExternal) {
+        window.open(to.meta.isLink, '_blank')
+        next(false) // 完全中止导航
+        return
+    }
+
 	NProgress.configure({ showSpinner: false });
 	if (to.meta.title) NProgress.start();
 	const token = Session.get('token');
