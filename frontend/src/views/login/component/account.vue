@@ -6,10 +6,8 @@
       <p>Provide infrastructure for cloud-edge collaborative stream data analysis.</p>
       </div>
     </el-form-item>
-    <el-form-item class="login-animation2">
 
-    </el-form-item>
-    <el-form-item class="login-animation3">
+    <el-form-item class="login-animation2">
       <div class="version-info">
 <!--        <span>System Version: {{ dayuVersion }}</span>-->
         <el-tag type="success">System Version: {{ dayuVersion }}</el-tag>
@@ -97,7 +95,7 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
     }
     // 登录成功提示
     const signInText = t('message.signInText');
-    ElMessage.success(`${currentTimeInfo}，${signInText}`);
+    ElMessage.success(`${currentTimeInfo}, ${signInText}`);
     // 添加 loading，防止第一次进入界面时出现短暂空白
     NextLoading.start();
   }
