@@ -3,9 +3,9 @@
     <el-form-item class="login-animation1">
       <div class="platform-description">
         <h3>Welcome to Dayu System</h3>
-      <p>Provide infrastructure for cloud-edge collaborative stream data analysis.</p>
+        <p>Provide infrastructure for cloud-edge collaborative stream data analysis.</p>
       </div>
-            <div class="version-info">
+      <div class="version-info">
         <el-tag type="success">System Version: {{ dayuVersion }}</el-tag>
       </div>
     </el-form-item>
@@ -140,11 +140,13 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
 
 .platform-description {
   text-align: center;
+
   h3 {
     color: var(--el-color-primary);
     margin-bottom: 8px;
     font-weight: 500;
   }
+
   p {
     color: var(--el-text-color-regular);
     font-size: 1.2em;
@@ -154,8 +156,8 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
 
 .version-info {
   width: 100%;
-  margin: 10px 0;
-  ::v-deep .el-tag {
+
+  .el-tag {
     font-size: 1.2em;
     padding: 12px 20px;
     border-radius: 24px;

@@ -89,6 +89,8 @@ const setColumnsAsideMove = (k: number) => {
 };
 // 菜单高亮点击事件
 const onColumnsAsideMenuClick = async (v: RouteItem) => {
+  if (to.meta?.isExternal) return;
+
   let {path, redirect} = v;
   if (redirect) {
     onColumnsAsideDown(v.k);
