@@ -7,9 +7,8 @@
       </div>
     </el-form-item>
 
-    <el-form-item class="login-animation2">
+    <el-form-item class="login-animation1">
       <div class="version-info">
-<!--        <span>System Version: {{ dayuVersion }}</span>-->
         <el-tag type="success">System Version: {{ dayuVersion }}</el-tag>
       </div>
     </el-form-item>

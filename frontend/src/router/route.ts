@@ -57,7 +57,6 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
                     roles: ['dayu', 'common'],
                     icon: 'iconfont icon-shouye',
                 },
-                redirect: '/dag'
             },
             {
                 path: '/dag',
