@@ -57,10 +57,7 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
                     roles: ['dayu', 'common'],
                     icon: 'iconfont icon-shouye',
                 },
-                redirect: () => {
-                    window.open('https://dayu-autostreamer.github.io/', '_blank');
-                    return '/dag';
-                }
+                redirect: '/dag'
             },
             {
                 path: '/dag',
