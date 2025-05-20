@@ -15,7 +15,7 @@ Please make sure to read and observe our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 We will help you to contribute in different areas like filing issues, developing features, fixing critical bugs and getting your work reviewed and merged.
 
-If you have questions about the development process, feel free to [contact us](README.md#contact)
+If you have questions about the development process, feel free to [contact us](README.md#contact).
 
 ## Find something to work on
 
