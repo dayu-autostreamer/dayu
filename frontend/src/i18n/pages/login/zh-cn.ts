@@ -24,5 +24,5 @@ export default {
 	scan: {
 		text: '打开手机扫一扫，快速登录/注册',
 	},
-	signInText: '欢迎回来！',
+	signInText: '欢迎来到大禹系统！',
 };

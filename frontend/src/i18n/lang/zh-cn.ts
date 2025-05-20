@@ -1,11 +1,11 @@
 // 定义内容
 export default {
 	router: {
-		home: 'Home',
-		install:'Application Installation',
-		dag: 'DAG Orchestration',
-		datasource: 'Source Configuration',
-		result:'Result Display'
+		home: '首页',
+		install:'服务下装',
+		dag: '应用编排',
+		datasource: '数据源配置',
+		result:'结果显示'
 	},
 	staticRoutes: {
 		signIn: '登录',
@@ -23,7 +23,7 @@ export default {
 		dropdownLarge: '大型',
 		dropdownDefault: '默认',
 		dropdownSmall: '小型',
-		dropdown1: 'Home',
+		dropdown1: 'Homepage',
 		dropdown2: '个人中心',
 		dropdown3: '404',
 		dropdown4: '401',

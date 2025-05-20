@@ -62,7 +62,7 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 界面设置
 			 */
 			// 是否开启菜单水平折叠效果
-			isCollapse: false,
+			isCollapse: true,
 			// 是否开启菜单手风琴效果
 			isUniqueOpened: true,
 			// 是否开启固定 Header
@@ -137,7 +137,7 @@ export const useThemeConfig = defineStore('themeConfig', {
 			// 网站主标题（菜单导航、浏览器当前网页标题）
 			globalTitle: 'DAYU',
 			// 默认初始语言，可选值"<zh-cn|en|zh-tw>"，默认 zh-cn
-			globalI18n: 'zh-cn',
+			globalI18n: 'en',
 			// 默认全局组件大小，可选值"<large|'default'|small>"，默认 'large'
 			globalComponentSize: 'large',
 		},

@@ -25,5 +25,5 @@ export default {
 	scan: {
 		text: 'Open the mobile phone to scan and quickly log in / register',
 	},
-	signInText: 'welcome back!',
+	signInText: 'welcome to dayu!',
 };
