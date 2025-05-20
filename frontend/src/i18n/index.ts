@@ -63,6 +63,6 @@ export const i18n = createI18n({
 	silentFallbackWarn: true,
 	fallbackWarn: false,
 	locale: themeConfig.value.globalI18n,
-	fallbackLocale: zhcnLocale.name,
+	fallbackLocale: enLocale.name,
 	messages,
 });
