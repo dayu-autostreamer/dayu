@@ -97,10 +97,10 @@ router.beforeEach(async (to, from, next) => {
 	if (to.meta.title) NProgress.start();
 	const token = Session.get('token');
 
-		if (to.meta?.isExternal) {
+    if (to.meta?.isExternal) {
         window.open(to.meta.isLink, '_blank');
         next(false);
-		NProgress.done();
+        NProgress.done();
         return
     }
 

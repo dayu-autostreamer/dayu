@@ -56,6 +56,7 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
                     isHide: false,
                     roles: ['dayu', 'common'],
                     icon: 'iconfont icon-shouye',
+                    isExternal: true
                 },
             },
             {
@@ -71,7 +72,6 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
                     isIframe: false,
                     roles: ['dayu', 'common'],
                     icon: 'iconfont icon-zidingyibuju',
-                    isExternal: true
                 },
             },
             {
