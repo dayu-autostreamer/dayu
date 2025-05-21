@@ -11,6 +11,7 @@
       >
         <el-option
             v-for="(option, index) in policyOptions"
+            v-if="isValidIndex(index, policyOptions)"
             :key="index"
             :label="option.policy_name"
             :value="index"
@@ -35,6 +36,7 @@
         >
           <el-option
               v-for="(option, index) in datasourceOptions"
+              v-if="isValidIndex(index, datasourceOptions)"
               :key="index"
               :label="option.source_name"
               :value="index"
@@ -137,6 +139,16 @@ export default {
       // { dag_name: "233dag", dag_id: "233dag" },
     ]);
     const nodeOptions = ref([]);
+
+    const isValidIndex = (index, array) => {
+      return (
+          index !== null &&
+          Number.isInteger(index) &&
+          index >= 0 &&
+          array?.hasOwnProperty(index)
+      );
+    };
+
     const getTask = async () => {
       try {
         const response = await axios.get("/api/policy");
@@ -187,21 +199,25 @@ export default {
           const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
           if (savedInstall) {
             const parsed = JSON.parse(savedInstall);
-            console.log('install configuration:' , parsed);
-            selectedPolicyIndex.value = parsed.selectedPolicyIndex;
-            selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
 
-            if (datasourceOptions.value && selectedDatasourceIndex.value !== null) {
-              const datasource = datasourceOptions.value[selectedDatasourceIndex.value];
+            if (isValidIndex(parsed.selectedDatasourceIndex, policyOptions.value)) {
+              selectedPolicyIndex.value = parsed.selectedDatasourceIndex;
+            } else {
+              selectedPolicyIndex.value = null;
+            }
+
+            if (isValidIndex(parsed.selectedDatasourceIndex, datasourceOptions.value)) {
+              selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
+
+              const datasource = datasourceOptions.value[parsed.selectedDatasourceIndex];
               selectedSources.value = datasource.source_list.map(source => ({
                 ...source,
                 dag_selected: parsed.selectedSources.find(s => s.id === source.id)?.dag_selected ?? '',
                 node_selected: parsed.selectedSources.find(s => s.id === source.id)?.node_selected ?? []
               }));
-
-              console.log('selectedDatasourceIndex: ',selectedDatasourceIndex.value);
-              console.log('datasource: ', datasourceOptions.value[selectedDatasourceIndex.value]);
-              console.log('selectedSources: ', selectedSources.value);
+            } else {
+              selectedDatasourceIndex.value = null;
+              selectedSources.value = [];
             }
 
           }
@@ -248,6 +264,15 @@ export default {
     watch(
         [selectedPolicyIndex, selectedDatasourceIndex, selectedSources],
         ([policyIdx, dsIdx, sources]) => {
+
+          if (!isValidIndex(policyIdx, policyOptions.value)) {
+            policyIdx = null;
+          }
+          if (!isValidIndex(dsIdx, datasourceOptions.value)) {
+            dsIdx = null;
+            sources = [];
+          }
+
           if (installed.value === 'uninstall') {
             const draftData = {
               selectedPolicyIndex: policyIdx,
@@ -279,6 +304,7 @@ export default {
       dagOptions,
       nodeOptions,
       getTask,
+      isValidIndex,
     };
   },
   methods: {
@@ -295,6 +321,13 @@ export default {
 
       try {
         const index = this.selectedDatasourceIndex;
+
+        if (!this.isValidIndex(index, this.datasourceOptions)) {
+          this.selectedDatasourceIndex = null;
+          this.selectedSources = [];
+          return;
+        }
+
         if (
             index !== null &&
             index >= 0 &&
@@ -350,6 +383,17 @@ export default {
         ElMessage.error("Please choose datasource configuration");
         return;
       }
+
+      if (!this.isValidIndex(this.selectedPolicyIndex, this.policyOptions)) {
+        ElMessage.error("Invalid policy selection");
+        return;
+      }
+
+      if (!this.isValidIndex(this.selectedDatasourceIndex, this.datasourceOptions)) {
+        ElMessage.error("Invalid datasource selection");
+        return;
+      }
+
 
       const source_config_label =
           this.datasourceOptions[source_index].source_label;
