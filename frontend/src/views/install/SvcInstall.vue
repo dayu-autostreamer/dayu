@@ -9,8 +9,9 @@
           v-model="selectedPolicyIndex"
           placeholder="Please choose scheduler policy"
       >
-        <template v-for="(option, index) in validPolicyOptions" :key="index">
+        <template v-for="(option, index) in policyOptions" :key="index">
           <el-option
+              v-if="isValidIndex(index, policyOptions)"
               :value="index"
               :label="option.policy_name"
           />
@@ -33,8 +34,9 @@
             @change="handleDatasourceChange"
             placeholder="Please choose datasource config"
         >
-          <template v-for="(option, index) in validDatasourceOptions" :key="index">
+          <template v-for="(option, index) in datasourceOptions" :key="index">
             <el-option
+                v-if="isValidIndex(index, policyOptions)"
                 :value="index"
                 :label="option.source_name"
             />
@@ -143,17 +145,10 @@ export default {
           Number.isSafeInteger(index) &&
           index >= 0 &&
           Array.isArray(array) &&
+          index < array.length &&
           array.hasOwnProperty(index)
       );
     };
-
-    const validPolicyOptions = computed(() =>
-        policyOptions.value.filter((_, index) => isValidIndex(index, policyOptions.value))
-    );
-
-    const validDatasourceOptions = computed(() =>
-        datasourceOptions.value.filter((_, index) => isValidIndex(index, datasourceOptions.value))
-    );
 
     const getTask = async () => {
       try {
@@ -250,6 +245,23 @@ export default {
     };
 
     watch(
+        [() => policyOptions.value.length, () => datasourceOptions.value.length],
+        ([newPolicyLen, newDsLen], [oldPolicyLen, oldDsLen]) => {
+          if (newPolicyLen < oldPolicyLen) {
+            if (selectedPolicyIndex.value >= newPolicyLen) {
+              selectedPolicyIndex.value = null;
+            }
+          }
+          if (newDsLen < oldDsLen) {
+            if (selectedDatasourceIndex.value >= newDsLen) {
+              selectedDatasourceIndex.value = null;
+              selectedSources.value = [];
+            }
+          }
+        }
+    );
+
+    watch(
         () => install_state.status,
         (newValue, oldValue) => {
           installed.value = newValue;
@@ -311,9 +323,6 @@ export default {
       nodeOptions,
       getTask,
       isValidIndex,
-
-      validPolicyOptions,
-      validDatasourceOptions,
     };
   },
   methods: {
