@@ -188,6 +188,7 @@ export default {
           const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
           if (savedInstall) {
             const parsed = JSON.parse(savedInstall);
+            console.log('install configuration:' , parsed);
             selectedPolicyIndex.value = parsed.selectedPolicyIndex;
             selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
 
@@ -198,6 +199,9 @@ export default {
                 dag_selected: parsed.selectedSources.find(s => s.id === source.id)?.dag_selected || '',
                 node_selected: parsed.selectedSources.find(s => s.id === source.id)?.node_selected || []
               }));
+
+              console.log('selectedDatasourceIndex: ',selectedDatasourceIndex.value, ' selectedDatasourceIndex: ',selectedDatasourceIndex.value);
+              console.log('selectedSources: ', selectedSources );
             }
 
           }
