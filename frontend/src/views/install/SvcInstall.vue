@@ -9,13 +9,12 @@
           v-model="selectedPolicyIndex"
           placeholder="Please choose scheduler policy"
       >
-        <el-option
-            v-for="(option, index) in policyOptions"
-            v-if="isValidIndex(index, policyOptions)"
-            :key="index"
-            :label="option.policy_name"
-            :value="index"
-        ></el-option>
+        <template v-for="(option, index) in validPolicyOptions" :key="index">
+          <el-option
+              :value="index"
+              :label="option.policy_name"
+          />
+        </template>
       </el-select>
     </div>
   </div>
@@ -34,13 +33,12 @@
             @change="handleDatasourceChange"
             placeholder="Please choose datasource config"
         >
-          <el-option
-              v-for="(option, index) in datasourceOptions"
-              v-if="isValidIndex(index, datasourceOptions)"
-              :key="index"
-              :label="option.source_name"
-              :value="index"
-          ></el-option>
+          <template v-for="(option, index) in validDatasourceOptions" :key="index">
+            <el-option
+                :value="index"
+                :label="option.source_name"
+            />
+          </template>
         </el-select>
       </div>
     </div>
@@ -108,7 +106,7 @@ import {ElMessage} from "element-plus";
 
 import axios from "axios";
 import {useInstallStateStore} from "/@/stores/installState";
-import {ref, watch, onMounted} from "vue";
+import {ref, watch, onMounted, computed} from "vue";
 
 export default {
   components: {
@@ -142,12 +140,20 @@ export default {
 
     const isValidIndex = (index, array) => {
       return (
-          index !== null &&
-          Number.isInteger(index) &&
+          Number.isSafeInteger(index) &&
           index >= 0 &&
-          array?.hasOwnProperty(index)
+          Array.isArray(array) &&
+          array.hasOwnProperty(index)
       );
     };
+
+    const validPolicyOptions = computed(() =>
+        policyOptions.value.filter((_, index) => isValidIndex(index, policyOptions.value))
+    );
+
+    const validDatasourceOptions = computed(() =>
+        datasourceOptions.value.filter((_, index) => isValidIndex(index, datasourceOptions.value))
+    );
 
     const getTask = async () => {
       try {
@@ -305,6 +311,9 @@ export default {
       nodeOptions,
       getTask,
       isValidIndex,
+
+      validPolicyOptions,
+      validDatasourceOptions,
     };
   },
   methods: {

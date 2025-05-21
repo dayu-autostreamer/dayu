@@ -14,7 +14,7 @@
           Service Containers
           <el-tooltip placement="right">
             <template #content>
-              From docker Registry: https://hub.docker.com/repositories/dayuhub
+              From docker Registry: https://hub.docker.com/u/dayuhub
             </template>
             <el-button size="small" circle>i</el-button>
           </el-tooltip>
