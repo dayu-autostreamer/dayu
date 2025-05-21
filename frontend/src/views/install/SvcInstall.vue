@@ -133,8 +133,8 @@ export default {
 
     const install_state = useInstallStateStore();
     const installed = ref(null);
-    const policyOptions = ref(null);
-    const datasourceOptions = ref(null);
+    const policyOptions = ref([]);
+    const datasourceOptions = ref([]);
     const dagOptions = ref([
       // { dag_name: "233dag", dag_id: "233dag" },
     ]);
@@ -200,8 +200,8 @@ export default {
           if (savedInstall) {
             const parsed = JSON.parse(savedInstall);
 
-            if (isValidIndex(parsed.selectedDatasourceIndex, policyOptions.value)) {
-              selectedPolicyIndex.value = parsed.selectedDatasourceIndex;
+            if (isValidIndex(parsed.selectedPolicyIndex, policyOptions.value)) {
+              selectedPolicyIndex.value = parsed.selectedPolicyIndex;
             } else {
               selectedPolicyIndex.value = null;
             }
