@@ -122,6 +122,9 @@ export default {
   },
   setup() {
 
+    const INSTALL_STATE_KEY = 'savedInstallConfig';
+    const DRAFT_STATE_KEY = 'savedDraftConfig';
+
     const selectedPolicyIndex = ref(null);
     const selectedDatasourceIndex = ref(null);
     const selectedSources = ref([]);
@@ -135,102 +138,122 @@ export default {
     ]);
     const nodeOptions = ref([]);
     const getTask = async () => {
-          try {
-            const response = await axios.get("/api/policy");
-            if (response.data !== null) {
-              policyOptions.value = response.data;
-            }
-          } catch (error) {
-            console.error("Failed to fetch policy options", error);
-            ElMessage.error("System Error");
-          }
-
-          try {
-            const response = await axios.get("/api/datasource");
-            if (response.data !== null) {
-              datasourceOptions.value = response.data;
-              console.log(datasourceOptions.value);
-            }
-          } catch (error) {
-            console.error("Failed to fetch datasource options", error);
-            ElMessage.error("System Error");
-          }
-
-          try {
-            const response = await axios.get("/api/dag_workflow");
-            if (response.data !== null) {
-              dagOptions.value = response.data;
-            }
-          } catch (error) {
-            console.error("Failed to fetch dag options", error);
-            ElMessage.error("System Error");
-          }
-
-          try {
-            const response = await axios.get("/api/edge_node");
-            if (response.data !== null) {
-              nodeOptions.value = response.data;
-            }
-          } catch (error) {
-            console.error("Failed to fetch node options", error);
-            ElMessage.error("System Error");
-          }
-
-          try {
-            const response = await axios.get("/api/install_state");
-            installed.value = response.data["state"];
-            if (installed.value === "install") {
-              install_state.install();
-
-              const savedData = localStorage.getItem('savedSelections');
-              if (savedData) {
-                const parsedData = JSON.parse(savedData);
-                selectedPolicyIndex.value = parsedData.selectedPolicyIndex;
-                selectedDatasourceIndex.value = parsedData.selectedDatasourceIndex;
-                if (selectedDatasourceIndex.value !== null) {
-                  const datasource = datasourceOptions.value[selectedDatasourceIndex.value];
-                  selectedSources.value = datasource.source_list.map(source => ({
-                    ...source,
-                    dag_selected: '',
-                    node_selected: [],
-                  }));
-
-                  parsedData.selectedSources.forEach((savedSource, idx) => {
-                    const currentSource = selectedSources.value[idx];
-                    if (currentSource && currentSource.id === savedSource.id) {
-                      currentSource.dag_selected = savedSource.dag_selected;
-                      currentSource.node_selected = savedSource.node_selected;
-                    }
-                  });
-
-                }
-              }
-
-            } else {
-              install_state.uninstall();
-              localStorage.removeItem('savedSelections');
-              selectedPolicyIndex.value = null;
-              selectedDatasourceIndex.value = null;
-              selectedSources.value = [];
-            }
-          } catch
-              (error) {
-            console.error("query state error");
-          }
+      try {
+        const response = await axios.get("/api/policy");
+        if (response.data !== null) {
+          policyOptions.value = response.data;
         }
-    ;
+      } catch (error) {
+        console.error("Failed to fetch policy options", error);
+        ElMessage.error("System Error");
+      }
 
-    watch(
-        () => install_state.status,
-        (newValue, oldValue) => {
-          installed.value = newValue;
-          if (oldValue !== newValue && newValue === 'uninstall') {
-            localStorage.removeItem('savedSelections');
+      try {
+        const response = await axios.get("/api/datasource");
+        if (response.data !== null) {
+          datasourceOptions.value = response.data;
+          console.log(datasourceOptions.value);
+        }
+      } catch (error) {
+        console.error("Failed to fetch datasource options", error);
+        ElMessage.error("System Error");
+      }
+
+      try {
+        const response = await axios.get("/api/dag_workflow");
+        if (response.data !== null) {
+          dagOptions.value = response.data;
+        }
+      } catch (error) {
+        console.error("Failed to fetch dag options", error);
+        ElMessage.error("System Error");
+      }
+
+      try {
+        const response = await axios.get("/api/edge_node");
+        if (response.data !== null) {
+          nodeOptions.value = response.data;
+        }
+      } catch (error) {
+        console.error("Failed to fetch node options", error);
+        ElMessage.error("System Error");
+      }
+
+      try {
+        const response = await axios.get("/api/install_state");
+        installed.value = response.data["state"];
+        if (installed.value === "install") {
+          install_state.install();
+
+          const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
+          if (savedInstall) {
+            const parsed = JSON.parse(savedInstall);
+            selectedPolicyIndex.value = parsed.selectedPolicyIndex;
+            selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
+
+            if (datasourceOptions.value && selectedDatasourceIndex.value !== null) {
+              const datasource = datasourceOptions.value[selectedDatasourceIndex.value];
+              selectedSources.value = datasource.source_list.map(source => ({
+                ...source,
+                dag_selected: parsed.selectedSources.find(s => s.id === source.id)?.dag_selected || '',
+                node_selected: parsed.selectedSources.find(s => s.id === source.id)?.node_selected || []
+              }));
+            }
+
+          }
+
+        } else {
+          install_state.uninstall();
+          const savedDraft = localStorage.getItem(DRAFT_STATE_KEY);
+
+          if (savedDraft) {
+            const parsed = JSON.parse(savedDraft);
+            selectedPolicyIndex.value = parsed.selectedPolicyIndex;
+            selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
+            selectedSources.value = parsed.selectedSources || [];
+          } else {
             selectedPolicyIndex.value = null;
             selectedDatasourceIndex.value = null;
             selectedSources.value = [];
           }
         }
+      } catch
+          (error) {
+        console.error("query state error");
+      }
+    };
+
+    watch(
+        () => install_state.status,
+        (newValue, oldValue) => {
+          installed.value = newValue;
+          if (oldValue === 'install' && newValue === 'uninstall') {
+            localStorage.removeItem(INSTALL_STATE_KEY);
+          }
+          if (oldValue === 'uninstall' && newValue === 'install') {
+            const currentConfig = {
+              selectedPolicyIndex: selectedPolicyIndex.value,
+              selectedDatasourceIndex: selectedDatasourceIndex.value,
+              selectedSources: JSON.parse(JSON.stringify(selectedSources.value)) // 深拷贝
+            };
+            localStorage.setItem(INSTALL_STATE_KEY, JSON.stringify(currentConfig));
+            localStorage.removeItem(DRAFT_STATE_KEY);
+          }
+        }
+    );
+    watch(
+        [selectedPolicyIndex, selectedDatasourceIndex, selectedSources],
+        ([policyIdx, dsIdx, sources]) => {
+          if (installed.value === 'uninstall') {
+            const draftData = {
+              selectedPolicyIndex: policyIdx,
+              selectedDatasourceIndex: dsIdx,
+              selectedSources: JSON.parse(JSON.stringify(sources))
+            };
+            localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(draftData));
+          }
+        },
+        {deep: true}
     );
 
     onMounted(async () => {
@@ -238,6 +261,9 @@ export default {
     });
 
     return {
+      INSTALL_STATE_KEY,
+      DRAFT_STATE_KEY,
+
       selectedPolicyIndex,
       selectedDatasourceIndex,
       selectedSources,
@@ -270,26 +296,27 @@ export default {
             index >= 0 &&
             index < this.datasourceOptions.length
         ) {
-          // console.log(this.datasourceOptions);
           const datasource = this.datasourceOptions[index];
-          this.selectedSources = datasource.source_list.map(source => ({
+          const newSources = datasource.source_list.map(source => ({
             ...source,
             dag_selected: '',
-            node_selected: [],
+            node_selected: []
           }));
 
-          if (this.installed === 'install') {
-            const savedData = JSON.parse(localStorage.getItem('savedSelections'));
-            if (savedData?.selectedSources) {
-              savedData.selectedSources.forEach((savedSource, idx) => {
-                const currentSource = this.selectedSources[idx];
-                if (currentSource?.id === savedSource.id) {
-                  currentSource.dag_selected = savedSource.dag_selected;
-                  currentSource.node_selected = savedSource.node_selected;
+          if (this.installed === 'uninstall') {
+            const savedDraft = localStorage.getItem(this.DRAFT_STATE_KEY);
+            if (savedDraft) {
+              const parsed = JSON.parse(savedDraft);
+              parsed.selectedSources.forEach(savedSource => {
+                const target = newSources.find(s => s.id === savedSource.id);
+                if (target) {
+                  target.dag_selected = savedSource.dag_selected;
+                  target.node_selected = savedSource.node_selected;
                 }
               });
             }
           }
+          this.selectedSources = newSources;
 
         } else {
           console.error("Invalid selected index.");
@@ -328,7 +355,8 @@ export default {
       // if user assigned none then add all.
       for (let i = 0; i < this.selectedSources.length; i++) {
         if (this.selectedSources[i].node_selected.length === 0) {
-          this.selectedSources.node_selected = nodeOptions;
+          // this.selectedSources.node_selected = nodeOptions;
+          this.selectedSources[i].node_selected = this.nodeOptions.map(n => n.name);
         }
       }
 
@@ -353,12 +381,13 @@ export default {
             if (state === "success") {
               this.install_state.install();
 
-              const savedData = {
+              const installConfig = {
                 selectedPolicyIndex: this.selectedPolicyIndex,
                 selectedDatasourceIndex: this.selectedDatasourceIndex,
-                selectedSources: this.selectedSources,
+                selectedSources: JSON.parse(JSON.stringify(this.selectedSources))
               };
-              localStorage.setItem('savedSelections', JSON.stringify(savedData));
+              localStorage.setItem(this.INSTALL_STATE_KEY, JSON.stringify(installConfig));
+              localStorage.removeItem(this.DRAFT_STATE_KEY);
 
               msg += ". Refreshing..";
               ElMessage({

@@ -82,7 +82,7 @@ export default {
       }).catch(error=>{
         ElMessage.error("System Error",3000);
       })
-    }, 1000);
+    }, 2000);
     return {
       installed,
       loading,
