@@ -63,12 +63,14 @@
           @change="updateDagSelection(index, source, source.dag_selected)"
           placeholder="Assign dag"
       >
-        <el-option
-            v-for="(option, index) in dagOptions"
-            :key="index"
-            :label="option.dag_name"
-            :value="option.dag_id"
-        ></el-option>
+        <template v-for="(option, index) in dagOptions" :key="index">
+          <el-option
+              v-if="isValidIndex(index, dagOptions)"
+              :label="option.dag_name"
+              :value="option.dag_id"
+          ></el-option>
+        </template>
+
       </el-select>
 
       <el-select
@@ -78,12 +80,14 @@
           placeholder="Bind edge nodes (default all nodes)"
           multiple
       >
-        <el-option
-            v-for="(option, index) in nodeOptions"
-            :key="index"
-            :label="option.name"
-            :value="option.name"
-        ></el-option>
+        <template v-for="(option, index) in nodeOptions" :key="index">
+          <el-option
+              v-if="isValidIndex(index, nodeOptions)"
+              :label="option.name"
+              :value="option.name"
+          ></el-option>
+        </template>
+
       </el-select>
     </div>
   </div>
@@ -97,7 +101,15 @@
         :disabled="installed === 'install'"
         style="margin-top: 25px"
         @click="submitService"
-    >Install Services
+    >Install
+    </el-button>
+
+    <el-button
+        type="danger"
+        round
+        style="margin-top: 25px; margin-left: 10px"
+        @click="handleClear"
+    >Clear
     </el-button>
   </div>
 </template>
@@ -149,6 +161,46 @@ export default {
           array.hasOwnProperty(index)
       );
     };
+
+    const cleanupAllSelections = () => {
+      if (!isValidIndex(selectedPolicyIndex.value, policyOptions.value)) {
+        selectedPolicyIndex.value = null;
+      }
+
+      if (!isValidIndex(selectedDatasourceIndex.value, datasourceOptions.value)) {
+        selectedDatasourceIndex.value = null;
+        selectedSources.value = [];
+      }
+
+      selectedSources.value = selectedSources.value.map(source => ({
+        ...source,
+        dag_selected: dagOptions.value.some(dag => dag.dag_id === source.dag_selected)
+            ? source.dag_selected
+            : '',
+        node_selected: source.node_selected.filter(nodeName =>
+            nodeOptions.value.some(node => node.name === nodeName)
+        )
+      }));
+    };
+
+    const updateStorage = () => {
+      if (installed.value === 'install') {
+        const installConfig = {
+          selectedPolicyIndex: selectedPolicyIndex.value,
+          selectedDatasourceIndex: selectedDatasourceIndex.value,
+          selectedSources: JSON.parse(JSON.stringify(selectedSources.value))
+        };
+        localStorage.setItem(INSTALL_STATE_KEY, JSON.stringify(installConfig));
+      } else {
+        const draftConfig = {
+          selectedPolicyIndex: selectedPolicyIndex.value,
+          selectedDatasourceIndex: selectedDatasourceIndex.value,
+          selectedSources: JSON.parse(JSON.stringify(selectedSources.value))
+        };
+        localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(draftConfig));
+      }
+    };
+
 
     const getTask = async () => {
       try {
@@ -245,21 +297,46 @@ export default {
     };
 
     watch(
-        [() => policyOptions.value.length, () => datasourceOptions.value.length],
-        ([newPolicyLen, newDsLen], [oldPolicyLen, oldDsLen]) => {
-          if (newPolicyLen < oldPolicyLen) {
-            if (selectedPolicyIndex.value >= newPolicyLen) {
-              selectedPolicyIndex.value = null;
-            }
+        [
+          () => policyOptions.value.length,
+          () => datasourceOptions.value.length,
+          () => dagOptions.value.length,
+          () => nodeOptions.value.length
+        ],
+        ([newPL, newDL, newDagL, newNodeL], [oldPL, oldDL, oldDagL, oldNodeL]) => {
+          if (newPL < oldPL && selectedPolicyIndex.value >= newPL) {
+            selectedPolicyIndex.value = null;
           }
-          if (newDsLen < oldDsLen) {
-            if (selectedDatasourceIndex.value >= newDsLen) {
-              selectedDatasourceIndex.value = null;
-              selectedSources.value = [];
-            }
+
+          if (newDL < oldDL && selectedDatasourceIndex.value >= newDL) {
+            selectedDatasourceIndex.value = null;
+            selectedSources.value = [];
           }
-        }
+
+          if (newDagL !== oldDagL) {
+            selectedSources.value = selectedSources.value.map(source => ({
+              ...source,
+              dag_selected: dagOptions.value.some(dag => dag.dag_id === source.dag_selected)
+                  ? source.dag_selected
+                  : ''
+            }));
+          }
+
+          if (newNodeL !== oldNodeL) {
+            selectedSources.value = selectedSources.value.map(source => ({
+              ...source,
+              node_selected: source.node_selected.filter(nodeName =>
+                  nodeOptions.value.some(node => node.name === nodeName)
+              )
+            }));
+          }
+
+          cleanupAllSelections();
+          updateStorage();
+        },
+        {deep: true, flush: 'post'}
     );
+
 
     watch(
         () => install_state.status,
@@ -478,6 +555,17 @@ export default {
             ElMessage.error("Network Error", 3000);
           });
 
+    },
+
+    handleClear() {
+      this.selectedPolicyIndex = null;
+      this.selectedDatasourceIndex = null;
+      this.selectedSources = [];
+
+      localStorage.removeItem(this.INSTALL_STATE_KEY);
+      localStorage.removeItem(this.DRAFT_STATE_KEY);
+
+      this.getTask();
     },
   },
 };
