@@ -195,8 +195,8 @@ export default {
               const datasource = datasourceOptions.value[selectedDatasourceIndex.value];
               selectedSources.value = datasource.source_list.map(source => ({
                 ...source,
-                dag_selected: parsed.selectedSources.find(s => s.id === source.id)?.dag_selected || '',
-                node_selected: parsed.selectedSources.find(s => s.id === source.id)?.node_selected || []
+                dag_selected: parsed.selectedSources.find(s => s.id === source.id)?.dag_selected ?? '',
+                node_selected: parsed.selectedSources.find(s => s.id === source.id)?.node_selected ?? []
               }));
 
               console.log('selectedDatasourceIndex: ',selectedDatasourceIndex.value);
