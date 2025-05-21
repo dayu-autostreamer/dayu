@@ -200,8 +200,9 @@ export default {
                 node_selected: parsed.selectedSources.find(s => s.id === source.id)?.node_selected || []
               }));
 
-              console.log('selectedDatasourceIndex: ',selectedDatasourceIndex.value, ' selectedDatasourceIndex: ',selectedDatasourceIndex.value);
-              console.log('selectedSources: ', selectedSources );
+              console.log('selectedDatasourceIndex: ',selectedDatasourceIndex.value);
+              console.log('datasource: ',datasource.value);
+              console.log('selectedSources: ', selectedSources.value);
             }
 
           }
