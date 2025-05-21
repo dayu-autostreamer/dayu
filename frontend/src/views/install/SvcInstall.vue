@@ -1,4 +1,4 @@
-<template xmlns="http://www.w3.org/1999/html">
+<template>
   <div>
     <div>
       <h3>Scheduler Policy</h3>
@@ -36,7 +36,7 @@
         >
           <template v-for="(option, index) in datasourceOptions" :key="index">
             <el-option
-                v-if="isValidIndex(index, policyOptions)"
+                v-if="isValidIndex(index, datasourceOptions)"
                 :value="index"
                 :label="option.source_name"
             />
@@ -304,11 +304,11 @@ export default {
           () => nodeOptions.value.length
         ],
         ([newPL, newDL, newDagL, newNodeL], [oldPL, oldDL, oldDagL, oldNodeL]) => {
-          if (newPL < oldPL && selectedPolicyIndex.value >= newPL) {
+          if (newPL < oldPL) {
             selectedPolicyIndex.value = null;
           }
 
-          if (newDL < oldDL && selectedDatasourceIndex.value >= newDL) {
+          if (newDL < oldDL) {
             selectedDatasourceIndex.value = null;
             selectedSources.value = [];
           }
