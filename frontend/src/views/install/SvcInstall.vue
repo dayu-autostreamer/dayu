@@ -297,8 +297,7 @@ export default {
       } catch (error) {
         console.error("Submission failed", error);
       }
-    }
-    ,
+    },
 
     submitService() {
       const policy_index = this.selectedPolicyIndex;
@@ -341,7 +340,6 @@ export default {
       };
       let task_info = JSON.stringify(content);
 
-      // console.log(JSON.stringify(content));
       this.loading = true;
       fetch("/api/install", {
         method: "POST",
@@ -354,6 +352,13 @@ export default {
             this.loading = false;
             if (state === "success") {
               this.install_state.install();
+
+              const savedData = {
+                selectedPolicyIndex: this.selectedPolicyIndex,
+                selectedDatasourceIndex: this.selectedDatasourceIndex,
+                selectedSources: this.selectedSources,
+              };
+              localStorage.setItem('savedSelections', JSON.stringify(savedData));
 
               msg += ". Refreshing..";
               ElMessage({
@@ -376,29 +381,10 @@ export default {
           })
           .catch((error) => {
             this.loading = false;
-            // console.error(error);
             ElMessage.error("Network Error", 3000);
           });
 
-      fetch("/api/install", {
-        method: "POST",
-        body: task_info,
-      })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.state === "success") {
-              // 保存当前选择到本地存储
-              const savedData = {
-                selectedPolicyIndex: this.selectedPolicyIndex,
-                selectedDatasourceIndex: this.selectedDatasourceIndex,
-                selectedSources: this.selectedSources,
-              };
-              localStorage.setItem('savedSelections', JSON.stringify(savedData));
-              // ...其余逻辑
-            }
-          });
-    }
-    ,
+    },
   },
 };
 </script>
