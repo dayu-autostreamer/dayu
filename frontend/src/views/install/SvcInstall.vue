@@ -152,7 +152,6 @@ export default {
         const response = await axios.get("/api/datasource");
         if (response.data !== null) {
           datasourceOptions.value = response.data;
-          console.log(datasourceOptions.value);
         }
       } catch (error) {
         console.error("Failed to fetch datasource options", error);
@@ -201,7 +200,7 @@ export default {
               }));
 
               console.log('selectedDatasourceIndex: ',selectedDatasourceIndex.value);
-              console.log('datasource: ',datasource.value);
+              console.log('datasource: ', datasourceOptions.value[selectedDatasourceIndex.value]);
               console.log('selectedSources: ', selectedSources.value);
             }
 
@@ -356,7 +355,6 @@ export default {
           this.datasourceOptions[source_index].source_label;
       const policy_id = this.policyOptions[policy_index].policy_id;
 
-      console.log(this.selectedSources);
       // if user assigned none then add all.
       for (let i = 0; i < this.selectedSources.length; i++) {
         if (this.selectedSources[i].node_selected.length === 0) {
