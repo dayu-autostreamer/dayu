@@ -361,9 +361,13 @@ export default {
         ([policyIdx, dsIdx, sources]) => {
 
           if (!isValidIndex(policyIdx, policyOptions.value)) {
+            console.log('policyIdx: ', policyIdx)
+            console.log('policyOptions.value: ', policyOptions.value)
             policyIdx = null;
           }
           if (!isValidIndex(dsIdx, datasourceOptions.value)) {
+            console.log('dsIdx: ', dsIdx)
+            console.log('datasourceOptions.value: ', datasourceOptions.value)
             dsIdx = null;
             sources = [];
           }
