@@ -210,45 +210,30 @@ export default {
         console.error("Fail to fetch install state", error);
         ElMessage.error("Fail to fetch install state");
       }
-      console.log('config storage 1: ', loadStorage())
-
 
       try {
         const response = await axios.get("/api/policy");
-        console.log('config storage 1.1: ', loadStorage())
         if (response.data !== null) {
-          console.log('config storage 1.2: ', loadStorage())
           const received_policy = response.data;
-          console.log('config storage 1.3: ', loadStorage())
           const prevPL = localStorage.getItem(LENGTH_KEYS.policy);
-          console.log('config storage 1.4: ', loadStorage())
-          console.log('policy length:', prevPL, ' -> ', received_policy.length);
           if (prevPL && received_policy.length < prevPL) {
-            console.log('config storage 1.5: ', loadStorage())
             const config = loadStorage();
             config.selectedPolicyIndex = null;
-            console.log('config storage 1.6: ', loadStorage())
             updateStorage(config);
-            console.log('config storage 1.7: ', loadStorage())
           }
           policyOptions.value = response.data;
-          console.log('config storage 1.8: ', loadStorage())
           localStorage.setItem(LENGTH_KEYS.policy, received_policy.length);
-          console.log('config storage 1.9: ', loadStorage())
         }
       } catch (error) {
         console.error("Fail to fetch policy options", error);
         ElMessage.error("Fail to fetch policy options");
       }
 
-      console.log('config storage 2: ', loadStorage())
-
       try {
         const response = await axios.get("/api/datasource");
         if (response.data !== null) {
           const received_datasource = response.data;
           const prevDL = localStorage.getItem(LENGTH_KEYS.datasource);
-          console.log('datasource length:', prevDL, ' -> ', received_datasource.length);
           if (prevDL && received_datasource.length < prevDL) {
             const config = loadStorage();
             config.selectedDatasourceIndex = null;
@@ -263,14 +248,11 @@ export default {
         ElMessage.error("Fail to fetch datasource options");
       }
 
-      console.log('config storage 3: ', loadStorage())
-
       try {
         const response = await axios.get("/api/dag_workflow");
         if (response.data !== null) {
           const received_dag = response.data;
           const prevDagL = localStorage.getItem(LENGTH_KEYS.dag);
-          console.log('dag length:', prevDagL, ' -> ', received_dag.length);
           if (prevDagL && received_dag.length < prevDagL) {
             const config = loadStorage();
             config.selectedSources = config.selectedSources.map(source => ({
@@ -289,14 +271,11 @@ export default {
         ElMessage.error("Fail to fetch dag options");
       }
 
-      console.log('config storage 4: ', loadStorage())
-
       try {
         const response = await axios.get("/api/edge_node");
         if (response.data !== null) {
           const received_node = response.data;
           const prevNodeL = localStorage.getItem(LENGTH_KEYS.node);
-          console.log('node length:', prevNodeL, ' -> ', received_node.length);
           if (prevNodeL && received_node.length < prevNodeL) {
             const config = loadStorage();
             config.selectedSources = selectedSources.map(source => ({
@@ -315,16 +294,11 @@ export default {
         ElMessage.error("Fail to fetch node options");
       }
 
-      console.log('config storage 5: ', loadStorage())
-
-
       if (installed.value === "install") {
         install_state.install();
         const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
         if (savedInstall) {
           const parsed = JSON.parse(savedInstall);
-          console.log('config from save_install: ', parsed);
-
           if (isValidIndex(parsed.selectedPolicyIndex, policyOptions.value)) {
             selectedPolicyIndex.value = parsed.selectedPolicyIndex;
           } else {
@@ -386,23 +360,13 @@ export default {
     watch(
         [selectedPolicyIndex, selectedDatasourceIndex, selectedSources],
         ([policyIdx, dsIdx, sources]) => {
-
-          console.log('policyIdx: ', policyIdx)
-          console.log('dsIdx: ', dsIdx)
-          console.log('sources: ', sources)
-
           if (!isValidIndex(policyIdx, policyOptions.value)) {
-            console.log('policyIdx: ', policyIdx)
-            console.log('policyOptions.value: ', policyOptions.value)
             policyIdx = null;
           }
           if (!isValidIndex(dsIdx, datasourceOptions.value)) {
-            console.log('dsIdx: ', dsIdx)
-            console.log('datasourceOptions.value: ', datasourceOptions.value)
             dsIdx = null;
             sources = [];
           }
-          console.log('install: ', installed.value)
 
           if (installed.value === 'uninstall') {
             const draftData = {
@@ -550,10 +514,8 @@ export default {
                 selectedDatasourceIndex: this.selectedDatasourceIndex,
                 selectedSources: JSON.parse(JSON.stringify(this.selectedSources))
               };
-              console.log('installConfig1', installConfig);
               localStorage.setItem(this.INSTALL_STATE_KEY, JSON.stringify(installConfig));
               localStorage.removeItem(this.DRAFT_STATE_KEY);
-              console.log('installConfig2', installConfig);
 
               msg += ". Refreshing..";
               ElMessage({
