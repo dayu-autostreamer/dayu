@@ -532,6 +532,7 @@ export default {
                 selectedDatasourceIndex: this.selectedDatasourceIndex,
                 selectedSources: JSON.parse(JSON.stringify(this.selectedSources))
               };
+              console.log('installConfig', installConfig);
               localStorage.setItem(this.INSTALL_STATE_KEY, JSON.stringify(installConfig));
               localStorage.removeItem(this.DRAFT_STATE_KEY);
 
