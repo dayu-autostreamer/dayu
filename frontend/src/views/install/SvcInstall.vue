@@ -375,6 +375,7 @@ export default {
             dsIdx = null;
             sources = [];
           }
+          console.log('install: ',installed.value)
 
           if (installed.value === 'uninstall') {
             const draftData = {
