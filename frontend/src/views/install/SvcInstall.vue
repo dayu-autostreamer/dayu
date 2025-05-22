@@ -360,25 +360,28 @@ export default {
         [selectedPolicyIndex, selectedDatasourceIndex, selectedSources],
         ([policyIdx, dsIdx, sources]) => {
 
+          console.log('policyIdx: ', policyIdx)
+          console.log('dsIdx: ', dsIdx)
+          console.log('sources: ', sources)
+
           if (!isValidIndex(policyIdx, policyOptions.value)) {
             console.log('policyIdx: ', policyIdx)
             console.log('policyOptions.value: ', policyOptions.value)
-            selectedPolicyIndex.value = null;
+            policyIdx = null;
           }
           if (!isValidIndex(dsIdx, datasourceOptions.value)) {
             console.log('dsIdx: ', dsIdx)
             console.log('datasourceOptions.value: ', datasourceOptions.value)
-            selectedDatasourceIndex.value = null;
-            selectedSources.value = [];
+            dsIdx = null;
+            sources = [];
           }
 
           if (installed.value === 'uninstall') {
             const draftData = {
-              selectedPolicyIndex: selectedPolicyIndex.value,
-              selectedDatasourceIndex: selectedDatasourceIndex.value,
-              selectedSources: JSON.parse(JSON.stringify(selectedSources.value))
+              selectedPolicyIndex: policyIdx,
+              selectedDatasourceIndex: dsIdx,
+              selectedSources: JSON.parse(JSON.stringify(sources))
             };
-            console.log('[Save Draft]', draftData);
             localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(draftData));
           }
         },
