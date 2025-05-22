@@ -281,6 +281,7 @@ export default {
 
           if (savedDraft) {
             const parsed = JSON.parse(savedDraft);
+            console.log('saved draft: ', parsed);
             selectedPolicyIndex.value = parsed.selectedPolicyIndex;
             selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
             selectedSources.value = parsed.selectedSources || [];
@@ -304,6 +305,7 @@ export default {
           () => nodeOptions.value.length
         ],
         ([newPL, newDL, newDagL, newNodeL], [oldPL, oldDL, oldDagL, oldNodeL]) => {
+          console.log('length change...')
           if (newPL < oldPL) {
             selectedPolicyIndex.value = null;
           }
