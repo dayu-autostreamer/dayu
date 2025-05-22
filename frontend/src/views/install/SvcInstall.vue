@@ -210,17 +210,26 @@ export default {
 
       try {
         const response = await axios.get("/api/policy");
+        console.log('config storage 1.1: ', loadStorage())
         if (response.data !== null) {
+          console.log('config storage 1.2: ', loadStorage())
           const received_policy = response.data;
+          console.log('config storage 1.3: ', loadStorage())
           const prevPL = localStorage.getItem(LENGTH_KEYS.policy);
+          console.log('config storage 1.4: ', loadStorage())
           console.log('policy length:', prevPL, ' -> ', received_policy.length);
           if (prevPL && received_policy.length < prevPL) {
+            console.log('config storage 1.5: ', loadStorage())
             const config = loadStorage();
-            config.selectedPolicyIndex = null
-            updateStorage(config)
+            config.selectedPolicyIndex = null;
+            console.log('config storage 1.6: ', loadStorage())
+            updateStorage(config);
+            console.log('config storage 1.7: ', loadStorage())
           }
           policyOptions.value = response.data;
+          console.log('config storage 1.8: ', loadStorage())
           localStorage.setItem(LENGTH_KEYS.policy, received_policy.length);
+          console.log('config storage 1.9: ', loadStorage())
         }
       } catch (error) {
         console.error("Fail to fetch policy options", error);
