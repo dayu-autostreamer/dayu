@@ -339,7 +339,7 @@ export default {
             }));
           }
 
-          cleanupAllSelections();
+          // cleanupAllSelections();
           updateStorage();
         },
         {deep: true, flush: 'post'}
