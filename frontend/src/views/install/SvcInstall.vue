@@ -306,6 +306,12 @@ export default {
         ],
         ([newPL, newDL, newDagL, newNodeL], [oldPL, oldDL, oldDagL, oldNodeL]) => {
           console.log('length change...')
+          console.log('policy: ', oldPL, ' -> ', newPL);
+          console.log('datasource: ', oldDL, ' -> ', newDL);
+          console.log('dag: ', oldDagL, ' -> ', newDagL);
+          console.log('node: ', oldNodeL, ' -> ', newNodeL);
+
+
           if (newPL < oldPL) {
             selectedPolicyIndex.value = null;
           }
