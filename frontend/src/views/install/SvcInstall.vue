@@ -167,7 +167,47 @@ export default {
       );
     };
 
+    const loadStorage = () => {
+      if (installed.value === 'install') {
+        const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
+        return JSON.parse(savedInstall);
+
+      } else {
+        const savedDraft = localStorage.getItem(DRAFT_STATE_KEY);
+        return JSON.parse(savedDraft);
+      }
+    };
+
+    const updateStorage = (configuration) => {
+      const currentConfig = {
+        selectedPolicyIndex: configuration.selectedPolicyIndex,
+        selectedDatasourceIndex: configuration.selectedDatasourceIndex,
+        selectedSources: JSON.parse(JSON.stringify(configuration.selectedSources)) // 深拷贝
+      };
+
+      if (installed.value === 'install') {
+        localStorage.setItem(INSTALL_STATE_KEY, JSON.stringify(currentConfig));
+      } else {
+        localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(currentConfig));
+      }
+    }
+
     const getTask = async () => {
+      try {
+        const response = await axios.get("/api/install_state");
+        installed.value = response.data["state"];
+        if (installed.value === "install") {
+          install_state.install();
+        } else {
+          install_state.uninstall();
+        }
+
+      } catch (error) {
+        console.error("Fail to fetch install state", error);
+        ElMessage.error("Fail to fetch install state");
+      }
+
+
       try {
         const response = await axios.get("/api/policy");
         if (response.data !== null) {
@@ -175,14 +215,16 @@ export default {
           const prevPL = localStorage.getItem(LENGTH_KEYS.policy);
           console.log('policy length:', prevPL, ' -> ', received_policy.length);
           if (prevPL && received_policy.length < prevPL) {
-            selectedPolicyIndex.value = null;
+            const config = loadStorage();
+            config.selectedPolicyIndex = null
+            updateStorage(config)
           }
           policyOptions.value = response.data;
           localStorage.setItem(LENGTH_KEYS.policy, received_policy.length);
         }
       } catch (error) {
-        console.error("Failed to fetch policy options", error);
-        ElMessage.error("System Error");
+        console.error("Fail to fetch policy options", error);
+        ElMessage.error("Fail to fetch policy options");
       }
 
       try {
@@ -192,15 +234,17 @@ export default {
           const prevDL = localStorage.getItem(LENGTH_KEYS.datasource);
           console.log('datasource length:', prevDL, ' -> ', received_datasource.length);
           if (prevDL && received_datasource.length < prevDL) {
-            selectedDatasourceIndex.value = null;
-            selectedSources.value = [];
+            const config = loadStorage();
+            config.selectedDatasourceIndex = null;
+            config.selectedSources = [];
+            updateStorage(config);
           }
           datasourceOptions.value = response.data;
-           localStorage.setItem(LENGTH_KEYS.datasource, received_datasource.length);
+          localStorage.setItem(LENGTH_KEYS.datasource, received_datasource.length);
         }
       } catch (error) {
-        console.error("Failed to fetch datasource options", error);
-        ElMessage.error("System Error");
+        console.error("Fail to fetch datasource options", error);
+        ElMessage.error("Fail to fetch datasource options");
       }
 
       try {
@@ -210,19 +254,21 @@ export default {
           const prevDagL = localStorage.getItem(LENGTH_KEYS.dag);
           console.log('dag length:', prevDagL, ' -> ', received_dag.length);
           if (prevDagL && received_dag.length < prevDagL) {
-            selectedSources.value = selectedSources.value.map(source => ({
+            const config = loadStorage();
+            config.selectedSources = config.selectedSources.map(source => ({
               ...source,
               dag_selected: dagOptions.value.some(dag => dag.dag_id === source.dag_selected)
                   ? source.dag_selected
                   : ''
             }));
+            updateStorage(config);
           }
           dagOptions.value = response.data;
           localStorage.setItem(LENGTH_KEYS.dag, received_dag.length);
         }
       } catch (error) {
-        console.error("Failed to fetch dag options", error);
-        ElMessage.error("System Error");
+        console.error("Fail to fetch dag options", error);
+        ElMessage.error("Fail to fetch dag options");
       }
 
       try {
@@ -232,19 +278,21 @@ export default {
           const prevNodeL = localStorage.getItem(LENGTH_KEYS.node);
           console.log('node length:', prevNodeL, ' -> ', received_node.length);
           if (prevNodeL && received_node.length < prevNodeL) {
-            selectedSources.value = selectedSources.value.map(source => ({
+            const config = loadStorage();
+            config.selectedSources = selectedSources.map(source => ({
               ...source,
               node_selected: source.node_selected.filter(nodeName =>
                   nodeOptions.value.some(node => node.name === nodeName)
               )
             }));
+            updateStorage(config);
           }
           nodeOptions.value = response.data;
           localStorage.setItem(LENGTH_KEYS.node, received_node.length);
         }
       } catch (error) {
-        console.error("Failed to fetch node options", error);
-        ElMessage.error("System Error");
+        console.error("Fail to fetch node options", error);
+        ElMessage.error("Fail to fetch node options");
       }
 
       try {
@@ -285,7 +333,6 @@ export default {
 
           if (savedDraft) {
             const parsed = JSON.parse(savedDraft);
-            console.log('saved draft: ', parsed);
             selectedPolicyIndex.value = parsed.selectedPolicyIndex;
             selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
             selectedSources.value = parsed.selectedSources || [];
