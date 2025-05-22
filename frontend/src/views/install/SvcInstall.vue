@@ -115,13 +115,11 @@
 </template>
 
 <script>
-import {ElButton} from "element-plus";
-import {ElMessage} from "element-plus";
+import {ElButton, ElMessage} from "element-plus";
 
 import axios from "axios";
 import {useInstallStateStore} from "/@/stores/installState";
-import {ref, watch, onMounted, computed} from "vue";
-import dag from "/@/views/dag/index.vue";
+import {onMounted, ref, watch} from "vue";
 
 export default {
   components: {
@@ -449,26 +447,12 @@ export default {
             index < this.datasourceOptions.length
         ) {
           const datasource = this.datasourceOptions[index];
-          const newSources = datasource.source_list.map(source => ({
+
+          this.selectedSources = datasource.source_list.map(source => ({
             ...source,
             dag_selected: '',
             node_selected: []
           }));
-
-          if (this.installed === 'uninstall') {
-            const savedDraft = localStorage.getItem(this.DRAFT_STATE_KEY);
-            if (savedDraft) {
-              const parsed = JSON.parse(savedDraft);
-              parsed.selectedSources.forEach(savedSource => {
-                const target = newSources.find(s => s.id === savedSource.id);
-                if (target) {
-                  target.dag_selected = savedSource.dag_selected;
-                  target.node_selected = savedSource.node_selected;
-                }
-              });
-            }
-          }
-          this.selectedSources = newSources;
 
         } else {
           console.error("Invalid selected index.");
