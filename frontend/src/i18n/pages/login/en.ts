@@ -1,4 +1,3 @@
-// 定义内容
 export default {
 	label: {
 		one1: 'User name login',

@@ -1,4 +1,3 @@
-// 定义内容
 export default {
     router: {
         home: 'Home',
