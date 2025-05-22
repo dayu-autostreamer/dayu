@@ -139,6 +139,12 @@ export default {
 
     const INSTALL_STATE_KEY = 'savedInstallConfig';
     const DRAFT_STATE_KEY = 'savedDraftConfig';
+    const LENGTH_KEYS = {
+      policy: 'prev_len:policy',
+      datasource: 'prev_len:datasource',
+      dag: 'prev_len:dag',
+      node: 'prev_len:node'
+    };
 
     const selectedPolicyIndex = ref(null);
     const selectedDatasourceIndex = ref(null);
@@ -162,20 +168,17 @@ export default {
     };
 
     const getTask = async () => {
-      const prevPolicy = [...policyOptions.value];
-      const prevDatasource = [...datasourceOptions.value];
-      const prevDag = [...dagOptions.value];
-      const prevNode = [...nodeOptions.value];
-
       try {
         const response = await axios.get("/api/policy");
         if (response.data !== null) {
           const received_policy = response.data;
-          console.log('policy length:', prevPolicy.length, ' -> ', received_policy.length);
-          if (received_policy.length < prevPolicy.length) {
+          const prevPL = localStorage.getItem(LENGTH_KEYS.policy);
+          console.log('policy length:', prevPL, ' -> ', received_policy.length);
+          if (prevPL && received_policy.length < prevPL) {
             selectedPolicyIndex.value = null;
           }
           policyOptions.value = response.data;
+          localStorage.setItem(LENGTH_KEYS.policy, received_policy.length);
         }
       } catch (error) {
         console.error("Failed to fetch policy options", error);
@@ -186,12 +189,14 @@ export default {
         const response = await axios.get("/api/datasource");
         if (response.data !== null) {
           const received_datasource = response.data;
-          console.log('datasource length:', prevDatasource.length, ' -> ', received_datasource.length);
-          if (received_datasource.length < prevDatasource.length) {
+          const prevDL = localStorage.getItem(LENGTH_KEYS.datasource);
+          console.log('datasource length:', prevDL, ' -> ', received_datasource.length);
+          if (prevDL && received_datasource.length < prevDL) {
             selectedDatasourceIndex.value = null;
             selectedSources.value = [];
           }
           datasourceOptions.value = response.data;
+           localStorage.setItem(LENGTH_KEYS.datasource, received_datasource.length);
         }
       } catch (error) {
         console.error("Failed to fetch datasource options", error);
@@ -202,8 +207,9 @@ export default {
         const response = await axios.get("/api/dag_workflow");
         if (response.data !== null) {
           const received_dag = response.data;
-          console.log('dag length:', prevDag.length, ' -> ', received_dag.length);
-          if (received_dag.length < prevDag.length) {
+          const prevDagL = localStorage.getItem(LENGTH_KEYS.dag);
+          console.log('dag length:', prevDagL, ' -> ', received_dag.length);
+          if (prevDagL && received_dag.length < prevDagL) {
             selectedSources.value = selectedSources.value.map(source => ({
               ...source,
               dag_selected: dagOptions.value.some(dag => dag.dag_id === source.dag_selected)
@@ -211,8 +217,8 @@ export default {
                   : ''
             }));
           }
-
           dagOptions.value = response.data;
+          localStorage.setItem(LENGTH_KEYS.dag, received_dag.length);
         }
       } catch (error) {
         console.error("Failed to fetch dag options", error);
@@ -223,8 +229,9 @@ export default {
         const response = await axios.get("/api/edge_node");
         if (response.data !== null) {
           const received_node = response.data;
-          console.log('node length:', prevNode.length, ' -> ', received_node.length);
-          if (received_node.length < prevNode.length) {
+          const prevNodeL = localStorage.getItem(LENGTH_KEYS.node);
+          console.log('node length:', prevNodeL, ' -> ', received_node.length);
+          if (prevNodeL && received_node.length < prevNodeL) {
             selectedSources.value = selectedSources.value.map(source => ({
               ...source,
               node_selected: source.node_selected.filter(nodeName =>
@@ -233,6 +240,7 @@ export default {
             }));
           }
           nodeOptions.value = response.data;
+          localStorage.setItem(LENGTH_KEYS.node, received_node.length);
         }
       } catch (error) {
         console.error("Failed to fetch node options", error);
