@@ -166,29 +166,39 @@ export default {
     };
 
     const loadStorage = () => {
-      if (installed.value === 'install') {
-        const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
-        return JSON.parse(savedInstall);
-
-      } else {
-        const savedDraft = localStorage.getItem(DRAFT_STATE_KEY);
-        return JSON.parse(savedDraft);
+      try {
+        const key = installed.value === 'install' ? INSTALL_STATE_KEY : DRAFT_STATE_KEY;
+        const data = localStorage.getItem(key);
+        return data ? JSON.parse(data) : null;
+      } catch (error) {
+        console.error('Fail to load storage', error);
+        return null;
       }
     };
 
     const updateStorage = (configuration) => {
-      const currentConfig = {
-        selectedPolicyIndex: configuration.selectedPolicyIndex,
-        selectedDatasourceIndex: configuration.selectedDatasourceIndex,
-        selectedSources: JSON.parse(JSON.stringify(configuration.selectedSources))
-      };
+      try {
 
-      if (installed.value === 'install') {
-        localStorage.setItem(INSTALL_STATE_KEY, JSON.stringify(currentConfig));
-      } else {
-        localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(currentConfig));
+        const safeCopy = (obj) => {
+          try {
+            return JSON.parse(JSON.stringify(obj));
+          } catch {
+            return null;
+          }
+        };
+
+        const currentConfig = {
+          selectedPolicyIndex: configuration.selectedPolicyIndex ?? null,
+          selectedDatasourceIndex: configuration.selectedDatasourceIndex ?? null,
+          selectedSources: safeCopy(configuration.selectedSources) || []
+        };
+
+        const key = installed.value === 'install' ? INSTALL_STATE_KEY : DRAFT_STATE_KEY;
+        localStorage.setItem(key, JSON.stringify(currentConfig));
+      } catch (error) {
+        console.error('Fail to update storage', error);
       }
-    }
+    };
 
     const getTask = async () => {
 
@@ -317,7 +327,7 @@ export default {
         const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
         if (savedInstall) {
           const parsed = JSON.parse(savedInstall);
-          console.log('config from save_install: ',parsed);
+          console.log('config from save_install: ', parsed);
 
           if (isValidIndex(parsed.selectedPolicyIndex, policyOptions.value)) {
             selectedPolicyIndex.value = parsed.selectedPolicyIndex;
