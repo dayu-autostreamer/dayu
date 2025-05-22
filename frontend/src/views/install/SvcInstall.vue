@@ -161,51 +161,12 @@ export default {
       );
     };
 
-    const cleanupAllSelections = () => {
-      if (!isValidIndex(selectedPolicyIndex.value, policyOptions.value)) {
-        selectedPolicyIndex.value = null;
-      }
-
-      if (!isValidIndex(selectedDatasourceIndex.value, datasourceOptions.value)) {
-        selectedDatasourceIndex.value = null;
-        selectedSources.value = [];
-      }
-
-      selectedSources.value = selectedSources.value.map(source => ({
-        ...source,
-        dag_selected: dagOptions.value.some(dag => dag.dag_id === source.dag_selected)
-            ? source.dag_selected
-            : '',
-        node_selected: source.node_selected.filter(nodeName =>
-            nodeOptions.value.some(node => node.name === nodeName)
-        )
-      }));
-    };
-
-    const updateStorage = () => {
-      if (installed.value === 'install') {
-        const installConfig = {
-          selectedPolicyIndex: selectedPolicyIndex.value,
-          selectedDatasourceIndex: selectedDatasourceIndex.value,
-          selectedSources: JSON.parse(JSON.stringify(selectedSources.value))
-        };
-        localStorage.setItem(INSTALL_STATE_KEY, JSON.stringify(installConfig));
-      } else {
-        const draftConfig = {
-          selectedPolicyIndex: selectedPolicyIndex.value,
-          selectedDatasourceIndex: selectedDatasourceIndex.value,
-          selectedSources: JSON.parse(JSON.stringify(selectedSources.value))
-        };
-        localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(draftConfig));
-      }
-    };
-
-
     const getTask = async () => {
       try {
         const response = await axios.get("/api/policy");
         if (response.data !== null) {
           const received_policy = response.data;
+          console.log('policy length:', policyOptions.value.length, ' -> ', received_policy.length);
           if (received_policy.length < policyOptions.value.length) {
             selectedPolicyIndex.value = null;
           }
@@ -220,6 +181,7 @@ export default {
         const response = await axios.get("/api/datasource");
         if (response.data !== null) {
           const received_datasource = response.data;
+          console.log('datasource length:', datasourceOptions.value.length, ' -> ', received_datasource.length);
           if (received_datasource.length < datasourceOptions.value.length) {
             selectedDatasourceIndex.value = null;
             selectedSources.value = [];
@@ -235,6 +197,7 @@ export default {
         const response = await axios.get("/api/dag_workflow");
         if (response.data !== null) {
           const received_dag = response.data;
+          console.log('dag length:', dagOptions.value.length, ' -> ', received_dag.length);
           if (received_dag.length < dagOptions.value.length) {
             selectedSources.value = selectedSources.value.map(source => ({
               ...source,
@@ -255,6 +218,7 @@ export default {
         const response = await axios.get("/api/edge_node");
         if (response.data !== null) {
           const received_node = response.data;
+          console.log('node length:', nodeOptions.value.length, ' -> ', received_node.length);
           if (received_node.length < nodeOptions.value.length) {
             selectedSources.value = selectedSources.value.map(source => ({
               ...source,
