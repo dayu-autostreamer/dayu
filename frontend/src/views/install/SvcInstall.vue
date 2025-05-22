@@ -321,7 +321,7 @@ export default {
             selectedSources.value = [];
           }
 
-          if (newDagL !== oldDagL) {
+          if (newDagL < oldDagL) {
             selectedSources.value = selectedSources.value.map(source => ({
               ...source,
               dag_selected: dagOptions.value.some(dag => dag.dag_id === source.dag_selected)
@@ -330,7 +330,7 @@ export default {
             }));
           }
 
-          if (newNodeL !== oldNodeL) {
+          if (newNodeL < oldNodeL) {
             selectedSources.value = selectedSources.value.map(source => ({
               ...source,
               node_selected: source.node_selected.filter(nodeName =>
@@ -339,7 +339,6 @@ export default {
             }));
           }
 
-          // cleanupAllSelections();
           updateStorage();
         },
         {deep: true, flush: 'post'}
