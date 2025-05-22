@@ -1,6 +1,6 @@
 export default {
 	label: {
-		one1: 'User name login',
+		one1: 'System Info',
 		two2: 'Mobile number',
 	},
 	link: {
