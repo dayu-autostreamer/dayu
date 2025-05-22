@@ -293,57 +293,49 @@ export default {
         ElMessage.error("Fail to fetch node options");
       }
 
-      try {
-        const response = await axios.get("/api/install_state");
-        installed.value = response.data["state"];
-        if (installed.value === "install") {
-          install_state.install();
 
-          const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
-          if (savedInstall) {
-            const parsed = JSON.parse(savedInstall);
+      if (installed.value === "install") {
+        const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
+        if (savedInstall) {
+          const parsed = JSON.parse(savedInstall);
+          console.log('config from save_install: ',parsed);
 
-            if (isValidIndex(parsed.selectedPolicyIndex, policyOptions.value)) {
-              selectedPolicyIndex.value = parsed.selectedPolicyIndex;
-            } else {
-              selectedPolicyIndex.value = null;
-            }
-
-            if (isValidIndex(parsed.selectedDatasourceIndex, datasourceOptions.value)) {
-              selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
-
-              const datasource = datasourceOptions.value[parsed.selectedDatasourceIndex];
-              selectedSources.value = datasource.source_list.map(source => ({
-                ...source,
-                dag_selected: parsed.selectedSources.find(s => s.id === source.id)?.dag_selected ?? '',
-                node_selected: parsed.selectedSources.find(s => s.id === source.id)?.node_selected ?? []
-              }));
-            } else {
-              selectedDatasourceIndex.value = null;
-              selectedSources.value = [];
-            }
-
-          }
-
-        } else {
-          install_state.uninstall();
-          const savedDraft = localStorage.getItem(DRAFT_STATE_KEY);
-
-          if (savedDraft) {
-            const parsed = JSON.parse(savedDraft);
+          if (isValidIndex(parsed.selectedPolicyIndex, policyOptions.value)) {
             selectedPolicyIndex.value = parsed.selectedPolicyIndex;
-            selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
-            selectedSources.value = parsed.selectedSources || [];
           } else {
             selectedPolicyIndex.value = null;
+          }
+
+          if (isValidIndex(parsed.selectedDatasourceIndex, datasourceOptions.value)) {
+            selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
+
+            const datasource = datasourceOptions.value[parsed.selectedDatasourceIndex];
+            selectedSources.value = datasource.source_list.map(source => ({
+              ...source,
+              dag_selected: parsed.selectedSources.find(s => s.id === source.id)?.dag_selected ?? '',
+              node_selected: parsed.selectedSources.find(s => s.id === source.id)?.node_selected ?? []
+            }));
+          } else {
             selectedDatasourceIndex.value = null;
             selectedSources.value = [];
           }
+
         }
-      } catch
-          (error) {
-        console.error("query state error");
+
+      } else {
+        const savedDraft = localStorage.getItem(DRAFT_STATE_KEY);
+        if (savedDraft) {
+          const parsed = JSON.parse(savedDraft);
+          selectedPolicyIndex.value = parsed.selectedPolicyIndex;
+          selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
+          selectedSources.value = parsed.selectedSources || [];
+        } else {
+          selectedPolicyIndex.value = null;
+          selectedDatasourceIndex.value = null;
+          selectedSources.value = [];
+        }
       }
+
     };
 
 
@@ -358,7 +350,7 @@ export default {
             const currentConfig = {
               selectedPolicyIndex: selectedPolicyIndex.value,
               selectedDatasourceIndex: selectedDatasourceIndex.value,
-              selectedSources: JSON.parse(JSON.stringify(selectedSources.value)) // 深拷贝
+              selectedSources: JSON.parse(JSON.stringify(selectedSources.value))
             };
             localStorage.setItem(INSTALL_STATE_KEY, JSON.stringify(currentConfig));
             localStorage.removeItem(DRAFT_STATE_KEY);
