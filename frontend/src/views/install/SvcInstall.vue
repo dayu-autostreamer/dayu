@@ -162,12 +162,17 @@ export default {
     };
 
     const getTask = async () => {
+      const prevPolicy = [...policyOptions.value];
+      const prevDatasource = [...datasourceOptions.value];
+      const prevDag = [...dagOptions.value];
+      const prevNode = [...nodeOptions.value];
+
       try {
         const response = await axios.get("/api/policy");
         if (response.data !== null) {
           const received_policy = response.data;
-          console.log('policy length:', policyOptions.value.length, ' -> ', received_policy.length);
-          if (received_policy.length < policyOptions.value.length) {
+          console.log('policy length:', prevPolicy.length, ' -> ', received_policy.length);
+          if (received_policy.length < prevPolicy.length) {
             selectedPolicyIndex.value = null;
           }
           policyOptions.value = response.data;
@@ -181,8 +186,8 @@ export default {
         const response = await axios.get("/api/datasource");
         if (response.data !== null) {
           const received_datasource = response.data;
-          console.log('datasource length:', datasourceOptions.value.length, ' -> ', received_datasource.length);
-          if (received_datasource.length < datasourceOptions.value.length) {
+          console.log('datasource length:', prevDatasource.length, ' -> ', received_datasource.length);
+          if (received_datasource.length < prevDatasource.length) {
             selectedDatasourceIndex.value = null;
             selectedSources.value = [];
           }
@@ -197,8 +202,8 @@ export default {
         const response = await axios.get("/api/dag_workflow");
         if (response.data !== null) {
           const received_dag = response.data;
-          console.log('dag length:', dagOptions.value.length, ' -> ', received_dag.length);
-          if (received_dag.length < dagOptions.value.length) {
+          console.log('dag length:', prevDag.length, ' -> ', received_dag.length);
+          if (received_dag.length < prevDag.length) {
             selectedSources.value = selectedSources.value.map(source => ({
               ...source,
               dag_selected: dagOptions.value.some(dag => dag.dag_id === source.dag_selected)
@@ -218,8 +223,8 @@ export default {
         const response = await axios.get("/api/edge_node");
         if (response.data !== null) {
           const received_node = response.data;
-          console.log('node length:', nodeOptions.value.length, ' -> ', received_node.length);
-          if (received_node.length < nodeOptions.value.length) {
+          console.log('node length:', prevNode.length, ' -> ', received_node.length);
+          if (received_node.length < prevNode.length) {
             selectedSources.value = selectedSources.value.map(source => ({
               ...source,
               node_selected: source.node_selected.filter(nodeName =>
