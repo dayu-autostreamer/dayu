@@ -180,7 +180,7 @@ export default {
       const currentConfig = {
         selectedPolicyIndex: configuration.selectedPolicyIndex,
         selectedDatasourceIndex: configuration.selectedDatasourceIndex,
-        selectedSources: JSON.parse(JSON.stringify(configuration.selectedSources)) // 深拷贝
+        selectedSources: JSON.parse(JSON.stringify(configuration.selectedSources))
       };
 
       if (installed.value === 'install') {
@@ -191,6 +191,7 @@ export default {
     }
 
     const getTask = async () => {
+
       try {
         const response = await axios.get("/api/install_state");
         installed.value = response.data["state"];
@@ -204,6 +205,7 @@ export default {
         console.error("Fail to fetch install state", error);
         ElMessage.error("Fail to fetch install state");
       }
+      console.log('config storage 1: ', loadStorage())
 
 
       try {
@@ -225,6 +227,8 @@ export default {
         ElMessage.error("Fail to fetch policy options");
       }
 
+      console.log('config storage 2: ', loadStorage())
+
       try {
         const response = await axios.get("/api/datasource");
         if (response.data !== null) {
@@ -244,6 +248,8 @@ export default {
         console.error("Fail to fetch datasource options", error);
         ElMessage.error("Fail to fetch datasource options");
       }
+
+      console.log('config storage 3: ', loadStorage())
 
       try {
         const response = await axios.get("/api/dag_workflow");
@@ -269,6 +275,8 @@ export default {
         ElMessage.error("Fail to fetch dag options");
       }
 
+      console.log('config storage 4: ', loadStorage())
+
       try {
         const response = await axios.get("/api/edge_node");
         if (response.data !== null) {
@@ -292,6 +300,8 @@ export default {
         console.error("Fail to fetch node options", error);
         ElMessage.error("Fail to fetch node options");
       }
+
+      console.log('config storage 5: ', loadStorage())
 
 
       if (installed.value === "install") {
@@ -524,9 +534,10 @@ export default {
                 selectedDatasourceIndex: this.selectedDatasourceIndex,
                 selectedSources: JSON.parse(JSON.stringify(this.selectedSources))
               };
-              console.log('installConfig', installConfig);
+              console.log('installConfig1', installConfig);
               localStorage.setItem(this.INSTALL_STATE_KEY, JSON.stringify(installConfig));
               localStorage.removeItem(this.DRAFT_STATE_KEY);
+              console.log('installConfig2', installConfig);
 
               msg += ". Refreshing..";
               ElMessage({
