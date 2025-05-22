@@ -205,11 +205,6 @@ export default {
       try {
         const response = await axios.get("/api/install_state");
         installed.value = response.data["state"];
-        if (installed.value === "install") {
-          install_state.install();
-        } else {
-          install_state.uninstall();
-        }
 
       } catch (error) {
         console.error("Fail to fetch install state", error);
@@ -324,6 +319,7 @@ export default {
 
 
       if (installed.value === "install") {
+        install_state.install();
         const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
         if (savedInstall) {
           const parsed = JSON.parse(savedInstall);
@@ -352,6 +348,7 @@ export default {
         }
 
       } else {
+        install_state.uninstall();
         const savedDraft = localStorage.getItem(DRAFT_STATE_KEY);
         if (savedDraft) {
           const parsed = JSON.parse(savedDraft);
