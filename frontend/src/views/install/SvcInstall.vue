@@ -121,6 +121,7 @@ import {ElMessage} from "element-plus";
 import axios from "axios";
 import {useInstallStateStore} from "/@/stores/installState";
 import {ref, watch, onMounted, computed} from "vue";
+import dag from "/@/views/dag/index.vue";
 
 export default {
   components: {
@@ -147,9 +148,7 @@ export default {
     const installed = ref(null);
     const policyOptions = ref([]);
     const datasourceOptions = ref([]);
-    const dagOptions = ref([
-      // { dag_name: "233dag", dag_id: "233dag" },
-    ]);
+    const dagOptions = ref([]);
     const nodeOptions = ref([]);
 
     const isValidIndex = (index, array) => {
@@ -206,6 +205,10 @@ export default {
       try {
         const response = await axios.get("/api/policy");
         if (response.data !== null) {
+          const received_policy = response.data;
+          if (received_policy.length < policyOptions.value.length) {
+            selectedPolicyIndex.value = null;
+          }
           policyOptions.value = response.data;
         }
       } catch (error) {
@@ -216,6 +219,11 @@ export default {
       try {
         const response = await axios.get("/api/datasource");
         if (response.data !== null) {
+          const received_datasource = response.data;
+          if (received_datasource.length < datasourceOptions.value.length) {
+            selectedDatasourceIndex.value = null;
+            selectedSources.value = [];
+          }
           datasourceOptions.value = response.data;
         }
       } catch (error) {
@@ -226,6 +234,16 @@ export default {
       try {
         const response = await axios.get("/api/dag_workflow");
         if (response.data !== null) {
+          const received_dag = response.data;
+          if (received_dag.length < dagOptions.value.length) {
+            selectedSources.value = selectedSources.value.map(source => ({
+              ...source,
+              dag_selected: dagOptions.value.some(dag => dag.dag_id === source.dag_selected)
+                  ? source.dag_selected
+                  : ''
+            }));
+          }
+
           dagOptions.value = response.data;
         }
       } catch (error) {
@@ -236,6 +254,15 @@ export default {
       try {
         const response = await axios.get("/api/edge_node");
         if (response.data !== null) {
+          const received_node = response.data;
+          if (received_node.length < nodeOptions.value.length) {
+            selectedSources.value = selectedSources.value.map(source => ({
+              ...source,
+              node_selected: source.node_selected.filter(nodeName =>
+                  nodeOptions.value.some(node => node.name === nodeName)
+              )
+            }));
+          }
           nodeOptions.value = response.data;
         }
       } catch (error) {
@@ -297,53 +324,6 @@ export default {
       }
     };
 
-    watch(
-        [
-          () => policyOptions.value.length,
-          () => datasourceOptions.value.length,
-          () => dagOptions.value.length,
-          () => nodeOptions.value.length
-        ],
-        ([newPL, newDL, newDagL, newNodeL], [oldPL, oldDL, oldDagL, oldNodeL]) => {
-          console.log('length change...')
-          console.log('policy: ', oldPL, ' -> ', newPL);
-          console.log('datasource: ', oldDL, ' -> ', newDL);
-          console.log('dag: ', oldDagL, ' -> ', newDagL);
-          console.log('node: ', oldNodeL, ' -> ', newNodeL);
-
-
-          if (newPL < oldPL) {
-            selectedPolicyIndex.value = null;
-          }
-
-          if (newDL < oldDL) {
-            selectedDatasourceIndex.value = null;
-            selectedSources.value = [];
-          }
-
-          if (newDagL < oldDagL) {
-            selectedSources.value = selectedSources.value.map(source => ({
-              ...source,
-              dag_selected: dagOptions.value.some(dag => dag.dag_id === source.dag_selected)
-                  ? source.dag_selected
-                  : ''
-            }));
-          }
-
-          if (newNodeL < oldNodeL) {
-            selectedSources.value = selectedSources.value.map(source => ({
-              ...source,
-              node_selected: source.node_selected.filter(nodeName =>
-                  nodeOptions.value.some(node => node.name === nodeName)
-              )
-            }));
-          }
-
-          updateStorage();
-        },
-        {deep: true, flush: 'post'}
-    );
-
 
     watch(
         () => install_state.status,
@@ -382,7 +362,7 @@ export default {
             dsIdx = null;
             sources = [];
           }
-          console.log('install: ',installed.value)
+          console.log('install: ', installed.value)
 
           if (installed.value === 'uninstall') {
             const draftData = {
