@@ -137,7 +137,7 @@ export const useThemeConfig = defineStore('themeConfig', {
 			// 网站主标题（菜单导航、浏览器当前网页标题）
 			globalTitle: 'DAYU',
 			// 默认初始语言，可选值"<zh-cn|en|zh-tw>"，默认 zh-cn
-			globalI18n: 'zh-cn',
+			globalI18n: 'en',
 			// 默认全局组件大小，可选值"<large|'default'|small>"，默认 'large'
 			globalComponentSize: 'large',
 		},

@@ -71,7 +71,7 @@
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: crave
-  name: Adaptive Video Encoding
+  name: Adaptive Video Encoding (CRAVE)
   yaml: crave.yaml
   dependency:
     generator: generator-adaptive.yaml

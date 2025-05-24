@@ -197,6 +197,8 @@ spec:
       spec:
         containers:
           - env:
+            - name: VITE_DAYU_VERSION
+              value: $TAG
             - name: VITE_BACKEND_ADDRESS
               value: 'http://$CLOUD_IP:$BACKEND_PORT'
             - name: VITE_PORT
@@ -310,7 +312,7 @@ stop_system() {
 
 
 show_prompt_infos() {
-  sleep 2
+  sleep 1
   FRONTEND_PORT=$(get_service_nodeport "frontend-cloud" "$NAMESPACE")
   echo "$(green_text "██████╗  █████╗ ██╗   ██╗██╗   ██╗")"
   echo "$(green_text "██╔══██╗██╔══██╗╚██╗ ██╔╝██║   ██║")"

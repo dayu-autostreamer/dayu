@@ -8,9 +8,6 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/dayu-autostreamer/dayu/badge)](https://scorecard.dev/viewer/?uri=github.com/dayu-autostreamer/dayu)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10523/badge)](https://www.bestpractices.dev/projects/10523)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
-[![GitHub Repo stars](https://img.shields.io/github/stars/dayu-autostreamer/dayu?style=flat)](https://github.com/dayu-autostreamer/dayu)
-[![GitHub forks](https://img.shields.io/github/forks/dayu-autostreamer/dayu?style=flat)](https://github.com/dayu-autostreamer/dayu)
-
 
 ![](pics/dayu_logo.png)
 

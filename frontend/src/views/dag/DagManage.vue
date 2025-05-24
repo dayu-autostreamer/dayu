@@ -14,7 +14,7 @@
           Service Containers
           <el-tooltip placement="right">
             <template #content>
-              From docker Registry: https://hub.docker.com/repositories/dayuhub
+              From docker Registry: https://hub.docker.com/u/dayuhub
             </template>
             <el-button size="small" circle>i</el-button>
           </el-tooltip>
@@ -271,7 +271,6 @@ export default {
       vueFlowInstance.fitView();
     });
     onNodeDragStop(({event, nodes, node}) => {
-      // console.log("Node Drag Stop", { event, nodes, node });
     });
     onConnect((connection) => {
       const line = {
@@ -338,7 +337,6 @@ export default {
     // delete dag
     deleteWorkflow(index, dag_id) {
       this.dagList.splice(index, 1);
-      console.log(dag_id);
       const content = {
         dag_id: dag_id,
       };
@@ -358,7 +356,7 @@ export default {
           })
           .catch((error) => {
             ElMessage.error("Network error");
-            console.log(error);
+            console.error(error);
           });
     },
 
@@ -367,7 +365,6 @@ export default {
         ElMessage.error("Please fill the dag name");
         return;
       }
-      console.log(this.flowNodes);
       if (this.flowNodes === undefined || this.flowNodes.length === 0) {
         ElMessage.error("Please choose services");
         return;
@@ -455,7 +452,6 @@ export default {
     },
     // update dag to backen
     updateDagList(data) {
-      console.log(data);
       fetch("/api/dag_workflow", {
         method: "POST",
         headers: {
@@ -467,7 +463,6 @@ export default {
           .then((data) => {
             const state = data["state"];
             const msg = data["msg"];
-            console.log(state);
             this.showMsg(state, msg);
             if (state === "success") {
               this.getDagList();
@@ -481,9 +476,7 @@ export default {
     },
     async getServiceList() {
       const response = await fetch("/api/service");
-      const data = await response.json();
-      this.services = data;
-      console.log(this.services);
+      this.services = await response.json();
     },
 
 

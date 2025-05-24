@@ -16,7 +16,6 @@ const alias: Record<string, string> = {
   "vue-i18n": "vue-i18n/dist/vue-i18n.cjs.js",
 };
 
-// 之前使用loadEnv获取环境变量 现在使用node自带的process对象配置环境变量
 const viteConfig = defineConfig((mode: ConfigEnv) => {
 
   return {
@@ -39,7 +38,6 @@ const viteConfig = defineConfig((mode: ConfigEnv) => {
     optimizeDeps: { exclude: ["vue-demi"] },
     server: {
       host: "0.0.0.0",
-      // port: env.VITE_PORT as unknown as number,
       port: process.env.VITE_PORT as unknown as number,
       open: JSON.parse(String(process.env.VITE_OPEN)),
       hmr: true,
@@ -52,7 +50,6 @@ const viteConfig = defineConfig((mode: ConfigEnv) => {
         },
         "/api": {
           target: process.env.VITE_BACKEND_ADDRESS,
-          // target: "http://127.0.0.1:5000",
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/api/, ""),
         },

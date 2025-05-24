@@ -158,7 +158,6 @@ export default {
       fetch("/api/datasource")
           .then((response) => response.json())
           .then((data) => {
-            // console.log(data);
             this.info = data;
           })
           .catch((error) => {
@@ -170,8 +169,6 @@ export default {
     // 选择视频流
     selectItem(item) {
       this.selected_label = item.key.source_label;
-      // console.log(this.selected_label)
-      // console.log(this.source_label);
     },
 
 
@@ -217,10 +214,7 @@ export default {
       fetch('/api/query_state').then((response) => response.json())
           .then(data => {
             this.state = data.state;
-            console.log(this.state);
             this.source_label = data.source_label;
-            // console.log("query:" + this.source_label);
-            // console.log("query:" + this.selected_label)
           })
     },
 
@@ -230,7 +224,6 @@ export default {
         'source_label': this.source_label
       }
       const task_info = JSON.stringify(content)
-      console.log(task_info)
       fetch('/api/stop_query', {
         method: 'POST',
         body: task_info
@@ -249,13 +242,11 @@ export default {
             this.showMsg(state, msg);
           }).catch(error => {
         this.kill_loading = false;
-        // console.log('submit task fail');
         this.handleError(error)
       })
     },
 
     delete_source(source_label) {
-      console.log(source_label);
       const content = {
         'source_label': source_label
       }
@@ -284,7 +275,6 @@ export default {
     this.getInfo();
     this.selected_label = localStorage.getItem('source_item')
     console.log('mount:', this.selected_label);
-    // console.log(this.info)
 
   },
 };

@@ -46,9 +46,10 @@
 </template>
 
 <script>
-import { useInstallStateStore } from '/@/stores/installState';
-import { ElMessage } from "element-plus";
-import { ref, watch } from 'vue';
+import {useInstallStateStore} from '/@/stores/installState';
+import {ElMessage} from "element-plus";
+import {ref, watch} from 'vue';
+
 export default {
   data() {
     return {
@@ -64,15 +65,12 @@ export default {
     // installed.value = true;
     watch(() => install_state.status, (newValue, oldValue) => {
       installed.value = newValue;
-      console.log(installed.value);
     });
     const loading = ref(null)
     setInterval(() => {
       fetch('/api/install_state').then(response=> response.json())
       .then(data=>{
-        // console.log(data);
         installed.value = data['state'];
-        // console.log(response);
         const val = data['state']
         if(val === 'install'){
           install_state.install();
@@ -82,7 +80,7 @@ export default {
       }).catch(error=>{
         ElMessage.error("System Error",3000);
       })
-    }, 1000);
+    }, 2000);
     return {
       installed,
       loading,
@@ -94,16 +92,11 @@ export default {
         .then(data => {
           const state = data.state;
           let msg = data.msg;
-          
-          console.log(state)
-          console.log(msg)
 
           loading.value = false;
           // this.getServiceList();
           if(state === 'success'){
             install_state.uninstall();
-            // this.installed = 'install';
-            // console.log(this.install_state.status);
             msg += ". Refreshing"
             ElMessage({
               message: msg,
@@ -127,7 +120,6 @@ export default {
           console.error(error);
           ElMessage.error("Network Error",3000);
         });
-        // console.log(install_state.status);
       }
     };
   },
@@ -138,23 +130,19 @@ export default {
         const data = await response.json();
         this.services = data;
       } catch (error) {
-        // console.error("请求失败:", error);
         ElMessage.error("System Error");
       }
       
     },
     refresh(){
-      console.log(this.selected_service)
       this.sendRequest(this.selected_service)
     },
     async sendRequest(service) {
       try {
         this.selected_service = service
         const response = await fetch(`/api/service_info/${service}`);
-        const data = await response.json();
-        this.urlData = data;
+        this.urlData = await response.json();
       } catch (error) {
-        // console.error("请求失败:", error);
         ElMessage.error("System Error");
       }
     },

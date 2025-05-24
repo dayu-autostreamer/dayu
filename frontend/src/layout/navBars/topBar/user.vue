@@ -65,7 +65,7 @@
 			</span>
 			<template #dropdown>
 				<el-dropdown-menu>
-					<el-dropdown-item command="/home">{{ $t('message.user.dropdown1') }}</el-dropdown-item>
+					<el-dropdown-item command="homepage">{{ $t('message.user.dropdown1') }}</el-dropdown-item>
 					<el-dropdown-item command="wareHouse">{{ $t('message.user.dropdown6') }}</el-dropdown-item>
 					<el-dropdown-item divided command="logOut">{{ $t('message.user.dropdown5') }}</el-dropdown-item>
 				</el-dropdown-menu>
@@ -103,7 +103,7 @@ const { themeConfig } = storeToRefs(storesThemeConfig);
 const searchRef = ref();
 const state = reactive({
 	isScreenfull: false,
-	disabledI18n: 'zh-cn',
+	disabledI18n: 'en',
 	disabledSize: 'large',
 });
 
@@ -172,7 +172,9 @@ const onHandleCommandClick = (path: string) => {
 			.catch(() => {});
 	} else if (path === 'wareHouse') {
 		window.open('https://github.com/dayu-autostreamer/dayu');
-	} else {
+	} else if(path === 'homepage') {
+    window.open('https://dayu-autostreamer.github.io');
+  } else {
 		router.push(path);
 	}
 };

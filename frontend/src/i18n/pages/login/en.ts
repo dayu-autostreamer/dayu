@@ -1,7 +1,6 @@
-// 定义内容
 export default {
 	label: {
-		one1: 'User name login',
+		one1: 'System Information',
 		two2: 'Mobile number',
 	},
 	link: {
@@ -25,5 +24,5 @@ export default {
 	scan: {
 		text: 'Open the mobile phone to scan and quickly log in / register',
 	},
-	signInText: 'welcome back!',
+	signInText: 'welcome to dayu!',
 };

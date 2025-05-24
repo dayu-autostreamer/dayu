@@ -1,28 +1,28 @@
-// 定义内容
 export default {
 	label: {
-		one1: '用戶名登入',
-		two2: '手機號登入',
+		one1: 'System Information',
+		two2: 'Mobile number',
 	},
 	link: {
-		one3: '協力廠商登入',
-		two4: '友情連結',
+		one3: 'Third party login',
+		two4: 'Links',
 	},
 	account: {
-		accountPlaceholder1: '用戶名admin或不輸均為common',
-		accountPlaceholder2: '密碼：123456',
-		accountPlaceholder3: '請輸入驗證碼',
-		accountBtnText: '登入',
+		accountPlaceholder1: 'The user name admin or not is common',
+		accountPlaceholder2: 'Password: 123456',
+		accountPlaceholder3: 'Please enter the verification code',
+		accountBtnText: 'Sign in',
 	},
 	mobile: {
-		placeholder1: '請輸入手機號',
-		placeholder2: '請輸入驗證碼',
-		codeText: '獲取驗證碼',
-		btnText: '登入',
-		msgText: '* 溫馨提示：建議使用穀歌、Microsoft Edge，版本79.0.1072.62及以上瀏覽器，360瀏覽器請使用極速模式',
+		placeholder1: 'Please input mobile phone number',
+		placeholder2: 'Please enter the verification code',
+		codeText: 'Get code',
+		btnText: 'Sign in',
+		msgText:
+			'Warm tip: it is recommended to use Google, Microsoft edge, version 79.0.1072.62 and above browsers, and 360 browser, please use speed mode',
 	},
 	scan: {
-		text: '打開手機掃一掃，快速登錄/注册',
+		text: 'Open the mobile phone to scan and quickly log in / register',
 	},
-	signInText: '歡迎回來！',
+	signInText: 'welcome to dayu!',
 };

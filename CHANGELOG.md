@@ -5,11 +5,12 @@
 ### Features
 
 ### Bug Fix
-- Fix concurrency conflicts for starting up multiple streams in rtsp video and http video(`datasource`).
+- Fix concurrency conflicts for starting up multiple streams in rtsp video and http video (`datasource`).
 
 ### Minor Update
-- Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios.
-
+- Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios (`frontend`).
+- Clean up frontend code and beatify frontend pages (`frontend`).
+- Add persistent storage of installation configuration (`frontend`).
 
 ## v1.1
 
