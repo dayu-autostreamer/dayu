@@ -638,7 +638,7 @@ class BackendServer:
         return ans
 
     async def get_system_parameters(self):
-        pass
+        return self.server.get_system_parameters()
 
     async def get_result_visualization_config(self, source_id):
         """
