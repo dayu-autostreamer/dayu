@@ -91,9 +91,8 @@
 
 如果有任何问题，请随时通过以下方式联系我们：
 
-- [Lei Xie](mailto:lxie@nju.edu.cn)
-
-- [Wenhui Zhou](mailto:whzhou@smail.nju.edu.cn)
+- [谢磊 lxie@nju.edu.cn](mailto:lxie@nju.edu.cn)
+- [周文晖 whzhou@smail.nju.edu.cn](mailto:whzhou@smail.nju.edu.cn)
 
 ## 贡献
 
