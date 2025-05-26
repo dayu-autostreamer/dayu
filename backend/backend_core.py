@@ -368,6 +368,8 @@ class BackendCore:
                 LOGGER.warning(f"Failed to load system visualization data: {e}")
                 LOGGER.exception(e)
 
+        return visualization_data
+
     def parse_task_result(self, results):
         for result in results:
             if result is None or result == '':
