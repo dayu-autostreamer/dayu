@@ -7,7 +7,7 @@ from .curve_visualizer import CurveVisualizer
 __all__ = ('CPUUsageVisualizer',)
 
 
-@ClassFactory.register(ClassType.RESULT_VISUALIZER, alias='cpu_usage')
+@ClassFactory.register(ClassType.SYSTEM_VISUALIZER, alias='cpu_usage')
 class CPUUsageVisualizer(CurveVisualizer, abc.ABC):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

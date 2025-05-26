@@ -343,22 +343,30 @@ class BackendCore:
             source_id] if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
         visualization_data = []
         for idx, vf in enumerate(visualizations):
-            al_name = vf['hook_name']
-            al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
-            al_params.update({'variables': vf['variables']})
-            vf_func = Context.get_algorithm('RESULT_VISUALIZER', al_name=al_name, **al_params)
-            visualization_data.append({"id": idx, "data": vf_func(task)})
+            try:
+                al_name = vf['hook_name']
+                al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
+                al_params.update({'variables': vf['variables']})
+                vf_func = Context.get_algorithm('RESULT_VISUALIZER', al_name=al_name, **al_params)
+                visualization_data.append({"id": idx, "data": vf_func(task)})
+            except Exception as e:
+                LOGGER.warning(f'Failed to load result visualization data: {e}')
+                LOGGER.exception(e)
 
         return visualization_data
 
     def prepare_system_visualizations_data(self):
         visualization_data = []
         for idx, vf in enumerate(self.system_visualization_configs):
-            al_name = vf['hook_name']
-            al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
-            al_params.update({'variables': vf['variables']})
-            vf_func = Context.get_algorithm('SYSTEM_VISUALIZER', al_name=al_name, **al_params)
-            visualization_data.append({"id": idx, "data": vf_func()})
+            try:
+                al_name = vf['hook_name']
+                al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
+                al_params.update({'variables': vf['variables']})
+                vf_func = Context.get_algorithm('SYSTEM_VISUALIZER', al_name=al_name, **al_params)
+                visualization_data.append({"id": idx, "data": vf_func()})
+            except Exception as e:
+                LOGGER.warning(f"Failed to load system visualization data: {e}")
+                LOGGER.exception(e)
 
     def parse_task_result(self, results):
         for result in results:
