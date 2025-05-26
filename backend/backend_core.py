@@ -23,9 +23,9 @@ class BackendCore:
         self.image_meta = None
         self.schedulers = None
         self.services = None
-        self.visualizations = None
-
-        self.source_visualizations = {}
+        self.result_visualization_configs = None
+        self.system_visualization_configs = None
+        self.customized_source_result_visualization_configs = {}
 
         self.source_configs = []
 
@@ -62,7 +62,8 @@ class BackendCore:
             self.image_meta = base_info['default-image-meta']
             self.schedulers = base_info['scheduler-policies']
             self.services = base_info['services']
-            self.visualizations = base_info['visualizations']
+            self.result_visualization_configs = base_info['result-visualizations']
+            self.system_visualization_configs = base_info['system-visualizations']
         except KeyError as e:
             LOGGER.warning(f'Parse base info failed: {str(e)}')
 
@@ -336,18 +337,28 @@ class BackendCore:
 
         return source_ids
 
-    def prepare_visualization_data(self, task):
+    def prepare_result_visualization_data(self, task):
         source_id = task.get_source_id()
-        visualizations = self.source_visualizations[source_id] if source_id in self.source_visualizations else self.visualizations
+        visualizations = self.customized_source_result_visualization_configs[
+            source_id] if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
         visualization_data = []
         for idx, vf in enumerate(visualizations):
             al_name = vf['hook_name']
             al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
             al_params.update({'variables': vf['variables']})
-            vf_func = Context.get_algorithm('VISUALIZER', al_name=al_name, **al_params)
+            vf_func = Context.get_algorithm('RESULT_VISUALIZER', al_name=al_name, **al_params)
             visualization_data.append({"id": idx, "data": vf_func(task)})
 
         return visualization_data
+
+    def prepare_system_visualizations_data(self):
+        visualization_data = []
+        for idx, vf in enumerate(self.system_visualization_configs):
+            al_name = vf['hook_name']
+            al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
+            al_params.update({'variables': vf['variables']})
+            vf_func = Context.get_algorithm('SYSTEM_VISUALIZER', al_name=al_name, **al_params)
+            visualization_data.append({"id": idx, "data": vf_func()})
 
     def parse_task_result(self, results):
         for result in results:
@@ -362,7 +373,7 @@ class BackendCore:
             LOGGER.debug(task.get_delay_info())
 
             try:
-                visualization_data = self.prepare_visualization_data(task)
+                visualization_data = self.prepare_result_visualization_data(task)
             except Exception as e:
                 LOGGER.warning(f'Prepare visualization data failed: {str(e)}')
                 LOGGER.exception(e)
@@ -406,6 +417,9 @@ class BackendCore:
             except Exception as e:
                 LOGGER.warning(f'Error occurred in getting task result: {str(e)}')
                 LOGGER.exception(e)
+
+    def get_system_parameters(self):
+        return [{'data': self.prepare_system_visualizations_data()}]
 
     def check_datasource_config(self, config_path):
         if not YamlOps.is_yaml_file(config_path):
@@ -530,7 +544,12 @@ class BackendCore:
 
         return results
 
-    def get_visualization_config(self, source_id):
+    def get_result_visualization_config(self, source_id):
         self.parse_base_info()
-        visualizations = self.source_visualizations[source_id] if source_id in self.source_visualizations else self.visualizations
+        visualizations = self.customized_source_result_visualization_configs[
+            source_id] if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
         return [{'id': idx, **vf} for idx, vf in enumerate(visualizations)]
+
+    def get_system_visualization_config(self):
+        self.parse_base_info()
+        return self.system_visualization_configs

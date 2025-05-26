@@ -112,15 +112,25 @@ class BackendServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.BACKEND_TASK_RESULT]
                      ),
-            APIRoute(NetworkAPIPath.BACKEND_POST_VISUALIZATION_CONFIG,
-                     self.upload_visualization_config,
+            APIRoute(NetworkAPIPath.BACKEND_SYSTEM_PARAMETERS,
+                     self.get_system_parameters,
                      response_class=JSONResponse,
-                     methods=[NetworkAPIMethod.BACKEND_POST_VISUALIZATION_CONFIG]
+                     methods=[NetworkAPIMethod.BACKEND_SYSTEM_PARAMETERS]
                      ),
-            APIRoute(NetworkAPIPath.BACKEND_GET_VISUALIZATION_CONFIG,
-                     self.get_visualization_config,
+            APIRoute(NetworkAPIPath.BACKEND_POST_RESULT_VISUALIZATION_CONFIG,
+                     self.upload_result_visualization_config,
                      response_class=JSONResponse,
-                     methods=[NetworkAPIMethod.BACKEND_GET_VISUALIZATION_CONFIG]
+                     methods=[NetworkAPIMethod.BACKEND_POST_RESULT_VISUALIZATION_CONFIG]
+                     ),
+            APIRoute(NetworkAPIPath.BACKEND_GET_RESULT_VISUALIZATION_CONFIG,
+                     self.get_result_visualization_config,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.BACKEND_GET_RESULT_VISUALIZATION_CONFIG]
+                     ),
+            APIRoute(NetworkAPIPath.BACKEND_GET_SYSTEM_VISUALIZATION_CONFIG,
+                     self.get_system_visualization_config,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.BACKEND_GET_SYSTEM_VISUALIZATION_CONFIG]
                      ),
             APIRoute(NetworkAPIPath.BACKEND_DOWNLOAD_LOG,
                      self.download_log,
@@ -561,7 +571,7 @@ class BackendServer:
         self.server.source_label = ''
         self.server.is_get_result = False
         self.server.task_results.clear()
-        self.server.source_visualizations.clear()
+        self.server.customized_source_result_visualization_configs.clear()
         time.sleep(1)
 
         return {'state': 'success', 'msg': 'Datasource close successfully'}
@@ -627,14 +637,17 @@ class BackendServer:
 
         return ans
 
-    async def get_visualization_config(self, source_id):
+    async def get_system_parameters(self):
+        pass
+
+    async def get_result_visualization_config(self, source_id):
         """
         get visualization configuration
         """
         source_id = int(source_id)
-        return self.server.get_visualization_config(source_id)
+        return self.server.get_result_visualization_config(source_id)
 
-    async def upload_visualization_config(self, source_id, file: UploadFile = File(...)):
+    async def upload_result_visualization_config(self, source_id, file: UploadFile = File(...)):
         """
         body: file
         :return:
@@ -642,16 +655,22 @@ class BackendServer:
         """
         source_id = int(source_id)
         file_data = await file.read()
-        with open('visualization_config.yaml', 'wb') as buffer:
+        with open('result_visualization_config.yaml', 'wb') as buffer:
             buffer.write(file_data)
 
-        config = self.server.check_visualization_config('visualization_config.yaml')
-        FileOps.remove_file('visualization_config.yaml')
+        config = self.server.check_visualization_config('result_visualization_config.yaml')
+        FileOps.remove_file('result_visualization_config.yaml')
         if config:
-            self.server.source_visualizations[source_id] = copy.deepcopy(config)
+            self.server.customized_source_result_visualization_configs[source_id] = copy.deepcopy(config)
             return {'state': 'success', 'msg': 'Visualization configured successfully'}
         else:
             return {'state': 'fail', 'msg': 'Visualization configured failed, please check uploading file format'}
+
+    async def get_system_visualization_config(self):
+        """
+        get visualization configuration
+        """
+        return self.server.get_system_visualization_config()
 
     async def get_datasource_state(self):
         state = 'open' if self.server.source_open else 'close'

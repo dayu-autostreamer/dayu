@@ -1,0 +1,7 @@
+- name: CPU Usage
+  type: curve
+  x_axis: Time
+  y_axis: Usage (%)
+  variables: []
+  hook_name: cpu_usage
+  size: 1
