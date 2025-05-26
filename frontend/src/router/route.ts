@@ -131,7 +131,7 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
                     isAffix: false,
                     isIframe: false,
                     roles: ['dayu', 'common'],
-                    icon: 'iconfont icon-settings',
+                    icon: 'iconfont icon-ico_shuju',
                 }
             },
         ],
