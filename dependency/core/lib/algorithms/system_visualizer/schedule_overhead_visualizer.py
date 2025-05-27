@@ -33,4 +33,4 @@ class ScheduleOverheadVisualizer(CurveVisualizer, abc.ABC):
     def __call__(self):
         overhead = self.request_scheduling_overhead()
 
-        return overhead * 1000 if overhead else 0
+        return {self.variables[0]: overhead * 1000 if overhead else 0}
