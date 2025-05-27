@@ -178,7 +178,7 @@ export default {
               const vizDataItem = task.data.find(
                   item => String(item.id) === String(vizConfig.id))
               return {
-                timestamp: new Date(task.timestamp).toLocaleString(),
+                timestamp: task.timestamp,
                 ...(vizDataItem?.data || {})
               }
             })
