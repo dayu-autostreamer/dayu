@@ -26,7 +26,7 @@
       <template v-if="componentsLoaded">
         <el-col
             v-for="viz in visualizationConfig"
-            :key="viz.id"
+            :key="getVizKey(viz)"
             :xs="24"
             :sm="24"
             :md="getVisualizationSpan(viz.size, 'md')"
@@ -39,6 +39,7 @@
               <h3 class="viz-title">{{ viz.name }}</h3>
               <component
                   :is="vizControls[viz.type]"
+                  :key="viz.type + '-' + viz.variablesHash"
                   :config="viz"
                   :variable-states="variableStates[viz.id] || {}"
                   @update:variable-states="updateVariableStates(viz.id, $event)"
@@ -48,7 +49,7 @@
             <component
                 :is="visualizationComponents[viz.type]"
                 v-if="visualizationComponents[viz.type]"
-                :key="`${viz.type}-${viz.id}`"
+                :key="`${viz.type}-${viz.id}-${viz.variablesHash}`"
                 :config="viz"
                 :data="processedData[viz.id]"
                 :variable-states="variableStates[viz.id] || {}"
@@ -128,6 +129,14 @@ export default {
   },
 
   methods: {
+    calculateVariablesHash(variables) {
+      return [...variables].sort().join('|');
+    },
+
+    getVizKey(viz) {
+      return `${viz.id}-${viz.variablesHash}-${viz.size}`;  // 包含可能影响布局的字段
+    },
+
     arraysEqual(a, b) {
       if (a === b) return true;
       if (!Array.isArray(a) || !Array.isArray(b)) return false;
@@ -202,6 +211,7 @@ export default {
         acc[varName] = newStates[varName] ?? true;
         return acc;
       }, {});
+      console.log('variableStates:', this.variableStates);
       emitter.emit('force-update-charts')
     },
 
@@ -211,11 +221,11 @@ export default {
         const data = await response.json()
 
         this.visualizationConfig = data.map(viz => reactive({
+          ...viz,
           id: String(viz.id),
-          name: viz.name,
-          type: viz.type,
-          size: Math.min(3, Math.max(1, viz.size || 1)),
-          variables: [...(viz.variables || [])] // 确保数组引用可变
+          size: Math.min(3, Math.max(1, parseInt(viz.size) || 1)),
+          variables: [...(viz.variables || [])],
+          variablesHash: this.calculateVariablesHash(viz.variables)  // 新增哈希字段
         }));
 
         this.activeVisualizations = new Set(this.visualizationConfig.map(viz => viz.id))
@@ -266,7 +276,8 @@ export default {
                   // 更新可视化配置
                   const updatedViz = {
                     ...currentViz,
-                    variables: [...newVariables]
+                    variables: [...newVariables],
+                    variablesHash: this.calculateVariablesHash(newVariables)  // 更新哈希
                   };
                   this.visualizationConfig.splice(vizIndex, 1, updatedViz);
 
