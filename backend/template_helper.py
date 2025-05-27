@@ -380,6 +380,8 @@ class TemplateHelper:
                     new_edge_worker['template']['spec']['nodeName'] = edge_node
                     edge_workers.append(new_edge_worker)
                 yaml_doc['spec']['edgeWorker'] = edge_workers
+            else:
+                del yaml_doc['spec']['edgeWorker']
 
             cloud_worker_template = yaml_doc['spec']['cloudWorker']
             new_cloud_worker = copy.deepcopy(cloud_worker_template)
