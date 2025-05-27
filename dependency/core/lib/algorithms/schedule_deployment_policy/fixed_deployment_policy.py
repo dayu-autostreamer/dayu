@@ -1,4 +1,5 @@
 import abc
+import copy
 
 from .base_deployment_policy import BaseDeploymentPolicy
 
@@ -26,18 +27,16 @@ class FixedDeploymentPolicy(BaseDeploymentPolicy, abc.ABC):
         dag = info['dag']
         node_set = info['node_set']
 
+        deploy_plan = copy.deepcopy(self.fixed_policy)
+
         all_services = list(dag.keys())
         for service in all_services:
-            if service in self.fixed_policy:
-                intersection_nodes = list(set(self.fixed_policy[service]) & set(node_set))
-                self.fixed_policy[service] = intersection_nodes if intersection_nodes else list(node_set)
+            if service in deploy_plan:
+                intersection_nodes = list(set(deploy_plan[service]) & set(node_set))
+                deploy_plan[service] = intersection_nodes
             else:
-                self.fixed_policy[service] = list(node_set)
+                deploy_plan[service] = list(node_set)
 
-        deploy_plan = {}
-        for node, services in self.fixed_policy.items():
-            for service in services:
-                deploy_plan.setdefault(service, []).append(node)
 
         LOGGER.info(f'[Deployment] (source {source_id}) Deploy policy: {deploy_plan}')
 
