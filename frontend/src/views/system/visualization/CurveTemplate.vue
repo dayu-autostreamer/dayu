@@ -72,19 +72,15 @@ export default {
 
     // Computed Properties
     const safeData = computed(() => {
-      console.log('props.data: ', props.data);
-      console.log('props.config: ', props.config);
       return (props.data || []).map(item => {
         const cleanItem = {timestamp: item.timestamp}
 
         props.config.variables?.forEach(varName => {
           const rawValue = item[varName]
-          console.log('rawValue: ', rawValue)
           // 转换无效值为0
           cleanItem[varName] = rawValue !== null && rawValue !== undefined ?
               rawValue : 0
         })
-        console.log('cleanItem: ', cleanItem)
         return cleanItem
       })
     })

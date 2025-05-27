@@ -5,3 +5,10 @@
   variables: []
   hook_name: cpu_usage
   size: 1
+- name: Memory Usage
+  type: curve
+  x_axis: Time
+  y_axis: Usage (%)
+  variables: []
+  hook_name: memory_usage
+  size: 1

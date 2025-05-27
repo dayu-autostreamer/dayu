@@ -95,11 +95,9 @@ export default {
       this.visualizationConfig.forEach(viz => {
         result[viz.id] = this.processVizData(viz)
       })
-      console.log('processedData', result)
       return result
     },
     currentActiveVisualizations() {
-      console.log('activeVisualizations:', this.activeVisualizations)
       return this.activeVisualizations || new Set()
     },
     currentActiveVisualizationsArray: {
@@ -183,9 +181,6 @@ export default {
       if (!this.bufferedTaskCache.length) return []
 
       try {
-        console.log('vizConfig', vizConfig);
-        console.log('bufferedTaskCache', this.bufferedTaskCache);
-
         return this.bufferedTaskCache
             .filter(task => {
               return task.data?.some(item =>
@@ -211,7 +206,7 @@ export default {
         acc[varName] = newStates[varName] ?? true;
         return acc;
       }, {});
-      console.log('variableStates:', this.variableStates);
+
       emitter.emit('force-update-charts')
     },
 
@@ -266,8 +261,6 @@ export default {
             const vizId = item.id;
             const newVariables = Object.keys(item.data);
 
-            console.log('newVariables:', newVariables);
-
             if (newVariables && Array.isArray(newVariables)) {
               const vizIndex = this.visualizationConfig.findIndex(v => v.id === vizId);
               if (vizIndex !== -1) {
@@ -282,9 +275,6 @@ export default {
                     variablesHash: this.calculateVariablesHash(newVariables)
                   };
                   this.visualizationConfig.splice(vizIndex, 1, updatedViz);
-
-                  console.log('update visualizationConfig:', this.visualizationConfig);
-
 
                   // 同步更新变量状态
                   const currentState = this.variableStates[vizId] || {};

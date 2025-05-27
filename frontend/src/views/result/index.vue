@@ -90,7 +90,7 @@
       <template v-if="!isSourceLoading">
         <el-col
             v-for="viz in currentVisualizationConfig"
-            :key="viz.id"
+            :key="getVizKey(viz)"
             :xs="24"
             :sm="24"
             :md="getVisualizationSpan(viz.size, 'md')"
@@ -103,6 +103,7 @@
               <h3 class="viz-title">{{ viz.name }}</h3>
               <component
                   :is="vizControls[viz.type]"
+                  :key="viz.type + '-' + viz.variablesHash"
                   v-if="vizControls[viz.type] && selectedDataSource"
                   :config="viz"
                   :variable-states="variableStates[selectedDataSource]?.[viz.id] || {}"
@@ -113,7 +114,7 @@
             <component
                 :is="visualizationComponents[viz.type]"
                 v-if="componentsLoaded && visualizationComponents[viz.type] && selectedDataSource"
-                :key="`${viz.type}-${selectedDataSource}-${viz.id}`"
+                :key="`${viz.type}-${selectedDataSource}-${viz.id}-${viz.variablesHash}`"
                 :config="viz"
                 :data="processedData[viz.id]"
                 :variable-states="variableStates[selectedDataSource]?.[viz.id] || {}"
@@ -224,6 +225,22 @@ export default {
     }
   },
   methods: {
+    calculateVariablesHash(variables) {
+      return [...variables].sort().join('|');
+    },
+
+    getVizKey(viz) {
+      return `${viz.id}-${viz.variablesHash}-${viz.size}`;
+    },
+
+    arraysEqual(a, b) {
+      if (a === b) return true;
+      if (!Array.isArray(a) || !Array.isArray(b)) return false;
+      if (a.length !== b.length) return false;
+      const sortedA = [...a].sort();
+      const sortedB = [...b].sort();
+      return sortedA.every((val, i) => val === sortedB[i]);
+    },
     triggerConfigUpload() {
       if (!this.selectedDataSource) return
       this.$refs.uploadInput.value = null
@@ -349,14 +366,23 @@ export default {
     updateVariableStates(vizId, newStates) {
       if (!this.selectedDataSource) return
 
-      this.variableStates[vizId] = {
-        ...this.variableStates[vizId],
-        ...newStates
-      }
-      this.variableStates[this.selectedDataSource][vizId] = {
-        ...(this.variableStates[this.selectedDataSource][vizId] || {}),
-        ...newStates
-      }
+      const validVars = this.currentVisualizationConfig
+          .find(v => v.id === vizId)
+          ?.variables || []
+
+      this.variableStates[this.selectedDataSource][vizId] = validVars.reduce((acc, varName) => {
+        acc[varName] = newStates[varName] ?? true
+        return acc
+      }, {})
+
+      // this.variableStates[vizId] = {
+      //   ...this.variableStates[vizId],
+      //   ...newStates
+      // }
+      // this.variableStates[this.selectedDataSource][vizId] = {
+      //   ...(this.variableStates[this.selectedDataSource][vizId] || {}),
+      //   ...newStates
+      // }
       emitter.emit('force-update-charts')
     },
 
@@ -382,12 +408,14 @@ export default {
         const response = await fetch(`/api/visualization_config/${sourceId}`)
         const data = await response.json()
 
-        const processedConfig = data.map(viz => ({
+        const processedConfig = data.map(viz => reactive({
           ...viz,
           id: String(viz.id),
-          variables: viz.variables || [],
-          size: Math.min(3, Math.max(1, parseInt(viz.size) || 1))
+          variables: [...(viz.variables || [])], // 确保数组可修改
+          size: Math.min(3, Math.max(1, parseInt(viz.size) || 1)),
+          variablesHash: this.calculateVariablesHash(viz.variables || []) // 新增哈希
         }));
+
 
         this.visualizationConfig[sourceId] = processedConfig
 
@@ -415,6 +443,7 @@ export default {
 
         // 创建新缓存对象保持响应式
         const newCache = {...this.bufferedTaskCache}
+        const configUpdates = {}
 
         Object.entries(data).forEach(([sourceIdStr, tasks]) => {
           const sourceId = String(sourceIdStr)
@@ -435,6 +464,42 @@ export default {
             ...(newCache[sourceId] || []),
             ...validTasks
           ].slice(-this.maxBufferedTaskCacheSize)
+
+          tasks.forEach(task => {
+            task.data?.forEach(item => {
+              const vizId = String(item.id)
+              const newVariables = Object.keys(item.data || {})
+
+              // 查找对应配置
+              const vizConfig = (this.visualizationConfig[sourceId] || [])
+                  .find(v => v.id === vizId)
+
+              if (vizConfig && !this.arraysEqual(vizConfig.variables, newVariables)) {
+                configUpdates[sourceId] = configUpdates[sourceId] || []
+                configUpdates[sourceId].push({
+                  vizId,
+                  newVariables
+                })
+              }
+            })
+          })
+
+        })
+
+        Object.entries(configUpdates).forEach(([sourceId, updates]) => {
+          const newConfig = [...(this.visualizationConfig[sourceId] || [])]
+          updates.forEach(({vizId, newVariables}) => {
+            const index = newConfig.findIndex(v => v.id === vizId)
+            if (index !== -1) {
+              const updatedViz = {
+                ...newConfig[index],
+                variables: [...newVariables],
+                variablesHash: this.calculateVariablesHash(newVariables)
+              }
+              newConfig.splice(index, 1, updatedViz)
+            }
+          })
+          this.visualizationConfig[sourceId] = newConfig
         })
 
         // 强制替换整个缓存对象
