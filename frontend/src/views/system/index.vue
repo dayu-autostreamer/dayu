@@ -264,7 +264,7 @@ export default {
         newTasks.forEach(task => {
           task.data.forEach(item => {
             const vizId = item.id;
-            const newVariables = item.data?.variables;
+            const newVariables = Object.keys(item.data);
 
             console.log('newVariables:', newVariables);
 
