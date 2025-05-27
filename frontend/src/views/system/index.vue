@@ -165,19 +165,27 @@ export default {
     processVizData(vizConfig) {
       if (!this.bufferedTaskCache.length) return []
 
-      return this.bufferedTaskCache
-          .filter(task => {
-            return task.data?.some(item =>
-                String(item.id) === String(vizConfig.id))
-          })
-          .map(task => {
-            const vizDataItem = task.data.find(
-                item => String(item.id) === String(vizConfig.id))
-            return {
-              timestamp: new Date(task.timestamp).toLocaleString(),
-              ...(vizDataItem?.data || {})
-            }
-          })
+      try {
+        console.log('vizConfig', vizConfig);
+        console.log('bufferedTaskCache', this.bufferedTaskCache);
+
+        return this.bufferedTaskCache
+            .filter(task => {
+              return task.data?.some(item =>
+                  String(item.id) === String(vizConfig.id))
+            })
+            .map(task => {
+              const vizDataItem = task.data.find(
+                  item => String(item.id) === String(vizConfig.id))
+              return {
+                timestamp: new Date(task.timestamp).toLocaleString(),
+                ...(vizDataItem?.data || {})
+              }
+            })
+      } catch (error) {
+        console.error('Data process error:', error)
+      }
+
     },
 
     updateVariableStates(vizId, newStates) {
