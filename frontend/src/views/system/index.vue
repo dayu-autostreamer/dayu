@@ -134,7 +134,7 @@ export default {
     },
 
     getVizKey(viz) {
-      return `${viz.id}-${viz.variablesHash}-${viz.size}`;  // 包含可能影响布局的字段
+      return `${viz.id}-${viz.variablesHash}-${viz.size}`;
     },
 
     arraysEqual(a, b) {
@@ -225,7 +225,7 @@ export default {
           id: String(viz.id),
           size: Math.min(3, Math.max(1, parseInt(viz.size) || 1)),
           variables: [...(viz.variables || [])],
-          variablesHash: this.calculateVariablesHash(viz.variables)  // 新增哈希字段
+          variablesHash: this.calculateVariablesHash(viz.variables)
         }));
 
         this.activeVisualizations = new Set(this.visualizationConfig.map(viz => viz.id))
@@ -266,6 +266,8 @@ export default {
             const vizId = item.id;
             const newVariables = item.data?.variables;
 
+            console.log('newVariables:', newVariables);
+
             if (newVariables && Array.isArray(newVariables)) {
               const vizIndex = this.visualizationConfig.findIndex(v => v.id === vizId);
               if (vizIndex !== -1) {
@@ -277,9 +279,12 @@ export default {
                   const updatedViz = {
                     ...currentViz,
                     variables: [...newVariables],
-                    variablesHash: this.calculateVariablesHash(newVariables)  // 更新哈希
+                    variablesHash: this.calculateVariablesHash(newVariables)
                   };
                   this.visualizationConfig.splice(vizIndex, 1, updatedViz);
+
+                  console.log('update visualizationConfig:', this.visualizationConfig);
+
 
                   // 同步更新变量状态
                   const currentState = this.variableStates[vizId] || {};
