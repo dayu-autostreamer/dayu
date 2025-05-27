@@ -14,7 +14,7 @@ pod-template:
 cloud-pod-template:
   env:
     - name: DETECTOR_PARAMETERS
-      value: "{'weights':'yolov5s.engine', 'plugin_library':'libmyplugins.so', 'device':1}"
+      value: "{'weights':'yolov5s.engine', 'plugin_library':'libmyplugins.so', 'device':0}"
 edge-pod-template:
   env:
     - name: DETECTOR_PARAMETERS
