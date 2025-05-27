@@ -429,7 +429,7 @@ class BackendCore:
                 LOGGER.exception(e)
 
     def get_system_parameters(self):
-        return [{'data': self.prepare_system_visualizations_data()}]
+        return self.prepare_system_visualizations_data()
 
     def check_datasource_config(self, config_path):
         if not YamlOps.is_yaml_file(config_path):
