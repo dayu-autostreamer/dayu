@@ -128,6 +128,14 @@ export default {
   },
 
   methods: {
+    arraysEqual(a, b) {
+      if (a === b) return true;
+      if (!Array.isArray(a) || !Array.isArray(b)) return false;
+      if (a.length !== b.length) return false;
+      const sortedA = [...a].sort();
+      const sortedB = [...b].sort();
+      return sortedA.every((val, i) => val === sortedB[i]);
+    },
     getVisualizationSpan(size, breakpoint) {
       const baseSize = size || 1
       switch (breakpoint) {
@@ -189,10 +197,11 @@ export default {
     },
 
     updateVariableStates(vizId, newStates) {
-      this.variableStates[vizId] = {
-        ...this.variableStates[vizId],
-        ...newStates
-      }
+      const validVars = this.visualizationConfig.find(v => v.id === vizId)?.variables || [];
+      this.variableStates[vizId] = validVars.reduce((acc, varName) => {
+        acc[varName] = newStates[varName] ?? true;
+        return acc;
+      }, {});
       emitter.emit('force-update-charts')
     },
 
@@ -201,12 +210,13 @@ export default {
         const response = await fetch('/api/system_visualization_config')
         const data = await response.json()
 
-        this.visualizationConfig = data.map(viz => ({
-          ...viz,
+        this.visualizationConfig = data.map(viz => reactive({
           id: String(viz.id),
-          variables: viz.variables || [],
-          size: Math.min(3, Math.max(1, parseInt(viz.size) || 1))
-        }))
+          name: viz.name,
+          type: viz.type,
+          size: Math.min(3, Math.max(1, viz.size || 1)),
+          variables: [...(viz.variables || [])] // 确保数组引用可变
+        }));
 
         this.activeVisualizations = new Set(this.visualizationConfig.map(viz => viz.id))
 
@@ -240,6 +250,37 @@ export default {
             data: item.data
           }))
         }))
+
+        newTasks.forEach(task => {
+          task.data.forEach(item => {
+            const vizId = item.id;
+            const newVariables = item.data?.variables;
+
+            if (newVariables && Array.isArray(newVariables)) {
+              const vizIndex = this.visualizationConfig.findIndex(v => v.id === vizId);
+              if (vizIndex !== -1) {
+                const currentViz = this.visualizationConfig[vizIndex];
+
+                // 比较variables差异
+                if (!this.arraysEqual(currentViz.variables, newVariables)) {
+                  // 更新可视化配置
+                  const updatedViz = {
+                    ...currentViz,
+                    variables: [...newVariables]
+                  };
+                  this.visualizationConfig.splice(vizIndex, 1, updatedViz);
+
+                  // 同步更新变量状态
+                  const currentState = this.variableStates[vizId] || {};
+                  this.variableStates[vizId] = newVariables.reduce((acc, varName) => {
+                    acc[varName] = varName in currentState ? currentState[varName] : true;
+                    return acc;
+                  }, {});
+                }
+              }
+            }
+          });
+        });
 
         this.bufferedTaskCache = reactive([
           ...this.bufferedTaskCache,
