@@ -2,6 +2,6 @@
   type: curve
   x_axis: Time
   y_axis: Usage (%)
-  variables: []
+  variables: [ "no device" ]
   hook_name: cpu_usage
   size: 1

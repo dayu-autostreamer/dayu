@@ -94,6 +94,7 @@ export default {
       this.visualizationConfig.forEach(viz => {
         result[viz.id] = this.processVizData(viz)
       })
+      console.log('processedData', result)
       return result
     },
     currentActiveVisualizations() {
