@@ -375,14 +375,6 @@ export default {
         return acc
       }, {})
 
-      // this.variableStates[vizId] = {
-      //   ...this.variableStates[vizId],
-      //   ...newStates
-      // }
-      // this.variableStates[this.selectedDataSource][vizId] = {
-      //   ...(this.variableStates[this.selectedDataSource][vizId] || {}),
-      //   ...newStates
-      // }
       emitter.emit('force-update-charts')
     },
 

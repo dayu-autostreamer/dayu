@@ -5,10 +5,6 @@ REPOSITORY := $(or $(REPO),dayuhub)
 IMAGE_REPO ?= $(REGISTRY)/$(REPOSITORY)
 IMAGE_TAG ?= $(or $(TAG),v1.2)
 
-#$(info "REGISTRY = $(REGISTRY)")
-#$(info "REPOSITORY = $(REPOSITORY)")
-#$(info "IMAGE_TAG = $(IMAGE_TAG)")
-
 .EXPORT_ALL_VARIABLES:
 
 define BUILD_HELP_INFO
