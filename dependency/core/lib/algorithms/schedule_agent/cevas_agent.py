@@ -143,6 +143,9 @@ class CEVASAgent(BaseAgent, abc.ABC):
     def update_policy(self, policy):
         pass
 
+    def get_schedule_overhead(self):
+        return self.overhead_estimator.get_latest_overhead()
+
     def update_task(self, task):
         avg_num = np.mean(task.get_scenario_data()['obj_num'])
         file_size = task.get_tmp_data()['file_size']

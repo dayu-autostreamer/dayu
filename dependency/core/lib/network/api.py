@@ -14,6 +14,7 @@ class NetworkAPIPath:
     DISTRIBUTOR_IS_DATABASE_EMPTY = '/is_database_empty'
 
     SCHEDULER_SCHEDULE = '/schedule'
+    SCHEDULER_OVERHEAD = '/overhead'
     SCHEDULER_SCENARIO = '/scenario'
     SCHEDULER_POST_RESOURCE = '/resource'
     SCHEDULER_GET_RESOURCE = '/resource'
@@ -64,6 +65,7 @@ class NetworkAPIMethod:
     DISTRIBUTOR_IS_DATABASE_EMPTY = 'GET'
 
     SCHEDULER_SCHEDULE = 'GET'
+    SCHEDULER_OVERHEAD = 'GET'
     SCHEDULER_SCENARIO = 'POST'
     SCHEDULER_POST_RESOURCE = 'POST'
     SCHEDULER_GET_RESOURCE = 'GET'

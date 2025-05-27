@@ -12,3 +12,10 @@
   variables: []
   hook_name: memory_usage
   size: 1
+- name: Scheduling Overhead
+  type: curve
+  x_axis: Time
+  y_axis: Overhead (ms)
+  variables: [ "Overhead" ]
+  hook_name: schedule_overhead
+  size: 1

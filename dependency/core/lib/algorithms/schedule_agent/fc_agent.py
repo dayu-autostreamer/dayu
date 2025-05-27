@@ -113,3 +113,6 @@ class FCAgent(BaseAgent, abc.ABC):
         if len(self.history_window) >= self.window_length:
             self.history_window = self.history_window[1:]
         self.history_window.append(task.calculate_total_time() / task.get_metadata()['buffer_size'])
+
+    def get_schedule_overhead(self):
+        return self.overhead_estimator.get_latest_overhead()

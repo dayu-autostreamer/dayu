@@ -356,3 +356,6 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
     def update_task(self, task):
         pass
+
+    def get_schedule_overhead(self):
+        return self.overhead_estimator.get_latest_overhead()

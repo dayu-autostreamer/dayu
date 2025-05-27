@@ -22,7 +22,7 @@ pod-template:
     - name: SCH_AGENT_NAME
       value: hei_syn
     - name: SCH_AGENT_PARAMETERS
-      value: "{'window_size':8, 'mode':'train', 'model_dir':'model', 'load_model':False, 'load_model_episode':0}"
+      value: "{'window_size':8, 'mode':'train', 'model_dir':'model', 'load_model':False, 'load_model_episode':0, 'acc_gt_dir':'acc-gt-sparse'}"
 port-open:
   pos: cloud
   port: 9000

@@ -3,6 +3,7 @@ import abc
 import time
 
 from core.lib.common import ClassFactory, ClassType, LOGGER
+from core.lib.estimation import OverheadEstimator
 
 from .base_agent import BaseAgent
 
@@ -40,6 +41,8 @@ class HEINFAgent(BaseAgent, abc.ABC):
         self.latest_task_delay = None
         self.schedule_plan = None
 
+        self.overhead_estimator = OverheadEstimator('HEI-Micro-Only', 'scheduler/hei')
+
     def update_scenario(self, scenario):
         try:
             task_delay = scenario['delay']
@@ -63,11 +66,16 @@ class HEINFAgent(BaseAgent, abc.ABC):
     def get_schedule_plan(self, info):
         return self.schedule_plan
 
+    def get_schedule_overhead(self):
+        return self.overhead_estimator.get_latest_overhead()
+
     def run(self):
         LOGGER.info(f'[NF Inference] (agent {self.agent_id}) Start inference nf agent ..')
 
         while True:
             time.sleep(self.nf_schedule_interval)
 
-            self.schedule_plan = self.nf_agent(self.latest_policy, self.latest_task_delay)
+            with self.overhead_estimator:
+                self.schedule_plan = self.nf_agent(self.latest_policy, self.latest_task_delay)
+
             LOGGER.debug(f'[NF Update] (agent {self.agent_id}) schedule: {self.schedule_plan}')
