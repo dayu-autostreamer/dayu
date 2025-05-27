@@ -405,7 +405,7 @@ export default {
 
     async fetchVisualizationConfig(sourceId) {
       try {
-        const response = await fetch(`/api/visualization_config/${sourceId}`)
+        const response = await fetch(`/api/result_visualization_config/${sourceId}`)
         const data = await response.json()
 
         const processedConfig = data.map(viz => reactive({

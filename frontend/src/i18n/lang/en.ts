@@ -1,6 +1,6 @@
 export default {
     router: {
-        home: 'Home',
+        home: 'HomePage',
         install: 'Application Installation',
         dag: 'DAG Orchestration',
         datasource: 'Source Configuration',
