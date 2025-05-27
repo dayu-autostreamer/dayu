@@ -257,7 +257,7 @@ export default {
 
         this.$refs.uploadButton.loading = true
 
-        fetch(`/api/visualization_config/${this.selectedDataSource}`, {
+        fetch(`/api/result_visualization_config/${this.selectedDataSource}`, {
           method: 'POST',
           body: formData
         })
