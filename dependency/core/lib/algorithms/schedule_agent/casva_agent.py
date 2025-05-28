@@ -303,6 +303,9 @@ class CASVAAgent(BaseAgent, abc.ABC):
         self.latest_skip_count = info['skip_count']
         return self.schedule_plan
 
+    def get_schedule_overhead(self):
+        return self.overhead_estimator.get_latest_overhead()
+
     def run(self):
 
         if self.mode == 'train':

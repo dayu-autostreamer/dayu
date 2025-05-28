@@ -37,7 +37,8 @@ class ClassType:
 
     MON_PRAM = 'monitor_parameter'
 
-    VISUALIZER = 'visualizer'
+    RESULT_VISUALIZER = 'result_visualizer'
+    SYSTEM_VISUALIZER = 'system_visualizer'
 
 
 class ClassFactory(object):

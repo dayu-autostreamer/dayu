@@ -8,7 +8,7 @@ from .curve_visualizer import CurveVisualizer
 __all__ = ('ObjectNumberVisualizer',)
 
 
-@ClassFactory.register(ClassType.VISUALIZER, alias='obj_num')
+@ClassFactory.register(ClassType.RESULT_VISUALIZER, alias='obj_num')
 class ObjectNumberVisualizer(CurveVisualizer, abc.ABC):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

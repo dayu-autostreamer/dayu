@@ -119,6 +119,21 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
                     icon: 'iconfont icon-shuju',
                 },
             },
+            {
+                path: '/system',
+                name: 'system',
+                component: () => import('/@/views/system/index.vue'),
+                meta: {
+                    title: 'message.router.system',
+                    isLink: '',
+                    isHide: false,
+                    isKeepAlive: true,
+                    isAffix: false,
+                    isIframe: false,
+                    roles: ['dayu', 'common'],
+                    icon: 'iconfont icon-ico_shuju',
+                }
+            },
         ],
     },
 ];

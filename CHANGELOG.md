@@ -4,13 +4,18 @@
 
 ### Features
 
+
 ### Bug Fix
 - Fix concurrency conflicts for starting up multiple streams in rtsp video and http video (`datasource`).
+- Support dynamic variable update in visualization modules (`frontend`).
+- Support cloud-only deployment of processors (`backend`).
 
 ### Minor Update
-- Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios (`frontend`).
+- Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios (`frontend` / `backend`).
 - Clean up frontend code and beatify frontend pages (`frontend`).
 - Add persistent storage of installation configuration (`frontend`).
+- Add system visualization to monitor system parameters, including resource usage, scheduling cost and so on (`frontend` / `backend` / `scheduler`).
+
 
 ## v1.1
 

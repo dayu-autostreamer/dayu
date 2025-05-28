@@ -43,7 +43,7 @@ fi
 
 if ! pgrep -x "mediamtx" > /dev/null; then
     echo "Starting mediamtx server..."
-    "$RTSP_PATH"/mediamtx "$RTSP_PATH"/mediamtx.yml &
+    setsid "$RTSP_PATH"/mediamtx "$RTSP_PATH"/mediamtx.yml > /dev/null 2>&1 &
     sleep 4
 else
     echo "mediamtx server already running."

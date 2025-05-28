@@ -21,7 +21,9 @@ scheduler-policies:
   !include scheduler_policies.yaml
 services:
   !include services.yaml
-visualizations:
-  !include visualizations.yaml
+result-visualizations:
+  !include result-visualizations.yaml
+system-visualizations:
+  !include system-visualizations.yaml
 
 

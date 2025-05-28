@@ -356,16 +356,9 @@ class TemplateHelper:
                                 )
         if response is None:
             LOGGER.warning('[Service Deployment] No response from scheduler.')
-            invert_deployment_plan = {}
+            deployment_plan = {}
         else:
             deployment_plan = response['plan']
-            invert_deployment_plan = {}
-            for node, services in deployment_plan.items():
-                for service in services:
-                    if service in invert_deployment_plan:
-                        invert_deployment_plan[service].append(node)
-                    else:
-                        invert_deployment_plan[service] = [node]
 
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
@@ -374,25 +367,25 @@ class TemplateHelper:
             yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
             edge_nodes = service_dict[service_id]['node']
-            if (service_id in invert_deployment_plan and
-                    (set(invert_deployment_plan[service_id]) - set(edge_nodes) is not None)):
-                edge_nodes = list(set(invert_deployment_plan[service_id]) & set(edge_nodes))
+            if service_id in deployment_plan:
+                edge_nodes = list(set(deployment_plan[service_id]) & set(edge_nodes))
             else:
                 LOGGER.warning("Using default service plan.")
 
-            edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
+            if edge_nodes:
+                edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
+                edge_workers = []
+                for edge_node in edge_nodes:
+                    new_edge_worker = copy.deepcopy(edge_worker_template)
+                    new_edge_worker['template']['spec']['nodeName'] = edge_node
+                    edge_workers.append(new_edge_worker)
+                yaml_doc['spec']['edgeWorker'] = edge_workers
+            else:
+                del yaml_doc['spec']['edgeWorker']
+
             cloud_worker_template = yaml_doc['spec']['cloudWorker']
-
-            edge_workers = []
-            for edge_node in edge_nodes:
-                new_edge_worker = copy.deepcopy(edge_worker_template)
-                new_edge_worker['template']['spec']['nodeName'] = edge_node
-                edge_workers.append(new_edge_worker)
-
             new_cloud_worker = copy.deepcopy(cloud_worker_template)
             new_cloud_worker['template']['spec']['nodeName'] = cloud_node
-
-            yaml_doc['spec']['edgeWorker'] = edge_workers
             yaml_doc['spec']['cloudWorker'] = new_cloud_worker
 
             yaml_docs.append(yaml_doc)

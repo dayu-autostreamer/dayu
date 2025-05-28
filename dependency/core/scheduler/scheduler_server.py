@@ -20,6 +20,11 @@ class SchedulerServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_SCHEDULE]
                      ),
+            APIRoute(NetworkAPIPath.SCHEDULER_OVERHEAD,
+                     self.get_schedule_overhead,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_OVERHEAD]
+                     ),
             APIRoute(NetworkAPIPath.SCHEDULER_SCENARIO,
                      self.update_object_scenario,
                      response_class=JSONResponse,
@@ -60,6 +65,9 @@ class SchedulerServer:
         plan = self.scheduler.get_schedule_plan(data)
 
         return {'plan': plan}
+
+    async def get_schedule_overhead(self):
+        return self.scheduler.get_schedule_overhead()
 
     async def update_object_scenario(self, data: str = Form(...)):
         task = Task.deserialize(data)

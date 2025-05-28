@@ -8,7 +8,7 @@ from .topology_visualizer import TopologyVisualizer
 __all__ = ('DAGOffloadingTopologyVisualizer',)
 
 
-@ClassFactory.register(ClassType.VISUALIZER, alias='dag_offloading')
+@ClassFactory.register(ClassType.RESULT_VISUALIZER, alias='dag_offloading')
 class DAGOffloadingTopologyVisualizer(TopologyVisualizer, abc.ABC):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

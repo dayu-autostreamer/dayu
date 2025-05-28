@@ -92,3 +92,11 @@ class Scheduler:
         agent = self.schedule_table[source_id]
         plan = agent.get_service_deployment_plan(data)
         return plan
+
+    def get_schedule_overhead(self):
+        overheads = []
+        for source_id in self.schedule_table:
+            agent = self.schedule_table[source_id]
+            overheads.append(agent.get_schedule_overhead())
+
+        return sum(overheads) / len(overheads) if overheads else 0

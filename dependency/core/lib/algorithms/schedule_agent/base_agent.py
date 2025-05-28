@@ -32,5 +32,8 @@ class BaseAgent(metaclass=abc.ABCMeta):
     def get_service_deployment_plan(self, info):
         return self.service_deployment_policy(info)
 
+    def get_schedule_overhead(self):
+        return 0
+
     def run(self):
         raise NotImplementedError

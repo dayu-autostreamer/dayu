@@ -7,7 +7,7 @@ from .curve_visualizer import CurveVisualizer
 __all__ = ('ServiceProcessingDelayVisualizer',)
 
 
-@ClassFactory.register(ClassType.VISUALIZER, alias='service_processing_delay')
+@ClassFactory.register(ClassType.RESULT_VISUALIZER, alias='service_processing_delay')
 class ServiceProcessingDelayVisualizer(CurveVisualizer, abc.ABC):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

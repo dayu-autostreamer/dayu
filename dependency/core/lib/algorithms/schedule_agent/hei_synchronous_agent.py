@@ -4,8 +4,8 @@ import time
 import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
-from core.lib.estimation import AccEstimator
-from core.lib.common import VideoOps, FileNameConstant
+from core.lib.estimation import AccEstimator, OverheadEstimator
+from core.lib.common import VideoOps
 
 from .base_agent import BaseAgent
 
@@ -21,7 +21,13 @@ class HEISYNAgent(BaseAgent, abc.ABC):
                  mode: str = 'inference',
                  model_dir: str = 'model',
                  load_model: bool = False,
-                 load_model_episode: int = 0):
+                 load_model_episode: int = 0,
+                 acc_gt_dir: str = '',
+                 relaxed_coefficient: float = 1.6,
+                 punishment_coefficient: float = 20,
+                 punishment_bound: float = -2,
+                 reward_bound: float = 0.5,
+                 reward_coefficient: float = 0.3, ):
         super().__init__()
 
         from .hei import SoftActorCritic, RandomBuffer, Adapter, NegativeFeedback, StateBuffer
@@ -37,6 +43,12 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         self.state_buffer = StateBuffer(self.window_size)
         self.mode = mode
 
+        self.relaxed_coefficient = relaxed_coefficient
+        self.punishment_coefficient = punishment_coefficient
+        self.punishment_bound = punishment_bound
+        self.reward_bound = reward_bound
+        self.reward_coefficient = reward_coefficient
+
         self.drl_agent = SoftActorCritic(**drl_params)
         self.replay_buffer = RandomBuffer(**drl_params)
         self.adapter = Adapter
@@ -49,6 +61,7 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         self.state_dim = drl_params['state_dims']
         self.action_dim = drl_params['action_dim']
 
+        self.acc_gt_dir = acc_gt_dir
         self.acc_estimator = None
 
         self.model_dir = Context.get_file_path(os.path.join('scheduler/hei', model_dir, f'agent_{self.agent_id}'))
@@ -66,6 +79,9 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         self.latest_policy = None
         self.latest_task_delay = None
         self.schedule_plan = None
+
+        self.macro_overhead_estimator = OverheadEstimator('HEI-Macro-Syn', 'scheduler/hei')
+        self.micro_overhead_estimator = OverheadEstimator('HEI-Micro-Syn', 'scheduler/hei')
 
     def get_drl_state_buffer(self):
         while True:
@@ -85,7 +101,8 @@ class HEISYNAgent(BaseAgent, abc.ABC):
 
         LOGGER.info(f'[DRL Decision] (agent {self.agent_id}) Action: {action}   Decision:{self.intermediate_decision}')
 
-        self.schedule_plan = self.nf_agent(self.latest_policy, self.latest_task_delay, self.intermediate_decision)
+        with self.micro_overhead_estimator:
+            self.schedule_plan = self.nf_agent(self.latest_policy, self.latest_task_delay, self.intermediate_decision)
 
         LOGGER.debug(f'[NF Update] (agent {self.agent_id}) schedule: {self.schedule_plan}')
 
@@ -110,7 +127,7 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         return state, reward, done, info
 
     def create_acc_estimator(self, service_name: str):
-        gt_path_prefix = os.path.join(FileNameConstant.ACC_GT_DIR.value, service_name)
+        gt_path_prefix = os.path.join(self.acc_gt_dir, service_name)
         gt_file_path = Context.get_file_path(os.path.join(gt_path_prefix, 'gt_file.txt'))
         self.acc_estimator = AccEstimator(gt_file_path)
 
@@ -148,9 +165,9 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         LOGGER.info(f'[Reward Computing] delay:{final_delay} acc:{final_acc}')
 
         if final_delay < 0:
-            reward = min(final_delay * 20, -2)
+            reward = max(final_delay * self.punishment_coefficient, self.punishment_bound)
         else:
-            reward = 1 / max(final_delay, 0.5) * 0.3 + final_acc
+            reward = 1 / max(final_delay, self.reward_bound) * self.reward_coefficient + final_acc
 
         return reward
 
@@ -158,7 +175,9 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         LOGGER.info(f'[DRL Train] (agent {self.agent_id}) Start train drl agent ..')
         state = self.reset_drl_env()
         for step in range(self.total_steps):
-            action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
+
+            with self.macro_overhead_estimator:
+                action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
 
             next_state, reward, done, info = self.step_drl_env(action)
             done = self.adapter.done_adapter(done, step)
@@ -187,7 +206,10 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         while True:
             time.sleep(self.drl_schedule_interval)
             cur_step += 1
-            action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
+
+            with self.macro_overhead_estimator:
+                action = self.drl_agent.select_action(state, deterministic=False, with_logprob=False)
+
             next_state, reward, done, info = self.step_drl_env(action)
             done = self.adapter.done_adapter(done, cur_step)
             state = next_state
@@ -229,6 +251,9 @@ class HEISYNAgent(BaseAgent, abc.ABC):
 
     def set_latest_policy(self, policy):
         self.latest_policy = policy
+
+    def get_schedule_overhead(self):
+        return self.micro_overhead_estimator.get_latest_overhead() + self.macro_overhead_estimator.get_latest_overhead()
 
     def get_schedule_plan(self, info):
         return self.schedule_plan

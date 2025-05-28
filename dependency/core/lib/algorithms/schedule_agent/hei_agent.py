@@ -269,6 +269,11 @@ class HEIAgent(BaseAgent, abc.ABC):
     def get_schedule_plan(self, info):
         return self.schedule_plan
 
+    def get_schedule_overhead(self):
+        return self.micro_overhead_estimator.get_latest_overhead() + \
+            (self.nf_schedule_interval / self.drl_schedule_interval) * \
+            self.macro_overhead_estimator.get_latest_overhead()
+
     def run(self):
         threading.Thread(target=self.run_nf_agent).start()
 
