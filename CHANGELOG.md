@@ -1,6 +1,6 @@
 # Dayu Release Notes
 
-## v1.2
+## v1.2 (In Development)
 
 ### Features
 
