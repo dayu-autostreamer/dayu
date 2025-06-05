@@ -98,10 +98,16 @@ If you have questions, feel free to reach out to us in the following ways:
 - [Lei Xie (lxie@nju.edu.cn)](mailto:lxie@nju.edu.cn)
 - [Wenhui Zhou (whzhou@smail.nju.edu.cn)](mailto:whzhou@smail.nju.edu.cn)
 
+## License
+Dayu is under the Apache 2.0 license. See the [LICENSE](LICENSE) file for details.
+
 ## Contributing
 
 If you're interested in being a contributor and want to get involved in developing the Dayu code, please see [CONTRIBUTING](CONTRIBUTING.md) for details on submitting patches and the contribution workflow.
 
-## License
-Dayu is under the Apache 2.0 license. See the [LICENSE](LICENSE) file for details.
+Thanks for the following contributors:
+
+<a href="https://github.com/dayu-autostreamer/dayu/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu"  alt=""/>
+</a>
 

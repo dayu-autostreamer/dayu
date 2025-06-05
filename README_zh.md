@@ -94,11 +94,17 @@
 - [谢磊 lxie@nju.edu.cn](mailto:lxie@nju.edu.cn)
 - [周文晖 whzhou@smail.nju.edu.cn](mailto:whzhou@smail.nju.edu.cn)
 
-## 贡献
-
-如果您有兴趣成为贡献者并希望参与大禹系统代码的开发，请参阅[CONTRIBUTING](CONTRIBUTING.md)，了解提交补丁和贡献流程的详细信息。
-
 ## 许可证
 
 大禹系统遵循Apache 2.0许可证,请参阅[LICENSE](LICENSE)以获取详细信息。
 
+
+## 贡献
+
+如果您有兴趣成为贡献者并希望参与大禹系统代码的开发，请参阅[CONTRIBUTING](CONTRIBUTING.md)，了解提交补丁和贡献流程的详细信息。
+
+感谢以下开发者对大禹系统的贡献：
+
+<a href="https://github.com/dayu-autostreamer/dayu/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu"  alt=""/>
+</a>
