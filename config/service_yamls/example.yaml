@@ -1,0 +1,563 @@
+apiVersion: sedna.io/v1alpha1
+kind: JointMultiEdgeService
+metadata:
+  name: controller
+  namespace: dayu
+spec:
+  cloudWorker:
+    logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: DISPLAY
+            value: 'True'
+          - name: DELETE_TEMP_FILES
+            value: 'False'
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/controller:v1.2
+          imagePullPolicy: IfNotPresent
+          name: controller
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: cloud.kubeedge
+        serviceAccountName: worker-admin
+  edgeWorker:
+  - logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: DISPLAY
+            value: 'True'
+          - name: DELETE_TEMP_FILES
+            value: 'False'
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/controller:v1.2
+          imagePullPolicy: IfNotPresent
+          name: controller
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: edge2
+        serviceAccountName: worker-admin
+  - logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: DISPLAY
+            value: 'True'
+          - name: DELETE_TEMP_FILES
+            value: 'False'
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/controller:v1.2
+          imagePullPolicy: IfNotPresent
+          name: controller
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: edge1
+        serviceAccountName: worker-admin
+  serviceConfig:
+    port: 9000
+    pos: both
+    targetPort: 9000
+---
+apiVersion: sedna.io/v1alpha1
+kind: JointMultiEdgeService
+metadata:
+  name: distributor
+  namespace: dayu
+spec:
+  cloudWorker:
+    logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/distributor:v1.2
+          imagePullPolicy: IfNotPresent
+          name: distributor
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: cloud.kubeedge
+        serviceAccountName: worker-admin
+  serviceConfig:
+    port: 9000
+    pos: cloud
+    targetPort: 9000
+---
+apiVersion: sedna.io/v1alpha1
+kind: JointMultiEdgeService
+metadata:
+  name: scheduler
+  namespace: dayu
+spec:
+  cloudWorker:
+    file:
+      paths:
+      - /data/dayu-files/scheduler/fixed/
+    logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: SCH_CONFIG_EXTRACTION_NAME
+            value: simple
+          - name: SCH_SCENARIO_EXTRACTION_NAME
+            value: simple
+          - name: SCH_STARTUP_POLICY_NAME
+            value: fixed
+          - name: SCH_POLICY_EXTRACTION_NAME
+            value: simple
+          - name: SCH_SELECTION_POLICY_NAME
+            value: fixed
+          - name: SCH_SELECTION_POLICY_PARAMETERS
+            value: '{''fixed_value'':0, ''fixed_type'':''position''}'
+          - name: SCH_DEPLOYMENT_POLICY_NAME
+            value: fixed
+          - name: SCH_DEPLOYMENT_POLICY_PARAMETERS
+            value: '{''policy'':{''face-detection'':[''edge1''],''gender-classification'':[],
+              ''age-classification'':[''edge2'']}}'
+          - name: SCH_AGENT_NAME
+            value: fixed
+          - name: SCH_AGENT_PARAMETERS
+            value: '{''configuration'':{''resolution'': ''720p'',''fps'': 15,''encoding'':
+              ''mp4v'',''buffer_size'': 4},''offloading'':{''face-detection'': ''edge1'',
+              ''age-classification'':''edge2'', ''gender-classification'':''cloud.kubeedge''}}'
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/scheduler:v1.2
+          imagePullPolicy: IfNotPresent
+          name: scheduler
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: cloud.kubeedge
+        serviceAccountName: worker-admin
+  serviceConfig:
+    port: 9000
+    pos: cloud
+    targetPort: 9000
+---
+apiVersion: sedna.io/v1alpha1
+kind: JointMultiEdgeService
+metadata:
+  name: monitor
+  namespace: dayu
+spec:
+  cloudWorker:
+    logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: INTERVAL
+            value: '5'
+          - name: MONITORS
+            value: '[''cpu'', ''memory'', ''bandwidth'']'
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/monitor:v1.2
+          imagePullPolicy: IfNotPresent
+          name: monitor
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: cloud.kubeedge
+        serviceAccountName: worker-admin
+  edgeWorker:
+  - logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: INTERVAL
+            value: '5'
+          - name: MONITORS
+            value: '[''cpu'', ''memory'', ''bandwidth'']'
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/monitor:v1.2
+          imagePullPolicy: IfNotPresent
+          name: monitor
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: edge2
+        serviceAccountName: worker-admin
+  - logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: INTERVAL
+            value: '5'
+          - name: MONITORS
+            value: '[''cpu'', ''memory'']'
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/monitor:v1.2
+          imagePullPolicy: IfNotPresent
+          name: monitor
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: edge1
+        serviceAccountName: worker-admin
+  serviceConfig:
+    port: 9000
+    pos: cloud
+    targetPort: 9000
+---
+apiVersion: sedna.io/v1alpha1
+kind: JointMultiEdgeService
+metadata:
+  name: generator
+  namespace: dayu
+spec:
+  edgeWorker:
+  - logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: GEN_FILTER_NAME
+            value: simple
+          - name: GEN_GETTER_FILTER_NAME
+            value: simple
+          - name: GEN_PROCESS_NAME
+            value: simple
+          - name: GEN_COMPRESS_NAME
+            value: simple
+          - name: GEN_BSO_NAME
+            value: simple
+          - name: GEN_BSTO_NAME
+            value: simple
+          - name: GEN_ASO_NAME
+            value: simple
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GEN_GETTER_NAME
+            value: rtsp_video
+          - name: SOURCE_URL
+            value: rtsp://192.168.1.91:30345/video0
+          - name: SOURCE_TYPE
+            value: video
+          - name: SOURCE_ID
+            value: '0'
+          - name: SOURCE_METADATA
+            value: '{''resolution'': ''1080p'', ''fps'': 30, ''encoding'': ''mp4v'',
+              ''buffer_size'': 4}'
+          - name: ALL_EDGE_DEVICES
+            value: '[''edge1'', ''edge2'']'
+          - name: DAG
+            value: '{''face-detection'': {''service'': {''service_name'': ''face-detection''},
+              ''next_nodes'': [''gender-classification'', ''age-classification'']},
+              ''gender-classification'': {''service'': {''service_name'': ''gender-classification''},
+              ''next_nodes'': []}, ''age-classification'': {''service'': {''service_name'':
+              ''age-classification''}, ''next_nodes'': []}}'
+          image: repo:5000/dayuhub/generator:v1.2
+          imagePullPolicy: IfNotPresent
+          name: generator72be828d-bc29-4b59-af34-0017b2c7b65a
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: edge1
+        serviceAccountName: worker-admin
+---
+apiVersion: sedna.io/v1alpha1
+kind: JointMultiEdgeService
+metadata:
+  name: processor-face-detection
+  namespace: dayu
+spec:
+  cloudWorker:
+    file:
+      paths:
+      - /data/dayu-files/processor/face-detection/
+    logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: PROCESSOR_NAME
+            value: detector_tracker_processor
+          - name: DETECTOR_PARAMETERS
+            value: '{''weights'':''retina_mnet.engine'', ''plugin_library'':''libdecodeplugin.so''}'
+          - name: SCENARIOS_EXTRACTORS
+            value: '[''obj_num'', ''obj_size'']'
+          - name: PRO_QUEUE_NAME
+            value: simple
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/face-detection:v1.2
+          imagePullPolicy: IfNotPresent
+          name: processor-face-detection
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: cloud.kubeedge
+        serviceAccountName: worker-admin
+  edgeWorker:
+  - file:
+      paths:
+      - /data/dayu-files/processor/face-detection/
+    logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: PROCESSOR_NAME
+            value: detector_tracker_processor
+          - name: DETECTOR_PARAMETERS
+            value: '{''weights'':''retina_mnet.engine'', ''plugin_library'':''libdecodeplugin.so''}'
+          - name: SCENARIOS_EXTRACTORS
+            value: '[''obj_num'', ''obj_size'']'
+          - name: PRO_QUEUE_NAME
+            value: simple
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/face-detection:v1.2
+          imagePullPolicy: IfNotPresent
+          name: processor-face-detection
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: edge1
+        serviceAccountName: worker-admin
+  serviceConfig:
+    port: 9000
+    pos: both
+    targetPort: 9000
+---
+apiVersion: sedna.io/v1alpha1
+kind: JointMultiEdgeService
+metadata:
+  name: processor-gender-classification
+  namespace: dayu
+spec:
+  cloudWorker:
+    file:
+      paths:
+      - /data/dayu-files/processor/gender-classification/
+    logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: PROCESSOR_NAME
+            value: classifier_processor
+          - name: CLASSIFIER_PARAMETERS
+            value: '{''weights'':''gender_resnet18.engine''}'
+          - name: SCENARIOS_EXTRACTORS
+            value: '[''obj_num'', ''obj_size'']'
+          - name: PRO_QUEUE_NAME
+            value: simple
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/gender-classification:v1.2
+          imagePullPolicy: IfNotPresent
+          name: processor-gender-classification
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: cloud.kubeedge
+        serviceAccountName: worker-admin
+  serviceConfig:
+    port: 9000
+    pos: both
+    targetPort: 9000
+---
+apiVersion: sedna.io/v1alpha1
+kind: JointMultiEdgeService
+metadata:
+  name: processor-age-classification
+  namespace: dayu
+spec:
+  cloudWorker:
+    file:
+      paths:
+      - /data/dayu-files/processor/age-classification/
+    logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: PROCESSOR_NAME
+            value: classifier_processor
+          - name: CLASSIFIER_PARAMETERS
+            value: '{''weights'':''age_resnet18.engine''}'
+          - name: SCENARIOS_EXTRACTORS
+            value: '[''obj_num'', ''obj_size'']'
+          - name: PRO_QUEUE_NAME
+            value: simple
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/age-classification:v1.2
+          imagePullPolicy: IfNotPresent
+          name: processor-age-classification
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: cloud.kubeedge
+        serviceAccountName: worker-admin
+  edgeWorker:
+  - file:
+      paths:
+      - /data/dayu-files/processor/age-classification/
+    logLevel:
+      level: DEBUG
+    template:
+      spec:
+        containers:
+        - env:
+          - name: PROCESSOR_NAME
+            value: classifier_processor
+          - name: CLASSIFIER_PARAMETERS
+            value: '{''weights'':''age_resnet18.engine''}'
+          - name: SCENARIOS_EXTRACTORS
+            value: '[''obj_num'', ''obj_size'']'
+          - name: PRO_QUEUE_NAME
+            value: simple
+          - name: NAMESPACE
+            value: dayu
+          - name: KUBERNETES_SERVICE_HOST
+            value: 114.212.81.11
+          - name: KUBERNETES_SERVICE_PORT
+            value: '6443'
+          - name: GUNICORN_PORT
+            value: '9000'
+          - name: FILE_PREFIX
+            value: /data/dayu-files
+          image: repo:5000/dayuhub/age-classification:v1.2
+          imagePullPolicy: IfNotPresent
+          name: processor-age-classification
+          ports:
+          - containerPort: 9000
+        dnsPolicy: ClusterFirstWithHostNet
+        nodeName: edge2
+        serviceAccountName: worker-admin
+  serviceConfig:
+    port: 9000
+    pos: both
+    targetPort: 9000
