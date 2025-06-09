@@ -1,15 +1,15 @@
 import abc
 import random
 
-from .base_deployment_policy import BaseDeploymentPolicy
+from .base_initial_deployment_policy import BaseInitialDeploymentPolicy
 
 from core.lib.common import ClassFactory, ClassType, LOGGER
 
-__all__ = ('RandomDeploymentPolicy',)
+__all__ = ('RandomInitialDeploymentPolicy',)
 
 
-@ClassFactory.register(ClassType.SCH_DEPLOYMENT_POLICY, alias='random')
-class RandomDeploymentPolicy(BaseDeploymentPolicy, abc.ABC):
+@ClassFactory.register(ClassType.SCH_INITIAL_DEPLOYMENT_POLICY, alias='random')
+class RandomInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
     def __init__(self, max_service_num=-1):
         self.max_service_num = max_service_num
 
@@ -25,7 +25,7 @@ class RandomDeploymentPolicy(BaseDeploymentPolicy, abc.ABC):
             if self.max_service_num != -1:
                 available_nodes = [n for n in node_set if len(deploy_plan[n]) < self.max_service_num]
                 if not available_nodes:
-                    LOGGER.warning(f"[Deployment] (source {source_id}) Service '{service}' cannot be deployed，"
+                    LOGGER.warning(f"[Initial Deployment] (source {source_id}) Service '{service}' cannot be deployed，"
                                    f"please check max_service_num (current:{self.max_service_num}) "
                                    f"or add nodes (current: {node_set})")
                 node = random.choice(available_nodes)
@@ -46,6 +46,6 @@ class RandomDeploymentPolicy(BaseDeploymentPolicy, abc.ABC):
             if add_num > 0:
                 deploy_plan[node].extend(random.sample(candidates, add_num))
 
-        LOGGER.info(f'[Deployment] (source {source_id}) Deploy policy: {deploy_plan}')
+        LOGGER.info(f'[Initial Deployment] (source {source_id}) Deploy policy: {deploy_plan}')
 
         return deploy_plan

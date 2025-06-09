@@ -1,5 +1,6 @@
 import copy
 import re
+import threading
 from collections import deque
 from func_timeout import func_set_timeout as timeout
 import func_timeout.exceptions as timeout_exceptions
@@ -46,6 +47,10 @@ class BackendCore:
         self.task_results = {}
 
         self.is_get_result = False
+        self.is_cycle_deploy = False
+
+        self.yaml_dict = None
+        self.source_deploy = None
 
         self.cur_yaml_docs = None
         self.save_yaml_path = 'resources.yaml'
@@ -81,6 +86,9 @@ class BackendCore:
 
         service_dict, source_deploy = self.extract_service_from_source_deployment(source_deploy)
         yaml_dict.update({'processor': self.template_helper.load_application_apply_yaml(service_dict)})
+
+        self.yaml_dict = yaml_dict
+        self.source_deploy = source_deploy
 
         first_stage_components = ['scheduler', 'distributor', 'monitor', 'controller']
         second_stage_components = ['generator', 'processor']
@@ -121,10 +129,18 @@ class BackendCore:
         if not result:
             return False, msg
 
+        # Start cycle deployment
+        self.is_cycle_deploy = True
+        threading.Thread(target=self.run_cycle_deploy).start()
+
         return True, 'Install services successfully'
 
     def parse_and_delete_templates(self):
-        docs = self.get_yaml_docs()
+
+        # End cycle deployment
+        self.is_cycle_deploy = False
+
+        docs = self.read_component_yaml()
         try:
             result, msg = self.uninstall_yaml_templates(docs)
         except timeout_exceptions.FunctionTimedOut as e:
@@ -139,25 +155,103 @@ class BackendCore:
 
         return result, msg
 
-    @timeout(120)
-    def uninstall_yaml_templates(self, yaml_docs):
-        res = KubeHelper.delete_custom_resources(yaml_docs)
-        while KubeHelper.check_component_pods_exist(self.namespace):
-            time.sleep(1)
-        return res, '' if res else 'kubernetes api error'
+    def parse_and_redeploy_services(self, update_docs):
+        original_docs = self.read_component_yaml()
+        if not original_docs:
+            msg = 'no valid components yaml docs found.'
+            LOGGER.warning(msg)
+            return False, ''
 
-    @timeout(60)
+        _, docs_to_add, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
+
+        # delete old processors
+        res, msg = self.uninstall_processors(docs_to_delete)
+        if not res:
+            return False, msg
+
+        # deploy new processors
+        res, msg = self.install_processors(docs_to_add)
+        if not res:
+            return False, msg
+
+        return True, ''
+
+    @timeout(100)
+    def install_processors(self, yaml_docs):
+        if not yaml_docs:
+            return True, 'no processors need to be installed.'
+        _result = KubeHelper.apply_custom_resources(yaml_docs)
+        processors = [doc['metadata']['name'] for doc in yaml_docs]
+        while not KubeHelper.check_specific_pods_running(self.namespace, processors):
+            time.sleep(1)
+        return _result, '' if _result else 'kubernetes api error'
+
+    @timeout(200)
+    def uninstall_processors(self, yaml_docs):
+        if not yaml_docs:
+            return True, 'no processors need to be uninstalled'
+        _result = KubeHelper.delete_custom_resources(yaml_docs)
+        processors = [doc['metadata']['name'] for doc in yaml_docs]
+        while KubeHelper.check_specific_pods_exist(self.namespace, processors):
+            time.sleep(1)
+        return _result, '' if _result else 'kubernetes api error'
+
+    @timeout(100)
     def install_yaml_templates(self, yaml_docs):
         if not yaml_docs:
-            return False, 'components yaml data is empty'
+            return False, 'yaml data is lost, fail to install resources'
         _result = KubeHelper.apply_custom_resources(yaml_docs)
         while not KubeHelper.check_pods_running(self.namespace):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
 
+    @timeout(200)
+    def uninstall_yaml_templates(self, yaml_docs):
+        if not yaml_docs:
+            return False, 'yaml docs is lost, fail to delete resources'
+        _result = KubeHelper.delete_custom_resources(yaml_docs)
+        while KubeHelper.check_component_pods_exist(self.namespace):
+            time.sleep(1)
+        return _result, '' if _result else 'kubernetes api error'
+
+    @staticmethod
+    def check_and_update_docs_list(original_docs, update_docs):
+        original_dict = {doc['metadata']['name']: doc for doc in original_docs}
+        update_dict = {doc['metadata']['name']: doc for doc in update_docs}
+
+        resources_to_delete = []
+        resources_to_add = []
+        for name, new_doc in update_dict.items():
+            if name in original_dict:
+                if original_dict[name] != new_doc:
+                    resources_to_delete.append(original_dict[name])
+                    resources_to_add.append(new_doc)
+                    original_dict[name] = new_doc
+            else:
+                resources_to_add.append(new_doc)
+                original_dict[name] = new_doc
+
+        total_docs = list(original_dict.values())
+        return total_docs, resources_to_add, resources_to_delete
+
     def save_component_yaml(self, docs_list):
         self.cur_yaml_docs = docs_list
         YamlOps.write_all_yaml(docs_list, self.save_yaml_path)
+
+    def read_component_yaml(self):
+        if self.cur_yaml_docs:
+            return self.cur_yaml_docs
+        elif os.path.exists(self.save_yaml_path):
+            return YamlOps.read_all_yaml(self.save_yaml_path)
+        else:
+            return None
+
+    def update_component_yaml(self, update_docs_list):
+        original_docs_list = self.read_component_yaml()
+        if not original_docs_list:
+            raise Exception('No valid components yaml docs found.')
+        total_docs, _, _ = self.check_and_update_docs_list(original_docs_list, update_docs_list)
+        self.save_component_yaml(total_docs)
 
     def extract_service_from_source_deployment(self, source_deploy):
         service_dict = {}
@@ -185,14 +279,6 @@ class BackendCore:
             s['dag'] = extracted_dag
 
         return service_dict, source_deploy
-
-    def get_yaml_docs(self):
-        if self.cur_yaml_docs:
-            return self.cur_yaml_docs
-        elif os.path.exists(self.save_yaml_path):
-            return YamlOps.read_all_yaml(self.save_yaml_path)
-        else:
-            return None
 
     def clear_yaml_docs(self):
         self.cur_yaml_docs = None
@@ -425,7 +511,33 @@ class BackendCore:
                 self.parse_task_result(results)
 
             except Exception as e:
-                LOGGER.warning(f'Error occurred in getting task result: {str(e)}')
+                LOGGER.warning(f'Unexpected error occurred in getting task result: {str(e)}')
+                LOGGER.exception(e)
+
+    def run_cycle_deploy(self):
+        time.sleep(5)
+        while self.is_cycle_deploy:
+            try:
+                time.sleep(1)
+                if not self.yaml_dict or not self.source_deploy:
+                    LOGGER.debug('[REDEPLOYMENT] Configuration is lacked, cancel redeployment request..')
+                    time.sleep(5)
+                    continue
+                if KubeHelper.check_pods_running(self.namespace):
+                    LOGGER.debug('[REDEPLOYMENT] Pods is in error state, cancel redeployment request..')
+                    time.sleep(5)
+                    continue
+
+                redeploy_docs_list = self.template_helper.finetune_yaml_parameters(self.yaml_dict, self.source_deploy,
+                                                                                   scopes=['processor'])
+
+                res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
+
+                if res:
+                    self.update_component_yaml(redeploy_docs_list)
+
+            except Exception as e:
+                LOGGER.warning(f'[REDEPLOYMENT] Unexpected error occurred in redeployment: {e}')
                 LOGGER.exception(e)
 
     def get_system_parameters(self):

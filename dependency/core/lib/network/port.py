@@ -10,7 +10,7 @@ class PortInfo:
         ports_list = list(ports_dict.values())
         if ports_list:
             return ports_list[0]
-        assert None, f"Component '{component_name}' does not exist."
+        raise Exception(f"Component '{component_name}' does not exist.")
 
     @staticmethod
     def get_all_ports(keyword: str) -> dict:

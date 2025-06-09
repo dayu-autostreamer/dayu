@@ -197,16 +197,16 @@ class BackendServer:
         [
                     {
                         "dag_id":1,
-                        "dag_name":"headup",
+                        "dag_name":"...",
                         "dag":{
                             "node_id_A":{
-                                "id" : "skyrim's node",
+                                "id" : "...",
                                 "prev" : [],
                                 "succ" : ["node_id_B", ...],
                                 "service_id" : "car_detection"
                             },
                             "node_id_B":{
-                                "id" : "skyrim's node",
+                                "id" : "...",
                                 "prev" : ["node_id_A"],
                                 "succ" : [],
                                 "service_id" : "plate_recognition"
@@ -215,16 +215,16 @@ class BackendServer:
                     },
                     {
                         "dag_id":2,
-                        "dag_name":"headup",
+                        "dag_name":"...",
                         "dag":{
                             "node_id_A":{
-                                "id" : "skyrim's node",
+                                "id" : "...",
                                 "prev" : [],
                                 "succ" : ["node_id_B", ...],
                                 "service_id" : car_detection
                             },
                             "node_id_B":{
-                                "id" : "skyrim's node",
+                                "id" : "...",
                                 "prev" : ["node_id_A"],
                                 "succ" : [],
                                 "service_id" : plate_recognition

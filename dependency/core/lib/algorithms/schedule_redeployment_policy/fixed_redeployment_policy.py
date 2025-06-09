@@ -1,15 +1,15 @@
 import abc
 import copy
 
-from .base_deployment_policy import BaseDeploymentPolicy
+from .base_redeployment_policy import BaseRedeploymentPolicy
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, ConfigLoader, Context
 
-__all__ = ('FixedDeploymentPolicy',)
+__all__ = ('FixedRedeploymentPolicy',)
 
 
-@ClassFactory.register(ClassType.SCH_DEPLOYMENT_POLICY, alias='fixed')
-class FixedDeploymentPolicy(BaseDeploymentPolicy, abc.ABC):
+@ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='fixed')
+class FixedRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
     def __init__(self, policy):
         """
         Args:
@@ -38,6 +38,6 @@ class FixedDeploymentPolicy(BaseDeploymentPolicy, abc.ABC):
                 deploy_plan[service] = list(node_set)
 
 
-        LOGGER.info(f'[Deployment] (source {source_id}) Deploy policy: {deploy_plan}')
+        LOGGER.info(f'[Redeployment] (source {source_id}) Deploy policy: {deploy_plan}')
 
         return deploy_plan
