@@ -1,7 +1,8 @@
-from .generator import Generator
-from core.lib.content import Task
+import time
 
-from core.lib.common import ClassType, ClassFactory, Context, LOGGER
+from core.lib.common import ClassType, ClassFactory, Context, LOGGER, KubeConfig
+
+from .generator import Generator
 
 
 @ClassFactory.register(ClassType.GENERATOR, alias='video')
@@ -25,9 +26,18 @@ class VideoGenerator(Generator):
         self.after_schedule_operation(self, None)
 
         while True:
+            if KubeConfig.check_services_running():
+                LOGGER.debug("Services not in running state, wait for service deployment..")
+                time.sleep(2)
+                continue
+
+            # skip getter according to some specific requirements
             if not self.getter_filter(self):
                 LOGGER.info('[Filter Getter] step to next round of getter.')
                 continue
+
+            # get data from source
             self.data_getter(self)
 
+            # request schedule policy for subsequent tasks
             self.request_schedule_policy()
