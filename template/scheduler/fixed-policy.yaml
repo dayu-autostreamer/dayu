@@ -17,8 +17,12 @@ pod-template:
       value: "{'fixed_value':0, 'fixed_type':'position'}"
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
       value: fixed
-    - name: SCH_DEPLOYMENT_POLICY_PARAMETERS
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
       value: "{'policy':{'face-detection':['edge1'],'gender-classification':[], 'age-classification':['edge2']}}"
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
+      value: "{'policy':{'face-detection':['edge2'],'gender-classification':['edge1'], 'age-classification':[]}}"
     - name: SCH_AGENT_NAME
       value: fixed
     - name: SCH_AGENT_PARAMETERS
