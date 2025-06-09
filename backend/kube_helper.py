@@ -134,7 +134,7 @@ class KubeHelper:
         return False
 
     @staticmethod
-    def check_specific_pods_exist(namespace, specific_pods):
+    def check_specific_pods_exist(namespace: str, specific_pods: list):
         config.load_incluster_config()
         v1 = client.CoreV1Api()
         pods = v1.list_namespaced_pod(namespace)
