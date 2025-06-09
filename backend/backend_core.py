@@ -523,7 +523,7 @@ class BackendCore:
                     LOGGER.debug('[REDEPLOYMENT] Configuration is lacked, cancel redeployment request..')
                     time.sleep(5)
                     continue
-                if KubeHelper.check_pods_running(self.namespace):
+                if not KubeHelper.check_pods_running(self.namespace):
                     LOGGER.debug('[REDEPLOYMENT] Pods is in error state, cancel redeployment request..')
                     time.sleep(5)
                     continue
