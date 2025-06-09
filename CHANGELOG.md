@@ -3,7 +3,7 @@
 ## v1.2 (In Development)
 
 ### Features
-
+- Add a cyclic redeployment mechanism of service processors for further flexible task processing.
 
 ### Bug Fix
 - Fix concurrency conflicts for starting up multiple streams in rtsp video and http video (`datasource`).
