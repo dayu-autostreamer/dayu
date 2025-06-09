@@ -1,7 +1,7 @@
 import abc
 
 
-class BaseDeploymentPolicy(metaclass=abc.ABCMeta):
+class BaseInitialDeploymentPolicy(metaclass=abc.ABCMeta):
 
     def __call__(self, info):
         raise NotImplementedError

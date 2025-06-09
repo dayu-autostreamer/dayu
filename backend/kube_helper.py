@@ -103,6 +103,22 @@ class KubeHelper:
         for pod in pods.items:
             if pod.status.phase != "Running" or not all([c.ready for c in pod.status.container_statuses]):
                 all_running = False
+                break
+
+        return all_running
+
+    @staticmethod
+    def check_specific_pods_running(namespace, specific_pods):
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+
+        pods = v1.list_namespaced_pod(namespace)
+        all_running = True
+        for pod in pods.items:
+            if any(specific_pod in pod.metadata.name for specific_pod in specific_pods):
+                if pod.status.phase != "Running" or not all([c.ready for c in pod.status.container_statuses]):
+                    all_running = False
+                    break
 
         return all_running
 
@@ -118,7 +134,17 @@ class KubeHelper:
         return False
 
     @staticmethod
-    def check_pos_exist(namespace):
+    def check_specific_pods_exist(namespace, specific_pods):
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        pods = v1.list_namespaced_pod(namespace)
+        for pod in pods.items:
+            if any(specific_pod in pod.metadata.name for specific_pod in specific_pods):
+                return True
+        return False
+
+    @staticmethod
+    def check_pods_exist(namespace):
         config.load_incluster_config()
         v1 = client.CoreV1Api()
 
@@ -210,7 +236,7 @@ class KubeHelper:
             if node.metadata.name == hostname:
                 return int(node.status.capacity['cpu'][-1])
 
-        assert None, f'hostname of {hostname} not exists'
+        raise Exception(f'hostname of {hostname} not exists')
 
     @staticmethod
     def create_namespace(namespace_name):

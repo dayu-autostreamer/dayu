@@ -15,10 +15,10 @@ pod-template:
       value: simple
     - name: SCH_SELECTION_POLICY_NAME
       value: fixed
-    - name: SCH_SELECTION_POLICY_PARAMETERS
-      value: "{'fixed_value':0, 'fixed_type':'position'}"
-    - name: SCH_DEPLOYMENT_POLICY_NAME
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
       value: full
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: non
     - name: SCH_AGENT_NAME
       value: hei_syn
     - name: SCH_AGENT_PARAMETERS

@@ -49,6 +49,10 @@ class SchedulerServer:
                      self.generate_initial_deployment_plan,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT]),
+            APIRoute(NetworkAPIPath.SCHEDULER_REDEPLOYMENT,
+                     self.generate_redeployment_plan,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_REDEPLOYMENT]),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -103,11 +107,26 @@ class SchedulerServer:
         for source_data in data:
             source_id = source_data['source']['id']
             self.scheduler.register_schedule_table(source_id=source_id)
-            source_plan = self.scheduler.get_deployment_plan(source_id, source_data)
+            source_plan = self.scheduler.get_initial_deployment_plan(source_id, source_data)
             plan.update(
                 {node: list(set(plan[node] + source_plan[node])) if node in plan else source_plan[node]
                  for node in source_plan}
             )
 
-        LOGGER.info(f'[Deployment] (all sources) Deploy policy: {plan}')
+        LOGGER.info(f'[Initial Deployment] (all sources) Deploy policy: {plan}')
+        return {'plan': plan}
+
+    async def generate_redeployment_plan(self, data: str = Form(...)):
+        data = json.loads(data)
+        plan = {}
+        for source_data in data:
+            source_id = source_data['source']['id']
+            self.scheduler.register_schedule_table(source_id=source_id)
+            source_plan = self.scheduler.get_redeployment_plan(source_id, source_data)
+            plan.update(
+                {node: list(set(plan[node] + source_plan[node])) if node in plan else source_plan[node]
+                 for node in source_plan}
+            )
+
+        LOGGER.info(f'[Redeployment] (all sources) Deploy policy: {plan}')
         return {'plan': plan}

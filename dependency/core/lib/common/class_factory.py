@@ -27,7 +27,8 @@ class ClassType:
     SCH_SCENARIO_EXTRACTION = 'scheduler_scenario_extraction'
     SCH_POLICY_EXTRACTION = 'scheduler_policy_extraction'
     SCH_SELECTION_POLICY = 'scheduler_selection_policy'
-    SCH_DEPLOYMENT_POLICY = 'scheduler_deployment_policy'
+    SCH_INITIAL_DEPLOYMENT_POLICY = 'scheduler_initial_deployment_policy'
+    SCH_REDEPLOYMENT_POLICY = 'scheduler_redeployment_policy'
 
     PROCESSOR = 'processor'
     PRO_DETECTOR = 'processor_detector'

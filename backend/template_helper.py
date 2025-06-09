@@ -168,39 +168,7 @@ class TemplateHelper:
         return docs_list
 
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
-        scheduler_hostname = NodeInfo.get_cloud_node()
-        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
-                                          port=scheduler_port,
-                                          path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE)
-
-        params = []
-
-        for source_info in source_deploy:
-            SOURCE_ENV = source_info['source']
-            NODE_SET_ENV = source_info['node_set']
-            DAG_ENV = {}
-            dag = source_info['dag']
-
-            for key in dag.keys():
-                temp_node = {}
-                if key != '_start':
-                    temp_node['service'] = {'service_name': key}
-                    temp_node['next_nodes'] = dag[key]['succ']
-                    DAG_ENV[key] = temp_node
-            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
-
-        response = http_request(url=scheduler_address,
-                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE,
-                                data={'data': json.dumps(params)},
-                                )
-
-        if response is None:
-            LOGGER.warning('[Source Node Selection] No response from scheduler.')
-            selection_plan = None
-        else:
-            selection_plan = response['plan']
-            selection_plan = {int(k): v for k, v in selection_plan.items()}
+        selection_plan = self.request_source_selection_decision(source_deploy)
 
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
@@ -329,37 +297,7 @@ class TemplateHelper:
         return yaml_doc
 
     def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy):
-        scheduler_hostname = NodeInfo.get_cloud_node()
-        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
-                                          port=scheduler_port,
-                                          path=NetworkAPIPath.SCHEDULER_INITIAL_DEPLOYMENT)
-
-        params = []
-        for source_info in source_deploy:
-            SOURCE_ENV = source_info['source']
-            NODE_SET_ENV = source_info['node_set']
-            DAG_ENV = {}
-            dag = source_info['dag']
-
-            for key in dag.keys():
-                temp_node = {}
-                if key != '_start':
-                    temp_node['service'] = {'service_name': key}
-                    temp_node['next_nodes'] = dag[key]['succ']
-                    DAG_ENV[key] = temp_node
-            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
-
-        response = http_request(url=scheduler_address,
-                                method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
-                                data={'data': json.dumps(params)},
-                                )
-        if response is None:
-            LOGGER.warning('[Service Deployment] No response from scheduler.')
-            deployment_plan = {}
-        else:
-            deployment_plan = response['plan']
-
+        deployment_plan = self.request_deployment_decision(source_deploy)
         yaml_docs = []
         for index, service_id in enumerate(service_dict):
             yaml_doc = service_dict[service_id]['service']
@@ -432,6 +370,91 @@ class TemplateHelper:
     def prepare_file_path(self, file_path: str) -> str:
         file_prefix = self.load_base_info()['default-file-mount-prefix']
         return os.path.join(file_prefix, file_path, "")
+
+    def request_source_selection_decision(self, source_deploy):
+        scheduler_hostname = NodeInfo.get_cloud_node()
+        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
+        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                          port=scheduler_port,
+                                          path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE)
+
+        params = []
+
+        for source_info in source_deploy:
+            SOURCE_ENV = source_info['source']
+            NODE_SET_ENV = source_info['node_set']
+            DAG_ENV = {}
+            dag = source_info['dag']
+
+            for key in dag.keys():
+                temp_node = {}
+                if key != '_start':
+                    temp_node['service'] = {'service_name': key}
+                    temp_node['next_nodes'] = dag[key]['succ']
+                    DAG_ENV[key] = temp_node
+            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
+
+        response = http_request(url=scheduler_address,
+                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE,
+                                data={'data': json.dumps(params)},
+                                )
+
+        if response is None:
+            LOGGER.warning('[Source Node Selection] No response from scheduler.')
+            selection_plan = None
+        else:
+            selection_plan = response['plan']
+            selection_plan = {int(k): v for k, v in selection_plan.items()}
+
+        return selection_plan
+
+    def request_deployment_decision(self, source_deploy):
+        scheduler_hostname = NodeInfo.get_cloud_node()
+        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
+        initial_deployment_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                                   port=scheduler_port,
+                                                   path=NetworkAPIPath.SCHEDULER_INITIAL_DEPLOYMENT)
+        redeployment_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                             port=scheduler_port,
+                                             path=NetworkAPIPath.SCHEDULER_REDEPLOYMENT)
+
+        params = []
+        for source_info in source_deploy:
+            SOURCE_ENV = source_info['source']
+            NODE_SET_ENV = source_info['node_set']
+            DAG_ENV = {}
+            dag = source_info['dag']
+
+            for key in dag.keys():
+                temp_node = {}
+                if key != '_start':
+                    temp_node['service'] = {'service_name': key}
+                    temp_node['next_nodes'] = dag[key]['succ']
+                    DAG_ENV[key] = temp_node
+            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
+
+        if not self.check_is_redeployment():
+            # initial deployment
+            response = http_request(url=initial_deployment_address,
+                                    method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
+                                    data={'data': json.dumps(params)})
+        else:
+            # redeployment
+            response = http_request(url=redeployment_address,
+                                    method=NetworkAPIMethod.SCHEDULER_REDEPLOYMENT,
+                                    data={'data': json.dumps(params)})
+
+        if response is None:
+            LOGGER.warning('[Service Deployment] No response from scheduler.')
+            deployment_plan = {}
+        else:
+            deployment_plan = response['plan']
+
+        return deployment_plan
+
+    def check_is_redeployment(self):
+        base_info = self.load_base_info()
+        return KubeHelper.check_specific_pods_exist(base_info['namespace'], 'processor')
 
     @staticmethod
     def get_all_selected_edge_nodes(yaml_dict):

@@ -88,9 +88,14 @@ class Scheduler:
         plan = agent.get_source_selection_plan(data)
         return plan
 
-    def get_deployment_plan(self, source_id, data):
+    def get_initial_deployment_plan(self, source_id, data):
         agent = self.schedule_table[source_id]
-        plan = agent.get_service_deployment_plan(data)
+        plan = agent.get_initial_deployment_plan(data)
+        return plan
+
+    def get_redeployment_plan(self, source_id, data):
+        agent = self.schedule_table[source_id]
+        plan = agent.get_redeployment_plan(data)
         return plan
 
     def get_schedule_overhead(self):

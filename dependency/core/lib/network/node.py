@@ -3,7 +3,6 @@ from typing import List
 from kubernetes import client, config
 from core.lib.common import reverse_key_value_in_dict, Context
 from core.lib.network import find_all_ips
-from core.lib.common import Context
 
 
 class NodeInfo:
@@ -91,6 +90,7 @@ class NodeInfo:
         for hostname in node_role:
             if node_role[hostname] == 'cloud':
                 return hostname
+        raise Exception('No cloud node identified in system!')
 
     @staticmethod
     def get_edge_nodes() -> List[str]:
