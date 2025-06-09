@@ -89,3 +89,25 @@ class KubeConfig:
             List of node names
         """
         return cls.get_service_nodes_dict().get(service_name, [])
+
+    @classmethod
+    def check_services_running(cls):
+        """
+        Check if all services are running
+        Returns:
+            state: bool
+        """
+        api = cls._get_api()
+
+        pods = api.list_namespaced_pod(cls.NAMESPACE).items
+        for pod in pods:
+            pod_name = pod.metadata.name
+            node_name = pod.spec.node_name
+            if not node_name or not pod_name.startswith(cls.SERVICE_PREFIX):
+                continue
+
+            if pod.status.phase != "Running" or not all([c.ready for c in pod.status.container_statuses]):
+                return False
+
+        return True
+
