@@ -180,8 +180,10 @@ class BackendCore:
     def install_processors(self, yaml_docs):
         if not yaml_docs:
             return True, 'no processors need to be installed.'
-        _result = KubeHelper.apply_custom_resources(yaml_docs)
+
         processors = [doc['metadata']['name'] for doc in yaml_docs]
+        LOGGER.info(f'[Redeployment] install processors: {processors}')
+        _result = KubeHelper.apply_custom_resources(yaml_docs)
         while not KubeHelper.check_specific_pods_running(self.namespace, processors):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
@@ -190,8 +192,11 @@ class BackendCore:
     def uninstall_processors(self, yaml_docs):
         if not yaml_docs:
             return True, 'no processors need to be uninstalled'
-        _result = KubeHelper.delete_custom_resources(yaml_docs)
+
+
         processors = [doc['metadata']['name'] for doc in yaml_docs]
+        LOGGER.info(f'[Redeployment] uninstall processors: {processors}')
+        _result = KubeHelper.delete_custom_resources(yaml_docs)
         while KubeHelper.check_specific_pods_exist(self.namespace, processors):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
@@ -520,11 +525,11 @@ class BackendCore:
             try:
                 time.sleep(1)
                 if not self.yaml_dict or not self.source_deploy:
-                    LOGGER.debug('[REDEPLOYMENT] Configuration is lacked, cancel redeployment request..')
+                    LOGGER.debug('[Redeployment] Configuration is lacked, cancel redeployment request..')
                     time.sleep(5)
                     continue
                 if not KubeHelper.check_pods_running(self.namespace):
-                    LOGGER.debug('[REDEPLOYMENT] Pods is in error state, cancel redeployment request..')
+                    LOGGER.debug('[Redeployment] Pods is in error state, cancel redeployment request..')
                     time.sleep(5)
                     continue
 
@@ -535,9 +540,12 @@ class BackendCore:
 
                 if res:
                     self.update_component_yaml(redeploy_docs_list)
+                    LOGGER.info(f'[Redeployment] Redeployment succeeded.')
+                else:
+                    LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
 
             except Exception as e:
-                LOGGER.warning(f'[REDEPLOYMENT] Unexpected error occurred in redeployment: {e}')
+                LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {e}')
                 LOGGER.exception(e)
 
     def get_system_parameters(self):
