@@ -94,7 +94,8 @@ class BackendCore:
         second_stage_components = ['generator', 'processor']
 
         LOGGER.info(f'[First Deployment Stage] deploy components:{first_stage_components}')
-        first_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
+        first_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
+                                                                        copy.deepcopy(source_deploy),
                                                                         scopes=first_stage_components)
         try:
             result, msg = self.install_yaml_templates(first_docs_list)
@@ -112,7 +113,8 @@ class BackendCore:
             return False, msg
 
         LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
-        second_docs_list = self.template_helper.finetune_yaml_parameters(yaml_dict, source_deploy,
+        second_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
+                                                                         copy.deepcopy(source_deploy),
                                                                          scopes=second_stage_components)
         try:
             result, msg = self.install_yaml_templates(second_docs_list)
@@ -192,7 +194,6 @@ class BackendCore:
     def uninstall_processors(self, yaml_docs):
         if not yaml_docs:
             return True, 'no processors need to be uninstalled'
-
 
         processors = [doc['metadata']['name'] for doc in yaml_docs]
         LOGGER.info(f'[Redeployment] uninstall processors: {processors}')
@@ -533,7 +534,8 @@ class BackendCore:
                     time.sleep(5)
                     continue
 
-                redeploy_docs_list = self.template_helper.finetune_yaml_parameters(self.yaml_dict, self.source_deploy,
+                redeploy_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(self.yaml_dict),
+                                                                                   copy.deepcopy(self.source_deploy),
                                                                                    scopes=['processor'])
 
                 res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
