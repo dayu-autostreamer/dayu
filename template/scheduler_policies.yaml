@@ -6,6 +6,14 @@
     controller: controller-no-delete.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
+- id: hedger
+  name: Hedger
+  yaml: hedger.yaml
+  dependency:
+    generator: generator-base.yaml
+    controller: controller-no-delete.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
 - id: hei
   name: Hierarchical Embodied Intelligence
   yaml: hei.yaml
