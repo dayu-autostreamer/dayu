@@ -14,3 +14,5 @@ from .error import *
 from .kube import KubeConfig
 from .name import NameMaintainer
 from .counter import Counter
+from .instance import GlobalInstanceManager
+

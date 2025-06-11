@@ -1,0 +1,32 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SCENARIO_EXTRACTION_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: "{'fixed_value':0, 'fixed_type':'position'}"
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_DEPLOYMENT_POLICY_PARAMETERS
+      value: "{'policy':{'face-detection':['edge1'],'gender-classification':[], 'age-classification':['edge2']}}"
+    - name: SCH_AGENT_NAME
+      value: fixed
+    - name: SCH_AGENT_PARAMETERS
+      value: "{'configuration':{'resolution': '720p','fps': 15,'encoding': 'mp4v','buffer_size': 4},'offloading':{'face-detection': 'edge1', 'age-classification':'edge2', 'gender-classification':'cloud.kubeedge'}}"
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/hedger/'
+
