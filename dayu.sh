@@ -472,7 +472,7 @@ get_kubernetes_service_endpoint() {
 
 display_config() {
     echo "----------------------------------------"
-    echo "        Configuration imported"
+    echo "        Configuration Imported"
     echo "----------------------------------------"
     echo "  Namespace: $NAMESPACE"
     echo "  Log Level: $LOG_LEVEL"
