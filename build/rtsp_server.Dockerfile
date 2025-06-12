@@ -5,7 +5,8 @@ LABEL authors="skyrim"
 
 ENV TZ=Asia/Shanghai
 
-RUN apt-get update && \
+RUN rm -rf /etc/apt/sources.list.d/ros-latest.list && \
+    apt-get update && \
     apt-get install -y ffmpeg && \
     apt-get clean
 
