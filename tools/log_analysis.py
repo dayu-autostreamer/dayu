@@ -1,7 +1,7 @@
 """
 Dayu Log Analysis Tool
 
-Tool script to parse and analyse log exported from dayu system.
+Tool script to parse and analyze log exported from dayu system.
 
 Log files can be downloaded from frontend ui (in "Result Display" module , click the "Export Log" button).
 
