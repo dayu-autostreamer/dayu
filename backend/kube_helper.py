@@ -93,6 +93,68 @@ class KubeHelper:
         return KubeHelper.delete_custom_resources(docs)
 
     @staticmethod
+    def update_custom_resources(docs):
+        config.load_incluster_config()
+        api_instance = client.CustomObjectsApi()
+
+        for doc in docs:
+            if not doc:
+                continue
+            group, version = doc['apiVersion'].split('/')
+            namespace = doc['metadata']['namespace']
+            plural = KubeHelper.get_crd_plural(doc['kind'])
+            name = doc['metadata']['name']
+
+            try:
+                # try to get existing resource
+                existing = api_instance.get_namespaced_custom_object(
+                    group=group,
+                    version=version,
+                    namespace=namespace,
+                    plural=plural,
+                    name=name
+                )
+
+                # keep version data
+                doc['metadata']['resourceVersion'] = existing['metadata']['resourceVersion']
+
+                api_instance.replace_namespaced_custom_object(
+                    group=group,
+                    version=version,
+                    namespace=namespace,
+                    plural=plural,
+                    name=name,
+                    body=doc
+                )
+                LOGGER.info(f"Updated {doc['kind']}/{name} in {namespace}")
+
+            except client.rest.ApiException as e:
+                if e.status == 404:
+                    # create resource directly if resource does not exist
+                    api_instance.create_namespaced_custom_object(
+                        group=group,
+                        version=version,
+                        namespace=namespace,
+                        plural=plural,
+                        body=doc
+                    )
+                    LOGGER.info(f"Created {doc['kind']}/{name} in {namespace}")
+                else:
+                    LOGGER.exception(f"API error: {e}")
+                    return False
+            except Exception as e:
+                LOGGER.exception(f"Unexpected error: {e}")
+                return False
+        return True
+
+    @staticmethod
+    def update_custom_resources_by_file(yaml_file_path):
+        with open(yaml_file_path, 'r') as file:
+            docs = YamlOps.read_all_yaml(file)
+
+        return KubeHelper.update_custom_resources(docs)
+
+    @staticmethod
     def check_pods_running(namespace):
         config.load_incluster_config()
         v1 = client.CoreV1Api()

@@ -164,19 +164,25 @@ class BackendCore:
             LOGGER.warning(msg)
             return False, ''
 
-        _, docs_to_add, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
+        _, docs_to_update, _ = self.check_and_update_docs_list(original_docs, update_docs)
 
-        # delete old processors
-        res, msg = self.uninstall_processors(docs_to_delete)
-        if not res:
-            return False, msg
-
-        # deploy new processors
-        res, msg = self.install_processors(docs_to_add)
+        res,msg = self.update_processors(docs_to_update)
         if not res:
             return False, msg
 
         return True, ''
+
+    @timeout(200)
+    def update_processors(self, yaml_docs):
+        if not yaml_docs:
+            return True, 'no processors need to be updated.'
+
+        processors = [doc['metadata']['name'] for doc in yaml_docs]
+        LOGGER.info(f'[Redeployment] update processors:{processors}')
+        _result = KubeHelper.update_custom_resources(yaml_docs)
+        while not KubeHelper.check_specific_pods_running(self.namespace, processors):
+            time.sleep(1)
+        return _result, '' if _result else 'kubernetes api error.'
 
     @timeout(100)
     def install_processors(self, yaml_docs):
@@ -188,7 +194,7 @@ class BackendCore:
         _result = KubeHelper.apply_custom_resources(yaml_docs)
         while not KubeHelper.check_specific_pods_running(self.namespace, processors):
             time.sleep(1)
-        return _result, '' if _result else 'kubernetes api error'
+        return _result, '' if _result else 'kubernetes api error.'
 
     @timeout(200)
     def uninstall_processors(self, yaml_docs):
