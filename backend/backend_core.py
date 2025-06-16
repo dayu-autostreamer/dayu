@@ -1,5 +1,6 @@
 import copy
 import re
+import json
 import threading
 from collections import deque
 from func_timeout import func_set_timeout as timeout
@@ -164,11 +165,22 @@ class BackendCore:
             LOGGER.warning(msg)
             return False, ''
 
-        _, docs_to_update, _ = self.check_and_update_docs_list(original_docs, update_docs)
+        _, docs_to_add, docs_to_update, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
 
-        res,msg = self.update_processors(docs_to_update)
-        if not res:
-            return False, msg
+        if docs_to_update:
+            res, msg = self.update_processors(docs_to_update)
+            if not res:
+                return False, msg
+
+        if docs_to_add:
+            res, msg = self.install_processors(docs_to_add)
+            if not res:
+                return False, msg
+
+        if docs_to_delete:
+            res, msg = self.uninstall_processors(docs_to_delete)
+            if not res:
+                return False, msg
 
         return True, ''
 
@@ -228,23 +240,115 @@ class BackendCore:
 
     @staticmethod
     def check_and_update_docs_list(original_docs, update_docs):
+        """
+        Intelligently compares and categorizes Kubernetes resource configurations
+        :param original_docs: List of existing resource configurations
+        :param update_docs: List of new resource configurations
+        :return: Tuple containing:
+            - total_docs: Complete merged configuration
+            - resources_to_add: Resources to be created
+            - resources_to_update: Resources needing updates
+            - resources_to_delete: Resources to be deleted
+        """
+        # Create name-based dictionaries for efficient lookup
         original_dict = {doc['metadata']['name']: doc for doc in original_docs}
         update_dict = {doc['metadata']['name']: doc for doc in update_docs}
 
-        resources_to_delete = []
+        # Initialize change sets
         resources_to_add = []
+        resources_to_update = []
+        resources_to_delete = []
+
+        # 1. Detect resources to delete (present in original but missing in update)
+        for name in list(original_dict.keys()):
+            if name not in update_dict:
+                resources_to_delete.append(original_dict.pop(name))
+
+        # 2. Detect resources to add or update
         for name, new_doc in update_dict.items():
-            if name in original_dict:
-                if original_dict[name] != new_doc:
-                    resources_to_delete.append(original_dict[name])
-                    resources_to_add.append(new_doc)
-                    original_dict[name] = new_doc
-            else:
+            if name not in original_dict:
+                # New resource found
                 resources_to_add.append(new_doc)
                 original_dict[name] = new_doc
+            else:
+                # Compare configuration changes
+                old_doc = original_dict[name]
+                if BackendCore.has_significant_changes(old_doc, new_doc):
+                    resources_to_update.append(new_doc)
+                    original_dict[name] = new_doc
+                else:
+                    LOGGER.debug(f"No significant changes detected for {name}, keeping existing config")
 
+        # Generate merged configuration (updated state)
         total_docs = list(original_dict.values())
-        return total_docs, resources_to_add, resources_to_delete
+
+        return total_docs, resources_to_add, resources_to_update, resources_to_delete
+
+    @staticmethod
+    def has_significant_changes(old_doc, new_doc):
+        """
+        Detects if resource configurations have meaningful differences
+        Ignores metadata, status, and non-critical fields
+        """
+        # Basic type checks
+        if old_doc['kind'] != new_doc['kind']:
+            LOGGER.debug(f"Kind changed from {old_doc['kind']} to {new_doc['kind']}")
+            return True
+        if old_doc['apiVersion'] != new_doc['apiVersion']:
+            LOGGER.debug(f"API version changed from {old_doc['apiVersion']} to {new_doc['apiVersion']}")
+            return True
+
+        # Prepare comparison objects (deepcopy to avoid mutation)
+        old_spec = copy.deepcopy(old_doc.get('spec', {}))
+        new_spec = copy.deepcopy(new_doc.get('spec', {}))
+
+        # Remove fields that don't trigger redeployment
+        for spec in [old_spec, new_spec]:
+            # Remove log level fields
+            spec.pop('logLevel', None)
+
+            # Process worker configurations
+            for worker_type in ['cloudWorker', 'edgeWorker']:
+                if worker_type in spec:
+                    worker = spec[worker_type]
+                    # Remove file paths (usually don't affect deployment)
+                    worker.pop('file', None)
+
+                    if 'template' in worker and 'spec' in worker['template']:
+                        template_spec = worker['template']['spec']
+                        # Remove fields that don't require pod recreation
+                        template_spec.pop('dnsPolicy', None)
+                        template_spec.pop('serviceAccountName', None)
+                        template_spec.pop('restartPolicy', None)
+
+                        # Process container configurations
+                        for container in template_spec.get('containers', []):
+                            # Keep only deployment-critical fields
+                            retained_fields = {'image', 'ports', 'nodeName', 'command', 'args'}
+                            container_keys = list(container.keys())
+                            for key in container_keys:
+                                if key not in retained_fields:
+                                    container.pop(key, None)
+
+        # Normalize for comparison
+        def normalize_spec(spec):
+            """Standardize spec for reliable comparison"""
+            # Sort edgeWorker list by nodeName
+            if 'edgeWorker' in spec and isinstance(spec['edgeWorker'], list):
+                spec['edgeWorker'] = sorted(
+                    spec['edgeWorker'],
+                    key=lambda x: x.get('template', {}).get('spec', {}).get('nodeName', '')
+                )
+            return json.dumps(spec, sort_keys=True, default=str)
+
+        # Perform comparison
+        old_normalized = normalize_spec(old_spec)
+        new_normalized = normalize_spec(new_spec)
+
+        has_changes = old_normalized != new_normalized
+        if has_changes:
+            LOGGER.debug(f"Configuration changes detected for {old_doc['metadata']['name']}")
+        return has_changes
 
     def save_component_yaml(self, docs_list):
         self.cur_yaml_docs = docs_list
@@ -262,7 +366,7 @@ class BackendCore:
         original_docs_list = self.read_component_yaml()
         if not original_docs_list:
             raise Exception('No valid components yaml docs found.')
-        total_docs, _, _ = self.check_and_update_docs_list(original_docs_list, update_docs_list)
+        total_docs, _, _, _ = self.check_and_update_docs_list(original_docs_list, update_docs_list)
         self.save_component_yaml(total_docs)
 
     def extract_service_from_source_deployment(self, source_deploy):
