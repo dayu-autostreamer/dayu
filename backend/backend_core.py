@@ -311,24 +311,30 @@ class BackendCore:
             for worker_type in ['cloudWorker', 'edgeWorker']:
                 if worker_type in spec:
                     worker = spec[worker_type]
-                    # Remove file paths (usually don't affect deployment)
-                    worker.pop('file', None)
 
-                    if 'template' in worker and 'spec' in worker['template']:
-                        template_spec = worker['template']['spec']
-                        # Remove fields that don't require pod recreation
-                        template_spec.pop('dnsPolicy', None)
-                        template_spec.pop('serviceAccountName', None)
-                        template_spec.pop('restartPolicy', None)
+                    worker_list = worker if isinstance(worker, list) else [worker]
 
-                        # Process container configurations
-                        for container in template_spec.get('containers', []):
-                            # Keep only deployment-critical fields
-                            retained_fields = {'image', 'ports', 'nodeName', 'command', 'args'}
-                            container_keys = list(container.keys())
-                            for key in container_keys:
-                                if key not in retained_fields:
-                                    container.pop(key, None)
+                    for worker_item in worker_list:
+                        if not isinstance(worker_item, dict):
+                            continue
+
+                        worker_item.pop('file', None)
+
+                        if 'template' in worker and 'spec' in worker['template']:
+                            template_spec = worker['template']['spec']
+                            # Remove fields that don't require pod recreation
+                            template_spec.pop('dnsPolicy', None)
+                            template_spec.pop('serviceAccountName', None)
+                            template_spec.pop('restartPolicy', None)
+
+                            # Process container configurations
+                            for container in template_spec.get('containers', []):
+                                # Keep only deployment-critical fields
+                                retained_fields = {'image', 'ports', 'nodeName', 'command', 'args'}
+                                container_keys = list(container.keys())
+                                for key in container_keys:
+                                    if key not in retained_fields:
+                                        container.pop(key, None)
 
         # Normalize for comparison
         def normalize_spec(spec):
