@@ -196,7 +196,16 @@ class BackendCore:
 
         processors = [doc['metadata']['name'] for doc in yaml_docs]
         LOGGER.info(f'[Redeployment] update processors:{processors}')
-        _result = KubeHelper.update_custom_resources(yaml_docs)
+
+        _result = KubeHelper.delete_custom_resources(yaml_docs)
+        if not _result:
+            return False, 'kubernetes api error.'
+        while KubeHelper.check_specific_pods_exist(self.namespace, include_pods=processors):
+            time.sleep(1)
+
+        _result = KubeHelper.apply_custom_resources(yaml_docs)
+        if not _result:
+            return False, 'kubernetes api error.'
         while not KubeHelper.check_specific_pods_running(self.namespace, processors):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error.'
@@ -211,6 +220,8 @@ class BackendCore:
         processors = [doc['metadata']['name'] for doc in yaml_docs]
         LOGGER.info(f'[Redeployment] install processors: {processors}')
         _result = KubeHelper.apply_custom_resources(yaml_docs)
+        if not _result:
+            return False, 'kubernetes api error.'
         while not KubeHelper.check_specific_pods_running(self.namespace, processors):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error.'
@@ -225,6 +236,8 @@ class BackendCore:
         processors = [doc['metadata']['name'] for doc in yaml_docs]
         LOGGER.info(f'[Redeployment] uninstall processors: {processors}')
         _result = KubeHelper.delete_custom_resources(yaml_docs)
+        if not _result:
+            return False, 'kubernetes api error.'
         while KubeHelper.check_specific_pods_exist(self.namespace, include_pods=processors):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
@@ -234,6 +247,8 @@ class BackendCore:
         if not yaml_docs:
             return False, 'yaml data is lost, fail to install resources'
         _result = KubeHelper.apply_custom_resources(yaml_docs)
+        if not _result:
+            return False, 'kubernetes api error.'
         while not KubeHelper.check_pods_running(self.namespace):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
@@ -243,6 +258,8 @@ class BackendCore:
         if not yaml_docs:
             return False, 'yaml docs is lost, fail to delete resources'
         _result = KubeHelper.delete_custom_resources(yaml_docs)
+        if not _result:
+            return False, 'kubernetes api error.'
         while KubeHelper.check_specific_pods_exist(self.namespace, exclude_pods=self.system_support_components):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'

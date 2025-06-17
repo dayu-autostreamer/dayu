@@ -3,6 +3,7 @@ import psutil
 import pytz
 
 from core.lib.common import LOGGER, YamlOps
+from tensorflow.python.framework.errors_impl import UnimplementedError
 
 
 class KubeHelper:
@@ -94,97 +95,7 @@ class KubeHelper:
 
     @staticmethod
     def update_custom_resources(docs):
-        config.load_incluster_config()
-        api_instance = client.CustomObjectsApi()
-        apps_v1 = client.AppsV1Api()
-        v1 = client.CoreV1Api()
-
-        for doc in docs:
-            if not doc:
-                continue
-            group, version = doc['apiVersion'].split('/')
-            namespace = doc['metadata']['namespace']
-            plural = KubeHelper.get_crd_plural(doc['kind'])
-            name = doc['metadata']['name']
-
-            try:
-                # try to get existing resource
-                existing = api_instance.get_namespaced_custom_object(
-                    group=group,
-                    version=version,
-                    namespace=namespace,
-                    plural=plural,
-                    name=name
-                )
-
-                api_instance.replace_namespaced_custom_object(
-                    group=group,
-                    version=version,
-                    namespace=namespace,
-                    plural=plural,
-                    name=name,
-                    body=doc
-                )
-
-                if 'serviceConfig' in doc['spec']:
-                    svc_name = f"{name}-{doc['spec']['serviceConfig']['pos']}"
-                    svc_patch = {
-                        "spec": {
-                            "ports": [{"port": doc['spec']['serviceConfig']['port'],
-                                       "targetPort": doc['spec']['serviceConfig']['targetPort']}]
-                        }
-                    }
-                    v1.patch_namespaced_service(name=svc_name, namespace=namespace, body=svc_patch)
-
-                    for edge_worker in doc.get('spec', {}).get('edgeWorker', []):
-                        edge_node_name = edge_worker['template']['spec']['nodeName']
-                        dep_name = f"{name}-edge-{edge_node_name}"
-                        deployment_patch = {
-                            "spec": {
-                                "template": {
-                                    "spec": {
-                                        "nodeName": edge_node_name
-                                    }
-                                }
-                            }
-                        }
-                        apps_v1.patch_namespaced_deployment(name=dep_name, namespace=namespace, body=deployment_patch)
-
-                    if 'cloudWorker' in doc['spec']:
-                        cloud_node_name = doc['spec']['cloudWorker']['template']['spec']['nodeName']
-                        cloud_dep_name = f"{name}-cloud-{cloud_node_name}"
-                        cloud_deployment_patch = {
-                            "spec": {
-                                "template": {
-                                    "spec": {
-                                        "nodeName": cloud_node_name
-                                    }
-                                }
-                            }
-                        }
-                        apps_v1.patch_namespaced_deployment(name=cloud_dep_name, namespace=namespace,
-                                                            body=cloud_deployment_patch)
-
-                    LOGGER.info(f"Updated {doc['kind']}/{name} in {namespace}")
-
-            except client.rest.ApiException as e:
-                if e.status == 404:
-                    # create resource directly if resource does not exist
-                    api_instance.create_namespaced_custom_object(
-                        group=group,
-                        version=version,
-                        namespace=namespace,
-                        plural=plural,
-                        body=doc
-                    )
-                    LOGGER.info(f"Created {doc['kind']}/{name} in {namespace}")
-                else:
-                    LOGGER.exception(f"API error: {e}")
-                    return False
-            except Exception as e:
-                LOGGER.exception(f"Unexpected error: {e}")
-                return False
-        return True
+        raise UnimplementedError('Update resource is not implemented, please use deleting resource and creating resource to replace.')
 
     @staticmethod
     def update_custom_resources_by_file(yaml_file_path):
