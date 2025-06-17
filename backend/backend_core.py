@@ -59,6 +59,9 @@ class BackendCore:
 
         self.default_visualization_image = 'default_visualization.png'
 
+        self.system_support_components = ['backend', 'frontend', 'datasource', 'redis']
+        self.function_components = ['generator', 'scheduler', 'controller', 'distributor', 'monitor']
+
         self.parse_base_info()
 
     def parse_base_info(self):
@@ -186,8 +189,10 @@ class BackendCore:
 
     @timeout(200)
     def update_processors(self, yaml_docs):
+        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
+                     not in (self.system_support_components + self.function_components)]
         if not yaml_docs:
-            return True, 'no processors need to be updated.'
+            return True, 'no processors need to be installed.'
 
         processors = [doc['metadata']['name'] for doc in yaml_docs]
         LOGGER.info(f'[Redeployment] update processors:{processors}')
@@ -198,6 +203,8 @@ class BackendCore:
 
     @timeout(100)
     def install_processors(self, yaml_docs):
+        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
+                     not in (self.system_support_components + self.function_components)]
         if not yaml_docs:
             return True, 'no processors need to be installed.'
 
@@ -210,13 +217,15 @@ class BackendCore:
 
     @timeout(200)
     def uninstall_processors(self, yaml_docs):
+        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
+                     not in (self.system_support_components + self.function_components)]
         if not yaml_docs:
-            return True, 'no processors need to be uninstalled'
+            return True, 'no processors need to be installed.'
 
         processors = [doc['metadata']['name'] for doc in yaml_docs]
         LOGGER.info(f'[Redeployment] uninstall processors: {processors}')
         _result = KubeHelper.delete_custom_resources(yaml_docs)
-        while KubeHelper.check_specific_pods_exist(self.namespace, processors):
+        while KubeHelper.check_specific_pods_exist(self.namespace, include_pods=processors):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
 
@@ -234,7 +243,7 @@ class BackendCore:
         if not yaml_docs:
             return False, 'yaml docs is lost, fail to delete resources'
         _result = KubeHelper.delete_custom_resources(yaml_docs)
-        while KubeHelper.check_component_pods_exist(self.namespace):
+        while KubeHelper.check_specific_pods_exist(self.namespace, exclude_pods=self.system_support_components):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
 
@@ -259,12 +268,12 @@ class BackendCore:
         resources_to_update = []
         resources_to_delete = []
 
-        # 1. Detect resources to delete (present in original but missing in update)
+        # Detect resources to delete (present in original but missing in update)
         for name in list(original_dict.keys()):
             if name not in update_dict:
                 resources_to_delete.append(original_dict.pop(name))
 
-        # 2. Detect resources to add or update
+        # Detect resources to add or update
         for name, new_doc in update_dict.items():
             if name not in original_dict:
                 # New resource found
@@ -491,6 +500,11 @@ class BackendCore:
         edge_nodes = [{'name': node_name} for node_name in node_role if node_role[node_name] == 'edge']
         edge_nodes.sort(key=sort_key)
         return edge_nodes
+
+    def check_install_state(self):
+        return 'install' if KubeHelper.check_specific_pods_exist(self.namespace,
+                                                                 exclude_pods=self.system_support_components) \
+            else 'uninstall'
 
     def check_simulation_datasource(self):
         return KubeHelper.check_pod_name('datasource', namespace=self.namespace)

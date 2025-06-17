@@ -527,8 +527,7 @@ class BackendServer:
         {'state':'install/uninstall'}
         """
 
-        state = 'install' if KubeHelper.check_component_pods_exist(self.server.namespace) else 'uninstall'
-        return {'state': state}
+        return {'state': self.server.check_install_state()}
 
     async def submit_query(self, data=Body(...)):
         """

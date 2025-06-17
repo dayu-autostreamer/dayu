@@ -454,7 +454,7 @@ class TemplateHelper:
 
     def check_is_redeployment(self):
         base_info = self.load_base_info()
-        return KubeHelper.check_specific_pods_exist(base_info['namespace'], ['processor'])
+        return KubeHelper.check_specific_pods_exist(base_info['namespace'], include_pods=['processor'])
 
     @staticmethod
     def get_all_selected_edge_nodes(yaml_dict):
