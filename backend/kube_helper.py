@@ -185,23 +185,17 @@ class KubeHelper:
         return all_running
 
     @staticmethod
-    def check_component_pods_exist(namespace):
-        config.load_incluster_config()
-        v1 = client.CoreV1Api()
-        except_pod_name = ['backend', 'frontend', 'datasource', 'redis']
-        pods = v1.list_namespaced_pod(namespace)
-        for pod in pods.items:
-            if not any(except_name in pod.metadata.name for except_name in except_pod_name):
-                return True
-        return False
-
-    @staticmethod
-    def check_specific_pods_exist(namespace: str, specific_pods: list):
+    def check_specific_pods_exist(namespace: str, include_pods: list = None, exclude_pods: list = None):
+        if include_pods is None:
+            include_pods = []
+        if exclude_pods is None:
+            exclude_pods = []
         config.load_incluster_config()
         v1 = client.CoreV1Api()
         pods = v1.list_namespaced_pod(namespace)
         for pod in pods.items:
-            if any(specific_pod in pod.metadata.name for specific_pod in specific_pods):
+            if any(include_pod in pod.metadata.name for include_pod in include_pods) and \
+                    not any(exclude_pod in pod.metadata.name for exclude_pod in exclude_pods):
                 return True
         return False
 
