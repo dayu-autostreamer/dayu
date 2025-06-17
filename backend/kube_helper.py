@@ -117,7 +117,6 @@ class KubeHelper:
                     name=name
                 )
 
-                doc['metadata']['resourceVersion'] = existing['metadata']['resourceVersion']
                 api_instance.replace_namespaced_custom_object(
                     group=group,
                     version=version,
