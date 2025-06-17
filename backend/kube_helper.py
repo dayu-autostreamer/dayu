@@ -96,6 +96,8 @@ class KubeHelper:
     def update_custom_resources(docs):
         config.load_incluster_config()
         api_instance = client.CustomObjectsApi()
+        apps_v1 = client.AppsV1Api()
+        v1 = client.CoreV1Api()
 
         for doc in docs:
             if not doc:
@@ -115,9 +117,7 @@ class KubeHelper:
                     name=name
                 )
 
-                # keep version data
                 doc['metadata']['resourceVersion'] = existing['metadata']['resourceVersion']
-
                 api_instance.replace_namespaced_custom_object(
                     group=group,
                     version=version,
@@ -126,7 +126,47 @@ class KubeHelper:
                     name=name,
                     body=doc
                 )
-                LOGGER.info(f"Updated {doc['kind']}/{name} in {namespace}")
+
+                if 'serviceConfig' in doc['spec']:
+                    svc_name = f"{name}-{doc['spec']['serviceConfig']['pos']}"
+                    svc_patch = {
+                        "spec": {
+                            "ports": [{"port": doc['spec']['serviceConfig']['port'],
+                                       "targetPort": doc['spec']['serviceConfig']['targetPort']}]
+                        }
+                    }
+                    v1.patch_namespaced_service(name=svc_name, namespace=namespace, body=svc_patch)
+
+                    for edge_worker in doc.get('spec', {}).get('edgeWorker', []):
+                        edge_node_name = edge_worker['template']['spec']['nodeName']
+                        dep_name = f"{name}-edge-{edge_node_name}"
+                        deployment_patch = {
+                            "spec": {
+                                "template": {
+                                    "spec": {
+                                        "nodeName": edge_node_name
+                                    }
+                                }
+                            }
+                        }
+                        apps_v1.patch_namespaced_deployment(name=dep_name, namespace=namespace, body=deployment_patch)
+
+                    if 'cloudWorker' in doc['spec']:
+                        cloud_node_name = doc['spec']['cloudWorker']['template']['spec']['nodeName']
+                        cloud_dep_name = f"{name}-cloud-{cloud_node_name}"
+                        cloud_deployment_patch = {
+                            "spec": {
+                                "template": {
+                                    "spec": {
+                                        "nodeName": cloud_node_name
+                                    }
+                                }
+                            }
+                        }
+                        apps_v1.patch_namespaced_deployment(name=cloud_dep_name, namespace=namespace,
+                                                            body=cloud_deployment_patch)
+
+                    LOGGER.info(f"Updated {doc['kind']}/{name} in {namespace}")
 
             except client.rest.ApiException as e:
                 if e.status == 404:
