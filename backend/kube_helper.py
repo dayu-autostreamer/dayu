@@ -3,7 +3,6 @@ import psutil
 import pytz
 
 from core.lib.common import LOGGER, YamlOps
-from tensorflow.python.framework.errors_impl import UnimplementedError
 
 
 class KubeHelper:
@@ -95,7 +94,7 @@ class KubeHelper:
 
     @staticmethod
     def update_custom_resources(docs):
-        raise UnimplementedError('Update resource is not implemented, please use deleting resource and creating resource to replace.')
+        raise NotImplementedError('Update resource is not implemented, please use deleting resource and creating resource to replace.')
 
     @staticmethod
     def update_custom_resources_by_file(yaml_file_path):
