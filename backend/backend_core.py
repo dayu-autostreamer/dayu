@@ -285,8 +285,6 @@ class BackendCore:
                 if BackendCore.has_significant_changes(old_doc, new_doc):
                     resources_to_update.append(new_doc)
                     original_dict[name] = new_doc
-                else:
-                    LOGGER.debug(f"No significant changes detected for {name}, keeping existing config")
 
         # Generate merged configuration (updated state)
         total_docs = list(original_dict.values())
@@ -361,8 +359,6 @@ class BackendCore:
         new_normalized = normalize_spec(new_spec)
 
         has_changes = old_normalized != new_normalized
-        if has_changes:
-            LOGGER.debug(f"Configuration changes detected for {old_doc['metadata']['name']}")
         return has_changes
 
     def save_component_yaml(self, docs_list):
