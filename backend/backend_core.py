@@ -106,7 +106,7 @@ class BackendCore:
         except timeout_exceptions.FunctionTimedOut as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             result = False
-            msg = 'first-stage install timeout after 60 seconds'
+            msg = 'first-stage install timeout after 100 seconds'
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             result = False
@@ -125,7 +125,7 @@ class BackendCore:
         except timeout_exceptions.FunctionTimedOut as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             result = False
-            msg = 'second-stage install timeout after 60 seconds'
+            msg = 'second-stage install timeout after 100 seconds'
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             result = False
@@ -150,7 +150,7 @@ class BackendCore:
         try:
             result, msg = self.uninstall_yaml_templates(docs)
         except timeout_exceptions.FunctionTimedOut as e:
-            msg = 'timeout after 120 seconds'
+            msg = 'timeout after 200 seconds'
             result = False
             LOGGER.warning(f'Uninstall services failed: {msg}')
         except Exception as e:
