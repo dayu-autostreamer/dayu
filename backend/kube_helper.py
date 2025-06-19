@@ -94,7 +94,8 @@ class KubeHelper:
 
     @staticmethod
     def update_custom_resources(docs):
-        raise NotImplementedError('Update resource is not implemented, please use deleting resource and creating resource to replace.')
+        raise NotImplementedError(
+            'Update resource is not implemented, please use deleting resource and creating resource to replace.')
 
     @staticmethod
     def update_custom_resources_by_file(yaml_file_path):
@@ -134,17 +135,24 @@ class KubeHelper:
         return all_running
 
     @staticmethod
-    def check_specific_pods_exist(namespace: str, include_pods: list = None, exclude_pods: list = None):
-        if include_pods is None:
-            include_pods = []
-        if exclude_pods is None:
-            exclude_pods = []
+    def check_pods_without_string_exists(namespace: str, exclude_str_list: list) -> bool:
         config.load_incluster_config()
         v1 = client.CoreV1Api()
+
         pods = v1.list_namespaced_pod(namespace)
         for pod in pods.items:
-            if any(include_pod in pod.metadata.name for include_pod in include_pods) and \
-                    not any(exclude_pod in pod.metadata.name for exclude_pod in exclude_pods):
+            if not any(except_name in pod.metadata.name for except_name in exclude_str_list):
+                return True
+        return False
+
+    @staticmethod
+    def check_pods_with_string_exists(namespace: str, include_str_list: list) -> bool:
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+
+        pods = v1.list_namespaced_pod(namespace)
+        for pod in pods.items:
+            if any(specific_pod in pod.metadata.name for specific_pod in include_str_list):
                 return True
         return False
 
