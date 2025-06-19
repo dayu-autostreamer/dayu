@@ -200,7 +200,7 @@ class BackendCore:
         _result = KubeHelper.delete_custom_resources(yaml_docs)
         if not _result:
             return False, 'kubernetes api error.'
-        while KubeHelper.check_specific_pods_exist(self.namespace, include_pods=processors):
+        while KubeHelper.check_pods_with_string_exists(self.namespace, include_str_list=processors):
             time.sleep(1)
 
         _result = KubeHelper.apply_custom_resources(yaml_docs)
@@ -238,7 +238,7 @@ class BackendCore:
         _result = KubeHelper.delete_custom_resources(yaml_docs)
         if not _result:
             return False, 'kubernetes api error.'
-        while KubeHelper.check_specific_pods_exist(self.namespace, include_pods=processors):
+        while KubeHelper.check_pods_with_string_exists(self.namespace, include_str_list=processors):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
 
@@ -260,7 +260,8 @@ class BackendCore:
         _result = KubeHelper.delete_custom_resources(yaml_docs)
         if not _result:
             return False, 'kubernetes api error.'
-        while KubeHelper.check_specific_pods_exist(self.namespace, exclude_pods=self.system_support_components):
+        while KubeHelper.check_pods_without_string_exists(self.namespace,
+                                                          exclude_str_list=self.system_support_components):
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
 
@@ -515,9 +516,10 @@ class BackendCore:
         return edge_nodes
 
     def check_install_state(self):
-        return 'install' if KubeHelper.check_specific_pods_exist(self.namespace,
-                                                                 exclude_pods=self.system_support_components) \
-            else 'uninstall'
+        return 'install' if KubeHelper.check_pods_without_string_exists(
+            self.namespace,
+            exclude_str_list=self.system_support_components
+        ) else 'uninstall'
 
     def check_simulation_datasource(self):
         return KubeHelper.check_pod_name('datasource', namespace=self.namespace)
