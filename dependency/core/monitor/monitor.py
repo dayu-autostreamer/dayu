@@ -1,7 +1,7 @@
 import json
 import time
 
-from core.lib.common import LOGGER, Context, ClassFactory, ClassType, SystemConstant, NodeRoleConstant
+from core.lib.common import LOGGER, Context, SystemConstant
 from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
@@ -19,11 +19,6 @@ class Monitor:
                                                path=NetworkAPIPath.SCHEDULER_POST_RESOURCE)
 
         self.local_device = NodeInfo.get_local_device()
-        self.is_iperf3_server = NodeInfo.get_node_role(NodeInfo.get_local_device()) == NodeRoleConstant.CLOUD.value
-        self.iperf3_server_ip = NodeInfo.hostname2ip(NodeInfo.get_cloud_node())
-
-        self.iperf3_port = PortInfo.get_component_port(SystemConstant.MONITOR.value)
-        self.iperf3_ports = [Context.get_parameter('GUNICORN_PORT')]
 
         monitor_parameters_text = Context.get_parameter('MONITORS', direct=False)
         self.monitor_parameters = []

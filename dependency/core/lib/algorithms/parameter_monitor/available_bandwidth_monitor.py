@@ -4,25 +4,25 @@ from func_timeout import func_set_timeout as timeout
 
 from .base_monitor import BaseMonitor
 
-from core.lib.common import ClassFactory, ClassType, LOGGER
+from core.lib.common import ClassFactory, ClassType, LOGGER, Context, SystemConstant, NodeRoleConstant
+from core.lib.network import NodeInfo, PortInfo
 
-__all__ = ('BandwidthMonitor',)
+__all__ = ('AvailableBandwidthMonitor',)
 
 
-@ClassFactory.register(ClassType.MON_PRAM, alias='bandwidth')
-class BandwidthMonitor(BaseMonitor, abc.ABC):
+@ClassFactory.register(ClassType.MON_PRAM, alias='available_bandwidth')
+class AvailableBandwidthMonitor(BaseMonitor, abc.ABC):
     def __init__(self, system):
         super().__init__(system)
-        self.name = 'bandwidth'
+        self.name = 'available_bandwidth'
 
-        self.is_server = system.is_iperf3_server
-
+        self.is_server = NodeInfo.get_node_role(NodeInfo.get_local_device()) == NodeRoleConstant.CLOUD.value
         if self.is_server:
-            self.iperf3_ports = system.iperf3_ports
+            self.iperf3_ports = [Context.get_parameter('GUNICORN_PORT')]
             self.run_iperf_server()
         else:
-            self.iperf3_port = system.iperf3_port
-            self.iperf3_server_ip = system.iperf3_server_ip
+            self.iperf3_port = PortInfo.get_component_port(SystemConstant.MONITOR.value)
+            self.iperf3_server_ip = NodeInfo.hostname2ip(NodeInfo.get_cloud_node())
 
     def run_iperf_server(self):
         for port in self.iperf3_ports:
