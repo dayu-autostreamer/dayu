@@ -26,7 +26,7 @@ class VideoGenerator(Generator):
         self.after_schedule_operation(self, None)
 
         while True:
-            if KubeConfig.check_services_running():
+            if not KubeConfig.check_services_running():
                 LOGGER.debug("Services not in running state, wait for service deployment..")
                 time.sleep(2)
                 continue
