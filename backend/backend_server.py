@@ -349,8 +349,8 @@ class BackendServer:
                 bandwidth = '-'
                 for hostname in resource_data:
                     single_resource_info = resource_data[hostname]
-                    if 'bandwidth' in single_resource_info and single_resource_info['bandwidth'] != 0:
-                        bandwidth = f"{single_resource_info['bandwidth']:.2f}Mbps"
+                    if 'available_bandwidth' in single_resource_info and single_resource_info['available_bandwidth'] != -1:
+                        bandwidth = f"{single_resource_info['available_bandwidth']:.2f}Mbps"
                 for single_info in info:
                     single_info['bandwidth'] = bandwidth
         except Exception as e:

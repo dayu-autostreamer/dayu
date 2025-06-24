@@ -1,11 +1,12 @@
 import abc
 import threading
+import json
 from func_timeout import func_set_timeout as timeout
 
 from .base_monitor import BaseMonitor
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, Context, SystemConstant, NodeRoleConstant
-from core.lib.network import NodeInfo, PortInfo
+from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 __all__ = ('AvailableBandwidthMonitor',)
 
@@ -16,6 +17,9 @@ class AvailableBandwidthMonitor(BaseMonitor, abc.ABC):
         super().__init__(system)
         self.name = 'available_bandwidth'
 
+        self.local_device = NodeInfo.get_local_device()
+        self.permitted_device = ''
+
         self.is_server = NodeInfo.get_node_role(NodeInfo.get_local_device()) == NodeRoleConstant.CLOUD.value
         if self.is_server:
             self.iperf3_ports = [Context.get_parameter('GUNICORN_PORT')]
@@ -23,6 +27,7 @@ class AvailableBandwidthMonitor(BaseMonitor, abc.ABC):
         else:
             self.iperf3_port = PortInfo.get_component_port(SystemConstant.MONITOR.value)
             self.iperf3_server_ip = NodeInfo.hostname2ip(NodeInfo.get_cloud_node())
+            self.request_for_bandwidth_permission()
 
     def run_iperf_server(self):
         for port in self.iperf3_ports:
@@ -45,10 +50,30 @@ class AvailableBandwidthMonitor(BaseMonitor, abc.ABC):
             if result.error:
                 LOGGER.warning(result.error)
 
+    def request_for_bandwidth_permission(self):
+        scheduler_hostname = NodeInfo.get_cloud_node()
+        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
+        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                          port=scheduler_port,
+                                          path=NetworkAPIPath.SCHEDULER_GET_RESOURCE_LOCK)
+        response = http_request(scheduler_address,
+                                method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE_LOCK,
+                                data={'data': json.dumps(
+                                    {'resource': 'available_bandwidth', 'device': self.local_device})})
+        if not response:
+            self.permitted_device = ''
+        else:
+            self.permitted_device = response['holder']
+
     def get_parameter_value(self):
         import iperf3
         if self.is_server:
-            return 0
+            LOGGER.debug(f'Current device is the server ({self.local_device}), skip available bandwidth monitor..')
+            return -1
+        if self.local_device != self.permitted_device:
+            LOGGER.debug(f'Current device is not the permitted device (current:{self.local_device},'
+                         f' permitted:{self.permitted_device}), skip available bandwidth monitor..')
+            return -1
 
         @timeout(2)
         def fetch_bandwidth_by_iperf3():
