@@ -11,7 +11,7 @@ import asyncio
 from pydantic import BaseModel
 
 from fastapi import FastAPI, Form, BackgroundTasks
-from fastapi.routing import  APIRouter
+from fastapi.routing import APIRouter
 from starlette.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -61,6 +61,7 @@ class VideoSource:
 
     def get_one_frame(self):
         frame = cv2.imread(os.path.join(self.data_dir, f'{self.frame_count}.jpg'))
+        frame_index = self.frame_count
         self.frame_count += 1
         if self.frame_count >= self.frame_max_count:
             if self.play_mode == 'non-cycle':
@@ -69,7 +70,7 @@ class VideoSource:
             else:
                 LOGGER.info('A video play cycle ends. Replay video in cycle mode.')
         self.frame_count %= self.frame_max_count
-        return frame
+        return frame, frame_index
 
     def get_source_data(self, data: str = Form(...)):
 
@@ -96,13 +97,13 @@ class VideoSource:
         self.frame_compress = Context.get_algorithm('GEN_COMPRESS', al_name=frame_compress_name) \
             if self.frame_compress is None else self.frame_compress
 
-        frames_index = []
+        frames_indexes = []
         frames_buffer = []
         while len(frames_buffer) < buffer_size:
-            frame = self.get_one_frame()
+            frame, frame_index = self.get_one_frame()
             if self.frame_filter(self, frame):
                 frames_buffer.append(frame)
-                frames_index.append(self.frame_count)
+                frames_indexes.append(frame_index)
 
         frames_buffer = [
             self.frame_process(self, frame, self.raw_meta_data['resolution'], self.meta_data['resolution'])
@@ -113,7 +114,7 @@ class VideoSource:
                                                                 file_suffix=self.file_suffix)
         self.frame_compress(self, frames_buffer, self.file_name)
 
-        return JSONResponse(frames_index)
+        return JSONResponse(frames_indexes)
 
     def get_source_file(self, backtask: BackgroundTasks):
         return FileResponse(path=self.file_name, filename=self.file_name, media_type='text/plain',
