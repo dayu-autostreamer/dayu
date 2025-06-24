@@ -275,17 +275,7 @@ class TemplateHelper:
         edge_workers = []
         for index, edge_node in enumerate(edge_nodes):
             new_edge_worker = copy.deepcopy(edge_worker_template)
-
             new_edge_worker['template']['spec']['nodeName'] = edge_node
-
-            # only test bandwidth for one edge
-            for parameter in new_edge_worker['template']['spec']['containers'][0]['env']:
-                if parameter['name'] == 'MONITORS':
-                    parameter_list = eval(parameter['value'])
-                    if index != 0 and 'bandwidth' in parameter_list:
-                        parameter_list.remove('bandwidth')
-                        parameter['value'] = str(parameter_list)
-
             edge_workers.append(new_edge_worker)
 
         new_cloud_worker = copy.deepcopy(cloud_worker_template)

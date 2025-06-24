@@ -40,6 +40,11 @@ class SchedulerServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_GET_RESOURCE]
                      ),
+            APIRoute(NetworkAPIPath.SCHEDULER_GET_RESOURCE_LOCK,
+                     self.get_resource_lock,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_GET_RESOURCE_LOCK]
+                     ),
             APIRoute(NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE,
                      self.generate_source_nodes_selection_plan,
                      response_class=JSONResponse,
@@ -86,6 +91,10 @@ class SchedulerServer:
 
     async def get_resource_state(self):
         return self.scheduler.get_scheduler_resource()
+
+    async def get_resource_lock(self, data: str = Form(...)):
+        data = json.loads(data)
+        return {'holder': self.scheduler.get_resource_lock(data)}
 
     async def generate_source_nodes_selection_plan(self, data: str = Form(...)):
         data = json.loads(data)

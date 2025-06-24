@@ -1,6 +1,6 @@
 import threading
 
-from core.lib.common import Context, LOGGER
+from core.lib.common import Context, LOGGER, ResourceLockManager
 from core.lib.network import NodeInfo
 
 
@@ -8,6 +8,8 @@ class Scheduler:
     def __init__(self):
         self.schedule_table = {}
         self.resource_table = {}
+
+        self.resource_lock_manager = ResourceLockManager()
 
         self.cloud_device = NodeInfo.get_cloud_node()
 
@@ -82,6 +84,9 @@ class Scheduler:
 
     def get_scheduler_resource(self):
         return self.resource_table
+
+    def get_resource_lock(self, info):
+        return self.resource_lock_manager.acquire_lock(info['resource'], info['device'])
 
     def get_source_node_selection_plan(self, source_id, data):
         agent = self.schedule_table[source_id]
