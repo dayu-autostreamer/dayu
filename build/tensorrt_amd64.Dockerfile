@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM ${REG}/yuefan2022/tensorrt-ubuntu20.04-cuda11.6:latest
+FROM ${REG}/ultralytics/ultralytics:latest
 
 LABEL authors="Wenhui Zhou"
 

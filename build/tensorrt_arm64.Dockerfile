@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM  ${REG}/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3
+FROM  ${REG}/ultralytics/ultralytics:latest-jetson-jetpack4
 
 LABEL authors="Wenhui Zhou"
 
