@@ -3,9 +3,9 @@ FROM ${REG}/ultralytics/ultralytics:latest
 
 LABEL authors="Wenhui Zhou"
 
-RUN rm -rf /etc/apt/sources.list.d/ros-latest.list && \
-    apt-get update && \
+RUN apt-get update && \
+    apt-get install -y build-essential python3-dev g++ && \
     pip3 install --upgrade pip && \
-    pip3 install typing_extensions numpy==1.23.1 scipy tiff imagecodecs scikit-learn scikit-image -i https://pypi.tuna.tsinghua.edu.cn/simple
+    pip3 install typing_extensions scipy tiff imagecodecs scikit-learn scikit-image numpy==1.23.1 -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 RUN ["/bin/bash"]
