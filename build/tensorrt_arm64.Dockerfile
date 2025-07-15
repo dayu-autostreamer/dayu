@@ -10,8 +10,7 @@ COPY pdk_files /pdk_files
 # Install requried libraries
 RUN sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list && \
     apt-get update && \
-    apt-get install -y software-properties-common && \
-    add-apt-repository ppa:ubuntu-toolchain-r/test
+    apt-get install -y software-properties-common
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
