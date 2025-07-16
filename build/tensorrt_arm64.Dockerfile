@@ -12,9 +12,10 @@ RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.ed
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential python3-dev g++ \
-      libsqlite3-dev libgeos-dev libproj-dev curl make \
+      libsqlite3-dev libgeos-dev curl make \
       autoconf automake libtool pkg-config \
-      git cmake  \
+      git cmake \
+      libproj-dev proj-data proj-bin \
  && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/src/gdal \
@@ -23,7 +24,10 @@ RUN mkdir -p /usr/src/gdal \
  && cd gdal \
  && mkdir build \
  && cd build \
- && cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local \
+ && cmake .. \
+    -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -DPROJ_INCLUDE_DIR=/usr/include \
+    -DPROJ_LIBRARY=/usr/lib/aarch64-linux-gnu/libproj.so \
  && make -j"$(nproc)" \
  && make install \
  && ldconfig \
