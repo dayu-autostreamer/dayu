@@ -9,18 +9,22 @@ RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.ed
  && sed -i 's@http://security.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list \
  && sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list
 
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      apt-transport-https ca-certificates gnupg dirmngr \
-      software-properties-common python3-apt python3-distutils \
+      build-essential python3-dev g++ \
+      libsqlite3-dev libgeos-dev libproj-dev curl \
  && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      build-essential python3-dev g++ \
-      libgdal-dev=2.2.3+dfsg-2 \
-      gdal-bin=2.2.3+dfsg-2 \
- && rm -rf /var/lib/apt/lists/*
+RUN cd /tmp \
+ && curl -L https://download.osgeo.org/gdal/3.6.3/gdal-3.6.3.tar.gz | tar xz \
+ && cd gdal-3.6.3 \
+ && ./configure --prefix=/usr/local \
+ && make -j"$(nproc)" \
+ && make install \
+ && ldconfig \
+ && cd / \
+ && rm -rf /tmp/gdal-3.6.3
 
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
