@@ -6,6 +6,7 @@ from core.lib.common import LOGGER, NameMaintainer
 class Timer:
     def __init__(self, label=""):
         self.label = label
+        self.elapsed_time = 0
 
     def __enter__(self):
         self.start_time = time.time()
