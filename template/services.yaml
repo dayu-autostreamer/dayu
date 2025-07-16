@@ -82,6 +82,15 @@
   input: bbox
   output: text
   yaml: age-classification.yaml
+
+- id: pedestrian-detection
+  service: pedestrian-detection
+  name: pedestrian detection
+  description: pedestrian detection (detection + tracking)
+  input: frame
+  output: bbox
+  yaml: pedestrian-detection.yaml
+
 # unimplemented
 - id: human-exposure-identification
   service: human-exposure-identification
