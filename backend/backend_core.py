@@ -134,9 +134,10 @@ class BackendCore:
                 msg = 'unexpected system error, please refer to logs in backend'
             finally:
                 self.save_component_yaml(first_docs_list + second_docs_list)
-                with open(os.path.join(Context.get_file_path(0), 'deployment.txt'), 'a') as f:
-                    f.write(f'{timer.get_elapsed_time()}\n')
-            if not result:
+        with open(os.path.join(Context.get_file_path(0), 'deployment.txt'), 'a') as f:
+            f.write(f'{timer.get_elapsed_time()}\n')
+
+        if not result:
                 return False, msg
 
         # Start cycle deployment
@@ -190,8 +191,8 @@ class BackendCore:
                 if not res:
                     return False, msg
 
-            with open(os.path.join(Context.get_file_path(0), 'redeployment.txt'), 'a') as f:
-                f.write(f'{timer.get_elapsed_time()}\n')
+        with open(os.path.join(Context.get_file_path(0), 'redeployment.txt'), 'a') as f:
+            f.write(f'{timer.get_elapsed_time()}\n')
 
         return True, ''
 
