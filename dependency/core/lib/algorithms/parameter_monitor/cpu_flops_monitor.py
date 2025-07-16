@@ -22,9 +22,10 @@ class CPUFlopsMonitor(BaseMonitor, abc.ABC):
 
         self.cores, self.freq, self.arch, self.instruction_set = self.get_cpu_info()
 
-    def get_cpu_info(self) -> Tuple[int, float, str, str]:
-        """Obtain the number of CPU cores, maximum frequency, architecture, and instruction set."""
-        # Obtain the number of physical cores
+    @staticmethod
+    def get_cpu_info() -> Tuple[int, float, str, str]:
+        """Get the number of CPU cores, maximum frequency, architecture, and instruction set."""
+        # Get the number of physical cores
         if platform.system() == "Linux":
             try:
                 with open('/proc/cpuinfo', 'r') as f:
@@ -36,9 +37,7 @@ class CPUFlopsMonitor(BaseMonitor, abc.ABC):
         else:
             cores = os.cpu_count() or 1
 
-        self.cores = cores
-
-        # Obtain CPU frequency and architecture
+        # Get CPU frequency and architecture
         freq, arch = None, platform.machine()
         try:
             if platform.system() == "Linux":
@@ -68,9 +67,6 @@ class CPUFlopsMonitor(BaseMonitor, abc.ABC):
                 LOGGER.warning(f'Obtaining CPU frequency and architecture failed: {e}')
                 freq = 2.0  # default
 
-        self.arch = arch
-        self.freq = freq
-
         # Detect the instruction set
         instruction_set = ""
         try:
@@ -91,7 +87,7 @@ class CPUFlopsMonitor(BaseMonitor, abc.ABC):
             else:
                 instruction_set = "SSE"
 
-        self.instruction_set = instruction_set
+        return cores, freq, arch, instruction_set
 
     def calculate_flops(self) -> Tuple[float, float]:
         """
