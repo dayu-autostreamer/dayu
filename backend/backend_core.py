@@ -10,6 +10,7 @@ import os
 import time
 from core.lib.content import Task
 from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant
+from core.lib.estimation import Timer
 from core.lib.network import http_request, NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod
 
 from kube_helper import KubeHelper
@@ -120,20 +121,23 @@ class BackendCore:
         second_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
                                                                          copy.deepcopy(source_deploy),
                                                                          scopes=second_stage_components)
-        try:
-            result, msg = self.install_yaml_templates(second_docs_list)
-        except timeout_exceptions.FunctionTimedOut as e:
-            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            result = False
-            msg = 'second-stage install timeout after 100 seconds'
-        except Exception as e:
-            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            result = False
-            msg = 'unexpected system error, please refer to logs in backend'
-        finally:
-            self.save_component_yaml(first_docs_list + second_docs_list)
-        if not result:
-            return False, msg
+        with Timer('Deployment Cost') as timer:
+            try:
+                result, msg = self.install_yaml_templates(second_docs_list)
+            except timeout_exceptions.FunctionTimedOut as e:
+                LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+                result = False
+                msg = 'second-stage install timeout after 100 seconds'
+            except Exception as e:
+                LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+                result = False
+                msg = 'unexpected system error, please refer to logs in backend'
+            finally:
+                self.save_component_yaml(first_docs_list + second_docs_list)
+                with open(os.path.join(Context.get_file_path(0), 'deployment.txt'), 'r') as f:
+                    f.write(f'{timer.get_elapsed_time()}\n')
+            if not result:
+                return False, msg
 
         # Start cycle deployment
         self.is_cycle_deploy = True
@@ -162,28 +166,32 @@ class BackendCore:
         return result, msg
 
     def parse_and_redeploy_services(self, update_docs):
-        original_docs = self.read_component_yaml()
-        if not original_docs:
-            msg = 'no valid components yaml docs found.'
-            LOGGER.warning(msg)
-            return False, ''
+        with Timer('Redeploy cost') as timer:
+            original_docs = self.read_component_yaml()
+            if not original_docs:
+                msg = 'no valid components yaml docs found.'
+                LOGGER.warning(msg)
+                return False, ''
 
-        _, docs_to_add, docs_to_update, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
+            _, docs_to_add, docs_to_update, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
 
-        if docs_to_update:
-            res, msg = self.update_processors(docs_to_update)
-            if not res:
-                return False, msg
+            if docs_to_update:
+                res, msg = self.update_processors(docs_to_update)
+                if not res:
+                    return False, msg
 
-        if docs_to_add:
-            res, msg = self.install_processors(docs_to_add)
-            if not res:
-                return False, msg
+            if docs_to_add:
+                res, msg = self.install_processors(docs_to_add)
+                if not res:
+                    return False, msg
 
-        if docs_to_delete:
-            res, msg = self.uninstall_processors(docs_to_delete)
-            if not res:
-                return False, msg
+            if docs_to_delete:
+                res, msg = self.uninstall_processors(docs_to_delete)
+                if not res:
+                    return False, msg
+
+            with open(os.path.join(Context.get_file_path(0), 'redeployment.txt'), 'r') as f:
+                f.write(f'{timer.get_elapsed_time()}\n')
 
         return True, ''
 
