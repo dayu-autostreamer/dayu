@@ -12,7 +12,6 @@ RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.ed
     apt-get update && \
     apt-get install -y python3-apt python3-distutils && \
     echo "deb https://ppa.launchpadcontent.net/ubuntugis/ppa/ubuntu bionic main" > /etc/apt/sources.list.d/ubuntugis-ppa.list && \
-    add-apt-repository -y ppa:ubuntugis/ppa && \
     apt-get update && \
     apt-get install -y software-properties-common && \
     apt-get install -y build-essential python3-dev g++ \
