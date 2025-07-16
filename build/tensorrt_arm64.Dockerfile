@@ -5,8 +5,6 @@ LABEL authors="Wenhui Zhou"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-FROM nvcr.io/nvidia/l4t-tensorflow:r32.7.1-tf2.8-py3
-
 RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list \
  && sed -i 's@http://security.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list \
  && sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list
