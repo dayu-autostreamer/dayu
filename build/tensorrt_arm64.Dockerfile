@@ -15,23 +15,12 @@ RUN apt-get update \
       software-properties-common python3-apt python3-distutils \
  && rm -rf /var/lib/apt/lists/*
 
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      gnupg dirmngr apt-transport-https ca-certificates \
- && rm -rf /var/lib/apt/lists/*
-
-RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys \
-      FF0E7BBEC491C6A1 089EBE08314DF160 \
- && echo "deb https://ppa.launchpadcontent.net/ubuntugis/ppa/ubuntu bionic main" \
-      > /etc/apt/sources.list.d/ubuntugis-ppa.list
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
       build-essential python3-dev g++ \
-      libgdal-dev gdal-bin \
+      libgdal-dev=2.2.3+dfsg-2 \
+      gdal-bin=2.2.3+dfsg-2 \
  && rm -rf /var/lib/apt/lists/*
-
 
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
