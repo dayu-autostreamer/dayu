@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM  ${REG}/ultralytics/ultralytics:latest-jetson-jetpack4
+FROM ${REG}/ultralytics/ultralytics:latest-jetson-jetpack4
 
 LABEL authors="Wenhui Zhou"
 
