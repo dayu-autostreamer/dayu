@@ -167,13 +167,13 @@ class BackendCore:
         return result, msg
 
     def parse_and_redeploy_services(self, update_docs):
-        with Timer('Redeploy cost') as timer:
-            original_docs = self.read_component_yaml()
-            if not original_docs:
-                msg = 'no valid components yaml docs found.'
-                LOGGER.warning(msg)
-                return False, ''
+        original_docs = self.read_component_yaml()
+        if not original_docs:
+            msg = 'no valid components yaml docs found.'
+            LOGGER.warning(msg)
+            return False, ''
 
+        with Timer('Redeploy cost') as timer:
             _, docs_to_add, docs_to_update, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
 
             if docs_to_update:
@@ -191,8 +191,9 @@ class BackendCore:
                 if not res:
                     return False, msg
 
-        with open(os.path.join(Context.get_file_path(0), 'redeployment.txt'), 'a') as f:
-            f.write(f'{timer.get_elapsed_time()}\n')
+        if docs_to_add or docs_to_update or docs_to_delete:
+            with open(os.path.join(Context.get_file_path(0), 'redeployment.txt'), 'a') as f:
+                f.write(f'{timer.get_elapsed_time()}\n')
 
         return True, ''
 
