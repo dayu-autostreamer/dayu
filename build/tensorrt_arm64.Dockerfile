@@ -10,9 +10,12 @@ RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.ed
     sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list && \
     apt-get clean && \
     apt-get update && \
-    apt-get install -y software-properties-common && \
+    apt-get install -y python3-apt python3-distutils && \
+    echo "deb https://ppa.launchpadcontent.net/ubuntugis/ppa/ubuntu bionic main" > /etc/apt/sources.list.d/ubuntugis-ppa.list && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 089EBE08314DF160 && \
     add-apt-repository -y ppa:ubuntugis/ppa && \
     apt-get update && \
+    apt-get install -y software-properties-common && \
     apt-get install -y build-essential python3-dev g++ \
         libgdal-dev=3.6.3+dfsg-1~ubuntu22.04.1 \
         gdal-bin=3.6.3+dfsg-1~ubuntu22.04.1 && \
