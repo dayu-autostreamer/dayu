@@ -25,7 +25,9 @@ RUN mkdir -p /usr/src/proj \
  && cd /usr/src/proj \
  && curl -L https://download.osgeo.org/proj/proj-9.1.1.tar.gz | tar -xz \
  && cd proj-9.1.1 \
- && ./configure --prefix=/usr/local \
+ && mkdir build \
+ && cd build \
+ && cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local \
  && make -j"$(nproc)" \
  && make install \
  && ldconfig \
