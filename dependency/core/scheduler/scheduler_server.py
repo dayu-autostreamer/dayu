@@ -94,7 +94,8 @@ class SchedulerServer:
 
     async def get_resource_lock(self, data: str = Form(...)):
         data = json.loads(data)
-        return {'holder': self.scheduler.get_resource_lock(data)}
+        holder = await self.scheduler.get_resource_lock(data)
+        return {'holder': holder}
 
     async def generate_source_nodes_selection_plan(self, data: str = Form(...)):
         data = json.loads(data)
