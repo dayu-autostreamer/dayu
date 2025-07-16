@@ -5,7 +5,10 @@ LABEL authors="Wenhui Zhou"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list && \
+RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list && \
+    sed -i 's@http://security.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list && \
+    sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list && \
+    apt-get clean && \
     apt-get update && \
     apt-get install -y build-essential python3-dev g++ && \
     pip3 install --upgrade pip && \
