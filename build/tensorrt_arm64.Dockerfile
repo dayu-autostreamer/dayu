@@ -15,7 +15,10 @@ RUN apt-get update \
       libsqlite3-dev libgeos-dev curl make \
       autoconf automake libtool pkg-config \
       git cmake \
-      libproj-dev proj-data proj-bin \
+      libproj-dev proj-bin proj-data proj-doc libproj15 \
+      libcurl4-gnutls-dev libexpat1-dev libxml2-dev \
+      zlib1g-dev libssl-dev libpng-dev libjpeg-dev \
+      libtiff-dev libwebp-dev libzstd-dev \
  && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/src/gdal \
@@ -26,7 +29,7 @@ RUN mkdir -p /usr/src/gdal \
  && cd build \
  && cmake .. \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
-    -DPROJ_INCLUDE_DIR=/usr/include \
+    -DPROJ_INCLUDE_DIR=/usr/include/aarch64-linux-gnu \
     -DPROJ_LIBRARY=/usr/lib/aarch64-linux-gnu/libproj.so \
  && make -j"$(nproc)" \
  && make install \
