@@ -14,13 +14,16 @@ RUN apt-get update \
       build-essential python3-dev g++ \
       libsqlite3-dev libgeos-dev libproj-dev curl make \
       autoconf automake libtool pkg-config \
+      git cmake  \
  && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/src/gdal \
  && cd /usr/src/gdal \
- && curl -L https://download.osgeo.org/gdal/3.6.3/gdal-3.6.3.tar.gz | tar -xz  \
- && cd gdal-3.6.3 \
- && ./configure --prefix=/usr/local \
+ && git clone --depth 1 --branch v3.6.3 https://github.com/OSGeo/gdal.git \
+ && cd gdal \
+ && mkdir build \
+ && cd build \
+ && cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local \
  && make -j"$(nproc)" \
  && make install \
  && ldconfig \
