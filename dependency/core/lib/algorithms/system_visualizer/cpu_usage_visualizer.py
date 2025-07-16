@@ -35,10 +35,10 @@ class CPUUsageVisualizer(CurveVisualizer, abc.ABC):
         if self.variables:
             if not resource:
                 return {device: 0 for device in self.variables}
-            return {device: resource[device]['cpu'] if device in resource else 0 for device in self.variables}
+            return {device: resource[device]['cpu_usage'] if device in resource else 0 for device in self.variables}
 
         else:
             if not resource:
                 return {'no device':0}
             else:
-                return {device:resource[device]['cpu'] for device in resource}
+                return {device:resource[device]['cpu_usage'] for device in resource}

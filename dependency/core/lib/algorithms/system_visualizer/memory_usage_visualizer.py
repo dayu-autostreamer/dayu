@@ -35,10 +35,10 @@ class MemoryUsageVisualizer(CurveVisualizer, abc.ABC):
         if self.variables:
             if not resource:
                 return {device: 0 for device in self.variables}
-            return {device: resource[device]['memory'] if device in resource else 0 for device in self.variables}
+            return {device: resource[device]['memory_usage'] if device in resource else 0 for device in self.variables}
 
         else:
             if not resource:
                 return {'no device':0}
             else:
-                return {device:resource[device]['memory'] for device in resource}
+                return {device:resource[device]['memory_usage'] for device in resource}
