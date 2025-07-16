@@ -20,8 +20,6 @@ RUN mkdir -p /usr/src/gdal \
  && cd /usr/src/gdal \
  && curl -L https://download.osgeo.org/gdal/3.6.3/gdal-3.6.3.tar.gz | tar -xz  \
  && cd gdal-3.6.3 \
- && chmod +x autogen.sh  \
- && ./autogen.sh  \
  && ./configure --prefix=/usr/local \
  && make -j"$(nproc)" \
  && make install \
