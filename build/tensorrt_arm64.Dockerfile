@@ -18,8 +18,7 @@ RUN apt-get update \
 
 RUN mkdir -p /usr/src/gdal \
  && cd /usr/src/gdal \
- && curl -L https://download.osgeo.org/gdal/3.6.3/gdal-3.6.3.tar.gz \
-      | tar -xz --strip-components=1 \
+ && curl -L https://download.osgeo.org/gdal/3.6.3/gdal-3.6.3.tar.gz | tar -xz  \
  && cd gdal-3.6.3 \
  && ./autogen.sh  \
  && ./configure --prefix=/usr/local \
