@@ -15,22 +15,27 @@ RUN apt-get update \
       libsqlite3-dev libgeos-dev curl make \
       autoconf automake libtool pkg-config \
       git cmake \
-      libproj-dev proj-bin proj-data proj-doc libproj15 \
       libcurl4-gnutls-dev libexpat1-dev libxml2-dev \
       zlib1g-dev libssl-dev libpng-dev libjpeg-dev \
       libtiff-dev libwebp-dev libzstd-dev \
+      sqlite3 libsqlite3-dev \
  && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /usr/src/proj \
+ && cd /usr/src/proj \
+ && curl -L https://download.osgeo.org/proj/proj-9.1.1.tar.gz | tar -xz \
+ && cd proj-9.1.1 \
+ && ./configure --prefix=/usr/local \
+ && make -j"$(nproc)" \
+ && make install \
+ && ldconfig \
+ && rm -rf /usr/src/proj
 
 RUN mkdir -p /usr/src/gdal \
  && cd /usr/src/gdal \
- && git clone --depth 1 --branch v3.6.3 https://github.com/OSGeo/gdal.git \
- && cd gdal \
- && mkdir build \
- && cd build \
- && cmake .. \
-    -DCMAKE_INSTALL_PREFIX=/usr/local \
-    -DPROJ_INCLUDE_DIR=/usr/include/aarch64-linux-gnu \
-    -DPROJ_LIBRARY=/usr/lib/aarch64-linux-gnu/libproj.so \
+ && curl -L https://download.osgeo.org/gdal/3.6.3/gdal-3.6.3.tar.gz | tar -xz \
+ && cd gdal-3.6.3 \
+ && ./configure --prefix=/usr/local --with-proj=/usr/local \
  && make -j"$(nproc)" \
  && make install \
  && ldconfig \
