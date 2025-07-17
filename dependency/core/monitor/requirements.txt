@@ -1,7 +1,5 @@
 iperf3
 psutil
-jetson-stats
-pynvml
 
 # The following packages has been pre-installed in the  base image
 # opencv-python
