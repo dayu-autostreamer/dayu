@@ -98,6 +98,13 @@
   input: bbox
   output: text
 
+- id: vehicle-detection
+  service: vehicle-detection
+  name: vehicle detection
+  description: vehicle detection (detection + tracking)
+  input: frame
+  output: bbox
+  yaml: vehicle-detection.yaml
 
 # unimplemented
 - id: human-exposure-identification
