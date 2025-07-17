@@ -71,6 +71,8 @@ class GPUFlopsMonitor(BaseMonitor, abc.ABC):
             (8, 7): 2,  # Ampere (AGX Orin): dual
         }
 
+        self.device_gpu_flops = self.get_gpu_flops()
+
     @staticmethod
     def load_pycuda():
         import pycuda.driver as cuda
@@ -121,5 +123,4 @@ class GPUFlopsMonitor(BaseMonitor, abc.ABC):
             return 0
 
     def get_parameter_value(self):
-        fp32_flops = self.get_gpu_flops()
-        return fp32_flops
+        return self.device_gpu_flops
