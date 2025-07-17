@@ -302,7 +302,7 @@ class BackendCore:
         # Detect resources to delete (present in original but missing in update)
         for name in list(original_dict.keys()):
             if name not in update_dict:
-                resources_to_delete.append(original_dict.pop(name))
+                resources_to_delete.append(original_dict[name])
 
         # Detect resources to add or update
         for name, new_doc in update_dict.items():
