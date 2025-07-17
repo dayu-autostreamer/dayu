@@ -291,6 +291,9 @@ class BackendCore:
         original_dict = {doc['metadata']['name']: doc for doc in original_docs}
         update_dict = {doc['metadata']['name']: doc for doc in update_docs}
 
+        print('original_dict:', original_dict)
+        print('update_dict:', update_dict)
+
         # Initialize change sets
         resources_to_add = []
         resources_to_update = []
