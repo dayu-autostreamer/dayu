@@ -74,8 +74,17 @@ RUN mkdir -p /usr/src/gdal \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libbz2-dev liblcms2-dev \
-           libsnappy-dev liblz4-dev libzopfli-dev libopenjp2-dev \
-           libjpeg-turbo8-dev libdeflate-dev
+           libsnappy-dev liblz4-dev libzopfli-dev libopenjp2-7-dev \
+           libjpeg-turbo8-dev zlib1g-dev \
+
+RUN cd /usr/src && \
+    wget https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.19.tar.gz && \
+    tar -xzf v1.19.tar.gz && \
+    cd libdeflate-1.19 && \
+    make -j"$(nproc)" && \
+    make install && \
+    ldconfig && \
+    rm -rf /usr/src/libdeflate-*
 
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
