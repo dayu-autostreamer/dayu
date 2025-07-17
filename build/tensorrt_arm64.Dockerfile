@@ -73,12 +73,15 @@ RUN mkdir -p /usr/src/gdal \
  && rm -rf /usr/src/gdal
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libbz2-dev
+    apt-get install -y --no-install-recommends libbz2-dev liblcms2-dev
 
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
- && pip3 install \
-      typing_extensions scipy tiff imagecodecs \
+ && pip3 install --no-cache-dir imagecodecs --nobinary imagecodecs \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+RUN pip3 install --upgrade pip \
+ && pip install typing_extensions scipy tiff  \
       scikit-learn scikit-image tensorrt pycuda \
       numpy==1.23.1 \
     -i https://pypi.tuna.tsinghua.edu.cn/simple
