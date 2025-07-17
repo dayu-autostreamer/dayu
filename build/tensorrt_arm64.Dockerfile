@@ -92,7 +92,10 @@ RUN cd /usr/src \
  && rm -rf /usr/src/libdeflate*
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends  libgif-dev  libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev
+    apt-get install -y --no-install-recommends  libgif-dev  \
+    libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev libheif-dev \
+    libjbig-dev liblzma-dev libcfitsio-dev libcharls-dev libde265-dev libx265-dev \
+
 
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
