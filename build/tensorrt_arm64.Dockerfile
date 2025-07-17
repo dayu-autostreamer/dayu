@@ -77,7 +77,7 @@ RUN apt-get update && \
 
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
- && pip3 install --no-cache-dir imagecodecs --no-binary imagecodecs \
+ && pip3 install --no-cache-dir imagecodecs \
     -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 RUN pip3 install --upgrade pip \
