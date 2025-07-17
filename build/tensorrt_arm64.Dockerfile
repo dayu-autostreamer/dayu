@@ -20,6 +20,7 @@ RUN apt-get update \
       libtiff-dev libwebp-dev libzstd-dev \
       sqlite3 libsqlite3-dev \
       libaec-dev \
+      libblosc-dev \
  && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/src/proj \
