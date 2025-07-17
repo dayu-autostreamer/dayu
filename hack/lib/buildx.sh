@@ -81,6 +81,8 @@ dayu::buildx::import_docker_info() {
       [model-switch-detection]="build/model_switch_detection.Dockerfile"
       [pedestrian-detection]="build/pedestrian_detection.Dockerfile"
       [license-plate-recognition]="build/license_plate_recognition.Dockerfile"
+      [vehicle-detection]="build/vehicle_detection.Dockerfile"
+
   )
   # Corresponding platforms
   declare -g -A PLATFORMS=(
@@ -100,6 +102,7 @@ dayu::buildx::import_docker_info() {
       [model-switch-detection]="linux/amd64,linux/arm64"
       [pedestrian-detection]="linux/amd64,linux/arm64"
       [license-plate-recognition]="linux/amd64,linux/arm64"
+      [vehicle-detection]="linux/amd64,linux/arm64"
   )
   # Images requiring special treatment, their platforms, and Dockerfiles
   declare -g -A SPECIAL_BUILD=(
@@ -110,6 +113,7 @@ dayu::buildx::import_docker_info() {
       [model-switch-detection]="linux/amd64:build/model_switch_detection_amd64.Dockerfile,linux/arm64:build/model_switch_detection_arm64.Dockerfile"
       [pedestrian-detection]="linux/amd64:build/pedestrian_detection_amd64.Dockerfile,linux/arm64:build/pedestrian_detection_arm64.Dockerfile"
       [license-plate-recognition]="linux/amd64:build/license_plate_recognition_amd64.Dockerfile,linux/arm64:build/license_plate_recognition_arm64.Dockerfile"
+      [vehicle-detection]="linux/amd64:build/vehicle_detection_amd64.Dockerfile,linux/arm64:build/vehicle_detection_arm64.Dockerfile"
   )
 }
 
