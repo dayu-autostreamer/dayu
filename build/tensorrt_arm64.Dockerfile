@@ -20,8 +20,20 @@ RUN apt-get update \
       libtiff-dev libwebp-dev libzstd-dev \
       sqlite3 libsqlite3-dev \
       libaec-dev \
-      libblosc-dev libbrotli-dev libbrunsli-dev \
+      libblosc-dev libbrotli-dev \
  && rm -rf /var/lib/apt/lists/*
+
+RUN cd /usr/src \
+ && git clone https://github.com/google/brunsli.git \
+ && cd brunsli \
+ && git submodule update --init \
+ && mkdir build \
+ && cd build \
+ && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local .. \
+ && make -j"$(nproc)" \
+ && make install \
+ && ldconfig \
+ && rm -rf /usr/src/brunsli
 
 RUN mkdir -p /usr/src/proj \
  && cd /usr/src/proj \
