@@ -94,7 +94,7 @@ RUN cd /usr/src \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends  libgif-dev  \
     libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev libheif-dev \
-    libjbig-dev liblzma-dev libcfitsio-dev libcharls-dev libde265-dev libx265-dev \
+    libjbig-dev liblzma-dev libcfitsio-dev libcharls-dev libde265-dev libx265-dev
 
 
 RUN pip3 install --upgrade pip \
