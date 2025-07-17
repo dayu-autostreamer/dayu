@@ -91,6 +91,9 @@ RUN cd /usr/src \
  && cd / \
  && rm -rf /usr/src/libdeflate*
 
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends  libgif-dev  libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev
+
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install --no-cache-dir imagecodecs \
