@@ -19,6 +19,7 @@ RUN apt-get update \
       zlib1g-dev libssl-dev libpng-dev libjpeg-dev \
       libtiff-dev libwebp-dev libzstd-dev \
       sqlite3 libsqlite3-dev \
+      libaec-dev libdeflate-dev \
  && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/src/proj \
