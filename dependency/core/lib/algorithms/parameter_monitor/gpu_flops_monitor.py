@@ -2,9 +2,8 @@ import abc
 import os
 import platform
 
-from .base_monitor import BaseMonitor
-
 from core.lib.common import ClassFactory, ClassType, LOGGER
+from .base_monitor import BaseMonitor
 
 __all__ = ('GPUFlopsMonitor',)
 
