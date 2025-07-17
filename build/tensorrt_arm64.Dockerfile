@@ -75,7 +75,7 @@ RUN mkdir -p /usr/src/gdal \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libbz2-dev liblcms2-dev \
            libsnappy-dev liblz4-dev libzopfli-dev libopenjp2-7-dev \
-           libjpeg-turbo8-dev zlib1g-dev \
+           libjpeg-turbo8-dev zlib1g-dev
 
 RUN cd /usr/src && \
     wget https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.19.tar.gz && \
