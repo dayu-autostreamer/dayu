@@ -115,6 +115,14 @@
   output: text
   yaml: exposure-identification.yaml
 
+- id: category-identification
+  service: category-identification
+  name: category identification
+  description: category identification
+  input: bbox
+  output: text
+  yaml: category-identification.yaml
+
 # unimplemented
 - id: human-exposure-identification
   service: human-exposure-identification
