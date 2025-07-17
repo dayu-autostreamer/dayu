@@ -91,6 +91,14 @@
   output: bbox
   yaml: pedestrian-detection.yaml
 
+- id: license-plate-recognition
+  service: license-plate-recognition
+  name: license plate recognition
+  description: license plate recognition
+  input: bbox
+  output: text
+
+
 # unimplemented
 - id: human-exposure-identification
   service: human-exposure-identification
