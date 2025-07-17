@@ -316,6 +316,7 @@ class BackendCore:
 
         # Generate merged configuration (updated state)
         total_docs = list(original_dict.values())
+        print('total_docs:', total_docs)
 
         return total_docs, resources_to_add, resources_to_update, resources_to_delete
 
@@ -390,12 +391,12 @@ class BackendCore:
         return has_changes
 
     def save_component_yaml(self, docs_list):
-        self.cur_yaml_docs = docs_list
+        self.cur_yaml_docs = copy.deepcopy(docs_list)
         YamlOps.write_all_yaml(docs_list, self.save_yaml_path)
 
     def read_component_yaml(self):
         if self.cur_yaml_docs:
-            return self.cur_yaml_docs
+            return copy.deepcopy(self.cur_yaml_docs)
         elif os.path.exists(self.save_yaml_path):
             return YamlOps.read_all_yaml(self.save_yaml_path)
         else:
