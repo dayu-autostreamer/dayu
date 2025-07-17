@@ -82,6 +82,9 @@ RUN cd /usr/src \
  && mkdir libdeflate \
  && tar -xzf libdeflate.tar.gz -C libdeflate --strip-components=1 \
  && cd libdeflate \
+ && mkdir build \
+ && cd build \
+ && cmake .. -DCMAKE_BUILD_TYPE=Release \
  && make -j"$(nproc)" \
  && make install \
  && ldconfig \
