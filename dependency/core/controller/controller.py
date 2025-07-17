@@ -5,6 +5,7 @@ from core.lib.network import http_request
 from core.lib.common import LOGGER
 from core.lib.common import Context
 from core.lib.common import SystemConstant
+from core.lib.common import KubeConfig
 from core.lib.content import Task
 from core.lib.network import merge_address
 from core.lib.network import NodeInfo, PortInfo
@@ -19,7 +20,6 @@ class Controller:
 
         self.is_display = Context.get_parameter('DISPLAY', direct=False)
 
-        self.service_ports_dict = None
         self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
         self.distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
         self.distributor_hostname = NodeInfo.get_cloud_node()
@@ -28,6 +28,7 @@ class Controller:
                                                 path=NetworkAPIPath.DISTRIBUTOR_DISTRIBUTE)
 
         self.local_device = NodeInfo.get_local_device()
+        self.cloud_device = NodeInfo.get_cloud_node()
 
     def send_task_to_other_device(self, cur_task: Task, device: str = ''):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
@@ -48,14 +49,24 @@ class Controller:
     def send_task_to_service(self, cur_task: Task, service: str = ''):
         self.record_execute_ts(cur_task=cur_task, is_end=False)
 
-        self.service_ports_dict = PortInfo.get_service_ports_dict()
-        if service not in self.service_ports_dict:
+        service_ports_dict = PortInfo.get_service_ports_dict()
+        if service not in service_ports_dict:
             LOGGER.warning(f'[Service Not Exist] Service {service} does not exist in {self.local_device} '
-                           f'(has service: {self.service_ports_dict.keys()})')
+                           f'(has service: {service_ports_dict.keys()})')
+            return
 
-        service_address = merge_address(NodeInfo.hostname2ip(self.local_device),
-                                        port=self.service_ports_dict[service],
-                                        path=NetworkAPIPath.PROCESSOR_PROCESS)
+        service_deployment = KubeConfig.get_service_nodes_dict()
+        if self.local_device not in service_deployment[service]:
+            LOGGER.warning(f'[Service Not In Current Device] Service {service} is not running on {self.local_device} '
+                           f'(running on: {service_deployment[service]}), '
+                           f'transmit to cloud node ({self.cloud_device}) as default.')
+            cur_task.set_current_stage_device(self.cloud_device)
+            self.submit_task(cur_task=cur_task)
+            return
+        else:
+            service_address = merge_address(NodeInfo.hostname2ip(self.local_device),
+                                            port=service_ports_dict[service],
+                                            path=NetworkAPIPath.PROCESSOR_PROCESS)
 
         if not os.path.exists(cur_task.get_file_path()):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
@@ -92,7 +103,7 @@ class Controller:
     def submit_task(self, cur_task: Task):
         if not cur_task:
             LOGGER.warning('Current task is None')
-            return
+            return 'error'
 
         LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
                     f'current service: {cur_task.get_flow_index()}')
