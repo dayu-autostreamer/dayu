@@ -1,21 +1,28 @@
 # Dayu Release Notes
 
+---
+
 ## v1.2 (In Development)
 
 ### Features
 - Add a cyclic redeployment mechanism of service processors for further flexible task processing.
 
+
 ### Bug Fix
 - Fix concurrency conflicts for starting up multiple streams in rtsp video and http video (`datasource`).
+- Fix frame index updating error in http video source (`datasource`).
 - Support dynamic variable update in visualization modules (`frontend`).
 - Support cloud-only deployment of processors (`backend`).
+- Fix task forwarding bug in inconsistent deployment and offloading decisions (`controller`).
 
 ### Minor Update
 - Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios (`frontend` / `backend`).
 - Clean up frontend code and beatify frontend pages (`frontend`).
 - Add persistent storage of installation configuration (`frontend`).
 - Add system visualization to monitor system parameters, including resource usage, scheduling cost and so on (`frontend` / `backend` / `scheduler`).
+- Improving a fine-grained monitoring architecture including monitoring cpu and gpu flops.
 
+---
 
 ## v1.1
 
@@ -27,7 +34,7 @@ The basic structure of tasks in dayu is updated from linear pipeline to topologi
 - A fine-grained and flexible deployment and offloading mechanism for topological logic nodes and physical nodes, which separates the process of model deployment and task offloading and allows collaboration among multi-edges and cloud.
 - A more flexible visualization module in frontend to display customized visualization views for system analysis.
 - Add our work on model evolution, adaptively switch models based on scenarios. [(link)](template/scheduler/model-switch.yaml)
-- Add our latest work on video encoding: CRAVE (Collaborative Region-aware Adaptive Video Encoding). It is a region-adaptive video encoding algorithm for cloud-edge collaborative object detection. [(link)](template/scheduler/crave.yaml)
+- Add our work on video encoding: CRAVE (Collaborative Region-aware Adaptive Video Encoding). It is a region-adaptive video encoding algorithm for cloud-edge collaborative object detection. [(link)](template/scheduler/crave.yaml)
 
 ### Bug Fix
 - Fix problem of write queue full in rtsp datasource server (`datasource`).
@@ -41,6 +48,7 @@ The basic structure of tasks in dayu is updated from linear pipeline to topologi
 - Unify the base image for system components. 
 - Add application of age classification. (Current available applications: car-detection, face-detection, gender-classification, age-classification)
 
+---
 
 ## v1.0
 
