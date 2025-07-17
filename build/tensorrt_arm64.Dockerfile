@@ -23,17 +23,14 @@ RUN apt-get update \
       libblosc-dev libbrotli-dev \
  && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      software-properties-common \
-      apt-transport-https \
-      ca-certificates \
-      wget \
- && wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc | apt-key add - \
- && apt-add-repository 'deb https://apt.kitware.com/ubuntu/ bionic main' \
- && apt-get update \
- && apt-get install -y --no-install-recommends cmake \
- && rm -rf /var/lib/apt/lists/*
+RUN cd /usr/src \
+ && wget https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3.tar.gz \
+ && tar -xzf cmake-3.28.3.tar.gz \
+ && cd cmake-3.28.3 \
+ && ./bootstrap \
+ && make -j"$(nproc)" \
+ && make install \
+ && rm -rf /usr/src/cmake-3.28.3*
 
 RUN cd /usr/src \
  && git clone https://github.com/google/brunsli.git \
