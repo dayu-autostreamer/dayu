@@ -96,7 +96,7 @@ RUN apt-get update && \
     libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev \
     libjbig-dev liblzma-dev libcfitsio-dev libcharls-dev \
     libheif-dev\
-    libde265-dev1\
+    libde265-dev\
     libx265-dev
 
 
