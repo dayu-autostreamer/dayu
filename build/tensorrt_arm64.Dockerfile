@@ -91,20 +91,28 @@ RUN cd /usr/src \
  && cd / \
  && rm -rf /usr/src/libdeflate*
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      cmake meson git autoconf automake libde265-dev libx265-dev \
+      libavcodec-dev libavformat-dev libavutil-dev \
+ && git clone https://github.com/strukturag/libheif.git /usr/src/libheif \
+ && cd /usr/src/libheif \
+ && git checkout v1.14.0 \
+ && mkdir build && cd build \
+ && cmake .. -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DDETECT_LIBDE265=ON \
+            -DDETECT_LIBX265=ON \
+ && make -j"$(nproc)" && make install \
+ && ldconfig \
+ && rm -rf /usr/src/libheif
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends  libgif-dev  \
-    libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev \
-    libjbig-dev liblzma-dev libcfitsio-dev libcharls-dev \
-    libheif-dev\
-    libde265-dev\
-    libx265-dev
-
+    libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev
 
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install --no-cache-dir imagecodecs \
-    --global-option="build_ext" \
-    --global-option="--disable-heif" \
     -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 RUN pip3 install --upgrade pip \
