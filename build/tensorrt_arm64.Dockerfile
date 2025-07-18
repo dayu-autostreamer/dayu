@@ -110,6 +110,20 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends  libgif-dev  \
     libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev
 
+RUN cd /usr/src \
+ && wget https://download.osgeo.org/libtiff/tiff-4.5.0.tar.gz \
+ && tar xzf tiff-4.5.0.tar.gz \
+ && cd tiff-4.5.0 \
+ && ./configure \
+      --prefix=/usr/local \
+      --enable-zstd \
+      --with-zlib \
+      --with-webp \
+ && make -j"$(nproc)" \
+ && make install \
+ && ldconfig \
+ && rm -rf /usr/src/tiff-4.5.0*
+
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install tiff \
