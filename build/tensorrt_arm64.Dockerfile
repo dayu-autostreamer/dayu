@@ -95,9 +95,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends  libgif-dev  \
     libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev \
     libjbig-dev liblzma-dev libcfitsio-dev libcharls-dev \
-    libheif-dev=1.3.2-2~ubuntu18.04.1 \
-    libde265-dev=1.0.3-1~ubuntu18.04.1 \
-    libx265-dev=2.6-3~ubuntu18.04.1
+    libheif-dev\
+    libde265-dev1\
+    libx265-dev
 
 
 RUN pip3 install --upgrade pip \
