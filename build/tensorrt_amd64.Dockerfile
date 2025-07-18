@@ -18,6 +18,7 @@ RUN wget -qO /tmp/cuda-keyring.deb \
     rm -f /etc/apt/sources.list.d/cuda.list /etc/apt/sources.list.d/nvidia-ml.list
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+      nvidia-cuda-toolkit \
       libnvinfer8 libnvinfer-dev libnvinfer-plugin8 python3-libnvinfer \
       libnvonnxparsers8 libnvparsers8 && \
     apt-mark hold libnvinfer8 libnvinfer-dev libnvinfer-plugin8 libnvonnxparsers8 libnvparsers8 && \
