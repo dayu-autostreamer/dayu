@@ -12,11 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget gnupg ca-c
     rm -rf /var/lib/apt/lists/*
 
 RUN wget -qO /tmp/cuda-keyring.deb \
-      https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb && \
+      https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb && \
     dpkg -i /tmp/cuda-keyring.deb && \
-    rm -f /tmp/cuda-keyring.deb
-
-RUN rm -f /etc/apt/sources.list.d/cuda.list /etc/apt/sources.list.d/nvidia-ml.list
+    rm -f /tmp/cuda-keyring.deb && \
+    rm -f /etc/apt/sources.list.d/cuda.list /etc/apt/sources.list.d/nvidia-ml.list
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libnvinfer8 libnvinfer-dev libnvinfer-plugin8 python3-libnvinfer \
@@ -24,7 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-mark hold libnvinfer8 libnvinfer-dev libnvinfer-plugin8 libnvonnxparsers8 libnvparsers8 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 最后安装 Python 包
 RUN pip3 install --upgrade pip && \
     pip3 install typing_extensions scipy tiff imagecodecs \
       scikit-learn scikit-image pycuda numpy==1.23.1 \
