@@ -10,7 +10,7 @@ __all__ = ('FixedInitialDeploymentPolicy',)
 
 @ClassFactory.register(ClassType.SCH_INITIAL_DEPLOYMENT_POLICY, alias='fixed')
 class FixedInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
-    def __init__(self, policy):
+    def __init__(self, policy=None, **kwargs):
         """
         Args:
             policy: {'service1':['node1', 'node2'], 'service2':['node2', 'node3']}
