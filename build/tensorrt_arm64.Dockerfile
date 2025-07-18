@@ -93,13 +93,18 @@ RUN cd /usr/src \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends  libgif-dev  \
-    libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev libheif-dev \
-    libjbig-dev liblzma-dev libcfitsio-dev libcharls-dev libde265-dev libx265-dev
+    libjbig-dev liblzma-dev  libcfitsio-dev  libcharls-dev \
+    libjbig-dev liblzma-dev libcfitsio-dev libcharls-dev \
+    libheif-dev=1.3.2-2~ubuntu18.04.1 \
+    libde265-dev=1.0.3-1~ubuntu18.04.1 \
+    libx265-dev=2.6-3~ubuntu18.04.1
 
 
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install --no-cache-dir imagecodecs \
+    --global-option="build_ext" \
+    --global-option="--disable-heif" \
     -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 RUN pip3 install --upgrade pip \
