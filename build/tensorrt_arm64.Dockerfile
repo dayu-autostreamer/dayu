@@ -134,6 +134,7 @@ RUN pip3 install --upgrade pip \
       --global-option="--skip-jpegxl" \
       --global-option="--skip-jpegxr" \
       --global-option="--skip-lz4" \
+      --global-option="--skip-zfp" \
     -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 RUN pip3 install --upgrade pip \
