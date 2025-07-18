@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from typing import List
-
+import ctypes
 import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
@@ -10,8 +10,12 @@ from core.lib.common import Context, LOGGER
 
 
 class CategoryIdentification:
-    def __init__(self, weights, device=0):
+    def __init__(self, weights, plugin_library, device=0):
         self.weights = Context.get_file_path(weights)
+
+        self.plugin_library = Context.get_file_path(plugin_library)
+
+        ctypes.CDLL(self.plugin_library)
 
         self.ctx = cuda.Device(device).make_context()
         stream = cuda.Stream()
