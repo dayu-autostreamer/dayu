@@ -138,7 +138,7 @@ class BackendCore:
             f.write(f'{timer.get_elapsed_time()}\n')
 
         if not result:
-                return False, msg
+            return False, msg
 
         # Start cycle deployment
         self.is_cycle_deploy = True
@@ -291,9 +291,6 @@ class BackendCore:
         original_dict = {doc['metadata']['name']: doc for doc in original_docs}
         update_dict = {doc['metadata']['name']: doc for doc in update_docs}
 
-        print('original_dict:', original_dict)
-        print('update_dict:', update_dict)
-
         # Initialize change sets
         resources_to_add = []
         resources_to_update = []
@@ -319,7 +316,6 @@ class BackendCore:
 
         # Generate merged configuration (updated state)
         total_docs = list(original_dict.values())
-        print('total_docs:', total_docs)
 
         return total_docs, resources_to_add, resources_to_update, resources_to_delete
 
