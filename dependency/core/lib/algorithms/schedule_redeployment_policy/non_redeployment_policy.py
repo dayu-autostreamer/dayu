@@ -1,32 +1,32 @@
-import abc
-
 from .base_redeployment_policy import BaseRedeploymentPolicy
+from core.lib.common import ClassFactory, ClassType, LOGGER
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, KubeConfig
-
-__all__ = ('FixedInitialDeploymentPolicy',)
-
+__all__ = ('NonRedeploymentPolicy',)
 
 @ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='non')
-class FixedInitialDeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
-    def __init__(self):
-        pass
-
+class NonRedeploymentPolicy(BaseRedeploymentPolicy):
+    """No-operation redeployment policy"""
+    
+    def __init__(self, **kwargs):
+        super().__init__()
+        # 记录初始化信息（可选）
+        LOGGER.debug('[Redeployment] NON policy initialized')
+    
     def __call__(self, info):
+        """Return empty redeployment plan
+        
+        Args:
+            info (dict): Context information containing:
+                - source: Information about the data source
+                - dag: Service dependency graph
+                - node_set: Available node set
+        
+        Returns:
+            dict: Always empty dictionary {}
+        """
         source_id = info['source']['id']
-        dag = info['dag']
-        node_set = info['node_set']
-
-        deploy_plan = {}
-        service_nodes_dict = KubeConfig.get_service_nodes_dict()
-        all_services = list(dag.keys())
-        for service in all_services:
-            if service in service_nodes_dict:
-                intersection_nodes = list(set(service_nodes_dict[service]) & set(node_set))
-                deploy_plan[service] = intersection_nodes
-            else:
-                deploy_plan[service] = list(node_set)
-
-        LOGGER.info(f'[Redeployment] (source {source_id}) Deploy policy: {deploy_plan}')
-
-        return deploy_plan
+        # 明确记录不执行重新部署
+        LOGGER.info(f'[Redeployment] Source {source_id}: NO redeployment (non policy)')
+        
+        # 返回空字典表示无操作
+        return {}
