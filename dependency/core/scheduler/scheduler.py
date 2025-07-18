@@ -1,6 +1,6 @@
 import threading
 
-from core.lib.common import Context, LOGGER, ResourceLockManager
+from core.lib.common import Context, LOGGER, ResourceLockManager, KubeConfig
 from core.lib.network import NodeInfo
 
 
@@ -49,7 +49,19 @@ class Scheduler:
             LOGGER.debug('No schedule plan, use startup policy')
             plan = self.get_startup_policy(info)
 
+        if not KubeConfig.check_services_running():
+            plan = self.set_backup_offloading_plan(plan)
+            LOGGER.debug('[Backup Offloading Plan] Processor not in running state (maybe in redeployment), '
+                         'using backup offloading plan (all cloud).')
+
         LOGGER.info(f'[Schedule Plan] Source {source_id}: {plan}')
+
+        return plan
+
+    def set_backup_offloading_plan(self, plan):
+        for service_name in plan['dag']:
+            if service_name != 'start':
+                plan['dag'][service_name]['service']['execute_device'] = self.cloud_device
 
         return plan
 
