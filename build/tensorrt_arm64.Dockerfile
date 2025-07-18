@@ -115,7 +115,8 @@ RUN pip3 install --upgrade pip \
  && pip3 install --no-cache-dir imagecodecs \
       --global-option="build_ext" \
       --global-option="--skip-jpeg8" \
-     --global-option="--skip-jpegls" \
+      --global-option="--skip-jpegls" \
+      --global-option="--skip-jpegxl" \
     -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 RUN pip3 install --upgrade pip \
