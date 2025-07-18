@@ -61,6 +61,7 @@ class Controller:
                            f'(running on: {service_deployment[service]}), '
                            f'transmit to cloud node ({self.cloud_device}) as default.')
             cur_task.set_current_stage_device(self.cloud_device)
+            self.erase_execute_ts(cur_task)
             self.submit_task(cur_task=cur_task)
             return
         else:
@@ -202,5 +203,35 @@ class Controller:
             self.record_transmit_ts(cur_task=task, is_end=is_end)
         elif action == 'execute':
             self.record_execute_ts(cur_task=task, is_end=is_end)
+        else:
+            raise ValueError(f'Action {action} not supported, only "transmit" and "execute" are supported."')
+
+    @staticmethod
+    def erase_transmit_ts(cur_task: Task):
+        assert cur_task, 'Current task of controller is NOT set!'
+
+        try:
+            TimeEstimator.erase_dag_ts(cur_task, sub_tag=f'transmit')
+        except Exception as e:
+            LOGGER.warning(f'Time erase failed: {str(e)}')
+
+    @staticmethod
+    def erase_execute_ts(cur_task: Task):
+        assert cur_task, 'Current task of controller is NOT set!'
+
+        try:
+            TimeEstimator.erase_dag_ts(cur_task, sub_tag=f'execute')
+        except Exception as e:
+            LOGGER.warning(f'Time erase failed: {str(e)}')
+
+    def erase_ts(self, task: Task, action: str = ''):
+        if action == 'transmit':
+            self.erase_transmit_ts(cur_task=task)
+            LOGGER.info(f'[Source {task.get_source_id()} / Task {task.get_task_id()}] '
+                        f'erase transmit time of stage {task.get_flow_index()}')
+        elif action == 'execute':
+            self.erase_execute_ts(cur_task=task)
+            LOGGER.info(f'[Source {task.get_source_id()} / Task {task.get_task_id()}] '
+                        f'erase execute time of stage {task.get_flow_index()}')
         else:
             raise ValueError(f'Action {action} not supported, only "transmit" and "execute" are supported."')
