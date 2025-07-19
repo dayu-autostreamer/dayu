@@ -15,16 +15,18 @@ RUN apt-get update \
  && wget -qO /tmp/cuda-keyring.deb \
        https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb \
  && dpkg -i /tmp/cuda-keyring.deb \
- && rm -f /tmp/cuda-keyring.deb \
- && rm -f /etc/apt/sources.list.d/nvidia-ml.list
+ && rm -f /tmp/cuda-keyring.deb
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       nvidia-cuda-toolkit \
       tensorrt=8.4.1.5-1+cuda11.6 \
-      libnvinfer-dev=8.4.1-1+cuda11.6 \
+      libnvinfer8=8.4.1-1+cuda11.6 \
+      libnvinfer-plugin8=8.4.1-1+cuda11.6 \
+      libnvonnxparsers8=8.4.1-1+cuda11.6 \
+      libnvparsers8=8.4.1-1+cuda11.6 \
       python3-pycuda \
- && apt-mark hold tensorrt libnvinfer8 libnvinfer-plugin8 libnvinfer-dev \
+ && apt-mark hold tensorrt libnvinfer8 libnvinfer-plugin8 \
                 libnvonnxparsers8 libnvparsers8 \
  && rm -rf /var/lib/apt/lists/*
 
