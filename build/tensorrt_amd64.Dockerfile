@@ -29,6 +29,6 @@ RUN apt-get update \
 RUN pip3 install --no-cache-dir --upgrade pip \
  && pip3 install --no-cache-dir \
       typing_extensions scipy tiff imagecodecs \
-      scikit-learn scikit-image ptflops numpy==1.23.1
+      scikit-learn scikit-image pycuda ptflops numpy==1.23.1
 
 CMD ["/bin/bash"]
