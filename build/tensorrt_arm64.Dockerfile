@@ -84,8 +84,8 @@ RUN set -eux; \
     rm -rf /usr/src/tiff-4.5.0*
 
 RUN pip3 install --no-cache-dir --upgrade pip \
+ && pip3 install --no-cache-dir --upgrade "setuptools>=60.0.0" \
  && pip3 install --no-cache-dir \
-      "setuptools<60.0.0" \
       imagecodecs \
       tiff \
       typing_extensions \
