@@ -11,18 +11,22 @@ RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.ed
  && sed -i 's@http://security.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list
 
 RUN apt-get update \
+ && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
+ && wget -qO /tmp/cuda-keyring.deb \
+       https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb \
+ && dpkg -i /tmp/cuda-keyring.deb \
+ && rm -f /tmp/cuda-keyring.deb \
+ && rm -f /etc/apt/sources.list.d/nvidia-ml.list
+
+RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      wget gnupg ca-certificates \
       nvidia-cuda-toolkit \
       libnvinfer8 libnvinfer-dev libnvinfer-plugin8 python3-libnvinfer \
-      libnvonnxparsers8 libnvparsers8 \
-      python3-pycuda \
+      libnvonnxparsers8 libnvparsers8 python3-pycuda \
  && apt-mark hold libnvinfer8 libnvinfer-dev libnvinfer-plugin8 libnvonnxparsers8 libnvparsers8 \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --no-cache-dir --upgrade pip \
  && pip3 install --no-cache-dir \
       typing_extensions scipy tiff imagecodecs \
-      scikit-learn scikit-image ptflops numpy==1.23.1
-
-CMD ["/bin/bash"]
+      scikit-learn scikit-image ptflops nu
