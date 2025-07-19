@@ -17,8 +17,11 @@ RUN apt-get update \
  && dpkg -i /tmp/cuda-keyring.deb \
  && rm -f /tmp/cuda-keyring.deb
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+RUN echo "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" > /etc/apt/sources.list.d/cuda.list \
+ && echo "deb https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2204/x86_64/ /" > /etc/apt/sources.list.d/nvidia-ml.list \
+ && apt-get update
+
+RUN apt-get install -y --no-install-recommends \
       nvidia-cuda-toolkit \
       tensorrt=8.4.1.5-1+cuda11.6 \
       libnvinfer8=8.4.1-1+cuda11.6 \
