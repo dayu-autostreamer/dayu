@@ -15,10 +15,16 @@ RUN sed -i \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
  && wget -qO /tmp/cuda-keyring.deb \
-      https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/\
-cuda-keyring_1.1-1_all.deb \
+      https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i /tmp/cuda-keyring.deb \
  && rm -f /tmp/cuda-keyring.deb
+
+RUN wget -qO /tmp/nvidia-ml-repo.deb \
+      https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2004/x86_64/\
+nvidia-machine-learning-repo-ubuntu2004_1.0.0-1_amd64.deb \
+ && dpkg -i /tmp/nvidia-ml-repo.deb \
+ && rm -f /tmp/nvidia-ml-repo.deb \
+ && apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2004/x86_64/7fa2af80.pub  # 添加 ML 仓库签名密钥 :contentReference[oaicite:0]{index=0}
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
