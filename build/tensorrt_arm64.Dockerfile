@@ -83,6 +83,10 @@ RUN set -eux; \
     make -j"$(nproc)"; make install; ldconfig; \
     rm -rf /usr/src/tiff-4.5.0*
 
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    libaec-dev libblosc-dev libbrotli-dev
+
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install tiff \
