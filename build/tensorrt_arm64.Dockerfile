@@ -27,8 +27,7 @@ RUN set -eux; \
     # CMake 3.28.3
     wget https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3.tar.gz; \
     tar xzf cmake-3.28.3.tar.gz; \
-    cd cmake-3.28.3; \
-    ./bootstrap; make -j"$(nproc)"; make install; \
+    cd cmake-3.28.3; ./bootstrap; make -j"$(nproc)"; make install; \
     cd /usr/src; rm -rf cmake-3.28.3*; \
     \
     # Brunsli
@@ -39,6 +38,7 @@ RUN set -eux; \
     cd /usr/src; rm -rf brunsli; \
     \
     # PROJ 9.1.1
+    mkdir -p proj; \
     curl -L https://download.osgeo.org/proj/proj-9.1.1.tar.gz | tar -xz -C proj --strip-components=1; \
     cd proj; mkdir build && cd build; \
     cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local; \
@@ -46,6 +46,7 @@ RUN set -eux; \
     cd /usr/src; rm -rf proj; \
     \
     # GDAL 3.6.3
+    mkdir -p gdal; \
     curl -L https://download.osgeo.org/gdal/3.6.3/gdal-3.6.3.tar.gz | tar -xz -C gdal --strip-components=1; \
     cd gdal; mkdir build && cd build; \
     cmake .. \
