@@ -83,18 +83,19 @@ RUN set -eux; \
     make -j"$(nproc)"; make install; ldconfig; \
     rm -rf /usr/src/tiff-4.5.0*
 
-RUN pip3 install --no-cache-dir --upgrade pip \
- && pip3 install --no-cache-dir setuptools==68.0.0 \
- && pip3 install --no-cache-dir \
-      imagecodecs \
-      tiff \
-      typing_extensions \
-      scipy \
-      scikit-learn \
-      scikit-image \
-      tensorrt \
-      pycuda \
-      ptflops \
-      numpy==1.23.1
+RUN pip3 install --upgrade pip \
+ && pip3 install "setuptools<60.0.0" \
+ && pip3 install tiff \
+ && pip3 install --no-cache-dir imagecodecs \
+      --global-option="build_ext" \
+      --global-option="--skip-jpeg8" \
+      --global-option="--skip-jpegls" \
+      --global-option="--skip-jpegxl" \
+      --global-option="--skip-jpegxr" \
+      --global-option="--skip-lz4" \
+      --global-option="--skip-zfp" \
+ && pip install typing_extensions scipy \
+      scikit-learn scikit-image tensorrt pycuda \
+      ptflops numpy==1.23.1
 
 CMD ["/bin/bash"]
