@@ -20,8 +20,8 @@ RUN apt-get update \
  && rm -f /tmp/cuda-keyring.deb
 
 RUN wget -qO /tmp/nvidia-ml-repo.deb \
-      https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2204/x86_64/\
-nvidia-machine-learning-repo-ubuntu2204_1.0.0-1_all.deb \
+      https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2004/x86_64/\
+nvidia-machine-learning-repo-ubuntu2004_1.0.0-1_amd64.deb \
  && dpkg -i /tmp/nvidia-ml-repo.deb \
  && rm -f /tmp/nvidia-ml-repo.deb \
  && apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2204/x86_64/7fa2af80.pub
