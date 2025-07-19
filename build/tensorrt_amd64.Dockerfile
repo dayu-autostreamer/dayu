@@ -13,15 +13,13 @@ RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.ed
 RUN apt-get update \
  && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
  && wget -qO /tmp/cuda-keyring.deb \
-       https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/\
-cuda-keyring_1.1-1_all.deb \
+     https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i /tmp/cuda-keyring.deb \
  && rm -f /tmp/cuda-keyring.deb
 
-
 RUN wget -qO /usr/share/keyrings/nvidia-ml-archive-keyring.gpg \
       https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2004/x86_64/7fa2af80.pub \
- && chmod 644 /usr/share/keyrings/nvidia-ml-archive-keyring.gpg  :contentReference[oaicite:0]{index=0}
+ && chmod 644 /usr/share/keyrings/nvidia-ml-archive-keyring.gpg
 
 RUN echo "deb [signed-by=/usr/share/keyrings/nvidia-ml-archive-keyring.gpg] \
       https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2004/x86_64/ /" \
@@ -40,8 +38,7 @@ RUN apt-get update \
  && apt-mark hold \
       libnvinfer8 libnvinfer-plugin8 libnvonnxparsers8 libnvparsers8 \
       python3-libnvinfer tensorrt \
- && rm -rf /var/lib/apt/lists/* :contentReference[oaicite:1]{index=1}
-
+ && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --no-cache-dir --upgrade pip \
  && pip3 install --no-cache-dir \
