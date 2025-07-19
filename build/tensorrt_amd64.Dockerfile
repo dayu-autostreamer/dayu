@@ -14,15 +14,11 @@ RUN sed -i \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
- && wget -qO /tmp/cuda-keyring.deb \
-      https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/\
-cuda-keyring_1.1-1_all.deb \
+ && wget -qO /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i /tmp/cuda-keyring.deb \
  && rm -f /tmp/cuda-keyring.deb
 
-RUN wget -qO /tmp/nvidia-ml-repo.deb \
-      https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2004/x86_64/\
-nvidia-machine-learning-repo-ubuntu2004_1.0.0-1_amd64.deb :contentReference[oaicite:0]{index=0} \
+RUN wget -qO /tmp/nvidia-ml-repo.deb https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2204/x86_64/nvidia-machine-learning-repo-ubuntu2204_1.0.0-1_amd64.deb \
  && dpkg -i /tmp/nvidia-ml-repo.deb \
  && rm -f /tmp/nvidia-ml-repo.deb
 
