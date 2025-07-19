@@ -19,7 +19,7 @@ RUN apt-get update \
  && rm -f /etc/apt/sources.list.d/nvidia-ml.list
 
 RUN wget -qO /tmp/nv-tensorrt-repo.deb \
-      https://developer.download.nvidia.com/compute/machine-learning/tensorrt/secure/8.4.1.5/local_repos/ubuntu2204/\
+      https://developer.download.nvidia.com/compute/machine-learning/tensorrt/secure/8.4.1.5/local_repos/ubuntu2204/ \
       nv-tensorrt-local-repo-ubuntu2204-cuda11.6-trt8.4.1.5-ga-20220524_1-1_amd64.deb \
  && dpkg -i /tmp/nv-tensorrt-repo.deb \
  && cp /var/nv-tensorrt-local-repo-*/archive-keyring.gpg /usr/share/keyrings/ \
