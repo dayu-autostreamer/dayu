@@ -94,8 +94,9 @@ RUN pip3 install --upgrade pip \
       --global-option="--skip-jpegxr" \
       --global-option="--skip-lz4" \
       --global-option="--skip-zfp" \
- && pip install typing_extensions scipy \
+ && pip3 install typing_extensions scipy \
       scikit-learn scikit-image tensorrt pycuda \
-      ptflops numpy==1.23.1
+      ptflops \
+ && pip3 install numpy==1.23.1
 
 CMD ["/bin/bash"]
