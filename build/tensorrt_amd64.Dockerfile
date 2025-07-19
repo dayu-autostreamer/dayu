@@ -18,17 +18,30 @@ RUN apt-get update \
  && rm -f /tmp/cuda-keyring.deb \
  && rm -f /etc/apt/sources.list.d/nvidia-ml.list
 
+RUN wget -qO /tmp/nv-tensorrt-repo.deb \
+      https://developer.download.nvidia.com/compute/machine-learning/tensorrt/secure/8.4.1.5/local_repos/ubuntu2204/\
+      nv-tensorrt-local-repo-ubuntu2204-cuda11.6-trt8.4.1.5-ga-20220524_1-1_amd64.deb \
+ && dpkg -i /tmp/nv-tensorrt-repo.deb \
+ && cp /var/nv-tensorrt-local-repo-*/archive-keyring.gpg /usr/share/keyrings/ \
+ && rm -f /tmp/nv-tensorrt-repo.deb
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       nvidia-cuda-toolkit \
-      libnvinfer8 libnvinfer-dev libnvinfer-plugin8 python3-libnvinfer \
-      libnvonnxparsers8 libnvparsers8 python3-pycuda \
+      libnvinfer8=8.4.1-1+cuda11.6 \
+      libnvinfer-plugin8=8.4.1-1+cuda11.6 \
+      libnvinfer-dev=8.4.1-1+cuda11.6 \
+      python3-libnvinfer=8.4.1-1+cuda11.6 \
+      libnvonnxparsers8=8.4.1-1+cuda11.6 \
+      libnvparsers8=8.4.1-1+cuda11.6 \
+      python3-pycuda \
  && apt-mark hold libnvinfer8 libnvinfer-dev libnvinfer-plugin8 libnvonnxparsers8 libnvparsers8 \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --no-cache-dir --upgrade pip \
  && pip3 install --no-cache-dir \
       typing_extensions scipy tiff imagecodecs \
-      scikit-learn scikit-image pycuda ptflops numpy==1.23.1
+      scikit-learn scikit-image tensorrt==8.6.1 pycuda \
+      ptflops numpy==1.23.1
 
 CMD ["/bin/bash"]
