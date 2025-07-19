@@ -74,6 +74,7 @@ dayu::buildx::import_docker_info() {
       [controller]="build/controller.Dockerfile"
       [monitor]="build/monitor.Dockerfile"
       [scheduler]="build/scheduler.Dockerfile"
+
       [car-detection]="build/car_detection.Dockerfile"
       [face-detection]="build/face_detection.Dockerfile"
       [gender-classification]="build/gender_classification.Dockerfile"
@@ -91,6 +92,7 @@ dayu::buildx::import_docker_info() {
       [controller]="linux/amd64,linux/arm64"
       [monitor]="linux/amd64,linux/arm64"
       [scheduler]="linux/amd64"
+
       [car-detection]="linux/amd64,linux/arm64"
       [face-detection]="linux/amd64,linux/arm64"
       [gender-classification]="linux/amd64,linux/arm64"
@@ -99,7 +101,6 @@ dayu::buildx::import_docker_info() {
   )
   # Images requiring special treatment, their platforms, and Dockerfiles
   declare -g -A SPECIAL_BUILD=(
-      [car-detection]="linux/amd64:build/car_detection_amd64.Dockerfile,linux/arm64:build/car_detection_arm64.Dockerfile"
       [face-detection]="linux/amd64:build/face_detection_amd64.Dockerfile,linux/arm64:build/face_detection_arm64.Dockerfile"
       [gender-classification]="linux/amd64:build/gender_classification_amd64.Dockerfile,linux/arm64:build/gender_classification_arm64.Dockerfile"
       [age-classification]="linux/amd64:build/age_classification_amd64.Dockerfile,linux/arm64:build/age_classification_arm64.Dockerfile"
