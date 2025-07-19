@@ -13,25 +13,31 @@ RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.ed
 RUN apt-get update \
  && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
  && wget -qO /tmp/cuda-keyring.deb \
-       https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb \
+      https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/\
+cuda-keyring_1.1-1_all.deb \
  && dpkg -i /tmp/cuda-keyring.deb \
- && rm -f /tmp/cuda-keyring.deb
+ && rm -f /tmp/cuda-keyring.deb :contentReference[oaicite:0]{index=0}
 
-RUN echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" > /etc/apt/sources.list.d/cuda.list \
- && echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2004/x86_64/ /" > /etc/apt/sources.list.d/nvidia-ml.list \
- && apt-get update
+RUN wget -qO /tmp/nvidia-ml-repo.deb \
+      https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2004/x86_64/\
+nvidia-machine-learning-repo-ubuntu2004_1.0.0-1_amd64.deb \
+ && dpkg -i /tmp/nvidia-ml-repo.deb \
+ && rm -f /tmp/nvidia-ml-repo.deb :contentReference[oaicite:1]{index=1}
 
-RUN apt-get install -y --no-install-recommends \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
       nvidia-cuda-toolkit \
-      tensorrt=8.4.1.5-1+cuda11.6 \
       libnvinfer8=8.4.1-1+cuda11.6 \
       libnvinfer-plugin8=8.4.1-1+cuda11.6 \
       libnvonnxparsers8=8.4.1-1+cuda11.6 \
       libnvparsers8=8.4.1-1+cuda11.6 \
+      tensorrt=8.4.1.5-1+cuda11.6 \
+      python3-libnvinfer=8.4.1-1+cuda11.6 \
       python3-pycuda \
- && apt-mark hold tensorrt libnvinfer8 libnvinfer-plugin8 \
-                libnvonnxparsers8 libnvparsers8 \
- && rm -rf /var/lib/apt/lists/*
+ && apt-mark hold \
+      libnvinfer8 libnvinfer-plugin8 libnvonnxparsers8 libnvparsers8 \
+      python3-libnvinfer tensorrt \
+ && rm -rf /var/lib/apt/lists/* :contentReference[oaicite:2]{index=2}
 
 RUN pip3 install --no-cache-dir --upgrade pip \
  && pip3 install --no-cache-dir \
