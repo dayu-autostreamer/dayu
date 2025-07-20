@@ -8,6 +8,7 @@ Description:
 
 """
 
+from core.lib.common import LOGGER
 
 def _import_random_switch_module():
     if __name__ == '__main__':
@@ -100,6 +101,11 @@ class ModelSwitchDetection:
             output.append(self.infer(image))
 
         return output
+
+    @property
+    def flops(self):
+        LOGGER.warning('Flops computation is currently not supported in model switch detection.')
+        return 0
     
 # ============================ test for docker build ============================    
 
