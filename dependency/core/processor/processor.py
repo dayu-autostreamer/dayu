@@ -15,6 +15,10 @@ class Processor:
     def __call__(self, task: Task):
         raise NotImplementedError
 
+    @property
+    def flops(self):
+        raise NotImplementedError
+
     def get_scenario(self, result, task):
         scenarios = {}
 
