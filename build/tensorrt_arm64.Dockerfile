@@ -19,6 +19,7 @@ RUN sed -i 's@http://\(archive\|security\).ubuntu.com/ubuntu/@https://mirrors.tu
       libtiff-dev libgif-dev libjbig-dev liblzma-dev libcfitsio-dev libcharls-dev \
       libcurl4-gnutls-dev libexpat1-dev libxml2-dev zlib1g-dev libssl-dev \
       libde265-dev libx265-dev libavcodec-dev libavformat-dev libavutil-dev meson \
+      libaec-dev libblosc-dev libbrotli-dev \
  && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
@@ -83,10 +84,6 @@ RUN set -eux; \
     make -j"$(nproc)"; make install; ldconfig; \
     rm -rf /usr/src/tiff-4.5.0*
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-    libaec-dev libblosc-dev libbrotli-dev
-
 RUN pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install tiff \
@@ -101,6 +98,6 @@ RUN pip3 install --upgrade pip \
  && pip3 install typing_extensions scipy \
       scikit-learn scikit-image tensorrt pycuda \
       ptflops \
- && pip3 install numpy==1.23.1
+ && pip3 install numpy==1.23.0
 
 CMD ["/bin/bash"]
