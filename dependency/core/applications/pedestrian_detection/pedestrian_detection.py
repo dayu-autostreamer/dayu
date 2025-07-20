@@ -73,8 +73,8 @@ class PedestrianDetection:
         self.warm_up_turns = 5
         self.conf_thres = 0.3
         self.iou_thres = 0.4
-        self.len_one_result = 38
-        self.len_all_result = 38001
+        self.len_one_result = 90
+        self.len_all_result = 90001
 
         self.categories = np.array(
             ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
