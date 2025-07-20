@@ -6,19 +6,36 @@ pod-template:
     - name: PROCESSOR_NAME
       value: "detector_tracker_processor"
     - name: DETECTOR_PARAMETERS
-      value: "{'weights':'yolov5s.engine', 'plugin_library':'libmyplugins.so'}"
+      value: >
+        {
+          'weights':'yolov5s.engine', 
+          'plugin_library':'libmyplugins.so',
+        }
     - name: SCENARIOS_EXTRACTORS
-      value: "['obj_num', 'obj_size']"
+      value: >
+        ['obj_num', 'obj_size']
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "True"
 cloud-pod-template:
   env:
     - name: DETECTOR_PARAMETERS
-      value: "{'weights':'yolov5s.engine', 'plugin_library':'libmyplugins.so', 'device':0}"
+      value: >
+        {
+          'weights':'yolov5s.engine', 
+          'plugin_library':'libmyplugins.so',
+          'device':0
+        }
 edge-pod-template:
   env:
     - name: DETECTOR_PARAMETERS
-      value: "{'weights':'yolov5s.engine', 'plugin_library':'libmyplugins.so', 'device':0}"
+      value: >
+        {
+          'weights':'yolov5s.engine', 
+          'plugin_library':'libmyplugins.so',
+          'device':0
+        }
 port-open:
   pos: both
   port: 9000

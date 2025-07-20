@@ -6,11 +6,17 @@ pod-template:
     - name: PROCESSOR_NAME
       value: "classifier_processor"
     - name: CLASSIFIER_PARAMETERS
-      value: "{'weights':'age_resnet18.engine'}"
+      value: >
+        {
+           'weights': 'age_resnet18.engine'
+        }
     - name: SCENARIOS_EXTRACTORS
-      value: "['obj_num', 'obj_size']"
+      value: >
+        [ 'obj_num', 'obj_size' ]
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "True"
 port-open:
   pos: both
   port: 9000
