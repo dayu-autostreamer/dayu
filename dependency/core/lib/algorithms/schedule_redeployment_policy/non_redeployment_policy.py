@@ -29,4 +29,5 @@ class NonRedeploymentPolicy(BaseRedeploymentPolicy):
         LOGGER.info(f'[Redeployment] Source {source_id}: NO redeployment (non policy)')
         
         # 返回空字典表示无操作
+        #TODO 不能返回空，backend_core会采用默认策略，应该返回和初始决策一样？
         return {}
