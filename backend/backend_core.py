@@ -138,7 +138,7 @@ class BackendCore:
             f.write(f'{timer.get_elapsed_time()}\n')
 
         if not result:
-                return False, msg
+            return False, msg
 
         # Start cycle deployment
         self.is_cycle_deploy = True
@@ -167,13 +167,13 @@ class BackendCore:
         return result, msg
 
     def parse_and_redeploy_services(self, update_docs):
-        with Timer('Redeploy cost') as timer:
-            original_docs = self.read_component_yaml()
-            if not original_docs:
-                msg = 'no valid components yaml docs found.'
-                LOGGER.warning(msg)
-                return False, ''
+        original_docs = self.read_component_yaml()
+        if not original_docs:
+            msg = 'no valid components yaml docs found.'
+            LOGGER.warning(msg)
+            return False, ''
 
+        with Timer('Redeploy cost') as timer:
             _, docs_to_add, docs_to_update, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
 
             if docs_to_update:
@@ -191,8 +191,9 @@ class BackendCore:
                 if not res:
                     return False, msg
 
-        with open(os.path.join(Context.get_file_path(0), 'redeployment.txt'), 'a') as f:
-            f.write(f'{timer.get_elapsed_time()}\n')
+        if docs_to_add or docs_to_update or docs_to_delete:
+            with open(os.path.join(Context.get_file_path(0), 'redeployment.txt'), 'a') as f:
+                f.write(f'{timer.get_elapsed_time()}\n')
 
         return True, ''
 
@@ -298,7 +299,7 @@ class BackendCore:
         # Detect resources to delete (present in original but missing in update)
         for name in list(original_dict.keys()):
             if name not in update_dict:
-                resources_to_delete.append(original_dict.pop(name))
+                resources_to_delete.append(original_dict[name])
 
         # Detect resources to add or update
         for name, new_doc in update_dict.items():
@@ -389,12 +390,12 @@ class BackendCore:
         return has_changes
 
     def save_component_yaml(self, docs_list):
-        self.cur_yaml_docs = docs_list
+        self.cur_yaml_docs = copy.deepcopy(docs_list)
         YamlOps.write_all_yaml(docs_list, self.save_yaml_path)
 
     def read_component_yaml(self):
         if self.cur_yaml_docs:
-            return self.cur_yaml_docs
+            return copy.deepcopy(self.cur_yaml_docs)
         elif os.path.exists(self.save_yaml_path):
             return YamlOps.read_all_yaml(self.save_yaml_path)
         else:

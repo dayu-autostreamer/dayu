@@ -271,7 +271,7 @@ class Task:
     def get_last_content(self):
         last_service_names = self.__dag_flow.get_prev_nodes('end')
         last_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
-                          for service_name in last_service_names]
+                         for service_name in last_service_names]
         # return one of first non-empty content
         return next((content for content in last_contents if content is not None), None)
 
@@ -378,6 +378,10 @@ class Task:
         assert self.__dag_flow, 'Task DAG is empty!'
         return self.__dag_flow.get_node(self.__cur_flow_index).service.get_execute_device()
 
+    def set_current_stage_device(self, dst_device):
+        assert self.__dag_flow, 'Task DAG is empty!'
+        return self.__dag_flow.get_node(self.__cur_flow_index).service.set_execute_device(dst_device)
+
     def set_initial_execute_device(self, device):
         Task.set_execute_device(self.__dag_flow, device)
 
@@ -400,7 +404,8 @@ class Task:
         return new_task
 
     def merge_task(self, other_task: 'Task'):
-        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_past_flow_index(), other_task.get_past_flow_index())
+        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_past_flow_index(),
+                                                               other_task.get_past_flow_index())
 
         merged_dag = self.get_dag()
         other_dag = other_task.get_dag()
