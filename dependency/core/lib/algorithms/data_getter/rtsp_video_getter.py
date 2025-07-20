@@ -37,7 +37,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
     def get_one_frame(self, system):
         import cv2
         if not self.data_source_capture:
-            self.data_source_capture = cv2.VideoCapture(system.video_data_source, cv2.CAP_FFMPEG)
+            self.data_source_capture = cv2.VideoCapture(system.video_data_source)
 
         ret, frame = self.data_source_capture.read()
         first_no_signal = True
@@ -48,7 +48,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
                 LOGGER.warning(f'No video signal from source {system.source_id}!')
                 first_no_signal = False
             self.frame_buffer = []
-            self.data_source_capture = cv2.VideoCapture(system.video_data_source, cv2.CAP_FFMPEG)
+            self.data_source_capture = cv2.VideoCapture(system.video_data_source)
             ret, frame = self.data_source_capture.read()
 
         if not first_no_signal:
