@@ -84,7 +84,9 @@ RUN set -eux; \
     make -j"$(nproc)"; make install; ldconfig; \
     rm -rf /usr/src/tiff-4.5.0*
 
-RUN pip3 install --upgrade pip \
+RUN apt-get update \
+ && apt-get remove -y python3-yaml python3-psutil && \
+ && pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install tiff \
  && pip3 install --no-cache-dir imagecodecs \
@@ -98,6 +100,6 @@ RUN pip3 install --upgrade pip \
  && pip3 install typing_extensions scipy \
       scikit-learn scikit-image tensorrt pycuda \
       ptflops \
- && pip3 install numpy==1.23.0
+ && pip3 install torch_geometric
 
 CMD ["/bin/bash"]
