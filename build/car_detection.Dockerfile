@@ -27,5 +27,4 @@ ENV PYTHONPATH="/home/dependency"
 WORKDIR /app
 COPY  ${code_dir}/* /app/
 
-
-CMD ["gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
+CMD ["python3", "-m", "gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
