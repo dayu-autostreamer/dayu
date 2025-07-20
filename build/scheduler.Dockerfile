@@ -13,7 +13,9 @@ ENV TZ=Asia/Shanghai
 COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
 COPY ${base_dir}/requirements.txt ./base_requirements.txt
 
-RUN pip3 install --upgrade pip && \
+RUN apt-get update && \
+    apt-get remove -y python3-yaml && \
+    pip3 install --upgrade pip && \
     pip3 install -r lib_requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip3 install -r base_requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip3 install torch-scatter torch-sparse torch-cluster torch-spline-conv torch-geometric -f https://data.pyg.org/whl/torch-2.0.0+cu117.html
