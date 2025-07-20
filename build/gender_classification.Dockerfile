@@ -7,13 +7,13 @@ ARG dependency_dir=dependency
 ARG lib_dir=dependency/core/lib
 ARG base_dir=dependency/core/processor
 ARG code_dir=components/processor
-ARG app_dir=dependency/core/applications/face_detection
+ARG app_dir=dependency/core/applications/gender_classification
 
 ENV TZ=Asia/Shanghai
 
 COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
 COPY ${base_dir}/requirements.txt ./base_requirements.txt
-COPY ${app_dir}/requirements_amd64.txt ./app_requirements.txt
+COPY ${app_dir}/requirements.txt ./app_requirements.txt
 
 
 RUN pip3 install --upgrade pip && \
@@ -28,5 +28,4 @@ ENV PYTHONPATH="/home/dependency"
 WORKDIR /app
 COPY  ${code_dir}/* /app/
 
-
-CMD ["gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
+CMD ["python3", "-m", "gunicorn", "main:app", "-c", "./gunicorn.conf.py"]

@@ -101,10 +101,7 @@ dayu::buildx::import_docker_info() {
   )
   # Images requiring special treatment, their platforms, and Dockerfiles
   declare -g -A SPECIAL_BUILD=(
-      [face-detection]="linux/amd64:build/face_detection_amd64.Dockerfile,linux/arm64:build/face_detection_arm64.Dockerfile"
-      [gender-classification]="linux/amd64:build/gender_classification_amd64.Dockerfile,linux/arm64:build/gender_classification_arm64.Dockerfile"
-      [age-classification]="linux/amd64:build/age_classification_amd64.Dockerfile,linux/arm64:build/age_classification_arm64.Dockerfile"
-      [model-switch-detection]="linux/amd64:build/model_switch_detection_amd64.Dockerfile,linux/arm64:build/model_switch_detection_arm64.Dockerfile"
+
   )
 }
 

@@ -7,7 +7,6 @@ ARG code_dir=frontend
 
 ENV TimeZone=Asia/Shanghai
 
-
 COPY  ${code_dir}/ /app/
 WORKDIR /app
 
