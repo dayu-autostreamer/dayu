@@ -20,7 +20,16 @@ pod-template:
     - name: SCH_AGENT_NAME
       value: fixed
     - name: SCH_AGENT_PARAMETERS
-      value: "{'configuration':{'resolution': '720p','fps': 15,'encoding': 'mp4v','buffer_size': 16}}"
+      value: >
+        {
+          'configuration':
+            {
+              'resolution': '720p',
+              'fps': 15,
+              'encoding': 'mp4v',
+              'buffer_size': 16
+            }
+        }
 port-open:
   pos: cloud
   port: 9000
