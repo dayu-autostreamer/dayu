@@ -115,11 +115,6 @@ dayu::buildx::import_docker_info() {
       [gender-classification]="linux/amd64:build/gender_classification_amd64.Dockerfile,linux/arm64:build/gender_classification_arm64.Dockerfile"
       [age-classification]="linux/amd64:build/age_classification_amd64.Dockerfile,linux/arm64:build/age_classification_arm64.Dockerfile"
       [model-switch-detection]="linux/amd64:build/model_switch_detection_amd64.Dockerfile,linux/arm64:build/model_switch_detection_arm64.Dockerfile"
-      [pedestrian-detection]="linux/amd64:build/pedestrian_detection_amd64.Dockerfile,linux/arm64:build/pedestrian_detection_arm64.Dockerfile"
-      [license-plate-recognition]="linux/amd64:build/license_plate_recognition_amd64.Dockerfile,linux/arm64:build/license_plate_recognition_arm64.Dockerfile"
-      [vehicle-detection]="linux/amd64:build/vehicle_detection_amd64.Dockerfile,linux/arm64:build/vehicle_detection_arm64.Dockerfile"
-      [exposure-identification]="linux/amd64:build/exposure_identification_amd64.Dockerfile,linux/arm64:build/exposure_identification_arm64.Dockerfile"
-      [category-identification]="linux/amd64:build/category_identification_amd64.Dockerfile,linux/arm64:build/category_identification_arm64.Dockerfile"
   )
 }
 
