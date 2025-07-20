@@ -6,7 +6,11 @@ pod-template:
     - name: SCH_CONFIG_EXTRACTION_NAME
       value: hei
     - name: SCH_CONFIG_EXTRACTION_PARAMETERS
-      value: "{'hei_drl_config':'drl_parameters.yaml', 'hei_hyper_config':'hyper_parameters.yaml'}"
+      value: >
+        {
+          'hei_drl_config':'drl_parameters.yaml',
+          'hei_hyper_config':'hyper_parameters.yaml'
+        }
     - name: SCH_SCENARIO_EXTRACTION_NAME
       value: simple
     - name: SCH_STARTUP_POLICY_NAME
@@ -22,7 +26,10 @@ pod-template:
     - name: SCH_AGENT_NAME
       value: hei_nf
     - name: SCH_AGENT_PARAMETERS
-      value: "{'window_size':8}"
+      value: >
+        {
+          'window_size':8
+        }
 port-open:
   pos: cloud
   port: 9000
