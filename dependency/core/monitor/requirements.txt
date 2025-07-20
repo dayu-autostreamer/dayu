@@ -8,3 +8,6 @@ psutil
 # torchvision
 # scikit-learn
 # scikit-image
+# tensorrt
+# pycuda
+# ptflops
