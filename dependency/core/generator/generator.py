@@ -6,7 +6,7 @@ from core.lib.network import merge_address
 from core.lib.network import NodeInfo, PortInfo
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.network import http_request
-from core.lib.estimation import TimeEstimator
+from core.lib.estimation import TimeEstimator, Timer
 
 
 class Generator:
@@ -42,11 +42,12 @@ class Generator:
         self.before_submit_task_operation = Context.get_algorithm('GEN_BSTO')
 
     def request_schedule_policy(self):
-        params = self.before_schedule_operation(self)
-        response = http_request(url=self.schedule_address,
-                                method=NetworkAPIMethod.SCHEDULER_SCHEDULE,
-                                data={'data': json.dumps(params)})
-        self.after_schedule_operation(self, response)
+        with Timer('[Timer] Request Offloading Schedule Policy'):
+            params = self.before_schedule_operation(self)
+            response = http_request(url=self.schedule_address,
+                                    method=NetworkAPIMethod.SCHEDULER_SCHEDULE,
+                                    data={'data': json.dumps(params)})
+            self.after_schedule_operation(self, response)
 
     @staticmethod
     def record_total_start_ts(cur_task: Task):
