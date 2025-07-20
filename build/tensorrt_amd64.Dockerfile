@@ -1,16 +1,14 @@
 ARG REG=docker.io
-FROM ${REG}/ultralytics/ultralytics:latest
+FROM ${REG}/yuefan2022/tensorrt-ubuntu20.04-cuda11.6:latest
 
 LABEL authors="Wenhui Zhou"
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list && \
-    sed -i 's@http://security.ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list && \
-    apt-get clean && \
+RUN rm -rf /etc/apt/sources.list.d/ros-latest.list && \
     apt-get update && \
-    apt-get install -y build-essential python3-dev g++ nvidia-cuda-toolkit && \
     pip3 install --upgrade pip && \
-    pip3 install typing_extensions scipy tiff imagecodecs scikit-learn scikit-image tensorrt pycuda numpy==1.23.1 -i https://pypi.tuna.tsinghua.edu.cn/simple
+    pip3 install opencv-python-headless typing_extensions  scipy tiff imagecodecs scikit-learn scikit-image -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip3 --default-timeout=1688 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117 && \
+    pip3 install tensorrt pycuda ptflops ultralytics  -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip3 install numpy==1.23.0  -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-RUN ["/bin/bash"]
+CMD ["/bin/bash"]
