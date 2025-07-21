@@ -169,7 +169,8 @@ class CarDetectionYoloV5:
         results = np.array(det.tolist())
         result_boxes, result_scores, result_classid = results[:, :4], results[:, 4], results[:, 5]
 
-        mask = np.isin(self.names[result_classid.astype(int)], self.target_categories)
+        names_array = np.array([self.names[int(i)] for i in result_classid])
+        mask = np.isin(names_array, self.target_categories)
 
         result_boxes = result_boxes.astype(int)[mask].tolist()
         result_scores = result_scores[mask].tolist()
