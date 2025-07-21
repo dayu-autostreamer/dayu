@@ -1,4 +1,4 @@
-namespace: shy-dayu
+namespace: dayu
 log-level: DEBUG
 log-file-name:
 pod-permission:

@@ -1,33 +1,18 @@
 from .base_redeployment_policy import BaseRedeploymentPolicy
-from core.lib.common import ClassFactory, ClassType, LOGGER
+from core.lib.common import ClassFactory, ClassType, KubeConfig, LOGGER
 
 __all__ = ('NonRedeploymentPolicy',)
 
 @ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='non')
 class NonRedeploymentPolicy(BaseRedeploymentPolicy):
     """No-operation redeployment policy"""
-    
-    def __init__(self, **kwargs):
-        super().__init__()
-        # 记录初始化信息（可选）
-        LOGGER.debug('[Redeployment] NON policy initialized')
-    
+
+    def __init__(self, policy=None): 
+        service_deployment = KubeConfig.get_service_nodes_dict()
+        if service_deployment is None:
+            raise RuntimeError("KubeConfig.get_service_nodes_dict() returned None")
+        self.non_policy = service_deployment
+
     def __call__(self, info):
-        """Return empty redeployment plan
-        
-        Args:
-            info (dict): Context information containing:
-                - source: Information about the data source
-                - dag: Service dependency graph
-                - node_set: Available node set
-        
-        Returns:
-            dict: Always empty dictionary {}
-        """
-        source_id = info['source']['id']
-        # 明确记录不执行重新部署
-        LOGGER.info(f'[Redeployment] Source {source_id}: NO redeployment (non policy)')
-        
-        # 返回空字典表示无操作
-        #TODO 不能返回空，backend_core会采用默认策略，应该返回和初始决策一样？
-        return {}
+        LOGGER.info(f"[Redeployment] Using NonRedeploymentPolicy, returning static plan: {self.non_policy}")
+        return self.non_policy 
