@@ -31,5 +31,4 @@ RUN sed -i \
   -e 's/writeQueueSize: 512/writeQueueSize: 32768/' \
   mediamtx.yml
 
-
 CMD ["/bin/bash"]

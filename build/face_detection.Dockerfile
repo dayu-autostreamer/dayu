@@ -1,26 +1,23 @@
 ARG REG=docker.io
-FROM ${REG}/ultralytics/ultralytics:latest
+FROM ${REG}/dayuhub/tensorrt:trt8
 
-LABEL authors="Wenyi Dai"
+LABEL authors="Wenhui Zhou"
 
 ARG dependency_dir=dependency
 ARG lib_dir=dependency/core/lib
 ARG base_dir=dependency/core/processor
 ARG code_dir=components/processor
-ARG app_dir=dependency/core/applications/model_switch_detection
+ARG app_dir=dependency/core/applications/face_detection
 
 ENV TZ=Asia/Shanghai
 
 COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
 COPY ${base_dir}/requirements.txt ./base_requirements.txt
-COPY ${app_dir}/requirements_arm64.txt ./app_requirements.txt
-
-RUN apt-get update && \
-    apt-get install -y build-essential python3-dev && \
-    rm -rf /var/lib/apt/lists/*
+COPY ${app_dir}/requirements.txt ./app_requirements.txt
 
 RUN pip3 install --upgrade pip && \
-    pip3 install --use-pep517 -r lib_requirements.txt --ignore-installed -i https://mirrors.aliyun.com/pypi/simple && \
+    pip3 uninstall -y numpy && \
+    pip3 install -r lib_requirements.txt --ignore-installed -i https://mirrors.aliyun.com/pypi/simple && \
     pip3 install -r base_requirements.txt -i https://mirrors.aliyun.com/pypi/simple && \
     pip3 install -r app_requirements.txt -i https://mirrors.aliyun.com/pypi/simple
 
@@ -30,4 +27,4 @@ ENV PYTHONPATH="/home/dependency"
 WORKDIR /app
 COPY  ${code_dir}/* /app/
 
-CMD ["gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
+CMD ["python3", "-m", "gunicorn", "main:app", "-c", "./gunicorn.conf.py"]

@@ -5,10 +5,11 @@ LABEL authors="Wenhui Zhou"
 
 RUN rm -rf /etc/apt/sources.list.d/ros-latest.list && \
     apt-get update && \
+    apt-get remove -y python3-yaml python3-psutil && \
     pip3 install --upgrade pip && \
     pip3 install opencv-python-headless typing_extensions  scipy tiff imagecodecs scikit-learn scikit-image -i https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip3 --default-timeout=1688 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117 && \
-    pip3 install tensorrt pycuda ptflops ultralytics  -i https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip3 install numpy==1.23.0  -i https://pypi.tuna.tsinghua.edu.cn/simple
+    pip3 install tensorrt pycuda ptflops ultralytics seaborn  -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip3 install torch_geometric  -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 CMD ["/bin/bash"]

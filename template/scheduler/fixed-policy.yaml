@@ -27,6 +27,7 @@ pod-template:
       value: fixed
     - name: SCH_AGENT_PARAMETERS
       value: "{'configuration':{'resolution': '720p','fps': 15,'encoding': 'mp4v','buffer_size': 4},'offloading':{'pedestrian-detection':['edge5'],'exposure-identification':['edge7'], 'vehicle-detection':['edge5'],'category-identification':['edge8'],'license-plate-recognition':['edge8']}}"
+
 port-open:
   pos: cloud
   port: 9000

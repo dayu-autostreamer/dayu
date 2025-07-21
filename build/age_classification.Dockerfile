@@ -9,15 +9,11 @@ ARG base_dir=dependency/core/processor
 ARG code_dir=components/processor
 ARG app_dir=dependency/core/applications/age_classification
 
-# Required to build Ubuntu 20.04 without user prompts with DLFW container
-ENV DEBIAN_FRONTEND=noninteractive
-
 ENV TZ=Asia/Shanghai
 
 COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
 COPY ${base_dir}/requirements.txt ./base_requirements.txt
-COPY ${app_dir}/requirements_amd64.txt ./app_requirements.txt
-
+COPY ${app_dir}/requirements.txt ./app_requirements.txt
 
 RUN pip3 install --upgrade pip && \
     pip3 uninstall -y numpy && \
@@ -31,5 +27,4 @@ ENV PYTHONPATH="/home/dependency"
 WORKDIR /app
 COPY  ${code_dir}/* /app/
 
-
-CMD ["gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
+CMD ["python3", "-m", "gunicorn", "main:app", "-c", "./gunicorn.conf.py"]

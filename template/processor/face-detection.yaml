@@ -6,11 +6,18 @@ pod-template:
     - name: PROCESSOR_NAME
       value: "detector_tracker_processor"
     - name: DETECTOR_PARAMETERS
-      value: "{'weights':'retina_mnet.engine', 'plugin_library':'libdecodeplugin.so'}"
+      value: >
+        {
+          'weights':'retina_mnet.engine', 
+          'plugin_library':'libdecodeplugin.so'
+        }
     - name: SCENARIOS_EXTRACTORS
-      value: "['obj_num', 'obj_size']"
+      value: >
+        ['obj_num', 'obj_size']
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "True"
 port-open:
   pos: both
   port: 9000

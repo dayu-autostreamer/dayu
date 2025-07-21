@@ -1,3 +1,7 @@
+"""
+Car tacking with optical flow
+"""
+
 from typing import List
 
 import cv2
@@ -8,7 +12,9 @@ class CarTracking:
     def __init__(self):
         pass
 
-    def __call__(self, tracking_frame_list: List[np.ndarray], prev_detection_frame: np.ndarray, content_result: tuple):
+    def __call__(self, tracking_frame_list: List[np.ndarray],
+                 prev_detection_frame: np.ndarray,
+                 content_result: tuple):
         bbox, prob, class_id = content_result
         grey_prev_frame = cv2.cvtColor(prev_detection_frame, cv2.COLOR_BGR2GRAY)
         key_points = self.select_key_points(bbox, grey_prev_frame)
@@ -19,7 +25,8 @@ class CarTracking:
             new_points, status, error = cv2.calcOpticalFlowPyrLK(grey_prev_frame, grey_present_frame, key_points, None)
 
             if len(key_points) > 0 and len(new_points) > 0:
-                bbox, prob, class_id = self.update_bounding_boxes((bbox, prob, class_id), key_points, new_points, status)
+                bbox, prob, class_id = self.update_bounding_boxes((bbox, prob, class_id),
+                                                                  key_points, new_points, status)
                 key_points = new_points[status == 1].reshape(-1, 1, 2)
 
             result.append((bbox.copy(), prob.copy(), class_id.copy()))

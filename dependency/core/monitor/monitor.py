@@ -11,6 +11,7 @@ class Monitor:
         self.resource_info = {}
 
         self.monitor_interval = Context.get_parameter('INTERVAL', direct=False)
+        self.last_monitor_ts = time.time()
 
         self.scheduler_hostname = NodeInfo.get_cloud_node()
         self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
@@ -37,7 +38,12 @@ class Monitor:
             thread.join()
 
     def wait_for_monitor(self):
-        time.sleep(self.monitor_interval)
+        current_ts = time.time()
+        if current_ts - self.last_monitor_ts < self.monitor_interval:
+            wait_time = self.monitor_interval - (current_ts - self.last_monitor_ts)
+            LOGGER.debug(f'[Monitor Interval] Waiting {wait_time} seconds for next monitor cycle.')
+            time.sleep(wait_time)
+        self.last_monitor_ts = current_ts
 
     def send_resource_state_to_scheduler(self):
 

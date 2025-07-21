@@ -257,8 +257,8 @@ class HEIDRLAgent(BaseAgent, abc.ABC):
             LOGGER.warning(f'Wrong scenario from Distributor: {str(e)}')
 
     def update_resource(self, device, resource):
-        bandwidth = resource['bandwidth']
-        if bandwidth != 0:
+        bandwidth = resource['available_bandwidth']
+        if bandwidth != -1:
             self.state_buffer.add_resource_buffer([bandwidth])
 
     def update_policy(self, policy):

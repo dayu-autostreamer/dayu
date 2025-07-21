@@ -1,5 +1,6 @@
 from kubernetes import client, config
 from collections import defaultdict
+import re
 
 from core.lib.common import Context
 
@@ -7,7 +8,7 @@ from core.lib.common import Context
 class KubeConfig:
     _api = None
     NAMESPACE = Context.get_parameter('NAMESPACE')
-    SERVICE_PREFIX = 'processor-'
+    SERVICE_PATTERN = pattern = re.compile(r"^processor-(.+?)-(?:cloudworker|edgeworker)-")
 
     @classmethod
     def _get_api(cls):
@@ -36,14 +37,11 @@ class KubeConfig:
             pod_name = pod.metadata.name
             node_name = pod.spec.node_name
 
-            if not node_name or not pod_name.startswith(cls.SERVICE_PREFIX):
+            match = cls.SERVICE_PATTERN.match(pod_name)
+            if not node_name or not match:
                 continue
 
-            parts = pod_name.split('-')
-            if len(parts) < 1:
-                continue
-            service_name = '-'.join(parts[1:3])
-
+            service_name = match.group(1)
             service_nodes[service_name].add(node_name)
 
         return {svc: list(nodes) for svc, nodes in service_nodes.items()}
@@ -103,11 +101,10 @@ class KubeConfig:
         for pod in pods:
             pod_name = pod.metadata.name
             node_name = pod.spec.node_name
-            if not node_name or not pod_name.startswith(cls.SERVICE_PREFIX):
+            if not node_name or not cls.SERVICE_PATTERN.match(pod_name):
                 continue
 
             if pod.status.phase != "Running" or not all([c.ready for c in pod.status.container_statuses]):
                 return False
 
         return True
-
