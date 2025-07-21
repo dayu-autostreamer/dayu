@@ -40,7 +40,7 @@ class CarDetection:
         try:
             from .car_detection_without_tensorrt import CarDetectionYoloV5
             model = CarDetectionYoloV5(weights=self.non_trt_weights, device=self.device)
-            self.flops = FlopsEstimator(model=model, input_shape=(1, 3, 640, 640)).compute_flops()
+            self.flops = FlopsEstimator(model=model.model, input_shape=(3, 640, 640)).compute_flops()
             del model
         except Exception as e:
             LOGGER.warning(f'Get model FLOPs failed:{e}')

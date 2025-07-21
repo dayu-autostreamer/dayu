@@ -99,7 +99,7 @@ RUN apt-get update \
       --global-option="--skip-zfp" \
  && pip3 install typing_extensions scipy \
       scikit-learn scikit-image tensorrt pycuda \
-      ptflops \
+      ptflops==0.7.2.2 \
  && pip3 install torch_geometric
 
 CMD ["/bin/bash"]
