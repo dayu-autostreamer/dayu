@@ -27,7 +27,7 @@ class CarDetection:
             self.model = CarDetectionYoloV5(weights=non_trt_weights, device=device)
 
     def _infer(self, image):
-        self.model.infer(image)
+        return self.model.infer(image)
 
     def __call__(self, images: List[np.ndarray]):
         output = []
