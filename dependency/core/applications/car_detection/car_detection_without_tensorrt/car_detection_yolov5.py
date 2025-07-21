@@ -107,6 +107,9 @@ class CarDetectionYoloV5:
         self.class_id = 'car'
 
         self.opt = parse_opt(args)
+        print('***args: ', args)
+        print('***weights: ', self.opt.weights)
+        print('***device: ', self.opt.device)
         # Load model
         self.device = select_device(self.opt.device)
         self.model = DetectMultiBackend(weights=self.opt.weights, device=self.device, dnn=self.opt.dnn,
