@@ -45,3 +45,7 @@ class ClassifierProcessor(Processor):
         task.set_current_content(content_output)
 
         return task
+
+    @property
+    def flops(self):
+        return self.classifier.flops
