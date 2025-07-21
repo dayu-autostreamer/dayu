@@ -1,0 +1,19 @@
+position: both
+pod-template:
+  image: exposure-identification
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: PROCESSOR_NAME
+      value: "classifier_processor"
+    - name: CLASSIFIER_PARAMETERS
+      value: "{'weights':'resnet50.engine'}"
+    - name: SCENARIOS_EXTRACTORS
+      value: "['obj_num', 'obj_size']"
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/exposure-identification/"
