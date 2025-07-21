@@ -126,7 +126,7 @@ class CarDetectionYoloV5:
         # Run inference
         im0 = image
         im = im0.copy()
-        im = letterbox(im, self.imgsz.tolist(), stride=self.stride, auto=self.pt)[0]  # padded resize
+        im = letterbox(im, (self.imgsz[0], self.imgsz[1]), stride=self.stride, auto=self.pt)[0]  # padded resize
         im = im.transpose((2, 0, 1))[::-1].copy()  # HWC to CHW, BGR to RGB
         im = np.ascontiguousarray(im)  # contiguous
 
