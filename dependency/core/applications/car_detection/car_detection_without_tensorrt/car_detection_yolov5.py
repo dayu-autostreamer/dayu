@@ -29,12 +29,24 @@ Usage - formats:
 """
 
 import argparse
+
+import os
+
+import sys
+from pathlib import Path
+
 import torch
 
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
 import numpy as np
+
+FILE = Path(__file__).resolve()
+ROOT = FILE.parents[0]  # YOLOv5 root directory
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))  # add ROOT to PATH
+ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.common import DetectMultiBackend
 from utils.general import (check_img_size, non_max_suppression, print_args, scale_boxes)
