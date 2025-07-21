@@ -85,7 +85,7 @@ RUN set -eux; \
     rm -rf /usr/src/tiff-4.5.0*
 
 RUN apt-get update \
- && apt-get remove -y python3-yaml python3-psutil && \
+ && apt-get remove -y python3-yaml python3-psutil \
  && pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install tiff \
