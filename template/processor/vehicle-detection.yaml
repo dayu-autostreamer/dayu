@@ -1,0 +1,27 @@
+position: both
+pod-template:
+  image: vehicle-detection
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: PROCESSOR_NAME
+      value: "detector_tracker_processor"
+    - name: DETECTOR_PARAMETERS
+      value: "{'weights':'yolov8s.engine', 'plugin_library':'libmyplugins.so'}"
+    - name: SCENARIOS_EXTRACTORS
+      value: "['obj_num', 'obj_size']"
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+cloud-pod-template:
+  env:
+    - name: DETECTOR_PARAMETERS
+      value: "{'weights':'yolov8s.engine', 'plugin_library':'libmyplugins.so', 'device':0}"
+edge-pod-template:
+  env:
+    - name: DETECTOR_PARAMETERS
+      value: "{'weights':'yolov8s.engine', 'plugin_library':'libmyplugins.so', 'device':0}"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/vehicle-detection/"

@@ -80,6 +80,11 @@ dayu::buildx::import_docker_info() {
       [gender-classification]="build/gender_classification.Dockerfile"
       [age-classification]="build/age_classification.Dockerfile"
       [model-switch-detection]="build/model_switch_detection.Dockerfile"
+      [pedestrian-detection]="build/pedestrian_detection.Dockerfile"
+      [license-plate-recognition]="build/license_plate_recognition.Dockerfile"
+      [vehicle-detection]="build/vehicle_detection.Dockerfile"
+      [exposure-identification]="build/exposure_identification.Dockerfile"
+      [category-identification]="build/category_identification.Dockerfile"
   )
   # Corresponding platforms
   declare -g -A PLATFORMS=(
@@ -98,6 +103,11 @@ dayu::buildx::import_docker_info() {
       [gender-classification]="linux/amd64,linux/arm64"
       [age-classification]="linux/amd64,linux/arm64"
       [model-switch-detection]="linux/amd64,linux/arm64"
+      [pedestrian-detection]="linux/amd64,linux/arm64"
+      [license-plate-recognition]="linux/amd64,linux/arm64"
+      [vehicle-detection]="linux/amd64,linux/arm64"
+      [exposure-identification]="linux/amd64,linux/arm64"
+      [category-identification]="linux/amd64,linux/arm64"
   )
   # Images requiring special treatment, their platforms, and Dockerfiles
   declare -g -A SPECIAL_BUILD=(
