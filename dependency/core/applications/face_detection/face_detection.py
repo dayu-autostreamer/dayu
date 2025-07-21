@@ -298,3 +298,9 @@ class FaceDetection:
             output.append(self.infer(image))
 
         return output
+
+    # TODO: add flops computing
+    @property
+    def flops(self):
+        LOGGER.warning('Flops computation is currently not supported in face detection.')
+        return 0

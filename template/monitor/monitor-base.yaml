@@ -4,9 +4,10 @@ pod-template:
   imagePullPolicy: IfNotPresent
   env:
     - name: INTERVAL
-      value: "5"
+      value: "6"
     - name: MONITORS
-      value: "['cpu_usage', 'memory_usage', 'available_bandwidth', 'cpu_flops', 'gpu_flops']"
+      value: >
+        ['cpu_usage', 'memory_usage', 'available_bandwidth', 'cpu_flops', 'gpu_flops', 'model_flops']
 port-open:
   pos: cloud
   port: 9000

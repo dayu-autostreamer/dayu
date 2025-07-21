@@ -56,3 +56,7 @@ class DetectorTrackerProcessor(Processor):
         process_output = tracking_output
 
         return process_output
+
+    @property
+    def flops(self):
+        return self.detector.flops

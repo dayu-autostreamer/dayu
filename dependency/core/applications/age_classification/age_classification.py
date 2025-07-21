@@ -146,3 +146,9 @@ class AgeClassification:
             output.append(self.infer(face))
 
         return output
+
+    # TODO: add flops computing
+    @property
+    def flops(self):
+        LOGGER.warning('Flops computation is currently not supported in age classification.')
+        return 0
