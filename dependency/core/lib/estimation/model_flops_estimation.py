@@ -9,6 +9,7 @@ class FlopsEstimator:
             self.model,
             self.input_shape,
             print_per_layer_stat=False,
+            as_strings=False,
             verbose=False
         )
         flops = 2 * macs
