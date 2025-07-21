@@ -40,7 +40,9 @@ class Monitor:
     def wait_for_monitor(self):
         current_ts = time.time()
         if current_ts - self.last_monitor_ts < self.monitor_interval:
-            time.sleep(self.monitor_interval - (current_ts - self.last_monitor_ts))
+            wait_time = self.monitor_interval - (current_ts - self.last_monitor_ts)
+            LOGGER.debug(f'[Monitor Interval] Waiting {wait_time} seconds for next monitor cycle.')
+            time.sleep(wait_time)
         self.last_monitor_ts = current_ts
 
     def send_resource_state_to_scheduler(self):
