@@ -21,10 +21,10 @@ class CarDetection:
         if use_tensorrt:
             from .car_detection_with_tensorrt import CarDetectionTensorRT
             self.model = CarDetectionTensorRT(weights=self.trt_weights,
-                                              plugin_library=self.trt_plugin_library, device=device)
+                                              plugin_library=self.trt_plugin_library, device=self.device)
         else:
             from .car_detection_without_tensorrt import CarDetectionYoloV5
-            self.model = CarDetectionYoloV5(weights=non_trt_weights, device=device)
+            self.model = CarDetectionYoloV5(weights=self.non_trt_weights, device=self.device)
 
     def _infer(self, image):
         return self.model.infer(image)
