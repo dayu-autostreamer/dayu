@@ -49,3 +49,7 @@ class DetectorProcessor(Processor):
             process_output = self.detector(images)
 
         return process_output
+
+    @property
+    def flops(self):
+        return self.detector.flops
