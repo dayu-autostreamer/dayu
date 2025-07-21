@@ -14,7 +14,6 @@ class ModelFlopsMonitor(BaseMonitor, abc.ABC):
         self.name = 'model_flops'
 
         self.local_device = NodeInfo.get_local_device()
-        self.model_flops_dict = self.get_model_flops()
 
     def get_model_flops(self):
         model_flops_dict = {}
@@ -29,4 +28,4 @@ class ModelFlopsMonitor(BaseMonitor, abc.ABC):
         return model_flops_dict
 
     def get_parameter_value(self):
-        return self.model_flops_dict
+        return self.get_model_flops()
