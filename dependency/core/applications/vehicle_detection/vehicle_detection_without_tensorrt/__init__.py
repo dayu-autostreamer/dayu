@@ -1,0 +1,1 @@
+from .vehicle_detection_yolov8 import VehicleDetectionYoloV8
