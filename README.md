@@ -11,7 +11,7 @@ English | [简体中文](./README_zh.md)
 
 ![](static/dayu_logo.png)
 
-| ![](static/news.svg) NEWS                                                                                       |
+| <img src="static/news.svg" width="10%">  NEWS                                                                   |
 |-----------------------------------------------------------------------------------------------------------------|
 | (**Latest Release**) May. 7th, 2025. Dayu v1.1 Release. Please check the [CHANGELOG](CHANGELOG.md) for details. |
 | Feb. 21th, 2025. Dayu v1.0 Release. Please check the [CHANGELOG](CHANGELOG.md) for details.                     |
