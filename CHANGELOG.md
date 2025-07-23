@@ -6,7 +6,8 @@
 
 ### Features
 - Add a cyclic redeployment mechanism of service processors for further flexible task processing.
-
+- Add new services to construct a logical topology, including pedestrian-detection, vehicle-detection, 
+exposure-identification, category-classification and license-plate-recognition.
 
 ### Bug Fix
 - Fix concurrency conflicts for starting up multiple streams in rtsp video and http video (`datasource`).
@@ -20,7 +21,9 @@
 - Clean up frontend code and beatify frontend pages (`frontend`).
 - Add persistent storage of installation configuration (`frontend`).
 - Add system visualization to monitor system parameters, including resource usage, scheduling cost and so on (`frontend` / `backend` / `scheduler`).
-- Improving a fine-grained monitoring architecture including monitoring cpu and gpu flops.
+- Improving a fine-grained monitoring architecture including monitoring cpu and gpu flops (`monitor`).
+- Add 'USE_TENSORRT' option in processors to choose whether using tensorrt mode (`processor`).
+- Add model flops calculation in processors to support model flops monitoring (`processor`).
 
 ---
 
