@@ -1,0 +1,1 @@
+from .license_plate_recognition_tensorrt import LicensePlateRecognitionTensorRT

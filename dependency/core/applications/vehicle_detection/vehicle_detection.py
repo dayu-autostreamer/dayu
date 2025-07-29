@@ -40,13 +40,7 @@ class VehicleDetection:
         try:
             from .vehicle_detection_without_tensorrt import VehicleDetectionYoloV8
             model = VehicleDetectionYoloV8(weights=self.non_trt_weights, device=self.device)
-            
-            # 调用 model.info() 返回元组
-            info = model.model.info()  
-            
-            # info结构： (layers, params, grads, gflops)
-            self.flops = info[3]  
-            print(self.flops)
+            self.flops = FlopsEstimator(model = model.model, input_shape=(3, 640, 640)).compute_flops()
             del model
             
         except Exception as e:

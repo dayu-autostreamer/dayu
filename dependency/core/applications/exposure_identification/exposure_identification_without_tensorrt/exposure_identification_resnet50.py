@@ -8,7 +8,7 @@ import cv2
 class ExposureIdentificationResNet50:
     def __init__(self, weights, device='cpu'):      
         # 1. 定义模型结构，输出5类
-        self.model = resnet50(weights=None)
+        self.model = resnet50(pretrained=False)
         self.model.fc = torch.nn.Linear(self.model.fc.in_features, 5)
         
         if isinstance(device, int):
