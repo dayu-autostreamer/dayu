@@ -6,15 +6,45 @@ pod-template:
     - name: PROCESSOR_NAME
       value: "classifier_processor"
     - name: CLASSIFIER_PARAMETERS
-      value: "{'detect_weights':'plate_detect.trt', 'recognize_weights':'plate_rec.trt'}"
+      value: >
+        {
+          'det_trt_weights':'plate_detect.trt', 
+          'non_det_trt_weights':'plate_detect.pt',
+          'rec_trt_weights':'plate_rec.trt',
+          'non_rec_trt_weights':'plate_rec_color.pth'
+        }
     - name: SCENARIOS_EXTRACTORS
-      value: "['obj_num', 'obj_size']"
+      value: >
+        ['obj_num', 'obj_size']
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "True"
+cloud-pod-template:
+  env:
+    - name: CLASSIFIER_PARAMETERS
+      value: >
+        {
+          'det_trt_weights':'plate_detect.trt', 
+          'non_det_trt_weights':'plate_detect.pt',
+          'rec_trt_weights':'plate_rec.trt',
+          'non_rec_trt_weights':'plate_rec_color.pth',
+          'device':0
+        }
+edge-pod-template:
+  env:
+    - name: CLASSIFIER_PARAMETERS
+      value: >
+        {
+         'det_trt_weights':'plate_detect.trt', 
+         'non_det_trt_weights':'plate_detect.pt',
+         'rec_trt_weights':'plate_rec.trt',
+         'non_rec_trt_weights':'plate_rec_color.pth',
+         'device':0
+        }
 port-open:
   pos: both
   port: 9000
 file-mount:
   - pos: both
     path: "processor/license-plate-recognition/"
-
