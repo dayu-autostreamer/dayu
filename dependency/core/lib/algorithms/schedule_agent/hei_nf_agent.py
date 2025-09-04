@@ -16,7 +16,7 @@ class HEINFAgent(BaseAgent, abc.ABC):
     def __init__(self, system,
                  agent_id: int,
                  window_size: int = 10):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         from .hei_nf import NegativeFeedback_Single
 

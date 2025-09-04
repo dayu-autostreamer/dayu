@@ -25,7 +25,7 @@ Zhang M, Wang F, Zhu Y, et al. Towards cloud-edge collaborative online video ana
 class CEVASAgent(BaseAgent, abc.ABC):
 
     def __init__(self, system, agent_id: int, fixed_policy: dict = None, time_slot: int = 3):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         import torch
         from .cevas.mlp import MLP

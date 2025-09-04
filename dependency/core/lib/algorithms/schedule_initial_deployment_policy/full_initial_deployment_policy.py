@@ -9,6 +9,9 @@ __all__ = ('FullInitialDeploymentPolicy',)
 
 @ClassFactory.register(ClassType.SCH_INITIAL_DEPLOYMENT_POLICY, alias='full')
 class FullInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
+    def __init__(self, system, agent_id):
+        pass
+
     def __call__(self, info):
         source_id = info['source']['id']
         dag = info['dag']

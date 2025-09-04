@@ -28,7 +28,7 @@ class HEIDRLAgent(BaseAgent, abc.ABC):
                  punishment_bound: float = -2,
                  reward_bound: float = 0.5,
                  reward_coefficient: float = 0.3, ):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         from .hei import SoftActorCritic, RandomBuffer, Adapter, StateBuffer
 

@@ -4,10 +4,13 @@ from core.lib.common import Context
 
 
 class BaseAgent(metaclass=abc.ABCMeta):
-    def __init__(self):
-        self.source_selection_policy = Context.get_algorithm('SCH_SELECTION_POLICY')
-        self.initial_deployment_policy = Context.get_algorithm('SCH_INITIAL_DEPLOYMENT_POLICY')
-        self.redeployment_policy = Context.get_algorithm('SCH_REDEPLOYMENT_POLICY')
+    def __init__(self, system, agent_id):
+        self.source_selection_policy = Context.get_algorithm('SCH_SELECTION_POLICY',
+                                                             system=system, agent_id=agent_id)
+        self.initial_deployment_policy = Context.get_algorithm('SCH_INITIAL_DEPLOYMENT_POLICY',
+                                                               system=system, agent_id=agent_id)
+        self.redeployment_policy = Context.get_algorithm('SCH_REDEPLOYMENT_POLICY',
+                                                         system=system, agent_id=agent_id)
 
     def __call__(self):
         raise NotImplementedError

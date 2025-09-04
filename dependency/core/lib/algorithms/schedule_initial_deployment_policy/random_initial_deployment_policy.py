@@ -10,7 +10,7 @@ __all__ = ('RandomInitialDeploymentPolicy',)
 
 @ClassFactory.register(ClassType.SCH_INITIAL_DEPLOYMENT_POLICY, alias='random')
 class RandomInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
-    def __init__(self, max_service_num=-1):
+    def __init__(self, system, agent_id, max_service_num=-1):
         self.max_service_num = max_service_num
 
     def __call__(self, info):

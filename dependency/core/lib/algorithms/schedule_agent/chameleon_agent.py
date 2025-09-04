@@ -30,7 +30,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
     def __init__(self, system, agent_id: int, fixed_policy: dict, acc_gt_dir: str,
                  best_num: int = 5, threshold=0.1,
                  profile_window=16, segment_size=4, calculate_time=1):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device

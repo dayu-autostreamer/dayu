@@ -11,7 +11,7 @@ __all__ = ('FixedAgent',)
 class FixedAgent(BaseAgent, abc.ABC):
 
     def __init__(self, system, agent_id: int, configuration=None, offloading=None):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device

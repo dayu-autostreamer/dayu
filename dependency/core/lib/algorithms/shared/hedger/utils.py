@@ -64,14 +64,14 @@ def bfs_hop_from_source(phys_edge_index: torch.Tensor, N: int, source_idx: int) 
     return torch.tensor(dist, device=phys_edge_index.device, dtype=torch.float)
 
 
-def compute_returns_advantages(rewards: List[float], values: List[float], dones: List[int], gamma=0.99, lam=0.95):
+def compute_returns_advantages(rewards: List[float], values: List[float], dones: List[int], gamma=0.99, lamda=0.95):
     T = len(rewards)
     adv = [0.0] * T
     gae = 0.0
     values_ext = values + [0.0]
     for t in reversed(range(T)):
         delta = rewards[t] + gamma * values_ext[t + 1] * (1 - dones[t]) - values_ext[t]
-        gae = delta + gamma * lam * (1 - dones[t]) * gae
+        gae = delta + gamma * lamda * (1 - dones[t]) * gae
         adv[t] = gae
     returns = [adv[t] + values[t] for t in range(T)]
     return adv, returns
