@@ -43,5 +43,9 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
     def __call__(self, info):
         dag = info['dag']
         node_set = info['node_set']
+        source_device = info['source_device']
+
+        self.hedger.register_logical_topology(dag)
+        self.hedger.register_physical_topology(list(node_set), source_device)
 
         self.hedger.get_redeployment_decision()

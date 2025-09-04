@@ -185,7 +185,7 @@ class TemplateHelper:
                 LOGGER.warning("Using default selection plan.")
                 node = node_set[0]
 
-            source_info['source'].update({'deploy_node': node})
+            source_info['source'].update({'source_device': node})
 
             dag = source_info['dag']
 
@@ -366,7 +366,7 @@ class TemplateHelper:
         scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
         scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
                                           port=scheduler_port,
-                                          path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE)
+                                          path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODES)
 
         params = []
 
@@ -385,7 +385,7 @@ class TemplateHelper:
             params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
 
         response = http_request(url=scheduler_address,
-                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE,
+                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODES,
                                 data={'data': json.dumps(params)},
                                 )
 
@@ -411,6 +411,7 @@ class TemplateHelper:
         params = []
         for source_info in source_deploy:
             SOURCE_ENV = source_info['source']
+            SOURCE_DEVICE_ENV = source_info['source_device']
             NODE_SET_ENV = source_info['node_set']
             DAG_ENV = {}
             dag = source_info['dag']
@@ -421,7 +422,10 @@ class TemplateHelper:
                     temp_node['service'] = {'service_name': key}
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
-            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
+            params.append({
+                "source": SOURCE_ENV,
+                "source_device": SOURCE_DEVICE_ENV,
+                "node_set": NODE_SET_ENV, "dag": DAG_ENV})
 
         if not self.check_is_redeployment():
             # initial deployment

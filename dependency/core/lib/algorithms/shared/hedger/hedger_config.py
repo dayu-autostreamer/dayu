@@ -1,3 +1,4 @@
+from typing import List, Tuple
 from dataclasses import dataclass, fields, replace
 
 
@@ -23,3 +24,24 @@ class DeploymentConstraintCfg:
     enforce_capacity: bool = True  # Enforce memory capacity
     min_edge_replicas: int = 0  # Enforce each service deployed on at least how many edge nodes
     penalty_capacity_relax: float = 1.0  # Penalty for relax the memory capacity
+
+
+class PhysicalTopology:
+    def __init__(self, edge_nodes: list, source_device: str):
+        pass
+
+    @property
+    def node_num(self) -> int:
+        pass
+
+    def edges(self) -> List[Tuple]:
+        pass
+
+
+class LogicalTopology:
+    def __init__(self, dag: dict):
+        pass
+
+    @property
+    def node_num(self) -> int:
+        pass
