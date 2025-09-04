@@ -10,7 +10,7 @@ __all__ = ('FixedRedeploymentPolicy',)
 
 @ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='fixed')
 class FixedRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
-    def __init__(self, policy):
+    def __init__(self, system, agent_id, policy):
         """
         Args:
             policy: {'service1':['node1', 'node2'], 'service2':['node2', 'node3']}

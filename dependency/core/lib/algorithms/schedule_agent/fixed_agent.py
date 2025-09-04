@@ -28,7 +28,7 @@ class FixedAgent(BaseAgent, abc.ABC):
         elif isinstance(offloading, str):
             self.fixed_offloading = ConfigLoader.load(Context.get_file_path(offloading))
         else:
-            raise TypeError(f'Input "offloading" must be of type str or dict, get type {type(configuration)}')
+            raise TypeError(f'Input "offloading" must be of type str or dict, get type {type(offloading)}')
 
         self.overhead_estimator = OverheadEstimator('Fixed', 'scheduler/fixed')
 

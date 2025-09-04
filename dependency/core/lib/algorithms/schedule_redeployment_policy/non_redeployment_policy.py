@@ -7,7 +7,7 @@ __all__ = ('NonRedeploymentPolicy',)
 class NonRedeploymentPolicy(BaseRedeploymentPolicy):
     """No-operation redeployment policy"""
 
-    def __init__(self, policy=None): 
+    def __init__(self, system, agent_id, policy=None):
         service_deployment = KubeConfig.get_service_nodes_dict()
         if service_deployment is None:
             raise RuntimeError("KubeConfig.get_service_nodes_dict() returned None")
