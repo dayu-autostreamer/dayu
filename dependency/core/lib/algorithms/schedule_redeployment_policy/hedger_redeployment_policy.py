@@ -17,7 +17,8 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
         self.default_deployment = None
         self.load_default_policy(deployment)
 
-        self.hedger = self.register_hedger(f'hedger_{self.agent_id}')
+        self.hedger = None
+        self.register_hedger(f'hedger_{self.agent_id}')
 
     def load_default_policy(self, deployment):
         if deployment is None or isinstance(deployment, dict):
