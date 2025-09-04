@@ -37,6 +37,13 @@ class HedgerAgent(BaseAgent, abc.ABC):
             self.hedger.register_offloading_agent()
 
     def get_schedule_plan(self, info):
+        source_edge_device = info['source_device']
+        all_edge_devices = info['all_edge_devices']
+        dag = info['dag']
+
+        self.hedger.register_logical_topology(dag)
+        self.hedger.register_physical_topology(all_edge_devices, source_edge_device)
+
         return None
 
     def run(self):

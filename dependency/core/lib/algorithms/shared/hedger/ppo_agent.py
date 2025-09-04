@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from topology_encoder import TopologyEncoders
 from ppo_network import DeploymentActor, OffloadActor, ValueHead
-from hedger_agent_config import DeploymentConstraintCfg, OffloadingConstraintCfg
+from hedger_config import DeploymentConstraintCfg, OffloadingConstraintCfg
 from utils import bfs_hop_from_source, compute_returns_advantages
 
 

@@ -1,12 +1,14 @@
 import threading
 import random
 import torch
+import time
 
 from core.lib.common import LOGGER
 
 from topology_encoder import TopologyEncoders
 from ppo_agent import HedgerOffloadPPO, HedgerDeploymentPPO
-from hedger_agent_config import from_partial_dict, OffloadingConstraintCfg, DeploymentConstraintCfg
+from hedger_config import from_partial_dict, OffloadingConstraintCfg, DeploymentConstraintCfg, LogicalTopology, \
+    PhysicalTopology
 
 __all__ = ('Hedger',)
 
@@ -23,6 +25,9 @@ class Hedger:
 
         self.offloading_agent_params = agent_params['offloading_agent']
         self.deployment_agent_params = agent_params['deployment_agent']
+
+        self.physical_topology = None
+        self.logical_topology = None
 
         self.shared_topology_encoder = None
         self.deployment_agent = None
@@ -89,6 +94,18 @@ class Hedger:
             constraint_cfg=from_partial_dict(OffloadingConstraintCfg, self.offloading_agent_params),
         ).to(self.device)
 
+    def register_physical_topology(self, edge_nodes, source_device):
+        if self.physical_topology:
+            return
+
+        self.physical_topology = PhysicalTopology(edge_nodes, source_device)
+
+    def register_logical_topology(self, dag):
+        if self.logical_topology:
+            return
+
+        self.logical_topology = LogicalTopology(dag)
+
     def get_offloading_decision(self):
         return self.offloading_decision
 
@@ -110,14 +127,22 @@ class Hedger:
     def train_offloading_agent(self):
         LOGGER.info('[Hedger Offloading] Hedger Offloading Agent start training.')
 
+    @property
+    def _ready_for_run(self):
+        return self.physical_topology and self.logical_topology
+
     def run(self):
+        while not self._ready_for_run:
+            LOGGER.debug('[Hedger] Waiting for physical/logical topology information to start run Hedger..')
+            time.sleep(0.5)
+
         if self.mode == 'train':
             LOGGER.info('[Hedger] Hedger is running in training mode..')
             self.set_seed()
             threading.Thread(self.train_deployment_agent).start()
             threading.Thread(self.train_offloading_agent).start()
         elif self.mode == 'inference':
-            LOGGER.info('[Hedger] Hedger is running in inference mode.')
+            LOGGER.info('[Hedger] Hedger is running in inference mode..')
             threading.Thread(self.inference_deployment_agent).start()
             threading.Thread(self.inference_offloading_agent).start()
         else:
