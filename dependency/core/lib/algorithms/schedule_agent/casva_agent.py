@@ -36,7 +36,7 @@ class CASVAAgent(BaseAgent, abc.ABC):
                  load_model: bool = False,
                  load_model_episode: int = 0,
                  acc_gt_dir: str = ''):
-        super().__init__()
+        super().__init__(system, agent_id)
         from .casva import DualClippedPPO, RandomBuffer, Adapter, StateBuffer
 
         assert streaming_mode in ['latency_first', 'delivery_first'], \

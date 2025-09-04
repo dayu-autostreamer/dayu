@@ -13,7 +13,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
     def __init__(self, system,
                  agent_id: int,
                  ):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         self.hedger = GlobalInstanceManager.get_instance(Hedger, 'hedger')
 

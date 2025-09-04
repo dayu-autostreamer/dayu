@@ -15,7 +15,7 @@
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: hei
-  name: Hierarchical Embodied Intelligence
+  name: Hierarchical Embodied Intelligence (Hier-EI)
   yaml: hei.yaml
   dependency:
     generator: generator-base.yaml
@@ -23,7 +23,7 @@
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: hei-macro-only
-  name: Hierarchical Embodied Intelligence (Macro Only)
+  name: Hier-EI (Macro Only)
   yaml: hei-macro-only.yaml
   dependency:
     generator: generator-base.yaml
@@ -31,7 +31,7 @@
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: hei-micro-only
-  name: Hierarchical Embodied Intelligence (Micro Only)
+  name: Hier-EI (Micro Only)
   yaml: hei-micro-only.yaml
   dependency:
     generator: generator-base.yaml
