@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from topology_encoder import TopologyEncoders
 from ppo_network import DeploymentActor, OffloadActor, ValueHead
-from hedger_config import DeployConstraintCfg, OffloadConstraintCfg
+from hedger_agent_config import DeploymentConstraintCfg, OffloadingConstraintCfg
 from utils import bfs_hop_from_source, compute_returns_advantages
 
 
@@ -18,8 +18,8 @@ class HedgerDeploymentPPO(nn.Module):
     """
 
     def __init__(self, encoder: TopologyEncoders, d_model=64, actor_lr=3e-4, critic_lr=1e-3,
-                 gamma=0.99, lamda=0.95, clip_eps=0.2, update_encoder: bool = True,
-                 deploy_cfg: DeployConstraintCfg = DeployConstraintCfg(cloud_idx=-1)):
+                 gamma=0.99, lamda=0.95, clip_eps=0.2, update_encoder: bool = True, cloud_node_idx: int = -1,
+                 constraint_cfg: DeploymentConstraintCfg = DeploymentConstraintCfg()):
         super().__init__()
         self.encoder = encoder
         self.actor = DeploymentActor(d_model)
@@ -30,7 +30,8 @@ class HedgerDeploymentPPO(nn.Module):
         self.gamma = gamma
         self.lamda = lamda
         self.clip_eps = clip_eps
-        self.cfg = deploy_cfg
+        self.cloud_idx = cloud_node_idx
+        self.cfg = constraint_cfg
 
     @staticmethod
     def topo_order(edge_index: torch.Tensor, num_nodes: int):
@@ -76,7 +77,7 @@ class HedgerDeploymentPPO(nn.Module):
         residual = self._initial_residual_mem(phys_feats)  # [Np]
         model_mem = logic_feats["model_mem"].float()  # [Ms] MB
         probs = self.actor(h_s, h_p, mask=None)  # [Ms,Np] 原始 Bernoulli 概率
-        cloud_idx = self.cfg.cloud_idx if self.cfg.cloud_idx >= 0 else (Np - 1)
+        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
 
         deploy_mask = torch.zeros(Ms, Np, dtype=torch.bool, device=h_p.device)
         logp_sum = torch.tensor(0., device=h_p.device)
@@ -135,7 +136,7 @@ class HedgerDeploymentPPO(nn.Module):
         residual = self._initial_residual_mem(phys_feats)
         model_mem = logic_feats["model_mem"].float()
         probs = self.actor(h_s, h_p, mask=None)
-        cloud_idx = self.cfg.cloud_idx if self.cfg.cloud_idx >= 0 else (Np - 1)
+        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
         if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
         logp_sum = torch.tensor(0., device=h_p.device)
         ent_sum = torch.tensor(0., device=h_p.device)
@@ -209,7 +210,7 @@ class HedgerOffloadPPO(nn.Module):
                  actor_lr=3e-4, critic_lr=1e-3, update_encoder: bool = True,
                  gamma=0.99, lamda=0.95, clip_eps=0.2,
                  source_node_idx: int = 0, cloud_node_idx: int = -1,
-                 constraint_cfg: OffloadConstraintCfg = OffloadConstraintCfg()):
+                 constraint_cfg: OffloadingConstraintCfg = OffloadingConstraintCfg()):
         super().__init__()
         self.encoder = encoder
         self.actor = OffloadActor(d_model)
@@ -221,7 +222,7 @@ class HedgerOffloadPPO(nn.Module):
         self.lamda = lamda
         self.clip_eps = clip_eps
         self.source = source_node_idx
-        self.cloud = cloud_node_idx
+        self.cloud_idx = cloud_node_idx
         self.cfg = constraint_cfg
 
     @staticmethod
@@ -268,9 +269,9 @@ class HedgerOffloadPPO(nn.Module):
 
         for i in topo_order:
             base = static_mask[i].clone()
-            if self.cfg.cloud_sticky and (last == self.cloud):
+            if self.cfg.cloud_sticky and (last == self.cloud_idx):
                 allowed = torch.zeros_like(base)
-                allowed[self.cloud] = base[self.cloud]
+                allowed[self.cloud_idx] = base[self.cloud_idx]
             else:
                 allowed = base.clone()
                 if self.cfg.forbid_return:
@@ -287,9 +288,9 @@ class HedgerOffloadPPO(nn.Module):
                 if self.cfg.allow_stay and base[last]:
                     allowed = torch.zeros_like(base)
                     allowed[last] = True
-                elif base[self.cloud]:
+                elif base[self.cloud_idx]:
                     allowed = torch.zeros_like(base)
-                    allowed[self.cloud] = True
+                    allowed[self.cloud_idx] = True
                 else:
                     allowed = base
 
@@ -327,9 +328,9 @@ class HedgerOffloadPPO(nn.Module):
 
         for i in topo_order:
             base = static_mask[i].clone()
-            if self.cfg.cloud_sticky and (last == self.cloud):
+            if self.cfg.cloud_sticky and (last == self.cloud_idx):
                 allowed = torch.zeros_like(base)
-                allowed[self.cloud] = base[self.cloud]
+                allowed[self.cloud_idx] = base[self.cloud_idx]
             else:
                 allowed = base.clone()
                 if self.cfg.forbid_return:
@@ -347,9 +348,9 @@ class HedgerOffloadPPO(nn.Module):
                 if self.cfg.allow_stay and base[last]:
                     allowed = torch.zeros_like(base)
                     allowed[last] = True
-                elif base[self.cloud]:
+                elif base[self.cloud_idx]:
                     allowed = torch.zeros_like(base)
-                    allowed[self.cloud] = True
+                    allowed[self.cloud_idx] = True
                 else:
                     allowed = base
 
