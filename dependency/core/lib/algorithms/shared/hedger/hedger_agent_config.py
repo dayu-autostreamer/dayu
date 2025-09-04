@@ -9,17 +9,17 @@ def from_partial_dict(cls, data: dict):
 
 @dataclass
 class OffloadingConstraintCfg:
-    allow_stay: bool = True  # 允许原地执行（不算回访）
-    forbid_return: bool = True  # 禁止回到任何历史节点（除当前所在）
-    cloud_sticky: bool = True  # 上云后黏住云
-    use_monotone_metric: bool = False  # 可选：启用单调性约束
-    metric_non_decreasing: bool = True  # True: metric[node_t] >= metric[last]
-    penalty_switch: float = 0.0  # 节点切换惩罚系数（软约束）
-    penalty_relax: float = 0.0  # 无可行动作被迫放宽的惩罚系数（软约束）
+    allow_stay: bool = True  # Allow execution at the same location of the past one
+    forbid_return: bool = True  # Forbidden to return to any historical node
+    cloud_sticky: bool = True  # Stay on the cloud after offloading to the cloud
+    use_monotone_metric: bool = False  # Enable monotonicity constraint with physical node hops
+    metric_non_decreasing: bool = True  # True: metric[node_t] >= metric[last], work only with use_monotone_metric=True
+    penalty_switch: float = 0.0  # Node switching penalty coefficient
+    penalty_relax: float = 0.0  # Penalty coefficient forced to relax for no feasible action
 
 
 @dataclass
 class DeploymentConstraintCfg:
-    enforce_capacity: bool = True  # 是否强 enforcing 显存容量
-    min_edge_replicas: int = 0  # 可选：可以强制每个服务至少在多少个边端部署
-    penalty_capacity_relax: float = 1.0  # 若不得不放宽容量（最后兜底）时的惩罚
+    enforce_capacity: bool = True  # Enforce memory capacity
+    min_edge_replicas: int = 0  # Enforce each service deployed on at least how many edge nodes
+    penalty_capacity_relax: float = 1.0  # Penalty for relax the memory capacity

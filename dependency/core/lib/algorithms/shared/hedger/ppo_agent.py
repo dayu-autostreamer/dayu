@@ -11,12 +11,6 @@ from utils import bfs_hop_from_source, compute_returns_advantages
 
 
 class HedgerDeploymentPPO(nn.Module):
-    """
-    顺序按服务决策：对 service i，允许在若干边缘/云节点上“部署/不部署”，
-    这里采用“逐节点 Bernoulli”的方式，并在解码时用“剩余显存”白盒约束过滤。
-    云端默认可用/可部署。
-    """
-
     def __init__(self, encoder: TopologyEncoders, d_model=64, actor_lr=3e-4, critic_lr=1e-3,
                  gamma=0.99, lamda=0.95, clip_eps=0.2, update_encoder: bool = True, cloud_node_idx: int = -1,
                  constraint_cfg: DeploymentConstraintCfg = DeploymentConstraintCfg()):
@@ -55,28 +49,20 @@ class HedgerDeploymentPPO(nn.Module):
         return order
 
     def _initial_residual_mem(self, phys_feats: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # 估算“瞬时可用显存”= mem_capacity * (1 - 当前 mem_util)；实际系统可替换成更精确的可用显存统计
+        # Estimate "instantaneous available memory"= mem_capacity * (1 - current mem_util);
         cap = phys_feats["mem_capacity"].float()  # [Np] MB
-        util = phys_feats["mem_util_seq"][:, -1].float()  # 当前时刻 mem_util
+        util = phys_feats["mem_util_seq"][:, -1].float()  # current mem_util
         return cap * (1.0 - util)  # [Np] MB
 
     @torch.no_grad()
-    def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
-               prev_deploy_mask: Optional[torch.Tensor] = None,  # [Ms,Np] 上一版部署，计算重部署成本
-               topo_order: Optional[list] = None):
-        """
-        返回：
-          deploy_mask: [Ms,Np] 0/1
-          logp_sum/ent_sum/value：用于 PPO
-          aux: {capacity_relax_cnt}
-        """
+    def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats, topo_order: Optional[list] = None):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         Ms, Np = h_s.size(0), h_p.size(0)
         if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
 
         residual = self._initial_residual_mem(phys_feats)  # [Np]
         model_mem = logic_feats["model_mem"].float()  # [Ms] MB
-        probs = self.actor(h_s, h_p, mask=None)  # [Ms,Np] 原始 Bernoulli 概率
+        probs = self.actor(h_s, h_p, mask=None)  # [Ms,Np] original Bernoulli probability
         cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
 
         deploy_mask = torch.zeros(Ms, Np, dtype=torch.bool, device=h_p.device)
@@ -85,41 +71,41 @@ class HedgerDeploymentPPO(nn.Module):
         capacity_relax_cnt = 0
 
         for i in topo_order:
-            # 基于容量的允许矩阵：residual >= model_mem[i]
+            # Capacity-based permission matrix: residual >= model_mem[i]
             allowed = residual >= model_mem[i]
-            # 云端总是允许（资源充足）
+            # The cloud always allows (resources are sufficient)
             allowed[cloud_idx] = True
 
-            # 若 enforce_capacity=True，且除云外全 False，就只能选云；否则可多标签采样
+            # If `enforce_capacity=True` and all other options are `False`, only the cloud option can be selected.
+            # Otherwise, multi-label sampling is possible.
             if self.cfg.enforce_capacity and (allowed.sum() == 0 or (allowed.sum() == 1 and allowed[cloud_idx])):
-                # 仅云可用
+                # Available on cloud only
                 pm = torch.zeros(Np, device=h_p.device)
                 pm[cloud_idx] = 1.0
                 dist = torch.distributions.Bernoulli(probs=pm)
-                act = (pm > 0.5)  # 直接选云
-                # 记录（使 logp/entropy 有定义）
+                act = (pm > 0.5)  # Directly select cloud
                 logp_sum += dist.log_prob(act.float()).sum()
                 ent_sum += dist.entropy().mean()
                 deploy_mask[i] = act
             else:
-                # 允许在 allowed 节点上 Bernoulli 采样（可多副本）
+                # Allow Bernoulli sampling (can be multiple copies) on allowed nodes
                 pm = probs[i].clone()
                 pm = torch.where(allowed, pm, torch.zeros_like(pm))
-                # 特殊情况：如果全部被置零（极端），放宽一次 -> 仅云
+                # Special circumstances: If all are zeroed (extreme), relax once-> Only cloud
                 if pm.sum() == 0:
                     capacity_relax_cnt += 1
                     pm = torch.zeros_like(pm)
                     pm[cloud_idx] = 1.0
                 dist = torch.distributions.Bernoulli(probs=pm)
                 act = (torch.rand_like(pm) < pm).float()  # [Np]
-                # 至少保证云端部署（兜底）
+                # At least ensure cloud deployment
                 if act.sum() == 0:
                     act[cloud_idx] = 1.0
                 logp_sum += dist.log_prob(act).sum()
                 ent_sum += dist.entropy().mean()
                 deploy_mask[i] = act.bool()
 
-            # 更新剩余显存（对非云端扣减）
+            # Update remaining memory (deduction for non-cloud)
             for n in range(Np):
                 if n == cloud_idx: continue
                 if deploy_mask[i, n]:
@@ -130,7 +116,7 @@ class HedgerDeploymentPPO(nn.Module):
 
     def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
                  deploy_mask: torch.Tensor, topo_order: Optional[list] = None):
-        # 评估给定 deploy_mask 的 logp/entropy/value（用于 PPO）
+        # Evaluate the log probability, entropy, and value of the given `deploy_mask` for use in PPO.
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         Ms, Np = h_s.size(0), h_p.size(0)
         residual = self._initial_residual_mem(phys_feats)
@@ -145,7 +131,7 @@ class HedgerDeploymentPPO(nn.Module):
             allowed = residual >= model_mem[i]
             allowed[cloud_idx] = True
             pm = torch.where(allowed, probs[i], torch.zeros_like(probs[i]))
-            # 特例处理：若 pm 全 0，则把云端设为 1
+            # Special case: If pm is all 0, set the cloud to 1
             if pm.sum() == 0:
                 pm = torch.zeros_like(pm)
                 pm[cloud_idx] = 1.0
@@ -369,7 +355,6 @@ class HedgerOffloadPPO(nn.Module):
         aux_cost = self.cfg.penalty_switch * switches + self.cfg.penalty_relax * relax_cnt
         return logp_sum, ent_sum, value.squeeze(0), {"switches": switches, "relax_cnt": relax_cnt, "aux_cost": aux_cost}
 
-    # -------- PPO 更新（以“图级一步”为样本） --------
     def ppo_update(self, transitions: List[dict], epochs=4, batch_size=32, clip_eps=None, entropy_coef=0.01,
                    value_coef=0.5):
         clip_eps = self.clip_eps if clip_eps is None else clip_eps
