@@ -35,6 +35,8 @@ class Hedger:
         self.deployment_decision = None
         self.offloading_decision = None
 
+        self.run()
+
     def set_seed(self):
         random.seed(self.seed)
         torch.manual_seed(self.seed)
@@ -91,22 +93,22 @@ class Hedger:
         return self.offloading_decision
 
     def get_initial_deployment_decision(self):
-        pass
+        return self.deployment_decision
 
     def get_redeployment_decision(self):
         return self.deployment_decision
 
     def inference_deployment_agent(self):
-        pass
+        LOGGER.info('[Hedger Deployment] Hedger Deployment Agent start inference.')
 
     def inference_offloading_agent(self):
-        pass
+        LOGGER.info('[Hedger Offloading] Hedger Offloading Agent start inference.')
 
     def train_deployment_agent(self):
-        pass
+        LOGGER.info('[Hedger Deployment] Hedger Deployment Agent start training.')
 
     def train_offloading_agent(self):
-        pass
+        LOGGER.info('[Hedger Offloading] Hedger Offloading Agent start training.')
 
     def run(self):
         if self.mode == 'train':

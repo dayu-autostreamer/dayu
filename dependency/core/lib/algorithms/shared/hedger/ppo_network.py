@@ -20,7 +20,7 @@ class DeploymentActor(nn.Module):
         scores = scores / max(self.temperature, 1e-6)
         if mask is not None:
             scores = scores.masked_fill(~mask, float('-inf'))
-        return torch.sigmoid(scores)  # 多标签 Bernoulli 概率
+        return torch.sigmoid(scores)  # Multilabel Bernoulli probability
 
 
 class OffloadActor(nn.Module):
@@ -37,7 +37,7 @@ class OffloadActor(nn.Module):
         scores = scores / max(self.temperature, 1e-6)
         if mask is not None:
             scores = scores.masked_fill(~mask, float('-inf'))
-        return F.softmax(scores, dim=-1)  # 每服务一个 Categorical
+        return F.softmax(scores, dim=-1)  # One Categorical per service
 
 
 class ValueHead(nn.Module):
