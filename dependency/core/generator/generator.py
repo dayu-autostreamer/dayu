@@ -10,7 +10,7 @@ from core.lib.estimation import TimeEstimator
 
 
 class Generator:
-    def __init__(self, source_id: int, metadata: dict, task_dag: list, ):
+    def __init__(self, source_id: int, metadata: dict, task_dag: dict, ):
         """ Initialize the generator."""
 
         """task base information"""
