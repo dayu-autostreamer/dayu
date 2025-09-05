@@ -6,7 +6,7 @@ from .generator import Generator
 @ClassFactory.register(ClassType.GENERATOR, alias='video')
 class VideoGenerator(Generator):
     def __init__(self, source_id: int, source_url: str,
-                 source_metadata: dict, dag: list):
+                 source_metadata: dict, dag: dict):
         super().__init__(source_id, source_metadata, dag)
         self.video_data_source = source_url
 
