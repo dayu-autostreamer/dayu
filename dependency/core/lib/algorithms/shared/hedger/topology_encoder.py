@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATConv, GCNConv
 
-from utils import safe_log1p, graph_in_out_degree, topo_levels_dag
+from .utils import safe_log1p, graph_in_out_degree, topo_levels_dag
 
 __all__ = ('TopologyEncoders',)
 

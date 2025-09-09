@@ -5,9 +5,9 @@ import time
 
 from core.lib.common import LOGGER
 
-from topology_encoder import TopologyEncoders
-from ppo_agent import HedgerOffloadPPO, HedgerDeploymentPPO
-from hedger_config import from_partial_dict, OffloadingConstraintCfg, DeploymentConstraintCfg, LogicalTopology, \
+from .topology_encoder import TopologyEncoders
+from .ppo_agent import HedgerOffloadPPO, HedgerDeploymentPPO
+from .hedger_config import from_partial_dict, OffloadingConstraintCfg, DeploymentConstraintCfg, LogicalTopology, \
     PhysicalTopology
 
 __all__ = ('Hedger',)
@@ -22,6 +22,8 @@ class Hedger:
         self.mode = hyper_params['mode']
         self.device = torch.device(hyper_params['device'])
         self.seed = hyper_params['seed']
+        self.deployment_interval = hyper_params['deployment_interval']
+        self.offloading_interval = hyper_params['offloading_interval']
 
         self.offloading_agent_params = agent_params['offloading_agent']
         self.deployment_agent_params = agent_params['deployment_agent']
@@ -39,6 +41,8 @@ class Hedger:
 
         self.deployment_decision = None
         self.offloading_decision = None
+
+        self.prev_deploy_mask = None
 
         self.run()
 
@@ -115,11 +119,34 @@ class Hedger:
     def get_redeployment_decision(self):
         return self.deployment_decision
 
+    def inference_hedger(self):
+        LOGGER.info('[Hedger] Hedger is running in inference mode..')
+        threading.Thread(self.inference_deployment_agent).start()
+        threading.Thread(self.inference_offloading_agent).start()
+
     def inference_deployment_agent(self):
         LOGGER.info('[Hedger Deployment] Hedger Deployment Agent start inference.')
 
     def inference_offloading_agent(self):
         LOGGER.info('[Hedger Offloading] Hedger Offloading Agent start inference.')
+
+    def train_hedger(self):
+        LOGGER.info('[Hedger] Hedger is running in training mode..')
+        self.set_seed()
+
+        service_num = len(self.logical_topology)
+        node_num = len(self.physical_topology)
+
+        logic_links = torch.tensor(self.logical_topology.links,
+                                   dtype=torch.long, device=self.device).t().contiguous()
+        phys_links = torch.tensor(self.physical_topology.links,
+                                  dtype=torch.long, device=self.device).t().contiguous()
+
+        self.prev_deploy_mask = torch.zeros((service_num, node_num), dtype=torch.bool, device=self.device)
+        self.prev_deploy_mask[:, self.physical_topology.cloud_idx] = True
+
+        threading.Thread(self.train_deployment_agent).start()
+        threading.Thread(self.train_offloading_agent).start()
 
     def train_deployment_agent(self):
         LOGGER.info('[Hedger Deployment] Hedger Deployment Agent start training.')
@@ -137,13 +164,8 @@ class Hedger:
             time.sleep(0.5)
 
         if self.mode == 'train':
-            LOGGER.info('[Hedger] Hedger is running in training mode..')
-            self.set_seed()
-            threading.Thread(self.train_deployment_agent).start()
-            threading.Thread(self.train_offloading_agent).start()
+            self.train_hedger()
         elif self.mode == 'inference':
-            LOGGER.info('[Hedger] Hedger is running in inference mode..')
-            threading.Thread(self.inference_deployment_agent).start()
-            threading.Thread(self.inference_offloading_agent).start()
+            self.inference_hedger()
         else:
             raise ValueError(f'Unsupported mode {self.mode} for Hedger, only "train" and "inference" are supported.')
