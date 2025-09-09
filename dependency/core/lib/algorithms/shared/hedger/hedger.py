@@ -121,6 +121,16 @@ class Hedger:
 
     def inference_hedger(self):
         LOGGER.info('[Hedger] Hedger is running in inference mode..')
+
+        logic_links = torch.tensor(self.logical_topology.links,
+                                   dtype=torch.long, device=self.device).t().contiguous()
+        phys_links = torch.tensor(self.physical_topology.links,
+                                  dtype=torch.long, device=self.device).t().contiguous()
+
+        self.prev_deploy_mask = torch.zeros((len(self.logical_topology), len(self.physical_topology)),
+                                            dtype=torch.bool, device=self.device)
+        self.prev_deploy_mask[:, self.physical_topology.cloud_idx] = True
+
         threading.Thread(self.inference_deployment_agent).start()
         threading.Thread(self.inference_offloading_agent).start()
 
@@ -134,15 +144,13 @@ class Hedger:
         LOGGER.info('[Hedger] Hedger is running in training mode..')
         self.set_seed()
 
-        service_num = len(self.logical_topology)
-        node_num = len(self.physical_topology)
-
         logic_links = torch.tensor(self.logical_topology.links,
                                    dtype=torch.long, device=self.device).t().contiguous()
         phys_links = torch.tensor(self.physical_topology.links,
                                   dtype=torch.long, device=self.device).t().contiguous()
 
-        self.prev_deploy_mask = torch.zeros((service_num, node_num), dtype=torch.bool, device=self.device)
+        self.prev_deploy_mask = torch.zeros((len(self.logical_topology), len(self.physical_topology)),
+                                            dtype=torch.bool, device=self.device)
         self.prev_deploy_mask[:, self.physical_topology.cloud_idx] = True
 
         threading.Thread(self.train_deployment_agent).start()
