@@ -98,7 +98,3 @@ class LogicalTopology:
         return service_links
 
 
-
-
-
-
