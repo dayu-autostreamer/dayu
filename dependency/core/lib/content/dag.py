@@ -59,6 +59,9 @@ class DAG:
     def __init__(self):
         self.nodes = {}
 
+    def __len__(self):
+        return len(self.nodes)
+
     def get_node(self, service_name: str) -> Node:
         if service_name not in self.nodes:
             raise KeyError(f"Service {service_name} does not exist in DAG")

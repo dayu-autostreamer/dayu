@@ -3,6 +3,7 @@ import abc
 from .base_initial_deployment_policy import BaseInitialDeploymentPolicy
 
 from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, ConfigLoader, Context
+from core.lib.content import Task
 from core.lib.algorithms.shared.hedger import Hedger
 
 __all__ = ('HedgerInitialDeploymentPolicy',)
@@ -45,7 +46,7 @@ class HedgerInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
         node_set = info['node_set']
         source_device = info['source_device']
 
-        self.hedger.register_logical_topology(dag)
+        self.hedger.register_logical_topology(Task.extract_dag_from_dict(dag))
         self.hedger.register_physical_topology(list(node_set), source_device)
 
         self.hedger.get_initial_deployment_decision()

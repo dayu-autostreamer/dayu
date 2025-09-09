@@ -1,6 +1,7 @@
 import abc
 
 from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, ConfigLoader, Context
+from core.lib.content import Task
 from core.lib.algorithms.shared.hedger import Hedger
 
 from .base_agent import BaseAgent
@@ -41,7 +42,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
         all_edge_devices = info['all_edge_devices']
         dag = info['dag']
 
-        self.hedger.register_logical_topology(dag)
+        self.hedger.register_logical_topology(Task.extract_dag_from_dag_deployment(dag))
         self.hedger.register_physical_topology(all_edge_devices, source_edge_device)
 
         return None
