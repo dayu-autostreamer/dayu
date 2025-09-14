@@ -1,7 +1,7 @@
 position: cloud
 pod-template:
   image: scheduler
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   env:
     - name: SCH_CONFIG_EXTRACTION_NAME
       value: simple
