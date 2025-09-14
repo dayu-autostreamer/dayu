@@ -1,7 +1,7 @@
 position: both
 pod-template:
   image: controller
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   env:
     - name: DISPLAY
       value: "False"

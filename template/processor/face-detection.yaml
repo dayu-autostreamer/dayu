@@ -1,7 +1,7 @@
 position: both
 pod-template:
   image: face-detection
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   env:
     - name: PROCESSOR_NAME
       value: "detector_tracker_processor"

@@ -26,7 +26,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/controller:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: controller
           ports:
           - containerPort: 9000
@@ -55,7 +55,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/controller:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: controller
           ports:
           - containerPort: 9000
@@ -83,7 +83,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/controller:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: controller
           ports:
           - containerPort: 9000
@@ -119,7 +119,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/distributor:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: distributor
           ports:
           - containerPort: 9000
@@ -181,7 +181,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/scheduler:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: scheduler
           ports:
           - containerPort: 9000
@@ -221,7 +221,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/monitor:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: monitor
           ports:
           - containerPort: 9000
@@ -250,7 +250,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/monitor:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: monitor
           ports:
           - containerPort: 9000
@@ -278,7 +278,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/monitor:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: monitor
           ports:
           - containerPort: 9000
@@ -343,7 +343,7 @@ spec:
               ''next_nodes'': []}, ''age-classification'': {''service'': {''service_name'':
               ''age-classification''}, ''next_nodes'': []}}'
           image: repo:5000/dayuhub/generator:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: generator72be828d-bc29-4b59-af34-0017b2c7b65a
         dnsPolicy: ClusterFirstWithHostNet
         nodeName: edge1
@@ -384,7 +384,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/face-detection:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: processor-face-detection
           ports:
           - containerPort: 9000
@@ -420,7 +420,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/face-detection:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: processor-face-detection
           ports:
           - containerPort: 9000
@@ -467,7 +467,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/gender-classification:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: processor-gender-classification
           ports:
           - containerPort: 9000
@@ -514,7 +514,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/age-classification:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: processor-age-classification
           ports:
           - containerPort: 9000
@@ -550,7 +550,7 @@ spec:
           - name: FILE_PREFIX
             value: /data/dayu-files
           image: repo:5000/dayuhub/age-classification:v1.2
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           name: processor-age-classification
           ports:
           - containerPort: 9000
