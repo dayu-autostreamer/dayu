@@ -42,7 +42,6 @@ jobs:
           results_format: sarif
           publish_results: true
           exclude_checks: "Pinned-Dependencies"
-          exclude_paths: "vendor/**"
 
       - name: "Upload artifact"
         uses: actions/upload-artifact@v4
