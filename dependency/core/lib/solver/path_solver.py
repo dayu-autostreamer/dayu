@@ -10,7 +10,8 @@ class PathSolver:
     Features:
     1. find the shortest path
     2. find the weighted shortest path
-    3. find all paths
+    3. find the weighted longest path
+    4. find all paths
     """
 
     def __init__(self, dag):
@@ -131,6 +132,64 @@ class PathSolver:
 
         # Path reconstruction
         if distances[dest] == float('inf'):
+            raise ValueError(f"No path exists from {src} to {dest}")
+
+        path = []
+        current = dest
+        while current != src:
+            path.append(current)
+            current = predecessors[current]
+        path.append(src)
+
+        return distances[dest], path[::-1]
+
+    def get_weighted_longest_path(self, src: str, dest: str,
+                                  weight_func: Callable) -> Tuple[float, List[str]]:
+        """
+        Find the maximum weight path between two nodes using Dijkstra's algorithm
+        :param src: Source node name
+        :param dest: Destination node name
+        :param weight_func: Function that takes a node service and returns its weight
+        :return: Tuple of (total_weight, path_nodes)
+        """
+        # Validate node existence
+        self._validate_nodes_exist(src, dest)
+
+        # Initialize data structures
+        distances: Dict[str, float] = {node: float('-inf') for node in self.dag.nodes}
+        distances[src] = weight_func(self.dag.get_node(src).service)
+        predecessors: Dict[str, str] = {}
+
+        # Priority queue: (current_distance, node)
+        heap = [(-distances[src], src)]  # Use negative weights to simulate "maximum" path
+
+        while heap:
+            current_dist, current_node = heapq.heappop(heap)
+
+            # Convert back the current distance
+            current_dist = -current_dist
+
+            # Early exit if destination is reached
+            if current_node == dest:
+                break
+
+            # Skip processed nodes with outdated distances
+            if current_dist < distances[current_node]:
+                continue
+
+            # Explore neighbors
+            for child in self.dag.get_next_nodes(current_node):
+                # Calculate new distance
+                new_dist = current_dist + weight_func(self.dag.get_node(child).service)
+
+                # Update if found longer path
+                if new_dist > distances[child]:
+                    distances[child] = new_dist
+                    predecessors[child] = current_node
+                    heapq.heappush(heap, (-new_dist, child))  # Push negative distance to max-heap
+
+        # Path reconstruction
+        if distances[dest] == float('-inf'):
             raise ValueError(f"No path exists from {src} to {dest}")
 
         path = []
