@@ -1,3 +1,4 @@
+from typing import List
 import threading
 import random
 import torch
@@ -24,6 +25,8 @@ class Hedger:
         self.seed = hyper_params['seed']
         self.deployment_interval = hyper_params['deployment_interval']
         self.offloading_interval = hyper_params['offloading_interval']
+        self.update_epochs = hyper_params['update_epochs']
+        self.total_steps = hyper_params['total_steps']
 
         self.offloading_agent_params = agent_params['offloading_agent']
         self.deployment_agent_params = agent_params['deployment_agent']
@@ -41,6 +44,9 @@ class Hedger:
 
         self.deployment_decision = None
         self.offloading_decision = None
+
+        self.deployment_transitions: List[dict] = []
+        self.offloading_transitions: List[dict] = []
 
         self.prev_deploy_mask = None
 
@@ -155,6 +161,23 @@ class Hedger:
 
         threading.Thread(self.train_deployment_agent).start()
         threading.Thread(self.train_offloading_agent).start()
+
+        while True:
+            time.sleep(1)
+
+            if len(self.offloading_transitions) >= 32:
+                off_transitions = self.offloading_transitions.copy()
+                self.offloading_transitions.clear()
+                self.offloading_agent.ppo_update(off_transitions,
+                                                 epochs=self.update_epochs, batch_size=16)
+
+            if len(self.deployment_transitions) >= 8:
+                dep_transitions = self.deployment_transitions.copy()
+                self.deployment_transitions.clear()
+                self.deployment_agent.ppo_update(dep_transitions,
+                                                 epochs=self.update_epochs, batch_size=4)
+
+        LOGGER.info('[Hedger] Training of Hedger finished.')
 
     def train_deployment_agent(self):
         LOGGER.info('[Hedger Deployment] Hedger Deployment Agent start training.')
