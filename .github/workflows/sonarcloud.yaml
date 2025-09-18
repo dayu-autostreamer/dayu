@@ -6,6 +6,8 @@ on:
     - cron: '20 1 * * 6'
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
