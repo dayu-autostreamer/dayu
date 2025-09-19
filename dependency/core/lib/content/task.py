@@ -313,7 +313,7 @@ class Task:
         assert self.__dag_flow, 'Task DAG is empty!'
         assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
 
-        total_time, _ = PathSolver(self.__dag_flow).get_weighted_shortest_path('start', 'end',
+        total_time, _ = PathSolver(self.__dag_flow).get_weighted_longest_path('start', 'end',
                                                                                lambda x: x.get_service_total_time())
         return total_time
 

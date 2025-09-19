@@ -15,6 +15,8 @@ on:
   pull_request:
     # The branches below must be a subset of the branches above
     branches: [ main ]
+  push:
+    branches: [ main ]
   schedule:
     # Weekly on Sundays.
     - cron: '20 1 * * 0'
@@ -45,7 +47,7 @@ jobs:
 
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3.28.17
+      uses: github/codeql-action/init@f1f6e5f6af878fb37288ce1c627459e94dbf7d01 # v3.29.5
       with:
         languages: ${{ matrix.language }}
         # If you wish to specify custom queries, you can do so here or in a config file.
@@ -65,4 +67,4 @@ jobs:
     #   make release
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3.28.17
+      uses: github/codeql-action/analyze@f1f6e5f6af878fb37288ce1c627459e94dbf7d01 # v3.29.5
