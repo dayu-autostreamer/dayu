@@ -9,7 +9,7 @@ import func_timeout.exceptions as timeout_exceptions
 import os
 import time
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant
+from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant, TaskConstant
 from core.lib.network import http_request, NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod
 
 from kube_helper import KubeHelper
@@ -406,7 +406,7 @@ class BackendCore:
             dag = s['dag']
             node_set = s['node_set']
             extracted_dag = copy.deepcopy(dag)
-            del extracted_dag['_start']
+            del extracted_dag[TaskConstant.START.value]
 
             def get_service_callback(node_item):
                 service_id = node_item['id']
@@ -479,7 +479,7 @@ class BackendCore:
 
     @staticmethod
     def bfs_dag(dag_graph, dag_callback):
-        source_list = dag_graph['_start']
+        source_list = dag_graph[TaskConstant.START.value]
         queue = deque(source_list)
         visited = set(source_list)
         while queue:
@@ -530,9 +530,9 @@ class BackendCore:
         def topo_sort(graph):
             in_degree = {}
             for node in graph.keys():
-                if node != '_start':
+                if node != TaskConstant.START.value:
                     in_degree[node] = len(graph[node]['prev'])
-            queue = copy.deepcopy(graph['_start'])
+            queue = copy.deepcopy(graph[TaskConstant.START.value])
             topo_order = []
 
             while queue:

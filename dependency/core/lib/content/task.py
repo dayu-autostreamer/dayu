@@ -6,7 +6,7 @@ from .service import Service
 from .dag import DAG
 
 from core.lib.solver import LCASolver, IntermediateNodeSolver, PathSolver
-from core.lib.common import NameMaintainer
+from core.lib.common import NameMaintainer, TaskConstant
 
 
 class Task:
@@ -16,7 +16,7 @@ class Task:
                  source_device: str,
                  all_edge_devices: list,
                  dag: DAG = None,
-                 flow_index: str = 'start',
+                 flow_index: str = TaskConstant.START.value,
                  past_flow_index: str = None,
                  metadata: dict = None,
                  raw_metadata: dict = None,
@@ -71,7 +71,9 @@ class Task:
         self.__file_path = file_path
 
     @staticmethod
-    def extract_dag_from_dict(dag_dict: dict, start_node_name='start', end_node_name='end'):
+    def extract_dag_from_dict(dag_dict: dict,
+                              start_node_name=TaskConstant.START.value,
+                              end_node_name=TaskConstant.END.value):
         """transfer DAG dict in to DAG class"""
         dag_flow = DAG.from_dict(dag_dict)
         if start_node_name not in dag_dict:
@@ -114,8 +116,8 @@ class Task:
             raise ValueError('Current DAG is not a pipeline structure.')
 
         pipeline_deployment_info = []
-        start = 'start'
-        end = 'end'
+        start = TaskConstant.START.value
+        end = TaskConstant.END.value
         current = dag_flow.get_next_nodes(start)[0]
         while current != end:
             pipeline_deployment_info.append(
@@ -262,14 +264,14 @@ class Task:
         return next((content for content in prev_contents if content is not None), None)
 
     def get_first_content(self):
-        first_service_names = self.__dag_flow.get_next_nodes('start')
+        first_service_names = self.__dag_flow.get_next_nodes(TaskConstant.START.value)
         first_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
                           for service_name in first_service_names]
         # return one of first non-empty content
         return next((content for content in first_contents if content is not None), None)
 
     def get_last_content(self):
-        last_service_names = self.__dag_flow.get_prev_nodes('end')
+        last_service_names = self.__dag_flow.get_prev_nodes(TaskConstant.END.value)
         last_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
                          for service_name in last_service_names]
         # return one of first non-empty content
@@ -311,15 +313,15 @@ class Task:
 
     def calculate_total_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
-        assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
+        assert self.__cur_flow_index == TaskConstant.END.value, f'DAG is not completed, current service: {self.__cur_flow_index}'
 
-        total_time, _ = PathSolver(self.__dag_flow).get_weighted_longest_path('start', 'end',
-                                                                               lambda x: x.get_service_total_time())
+        total_time, _ = PathSolver(self.__dag_flow).get_weighted_longest_path(TaskConstant.START.value, TaskConstant.END.value,
+                                                                              lambda x: x.get_service_total_time())
         return total_time
 
     def calculate_cloud_edge_transmit_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
-        assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
+        assert self.__cur_flow_index == TaskConstant.END.value, f'DAG is not completed, current service: {self.__cur_flow_index}'
 
         # get the longest transmitting time as cloud-edge transmitting time
         transmit_time = 0
@@ -330,7 +332,7 @@ class Task:
 
     def get_delay_info(self):
         assert self.__dag_flow, 'Task DAG is empty!'
-        assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
+        assert self.__cur_flow_index == TaskConstant.END.value, f'DAG is not completed, current service: {self.__cur_flow_index}'
 
         delay_info = ''
         total_time = self.calculate_total_time()

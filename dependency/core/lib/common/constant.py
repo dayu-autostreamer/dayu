@@ -25,3 +25,7 @@ class FileNameConstant(Enum):
 class NodeRoleConstant(Enum):
     CLOUD = 'cloud'
     EDGE = 'edge'
+
+class TaskConstant(Enum):
+    START = '_start'
+    END = '_end'

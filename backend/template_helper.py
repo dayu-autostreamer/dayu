@@ -6,7 +6,7 @@ import uuid
 
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge
+from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant
 from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
@@ -198,7 +198,7 @@ class TemplateHelper:
             DAG_ENV = {}
             for key in dag.keys():
                 temp_node = {}
-                if key != '_start':
+                if key != TaskConstant.START.value:
                     temp_node['service'] = {'service_name': key}
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
@@ -378,7 +378,7 @@ class TemplateHelper:
 
             for key in dag.keys():
                 temp_node = {}
-                if key != '_start':
+                if key != TaskConstant.START.value:
                     temp_node['service'] = {'service_name': key}
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
@@ -418,7 +418,7 @@ class TemplateHelper:
 
             for key in dag.keys():
                 temp_node = {}
-                if key != '_start':
+                if key != TaskConstant.START.value:
                     temp_node['service'] = {'service_name': key}
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node

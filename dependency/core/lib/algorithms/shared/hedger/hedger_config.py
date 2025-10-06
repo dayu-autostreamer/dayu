@@ -3,6 +3,7 @@ from dataclasses import dataclass, fields, replace
 
 from core.lib.network import NodeInfo
 from core.lib.content import DAG
+from core.lib.common import TaskConstant
 
 
 def from_partial_dict(cls, data: dict):
@@ -70,8 +71,8 @@ class LogicalTopology:
         self.dag = dag
 
         self.service_list = list(self.dag.nodes.keys())
-        self.service_list.remove('start')
-        self.service_list.remove('end')
+        self.service_list.remove(TaskConstant.START.value)
+        self.service_list.remove(TaskConstant.END.value)
 
     def __len__(self):
         return len(self.dag)
