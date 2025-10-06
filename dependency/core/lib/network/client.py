@@ -8,11 +8,11 @@ def http_request(url,
                  binary=True,
                  no_decode=False,
                  **kwargs):
-    _maxTimeout = timeout if timeout else 300
+    _max_timeout = timeout if timeout else 1000
     _method = 'GET' if not method else method
 
     try:
-        response = requests.request(method=_method, url=url, **kwargs)
+        response = requests.request(method=_method, url=url, timeout=_max_timeout, **kwargs)
         if response.status_code == 200:
             if no_decode:
                 return response
