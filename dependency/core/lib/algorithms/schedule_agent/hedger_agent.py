@@ -9,7 +9,7 @@ from .base_agent import BaseAgent
 __all__ = ('HedgerAgent',)
 
 
-@ClassFactory.register(ClassType.SCH_AGENT, alias='hei')
+@ClassFactory.register(ClassType.SCH_AGENT, alias='hedger')
 class HedgerAgent(BaseAgent, abc.ABC):
     def __init__(self, system, agent_id: int, configuration=None, offloading=None):
         super().__init__(system, agent_id)
