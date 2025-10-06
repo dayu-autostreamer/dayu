@@ -1,5 +1,5 @@
 import abc
-from core.lib.common import ClassFactory, ClassType, KubeConfig, Context, ConfigLoader
+from core.lib.common import ClassFactory, ClassType, KubeConfig, Context, ConfigLoader, TaskConstant
 from core.lib.estimation import OverheadEstimator
 
 from .base_agent import BaseAgent
@@ -53,7 +53,7 @@ class FixedAgent(BaseAgent, abc.ABC):
                 if service_name in service_info and service_name in self.fixed_offloading \
                         and self.fixed_offloading[service_name] in all_devices:
                     dag[service_name]['service']['execute_device'] = self.fixed_offloading[service_name]
-                elif service_name == 'start':
+                elif service_name == TaskConstant.START.value:
                     dag[service_name]['service']['execute_device'] = source_edge_device
                 else:
                     dag[service_name]['service']['execute_device'] = cloud_device

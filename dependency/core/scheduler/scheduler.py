@@ -1,6 +1,6 @@
 import threading
 
-from core.lib.common import Context, LOGGER, ResourceLockManager, KubeConfig
+from core.lib.common import Context, LOGGER, ResourceLockManager, KubeConfig, TaskConstant
 from core.lib.network import NodeInfo
 
 
@@ -60,7 +60,7 @@ class Scheduler:
 
     def set_backup_offloading_plan(self, plan):
         for service_name in plan['dag']:
-            if service_name != 'start':
+            if service_name != TaskConstant.START.value:
                 plan['dag'][service_name]['service']['execute_device'] = self.cloud_device
 
         return plan

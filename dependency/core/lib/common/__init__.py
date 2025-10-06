@@ -5,7 +5,7 @@ from .video_ops import VideoOps
 from .yaml_ops import YamlOps
 from .hash_ops import HashOps
 from .encode_ops import EncodeOps
-from .constant import SystemConstant, FileNameConstant, NodeRoleConstant
+from .constant import SystemConstant, FileNameConstant, NodeRoleConstant, TaskConstant
 from .context import Context
 from .config import ConfigLoader
 from .class_factory import *
@@ -16,4 +16,5 @@ from .name import NameMaintainer
 from .counter import Counter
 from .instance import GlobalInstanceManager
 from .resource import ResourceLockManager
+from .cache import ConfigBoundInstanceCache
 

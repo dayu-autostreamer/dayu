@@ -3,7 +3,7 @@ import os.path
 import time
 import numpy as np
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
+from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
 from core.lib.common import VideoOps
 
@@ -151,7 +151,7 @@ class HEISYNAgent(BaseAgent, abc.ABC):
             fps_ratio = meta_data['fps'] / raw_metadata['fps']
 
             if not self.acc_estimator:
-                self.create_acc_estimator(service_name=dag.get_next_nodes('start')[0])
+                self.create_acc_estimator(service_name=dag.get_next_nodes(TaskConstant.START.value)[0])
 
             acc = self.acc_estimator.calculate_accuracy(hash_data, content, resolution_ratio, fps_ratio)
             acc_list.append(acc)

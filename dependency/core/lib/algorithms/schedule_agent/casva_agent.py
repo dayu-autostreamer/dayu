@@ -4,8 +4,7 @@ import os.path
 import time
 import numpy as np
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
-from core.lib.common import VideoOps
+from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, VideoOps, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
 
 from .base_agent import BaseAgent
@@ -123,7 +122,6 @@ class CASVAAgent(BaseAgent, abc.ABC):
                                    'buffer_size': math.ceil(self.fps_list[fps_index] * self.segment_length)
                                    })
 
-
         dag = self.latest_policy['dag']
         for service_name in dag:
             dag[service_name]['service']['execute_device'] = self.cloud_device
@@ -185,7 +183,7 @@ class CASVAAgent(BaseAgent, abc.ABC):
             transmit_delay_list.append(task.calculate_cloud_edge_transmit_time())
 
             if not self.acc_estimator:
-                self.create_acc_estimator(service_name=dag.get_next_nodes('start')[0])
+                self.create_acc_estimator(service_name=dag.get_next_nodes(TaskConstant.START.value)[0])
             acc = self.acc_estimator.calculate_accuracy(hash_data, content, resolution_ratio, fps_ratio)
             acc_list.append(acc)
 

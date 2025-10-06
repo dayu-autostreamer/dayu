@@ -1,10 +1,8 @@
 import abc
 import os
 
-from core.lib.common import ClassFactory, ClassType, Context, LOGGER, EncodeOps
-from core.lib.common import VideoOps
+from core.lib.common import ClassFactory, ClassType, Context, LOGGER, EncodeOps, VideoOps, Queue, FileOps, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
-from core.lib.common import Queue, FileOps
 from core.lib.network import NodeInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, PortInfo, http_request
 from core.lib.content import Task
 
@@ -290,7 +288,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         policy = self.fixed_policy.copy()
         cloud_device = self.cloud_device
 
-        self.current_analytics = self.task_dag.get_next_nodes('start')[0]
+        self.current_analytics = self.task_dag.get_next_nodes(TaskConstant.START.value)[0]
         for service_name in dag:
             dag[service_name]['service']['execute_device'] = cloud_device
 

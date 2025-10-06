@@ -1,15 +1,9 @@
 import os
 
 from core.lib.estimation import TimeEstimator
-from core.lib.network import http_request
-from core.lib.common import LOGGER
-from core.lib.common import Context
-from core.lib.common import SystemConstant
-from core.lib.common import KubeConfig
+from core.lib.network import http_request, merge_address, NodeInfo, PortInfo, NetworkAPIPath, NetworkAPIMethod
+from core.lib.common import LOGGER, Context, SystemConstant, KubeConfig, TaskConstant
 from core.lib.content import Task
-from core.lib.network import merge_address
-from core.lib.network import NodeInfo, PortInfo
-from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 
 from .task_coordinator import TaskCoordinator
 
@@ -112,11 +106,11 @@ class Controller:
         service_name, _ = cur_task.get_current_service_info()
         dst_device = cur_task.get_current_stage_device()
 
-        if service_name == 'start':
+        if service_name == TaskConstant.START.value:
             next_tasks = cur_task.step_to_next_stage()
             actions = [self.submit_task(new_task) for new_task in next_tasks]
             action = 'execute' if 'execute' in actions else 'transmit'
-        elif service_name == 'end':
+        elif service_name == TaskConstant.END.value:
             self.send_task_to_distributor(cur_task)
             action = 'transmit'
         elif dst_device != self.local_device:
