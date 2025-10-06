@@ -45,6 +45,8 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
 
             if self.hash_codes:
                 response = http_request(system.video_data_source + '/file', method='GET', no_decode=True)
+            else:
+                time.sleep(1)
 
         self.file_name = NameMaintainer.get_task_data_file_name(system.source_id, task_id, self.file_suffix)
 
