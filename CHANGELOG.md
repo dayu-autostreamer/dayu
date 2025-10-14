@@ -12,6 +12,7 @@ exposure-identification, category-classification and license-plate-recognition.
 ### Bug Fix
 - Fix concurrency conflicts for starting up multiple streams in rtsp video and http video (`datasource`).
 - Fix frame index updating error in http video source (`datasource`).
+- Fix port occupation bug of rtsp video datasource after shutting down (`datasource`).
 - Support dynamic variable update in visualization modules (`frontend`).
 - Support cloud-only deployment of processors (`backend`).
 - Fix task forwarding bug in inconsistent deployment and offloading decisions (`controller`).
@@ -24,6 +25,9 @@ exposure-identification, category-classification and license-plate-recognition.
 - Improving a fine-grained monitoring architecture including monitoring cpu and gpu flops (`monitor`).
 - Add 'USE_TENSORRT' option in processors to choose whether using tensorrt mode (`processor`).
 - Add model flops calculation in processors to support model flops monitoring (`processor`).
+- Update 'ImagePullPolicy' in template files from 'IfNotPresent' to 'Always' to ensure pulling the latest images.
+- Update detailed overhead time statistics in scheduling logs (`scheduler`).
+- Accelerate backend visualization through caching mechanism (`backend`).
 
 ---
 
@@ -49,7 +53,7 @@ The basic structure of tasks in dayu is updated from linear pipeline to topologi
 - Beatify frontend pages (`frontend`).
 - Refactor template directory to simplify file structure.
 - Unify the base image for system components. 
-- Add application of age classification. (Current available applications: car-detection, face-detection, gender-classification, age-classification)
+- Add service of age classification. (Current available services: car-detection, face-detection, gender-classification, age-classification)
 
 ---
 
