@@ -46,7 +46,7 @@ class FCAgent(BaseAgent, abc.ABC):
         self.theta_high = 0
         self.theta_low = 0 - theta / 1000 * self.window_length
 
-        self.overhead_estimator = OverheadEstimator('FC', 'scheduler/fc')
+        self.overhead_estimator = OverheadEstimator('FC', 'scheduler/fc', agent_id=self.agent_id)
 
     def get_schedule_plan(self, info):
         if len(self.history_window) < self.window_length:

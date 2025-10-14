@@ -88,7 +88,7 @@ class HEIDRLAgent(BaseAgent, abc.ABC):
         self.reward_file = Context.get_file_path(os.path.join('scheduler/hei-drl', 'reward.txt'))
         FileOps.remove_file(self.reward_file)
 
-        self.overhead_estimator = OverheadEstimator('HEI-Macro-Only', 'scheduler/hei')
+        self.overhead_estimator = OverheadEstimator('HEI-Macro-Only', 'scheduler/hei', agent_id=self.agent_id)
 
     def get_drl_state_buffer(self):
         while True:

@@ -41,7 +41,7 @@ class HEINFAgent(BaseAgent, abc.ABC):
         self.latest_task_delay = None
         self.schedule_plan = None
 
-        self.overhead_estimator = OverheadEstimator('HEI-Micro-Only', 'scheduler/hei')
+        self.overhead_estimator = OverheadEstimator('HEI-Micro-Only', 'scheduler/hei', agent_id=self.agent_id)
 
     def update_scenario(self, scenario):
         try:

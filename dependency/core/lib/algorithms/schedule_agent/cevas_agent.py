@@ -42,7 +42,7 @@ class CEVASAgent(BaseAgent, abc.ABC):
         self.model.load_state_dict(torch.load(model_path, map_location=self.device))
         self.model.eval()
 
-        self.overhead_estimator = OverheadEstimator('CEVAS', 'scheduler/cevas')
+        self.overhead_estimator = OverheadEstimator('CEVAS', 'scheduler/cevas', agent_id=self.agent_id)
 
         self.data_time_sequence = []
         self.time_index = 0

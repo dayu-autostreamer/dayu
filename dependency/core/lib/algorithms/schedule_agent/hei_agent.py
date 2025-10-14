@@ -84,8 +84,8 @@ class HEIAgent(BaseAgent, abc.ABC):
         self.reward_file = Context.get_file_path(os.path.join('scheduler/hei', 'reward.txt'))
         FileOps.remove_file(self.reward_file)
 
-        self.macro_overhead_estimator = OverheadEstimator('HEI-Macro', 'scheduler/hei')
-        self.micro_overhead_estimator = OverheadEstimator('HEI-Micro', 'scheduler/hei')
+        self.macro_overhead_estimator = OverheadEstimator('HEI-Macro', 'scheduler/hei', agent_id=self.agent_id)
+        self.micro_overhead_estimator = OverheadEstimator('HEI-Micro', 'scheduler/hei', agent_id=self.agent_id)
 
     def get_drl_state_buffer(self):
         while True:
