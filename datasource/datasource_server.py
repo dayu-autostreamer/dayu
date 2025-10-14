@@ -16,8 +16,8 @@ class DataSource:
         self.process_list = []
 
         self.command_headers = {
-            'rtsp_video': 'bash modal_source.sh',
-            'http_video': 'python3 modal_source.py',
+            'rtsp_video': 'bash video_source.sh',
+            'http_video': 'python3 video_source.py',
         }
 
         self.backend_hostname = NodeInfo.get_cloud_node()
@@ -54,7 +54,7 @@ class DataSource:
                 return
             url = re.sub(r'(?<=:)\d+', str(self.inner_port), source['url'])
             url = re.sub(r'\d+\.\d+\.\d+\.\d+', '127.0.0.1', url)
-            command = (f'{self.command_headers[mode].replace("modal", modal)} '
+            command = (f'{self.command_headers[mode]} '
                        f'--root {datasource_dir} --address {url} --play_mode {self.play_mode}')
             process = ScriptHelper.start_script(command)
             self.process_list.append(process)
