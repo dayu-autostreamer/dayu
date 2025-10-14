@@ -2,6 +2,7 @@
   type: image
   variables: [ "Frame with Regions of Interest" ]
   hook_name: roi_frame
+  save_expense: true
   size: 1
 - name: DAG Service Offloading
   type: topology

@@ -3,6 +3,7 @@
   variables: [ "Frame with Regions of Interest" ]
   hook_name: roi_frame
   size: 1
+  save_expense: true
 - name: DAG Service Offloading
   type: topology
   variables: [ "Realtime DAG Service Offloading State" ]
@@ -26,12 +27,14 @@
   hook_name: roi_label_frame
   hook_params: '{"label_service": "gender-classification"}'
   size: 1
+  save_expense: true
 - name: Frame Visualization (Age)
   type: image
   variables: [ "Frame with ROI and Age Label" ]
   hook_name: roi_label_frame
   hook_params: '{"label_service": "age-classification"}'
   size: 1
+  save_expense: true
 - name: Object Number Curve
   type: curve
   x_axis: Task Index
