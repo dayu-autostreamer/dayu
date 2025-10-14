@@ -80,7 +80,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         self.acc_gt_dir = acc_gt_dir
         self.acc_estimator = None
 
-        self.overhead_estimator = OverheadEstimator('Chameleon', 'scheduler/chameleon')
+        self.overhead_estimator = OverheadEstimator('Chameleon', 'scheduler/chameleon', agent_id=self.agent_id)
 
     def get_all_knob_combinations(self):
         all_config_list = []

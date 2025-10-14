@@ -30,7 +30,7 @@ class FixedAgent(BaseAgent, abc.ABC):
         else:
             raise TypeError(f'Input "offloading" must be of type str or dict, get type {type(offloading)}')
 
-        self.overhead_estimator = OverheadEstimator('Fixed', 'scheduler/fixed')
+        self.overhead_estimator = OverheadEstimator('Fixed', 'scheduler/fixed', agent_id=self.agent_id)
 
     def get_schedule_plan(self, info):
         if self.fixed_configuration is None or self.fixed_offloading is None:

@@ -89,7 +89,7 @@ class CASVAAgent(BaseAgent, abc.ABC):
         self.past_buffer_size_value = 0
         self.latest_skip_count = 0
 
-        self.overhead_estimator = OverheadEstimator('CASVA', 'scheduler/casva')
+        self.overhead_estimator = OverheadEstimator('CASVA', 'scheduler/casva', agent_id=self.agent_id)
 
         self.reward_file = Context.get_file_path(os.path.join('scheduler/casva', 'reward.txt'))
         FileOps.remove_file(self.reward_file)

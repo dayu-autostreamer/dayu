@@ -80,8 +80,8 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         self.latest_task_delay = None
         self.schedule_plan = None
 
-        self.macro_overhead_estimator = OverheadEstimator('HEI-Macro-Syn', 'scheduler/hei')
-        self.micro_overhead_estimator = OverheadEstimator('HEI-Micro-Syn', 'scheduler/hei')
+        self.macro_overhead_estimator = OverheadEstimator('HEI-Macro-Syn', 'scheduler/hei', agent_id=self.agent_id)
+        self.micro_overhead_estimator = OverheadEstimator('HEI-Micro-Syn', 'scheduler/hei', agent_id=self.agent_id)
 
     def get_drl_state_buffer(self):
         while True:
