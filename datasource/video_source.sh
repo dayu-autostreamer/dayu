@@ -1,5 +1,45 @@
 #!/bin/bash
 
+# Track whether this script started mediamtx and its PID so we can stop it on exit
+STARTED_MEDIAMTX=0
+MEDIAMTX_PID=""
+
+cleanup() {
+    # Stop mediamtx only if we started it
+    if [[ "$STARTED_MEDIAMTX" -eq 1 && -n "$MEDIAMTX_PID" ]]; then
+        if kill -0 "$MEDIAMTX_PID" 2>/dev/null; then
+            echo "Stopping mediamtx (pid=$MEDIAMTX_PID)..."
+            kill "$MEDIAMTX_PID" 2>/dev/null || true
+            # Wait briefly, then force kill if still alive
+            for _ in {1..20}; do
+                if ! kill -0 "$MEDIAMTX_PID" 2>/dev/null; then
+                    break
+                fi
+                sleep 0.2
+            done
+            if kill -0 "$MEDIAMTX_PID" 2>/dev/null; then
+                echo "Force killing mediamtx (pid=$MEDIAMTX_PID)..."
+                kill -9 "$MEDIAMTX_PID" 2>/dev/null || true
+            fi
+        fi
+    fi
+    # Also try to stop any background jobs started by this script (if any)
+    bg_pids=$(jobs -p)
+    if [[ -n "$bg_pids" ]]; then
+        kill $bg_pids 2>/dev/null || true
+    fi
+}
+
+cleanup_and_exit() {
+    # Disarm traps to avoid recursion when calling exit
+    trap - INT TERM EXIT
+    cleanup
+    exit 0
+}
+
+# On SIGINT/SIGTERM, cleanup and exit to stop the streaming loop immediately
+trap cleanup_and_exit INT TERM
+
 function show_help() {
     echo "Usage: $0 --root <folder> --address <address>"
     echo
@@ -43,7 +83,10 @@ fi
 
 if ! pgrep -x "mediamtx" > /dev/null; then
     echo "Starting mediamtx server..."
-    setsid "$RTSP_PATH"/mediamtx "$RTSP_PATH"/mediamtx.yml > /dev/null 2>&1 &
+    # Start mediamtx in background and capture its PID for cleanup
+    "$RTSP_PATH"/mediamtx "$RTSP_PATH"/mediamtx.yml > /dev/null 2>&1 &
+    MEDIAMTX_PID=$!
+    STARTED_MEDIAMTX=1
     sleep 4
 else
     echo "mediamtx server already running."
