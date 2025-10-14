@@ -63,34 +63,33 @@ class CEVASAgent(BaseAgent, abc.ABC):
         policy.update({'dag': Task.extract_dag_deployment_from_pipeline_deployment(pipeline)})
         return policy
 
-    # 最优化目标
+    # Optimization target
     def optimize_target(self, strategy):
         a = 0.1
         b = 0.2
         return a * strategy[0] + b * strategy[1]
 
-    # 获取流水线每个逻辑节点在t+1时隙边缘节点上的CPU/内存/输入数据大小/云端执行成本
+    # Predict edge CPU/memory, per-node input size, and cloud execution cost for t+1
     def get_pipeline_cpu_memory(self, index, time_slot=3):
         import torch
+        # Expected result structure (conceptual):
         # {
-        #       edge_CPU:
-        #       edge_memory:
-        #       node_data:
-        #       cloud_cost:
+        #       edge_CPU,
+        #       edge_memory,
+        #       node_data,
+        #       cloud_cost,
         # }
-
-        # 需要输入节点个数
 
         data = []
 
         if index <= time_slot:
-            # 冷启动
+            # Cold start: reuse current slot data for the initial history window
             for i in range(0, time_slot):
                 data.append([self.data_time_sequence[index][0], self.data_time_sequence[index][1]])
         else:
             for i in range(index - time_slot, index):
                 data.append([self.data_time_sequence[i][0], self.data_time_sequence[i][1]])
-        # 展平
+        # Flatten to a 1-D tensor
         previous_data = torch.tensor([item for sublist in data for item in sublist]).float().to(self.device)
         res = self.model.forward(previous_data)
         return res
@@ -103,15 +102,14 @@ class CEVASAgent(BaseAgent, abc.ABC):
                 continue
 
             with self.overhead_estimator:
-                # 在t时隙获得t+1时隙单个流水线的最佳分割点
-                # 获得t+1时隙相关输入信息
+                # At slot t, compute the best split point for t+1 for a single pipeline
+                # Prepare the input information for t+1
                 schedule_info = self.get_pipeline_cpu_memory(self.time_index, self.time_slot)
                 LOGGER.debug(f'[CEVAS schedule info] schedule info: {schedule_info}')
 
-                # 信息顺序为 边缘节点CPU限制 / 内存限制 / 每个节点输入数据量大小 / 云开销
-                # 解空间比较小,遍历获得结果即可
-                # 遍历分割点
-                # 优化目标 target=min (a * P * x + b * D * x)
+                # schedule_info order: edge CPU limit / memory limit / per-node input size / cloud cost
+                # The search space is small; enumerate to get the best result
+                # Objective: target = min (a * P * x + b * D * x)
                 target = 0
                 target_idx = -1
                 P = schedule_info[3]
@@ -132,7 +130,7 @@ class CEVASAgent(BaseAgent, abc.ABC):
                 self.pipe_seg = target_idx
                 LOGGER.info(f'[CEVAS Update] update pipeline segment: {raw_seg} -> {self.pipe_seg}')
             else:
-                LOGGER.warning('CEVAS comouting error!')
+                LOGGER.warning('CEVAS computing error!')
 
     def update_scenario(self, scenario):
         pass
