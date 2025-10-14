@@ -8,21 +8,30 @@ class Queue:
 
     def put(self, item: object) -> None:
         if self.__queue.full():
-            self.__queue.get()
-        self.__queue.put(item)
+            try:
+                self.__queue.get_nowait()
+            except queue.Empty:
+                pass
+        try:
+            self.__queue.put_nowait(item)
+        except queue.Full:
+            pass
 
     def get(self) -> object:
-        return self.__queue.get()
+        return self.__queue.get_nowait()
 
     def put_all(self, items: List[object]) -> None:
         for item in items:
-            self.__queue.put(item)
+            self.put(item)
 
     def get_all(self) -> List[object]:
-        items = []
-        while not self.__queue.empty():
-            items.append(self.__queue.get())
-        return items
+        out_items = []
+        while True:
+            try:
+                out_items.append(self.get())
+            except queue.Empty:
+                break
+        return out_items
 
     def get_all_without_drop(self) -> List[object]:
         # This does not affect the queue state because it doesn't consume the items

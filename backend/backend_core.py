@@ -9,8 +9,10 @@ import func_timeout.exceptions as timeout_exceptions
 import os
 import time
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant, TaskConstant
+from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant, TaskConstant, \
+    ConfigBoundInstanceCache
 from core.lib.network import http_request, NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod
+from core.lib.estimation import Timer
 
 from kube_helper import KubeHelper
 from template_helper import TemplateHelper
@@ -25,9 +27,26 @@ class BackendCore:
         self.image_meta = None
         self.schedulers = None
         self.services = None
+
         self.result_visualization_configs = None
         self.system_visualization_configs = None
         self.customized_source_result_visualization_configs = {}
+        self.result_visualization_cache = ConfigBoundInstanceCache(
+            factory=lambda vf: Context.get_algorithm(
+                'RESULT_VISUALIZER',
+                al_name=vf['hook_name'],
+                **(dict(eval(vf['hook_params'])) if 'hook_params' in vf else {}),
+                variables=vf['variables']
+            )
+        )
+        self.system_visualization_cache = ConfigBoundInstanceCache(
+            factory=lambda vf: Context.get_algorithm(
+                'SYSTEM_VISUALIZER',
+                al_name=vf['hook_name'],
+                **(dict(eval(vf['hook_params'])) if 'hook_params' in vf else {}),
+                variables=vf['variables']
+            )
+        )
 
         self.source_configs = []
 
@@ -400,6 +419,19 @@ class BackendCore:
         self.save_component_yaml(total_docs)
 
     def extract_service_from_source_deployment(self, source_deploy):
+
+        def bfs_dag(dag_graph, dag_callback):
+            source_list = dag_graph[TaskConstant.START.value]
+            queue = deque(source_list)
+            visited = set(source_list)
+            while queue:
+                current_node_item = dag_graph[queue.popleft()]
+                dag_callback(current_node_item)
+                for child_id in current_node_item['succ']:
+                    if child_id not in visited:
+                        queue.append(child_id)
+                        visited.add(child_id)
+
         service_dict = {}
 
         for s in source_deploy:
@@ -421,7 +453,7 @@ class BackendCore:
 
                 extracted_dag[node_item['id']]['service'] = service
 
-            self.bfs_dag(dag, get_service_callback)
+            bfs_dag(dag, get_service_callback)
             s['dag'] = extracted_dag
 
         return service_dict, source_deploy
@@ -476,19 +508,6 @@ class BackendCore:
         url = f'{source_protocol}://{source_ip}:{source_port}/{source_type}{source_id}'
 
         return url
-
-    @staticmethod
-    def bfs_dag(dag_graph, dag_callback):
-        source_list = dag_graph[TaskConstant.START.value]
-        queue = deque(source_list)
-        visited = set(source_list)
-        while queue:
-            current_node_item = dag_graph[queue.popleft()]
-            dag_callback(current_node_item)
-            for child_id in current_node_item['succ']:
-                if child_id not in visited:
-                    queue.append(child_id)
-                    visited.add(child_id)
 
     @staticmethod
     def check_node_exist(node):
@@ -575,18 +594,19 @@ class BackendCore:
 
         return source_ids
 
-    def prepare_result_visualization_data(self, task):
+    def prepare_result_visualization_data(self, task, is_last=False):
         source_id = task.get_source_id()
-        visualizations = self.customized_source_result_visualization_configs[
-            source_id] if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
+        viz_configs = self.customized_source_result_visualization_configs[source_id] \
+            if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
+        viz_functions = self.result_visualization_cache.sync_and_get(viz_configs, namespace='result_visualizer')
+
         visualization_data = []
-        for idx, vf in enumerate(visualizations):
+        for idx, (viz_config, viz_func) in enumerate(zip(viz_configs, viz_functions)):
             try:
-                al_name = vf['hook_name']
-                al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
-                al_params.update({'variables': vf['variables']})
-                vf_func = Context.get_algorithm('RESULT_VISUALIZER', al_name=al_name, **al_params)
-                visualization_data.append({"id": idx, "data": vf_func(task)})
+                if 'save_expense' in viz_config and viz_config['save_expense'] and not is_last:
+                    visualization_data.append({"id": idx, "data": {v: None for v in viz_config['variables']}})
+                else:
+                    visualization_data.append({"id": idx, "data": viz_func(task)})
             except Exception as e:
                 LOGGER.warning(f'Failed to load result visualization data: {e}')
                 LOGGER.exception(e)
@@ -594,16 +614,15 @@ class BackendCore:
         return visualization_data
 
     def prepare_system_visualizations_data(self):
+        viz_configs = self.system_visualization_configs
+        viz_functions = self.system_visualization_cache.sync_and_get(viz_configs, namespace='system_visualizer')
+
         visualization_data = []
-        for idx, vf in enumerate(self.system_visualization_configs):
+        for idx, viz_func in enumerate(viz_functions):
             try:
-                al_name = vf['hook_name']
-                al_params = eval(vf['hook_params']) if 'hook_params' in vf else {}
-                al_params.update({'variables': vf['variables']})
-                vf_func = Context.get_algorithm('SYSTEM_VISUALIZER', al_name=al_name, **al_params)
-                visualization_data.append({"id": idx, "data": vf_func()})
+                visualization_data.append({"id": idx, "data": viz_func()})
             except Exception as e:
-                LOGGER.warning(f"Failed to load system visualization data: {e}")
+                LOGGER.warning(f'Failed to load result visualization data: {e}')
                 LOGGER.exception(e)
 
         return visualization_data
@@ -616,27 +635,37 @@ class BackendCore:
             task = Task.deserialize(result)
 
             source_id = task.get_source_id()
-            task_id = task.get_task_id()
-            file_path = self.get_file_result(task.get_file_path())
             LOGGER.debug(task.get_delay_info())
-
-            try:
-                visualization_data = self.prepare_result_visualization_data(task)
-            except Exception as e:
-                LOGGER.warning(f'Prepare visualization data failed: {str(e)}')
-                LOGGER.exception(e)
-                continue
-
-            if os.path.exists(file_path):
-                os.remove(file_path)
 
             if not self.source_open:
                 break
 
-            self.task_results[source_id].put_all([{
-                'task_id': task_id,
-                'data': visualization_data,
-            }])
+            self.task_results[source_id].put(copy.deepcopy(task))
+
+    def fetch_visualization_data(self, source_id):
+        assert source_id in self.task_results, f'Source_id {source_id} not found in task results!'
+        tasks = self.task_results[source_id].get_all()
+        vis_results = []
+
+        with Timer(f'Visualization preparation for {len(tasks)} tasks'):
+            for idx, task in enumerate(tasks):
+                file_path = self.get_file_result(task.get_file_path())
+                try:
+                    visualization_data = self.prepare_result_visualization_data(task, idx == len(tasks) - 1)
+                except Exception as e:
+                    LOGGER.warning(f'Prepare visualization data failed: {str(e)}')
+                    LOGGER.exception(e)
+                    continue
+
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+
+                vis_results.append({
+                    'task_id': task.get_task_id(),
+                    'data': visualization_data,
+                })
+
+        return vis_results
 
     def run_get_result(self):
         time_ticket = 0
@@ -658,8 +687,8 @@ class BackendCore:
                     continue
 
                 time_ticket = response["time_ticket"]
-                LOGGER.debug(f'time ticket: {time_ticket}')
                 results = response['result']
+                LOGGER.debug(f'Fetch {len(results)} tasks from time ticket: {time_ticket}')
                 self.parse_task_result(results)
 
             except Exception as e:
