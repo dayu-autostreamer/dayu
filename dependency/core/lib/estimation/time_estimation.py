@@ -40,6 +40,7 @@ class TimeEstimator:
         duration = TimeEstimator.record_ts(task.get_tmp_data(),
                                            f'{prefix}:{sub_tag}_time_{task.get_flow_index()}',
                                            is_end=is_end)
+        task.record_time_ticket_in_service(type_tag=sub_tag, is_end=is_end, duration=duration)
         return duration
 
     @staticmethod
