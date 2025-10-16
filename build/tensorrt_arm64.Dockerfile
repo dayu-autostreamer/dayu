@@ -86,6 +86,7 @@ RUN set -eux; \
 
 RUN apt-get update \
  && apt-get remove -y python3-yaml python3-psutil \
+ && apt-get install -y cuda-toolkit-10-2 \
  && pip3 install --upgrade pip \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install tiff \
@@ -100,6 +101,6 @@ RUN apt-get update \
  && pip3 install typing_extensions scipy \
       scikit-learn scikit-image tensorrt pycuda \
       ptflops==0.7.2.2 \
- && pip3 install torch_geometric
+ && pip3 install torch-scatter torch-sparse==0.6.13 torch-geometric==2.0.0
 
 CMD ["/bin/bash"]
