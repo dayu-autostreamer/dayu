@@ -1,7 +1,7 @@
 import abc
 
 
-class BasePolicyExtraction(metaclass=abc.ABCMeta):
+class BaseScenarioRetrieval(metaclass=abc.ABCMeta):
     def __call__(self, task):
         raise NotImplementedError
 
