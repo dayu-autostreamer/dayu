@@ -8,7 +8,6 @@ class NegativeFeedback:
         self.fps_list = system.fps_list.copy()
         self.resolution_list = system.resolution_list.copy()
         self.buffer_size_list = system.buffer_size_list.copy()
-        self.pipeline_list = None
 
         self.cloud_device = system.cloud_device
         self.edge_device = None
@@ -27,14 +26,11 @@ class NegativeFeedback:
         buffer_size = latest_policy['buffer_size']
         pipeline = latest_policy['dag']
 
-        self.pipeline_list = list(range(0, len(pipeline)))
         self.edge_device = latest_policy['edge_device']
 
         self.resolution_index = self.resolution_list.index(resolution)
         self.fps_index = self.fps_list.index(fps)
         self.buffer_size_index = self.buffer_size_list.index(buffer_size)
-        self.pipeline_index = next((i for i, service in enumerate(pipeline)
-                                    if service['execute_device'] == self.cloud_device), len(pipeline) - 1)
 
         constraint_delay = 1 / self.fps_list[self.fps_index] * 1.6
         delay_bias = constraint_delay - latest_delay
@@ -80,7 +76,7 @@ class NegativeFeedback:
         schedule_policy['fps'] = self.fps_list[self.fps_index]
         schedule_policy['buffer_size'] = self.buffer_size_list[self.buffer_size_index]
 
-        pipeline_index_decision = min(meta_decisions[-1] + 1, len(pipeline)-1)
+        pipeline_index_decision = min(meta_decisions[-1] + 1, len(pipeline))
         schedule_policy['pipeline'] = [{**p, 'execute_device': self.edge_device} for p in
                                        pipeline[:pipeline_index_decision]] + \
                                       [{**p, 'execute_device': self.cloud_device} for p in
