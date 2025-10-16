@@ -280,6 +280,10 @@ class Task:
     def set_current_content(self, content):
         self.__dag_flow.get_node(self.__cur_flow_index).service.set_content_data(content)
 
+    def get_current_service(self):
+        assert self.__dag_flow, 'Task DAG is empty!'
+        return self.__dag_flow.get_node(self.__cur_flow_index).service
+
     def get_current_service_info(self):
         assert self.__dag_flow, 'Task DAG is empty!'
         service = self.__dag_flow.get_node(self.__cur_flow_index).service
@@ -315,7 +319,8 @@ class Task:
         assert self.__dag_flow, 'Task DAG is empty!'
         assert self.__cur_flow_index == TaskConstant.END.value, f'DAG is not completed, current service: {self.__cur_flow_index}'
 
-        total_time, _ = PathSolver(self.__dag_flow).get_weighted_longest_path(TaskConstant.START.value, TaskConstant.END.value,
+        total_time, _ = PathSolver(self.__dag_flow).get_weighted_longest_path(TaskConstant.START.value,
+                                                                              TaskConstant.END.value,
                                                                               lambda x: x.get_service_total_time())
         return total_time
 
@@ -422,6 +427,16 @@ class Task:
             merged_dag.set_node_service(node, other_dag.get_node(node).service)
 
         self.set_dag(merged_dag)
+
+    def record_time_ticket_in_service(self, type_tag: str, is_end: bool, duration: float):
+        assert type_tag in ['transmit', 'execute'], \
+            f'Unsupported time tag: {type_tag}, only "transmit" and "execute" are supported!'
+        assert self.__dag_flow, 'Task DAG is empty!'
+
+        end_tag = 'end' if is_end else 'start'
+
+        current_service = self.get_current_service()
+        current_service.record_time_ticket(tag=f'{type_tag}_{end_tag}', duration=duration)
 
     def to_dict(self):
         return {
