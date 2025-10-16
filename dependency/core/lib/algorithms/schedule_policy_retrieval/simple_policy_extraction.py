@@ -1,13 +1,13 @@
 import abc
 
 from core.lib.common import ClassFactory, ClassType
-from .base_policy_extraction import BasePolicyExtraction
+from .base_policy_extraction import BasePolicyRetrieval
 
-__all__ = ('SimplePolicyExtraction',)
+__all__ = ('SimplePolicyRetrieval',)
 
 
-@ClassFactory.register(ClassType.SCH_POLICY_EXTRACTION, alias='simple')
-class SimplePolicyExtraction(BasePolicyExtraction, abc.ABC):
+@ClassFactory.register(ClassType.SCH_POLICY_RETRIEVAL, alias='simple')
+class SimplePolicyRetrieval(BasePolicyRetrieval, abc.ABC):
     def __call__(self, task):
         policy = {}
 

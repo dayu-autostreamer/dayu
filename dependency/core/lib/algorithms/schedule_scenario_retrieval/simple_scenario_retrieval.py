@@ -1,13 +1,13 @@
 import abc
 
 from core.lib.common import ClassFactory, ClassType
-from .base_scenario_extraction import BaseScenarioExtraction
+from .base_scenario_retrieval import BaseScenarioRetrieval
 
-__all__ = ('SimpleScenarioExtraction',)
+__all__ = ('SimpleScenarioRetrieval',)
 
 
-@ClassFactory.register(ClassType.SCH_SCENARIO_EXTRACTION, alias='simple')
-class SimpleScenarioExtraction(BaseScenarioExtraction, abc.ABC):
+@ClassFactory.register(ClassType.SCH_SCENARIO_RETRIEVAL, alias='simple')
+class SimpleScenarioRetrieval(BaseScenarioRetrieval, abc.ABC):
     def __call__(self, task):
         scenario = task.get_scenario_data()
         delay = task.calculate_total_time()

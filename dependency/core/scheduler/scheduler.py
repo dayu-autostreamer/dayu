@@ -14,14 +14,20 @@ class Scheduler:
         self.cloud_device = NodeInfo.get_cloud_node()
 
         self.config_extraction = Context.get_algorithm('SCH_CONFIG_EXTRACTION')
-        self.scenario_extraction = Context.get_algorithm('SCH_SCENARIO_EXTRACTION')
-        self.policy_extraction = Context.get_algorithm('SCH_POLICY_EXTRACTION')
+        self.scenario_retrieval = Context.get_algorithm('SCH_SCENARIO_RETRIEVAL')
+        self.policy_retrieval = Context.get_algorithm('SCH_POLICY_RETRIEVAL')
         self.startup_policy = Context.get_algorithm('SCH_STARTUP_POLICY')
 
-        self.extract_configuration()
+        self.extract_necessary_configuration_setting()
 
-    def extract_configuration(self):
+    def extract_necessary_configuration_setting(self):
         self.config_extraction(self)
+
+    def get_scenario_from_task(self, task):
+        return self.scenario_retrieval(task)
+
+    def get_policy_from_task(self, task):
+        return self.policy_retrieval(task)
 
     def get_startup_policy(self, info):
         return self.startup_policy(info)
@@ -30,9 +36,6 @@ class Scheduler:
         agent = Context.get_algorithm('SCH_AGENT', system=self, agent_id=source_id)
         threading.Thread(target=agent.run).start()
         self.schedule_table[source_id] = agent
-
-    def extract_scenario(self, task):
-        return self.scenario_extraction(task)
 
     def register_schedule_table(self, source_id):
         if source_id in self.schedule_table:
@@ -70,8 +73,8 @@ class Scheduler:
         if source_id not in self.schedule_table:
             LOGGER.warning(f'Scheduler agent for source {source_id} not exists!')
             return
-        scenario = self.extract_scenario(task)
-        policy = self.policy_extraction(task)
+        scenario = self.get_scenario_from_task(task)
+        policy = self.get_policy_from_task(task)
         agent = self.schedule_table[source_id]
         agent.update_scenario(scenario)
         agent.update_policy(policy)

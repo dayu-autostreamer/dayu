@@ -1,13 +1,13 @@
 import abc
 
 from core.lib.common import ClassFactory, ClassType
-from .base_scenario_extraction import BaseScenarioExtraction
+from .base_scenario_retrieval import BaseScenarioRetrieval
 
-__all__ = ('CASVAScenarioExtraction',)
+__all__ = ('CASVAScenarioRetrieval',)
 
 
-@ClassFactory.register(ClassType.SCH_SCENARIO_EXTRACTION, alias='casva')
-class CASVAScenarioExtraction(BaseScenarioExtraction, abc.ABC):
+@ClassFactory.register(ClassType.SCH_SCENARIO_RETRIEVAL, alias='casva')
+class CASVAScenarioRetrieval(BaseScenarioRetrieval, abc.ABC):
     def __call__(self, task):
         scenario = task.get_scenario_data()
         delay = task.calculate_cloud_edge_transmit_time()
