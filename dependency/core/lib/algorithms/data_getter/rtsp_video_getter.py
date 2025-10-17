@@ -61,18 +61,23 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
 
     def get_one_frame(self, system):
         import cv2
+        LOGGER.debug('[DEBUG] Start get a frame')
         if not self.data_source_capture or not self.data_source_capture.isOpened():
             # (Re)open with FFMPEG backend and low-latency options
             self.data_source_capture = self._open_capture(system.video_data_source)
+        LOGGER.debug('[DEBUG] Check and open datasource')
 
         ret, frame = self.data_source_capture.read()
         first_no_signal = True
+        LOGGER.debug('[DEBUG] Try to read a frame from datasource')
 
         # retry when no video signal
         while not ret:
+            LOGGER.debug('[DEBUG] No frame signal from datasource')
             if first_no_signal:
                 LOGGER.warning(f'No video signal from source {system.source_id}! Will retry...')
                 first_no_signal = False
+            LOGGER.debug('[DEBUG] Try to reopen datasource due to no signal')
             # Release and reopen to avoid stacking multiple sockets
             try:
                 if self.data_source_capture:
@@ -81,8 +86,12 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
                 pass
             self.data_source_capture = self._open_capture(system.video_data_source)
             # brief backoff to avoid tight reconnect spin
+            LOGGER.debug('[DEBUG] Sleep for a while before reconnecting')
             time.sleep(self._reconnect_backoff)
+            LOGGER.debug('[DEBUG] Try to read a frame from datasource')
             ret, frame = self.data_source_capture.read()
+
+        LOGGER.debug('[DEBUG] Get a frame from datasource')
 
         if not first_no_signal:
             LOGGER.info(f'Get video stream data from source {system.source_id}..')
@@ -99,11 +108,15 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
             self.process_frame(system, frame, system.raw_meta_data['resolution'], meta_data['resolution'])
             for frame in frame_buffer
         ]
+        LOGGER.debug(f'[DEBUG] Process frames in frame buffer')
         file_name = NameMaintainer.get_task_data_file_name(source_id, new_task_id, file_suffix=self.file_suffix)
         self.compress_frames(system, frame_buffer, file_name)
+        LOGGER.debug(f'[DEBUG] Compress frames in frame buffer')
 
         new_task = system.generate_task(new_task_id, task_dag, meta_data, file_name, None)
+        LOGGER.debug(f'[DEBUG] Generate new task {new_task_id}')
         system.submit_task_to_controller(new_task)
+        LOGGER.debug(f'[DEBUG] Submit task {new_task_id}')
         FileOps.remove_file(file_name)
 
     def __call__(self, system):
@@ -111,6 +124,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
             frame = self.get_one_frame(system)
             if self.filter_frame(system, frame):
                 self.frame_buffer.append(frame)
+                LOGGER.debug(f'[DEBUG] Add a frame to frame buffer')
 
         # generate tasks in parallel to avoid getting stuck with video compression
         new_task_id = Counter.get_count('task_id')
