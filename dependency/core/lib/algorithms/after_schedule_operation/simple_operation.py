@@ -1,4 +1,5 @@
 import abc
+import copy
 
 from .base_operation import BaseASOperation
 
@@ -27,6 +28,6 @@ class SimpleASOperation(BaseASOperation, abc.ABC):
             # Set execute device of start and end node
             dag.get_start_node().service.set_execute_device(system.local_device)
             dag.get_end_node().service.set_execute_device(NodeInfo.get_cloud_node())
-            system.task_dag = Task.extract_dag_from_dag_deployment(dag)
+            system.task_dag = copy.deepcopy(dag)
             del scheduler_policy['dag']
             system.meta_data.update(scheduler_policy)
