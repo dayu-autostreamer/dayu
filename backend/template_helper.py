@@ -411,7 +411,6 @@ class TemplateHelper:
         params = []
         for source_info in source_deploy:
             SOURCE_ENV = source_info['source']
-            SOURCE_DEVICE_ENV = source_info['source_device']
             NODE_SET_ENV = source_info['node_set']
             DAG_ENV = {}
             dag = source_info['dag']
@@ -424,8 +423,8 @@ class TemplateHelper:
                     DAG_ENV[key] = temp_node
             params.append({
                 "source": SOURCE_ENV,
-                "source_device": SOURCE_DEVICE_ENV,
-                "node_set": NODE_SET_ENV, "dag": DAG_ENV})
+                "node_set": NODE_SET_ENV,
+                "dag": DAG_ENV})
 
         if not self.check_is_redeployment():
             # initial deployment
