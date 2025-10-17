@@ -426,8 +426,6 @@ class Task:
         self.set_dag(merged_dag)
 
     def record_time_ticket_in_service(self, type_tag: str, is_end: bool, duration: float):
-        assert type_tag in ['transmit', 'execute'], \
-            f'Unsupported time tag: {type_tag}, only "transmit" and "execute" are supported!'
         assert self.__dag_flow, 'Task DAG is empty!'
 
         end_tag = 'end' if is_end else 'start'
