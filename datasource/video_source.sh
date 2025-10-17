@@ -50,12 +50,8 @@ function show_help() {
     echo "  --address <address>: Specific address to append to 'rtsp://127.0.0.1/'."
     echo "  --play_mode <mode>: cycle or non-cycle play mode"
     echo
-    echo "Environment overrides:"
-    echo "  DAYU_RTSP_FPS:      Output FPS. If unset or 'source', use each file's native FPS."
-    echo "  DAYU_RTSP_BITRATE:  Video bitrate (e.g., 2500k)."
-    echo
     echo "Example:"
-    echo "  DAYU_RTSP_BITRATE=2500k $0 --root /path/to/your/video/folder --address rtsp://127.0.0.1/stream --play_mode cycle"
+    echo "  $0 --root /path/to/your/video/folder --address your_specific_address --play_mode cycle"
     exit 1
 }
 
@@ -98,33 +94,6 @@ fi
 
 rtsp_url="$rtsp_address"
 
-# Defaults for low-latency encoding; overridable via env
-FPS_ENV=${DAYU_RTSP_FPS:-source}
-BITRATE=${DAYU_RTSP_BITRATE:-2500k}
-
-# Probe approximate integer FPS for a file (used to size GOP). Falls back to 30 if unknown.
-probe_fps_int() {
-    local file="$1"
-    local rate num den
-    rate=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of csv=p=0 "$file" 2>/dev/null | tr -d '\r')
-    if [[ -z "$rate" || "$rate" == "0/0" ]]; then
-        echo 30
-        return 0
-    fi
-    if [[ "$rate" == */* ]]; then
-        num=${rate%/*}
-        den=${rate#*/}
-        if [[ -z "$den" || "$den" == 0 ]]; then
-            echo 30
-        else
-            awk -v n="$num" -v d="$den" 'BEGIN { printf("%.0f\n", n/d) }'
-        fi
-    else
-        # already a number
-        echo "$rate"
-    fi
-}
-
 # Function to stream video files once or cycle based on play_mode
 stream_videos() {
     local play_mode=$1
@@ -140,31 +109,8 @@ stream_videos() {
 
         for video_file in "${video_files[@]}"; do
             if [[ -f "$video_file" ]]; then
-                # Decide FPS handling per file
-                local gop_val fps_label
-                if [[ "$FPS_ENV" == "source" || -z "$FPS_ENV" ]]; then
-                    local fps_int
-                    fps_int=$(probe_fps_int "$video_file")
-                    gop_val=${fps_int:-30}
-                    fps_label="source(~${gop_val}fps)"
-                    # No -r option to preserve native FPS; keep -re pacing
-                    FPS_OPT=()
-                else
-                    gop_val="$FPS_ENV"
-                    fps_label="${FPS_ENV}"
-                    FPS_OPT=(-r "$FPS_ENV")
-                fi
-
-                echo "Streaming $video_file to $rtsp_url (fps=$fps_label, bitrate=$BITRATE, gop=$gop_val)"
-                ffmpeg -nostdin -hide_banner -loglevel warning \
-                    -re -fflags +genpts -use_wallclock_as_timestamps 1 \
-                    -i "$video_file" \
-                    -an \
-                    -c:v libx264 -pix_fmt yuv420p -preset veryfast -tune zerolatency -profile:v baseline -level 3.1 \
-                    "${FPS_OPT[@]}" -g "$gop_val" -keyint_min "$gop_val" -sc_threshold 0 \
-                    -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize "$BITRATE" \
-                    -f rtsp -rtsp_transport tcp -muxdelay 0 -muxpreload 0 \
-                    "$rtsp_url"
+                echo "Streaming $video_file to $rtsp_url"
+                ffmpeg -re -i "$video_file" -c copy -b:v 3000k -f rtsp -rtsp_transport tcp "$rtsp_url"
             fi
         done
 
