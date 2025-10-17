@@ -1,5 +1,5 @@
 import abc
-import threading
+import multiprocessing
 import copy
 import os
 import time
@@ -128,11 +128,11 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
 
         # generate tasks in parallel to avoid getting stuck with video compression
         new_task_id = Counter.get_count('task_id')
-        threading.Thread(target=self.generate_and_send_new_task,
-                         args=(system,
-                               copy.deepcopy(self.frame_buffer),
-                               new_task_id,
-                               copy.deepcopy(system.task_dag),
-                               copy.deepcopy(system.meta_data),)).start()
+        multiprocessing.Process(target=self.generate_and_send_new_task,
+                                args=(system,
+                                      copy.deepcopy(self.frame_buffer),
+                                      new_task_id,
+                                      copy.deepcopy(system.task_dag),
+                                      copy.deepcopy(system.meta_data),)).start()
 
         self.frame_buffer = []
