@@ -128,6 +128,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
 
         # generate tasks in parallel to avoid getting stuck with video compression
         new_task_id = Counter.get_count('task_id')
+        LOGGER.debug(f'[DEBUG] Ready to generate and send new task.')
         multiprocessing.Process(target=self.generate_and_send_new_task,
                                 args=(system,
                                       copy.deepcopy(self.frame_buffer),
