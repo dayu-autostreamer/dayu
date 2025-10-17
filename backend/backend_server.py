@@ -490,6 +490,7 @@ class BackendServer:
             result, msg = self.server.parse_and_apply_templates(policy, source_deploy)
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            LOGGER.exception(e)
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
 

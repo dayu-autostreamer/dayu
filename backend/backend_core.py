@@ -124,10 +124,12 @@ class BackendCore:
             result, msg = self.install_yaml_templates(first_docs_list)
         except timeout_exceptions.FunctionTimedOut as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            LOGGER.exception(e)
             result = False
             msg = 'first-stage install timeout after 100 seconds'
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            LOGGER.exception(e)
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
         finally:
@@ -143,10 +145,12 @@ class BackendCore:
             result, msg = self.install_yaml_templates(second_docs_list)
         except timeout_exceptions.FunctionTimedOut as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            LOGGER.exception(e)
             result = False
             msg = 'second-stage install timeout after 100 seconds'
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            LOGGER.exception(e)
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
         finally:
@@ -608,7 +612,7 @@ class BackendCore:
                 else:
                     visualization_data.append({"id": idx, "data": viz_func(task)})
             except Exception as e:
-                LOGGER.warning(f'Failed to load result visualization data: {e}')
+                LOGGER.warning(f'Failed to load result visualization data: {str(e)}')
                 LOGGER.exception(e)
 
         return visualization_data
@@ -622,7 +626,7 @@ class BackendCore:
             try:
                 visualization_data.append({"id": idx, "data": viz_func()})
             except Exception as e:
-                LOGGER.warning(f'Failed to load result visualization data: {e}')
+                LOGGER.warning(f'Failed to load result visualization data: {str(e)}')
                 LOGGER.exception(e)
 
         return visualization_data
@@ -722,7 +726,7 @@ class BackendCore:
                     LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
 
             except Exception as e:
-                LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {e}')
+                LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {str(e)}')
                 LOGGER.exception(e)
 
     def get_system_parameters(self):
