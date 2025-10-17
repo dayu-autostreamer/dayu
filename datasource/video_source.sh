@@ -50,8 +50,12 @@ function show_help() {
     echo "  --address <address>: Specific address to append to 'rtsp://127.0.0.1/'."
     echo "  --play_mode <mode>: cycle or non-cycle play mode"
     echo
+    echo "Environment overrides:"
+    echo "  DAYU_RTSP_FPS:      Output FPS (default 25)."
+    echo "  DAYU_RTSP_BITRATE:  Video bitrate (e.g., 2500k)."
+    echo
     echo "Example:"
-    echo "  $0 --root /path/to/your/video/folder --address your_specific_address"
+    echo "  DAYU_RTSP_FPS=25 DAYU_RTSP_BITRATE=2500k $0 --root /path/to/your/video/folder --address rtsp://127.0.0.1/stream --play_mode cycle"
     exit 1
 }
 
@@ -94,6 +98,11 @@ fi
 
 rtsp_url="$rtsp_address"
 
+# Defaults for low-latency encoding; overridable via env
+FPS=${DAYU_RTSP_FPS:-25}
+BITRATE=${DAYU_RTSP_BITRATE:-2500k}
+GOP=$((FPS))
+
 # Function to stream video files once or cycle based on play_mode
 stream_videos() {
     local play_mode=$1
@@ -109,8 +118,16 @@ stream_videos() {
 
         for video_file in "${video_files[@]}"; do
             if [[ -f "$video_file" ]]; then
-                echo "Streaming $video_file to $rtsp_url"
-                ffmpeg -re -i "$video_file" -c copy -b:v 3000k -f rtsp -rtsp_transport tcp "$rtsp_url"
+                echo "Streaming $video_file to $rtsp_url (fps=$FPS, bitrate=$BITRATE, gop=$GOP)"
+                ffmpeg -nostdin -hide_banner -loglevel warning \
+                    -re -fflags +genpts -use_wallclock_as_timestamps 1 \
+                    -i "$video_file" \
+                    -an \
+                    -c:v libx264 -pix_fmt yuv420p -preset veryfast -tune zerolatency -profile:v baseline -level 3.1 \
+                    -r "$FPS" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 \
+                    -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize "$BITRATE" \
+                    -f rtsp -rtsp_transport tcp -muxdelay 0 -muxpreload 0 \
+                    "$rtsp_url"
             fi
         done
 
