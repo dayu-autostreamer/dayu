@@ -123,6 +123,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
             if ret and frame is not None:
                 if not first_no_signal:
                     LOGGER.info(f'Get video stream data from source {system.source_id}..')
+                LOGGER.debug(f'Get one frame from source {system.source_id}..')
                 return frame
 
             # Not successful; prepare to retry or give up gracefully
@@ -138,7 +139,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
 
             if attempts >= max_attempts:
                 # Give up for this tick; avoid spamming logs and CPU
-                LOGGER.error(
+                LOGGER.warning(
                     f'RTSP read failed after {attempts} attempts (source {system.source_id}). '
                     f'Please verify the RTSP URL/path, credentials, and network reachability. '
                     f'Common cause: server returned 404 on DESCRIBE.'
