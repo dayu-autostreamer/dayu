@@ -426,13 +426,13 @@ class Task:
 
         self.set_dag(merged_dag)
 
-    def record_time_ticket_in_service(self, type_tag: str, is_end: bool, duration: float):
+    def record_time_ticket_in_service(self, type_tag: str, is_end: bool, time_ticket: float):
         assert self.__dag_flow, 'Task DAG is empty!'
 
         end_tag = 'end' if is_end else 'start'
 
         current_service = self.get_current_service()
-        current_service.record_time_ticket(tag=f'{type_tag}_{end_tag}', duration=duration)
+        current_service.record_time_ticket(tag=f'{type_tag}_{end_tag}', duration=time_ticket)
 
     def to_dict(self):
         return {

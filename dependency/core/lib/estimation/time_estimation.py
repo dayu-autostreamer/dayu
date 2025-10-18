@@ -37,10 +37,10 @@ class TimeEstimator:
 
         """
         prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
-        duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                           f'{prefix}:{sub_tag}_time_{task.get_flow_index()}',
-                                           is_end=is_end)
-        task.record_time_ticket_in_service(type_tag=sub_tag, is_end=is_end, duration=duration)
+        duration, time_ticket = TimeEstimator.record_ts(task.get_tmp_data(),
+                                                        f'{prefix}:{sub_tag}_time_{task.get_flow_index()}',
+                                                        is_end=is_end)
+        task.record_time_ticket_in_service(type_tag=sub_tag, is_end=is_end, time_ticket=time_ticket)
         return duration
 
     @staticmethod
@@ -55,9 +55,9 @@ class TimeEstimator:
         """
 
         prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
-        duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                           tag=f'{prefix}:{tag}',
-                                           is_end=is_end)
+        duration, _ = TimeEstimator.record_ts(task.get_tmp_data(),
+                                              tag=f'{prefix}:{tag}',
+                                              is_end=is_end)
         return duration
 
     @staticmethod
@@ -71,19 +71,19 @@ class TimeEstimator:
                  duration: time estimation result
 
         """
-
+        cur_time_ticket = time.time()
         if is_end:
             assert tag in data, f'record end timestamp of {tag}, but start timestamp does not exists!'
             start_time = data[tag]
-            end_time = time.time()
+            end_time = cur_time_ticket
             del data[tag]
             duration = end_time - start_time
         else:
             assert tag not in data, f'record start timestamp of {tag}, but start timestamp has existed in system!'
-            data[tag] = time.time()
+            data[tag] = cur_time_ticket
             duration = 0
 
-        return duration
+        return duration, cur_time_ticket
 
     @staticmethod
     def erase_dag_ts(task: Task, sub_tag: str) -> None:
