@@ -344,6 +344,7 @@ class Task:
             service = self.__dag_flow.get_node(service_name).service
             delay_info += f'stage[{service.get_service_name()}] -> (device:{service.get_execute_device()})    ' \
                           f'execute delay:{service.get_execute_time():.4f}s    ' \
+                          f'real execute delay:{service.get_real_execute_time():.4f}s    ' \
                           f'transmit delay:{service.get_transmit_time():.4f}s\n'
         delay_info += (f'total delay:{total_time:.4f}s  '
                        f'average delay: {total_time / self.get_metadata()["buffer_size"]:.4f}s\n')
