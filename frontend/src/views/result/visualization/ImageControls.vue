@@ -12,14 +12,11 @@ export default {
     config: {
       type: Object,
       required: true,
-      validator: (val) => {
-        return Array.isArray(val.variables) && val.variables.length > 0
-      }
     }
   },
   computed: {
     tagContent() {
-      return this.config?.variables?.[0] || 'Auto-Updated Image'
+      return this.config?.variables?.[0] || 'image'
     }
   }
 }

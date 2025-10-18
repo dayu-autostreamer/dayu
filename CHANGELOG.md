@@ -16,6 +16,7 @@ exposure-identification, category-classification and license-plate-recognition.
 - Support dynamic variable update in visualization modules (`frontend`).
 - Support cloud-only deployment of processors (`backend`).
 - Fix task forwarding bug in inconsistent deployment and offloading decisions (`controller`).
+- Fix possible database locking in concurrency access of distributor (`distributor`).
 
 ### Minor Update
 - Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios (`frontend` / `backend`).
