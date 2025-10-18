@@ -22,8 +22,6 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
         self.data_source_capture = None
         self.frame_buffer = []
         self.file_suffix = 'mp4'
-        # Keep a small internal buffer to reduce latency/jitter when pulling RTSP
-        self._cap_buffer_size = 2
         # Backoff for reconnect attempts (seconds)
         self._reconnect_backoff = 0.5
 
@@ -47,16 +45,9 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
         # Units are microseconds for ffmpeg options used by OpenCV backend.
         os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = (
             'rtsp_transport;tcp|'
-            'stimeout;20000000|rw_timeout;20000000|'
-            'max_delay;500000|'
-            'probesize;32768|analyzeduration;0'
+            'stimeout;5000000|rw_timeout;5000000|'
         )
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-        try:
-            # Reduce OpenCV internal queueing to limit latency
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, self._cap_buffer_size)
-        except Exception:
-            pass
         return cap
 
     def get_one_frame(self, system):
