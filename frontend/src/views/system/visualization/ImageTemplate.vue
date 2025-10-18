@@ -57,10 +57,27 @@ export default {
       return `data:image/png;base64,${input}`
     }
 
-    watch(() => props.data, (newData) => {
+    // Retrieve the first non-null (non-null/non-null string) value of the object
+    // based on the list of variable names
+    const getFirstNonEmptyValue = (obj, variables) => {
+      if (!obj || typeof obj !== 'object' || !Array.isArray(variables)) return null
+      for (const key of variables) {
+        const val = obj[key]
+        if (val !== null && val !== undefined && val !== '') {
+          return val
+        }
+      }
+      return null
+    }
+
+    watch(() => [props.data, props.config && props.config.variables], ([newData, variables]) => {
       loadError.value = false
+      if (!Array.isArray(variables)) {
+        currentImage.value = null
+        return
+      }
       const validItems = (newData || []).filter(item =>
-          item?.image !== undefined && item.image !== null
+          getFirstNonEmptyValue(item, variables) !== null
       )
 
       if (validItems.length === 0) {
@@ -68,12 +85,12 @@ export default {
         return
       }
 
-      // 取最新数据项
-      const latestItem = validItems[validItems.length - 1]
+      // Fetch the latest no-empty data item
+      const latestItem = validItems.slice().reverse().find(item => getFirstNonEmptyValue(item, variables) !== null)
 
       try {
         isLoading.value = true
-        currentImage.value = processBase64(latestItem.image)
+        currentImage.value = processBase64(getFirstNonEmptyValue(latestItem, variables))
       } catch (e) {
         console.error('Image process error:', e)
         loadError.value = true

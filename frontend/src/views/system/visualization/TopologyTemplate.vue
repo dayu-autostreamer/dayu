@@ -72,11 +72,31 @@ export default {
       return [width , height] // 添加内边距
     }
 
+    // 辅助函数：根据变量名列表，从 item 中取第一个非空值
+    const getFirstNonEmptyValue = (obj, variables) => {
+      if (!obj || typeof obj !== 'object' || !Array.isArray(variables)) return null
+      for (const key of variables) {
+        const val = obj[key]
+        if (val !== null && val !== undefined && val !== '') {
+          return val
+        }
+      }
+      return null
+    }
+
     // 处理拓扑数据
     const topologyData = computed(() => {
       try {
-        const latestData = props.data[props.data.length - 1]?.topology
-        if (!latestData) return null
+        const variables = props.config && props.config.variables
+        if (!Array.isArray(variables)) return null
+
+        // 取最新一条包含指定变量非空值的数据
+        const latestData = [...(props.data || [])]
+          .reverse()
+          .map(item => getFirstNonEmptyValue(item, variables))
+          .find(v => v !== null)
+
+        if (!latestData || typeof latestData !== 'object') return null
 
         colorMap.value.clear()
         const nodes = []
@@ -86,7 +106,7 @@ export default {
           const {service_name, data} = nodeInfo.service
           const labelText = `${service_name}\n${data}`
           const [width, height] = calculateNodeSize(labelText)
-          const bgColor = generateColor(data)
+          const bgColor = generateColor(String(data))
 
           nodes.push({
             id: nodeId,
@@ -300,10 +320,10 @@ export default {
 .empty-state p {
   margin-top: 10px;
   font-size: 14px;
-  color: var(--el-text-color-secondary);
+  color: #909399; /* fallback color (Element Plus text secondary) */
 }
 
 .empty-state .el-icon {
-  color: var(--el-text-color-secondary);
+  color: #909399; /* fallback color (Element Plus text secondary) */
 }
 </style>
