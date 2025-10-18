@@ -32,6 +32,11 @@ class DistributorServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.DISTRIBUTOR_FILE]
                      ),
+            APIRoute(NetworkAPIPath.DISTRIBUTOR_RESULT_BY_TIME,
+                     self.query_results_by_time,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.DISTRIBUTOR_RESULT_BY_TIME]
+                     ),
             # query all results：return as json
             APIRoute(NetworkAPIPath.DISTRIBUTOR_ALL_RESULT,
                      self.query_all_result,
@@ -82,6 +87,13 @@ class DistributorServer:
             path=file_path,
             filename=file_path,
             background=backtask.add_task(FileOps.remove_file, file_path))
+
+    async def query_results_by_time(self, request: Request):
+        data = await request.json()
+        start_time = data['start_time']
+        end_time = data['end_time']
+        source_id = data['source_id'] if 'source_id' in data else None
+        return self.distributor.query_results_by_time(start_time, end_time, source_id)
 
     async def query_all_result(self):
         return self.distributor.query_all_result()
