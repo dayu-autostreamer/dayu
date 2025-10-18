@@ -12,11 +12,11 @@ pod-template:
           'hedger_hyper_config':'hedger_hyper_config.yaml',
           'hedger_agent_config':'hedger_agent_config.yaml'
         }
-    - name: SCH_SCENARIO_EXTRACTION_NAME
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
       value: simple
     - name: SCH_STARTUP_POLICY_NAME
       value: fixed
-    - name: SCH_POLICY_EXTRACTION_NAME
+    - name: SCH_POLICY_RETRIEVAL_NAME
       value: simple
     - name: SCH_SELECTION_POLICY_NAME
       value: fixed

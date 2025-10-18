@@ -5,6 +5,7 @@
   input: frame
   output: bbox
   yaml: car-detection.yaml
+
 - id: car-detection-pure
   service: car-detection
   name: car detection (only detection)
@@ -12,13 +13,15 @@
   input: frame
   output: bbox
   yaml: car-detection-pure.yaml
+
 # unimplemented
-- id: lane-detection
-  service: lane-detection
-  name: lane detection
-  description: lane detection
-  input: frame
-  output: coordinate
+#- id: lane-detection
+#  service: lane-detection
+#  name: lane detection
+#  description: lane detection
+#  input: frame
+#  output: coordinate
+
 - id: face-detection
   service: face-detection
   name: face detection
@@ -26,6 +29,7 @@
   input: frame
   output: bbox
   yaml: face-detection.yaml
+
 - id: face-detection-pure
   service: face-detection
   name: face detection (only detection)
@@ -33,41 +37,23 @@
   input: frame
   output: bbox
   yaml: face-detection-pure.yaml
+
 # unimplemented
-- id: human-detection
-  service: human-detection
-  name: human detection
-  description: human detection
-  input: frame
-  output: bbox
+#- id: driveable-area-segmentation
+#  service: driveable-area-segmentation
+#  name: driveable area segmentation
+#  description: driveable area segmentation
+#  input: frame
+#  output: mask
+
 # unimplemented
-- id: driveable-area-segmentation
-  service: driveable-area-segmentation
-  name: driveable area segmentation
-  description: driveable area segmentation
-  input: frame
-  output: mask
-# unimplemented
-- id: license-plate-detection
-  service: license-plate-detection
-  name: license plate detection
-  description: license plate detection
-  input: bbox
-  output: bbox
-# unimplemented
-- id: license-plate-text-recognition
-  service: license-plate-text-recognition
-  name: license plate text recognition
-  description: license plate text recognition
-  input: bbox
-  output: text
-# unimplemented
-- id: road-danger-identification
-  service: road-danger-identification
-  name: road danger identification
-  description: road danger identification
-  input: mask
-  output: text
+#- id: road-danger-identification
+#  service: road-danger-identification
+#  name: road danger identification
+#  description: road danger identification
+#  input: mask
+#  output: text
+
 - id: gender-classification
   service: gender-classification
   name: gender classification
@@ -75,6 +61,7 @@
   input: bbox
   output: text
   yaml: gender-classification.yaml
+
 - id: age-classification
   service: age-classification
   name: age classification
@@ -123,13 +110,6 @@
   output: text
   yaml: category-identification.yaml
 
-# unimplemented
-- id: human-exposure-identification
-  service: human-exposure-identification
-  name: human exposure identification
-  description: human exposure identification
-  input: bbox
-  output: text
 - id: model-switch-detection
   service: model-switch-detection
   name: model switch detection
