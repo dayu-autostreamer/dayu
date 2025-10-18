@@ -5,11 +5,11 @@ pod-template:
   env:
     - name: SCH_CONFIG_EXTRACTION_NAME
       value: chameleon
-    - name: SCH_SCENARIO_EXTRACTION_NAME
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
       value: simple
     - name: SCH_STARTUP_POLICY_NAME
       value: fixed
-    - name: SCH_POLICY_EXTRACTION_NAME
+    - name: SCH_POLICY_RETRIEVAL_NAME
       value: simple
     - name: SCH_SELECTION_POLICY_NAME
       value: fixed

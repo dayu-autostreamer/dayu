@@ -5,11 +5,11 @@ pod-template:
   env:
     - name: SCH_CONFIG_EXTRACTION_NAME
       value: simple
-    - name: SCH_SCENARIO_EXTRACTION_NAME
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
       value: simple
     - name: SCH_STARTUP_POLICY_NAME
       value: fixed
-    - name: SCH_POLICY_EXTRACTION_NAME
+    - name: SCH_POLICY_RETRIEVAL_NAME
       value: simple
     - name: SCH_SELECTION_POLICY_NAME
       value: fixed
@@ -25,11 +25,11 @@ pod-template:
       value: >
         {
           'policy':{
-            'pedestrian-detection':['edge5'],
-            'exposure-identification':['edge7'], 
-            'vehicle-detection':['edge7'],
-            'category-identification':['edge8'],
-            'license-plate-recognition':['edge8']
+            'pedestrian-detection':['edge2'],
+            'exposure-identification':[], 
+            'vehicle-detection':['edge3'],
+            'category-identification':['edge3'],
+            'license-plate-recognition':[]
           }
         }
     - name: SCH_REDEPLOYMENT_POLICY_NAME
@@ -38,11 +38,11 @@ pod-template:
       value: >
         {
           'policy':{
-            'pedestrian-detection':['edge5'],
-            'exposure-identification':['edge7'], 
-            'vehicle-detection':['edge7'],
-            'category-identification':['edge8'],
-            'license-plate-recognition':['edge8']
+            'pedestrian-detection':['edge2'],
+            'exposure-identification':[], 
+            'vehicle-detection':['edge3'],
+            'category-identification':['edge3'],
+            'license-plate-recognition':[]
           }
         }
     - name: SCH_AGENT_NAME
@@ -57,11 +57,11 @@ pod-template:
             'buffer_size': 4
           },
           'offloading':{
-            'pedestrian-detection':'edge5',
-            'exposure-identification':'edge7', 
-            'vehicle-detection':'edge7',
-            'category-identification':'edge8',
-            'license-plate-recognition':'edge8'
+            'pedestrian-detection':'edge2',
+            'exposure-identification':'cloud.kubeedge', 
+            'vehicle-detection':'edge3',
+            'category-identification':'edge3',
+            'license-plate-recognition':'cloud.kubeedge'
           }
         }
 port-open:
