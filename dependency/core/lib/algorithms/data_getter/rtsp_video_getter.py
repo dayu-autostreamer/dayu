@@ -45,7 +45,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
         # Units are microseconds for ffmpeg options used by OpenCV backend.
         os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = (
             'rtsp_transport;tcp|'
-            'stimeout;5000000|rw_timeout;5000000|'
+            'stimeout;5000000|rw_timeout;5000000'
         )
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         return cap
@@ -122,7 +122,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
         LOGGER.debug(f'[DEBUG] Ready to generate and send new task.')
         multiprocessing.Process(target=self.generate_and_send_new_task,
                                 args=(system,
-                                      copy.deepcopy(self.frame_buffer),
+                                      self.frame_buffer,
                                       new_task_id,
                                       copy.deepcopy(system.task_dag),
                                       copy.deepcopy(system.meta_data),)).start()
