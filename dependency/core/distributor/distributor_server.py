@@ -83,10 +83,11 @@ class DistributorServer:
         file_path = data['file']
         if not os.path.exists(file_path):
             return b''
+        backtask.add_task(FileOps.remove_file, file_path)
         return FileResponse(
             path=file_path,
             filename=file_path,
-            background=backtask.add_task(FileOps.remove_file, file_path))
+            background=backtask)
 
     async def query_results_by_time(self, request: Request):
         data = await request.json()
