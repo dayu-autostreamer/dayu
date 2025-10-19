@@ -33,7 +33,9 @@ class VehicleDetection:
         output = []
 
         for image in images:
-            output.append(self._infer(image))
+            result_boxes, result_scores, result_class_id = self._infer(image)
+            result_roi_id = list(range(len(result_boxes)))
+            output.append((result_boxes, result_scores, result_class_id, result_roi_id))
         return output
 
     def _calculate_flops(self):
@@ -45,6 +47,4 @@ class VehicleDetection:
             
         except Exception as e:
             LOGGER.warning(f'Get model FLOPs failed:{e}')
-            LOGGER.exception(e)  
-
-
+            LOGGER.exception(e)

@@ -1,9 +1,9 @@
 import threading
 from .base_inference import BaseInference
-from typing import List
 import numpy as np
 import os
 import sys
+
 cur_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(f"{cur_dir}/ofa")
 from utils.bn_calibration import load_bn_statistics
@@ -16,8 +16,9 @@ from PIL import Image
 
 from core.lib.common import Context
 
+
 class OfaInference(BaseInference):
-# class OfaInference:
+    # class OfaInference:
     def __init__(self, *args, **kwargs):
         '''
         Load all models, do all the necessary initializations.
@@ -32,7 +33,7 @@ class OfaInference(BaseInference):
         self.subnet_archs = kwargs['subnet_archs']
         # assert 'subnet_accuracy' in kwargs, 'subnet_accuracy not provided'
         self.subnet_accuracy = kwargs['subnet_accuracy']
-        self.subnet_latency =[]
+        self.subnet_latency = []
         # assert len(self.subnet_archs) == self.subnet_nums, 'Subnet archs and subnet nums do not match'
         # assert len(self.subnet_accuracy) == self.subnet_nums, 'Subnet accuracy and subnet nums do not match'
         # TODO: validate subnet_archs 
@@ -65,7 +66,7 @@ class OfaInference(BaseInference):
             self.model = get_fcos(Resnet50Fpn(get_ofa_supernet_resnet50()))
         else:
             raise ValueError('Invalid ofa_det_type')
-        
+
         self.current_model_index = None
         self.model_switch_lock = threading.Lock()
         self._load_supernet()
@@ -76,7 +77,9 @@ class OfaInference(BaseInference):
         try:
             print(f'Loading supernet...')
             model_path = Context.get_file_path(self.supernet_path)
-            self.model = torch.load(model_path, map_location=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+            self.model = torch.load(model_path,
+                                    map_location=torch.device('cuda') if torch.cuda.is_available() else torch.device(
+                                        'cpu'))
             self.model.eval()
             if torch.cuda.is_available():
                 self.model = self.model.cuda()
@@ -89,8 +92,9 @@ class OfaInference(BaseInference):
 
     def _measure_initial_latencies(self):
         print("Measuring initial latencies...")
-        dummy_input = torch.rand(1, 3, 640, 640).to(torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
-        
+        dummy_input = torch.rand(1, 3, 640, 640).to(
+            torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+
         for idx in range(self.subnet_nums):
             times = []
             self.switch_model(idx)
@@ -98,7 +102,7 @@ class OfaInference(BaseInference):
             for _ in range(5):
                 with torch.no_grad():
                     self.model(dummy_input)
-            
+
             # 测量
             for _ in range(10):
                 start_time = time.perf_counter()
@@ -125,22 +129,23 @@ class OfaInference(BaseInference):
 
     def get_models_accuracy(self):
         return self.subnet_accuracy
-    
+
     def get_models_latency(self):
         return self.subnet_latency
-    
+
     def get_current_model_index(self):
         return self.current_model_index
-    
+
     def get_models_num(self):
         '''
         Get the number of models.
         '''
         return self.subnet_nums
-    
+
     def infer(self, image: np.ndarray):
 
-        processed_image = self.preprocess_image(image).to(torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+        processed_image = self.preprocess_image(image).to(
+            torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
         start_time = time.perf_counter()
         with torch.no_grad():
             results = self.model(processed_image)[0]
@@ -152,32 +157,32 @@ class OfaInference(BaseInference):
         scores = results['scores'][mask].cpu().numpy().tolist()
 
         # start a new thread to update stats
-        update_stats_thread = threading.Thread(target=self.prepare_update_stats, args=(image, boxes, scores, labels, inference_latency))
+        update_stats_thread = threading.Thread(target=self.prepare_update_stats,
+                                               args=(image, boxes, scores, labels, inference_latency))
         update_stats_thread.start()
-        return boxes, scores, labels
-    
+        return boxes, scores, labels, list(range(len(boxes)))
+
     def prepare_update_stats(self, image: np.ndarray, boxes, scores, labels, inference_latency):
         '''
         Prepare the stats for updating.
         '''
-        super().prepare_update_stats(image, boxes, scores, labels, inference_latency)    
+        super().prepare_update_stats(image, boxes, scores, labels, inference_latency)
 
     def preprocess_image(self, raw_bgr_image):
 
         # BGR numpy array -> RGB PIL Image
         rgb_image = cv2.cvtColor(raw_bgr_image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_image)
-        
+
         # 创建转换pipeline
         transform = T.Compose([
             T.ToTensor(),
         ])
-        
+
         # PIL Image -> Tensor
         image_tensor = transform(pil_image)
-        
+
         # 添加batch维度
         image_tensor = image_tensor.unsqueeze(0)
-        
-        return image_tensor
 
+        return image_tensor

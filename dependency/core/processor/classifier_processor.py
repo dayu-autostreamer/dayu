@@ -23,10 +23,10 @@ class ClassifierProcessor(Processor):
             return task
         content_output = []
         try:
-            for bbox, prob, class_id in content:
+            for bbox, prob, class_id, roi_id in content:
                 ret, frame = cap.read()
-                height, width, _ = frame.shape
-                if ret:
+                height, width, _ = frame.shape if frame is not None else (0, 0, 0)
+                if ret and frame is not None:
                     faces = []
                     for x_min, y_min, x_max, y_max in bbox:
                         x_min = int(max(x_min, 0))

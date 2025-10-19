@@ -288,8 +288,10 @@ class FaceDetection:
         result_boxes = result_boxes.astype(int).tolist()
         result_scores = result_scores.tolist()
         result_class_id = np.full(len(result_boxes), self.class_id).tolist()
+        # Append roi_id as sequential indices per bbox
+        result_roi_id = list(range(len(result_boxes)))
 
-        return result_boxes, result_scores, result_class_id
+        return result_boxes, result_scores, result_class_id, result_roi_id
 
     def __call__(self, images: List[np.ndarray]):
         output = []
