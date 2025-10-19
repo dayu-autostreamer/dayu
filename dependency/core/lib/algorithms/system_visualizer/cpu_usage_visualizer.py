@@ -29,8 +29,10 @@ class CPUUsageVisualizer(CurveVisualizer, abc.ABC):
                                           port=scheduler_port,
                                           path=NetworkAPIPath.SCHEDULER_GET_RESOURCE)
 
-    def __call__(self):
-        resource = self.request_resource_info()
+    def __call__(self, resource=None):
+        # Use pre-fetched resource if provided to avoid duplicate requests
+        if resource is None:
+            resource = self.request_resource_info()
 
         if self.variables:
             if not resource:
@@ -39,6 +41,6 @@ class CPUUsageVisualizer(CurveVisualizer, abc.ABC):
 
         else:
             if not resource:
-                return {'no device':0}
+                return {'no device': 0}
             else:
-                return {device:resource[device]['cpu_usage'] for device in resource}
+                return {device: resource[device]['cpu_usage'] for device in resource}
