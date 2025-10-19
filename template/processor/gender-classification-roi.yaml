@@ -1,0 +1,25 @@
+position: both
+pod-template:
+  image: gender-classification
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "roi_classifier_processor"
+    - name: ROI_CLASSIFIER_PARAMETERS
+      value: > 
+        {
+          'weights':'gender_resnet18.engine'
+        }
+    - name: SCENARIOS_EXTRACTORS
+      value: > 
+        ['obj_num', 'obj_size']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+    - name: USE_TENSORRT
+      value: "True"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/gender-classification/"

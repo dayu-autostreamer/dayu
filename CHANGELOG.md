@@ -30,6 +30,7 @@ exposure-identification, category-classification and license-plate-recognition.
 - Update detailed overhead time statistics in scheduling logs (`scheduler`).
 - Accelerate backend visualization through caching mechanism (`backend`).
 - Add ROI ID to detection/tracking applications to support roi-accelerated classification applications (`processor`).
+- Add ROI Classifier to accelerate roi-level classification applications (`processor`).
 
 ---
 
