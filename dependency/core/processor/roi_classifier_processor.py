@@ -13,7 +13,7 @@ class RoiClassifierProcessor(Processor):
     def __init__(self):
         super().__init__()
         # Expect applications to provide a ROI-aware Classifier under the name 'Classifier' when PROCESSOR_NAME is set
-        self.classifier = Context.get_instance('RoiClassifier')
+        self.classifier = Context.get_instance('Roi_Classifier')
 
     def __call__(self, task: Task):
         data_file_path = task.get_file_path()
