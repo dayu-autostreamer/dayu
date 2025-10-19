@@ -9,20 +9,21 @@ class PedestrianTracking:
         pass
 
     def __call__(self, tracking_frame_list: List[np.ndarray], prev_detection_frame: np.ndarray, content_result: tuple):
-        bbox, prob, class_id = content_result
+        bbox, prob, class_id, roi_id = content_result
         grey_prev_frame = cv2.cvtColor(prev_detection_frame, cv2.COLOR_BGR2GRAY)
         key_points = self.select_key_points(bbox, grey_prev_frame)
 
-        result = [(bbox.copy(), prob.copy(), class_id.copy())]
+        result = [(bbox.copy(), prob.copy(), class_id.copy(), roi_id.copy())]
         for present_frame in tracking_frame_list:
             grey_present_frame = cv2.cvtColor(present_frame, cv2.COLOR_BGR2GRAY)
             new_points, status, error = cv2.calcOpticalFlowPyrLK(grey_prev_frame, grey_present_frame, key_points, None)
 
             if len(key_points) > 0 and len(new_points) > 0:
-                bbox, prob, class_id = self.update_bounding_boxes((bbox, prob, class_id), key_points, new_points, status)
+                bbox, prob, class_id, roi_id = self.update_bounding_boxes((bbox, prob, class_id, roi_id), key_points,
+                                                                          new_points, status)
                 key_points = new_points[status == 1].reshape(-1, 1, 2)
 
-            result.append((bbox.copy(), prob.copy(), class_id.copy()))
+            result.append((bbox.copy(), prob.copy(), class_id.copy(), roi_id.copy()))
 
             grey_prev_frame = grey_present_frame.copy()
 
@@ -43,12 +44,13 @@ class PedestrianTracking:
 
     @staticmethod
     def update_bounding_boxes(content_result, old_points, new_points, status):
-        bounding_boxes, probs, class_ids = content_result
+        bounding_boxes, probs, class_ids, roi_ids = content_result
         updated_boxes = []
         updated_probs = []
         updated_classes = []
+        updated_roi_ids = []
         point_movements = new_points - old_points
-        for box, prob, class_id in zip(bounding_boxes, probs, class_ids):
+        for box, prob, class_id, rid in zip(bounding_boxes, probs, class_ids, roi_ids):
 
             x1, y1, x2, y2 = box
             points_in_box = ((old_points[:, 0, 0] >= x1) & (old_points[:, 0, 0] < x2) &
@@ -62,4 +64,6 @@ class PedestrianTracking:
             updated_boxes.append(updated_box)
             updated_probs.append(prob)
             updated_classes.append(class_id)
-        return np.asarray(updated_boxes), np.asarray(updated_probs), np.asarray(updated_classes)
+            updated_roi_ids.append(rid)
+        return np.asarray(updated_boxes), np.asarray(updated_probs), \
+            np.asarray(updated_classes), np.asarray(updated_roi_ids)

@@ -50,9 +50,9 @@ class DetectorTrackerProcessor(Processor):
         tracking_list = images[1:]
         with Timer(f'Detection / {len(detection_list)} frame'):
             detection_output = self.detector(detection_list)
-        result_bbox, result_prob, result_class = detection_output[0]
+        result_bbox, result_prob, result_class, result_roi_id = detection_output[0]
         with Timer(f'Tracking / {len(tracking_list)} frame'):
-            tracking_output = self.tracker(tracking_list, detection_list[0], (result_bbox, result_prob, result_class))
+            tracking_output = self.tracker(tracking_list, detection_list[0], (result_bbox, result_prob, result_class, result_roi_id))
         process_output = tracking_output
 
         return process_output

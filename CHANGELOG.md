@@ -29,6 +29,7 @@ exposure-identification, category-classification and license-plate-recognition.
 - Update 'ImagePullPolicy' in template files from 'IfNotPresent' to 'Always' to ensure pulling the latest images.
 - Update detailed overhead time statistics in scheduling logs (`scheduler`).
 - Accelerate backend visualization through caching mechanism (`backend`).
+- Add ROI ID to detection/tracking applications to support roi-accelerated classification applications (`processor`).
 
 ---
 
