@@ -52,7 +52,7 @@ pod-template:
         {
           'configuration':{
             'resolution': '720p',
-            'fps': 15,
+            'fps': 10,
             'encoding': 'mp4v',
             'buffer_size': 4
           },

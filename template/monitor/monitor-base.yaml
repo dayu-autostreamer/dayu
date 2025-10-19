@@ -4,10 +4,10 @@ pod-template:
   imagePullPolicy: Always
   env:
     - name: INTERVAL
-      value: "6"
+      value: "4"
     - name: MONITORS
       value: >
-        ['cpu_usage', 'memory_usage', 'available_bandwidth', 'cpu_flops', 'gpu_flops', 'model_flops']
+        ['cpu_usage', 'memory_usage', 'available_bandwidth', 'cpu_flops', 'gpu_flops', 'model_flops', 'queue_length']
 port-open:
   pos: cloud
   port: 9000
