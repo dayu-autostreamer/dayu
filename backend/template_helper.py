@@ -200,6 +200,7 @@ class TemplateHelper:
                 temp_node = {}
                 if key != TaskConstant.START.value:
                     temp_node['service'] = {'service_name': key}
+                    temp_node['prev_nodes'] = dag[key]['prev']
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
 
