@@ -137,6 +137,11 @@ class BackendServer:
                      response_class=FileResponse,
                      methods=[NetworkAPIMethod.BACKEND_DOWNLOAD_LOG]
                      ),
+            APIRoute(NetworkAPIPath.BACKEND_DOWNLOAD_SYSTEM_LOG,
+                     self.download_system_log,
+                     response_class=FileResponse,
+                     methods=[NetworkAPIMethod.BACKEND_DOWNLOAD_SYSTEM_LOG]
+                     ),
             APIRoute(NetworkAPIPath.BACKEND_EDGE_NODE,
                      self.get_edge_nodes,
                      response_class=JSONResponse,
@@ -694,7 +699,7 @@ class BackendServer:
         file_name = self.server.get_log_file_name()
         if not file_name:
             formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-            file_name = f'LOG_SYSTEM_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
+            file_name = f'RESULT_LOG_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
 
         log_content = self.server.download_log_file()
         with open(self.server.log_file_path, 'w') as f:
@@ -703,5 +708,20 @@ class BackendServer:
         return FileResponse(
             path=self.server.log_file_path,
             filename=f'{file_name}.json',
-            background=backtask.add_task(FileOps.remove_file, self.server.log_file_path)
+            background=backtask
+        )
+
+    async def download_system_log(self, backtask: BackgroundTasks):
+        """Download accumulated system visualization logs and clear the cache."""
+        formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        file_name = f'SYSTEM_LOG_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
+
+        log_content = self.server.download_system_log_content()
+        with open(self.server.system_log_file_path, 'w') as f:
+            json.dump(log_content, f)
+        backtask.add_task(FileOps.remove_file, self.server.system_log_file_path)
+        return FileResponse(
+            path=self.server.system_log_file_path,
+            filename=f'{file_name}.json',
+            background=backtask
         )

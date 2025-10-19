@@ -75,6 +75,14 @@ class BackendCore:
         self.cur_yaml_docs = None
         self.save_yaml_path = 'resources.yaml'
         self.log_file_path = 'log.json'
+        # File path for system visualization logs (ephemeral download file)
+        self.system_log_file_path = 'system_log.json'
+        # In-memory system logs storage
+        self.system_logs = []
+        # Persistent store for system logs (append-only JSON Lines)
+        self.system_log_store_path = 'system_log_store.jsonl'
+        # Threshold for flushing in-memory logs to file
+        self.system_log_threshold = 1000
 
         self.default_visualization_image = 'default_visualization.png'
 
@@ -621,10 +629,25 @@ class BackendCore:
         viz_configs = self.system_visualization_configs
         viz_functions = self.system_visualization_cache.sync_and_get(viz_configs, namespace='system_visualizer')
 
+        # Fetch scheduler resources once to avoid duplicate requests in visualizers
+        self.get_resource_url()
+        resource_snapshot = None
+        try:
+            if self.resource_url:
+                resource_snapshot = http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE)
+        except Exception as e:
+            LOGGER.warning(f'Failed to fetch scheduler resource for system viz: {str(e)}')
+            LOGGER.exception(e)
+
         visualization_data = []
         for idx, viz_func in enumerate(viz_functions):
             try:
-                visualization_data.append({"id": idx, "data": viz_func()})
+                # Prefer passing shared resource snapshot when supported, fallback otherwise
+                try:
+                    data = viz_func(resource=resource_snapshot)
+                except TypeError:
+                    data = viz_func()
+                visualization_data.append({"id": idx, "data": data})
             except Exception as e:
                 LOGGER.warning(f'Failed to load result visualization data: {str(e)}')
                 LOGGER.exception(e)
@@ -729,8 +752,76 @@ class BackendCore:
                 LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {str(e)}')
                 LOGGER.exception(e)
 
+    def _flush_system_logs_to_file(self):
+        """Append in-memory logs to persistent JSONL file and clear memory buffer."""
+        if not self.system_logs:
+            return
+        try:
+            with open(self.system_log_store_path, 'a', encoding='utf-8') as f:
+                for item in self.system_logs:
+                    f.write(json.dumps(item, ensure_ascii=False))
+                    f.write('\n')
+            # Clear in-memory after successful flush
+            self.system_logs.clear()
+        except Exception as e:
+            LOGGER.warning(f'Flush system logs to file failed: {str(e)}')
+            LOGGER.exception(e)
+
+    def _load_system_logs_from_file(self):
+        """Load all persisted logs from JSONL file into a list."""
+        logs = []
+        if not os.path.exists(self.system_log_store_path):
+            return logs
+        try:
+            with open(self.system_log_store_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        logs.append(json.loads(line))
+                    except Exception:
+                        # Skip malformed line
+                        continue
+        except Exception as e:
+            LOGGER.warning(f'Read system log store failed: {str(e)}')
+            LOGGER.exception(e)
+        return logs
+
     def get_system_parameters(self):
-        return [{'data': self.prepare_system_visualizations_data()}]
+        # Backend-controlled timestamp and single resource fetch per request
+        timestamp = time.strftime('%H:%M:%S', time.localtime())
+
+        data = self.prepare_system_visualizations_data()
+        snapshot = {"timestamp": timestamp, "data": data}
+
+        # Append to in-memory system logs; flush to file when threshold is reached
+        try:
+            self.system_logs.append(copy.deepcopy(snapshot))
+            if len(self.system_logs) >= self.system_log_threshold:
+                self._flush_system_logs_to_file()
+        except Exception as e:
+            LOGGER.warning(f'Append system log failed: {str(e)}')
+            LOGGER.exception(e)
+
+        return [snapshot]
+
+    def download_system_log_content(self):
+        """Return current system logs (file + memory) and clear them afterwards."""
+        # Ensure any pending in-memory logs are flushed so we don't lose data
+        try:
+            self._flush_system_logs_to_file()
+        except Exception:
+            pass
+
+        # Load all logs from file
+        file_logs = self._load_system_logs_from_file()
+        # Combine with any remaining in-memory logs (should be empty after flush)
+        combined = file_logs + list(self.system_logs)
+        # Clear in-memory buffer and delete the store file
+        self.system_logs.clear()
+        FileOps.remove_file(self.system_log_store_path)
+        return combined
 
     def check_datasource_config(self, config_path):
         if not YamlOps.is_yaml_file(config_path):

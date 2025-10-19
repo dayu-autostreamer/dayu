@@ -4,18 +4,24 @@
     <el-row class="viz-controls-row mb15">
       <el-col :span="24">
         <div class="viz-controls-panel">
-          <div class="control-group">
-            <h4>Active Visualizations:</h4>
-            <el-checkbox-group v-model="currentActiveVisualizationsArray">
-              <el-checkbox
-                  v-for="viz in visualizationConfig"
-                  :key="viz.id"
-                  :label="viz.id"
-                  class="module-checkbox"
-              >
-                {{ viz.name }}
-              </el-checkbox>
-            </el-checkbox-group>
+          <div class="control-group"
+               style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+            <div>
+              <h4>Active Visualizations:</h4>
+              <el-checkbox-group v-model="currentActiveVisualizationsArray">
+                <el-checkbox
+                    v-for="viz in visualizationConfig"
+                    :key="viz.id"
+                    :label="viz.id"
+                    class="module-checkbox"
+                >
+                  {{ viz.name }}
+                </el-checkbox>
+              </el-checkbox-group>
+            </div>
+            <div>
+              <el-button type="primary" @click="exportSystemLog">Download System Log</el-button>
+            </div>
           </div>
         </div>
       </el-col>
@@ -70,7 +76,7 @@
 </template>
 
 <script>
-import {markRaw, reactive, toRaw} from 'vue'
+import {markRaw, reactive} from 'vue'
 import mitt from 'mitt'
 
 const emitter = mitt()
@@ -190,6 +196,7 @@ export default {
               const vizDataItem = task.data.find(
                   item => String(item.id) === String(vizConfig.id))
               return {
+                taskId: task.timestamp,
                 timestamp: task.timestamp,
                 ...(vizDataItem?.data || {})
               }
@@ -242,33 +249,26 @@ export default {
         const response = await fetch('/api/system_parameters')
         const data = await response.json()
 
-        const now = new Date();
-        const hours = String(now.getHours()).padStart(2, '0');
-        const minutes = String(now.getMinutes()).padStart(2, '0');
-        const seconds = String(now.getSeconds()).padStart(2, '0');
-
-        const newTasks = data.flatMap(task => ({
+        // Use backend-provided timestamp directly
+        const newTasks = data.map(task => ({
           ...task,
-          timestamp: `${hours}:${minutes}:${seconds}`,
-          data: task.data.map(item => ({
+          data: (task.data || []).map(item => ({
             id: String(item.id),
             data: item.data
           }))
         }))
 
+        // Update variable list if backend adds/removes variables dynamically
         newTasks.forEach(task => {
           task.data.forEach(item => {
             const vizId = item.id;
-            const newVariables = Object.keys(item.data);
+            const newVariables = Object.keys(item.data || {});
 
             if (newVariables && Array.isArray(newVariables)) {
               const vizIndex = this.visualizationConfig.findIndex(v => v.id === vizId);
               if (vizIndex !== -1) {
                 const currentViz = this.visualizationConfig[vizIndex];
-
-                // 比较variables差异
                 if (!this.arraysEqual(currentViz.variables, newVariables)) {
-                  // 更新可视化配置
                   const updatedViz = {
                     ...currentViz,
                     variables: [...newVariables],
@@ -276,7 +276,6 @@ export default {
                   };
                   this.visualizationConfig.splice(vizIndex, 1, updatedViz);
 
-                  // 同步更新变量状态
                   const currentState = this.variableStates[vizId] || {};
                   this.variableStates[vizId] = newVariables.reduce((acc, varName) => {
                     acc[varName] = varName in currentState ? currentState[varName] : true;
@@ -306,6 +305,38 @@ export default {
       this.pollingInterval = setInterval(() => {
         this.getLatestSystemData()
       }, 2000)
+    },
+
+    exportSystemLog() {
+      fetch('/api/download_system_log')
+          .then(async (response) => {
+            const disposition = response.headers.get('content-disposition') || '';
+            let filename = 'system_log.json';
+
+            let match = disposition.match(/filename\*\s*=\s*(?:UTF-8''|'')?([^;]+)/i);
+            if (match && match[1]) {
+              try {
+                filename = decodeURIComponent(match[1].replace(/(^")|("$)/g, ''));
+              } catch {
+                filename = match[1].replace(/(^")|("$)/g, '');
+              }
+            } else {
+              match = disposition.match(/filename\s*=\s*([^;]+)/i);
+              if (match && match[1]) {
+                filename = match[1].trim().replace(/(^")|("$)/g, '');
+              }
+            }
+
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', filename);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+          });
     },
   },
 
