@@ -297,7 +297,7 @@ class TemplateHelper:
 
             edge_nodes = service_dict[service_id]['node']
             if service_name in deployment_plan:
-                edge_nodes = list(set(deployment_plan[service_id]) & set(edge_nodes))
+                edge_nodes = list(set(deployment_plan[service_name]) & set(edge_nodes))
             else:
                 LOGGER.warning(f"Using default service plan for service '{service_id}'.")
 
