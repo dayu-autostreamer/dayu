@@ -1,5 +1,5 @@
 import abc
-from core.lib.common import ClassFactory, ClassType, KubeConfig
+from core.lib.common import ClassFactory, ClassType, KubeConfig, LOGGER
 from core.lib.content import Task
 
 from .topology_visualizer import TopologyVisualizer
@@ -13,11 +13,17 @@ class DAGDeploymentTopologyVisualizer(TopologyVisualizer, abc.ABC):
         super().__init__(**kwargs)
 
     def __call__(self, task: Task):
+        LOGGER.debug('[DEBUG] start dag deployment topology visualizer')
         result = task.get_dag_deployment_info()
+        LOGGER.debug('[DEBUG] got dag deployment info')
+        LOGGER.debug(f'[DEBUG] result: {result}')
         for node_info in result.values():
+            LOGGER.debug(f'[DEBUG] start node_info: {node_info["service"]["service_name"]}')
             service = node_info["service"]
             service.pop("execute_device")
             service_name = service["service_name"]
             service["data"] = '\n'.join(KubeConfig.get_nodes_for_service(service_name))
+            LOGGER.debug(f'[DEBUG] end node_info: {node_info["service"]["service_name"]}')
+        LOGGER.debug('[DEBUG] end dag deployment topology visualizer')
 
         return {'topology': result}
