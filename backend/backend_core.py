@@ -483,7 +483,6 @@ class BackendCore:
 
                 renamed_dag[new_key] = node_new
             s['dag'] = renamed_dag
-            LOGGER.debug(f'[DEBUG] dag in source_deploy after adjust: {s["dag"]}')
 
         return service_dict
 
