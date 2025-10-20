@@ -296,10 +296,10 @@ class TemplateHelper:
             yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
             edge_nodes = service_dict[service_id]['node']
-            if service_id in deployment_plan:
+            if service_name in deployment_plan:
                 edge_nodes = list(set(deployment_plan[service_id]) & set(edge_nodes))
             else:
-                LOGGER.warning("Using default service plan.")
+                LOGGER.warning(f"Using default service plan for service '{service_id}'.")
 
             if edge_nodes:
                 edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
