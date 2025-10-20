@@ -21,4 +21,4 @@ class DAGOffloadingTopologyVisualizer(TopologyVisualizer, abc.ABC):
             service = node_info["service"]
             service["data"] = service.pop("execute_device")
 
-        return {'topology': result}
+        return {self.variables[0]: result}

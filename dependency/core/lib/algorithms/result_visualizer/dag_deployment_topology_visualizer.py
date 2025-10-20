@@ -30,4 +30,4 @@ class DAGDeploymentTopologyVisualizer(TopologyVisualizer, abc.ABC):
             LOGGER.debug(f'[DEBUG] end node_info: {node_info["service"]["service_name"]}')
         LOGGER.debug('[DEBUG] end dag deployment topology visualizer')
 
-        return {'topology': result}
+        return {self.variables[0]: result}
