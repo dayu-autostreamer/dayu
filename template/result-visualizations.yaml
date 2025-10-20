@@ -8,6 +8,7 @@
   type: topology
   variables: [ "Realtime DAG Service Offloading State" ]
   hook_name: dag_offloading
+  save_expense: true
   size: 2
 - name: End to End Delay Curve
   type: curve
@@ -20,6 +21,7 @@
   type: topology
   variables: [ "Realtime DAG Service Deployment State" ]
   hook_name: dag_deployment
+  save_expense: true
   size: 2
 - name: Object Number Curve
   type: curve
