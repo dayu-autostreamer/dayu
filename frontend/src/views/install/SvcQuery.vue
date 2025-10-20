@@ -40,7 +40,7 @@
       </table>
     </div>
     <div style="text-align: right; margin-top: 20px;">
-      <el-button type="danger" @click="stopService" :loading="loading" :disabled="installed !== 'install'" >Stop Services</el-button>
+      <el-button type="danger" @click="uninstallServices" :loading="loading" :disabled="installed !== 'install'" >Uninstall</el-button>
     </div>
   </div>
 </template>
@@ -84,7 +84,7 @@ export default {
     return {
       installed,
       loading,
-      stopService: () => {
+      uninstallServices: () => {
         loading.value = true
         fetch('/api/stop_service',{
           method:'POST'

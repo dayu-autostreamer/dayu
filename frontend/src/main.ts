@@ -11,6 +11,7 @@ import "/@/theme/index.scss";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
 import VueGridLayout from "vue-grid-layout";
+import { useSystemParametersStore } from "/@/stores/systemParameters";
 
 const app = createApp(App);
 
@@ -24,3 +25,11 @@ app
   .use(i18n)
   .use(VueGridLayout)
   .mount("#app");
+
+// Initialize global system parameters polling after pinia is ready
+try {
+  const sysParams = useSystemParametersStore();
+  sysParams.init();
+} catch (e) {
+  // non-fatal if store init fails during SSR/tests
+}
