@@ -645,10 +645,10 @@ class BackendCore:
         viz_configs = self.system_visualization_configs
         viz_functions = self.system_visualization_cache.sync_and_get(viz_configs, namespace='system_visualizer')
 
-        # Fetch scheduler resources once to avoid duplicate requests in visualizers
-        self.get_resource_url()
         resource_snapshot = None
         try:
+            # Fetch scheduler resources once to avoid duplicate requests in visualizers
+            self.get_resource_url()
             if self.resource_url:
                 resource_snapshot = http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE)
         except Exception as e:
