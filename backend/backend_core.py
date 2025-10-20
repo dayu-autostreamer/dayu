@@ -482,7 +482,7 @@ class BackendCore:
                     node_new['succ'] = [id_to_name.get(x, x) for x in node_new['succ']]
 
                 renamed_dag[new_key] = node_new
-            s['dag'] = extracted_dag
+            s['dag'] = renamed_dag
             LOGGER.debug(f'[DEBUG] dag in source_deploy after adjust: {s["dag"]}')
 
         return service_dict
