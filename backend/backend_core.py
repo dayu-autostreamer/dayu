@@ -898,8 +898,11 @@ class BackendCore:
         cloud_hostname = NodeInfo.get_cloud_node()
         try:
             scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        except AssertionError:
+        except Exception as e:
+            LOGGER.warning(f'Get resource url failed: {str(e)}')
+            LOGGER.exception(e)
             return
+
         self.resource_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
                                           port=scheduler_port,
                                           path=NetworkAPIPath.SCHEDULER_GET_RESOURCE)
@@ -908,8 +911,11 @@ class BackendCore:
         cloud_hostname = NodeInfo.get_cloud_node()
         try:
             distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
-        except AssertionError:
+        except Exception as e:
+            LOGGER.warning(f'Get result url failed: {str(e)}')
+            LOGGER.exception(e)
             return
+
         self.result_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
                                         port=distributor_port,
                                         path=NetworkAPIPath.DISTRIBUTOR_RESULT)
@@ -921,8 +927,11 @@ class BackendCore:
         cloud_hostname = NodeInfo.get_cloud_node()
         try:
             distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
-        except AssertionError:
+        except Exception as e:
+            LOGGER.warning(f'Get log url failed: {str(e)}')
+            LOGGER.exception(e)
             return
+
         self.log_fetch_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
                                            port=distributor_port,
                                            path=NetworkAPIPath.DISTRIBUTOR_ALL_RESULT)
