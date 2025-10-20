@@ -78,28 +78,29 @@
 <script>
 import {markRaw, reactive} from 'vue'
 import mitt from 'mitt'
+import { useSystemParametersStore } from '/@/stores/systemParameters'
 
 const emitter = mitt()
 
 export default {
   data() {
     return {
-      bufferedTaskCache: reactive([]),
-      maxBufferedTaskCacheSize: 20,
       componentsLoaded: false,
       visualizationConfig: [],
       activeVisualizations: new Set(),
       variableStates: {},
       visualizationComponents: {},
       vizControls: {},
-      pollingInterval: null,
+      // stores
+      sysParamsStore: null,
     }
   },
   computed: {
     processedData() {
+      const buffer = this.sysParamsStore?.bufferedTaskCache || []
       const result = {}
       this.visualizationConfig.forEach(viz => {
-        result[viz.id] = this.processVizData(viz)
+        result[viz.id] = this.processVizData(viz, buffer)
       })
       return result
     },
@@ -117,10 +118,21 @@ export default {
   },
 
   async created() {
+    // init store
+    this.sysParamsStore = useSystemParametersStore()
+
     await this.autoRegisterComponents()
     this.componentsLoaded = true
     await this.fetchVisualizationConfig()
-    this.setupDataPolling()
+
+    // watch buffer to keep variable sets in sync with backend
+    this.$watch(
+        () => this.sysParamsStore.bufferedTaskCache,
+        (buffer) => {
+          this.syncVariablesFromBuffer(buffer || [])
+        },
+        { deep: true, immediate: true }
+    )
 
     emitter.on('force-update-charts', () => {
       this.$nextTick(() => {
@@ -134,7 +146,7 @@ export default {
 
   methods: {
     calculateVariablesHash(variables) {
-      return [...variables].sort().join('|');
+      return [...(variables || [])].sort().join('|');
     },
 
     getVizKey(viz) {
@@ -183,11 +195,11 @@ export default {
       }
     },
 
-    processVizData(vizConfig) {
-      if (!this.bufferedTaskCache.length) return []
+    processVizData(vizConfig, buffer) {
+      if (!buffer.length) return []
 
       try {
-        return this.bufferedTaskCache
+        return buffer
             .filter(task => {
               return task.data?.some(item =>
                   String(item.id) === String(vizConfig.id))
@@ -244,69 +256,6 @@ export default {
       }
     },
 
-    async getLatestSystemData() {
-      try {
-        const response = await fetch('/api/system_parameters')
-        const data = await response.json()
-
-        // Use backend-provided timestamp directly
-        const newTasks = data.map(task => ({
-          ...task,
-          data: (task.data || []).map(item => ({
-            id: String(item.id),
-            data: item.data
-          }))
-        }))
-
-        // Update variable list if backend adds/removes variables dynamically
-        newTasks.forEach(task => {
-          task.data.forEach(item => {
-            const vizId = item.id;
-            const newVariables = Object.keys(item.data || {});
-
-            if (newVariables && Array.isArray(newVariables)) {
-              const vizIndex = this.visualizationConfig.findIndex(v => v.id === vizId);
-              if (vizIndex !== -1) {
-                const currentViz = this.visualizationConfig[vizIndex];
-                if (!this.arraysEqual(currentViz.variables, newVariables)) {
-                  const updatedViz = {
-                    ...currentViz,
-                    variables: [...newVariables],
-                    variablesHash: this.calculateVariablesHash(newVariables)
-                  };
-                  this.visualizationConfig.splice(vizIndex, 1, updatedViz);
-
-                  const currentState = this.variableStates[vizId] || {};
-                  this.variableStates[vizId] = newVariables.reduce((acc, varName) => {
-                    acc[varName] = varName in currentState ? currentState[varName] : true;
-                    return acc;
-                  }, {});
-                }
-              }
-            }
-          });
-        });
-
-        this.bufferedTaskCache = reactive([
-          ...this.bufferedTaskCache,
-          ...newTasks
-        ].slice(-this.maxBufferedTaskCacheSize))
-
-        this.$nextTick(() => {
-          emitter.emit('force-update-charts')
-        })
-      } catch (error) {
-        console.error('Data fetch failed:', error)
-      }
-    },
-
-    setupDataPolling() {
-      this.getLatestSystemData()
-      this.pollingInterval = setInterval(() => {
-        this.getLatestSystemData()
-      }, 2000)
-    },
-
     exportSystemLog() {
       fetch('/api/download_system_log')
           .then(async (response) => {
@@ -338,10 +287,43 @@ export default {
             window.URL.revokeObjectURL(url);
           });
     },
+
+    syncVariablesFromBuffer(buffer) {
+      try {
+        const latestByViz = new Map()
+        buffer.forEach(task => {
+          (task.data || []).forEach(item => {
+            const vizId = String(item.id)
+            latestByViz.set(vizId, Object.keys(item.data || {}))
+          })
+        })
+        latestByViz.forEach((newVars, vizId) => {
+          const vizIndex = this.visualizationConfig.findIndex(v => v.id === vizId)
+          if (vizIndex !== -1) {
+            const curr = this.visualizationConfig[vizIndex]
+            if (!this.arraysEqual(curr.variables, newVars)) {
+              const updatedViz = {
+                ...curr,
+                variables: [...newVars],
+                variablesHash: this.calculateVariablesHash(newVars)
+              }
+              this.visualizationConfig.splice(vizIndex, 1, reactive(updatedViz))
+
+              const currentState = this.variableStates[vizId] || {}
+              this.variableStates[vizId] = newVars.reduce((acc, name) => {
+                acc[name] = name in currentState ? currentState[name] : true
+                return acc
+              }, {})
+            }
+          }
+        })
+      } catch (e) {
+        // no-op
+      }
+    },
   },
 
   beforeUnmount() {
-    clearInterval(this.pollingInterval)
     emitter.off('force-update-charts')
   }
 }
