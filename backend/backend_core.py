@@ -627,14 +627,18 @@ class BackendCore:
         viz_configs = self.customized_source_result_visualization_configs[source_id] \
             if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
         viz_functions = self.result_visualization_cache.sync_and_get(viz_configs, namespace='result_visualizer')
+        LOGGER.debug(f"[DEBUG] get viz configs and functions.")
 
         visualization_data = []
         for idx, (viz_config, viz_func) in enumerate(zip(viz_configs, viz_functions)):
+            LOGGER.debug(f"[DEBUG] start visualization config {viz_config['name']}")
             try:
                 if 'save_expense' in viz_config and viz_config['save_expense'] and not is_last:
                     visualization_data.append({"id": idx, "data": {v: None for v in viz_config['variables']}})
+                    LOGGER.debug(f"[DEBUG] save expense for visualization config {viz_config['name']}")
                 else:
                     visualization_data.append({"id": idx, "data": viz_func(task)})
+                LOGGER.debug(f"[DEBUG] end visualization config {viz_config['name']}")
             except Exception as e:
                 LOGGER.warning(f'Failed to load result visualization data: {str(e)}')
                 LOGGER.exception(e)
@@ -691,17 +695,21 @@ class BackendCore:
         vis_results = []
 
         with Timer(f'Visualization preparation for {len(tasks)} tasks'):
+            LOGGER.debug('[DEBUG] Start visualization')
             for idx, task in enumerate(tasks):
+                LOGGER.debug(f'[DEBUG] get file for Task {idx}/{len(tasks)}')
                 file_path = self.get_file_result(task.get_file_path())
+                LOGGER.debug(f'[DEBUG] file got.')
                 try:
+                    LOGGER.debug(f'[DEBUG] visualize for {idx}/{len(tasks)}')
                     visualization_data = self.prepare_result_visualization_data(task, idx == len(tasks) - 1)
+                    LOGGER.debug(f'[DEBUG] visualize done.')
                 except Exception as e:
                     LOGGER.warning(f'Prepare visualization data failed: {str(e)}')
                     LOGGER.exception(e)
                     continue
 
-                if os.path.exists(file_path):
-                    os.remove(file_path)
+                FileOps.remove_file(file_path)
 
                 vis_results.append({
                     'task_id': task.get_task_id(),
@@ -973,8 +981,8 @@ class BackendCore:
 
     def get_result_visualization_config(self, source_id):
         self.parse_base_info()
-        visualizations = self.customized_source_result_visualization_configs[
-            source_id] if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
+        visualizations = self.customized_source_result_visualization_configs[source_id] \
+            if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
         return [{'id': idx, **vf} for idx, vf in enumerate(visualizations)]
 
     def get_system_visualization_config(self):
