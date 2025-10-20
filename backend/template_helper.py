@@ -422,7 +422,6 @@ class TemplateHelper:
                     temp_node['service'] = {'service_name': key}
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
-            LOGGER.debug(f'[DEBUG] DAG_ENV: {DAG_ENV}')
             params.append({
                 "source": SOURCE_ENV,
                 "node_set": NODE_SET_ENV,
