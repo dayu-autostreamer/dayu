@@ -17,7 +17,8 @@ class CPUUsageVisualizer(CurveVisualizer, abc.ABC):
     def request_resource_info(self):
         self.get_resource_url()
 
-        return http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE) if self.resource_url else None
+        return http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE) \
+            if self.resource_url else None
 
     def get_resource_url(self):
         cloud_hostname = NodeInfo.get_cloud_node()
