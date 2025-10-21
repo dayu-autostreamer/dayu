@@ -65,7 +65,9 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
         LOGGER.info(f'[Camera Simulation] source {system.source_id}: sleep {sleep_time}s')
         time.sleep(sleep_time)
 
-        new_task = system.generate_task(new_task_id, copy.deepcopy(system.task_dag), copy.deepcopy(system.meta_data),
+        new_task = system.generate_task(new_task_id, copy.deepcopy(system.task_dag),
+                                        copy.deepcopy(system.service_deployment),
+                                        copy.deepcopy(system.meta_data),
                                         self.file_name, self.hash_codes)
         system.submit_task_to_controller(new_task)
 

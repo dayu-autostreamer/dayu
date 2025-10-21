@@ -16,6 +16,7 @@ class Task:
                  source_device: str,
                  all_edge_devices: list,
                  dag: DAG = None,
+                 deployment: dict = None,
                  flow_index: str = TaskConstant.START.value,
                  past_flow_index: str = None,
                  metadata: dict = None,
@@ -52,6 +53,8 @@ class Task:
 
         # dag info of task
         self.__dag_flow = dag
+        # deployment info
+        self.__deployment = deployment
 
         # current service name in dag (work as pointer)
         self.__cur_flow_index = flow_index
@@ -177,6 +180,12 @@ class Task:
 
     def set_dag(self, dag):
         self.__dag_flow = dag
+
+    def get_deployment(self):
+        return self.__deployment
+
+    def set_deployment(self, deployment):
+        self.__deployment = deployment
 
     def get_flow_index(self):
         return self.__cur_flow_index
@@ -441,6 +450,7 @@ class Task:
             'source_device': self.get_source_device(),
             'all_edge_devices': self.get_all_edge_devices(),
             'dag': self.get_dag().to_dict() if self.get_dag() else None,
+            'deployment': self.get_deployment(),
             'cur_flow_index': self.get_flow_index(),
             'past_flow_index': self.get_past_flow_index(),
             'meta_data': self.get_metadata(),
@@ -462,6 +472,7 @@ class Task:
                    all_edge_devices=dag_dict['all_edge_devices'])
 
         task.set_dag(DAG.from_dict(dag_dict['dag'])) if 'dag' in dag_dict and dag_dict['dag'] else None
+        task.set_deployment(dag_dict['deployment']) if 'deployment' in dag_dict else None
         task.set_flow_index(dag_dict['cur_flow_index']) if 'cur_flow_index' in dag_dict else None
         task.set_past_flow_index(dag_dict['past_flow_index']) if 'past_flow_index' in dag_dict else None
         task.set_metadata(dag_dict['meta_data']) if 'meta_data' in dag_dict else None
