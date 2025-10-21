@@ -11,10 +11,10 @@
 
 ![](static/dayu_logo.png)
 
-| <img src="static/news.svg" width="8%">  NEWS                       |
-|--------------------------------------------------------------------|
-| (**最新版本**) 2025.5.7. 大禹 v1.1 发布， 详细信息请查阅 [CHANGELOG](CHANGELOG.md) |
-| 2025.2.21. 大禹 v1.0 发布， 详细信息请查阅 [CHANGELOG](CHANGELOG.md)           |
+| <img src="static/news.svg" width="8%">  NEWS                           |
+|------------------------------------------------------------------------|
+| (**最新版本**) 2025.5.7. 大禹 v1.1 发布， 详细信息请查阅 [CHANGELOG](CHANGELOG.md#v11) |
+| 2025.2.21. 大禹 v1.0 发布， 详细信息请查阅 [CHANGELOG](CHANGELOG.md#v10)           |
 
 ## 简介
 
