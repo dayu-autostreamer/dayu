@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 from core.lib.content import Task
-from core.lib.common import LOGGER
+from core.lib.common import LOGGER, KubeConfig
 
 from .scheduler import Scheduler
 
@@ -73,7 +73,7 @@ class SchedulerServer:
         self.scheduler.register_schedule_table(data['source_id'])
         plan = self.scheduler.get_schedule_plan(data)
 
-        return {'plan': plan}
+        return {'plan': plan, 'deployment': KubeConfig.get_service_nodes_dict()}
 
     async def get_schedule_overhead(self):
         return self.scheduler.get_schedule_overhead()

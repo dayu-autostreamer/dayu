@@ -23,8 +23,9 @@ class CASVAASOperation(BaseASOperation, abc.ABC):
             system.task_dag = Task.set_execute_device(system.task_dag, system.local_device)
         else:
             scheduler_policy = scheduler_response['plan']
-            dag_deployment = scheduler_policy['dag']
+            system.service_deployment = scheduler_response.get('deployment', {})
 
+            dag_deployment = scheduler_policy['dag']
             dag = Task.extract_dag_from_dag_deployment(dag_deployment)
             # Set execute device of start and end node
             dag.get_start_node().service.set_execute_device(system.local_device)

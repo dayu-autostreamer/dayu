@@ -89,7 +89,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
 
         return frame
 
-    def generate_and_send_new_task(self, system, frame_buffer, new_task_id, task_dag, meta_data, ):
+    def generate_and_send_new_task(self, system, frame_buffer, new_task_id, task_dag, service_deployment, meta_data, ):
         source_id = system.source_id
 
         LOGGER.debug(f'[Frame Buffer] (source {system.source_id} / task {new_task_id}) '
@@ -104,7 +104,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
         self.compress_frames(system, frame_buffer, file_name)
         LOGGER.debug(f'[DEBUG] Compress frames in frame buffer')
 
-        new_task = system.generate_task(new_task_id, task_dag, meta_data, file_name, None)
+        new_task = system.generate_task(new_task_id, task_dag, service_deployment, meta_data, file_name, None)
         LOGGER.debug(f'[DEBUG] Generate new task {new_task_id}')
         system.submit_task_to_controller(new_task)
         LOGGER.debug(f'[DEBUG] Submit task {new_task_id}')
@@ -125,6 +125,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
                                       self.frame_buffer,
                                       new_task_id,
                                       copy.deepcopy(system.task_dag),
+                                      copy.deepcopy(system.service_deployment),
                                       copy.deepcopy(system.meta_data),)).start()
 
         self.frame_buffer = []
