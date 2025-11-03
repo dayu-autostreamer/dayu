@@ -14,6 +14,8 @@ pod-permission:
 crd-meta:
   api-version: sedna.io/v1alpha1
   kind: JointMultiEdgeService
+# cache ttl for kubernetes API objects in dayu containers, support never/<duration>. never means always use cached objects without refreshing except Non-hitting; <duration> is a cache refreshing ttl seconds, e.g., 5.0.
+kube-cache-ttl: never
 # default image meta information for dayu containers, <registry>/<repository>/<image_name>:<tag>
 default-image-meta:
   registry: repo:5000

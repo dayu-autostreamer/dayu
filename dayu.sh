@@ -119,6 +119,8 @@ spec:
                   value: "$KUBERNETES_SERVICE_PORT"
                 - name: GUNICORN_PORT
                   value: "8000"
+                - name: KUBE_CACHE_TTL
+                  value: "$KUBE_CACHE_TTL"
                 - name: FILE_PREFIX
                   value: "$DATASOURCE_DATA_ROOT"
               image: $REGISTRY/$REPOSITORY/datasource:$TAG
@@ -163,6 +165,8 @@ spec:
           - env:
             - name: GUNICORN_PORT
               value: "8000"
+            - name: KUBE_CACHE_TTL
+              value: "$KUBE_CACHE_TTL"
             image: $REGISTRY/$REPOSITORY/backend:$TAG
             imagePullPolicy: Always
             name: backend
@@ -396,6 +400,7 @@ import_config() {
     CLUSTER_ROLE_BINDING=$(yq e '.pod-permission.cluster-role-binding' "$TMP_FILE")
     API_VERSION=$(yq e '.crd-meta.api-version' "$TMP_FILE")
     KIND=$(yq e '.crd-meta.kind' "$TMP_FILE")
+    KUBE_CACHE_TTL=$(yq e '.kube-cache-ttl' "$TMP_FILE")
     REGISTRY=$(yq e '.default-image-meta.registry' "$TMP_FILE")
     REPOSITORY=$(yq e '.default-image-meta.repository' "$TMP_FILE")
     TAG=$(yq e '.default-image-meta.tag' "$TMP_FILE")
@@ -480,6 +485,7 @@ display_config() {
     echo "  Cluster Role Binding: $CLUSTER_ROLE_BINDING"
     echo "  API Version: $API_VERSION"
     echo "  Kind: $KIND"
+    echo "  Kube Cache TTL: $KUBE_CACHE_TTL"
     echo "  Registry: $REGISTRY"
     echo "  Repository: $REPOSITORY"
     echo "  Tag: $TAG"

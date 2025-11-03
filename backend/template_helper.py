@@ -63,7 +63,7 @@ class TemplateHelper:
             {'name': 'NAMESPACE', 'value': str(namespace)},
             {'name': 'KUBERNETES_SERVICE_HOST', 'value': str(k8s_endpoint['address'])},
             {'name': 'KUBERNETES_SERVICE_PORT', 'value': str(k8s_endpoint['port'])},
-
+            {'name': 'KUBE_CACHE_TTL', 'value': str(base_info['kube-cache-ttl'])},
         ])
         template['name'] = component_name
         template['image'] = self.process_image(template['image'])
