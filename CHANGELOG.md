@@ -17,6 +17,7 @@ exposure-identification, category-classification and license-plate-recognition.
 - Support cloud-only deployment of processors (`backend`).
 - Fix task forwarding bug in inconsistent deployment and offloading decisions (`controller`).
 - Fix possible database locking in concurrency access of distributor (`distributor`).
+- Add cache TTL of Kubernetes configurations to avoid additional expense in `PortInfo` and `KubeConfig`.
 
 ### Minor Update
 - Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios (`frontend` / `backend`).

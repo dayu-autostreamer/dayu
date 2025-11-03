@@ -15,15 +15,38 @@ class KubeConfig:
     # Caching controls
     _cache_lock = threading.Lock()
     _last_refresh_monotonic = 0.0
-    _service_nodes_cache = None
-    _node_services_cache = None
+    _service_nodes_cache = None  # {service: set(nodes)}
+    _node_services_cache = None  # {node: set(services)}
 
-    # Cache TTL in seconds (set via Context parameter if provided)
+    # Precomputed list views to avoid per-call conversions
+    _service_nodes_list_cache = None  # {service: [nodes]}
+    _node_services_list_cache = None  # {node: [services]}
+
+    # Non-blocking refresh state
+    _refresh_in_progress = False
+
+    # Optional selectors to reduce API payload
+    _label_selector = Context.get_parameter('KUBE_POD_LABEL_SELECTOR') or None
+    _field_selector = Context.get_parameter('KUBE_POD_FIELD_SELECTOR') or "spec.nodeName!=null"
+
+    # Cache TTL and refresh mode parsing (only 'ttl' and 'never')
     try:
-        _ttl_param = Context.get_parameter('KUBE_CACHE_TTL')
-        CACHE_TTL = float(_ttl_param) if _ttl_param is not None else 5.0
+        _ttl_raw = Context.get_parameter('KUBE_CACHE_TTL')
+        if _ttl_raw is None:
+            CACHE_TTL = float('inf')
+            _refresh_mode = 'never'
+        else:
+            s = str(_ttl_raw).strip().lower()
+            if s == 'never':
+                _refresh_mode = 'never'
+                CACHE_TTL = float('inf')
+            else:
+                _refresh_mode = 'ttl'
+                CACHE_TTL = float(s)
+
     except Exception:
-        CACHE_TTL = 5.0
+        CACHE_TTL = float('inf')
+        _refresh_mode = 'never'
 
     @classmethod
     def _get_api(cls):
@@ -43,49 +66,95 @@ class KubeConfig:
         with cls._cache_lock:
             cls._service_nodes_cache = None
             cls._node_services_cache = None
+            cls._service_nodes_list_cache = None
+            cls._node_services_list_cache = None
             cls._last_refresh_monotonic = 0.0
 
     @classmethod
-    def _refresh_cache_if_needed(cls, force: bool = False):
-        """Refresh caches from Kubernetes when expired or forced.
-        Builds both service->nodes and node->services maps in a single API call.
+    def _build_maps_from_pods(cls, pods):
+        """Build internal maps from a list of Pod objects."""
+        service_nodes = defaultdict(set)
+        node_services = defaultdict(set)
+
+        for pod in pods:
+            pod_name = getattr(pod.metadata, 'name', None)
+            node_name = getattr(pod.spec, 'node_name', None)
+            if not pod_name or not node_name:
+                continue
+
+            match = cls.SERVICE_PATTERN.match(pod_name)
+            if not match:
+                continue
+
+            service_name = match.group(1)
+            service_nodes[service_name].add(node_name)
+            node_services[node_name].add(service_name)
+
+        # Store as plain dicts of sets; create list views for fast reads
+        service_nodes_cache = {svc: set(nodes) for svc, nodes in service_nodes.items()}
+        node_services_cache = {node: set(svcs) for node, svcs in node_services.items()}
+
+        # Precompute list views (sorted for determinism)
+        service_nodes_list_cache = {svc: sorted(list(nodes)) for svc, nodes in service_nodes_cache.items()}
+        node_services_list_cache = {node: sorted(list(svcs)) for node, svcs in node_services_cache.items()}
+
+        return service_nodes_cache, node_services_cache, service_nodes_list_cache, node_services_list_cache
+
+    @classmethod
+    def _refresh_now(cls):
+        """Perform a synchronous refresh from the Kubernetes API for pod topology only.
         Any API error will keep existing caches intact to be resilient.
         """
+        api = cls._get_api()
+        pods = api.list_namespaced_pod(
+            cls.NAMESPACE,
+            label_selector=cls._label_selector,
+            field_selector=cls._field_selector,
+        ).items
+
+        service_nodes_cache, node_services_cache, service_nodes_list_cache, node_services_list_cache = cls._build_maps_from_pods(pods)
+
+        with cls._cache_lock:
+            cls._service_nodes_cache = service_nodes_cache
+            cls._node_services_cache = node_services_cache
+            cls._service_nodes_list_cache = service_nodes_list_cache
+            cls._node_services_list_cache = node_services_list_cache
+            cls._last_refresh_monotonic = time.monotonic()
+
+    @classmethod
+    def _refresh_cache_if_needed(cls, force: bool = False):
+        """Refresh caches according to configured mode.
+        - ttl: refresh on TTL expiry (non-blocking background for subsequent calls)
+        - never: no auto refresh except first warm-up or explicit force
+        """
+        mode = getattr(cls, '_refresh_mode', 'ttl')
+
+        if mode == 'never':
+            # Only warm-up if empty or force refresh
+            if force or cls._service_nodes_cache is None or cls._node_services_cache is None:
+                cls._refresh_now()
+            return
+
+        # Default TTL mode
         if not force and not cls._cache_expired():
+            return
+        if force:
+            cls._refresh_now()
             return
 
         with cls._cache_lock:
-            if not force and not cls._cache_expired():
-                return  # double-checked locking
-
-            api = cls._get_api()
-            try:
-                pods = api.list_namespaced_pod(cls.NAMESPACE).items
-            except Exception:
-                # If API call fails, keep old cache (if any)
+            if cls._refresh_in_progress or (not cls._cache_expired()):
                 return
+            cls._refresh_in_progress = True
 
-            service_nodes = defaultdict(set)
-            node_services = defaultdict(set)
+        def _bg_refresh():
+            try:
+                cls._refresh_now()
+            finally:
+                with cls._cache_lock:
+                    cls._refresh_in_progress = False
 
-            for pod in pods:
-                pod_name = getattr(pod.metadata, 'name', None)
-                node_name = getattr(pod.spec, 'node_name', None)
-                if not pod_name or not node_name:
-                    continue
-
-                match = cls.SERVICE_PATTERN.match(pod_name)
-                if not match:
-                    continue
-
-                service_name = match.group(1)
-                service_nodes[service_name].add(node_name)
-                node_services[node_name].add(service_name)
-
-            # Store as plain dicts of sets; convert to lists on read to preserve public API
-            cls._service_nodes_cache = {svc: set(nodes) for svc, nodes in service_nodes.items()}
-            cls._node_services_cache = {node: set(svcs) for node, svcs in node_services.items()}
-            cls._last_refresh_monotonic = time.monotonic()
+        threading.Thread(target=_bg_refresh, name="KubeConfigCacheRefresh", daemon=True).start()
 
     @classmethod
     def get_service_nodes_dict(cls):
@@ -101,8 +170,8 @@ class KubeConfig:
         cls._refresh_cache_if_needed()
 
         # Return a copy with lists to avoid external mutation and keep original behavior
-        cache = cls._service_nodes_cache or {}
-        return {svc: list(nodes) for svc, nodes in cache.items()}
+        cache = cls._service_nodes_list_cache or {}
+        return {svc: nodes[:] for svc, nodes in cache.items()}
 
     @classmethod
     def get_node_services_dict(cls):
@@ -117,8 +186,8 @@ class KubeConfig:
         """
         cls._refresh_cache_if_needed()
 
-        cache = cls._node_services_cache or {}
-        return {node: list(svcs) for node, svcs in cache.items()}
+        cache = cls._node_services_list_cache or {}
+        return {node: svcs[:] for node, svcs in cache.items()}
 
     @classmethod
     def get_services_on_node(cls, node_name):
@@ -130,8 +199,14 @@ class KubeConfig:
             List of service names
         """
         cls._refresh_cache_if_needed()
-        cache = cls._node_services_cache or {}
-        return list(cache.get(node_name, []))
+        cache = cls._node_services_list_cache or {}
+        result = list(cache.get(node_name, []))
+        # In 'never' mode, if miss happens, try one on-demand refresh once
+        if not result and getattr(cls, '_refresh_mode', 'ttl') == 'never':
+            cls._refresh_now()
+            cache = cls._node_services_list_cache or {}
+            return list(cache.get(node_name, []))
+        return result
 
     @classmethod
     def get_nodes_for_service(cls, service_name):
@@ -143,8 +218,13 @@ class KubeConfig:
             List of node names
         """
         cls._refresh_cache_if_needed()
-        cache = cls._service_nodes_cache or {}
-        return list(cache.get(service_name, []))
+        cache = cls._service_nodes_list_cache or {}
+        result = list(cache.get(service_name, []))
+        if not result and getattr(cls, '_refresh_mode', 'ttl') == 'never':
+            cls._refresh_now()
+            cache = cls._service_nodes_list_cache or {}
+            return list(cache.get(service_name, []))
+        return result
 
     @classmethod
     def check_services_running(cls):
@@ -155,14 +235,20 @@ class KubeConfig:
         """
         api = cls._get_api()
 
-        pods = api.list_namespaced_pod(cls.NAMESPACE).items
+        pods = api.list_namespaced_pod(
+            cls.NAMESPACE,
+            label_selector=cls._label_selector,
+            field_selector=cls._field_selector,
+        ).items
         for pod in pods:
             pod_name = pod.metadata.name
             node_name = pod.spec.node_name
             if not node_name or not cls.SERVICE_PATTERN.match(pod_name):
                 continue
 
-            if pod.status.phase != "Running" or not all([c.ready for c in pod.status.container_statuses]):
+            # Some clusters may not populate container_statuses immediately
+            statuses = getattr(pod.status, 'container_statuses', None) or []
+            if pod.status.phase != "Running" or not all([getattr(c, 'ready', False) for c in statuses]):
                 return False
 
         return True
