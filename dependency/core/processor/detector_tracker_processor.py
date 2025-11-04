@@ -21,7 +21,7 @@ class DetectorTrackerProcessor(Processor):
         self.frame_size = None
 
     def __call__(self, task: Task):
-        data_file_path = task.get_file_path()
+        data_file_path = Context.get_temporary_file_path(task.get_file_path())
         cap = cv2.VideoCapture(data_file_path)
         image_list = []
         success, frame = cap.read()
@@ -33,7 +33,7 @@ class DetectorTrackerProcessor(Processor):
         if len(image_list) == 0:
             LOGGER.critical('ERROR: image list length is 0')
             LOGGER.critical(f'Source: {task.get_source_id()}, Task: {task.get_task_id()}')
-            LOGGER.critical(f'file_path: {task.get_file_path()}')
+            LOGGER.critical(f'file_path: {Context.get_temporary_file_path(task.get_file_path())}')
             return None
         result = self.infer(image_list)
         task = self.get_scenario(result, task)

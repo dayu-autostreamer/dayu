@@ -16,7 +16,7 @@ class RoiClassifierProcessor(Processor):
         self.classifier = Context.get_instance('Roi_Classifier')
 
     def __call__(self, task: Task):
-        data_file_path = task.get_file_path()
+        data_file_path = Context.get_temporary_file_path(task.get_file_path())
         cap = cv2.VideoCapture(data_file_path)
         content = task.get_prev_content()
         if content is None:
