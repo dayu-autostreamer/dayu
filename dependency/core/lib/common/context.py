@@ -41,7 +41,7 @@ class Context:
             FileNotMountedError: If the specified file is not found in any mounted volumes.
             IndexError: If `file_path` is an integer but out of the valid volume index range.
         """
-        volume_num = cls.get_parameter('VOLUME_NUM', direct=False)
+        volume_num = cls.get_parameter('VOLUME_NUM', direct=False) - 1 # the last volume is for temporary files
         file_prefix = os.path.normpath(cls.get_parameter('FILE_PREFIX', ''))
         mount_prefix = os.path.normpath(cls.parameters.get('DATA_PATH_PREFIX', '/home/data'))
 
