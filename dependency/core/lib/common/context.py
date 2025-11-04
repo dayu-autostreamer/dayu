@@ -1,7 +1,7 @@
 import os
 from typing import Union
 
-from .class_factory import ClassFactory
+from .class_factory import ClassFactory, ClassType
 from .error import FileNotMountedError
 
 
