@@ -6,7 +6,7 @@ import time
 
 from .base_getter import BaseDataGetter
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Counter, NameMaintainer, Context
+from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Counter, NameMaintainer
 
 __all__ = ('RtspVideoGetter',)
 
@@ -101,7 +101,7 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
         ]
         LOGGER.debug(f'[DEBUG] Process frames in frame buffer')
         file_name = NameMaintainer.get_task_data_file_name(source_id, new_task_id, file_suffix=self.file_suffix)
-        self.compress_frames(system, frame_buffer, Context.get_temporary_file_path(file_name))
+        self.compress_frames(system, frame_buffer, file_name)
         LOGGER.debug(f'[DEBUG] Compress frames in frame buffer')
 
         new_task = system.generate_task(new_task_id, task_dag, service_deployment, meta_data, file_name, None)
