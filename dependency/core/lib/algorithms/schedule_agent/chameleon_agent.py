@@ -227,7 +227,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         cur_path = self.compress_video(frames)
 
-        tmp_task = Task(source_id=0, task_id=0, source_device='', all_edge_devices=[], dag=self.task_dag)
+        tmp_task = Task(source_id=-1, task_id=-1, source_device='', all_edge_devices=[], dag=self.task_dag)
         tmp_task.set_file_path(cur_path)
         response = http_request(url=self.processor_address,
                                 method=NetworkAPIMethod.PROCESSOR_PROCESS_RETURN,
