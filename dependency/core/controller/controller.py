@@ -148,6 +148,7 @@ class Controller:
                                                                  required_parallel_task_count)
                 # something wrong causes invalid task retrieving
                 if not tasks:
+                    LOGGER.warning('Invalid task retrieving from task coordinator!')
                     actions.append('wait')
                     continue
 
