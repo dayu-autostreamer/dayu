@@ -66,7 +66,7 @@ class ProcessorServer:
 
     def process_service_background(self, data, file_data):
         cur_task = Task.deserialize(data)
-        FileOps.save_data_file(cur_task, file_data)
+        FileOps.save_task_file_in_temp(cur_task, file_data)
         self.task_queue.put(cur_task)
         LOGGER.debug(f'[Task Queue] Queue Size (receive request): {self.task_queue.size()}')
         LOGGER.debug(f'[Monitor Task] (Process Request Background) '
@@ -88,11 +88,11 @@ class ProcessorServer:
         cur_task = Task.deserialize(data)
         LOGGER.info(f'[Process Return Background] Process task: source {cur_task.get_source_id()}  / '
                     f'task {cur_task.get_task_id()}')
-        FileOps.save_data_file(cur_task, file_data)
+        FileOps.save_task_file_in_temp(cur_task, file_data)
 
         new_task = self.processor(cur_task)
         LOGGER.debug(f'[Processor Return completed] content length: {len(new_task.get_current_content())}')
-        FileOps.remove_data_file(cur_task)
+        FileOps.remove_task_file_in_temp(cur_task)
         if new_task:
             return new_task.serialize()
         return None
@@ -122,7 +122,7 @@ class ProcessorServer:
 
             if new_task:
                 self.send_result_back_to_controller(new_task)
-            FileOps.remove_data_file(task)
+            FileOps.remove_task_file_in_temp(task)
 
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')

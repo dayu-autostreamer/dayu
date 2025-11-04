@@ -68,7 +68,7 @@ class DistributorServer:
 
     def distribute_data_background(self, data, file_data):
         cur_task = Task.deserialize(data)
-        FileOps.save_data_file(cur_task, file_data)
+        FileOps.save_task_file(cur_task, file_data)
         self.distributor.record_transmit_ts(cur_task)
         self.distributor.distribute_data(cur_task)
 

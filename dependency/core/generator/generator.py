@@ -90,7 +90,7 @@ class Generator:
                      method=NetworkAPIMethod.CONTROLLER_TASK,
                      data={'data': cur_task.serialize()},
                      files={'file': (cur_task.get_file_path(),
-                                     open(Context.get_temporary_file_path(cur_task.get_file_path()), 'rb'),
+                                     open(cur_task.get_file_path(), 'rb'),
                                      'multipart/form-data')}
                      )
         LOGGER.info(f'[To Controller {dst_device}] source: {cur_task.get_source_id()}  '

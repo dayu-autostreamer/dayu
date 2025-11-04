@@ -45,7 +45,7 @@ class ControllerServer:
     def submit_task_background(self, data, file_data):
         """deal with tasks submitted by the generator or other controllers"""
         cur_task = Task.deserialize(data)
-        FileOps.save_data_file(cur_task, file_data)
+        FileOps.save_task_file_in_temp(cur_task, file_data)
         # record end time of transmitting
         self.controller.record_transmit_ts(cur_task, is_end=True)
 
@@ -55,7 +55,7 @@ class ControllerServer:
         # so that task returned from processor don't need to carry with file.
         LOGGER.debug(f'[DEBUG for delete temp files] action: {action}, delete_temp_file:{self.is_delete_temp_files}')
         if self.is_delete_temp_files and not action == 'execute':
-            FileOps.remove_data_file(cur_task)
+            FileOps.remove_task_file_in_temp(cur_task)
 
     def process_return_background(self, data):
         """deal with tasks returned by the processor"""
@@ -71,4 +71,4 @@ class ControllerServer:
         # so that joint task merged from waiting tasks has file to transmit.
         LOGGER.debug(f'[DEBUG for delete temp files] action: {actions}, delete_temp_file:{self.is_delete_temp_files}')
         if self.is_delete_temp_files and 'execute' not in actions and 'wait' not in actions:
-            FileOps.remove_data_file(cur_task)
+            FileOps.remove_task_file_in_temp(cur_task)
