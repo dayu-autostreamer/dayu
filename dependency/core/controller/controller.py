@@ -47,7 +47,7 @@ class Controller:
         if service not in service_ports_dict:
             LOGGER.warning(f'[Service Not Exist] Service {service} does not exist in {self.local_device} '
                            f'(has service: {service_ports_dict.keys()})')
-            return
+            return 'error'
 
         service_deployment = KubeConfig.get_service_nodes_dict()
         if self.local_device not in service_deployment[service]:
@@ -57,7 +57,7 @@ class Controller:
             cur_task.set_current_stage_device(self.cloud_device)
             self.erase_execute_ts(cur_task)
             self.submit_task(cur_task=cur_task)
-            return
+            return 'transmit'
         else:
             service_address = merge_address(NodeInfo.hostname2ip(self.local_device),
                                             port=service_ports_dict[service],
@@ -67,7 +67,7 @@ class Controller:
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
                            f'task: {cur_task.get_task_id()} '
                            f'file: {Context.get_temporary_file_path(cur_task.get_file_path())}')
-            return
+            return 'error'
 
         # Local fast path: only send metadata
         http_request(url=service_address,
@@ -76,6 +76,8 @@ class Controller:
 
         LOGGER.info(f'[To Service {service} Local] source: {cur_task.get_source_id()}  '
                     f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
+
+        return 'execute'
 
     def send_task_to_distributor(self, cur_task: Task):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
@@ -116,8 +118,7 @@ class Controller:
             self.send_task_to_other_device(cur_task, dst_device)
             action = 'transmit'
         else:
-            self.send_task_to_service(cur_task, service_name)
-            action = 'execute'
+            action = self.send_task_to_service(cur_task, service_name)
 
         return action
 
