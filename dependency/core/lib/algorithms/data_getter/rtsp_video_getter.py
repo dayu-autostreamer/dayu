@@ -6,7 +6,7 @@ import time
 
 from .base_getter import BaseDataGetter
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Counter, NameMaintainer
+from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Counter, NameMaintainer, Context
 
 __all__ = ('RtspVideoGetter',)
 

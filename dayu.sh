@@ -101,6 +101,7 @@ spec:
     - file:
         paths:
           - $DATASOURCE_DATA_ROOT
+          - $DEFAULT_FILE_MOUNT_PREFIX/temp/
       logLevel:
         level: "DEBUG"
       template:
@@ -157,6 +158,7 @@ spec:
     file:
       paths:
       - $TEMPLATE
+      - $DEFAULT_FILE_MOUNT_PREFIX/temp/
     logLevel:
       level: "DEBUG"
     template:
@@ -404,6 +406,7 @@ import_config() {
     REGISTRY=$(yq e '.default-image-meta.registry' "$TMP_FILE")
     REPOSITORY=$(yq e '.default-image-meta.repository' "$TMP_FILE")
     TAG=$(yq e '.default-image-meta.tag' "$TMP_FILE")
+    DEFAULT_FILE_MOUNT_PREFIX=$(yq e '.default-file-mount-prefix' "$TMP_FILE")
     DATASOURCE_USE_SIMULATION=$(yq e '.datasource.use-simulation' "$TMP_FILE")
     DATASOURCE_DATA_ROOT=$(yq e '.datasource.data-root' "$TMP_FILE")
     DATASOURCE_NODE=$(yq e '.datasource.node' "$TMP_FILE")
@@ -489,6 +492,7 @@ display_config() {
     echo "  Registry: $REGISTRY"
     echo "  Repository: $REPOSITORY"
     echo "  Tag: $TAG"
+    echo "  Default File Mount Prefix: $DEFAULT_FILE_MOUNT_PREFIX"
     echo "  Datasource Simulation: $DATASOURCE_USE_SIMULATION"
     echo "  Datasource Data Root: $DATASOURCE_DATA_ROOT"
     echo "  Datasource Node: $DATASOURCE_NODE"
