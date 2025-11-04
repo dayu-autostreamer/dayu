@@ -53,8 +53,9 @@ class ControllerServer:
 
         # for execute action, the file is remained
         # so that task returned from processor don't need to carry with file.
-        LOGGER.debug(f'[DEBUG for delete temp files] action: {action}, delete_temp_file:{self.is_delete_temp_files}')
+        LOGGER.debug(f'[DEBUG for delete temp files] action: {action}, delete_temp_file:{self.is_delete_temp_files} in task {cur_task.get_task_id()}')
         if self.is_delete_temp_files and not action == 'execute':
+            LOGGER.debug(f'[DEBUG for delete temp files] delete temp files in task {cur_task.get_task_id()}')
             FileOps.remove_task_file_in_temp(cur_task)
 
     def process_return_background(self, data):
@@ -69,6 +70,7 @@ class ControllerServer:
         # so that task returned from processor don't need to carry with file;
         # for wait action of joint node, the file is remained
         # so that joint task merged from waiting tasks has file to transmit.
-        LOGGER.debug(f'[DEBUG for delete temp files] action: {actions}, delete_temp_file:{self.is_delete_temp_files}')
+        LOGGER.debug(f'[DEBUG for delete temp files] action: {actions}, delete_temp_file:{self.is_delete_temp_files} in task {cur_task.get_task_id()}')
         if self.is_delete_temp_files and 'execute' not in actions and 'wait' not in actions:
+            LOGGER.debug(f'[DEBUG for delete temp files] delete temp files in task {cur_task.get_task_id()}')
             FileOps.remove_task_file_in_temp(cur_task)
