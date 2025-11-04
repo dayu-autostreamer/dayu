@@ -32,6 +32,7 @@ exposure-identification, category-classification and license-plate-recognition.
 - Accelerate backend visualization through caching mechanism (`backend`).
 - Add ROI ID to detection/tracking applications to support roi-accelerated classification applications (`processor`).
 - Add ROI Classifier to accelerate roi-level classification applications (`processor`).
+- Optimize local service processor by sharing temporary directory on local devices (`controller`/`processor`).
 
 ---
 

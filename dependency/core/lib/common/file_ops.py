@@ -2,7 +2,7 @@ import os
 import shutil
 import tempfile
 
-from core.lib.common import Context
+from .context import Context
 
 
 class FileOps:
