@@ -122,7 +122,9 @@ class ProcessorServer:
 
             if new_task:
                 self.send_result_back_to_controller(new_task)
-            FileOps.remove_task_file_in_temp(task)
+
+            # # Share file with local controller
+            # FileOps.remove_task_file_in_temp(task)
 
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
