@@ -76,7 +76,7 @@ class ProcessorServer:
         """
             Process local services without transmitting files.
         """
-        backtask.add_task(self.process_service_background, data)
+        backtask.add_task(self.process_local_service_background, data)
 
     def process_local_service_background(self, data):
         cur_task = Task.deserialize(data)
