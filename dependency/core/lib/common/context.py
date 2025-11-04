@@ -1,7 +1,7 @@
 import os
 from typing import Union
 
-from .class_factory import ClassFactory, ClassType
+from .class_factory import ClassFactory
 from .error import FileNotMountedError
 
 
@@ -82,6 +82,13 @@ class Context:
                 return os.path.join(mount_prefix, f'volume{index}', file_name)
 
             raise FileNotMountedError(f"File '{file_path}' is not mounted.")
+
+    @classmethod
+    def get_temporary_file_path(cls, file_name: str) -> str:
+        volume_num = cls.get_parameter('VOLUME_NUM', direct=False)
+        mount_prefix = os.path.normpath(cls.parameters.get('DATA_PATH_PREFIX', '/home/data'))
+        temp_dir = os.path.join(mount_prefix, f'volume{volume_num-1}')
+        return os.path.join(temp_dir, file_name)
 
     @classmethod
     def get_algorithm(cls, algorithm, al_name=None, **al_params):

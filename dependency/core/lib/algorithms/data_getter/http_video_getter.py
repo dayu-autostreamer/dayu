@@ -50,7 +50,7 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
 
         self.file_name = NameMaintainer.get_task_data_file_name(system.source_id, task_id, self.file_suffix)
 
-        with open(self.file_name, 'wb') as f:
+        with open(Context.get_temporary_file_path(self.file_name), 'wb') as f:
             f.write(response.content)
 
     @staticmethod

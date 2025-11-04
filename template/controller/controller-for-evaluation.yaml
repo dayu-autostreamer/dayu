@@ -6,7 +6,7 @@ pod-template:
     - name: DISPLAY
       value: "False"
     - name: DELETE_TEMP_FILES
-      value: "False"
+      value: "True"
 port-open:
   pos: both
   port: 9000
