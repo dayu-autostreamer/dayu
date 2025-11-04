@@ -14,7 +14,7 @@ class FileOps:
 
     @staticmethod
     def remove_data_file(task):
-        file_path = task.get_file_path()
+        file_path = Context.get_temporary_file_path(task.get_file_path())
         FileOps.remove_file(file_path)
 
     @staticmethod
