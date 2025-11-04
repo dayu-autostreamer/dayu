@@ -101,45 +101,49 @@ class TemplateHelper:
         if pos == 'cloud':
             files_cloud = [self.prepare_file_path(file['path'])
                            for file in file_mount if file['pos'] in ('cloud', 'both')] \
-                if file_mount else None
+                if file_mount else []
+            files_cloud.append(self.prepare_file_path('temp/'))
 
             template_doc['spec'].update({
                 'cloudWorker': {
                     'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_cloud}} if files_cloud else {}),
+                    **({'file': {'paths': files_cloud}}),
                 }
             })
         elif pos == 'edge':
             files_edge = [self.prepare_file_path(file['path'])
                           for file in file_mount if file['pos'] in ('edge', 'both')] \
-                if file_mount else None
+                if file_mount else []
+            files_edge.append(self.prepare_file_path('temp/'))
 
             template_doc['spec'].update({
                 'edgeWorker': [{
                     'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_edge}} if files_edge else {}),
+                    **({'file': {'paths': files_edge}}),
                 }]
             })
         elif pos == 'both':
             files_cloud = [self.prepare_file_path(file['path'])
                            for file in file_mount if file['pos'] in ('cloud', 'both')] \
-                if file_mount else None
+                if file_mount else []
+            files_cloud.append(self.prepare_file_path('temp/'))
             files_edge = [self.prepare_file_path(file['path'])
                           for file in file_mount if file['pos'] in ('edge', 'both')] \
-                if file_mount else None
+                if file_mount else []
+            files_edge.append(self.prepare_file_path('temp/'))
 
             template_doc['spec'].update({
                 'edgeWorker': [{
                     'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_edge}} if files_edge else {}),
+                    **({'file': {'paths': files_edge}}),
                 }],
                 'cloudWorker': {
                     'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_cloud}} if files_cloud else {}),
+                    **({'file': {'paths': files_cloud}}),
                 }
             })
         else:

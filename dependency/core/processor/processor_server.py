@@ -20,6 +20,11 @@ class ProcessorServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.PROCESSOR_PROCESS]
                      ),
+            APIRoute(NetworkAPIPath.PROCESSOR_PROCESS_LOCAL,
+                     self.process_local_service,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.PROCESSOR_PROCESS_LOCAL]
+                     ),
             APIRoute(NetworkAPIPath.PROCESSOR_PROCESS_RETURN,
                      self.process_return_service,
                      response_class=JSONResponse,
@@ -53,14 +58,11 @@ class ProcessorServer:
                                                 port=self.controller_port,
                                                 path=NetworkAPIPath.CONTROLLER_RETURN)
 
-        threading.Thread(target=self.loop_process).start()
+        threading.Thread(target=self.loop_process, name="ProcessorLoop", daemon=True).start()
 
     async def process_service(self, backtask: BackgroundTasks, file: UploadFile = File(...), data: str = Form(...)):
         file_data = await file.read()
-        cur_task = Task.deserialize(data)
         backtask.add_task(self.process_service_background, data, file_data)
-        LOGGER.debug(f'[Monitor Task] (Process Request) '
-                     f'Source: {cur_task.get_source_id()} / Task: {cur_task.get_task_id()} ')
 
     def process_service_background(self, data, file_data):
         cur_task = Task.deserialize(data)
@@ -69,6 +71,16 @@ class ProcessorServer:
         LOGGER.debug(f'[Task Queue] Queue Size (receive request): {self.task_queue.size()}')
         LOGGER.debug(f'[Monitor Task] (Process Request Background) '
                      f'Source: {cur_task.get_source_id()} / Task: {cur_task.get_task_id()} ')
+
+    async def process_local_service(self, backtask: BackgroundTasks, data: str = Form(...)):
+        """
+            Process local services without transmitting files.
+        """
+        backtask.add_task(self.process_service_background, data)
+
+    def process_local_service_background(self, data):
+        cur_task = Task.deserialize(data)
+        self.task_queue.put(cur_task)
 
     async def process_return_service(self, file: UploadFile = File(...),
                                      data: str = Form(...)):

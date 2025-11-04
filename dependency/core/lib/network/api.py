@@ -3,6 +3,7 @@ class NetworkAPIPath:
     CONTROLLER_RETURN = '/process_return_task'
 
     PROCESSOR_PROCESS = '/predict'
+    PROCESSOR_PROCESS_LOCAL = '/predict_local'
     PROCESSOR_PROCESS_RETURN = '/predict_and_return'
     PROCESSOR_QUEUE_LENGTH = '/queue_length'
     PROCESSOR_MODEL_FLOPS = '/model_flops'
@@ -59,6 +60,7 @@ class NetworkAPIMethod:
     CONTROLLER_RETURN = 'POST'
 
     PROCESSOR_PROCESS = 'POST'
+    PROCESSOR_PROCESS_LOCAL = 'POST'
     PROCESSOR_PROCESS_RETURN = 'POST'
     PROCESSOR_QUEUE_LENGTH = 'GET'
     PROCESSOR_MODEL_FLOPS = 'GET'

@@ -236,7 +236,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
                                                 open(tmp_task.get_file_path(), 'rb'),
                                                 'multipart/form-data')}
                                 )
-        FileOps.remove_data_file(tmp_task)
+        FileOps.remove_file(tmp_task.get_file_path())
         if response:
             task = Task.deserialize(response)
             return task.get_first_content()

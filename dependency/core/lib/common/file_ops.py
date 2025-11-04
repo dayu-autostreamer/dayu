@@ -2,11 +2,13 @@ import os
 import shutil
 import tempfile
 
+from core.lib.common import Context
+
 
 class FileOps:
     @staticmethod
     def save_data_file(task, file_data):
-        file_path = task.get_file_path()
+        file_path = Context.get_temporary_file_path(task.get_file_path())
         with open(file_path, 'wb') as buffer:
             buffer.write(file_data)
 

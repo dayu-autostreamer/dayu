@@ -3,7 +3,7 @@
   yaml: fixed-policy.yaml
   dependency:
     generator: generator-base.yaml
-    controller: controller-no-delete.yaml
+    controller: controller-base.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: hedger
@@ -11,7 +11,7 @@
   yaml: hedger.yaml
   dependency:
     generator: generator-base.yaml
-    controller: controller-no-delete.yaml
+    controller: controller-base.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: hei
