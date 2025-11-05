@@ -190,7 +190,7 @@ class BackendServer:
         service_list = [service['id'] for service in self.server.services]
         current_service_list = []
 
-        if KubeHelper.check_pods_running(self.server.namespace):
+        if self.server.check_pods_running_state():
             for service_id in service_list:
                 if KubeHelper.check_pod_name(service_id, namespace=self.server.namespace):
                     current_service_list.append(service_id)
@@ -533,7 +533,7 @@ class BackendServer:
         {'state':'install/uninstall'}
         """
 
-        return {'state': self.server.check_install_state()}
+        return {'state': 'install' if self.server.check_install_state() else 'uninstall'}
 
     async def submit_query(self, data=Body(...)):
         """
