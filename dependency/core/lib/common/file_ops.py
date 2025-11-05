@@ -18,6 +18,11 @@ class FileOps:
         FileOps.remove_file(file_path)
 
     @staticmethod
+    def clear_temp_directory():
+        temp_dir = Context.get_temporary_file_path('')
+        FileOps.clear_directory(temp_dir)
+
+    @staticmethod
     def save_task_file(task, file_data):
         file_path = task.get_file_path()
         with open(file_path, 'wb') as buffer:

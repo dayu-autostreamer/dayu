@@ -5,7 +5,7 @@ from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.common import FileOps
-from core.lib.common import Context,LOGGER
+from core.lib.common import Context
 from core.lib.content import Task
 
 from .controller import Controller
@@ -35,6 +35,8 @@ class ControllerServer:
 
         self.is_delete_temp_files = Context.get_parameter('DELETE_TEMP_FILES', direct=False)
 
+        FileOps.clear_temp_directory()
+
     async def submit_task(self, backtask: BackgroundTasks, file: UploadFile = File(...), data: str = Form(...)):
         file_data = await file.read()
         backtask.add_task(self.submit_task_background, data, file_data)
@@ -53,9 +55,7 @@ class ControllerServer:
 
         # for execute action, the file is remained
         # so that task returned from processor don't need to carry with file.
-        LOGGER.debug(f'[DEBUG for delete temp files] action: {action}, delete_temp_file:{self.is_delete_temp_files} in task {cur_task.get_task_id()}')
         if self.is_delete_temp_files and not action == 'execute':
-            LOGGER.debug(f'[DEBUG for delete temp files] delete temp files in task {cur_task.get_task_id()}')
             FileOps.remove_task_file_in_temp(cur_task)
 
     def process_return_background(self, data):
@@ -70,7 +70,5 @@ class ControllerServer:
         # so that task returned from processor don't need to carry with file;
         # for wait action of joint node, the file is remained
         # so that joint task merged from waiting tasks has file to transmit.
-        LOGGER.debug(f'[DEBUG for delete temp files] action: {actions}, delete_temp_file:{self.is_delete_temp_files} in task {cur_task.get_task_id()}')
         if self.is_delete_temp_files and 'execute' not in actions and 'wait' not in actions:
-            LOGGER.debug(f'[DEBUG for delete temp files] delete temp files in task {cur_task.get_task_id()}')
             FileOps.remove_task_file_in_temp(cur_task)
