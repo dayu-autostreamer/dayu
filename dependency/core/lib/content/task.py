@@ -336,7 +336,7 @@ class Task:
 
         # get the longest transmitting time as cloud-edge transmitting time
         transmit_time = 0
-        for service_name in self.__dag_flow:
+        for service_name in self.__dag_flow.nodes:
             service = self.__dag_flow.get_node(service_name).service
             transmit_time = max(transmit_time, service.get_transmit_time())
         return transmit_time
