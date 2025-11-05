@@ -71,6 +71,7 @@ class BackendCore:
 
         self.yaml_dict = None
         self.source_deploy = None
+        self.install_state = False
 
         self.cur_yaml_docs = None
         self.save_yaml_path = 'resources.yaml'
@@ -564,10 +565,12 @@ class BackendCore:
         return edge_nodes
 
     def check_install_state(self):
-        return 'install' if KubeHelper.check_pods_without_string_exists(
+        self.install_state = 'install' if KubeHelper.check_pods_without_string_exists(
             self.namespace,
             exclude_str_list=self.system_support_components
         ) else 'uninstall'
+
+        return self.install_state
 
     def check_simulation_datasource(self):
         return KubeHelper.check_pod_name('datasource', namespace=self.namespace)
@@ -804,6 +807,10 @@ class BackendCore:
         return logs
 
     def get_system_parameters(self):
+        # Skip system parameters retrieving when not installed
+        if not self.install_state:
+            return []
+
         # Backend-controlled timestamp and single resource fetch per request
         timestamp = time.strftime('%H:%M:%S', time.localtime())
 
