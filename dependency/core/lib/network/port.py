@@ -161,8 +161,8 @@ class PortInfo:
         PortInfo._refresh_cache_if_needed()
         cache = PortInfo._nodeport_services_cache or {}
         result = {name: port for name, port in cache.items() if keyword in name}
-        # In 'never' mode, if miss happens, try one on-demand refresh once
-        if not result and getattr(PortInfo, '_refresh_mode', 'ttl') == 'never':
+        # On miss, perform one synchronous refresh
+        if not result:
             PortInfo._refresh_now()
             cache = PortInfo._nodeport_services_cache or {}
             return {name: port for name, port in cache.items() if keyword in name}
