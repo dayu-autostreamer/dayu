@@ -1,9 +1,9 @@
 import os
+import ast
 from typing import Union
 
 from .class_factory import ClassFactory, ClassType
 from .error import FileNotMountedError
-
 
 class Context:
     """The Context provides the capability of obtaining the context"""
@@ -17,8 +17,12 @@ class Context:
         value = cls.parameters.get(param) or cls.parameters.get(str(param).upper())
         value = value if value else default
 
-        if not direct:
-            value = eval(value)
+        if not direct and isinstance(value, str):
+            try:
+                value = ast.literal_eval(value)
+            except Exception:
+                # Fallback to raw string if parsing fails
+                pass
 
         return value
 
@@ -87,7 +91,10 @@ class Context:
     def get_temporary_file_path(cls, file_name: str) -> str:
         volume_num = cls.get_parameter('VOLUME_NUM', direct=False)
         mount_prefix = os.path.normpath(cls.parameters.get('DATA_PATH_PREFIX', '/home/data'))
-        temp_dir = os.path.join(mount_prefix, f'volume{volume_num-1}')
+        temp_dir = os.path.join(mount_prefix, f'volume{volume_num-1}', 'temp_files')
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
+
         return os.path.join(temp_dir, file_name)
 
     @classmethod
@@ -98,7 +105,7 @@ class Context:
         if not algorithm_dict:
             return None
         return ClassFactory.get_cls(
-            eval(f'ClassType.{algorithm}'),
+            getattr(ClassType, algorithm),
             algorithm_dict['method']
         )(**algorithm_dict['param'])
 
@@ -127,6 +134,4 @@ class Context:
             instance = globals()[class_name](**instance_params)
             return instance
         else:
-            assert None, f"Class '{class_name}' is not defined or imported."
-
-
+            raise ValueError("Class '{class_name}' is not defined or imported.")
