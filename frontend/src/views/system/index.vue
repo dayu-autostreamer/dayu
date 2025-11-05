@@ -20,7 +20,7 @@
               </el-checkbox-group>
             </div>
             <div>
-              <el-button type="primary" @click="exportSystemLog">Download System Log</el-button>
+              <el-button type="primary" @click="exportSystemLog">Export System Log</el-button>
             </div>
           </div>
         </div>

@@ -57,7 +57,7 @@
               class="export-button"
               @click="exportTaskLog"
           >
-            Export Log
+            Export Result Log
           </el-button>
         </div>
       </el-col>
