@@ -71,6 +71,8 @@ class BackendCore:
 
         self.yaml_dict = None
         self.source_deploy = None
+
+        self.installed_running_state = False
         self.install_state = False
 
         self.cur_yaml_docs = None
@@ -167,6 +169,8 @@ class BackendCore:
 
         if not result:
             return False, msg
+
+        self.installed_running_state = True
 
         # Start cycle deployment
         self.is_cycle_deploy = True
@@ -282,7 +286,7 @@ class BackendCore:
         _result = KubeHelper.apply_custom_resources(yaml_docs)
         if not _result:
             return False, 'kubernetes api error.'
-        while not KubeHelper.check_pods_running(self.namespace):
+        while not self.check_pods_running_state():
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
 
@@ -290,11 +294,11 @@ class BackendCore:
     def uninstall_yaml_templates(self, yaml_docs):
         if not yaml_docs:
             return False, 'yaml docs is lost, fail to delete resources'
+        self.installed_running_state = False
         _result = KubeHelper.delete_custom_resources(yaml_docs)
         if not _result:
             return False, 'kubernetes api error.'
-        while KubeHelper.check_pods_without_string_exists(self.namespace,
-                                                          exclude_str_list=self.system_support_components):
+        while self.check_install_state():
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
 
@@ -565,12 +569,15 @@ class BackendCore:
         return edge_nodes
 
     def check_install_state(self):
-        self.install_state = 'install' if KubeHelper.check_pods_without_string_exists(
+        self.install_state =KubeHelper.check_pods_without_string_exists(
             self.namespace,
             exclude_str_list=self.system_support_components
-        ) else 'uninstall'
+        )
 
         return self.install_state
+
+    def check_pods_running_state(self):
+        return KubeHelper.check_pods_running(self.namespace)
 
     def check_simulation_datasource(self):
         return KubeHelper.check_pod_name('datasource', namespace=self.namespace)
@@ -749,7 +756,7 @@ class BackendCore:
                     LOGGER.debug('[Redeployment] Configuration is lacked, cancel redeployment request..')
                     time.sleep(5)
                     continue
-                if not KubeHelper.check_pods_running(self.namespace):
+                if not self.check_pods_running_state():
                     LOGGER.debug('[Redeployment] Pods is in error state, cancel redeployment request..')
                     time.sleep(5)
                     continue
@@ -808,7 +815,7 @@ class BackendCore:
 
     def get_system_parameters(self):
         # Skip system parameters retrieving when not installed
-        if not self.install_state:
+        if not self.installed_running_state or not self.install_state:
             return []
 
         # Backend-controlled timestamp and single resource fetch per request
