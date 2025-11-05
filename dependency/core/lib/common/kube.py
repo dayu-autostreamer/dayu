@@ -122,6 +122,28 @@ class KubeConfig:
             cls._last_refresh_monotonic = time.monotonic()
 
     @classmethod
+    def _is_cache_initialized(cls) -> bool:
+        return cls._service_nodes_cache is not None and cls._node_services_cache is not None
+
+    @classmethod
+    def _is_cache_empty(cls) -> bool:
+        a = cls._service_nodes_list_cache or {}
+        b = cls._node_services_list_cache or {}
+        return (len(a) == 0) and (len(b) == 0)
+
+    @classmethod
+    def _warmup_blocking_if_needed(cls):
+        """
+            Block on first TTL access until we have attempted a synchronous refresh.
+        """
+        if getattr(cls, '_refresh_mode', 'ttl') != 'ttl':
+            return
+        if cls._is_cache_initialized():
+            return
+        # Synchronous refresh
+        cls._refresh_now()
+
+    @classmethod
     def _refresh_cache_if_needed(cls, force: bool = False):
         """Refresh caches according to configured mode.
         - ttl: refresh on TTL expiry (non-blocking background for subsequent calls)
@@ -133,6 +155,11 @@ class KubeConfig:
             # Only warm-up if empty or force refresh
             if force or cls._service_nodes_cache is None or cls._node_services_cache is None:
                 cls._refresh_now()
+            return
+
+        # TTL mode: ensure cold-start is warmed up synchronously once
+        if not force and not cls._is_cache_initialized():
+            cls._warmup_blocking_if_needed()
             return
 
         # Default TTL mode
