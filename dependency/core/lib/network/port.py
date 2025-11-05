@@ -34,6 +34,10 @@ class PortInfo:
         _refresh_mode = 'never'
         CACHE_TTL = float('inf')
 
+    # Warm-up timeout (seconds) for first cold-start in TTL mode
+    _warmup_raw = Context.get_parameter('KUBE_CACHE_WARMUP_TIMEOUT')
+    WARMUP_TIMEOUT = float(str(_warmup_raw).strip()) if _warmup_raw is not None else 3.0
+
     @classmethod
     def _get_api(cls):
         if not cls._api:
@@ -90,11 +94,37 @@ class PortInfo:
             cls._last_refresh_monotonic = time.monotonic()
 
     @classmethod
+    def _is_cache_initialized(cls) -> bool:
+        return cls._nodeport_services_cache is not None
+
+    @classmethod
+    def _is_cache_empty(cls) -> bool:
+        cache = cls._nodeport_services_cache or {}
+        return len(cache) == 0
+
+    @classmethod
+    def _warmup_blocking_if_needed(cls):
+        """
+            Block on first TTL access until we have attempted a synchronous refresh.
+        """
+        if getattr(cls, '_refresh_mode', 'ttl') != 'ttl':
+            return
+        if cls._is_cache_initialized():
+            return
+        # Synchronous refresh
+        cls._refresh_now()
+
+    @classmethod
     def _refresh_cache_if_needed(cls, force: bool = False):
         mode = getattr(cls, '_refresh_mode', 'ttl')
         if mode == 'never':
             if force or cls._nodeport_services_cache is None:
                 cls._refresh_now()
+            return
+
+        # TTL mode: ensure cold-start is warmed up synchronously once
+        if not force and not cls._is_cache_initialized():
+            cls._warmup_blocking_if_needed()
             return
 
         if not force and not cls._cache_expired():
