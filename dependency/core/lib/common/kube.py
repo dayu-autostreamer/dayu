@@ -228,8 +228,8 @@ class KubeConfig:
         cls._refresh_cache_if_needed()
         cache = cls._node_services_list_cache or {}
         result = list(cache.get(node_name, []))
-        # In 'never' mode, if miss happens, try one on-demand refresh once
-        if not result and getattr(cls, '_refresh_mode', 'ttl') == 'never':
+        # On miss, perform one synchronous refresh
+        if not result:
             cls._refresh_now()
             cache = cls._node_services_list_cache or {}
             return list(cache.get(node_name, []))
@@ -247,7 +247,7 @@ class KubeConfig:
         cls._refresh_cache_if_needed()
         cache = cls._service_nodes_list_cache or {}
         result = list(cache.get(service_name, []))
-        if not result and getattr(cls, '_refresh_mode', 'ttl') == 'never':
+        if not result:
             cls._refresh_now()
             cache = cls._service_nodes_list_cache or {}
             return list(cache.get(service_name, []))
