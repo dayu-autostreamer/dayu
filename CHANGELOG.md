@@ -33,6 +33,7 @@ exposure-identification, category-classification and license-plate-recognition.
 - Add ROI ID to detection/tracking applications to support roi-accelerated classification applications (`processor`).
 - Add ROI Classifier to accelerate roi-level classification applications (`processor`).
 - Optimize local service processor by sharing temporary directory on local devices (`controller`/`processor`).
+- Add adjustable request scheduling interval in generator to avoid frequent scheduling (`generator`).
 
 ---
 
