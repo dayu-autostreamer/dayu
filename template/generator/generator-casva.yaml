@@ -19,3 +19,6 @@ pod-template:
       value: casva
     - name: GEN_ASO_NAME
       value: casva
+    # interval in source seconds to schedule requests (e.g, 1 request for 1s video), 0 for request at each task
+    - name: REQUEST_SCHEDULING_INTERVAL
+      value: "0"

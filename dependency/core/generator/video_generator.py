@@ -15,6 +15,8 @@ class VideoGenerator(Generator):
         self.frame_compress = Context.get_algorithm('GEN_COMPRESS')
         self.getter_filter = Context.get_algorithm('GEN_GETTER_FILTER')
 
+        self.cumulative_scheduling_frame_count = 0
+
     def submit_task_to_controller(self, cur_task):
         self.record_total_start_ts(cur_task)
         super().submit_task_to_controller(cur_task)
@@ -33,4 +35,7 @@ class VideoGenerator(Generator):
             self.data_getter(self)
 
             # request schedule policy for subsequent tasks
-            self.request_schedule_policy()
+            if self.cumulative_scheduling_frame_count > \
+                    self.request_scheduling_interval * self.raw_meta_data.get('fps', 0):
+                self.request_schedule_policy()
+                self.cumulative_scheduling_frame_count = 0

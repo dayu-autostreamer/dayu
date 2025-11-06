@@ -42,6 +42,7 @@ class Generator:
         self.after_schedule_operation = Context.get_algorithm('GEN_ASO')
         self.data_getter = Context.get_algorithm('GEN_GETTER')
         self.before_submit_task_operation = Context.get_algorithm('GEN_BSTO')
+        self.request_scheduling_interval = Context.get_parameter('REQUEST_SCHEDULING_INTERVAL', direct=False)
 
     def request_schedule_policy(self):
         params = self.before_schedule_operation(self)
