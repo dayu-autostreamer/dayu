@@ -37,5 +37,6 @@ class VideoGenerator(Generator):
             # request schedule policy for subsequent tasks
             if self.cumulative_scheduling_frame_count > \
                     self.request_scheduling_interval * self.raw_meta_data.get('fps', 0):
+                LOGGER.debug(f'[Scheduling Request] Request a Scheduling policy from scheduler.')
                 self.request_schedule_policy()
                 self.cumulative_scheduling_frame_count = 0
