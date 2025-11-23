@@ -1,7 +1,7 @@
 position: both
 pod-template:
   image: vehicle-detection
-  imagePullPolicy: Always
+  imagePullPolicy: IfNotPresent
   env:
     - name: PROCESSOR_NAME
       value: "detector_tracker_processor"

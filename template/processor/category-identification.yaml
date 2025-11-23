@@ -1,7 +1,7 @@
 position: both
 pod-template:
   image: category-identification
-  imagePullPolicy: Always
+  imagePullPolicy: IfNotPresent
   env:
     - name: PROCESSOR_NAME
       value: "classifier_processor"
