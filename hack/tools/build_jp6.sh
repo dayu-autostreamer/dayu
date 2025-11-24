@@ -18,6 +18,8 @@ EOF
 
 # Default Dockerfiles and their platforms
 declare -A DOCKERFILES=(
+      [monitor]="build/monitor_jp6.Dockerfile"
+
       [pedestrian-detection]="build/pedestrian_detection_jp6.Dockerfile"
       [license-plate-recognition]="build/license_plate_recognition_jp6.Dockerfile"
       [vehicle-detection]="build/vehicle_detection_jp6.Dockerfile"
@@ -27,6 +29,7 @@ declare -A DOCKERFILES=(
 
 # Corresponding platforms
 declare -A PLATFORMS=(
+    [monitor]="linux/arm64"
     [pedestrian-detection]="linux/arm64"
     [license-plate-recognition]="linux/arm64"
     [vehicle-detection]="linux/arm64"

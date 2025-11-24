@@ -1,3 +1,5 @@
+docker pull "$REG"/dayuhub/monitor:v1.2-jp6
+docker tag "$REG"/dayuhub/monitor:v1.2-jp6 "$REG"/dayuhub/monitor:v1.2
 docker pull "$REG"/dayuhub/pedestrian-detection:v1.2-jp6
 docker tag "$REG"/dayuhub/pedestrian-detection:v1.2-jp6 "$REG"/dayuhub/pedestrian-detection:v1.2
 docker pull "$REG"/dayuhub/license-plate-recognition:v1.2-jp6
