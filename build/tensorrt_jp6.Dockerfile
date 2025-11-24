@@ -90,13 +90,7 @@ RUN apt-get update \
  && pip3 install "setuptools<60.0.0" \
  && pip3 install tiff \
  && pip3 install --no-cache-dir imagecodecs \
-      --global-option="build_ext" \
-      --global-option="--skip-jpeg8" \
-      --global-option="--skip-jpegls" \
-      --global-option="--skip-jpegxl" \
-      --global-option="--skip-jpegxr" \
-      --global-option="--skip-lz4" \
-      --global-option="--skip-zfp" \
+ && pip3 install --no-cache-dir --no-binary=imagecodecs imagecodecs \
  && pip3 install typing_extensions scipy \
       scikit-learn scikit-image tensorrt pycuda \
       ptflops==0.7.2.2 \
