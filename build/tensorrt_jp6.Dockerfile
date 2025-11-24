@@ -94,6 +94,8 @@ RUN apt-get update \
  && pip3 install typing_extensions scipy \
       scikit-learn scikit-image tensorrt pycuda \
       ptflops==0.7.2.2 \
- && pip3 install torch-scatter==2.1.2 torch-sparse==0.6.18 torch-geometric==2.6.1
+ && pip3 install --no-build-isolation torch-scatter==2.1.2 \
+ && pip3 install --no-build-isolation torch-sparse==0.6.18 \
+ && pip3 install --no-build-isolation torch-geometric==2.6.1
 
 CMD ["/bin/bash"]
