@@ -100,4 +100,6 @@ RUN apt-get update \
  && pip3 install --no-build-isolation torch-sparse==0.6.18 \
  && pip3 install --no-build-isolation torch-geometric==2.6.1
 
+RUN pip3 install --no-cache-dir --force-reinstall "numpy==1.23.5"
+
 CMD ["/bin/bash"]
