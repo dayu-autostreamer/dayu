@@ -15,7 +15,7 @@ def from_partial_dict(cls, data: dict):
 @dataclass
 class OffloadingConstraintCfg:
     allow_stay: bool = True  # Allow execution at the same location of the past one
-    forbid_return: bool = True  # Forbidden to return to any historical node
+    forbid_return: bool = False  # Forbidden to return to any historical node
     cloud_sticky: bool = True  # Stay on the cloud after offloading to the cloud
     use_monotone_metric: bool = False  # Enable monotonicity constraint with physical node hops
     metric_non_decreasing: bool = True  # True: metric[node_t] >= metric[last], work only with use_monotone_metric=True
