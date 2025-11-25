@@ -55,11 +55,43 @@ class HedgerDeploymentPPO(nn.Module):
             order += [i for i in range(num_nodes) if i not in seen]
         return order
 
-    def _initial_residual_mem(self, phys_feats: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # Estimate "instantaneous available memory"= mem_capacity * (1 - current mem_util);
+    def _initial_residual_mem(
+            self,
+            phys_feats: Dict[str, torch.Tensor],
+            logic_feats: Optional[Dict[str, torch.Tensor]] = None,
+            prev_deploy_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+            Calculate the "memory budget available for deploying the new model in this round."
+
+            - If `logic_feats` or `prev_deploy_mask` are not provided, revert to the old logic:
+              `residual = mem_capacity * (1 - mem_util).`
+
+            - If `prev_deploy_mask` is provided, indicating that we will first unload the previous model before deploying the new one, calculate as follows:
+
+              `total_used = cap * util`
+              `prev_usage = sum_i prev_deploy_mask[i, n] * model_mem[i]`
+
+              `baseline = max(total_used - prev_usage, 0)`  # Memory used by non-RL models
+              `residual_0 = max(cap - baseline, 0)`  # Budget for the new model
+        """
         cap = phys_feats["mem_capacity"].float()  # [Np] MB
-        util = phys_feats["mem_util_seq"][:, -1].float()  # current mem_util
-        return cap * (1.0 - util)  # [Np] MB
+
+        if logic_feats is None or prev_deploy_mask is None:
+            util = phys_feats["mem_util_seq"][:, -1].float()  # 当前总 mem_util
+            return cap * (1.0 - util)
+
+        util = phys_feats["mem_util_seq"][:, -1].float()  # [Np]
+        total_used = cap * util  # [Np]，当前总占用
+
+        model_mem = logic_feats["model_mem"].float()  # [Ms]
+        # prev_deploy_mask: [Ms, Np] -> [Np] (Total GPU memory usage of the old model on each node)
+        prev_usage = torch.matmul(prev_deploy_mask.float().t(), model_mem)  # [Np]
+        baseline = torch.clamp(total_used - prev_usage, min=0.0)  # [Np]
+
+        # Budget allocated for the "new round of model deployment"
+        residual = torch.clamp(cap - baseline, min=0.0)  # [Np]
+        return residual
 
     def _adapt_embeddings(self, h_s: torch.Tensor, h_p: torch.Tensor):
         """
@@ -70,13 +102,15 @@ class HedgerDeploymentPPO(nn.Module):
         return h_s, h_p
 
     @torch.no_grad()
-    def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats, topo_order: Optional[list] = None):
+    def policy(self, logic_edge_index, logic_feats, phys_edge_index,
+               phys_feats, topo_order: Optional[list] = None,
+               prev_deploy_mask: Optional[torch.Tensor] = None):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
         if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
 
-        residual = self._initial_residual_mem(phys_feats)  # [Np]
+        residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)  # [Np]
         model_mem = logic_feats["model_mem"].float()  # [Ms] MB
         probs = self.actor(h_s, h_p, mask=None)  # [Ms,Np] original Bernoulli probability
         cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
@@ -123,7 +157,8 @@ class HedgerDeploymentPPO(nn.Module):
 
             # Update remaining memory (deduction for non-cloud)
             for n in range(Np):
-                if n == cloud_idx: continue
+                if n == cloud_idx:
+                    continue
                 if deploy_mask[i, n]:
                     residual[n] = torch.clamp(residual[n] - model_mem[i], min=0.0)
 
@@ -131,12 +166,13 @@ class HedgerDeploymentPPO(nn.Module):
         return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {"capacity_relax_cnt": capacity_relax_cnt}
 
     def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
-                 deploy_mask: torch.Tensor, topo_order: Optional[list] = None):
+                 deploy_mask: torch.Tensor, topo_order: Optional[list] = None,
+                 prev_deploy_mask: Optional[torch.Tensor] = None):
         # Evaluate the log probability, entropy, and value of the given `deploy_mask` for use in PPO.
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
-        residual = self._initial_residual_mem(phys_feats)
+        residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)
         model_mem = logic_feats["model_mem"].float()
         probs = self.actor(h_s, h_p, mask=None)
         cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
@@ -157,7 +193,8 @@ class HedgerDeploymentPPO(nn.Module):
             logp_sum += dist.log_prob(act).sum()
             ent_sum += dist.entropy().mean()
             for n in range(Np):
-                if n == cloud_idx: continue
+                if n == cloud_idx:
+                    continue
                 if deploy_mask[i, n]: residual[n] = torch.clamp(residual[n] - model_mem[i], min=0.0)
 
         value = self.critic(h_s, h_p)
@@ -187,7 +224,8 @@ class HedgerDeploymentPPO(nn.Module):
                     tr = transitions[j]
                     lp, ent, val = self.evaluate(tr['logic_edge_index'], tr['logic_feats'],
                                                  tr['phys_edge_index'], tr['phys_feats'],
-                                                 tr['deploy_mask'], tr['topo_order'])
+                                                 tr['deploy_mask'], tr['topo_order'],
+                                                 tr['prev_deploy_mask'])
                     new_logp_list.append(lp)
                     new_val_list.append(val)
                     ent_list.append(ent)
@@ -208,7 +246,7 @@ class HedgerDeploymentPPO(nn.Module):
                 self.critic_opt.step()
 
 
-class HedgerOffloadPPO(nn.Module):
+class HedgerOffloadingPPO(nn.Module):
     def __init__(self, encoder: TopologyEncoders, d_model=64,
                  actor_lr=3e-4, critic_lr=1e-3, update_encoder: bool = True,
                  gamma=0.99, lamda=0.95, clip_eps=0.2,
