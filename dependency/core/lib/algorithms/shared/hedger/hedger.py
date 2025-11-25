@@ -9,7 +9,7 @@ import glob
 from core.lib.common import LOGGER, FileOps, Context
 
 from .topology_encoder import TopologyEncoders
-from .ppo_agent import HedgerOffloadPPO, HedgerDeploymentPPO
+from .ppo_agent import HedgerOffloadingPPO, HedgerDeploymentPPO
 from .hedger_config import from_partial_dict, OffloadingConstraintCfg, DeploymentConstraintCfg, LogicalTopology, \
     PhysicalTopology
 
@@ -107,7 +107,7 @@ class Hedger:
 
         assert self.shared_topology_encoder, 'Shared topology encoder must be registered before offloading agent.'
 
-        self.offloading_agent = HedgerOffloadPPO(
+        self.offloading_agent = HedgerOffloadingPPO(
             encoder=self.shared_topology_encoder,
             d_model=self.encoder_network_params['encoder_emb_dim'],
             actor_lr=self.offloading_agent_params['actor_lr'],
