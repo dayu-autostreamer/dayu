@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM ${REG}/dayuhub/tensorrt_jp6:trt8
+FROM ${REG}/dayuhub/tensorrt:jp6
 
 LABEL authors="Haoyang Su"
 
