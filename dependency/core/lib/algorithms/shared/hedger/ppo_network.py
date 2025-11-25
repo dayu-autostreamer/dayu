@@ -49,3 +49,27 @@ class ValueHead(nn.Module):
         vs = h_s.mean(dim=0, keepdim=True)
         vp = h_p.mean(dim=0, keepdim=True)
         return self.mlp(torch.cat([vs, vp], dim=-1)).squeeze(-1)  # [1]
+
+class FeatureAdapter(nn.Module):
+    """
+        A simple task-specific adapter:
+
+        - LayerNorm stabilizes the distribution
+
+        - A small MLP performs nonlinear transformations
+
+        - Residual connections maintain alignment with the backbone
+    """
+    def __init__(self, d_model: int, hidden_ratio: float = 0.5):
+        super().__init__()
+        hidden_dim = max(1, int(d_model * hidden_ratio))
+        self.net = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, d_model),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [..., d_model]
+        return x + self.net(x)

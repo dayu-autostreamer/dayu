@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .topology_encoder import TopologyEncoders
-from .ppo_network import DeploymentActor, OffloadActor, ValueHead
+from .ppo_network import DeploymentActor, OffloadActor, ValueHead, FeatureAdapter
 from .hedger_config import DeploymentConstraintCfg, OffloadingConstraintCfg
 from .utils import bfs_hop_from_source, compute_returns_advantages
 
@@ -18,9 +18,16 @@ class HedgerDeploymentPPO(nn.Module):
         self.encoder = encoder
         self.actor = DeploymentActor(d_model)
         self.critic = ValueHead(d_model)
-        params_actor = list(self.actor.parameters()) + (list(self.encoder.parameters()) if update_encoder else [])
+        self.service_adapter = FeatureAdapter(d_model)
+        self.device_adapter = FeatureAdapter(d_model)
+
+        adapter_params = list(self.service_adapter.parameters()) + list(self.device_adapter.parameters())
+        encoder_params = list(self.encoder.parameters()) if update_encoder else []
+        params_actor = list(self.actor.parameters()) + adapter_params + encoder_params
         self.actor_opt = torch.optim.Adam(params_actor, lr=actor_lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
+        self._actor_train_params = params_actor
+
         self.gamma = gamma
         self.lamda = lamda
         self.clip_eps = clip_eps
@@ -54,9 +61,18 @@ class HedgerDeploymentPPO(nn.Module):
         util = phys_feats["mem_util_seq"][:, -1].float()  # current mem_util
         return cap * (1.0 - util)  # [Np] MB
 
+    def _adapt_embeddings(self, h_s: torch.Tensor, h_p: torch.Tensor):
+        """
+        Perform a task-specific residual transformation on the (h_s, h_p) provided by the shared encoder
+        """
+        h_s = h_s + self.s_adapter(h_s)
+        h_p = h_p + self.p_adapter(h_p)
+        return h_s, h_p
+
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats, topo_order: Optional[list] = None):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
+        h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
         if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
 
@@ -118,6 +134,7 @@ class HedgerDeploymentPPO(nn.Module):
                  deploy_mask: torch.Tensor, topo_order: Optional[list] = None):
         # Evaluate the log probability, entropy, and value of the given `deploy_mask` for use in PPO.
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
+        h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
         residual = self._initial_residual_mem(phys_feats)
         model_mem = logic_feats["model_mem"].float()
@@ -186,7 +203,7 @@ class HedgerDeploymentPPO(nn.Module):
                 self.actor_opt.zero_grad()
                 self.critic_opt.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(list(self.actor.parameters()) + list(self.encoder.parameters()), 1.0)
+                nn.utils.clip_grad_norm_(self._actor_train_params, 1.0)
                 self.actor_opt.step()
                 self.critic_opt.step()
 
@@ -201,9 +218,16 @@ class HedgerOffloadPPO(nn.Module):
         self.encoder = encoder
         self.actor = OffloadActor(d_model)
         self.critic = ValueHead(d_model)
-        params_actor = list(self.actor.parameters()) + (list(self.encoder.parameters()) if update_encoder else [])
+        self.service_adapter = FeatureAdapter(d_model)
+        self.device_adapter = FeatureAdapter(d_model)
+
+        adapter_params = list(self.service_adapter.parameters()) + list(self.device_adapter.parameters())
+        encoder_params = list(self.encoder.parameters()) if update_encoder else []
+        params_actor = list(self.actor.parameters()) + adapter_params + encoder_params
         self.actor_opt = torch.optim.Adam(params_actor, lr=actor_lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
+        self._actor_train_params = params_actor
+
         self.gamma = gamma
         self.lamda = lamda
         self.clip_eps = clip_eps
@@ -236,10 +260,19 @@ class HedgerOffloadPPO(nn.Module):
         if not self.cfg.use_monotone_metric: return None
         return bfs_hop_from_source(phys_edge_index, N, self.source)
 
+    def _adapt_embeddings(self, h_s: torch.Tensor, h_p: torch.Tensor):
+        """
+        Perform a task-specific residual transformation on the (h_s, h_p) provided by the shared encoder
+        """
+        h_s = h_s + self.s_adapter(h_s)
+        h_p = h_p + self.p_adapter(h_p)
+        return h_s, h_p
+
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
                static_mask: torch.Tensor, topo_order: Optional[list] = None):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
+        h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
 
         actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
@@ -300,6 +333,7 @@ class HedgerOffloadPPO(nn.Module):
     def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
                  actions: torch.Tensor, static_mask: torch.Tensor, topo_order: Optional[list] = None):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
+        h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
 
         logp_sum = torch.tensor(0., device=h_p.device)
@@ -396,6 +430,6 @@ class HedgerOffloadPPO(nn.Module):
                 self.actor_opt.zero_grad()
                 self.critic_opt.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(list(self.actor.parameters()) + list(self.encoder.parameters()), 1.0)
+                nn.utils.clip_grad_norm_(self._actor_train_params, 1.0)
                 self.actor_opt.step()
                 self.critic_opt.step()
