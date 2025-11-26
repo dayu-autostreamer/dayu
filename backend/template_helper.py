@@ -379,8 +379,6 @@ class TemplateHelper:
 
                 yaml_docs.append(edge_yaml_doc)
 
-        print(yaml_docs)
-
         return yaml_docs
 
     def process_image(self, image: str) -> str:
