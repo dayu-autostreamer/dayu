@@ -6,7 +6,7 @@ import uuid
 
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant
+from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant, NameMaintainer
 from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
@@ -323,7 +323,8 @@ class TemplateHelper:
 
             # Cloud-only CR
             # Create cloudWorker CR (processor must be deployed on cloud node)
-            cloud_component_name = f"processor-{service_name}-cloud"
+            cloud_component_name = f"processor-{service_name}-{NameMaintainer.standardize_device_name(cloud_node)}"
+            yaml_docs.append(base_yaml_doc)
             cloud_yaml_doc = copy.deepcopy(base_yaml_doc)
             cloud_yaml_doc = self.fill_template(cloud_yaml_doc, cloud_component_name)
 
@@ -351,7 +352,7 @@ class TemplateHelper:
 
             # Edge-only CRs per node
             for edge_node in edge_nodes:
-                edge_component_name = f"processor-{service_name}-{edge_node.replace('-','').lower()}"
+                edge_component_name = f"processor-{service_name}-{NameMaintainer.standardize_device_name(edge_node)}"
 
                 edge_yaml_doc = copy.deepcopy(base_yaml_doc)
                 edge_yaml_doc = self.fill_template(edge_yaml_doc, edge_component_name)
