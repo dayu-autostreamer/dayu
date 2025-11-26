@@ -292,15 +292,17 @@ class TemplateHelper:
         return yaml_doc
 
     def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy):
-        """Generate processor CRs with one CR per (service, edge_node) to enable per-node redeployment.
+        """Generate processor CRs with fine-grained units.
 
-        For each logical service, we:
-        - Request deployment plan from scheduler to get the final edge_nodes list.
-        - For each edge_node, create an independent CR with unique metadata.name
-          of the form `processor-{service_name}-{edge_node}`.
-        - Each CR contains exactly one edgeWorker targeting that node.
-        - CloudWorker behavior is kept consistent with the original template:
-          if present in the template, it is retained and bound to `cloud_node`.
+        For each logical processor service we generate:
+        - One cloud-only CR (if cloudWorker template exists) with name
+          `processor-{service_name}-cloud`.
+        - One edge-only CR per edge node with name
+          `processor-{service_name}-{edge_node}`.
+
+        This enables independent redeployment for cloud and each edge node
+        while keeping the `processor-{service_name}` prefix so that
+        service-level queries by prefix still work.
         """
         deployment_plan = self.request_deployment_decision(source_deploy)
         yaml_docs = []
@@ -319,42 +321,61 @@ class TemplateHelper:
             else:
                 LOGGER.warning(f"Using default service plan for service '{service_id}'.")
 
+            # Cloud-only CR
+            # Create cloudWorker CR (processor must be deployed on cloud node)
+            cloud_component_name = f"processor-{service_name}-cloud"
+            cloud_yaml_doc = copy.deepcopy(base_yaml_doc)
+            cloud_yaml_doc = self.fill_template(cloud_yaml_doc, cloud_component_name)
+
+            # Configure cloudWorker bound to cloud_node
+            if 'cloudWorker' in cloud_yaml_doc['spec'] and cloud_yaml_doc['spec']['cloudWorker']:
+                cloud_worker_template = cloud_yaml_doc['spec']['cloudWorker']
+                new_cloud_worker = copy.deepcopy(cloud_worker_template)
+                new_cloud_worker['template']['spec']['nodeName'] = cloud_node
+                new_cloud_worker['template']['spec']['containers'][0]['env'].extend({
+                    'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"})
+                cloud_yaml_doc['spec']['cloudWorker'] = new_cloud_worker
+            else:
+                LOGGER.warning(f"Processor service '{service_name}' has no cloudWorker template; skip cloud CR.")
+
+            # Remove edgeWorker from cloud-only CR if present to avoid
+            # accidentally scheduling edge workloads here.
+            if 'edgeWorker' in cloud_yaml_doc['spec']:
+                cloud_yaml_doc['spec'].pop('edgeWorker', None)
+
+            yaml_docs.append(cloud_yaml_doc)
+
+            # If no edge nodes are selected, skip edge CR generation
             if not edge_nodes:
-                # No edge nodes selected for this service; skip generating CRs
                 continue
 
-            # For each edge node, create an independent CR so that backend_core
-            # can redeploy them independently.
+            # Edge-only CRs per node
             for edge_node in edge_nodes:
-                # Use a unique component name including node to distinguish CRs
-                component_name = f"processor-{service_name}-{edge_node}"
+                edge_component_name = f"processor-{service_name}-{edge_node}"
 
-                # Start from a fresh copy of the base service template
-                yaml_doc = copy.deepcopy(base_yaml_doc)
-                yaml_doc = self.fill_template(yaml_doc, component_name)
+                edge_yaml_doc = copy.deepcopy(base_yaml_doc)
+                edge_yaml_doc = self.fill_template(edge_yaml_doc, edge_component_name)
 
                 # Configure edgeWorker for this specific node (single worker per CR)
-                if 'edgeWorker' in yaml_doc['spec'] and yaml_doc['spec']['edgeWorker']:
-                    edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
+                if 'edgeWorker' in edge_yaml_doc['spec'] and edge_yaml_doc['spec']['edgeWorker']:
+                    edge_worker_template = edge_yaml_doc['spec']['edgeWorker'][0]
 
                     new_edge_worker = copy.deepcopy(edge_worker_template)
-                    # Set target node for this CR
                     new_edge_worker['template']['spec']['nodeName'] = edge_node
 
-                    yaml_doc['spec']['edgeWorker'] = [new_edge_worker]
+                    edge_yaml_doc['spec']['edgeWorker'] = [new_edge_worker]
                 else:
-                    # Processor without edgeWorker does not make sense in this model; skip
-                    LOGGER.warning(f"Processor service '{service_name}' has no edgeWorker template; skip node {edge_node}.")
+                    LOGGER.warning(
+                        f"Processor service '{service_name}' has no edgeWorker template; skip node {edge_node}."
+                    )
                     continue
 
-                # Configure cloudWorker if present in template: keep original semantics
-                if 'cloudWorker' in yaml_doc['spec'] and yaml_doc['spec']['cloudWorker']:
-                    cloud_worker_template = yaml_doc['spec']['cloudWorker']
-                    new_cloud_worker = copy.deepcopy(cloud_worker_template)
-                    new_cloud_worker['template']['spec']['nodeName'] = cloud_node
-                    yaml_doc['spec']['cloudWorker'] = new_cloud_worker
+                # Remove cloudWorker from edge-only CR if present to avoid
+                # duplicating cloud workloads into each edge CR.
+                if 'cloudWorker' in edge_yaml_doc['spec']:
+                    edge_yaml_doc['spec'].pop('cloudWorker', None)
 
-                yaml_docs.append(yaml_doc)
+                yaml_docs.append(edge_yaml_doc)
 
         return yaml_docs
 

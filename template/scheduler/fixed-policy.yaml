@@ -26,9 +26,9 @@ pod-template:
         {
           'policy':{
             'pedestrian-detection':['edge2'],
-            'exposure-identification':[], 
-            'vehicle-detection':['edge3'],
-            'category-identification':[],
+            'exposure-identification':['edge2'], 
+            'vehicle-detection':[],
+            'category-identification':['edge3'],
             'license-plate-recognition':[]
           }
         }
