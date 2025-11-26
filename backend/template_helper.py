@@ -324,7 +324,6 @@ class TemplateHelper:
             # Cloud-only CR
             # Create cloudWorker CR (processor must be deployed on cloud node)
             cloud_component_name = f"processor-{service_name}-{NameMaintainer.standardize_device_name(cloud_node)}"
-            yaml_docs.append(base_yaml_doc)
             cloud_yaml_doc = copy.deepcopy(base_yaml_doc)
             cloud_yaml_doc = self.fill_template(cloud_yaml_doc, cloud_component_name)
 
