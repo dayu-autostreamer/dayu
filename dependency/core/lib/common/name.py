@@ -6,3 +6,11 @@ class NameMaintainer:
     @staticmethod
     def get_task_data_file_name(source_id, task_id, file_suffix):
         return f'data_of_source_{source_id}_task_{task_id}.{file_suffix}'
+
+    @staticmethod
+    def standardize_device_name(name: str) -> str:
+        return name.replace('-', '').replace('_', '').replace('.','').lower()
+
+    @staticmethod
+    def standardize_service_name(name: str) -> str:
+        return name.replace('_', '-').lower()

@@ -1,7 +1,7 @@
 import kubernetes as k8s
 import threading
 import time
-from core.lib.common import Context, SystemConstant
+from core.lib.common import Context, SystemConstant, NameMaintainer
 
 
 class PortInfo:
@@ -175,7 +175,7 @@ class PortInfo:
         service_ports_dict = {}
         for svc_name in ports_dict:
             # get sub service name
-            if device.replace('-', '').lower() == svc_name.split('-')[-2]:
+            if NameMaintainer.standardize_device_name(device) == svc_name.split('-')[-2]:
                 des_name = '-'.join(svc_name.split('-')[1:-2])
                 service_ports_dict[des_name] = ports_dict[svc_name]
 

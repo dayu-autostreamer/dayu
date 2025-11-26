@@ -55,8 +55,9 @@ class Controller:
 
             LOGGER.warning(f'[Service Not In Current Device] Service {service} does not exist in {self.local_device} '
                            f'({self.local_device} has service: {service_ports_dict.keys()}, '
-                           f'Service {service} running on {service_deployment[service]})).')
-            LOGGER.warning(f'[Service Not In Current Device] Service {service} does not exist in {self.local_device} '
+                           f'Service {service} running on {service_deployment[service]})). '
+                           f'Transmit to cloud device {self.cloud_device} as default.')
+            LOGGER.warning(f'[Service Not In Current Device] '
                            f'Transmit to cloud device {self.cloud_device} as default.')
 
             cur_task.set_current_stage_device(self.cloud_device)
