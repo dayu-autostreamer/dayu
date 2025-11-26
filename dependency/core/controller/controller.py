@@ -43,25 +43,30 @@ class Controller:
     def send_task_to_service(self, cur_task: Task, service: str = ''):
         self.record_execute_ts(cur_task=cur_task, is_end=False)
 
-        service_ports_dict = PortInfo.get_service_ports_dict()
-        if service not in service_ports_dict:
-            LOGGER.warning(f'[Service Not Exist] Service {service} does not exist in {self.local_device} '
-                           f'(has service: {service_ports_dict.keys()})')
-            return 'error'
+        service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
 
-        service_deployment = KubeConfig.get_service_nodes_dict()
-        if self.local_device not in service_deployment[service]:
-            LOGGER.warning(f'[Service Not In Current Device] Service {service} is not running on {self.local_device} '
-                           f'(running on: {service_deployment[service]}), '
-                           f'transmit to cloud node ({self.cloud_device}) as default.')
+        if service not in service_ports_dict:
+            service_deployment = KubeConfig.get_service_nodes_dict()
+            if service not in service_deployment or not service_deployment[service] or \
+                    self.cloud_device not in service_deployment[service]:
+                LOGGER.warning(f'[Service Not Exist] Service {service} does not exist in {self.local_device} '
+                               f'({self.local_device} has service: {service_ports_dict.keys()}).')
+                return 'error'
+
+            LOGGER.warning(f'[Service Not In Current Device] Service {service} does not exist in {self.local_device} '
+                           f'({self.local_device} has service: {service_ports_dict.keys()}, '
+                           f'Service {service} running on {service_deployment[service]})).')
+            LOGGER.warning(f'[Service Not In Current Device] Service {service} does not exist in {self.local_device} '
+                           f'Transmit to cloud device {self.cloud_device} as default.')
+
             cur_task.set_current_stage_device(self.cloud_device)
             self.erase_execute_ts(cur_task)
             self.submit_task(cur_task=cur_task)
             return 'transmit'
-        else:
-            service_address = merge_address(NodeInfo.hostname2ip(self.local_device),
-                                            port=service_ports_dict[service],
-                                            path=NetworkAPIPath.PROCESSOR_PROCESS_LOCAL)
+
+        service_address = merge_address(NodeInfo.hostname2ip(self.local_device),
+                                        port=service_ports_dict[service],
+                                        path=NetworkAPIPath.PROCESSOR_PROCESS_LOCAL)
 
         if not os.path.exists(Context.get_temporary_file_path(cur_task.get_file_path())):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '

@@ -351,7 +351,7 @@ class TemplateHelper:
 
             # Edge-only CRs per node
             for edge_node in edge_nodes:
-                edge_component_name = f"processor-{service_name}-{edge_node}"
+                edge_component_name = f"processor-{service_name}-{edge_node.replace('-','').lower()}"
 
                 edge_yaml_doc = copy.deepcopy(base_yaml_doc)
                 edge_yaml_doc = self.fill_template(edge_yaml_doc, edge_component_name)

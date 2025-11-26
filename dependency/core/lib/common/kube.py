@@ -10,7 +10,7 @@ from core.lib.common import Context
 class KubeConfig:
     _api = None
     NAMESPACE = Context.get_parameter('NAMESPACE')
-    SERVICE_PATTERN = pattern = re.compile(r"^processor-(.+?)-(?:cloudworker|edgeworker)-")
+    SERVICE_PATTERN = re.compile(r"^processor-(.+?)-[^-]+-(?:cloudworker|edgeworker)-")
 
     # Caching controls
     _cache_lock = threading.Lock()

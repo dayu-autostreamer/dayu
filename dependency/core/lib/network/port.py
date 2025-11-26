@@ -169,17 +169,18 @@ class PortInfo:
         return result
 
     @staticmethod
-    def get_service_ports_dict() -> dict:
+    def get_service_ports_dict(device:str) -> dict:
         component_name = SystemConstant.PROCESSOR.value
         ports_dict = PortInfo.get_all_ports(component_name)
-        component_ports_dict = {}
+        service_ports_dict = {}
         for svc_name in ports_dict:
             # get sub service name
-            des_name = '-'.join(svc_name.split('-')[1:-1])
-            component_ports_dict[des_name] = ports_dict[svc_name]
+            if device.replace('-', '').lower() == svc_name.split('-')[-2]:
+                des_name = '-'.join(svc_name.split('-')[1:-2])
+                service_ports_dict[des_name] = ports_dict[svc_name]
 
-        return component_ports_dict
+        return service_ports_dict
 
     @staticmethod
-    def get_service_port(service_name: str) -> int:
-        return PortInfo.get_service_ports_dict().get(service_name)
+    def get_service_port(device:str, service_name: str) -> int:
+        return PortInfo.get_service_ports_dict(device).get(service_name)
