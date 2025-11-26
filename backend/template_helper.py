@@ -295,7 +295,7 @@ class TemplateHelper:
         """Generate processor CRs with fine-grained units.
 
         For each logical processor service we generate:
-        - One cloud-only CR (if cloudWorker template exists) with name
+        - One cloud-only CR  with name
           `processor-{service_name}-cloud`.
         - One edge-only CR per edge node with name
           `processor-{service_name}-{edge_node}`.
@@ -332,7 +332,7 @@ class TemplateHelper:
                 cloud_worker_template = cloud_yaml_doc['spec']['cloudWorker']
                 new_cloud_worker = copy.deepcopy(cloud_worker_template)
                 new_cloud_worker['template']['spec']['nodeName'] = cloud_node
-                new_cloud_worker['template']['spec']['containers'][0]['env'].extend({
+                new_cloud_worker['template']['spec']['containers'][0]['env'].append({
                     'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"})
                 cloud_yaml_doc['spec']['cloudWorker'] = new_cloud_worker
             else:
@@ -362,6 +362,8 @@ class TemplateHelper:
 
                     new_edge_worker = copy.deepcopy(edge_worker_template)
                     new_edge_worker['template']['spec']['nodeName'] = edge_node
+                    new_edge_worker['template']['spec']['containers'][0]['env'].append({
+                        'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"})
 
                     edge_yaml_doc['spec']['edgeWorker'] = [new_edge_worker]
                 else:
