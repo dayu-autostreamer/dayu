@@ -292,36 +292,69 @@ class TemplateHelper:
         return yaml_doc
 
     def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy):
+        """Generate processor CRs with one CR per (service, edge_node) to enable per-node redeployment.
+
+        For each logical service, we:
+        - Request deployment plan from scheduler to get the final edge_nodes list.
+        - For each edge_node, create an independent CR with unique metadata.name
+          of the form `processor-{service_name}-{edge_node}`.
+        - Each CR contains exactly one edgeWorker targeting that node.
+        - CloudWorker behavior is kept consistent with the original template:
+          if present in the template, it is retained and bound to `cloud_node`.
+        """
         deployment_plan = self.request_deployment_decision(source_deploy)
         yaml_docs = []
-        for index, service_id in enumerate(service_dict):
-            yaml_doc = service_dict[service_id]['service']
-            service_name = service_dict[service_id]['service_name']
-            yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
-            edge_nodes = service_dict[service_id]['node']
+        for service_id, service_info in service_dict.items():
+            base_yaml_doc = service_info['service']
+            service_name = service_info['service_name']
+
+            # Original candidate edge nodes from DAG / services config
+            edge_nodes = service_info['node']
+
+            # Apply scheduler's deployment decision if available
             if service_name in deployment_plan:
+                # Intersect with original edge_nodes to avoid unexpected nodes
                 edge_nodes = list(set(deployment_plan[service_name]) & set(edge_nodes))
             else:
                 LOGGER.warning(f"Using default service plan for service '{service_id}'.")
 
-            if edge_nodes:
-                edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
-                edge_workers = []
-                for edge_node in edge_nodes:
+            if not edge_nodes:
+                # No edge nodes selected for this service; skip generating CRs
+                continue
+
+            # For each edge node, create an independent CR so that backend_core
+            # can redeploy them independently.
+            for edge_node in edge_nodes:
+                # Use a unique component name including node to distinguish CRs
+                component_name = f"processor-{service_name}-{edge_node}"
+
+                # Start from a fresh copy of the base service template
+                yaml_doc = copy.deepcopy(base_yaml_doc)
+                yaml_doc = self.fill_template(yaml_doc, component_name)
+
+                # Configure edgeWorker for this specific node (single worker per CR)
+                if 'edgeWorker' in yaml_doc['spec'] and yaml_doc['spec']['edgeWorker']:
+                    edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
+
                     new_edge_worker = copy.deepcopy(edge_worker_template)
+                    # Set target node for this CR
                     new_edge_worker['template']['spec']['nodeName'] = edge_node
-                    edge_workers.append(new_edge_worker)
-                yaml_doc['spec']['edgeWorker'] = edge_workers
-            else:
-                del yaml_doc['spec']['edgeWorker']
 
-            cloud_worker_template = yaml_doc['spec']['cloudWorker']
-            new_cloud_worker = copy.deepcopy(cloud_worker_template)
-            new_cloud_worker['template']['spec']['nodeName'] = cloud_node
-            yaml_doc['spec']['cloudWorker'] = new_cloud_worker
+                    yaml_doc['spec']['edgeWorker'] = [new_edge_worker]
+                else:
+                    # Processor without edgeWorker does not make sense in this model; skip
+                    LOGGER.warning(f"Processor service '{service_name}' has no edgeWorker template; skip node {edge_node}.")
+                    continue
 
-            yaml_docs.append(yaml_doc)
+                # Configure cloudWorker if present in template: keep original semantics
+                if 'cloudWorker' in yaml_doc['spec'] and yaml_doc['spec']['cloudWorker']:
+                    cloud_worker_template = yaml_doc['spec']['cloudWorker']
+                    new_cloud_worker = copy.deepcopy(cloud_worker_template)
+                    new_cloud_worker['template']['spec']['nodeName'] = cloud_node
+                    yaml_doc['spec']['cloudWorker'] = new_cloud_worker
+
+                yaml_docs.append(yaml_doc)
 
         return yaml_docs
 
