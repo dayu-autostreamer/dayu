@@ -39,10 +39,13 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         self.fps_list = system.fps_list.copy()
         self.resolution_list = system.resolution_list.copy()
 
+        self.local_device = NodeInfo.get_local_device()
+
         self.schedule_knobs = {'resolution': self.resolution_list,
                                'fps': self.fps_list}
 
         self.processor_address = None
+
 
         # Windowing configuration:
         # - A large profiling window contains (profile_window / segment_size) segments
@@ -220,7 +223,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
     def execute_analytics(self, frames):
         if not self.processor_address:
             processor_hostname = NodeInfo.get_cloud_node()
-            processor_port = PortInfo.get_service_port(self.current_analytics)
+            processor_port = PortInfo.get_service_port(self.local_device, self.current_analytics)
             self.processor_address = merge_address(NodeInfo.hostname2ip(processor_hostname),
                                                    port=processor_port,
                                                    path=NetworkAPIPath.PROCESSOR_PROCESS_RETURN)
