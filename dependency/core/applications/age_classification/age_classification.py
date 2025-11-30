@@ -160,6 +160,9 @@ class AgeClassificationRoi:
         self.model = AgeClassification(weights=weights, device=device)
         self.cache: Dict[int, str] = {}
 
+    def reset_cache(self):
+        self.cache.clear()
+
     @property
     def flops(self):
         return self.model.flops

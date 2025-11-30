@@ -61,6 +61,9 @@ class LicensePlateRecognitionRoi:
                                              device=device)
         self.cache: Dict[int, any] = {}
 
+    def reset_cache(self):
+        self.cache.clear()
+
     @property
     def flops(self):
         return getattr(self.model, 'flops', 0)

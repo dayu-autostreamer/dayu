@@ -55,6 +55,9 @@ class CategoryIdentificationRoi:
                                             non_trt_weights=non_trt_weights, device=device)
         self.cache: Dict[int, any] = {}
 
+    def reset_cache(self):
+        self.cache.clear()
+
     @property
     def flops(self):
         return getattr(self.model, 'flops', 0)
