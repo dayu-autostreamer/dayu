@@ -173,5 +173,6 @@ class AgeClassificationRoi:
             res = self.model.infer(face)
             self.cache[rid] = res
             results.append(res)
+        self.cache.clear()
         return results
 
