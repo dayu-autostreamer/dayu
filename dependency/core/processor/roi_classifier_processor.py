@@ -22,12 +22,10 @@ class RoiClassifierProcessor(Processor):
         if content is None:
             LOGGER.warning(f'content of source {task.get_source_id()} task {task.get_task_id()} is none!')
             return task
+
         # Reset classifier cache at the beginning of each task to avoid cross-task roi_id collision
-        if hasattr(self.classifier, 'reset_cache'):
-            try:
-                self.classifier.reset_cache()
-            except Exception:
-                pass
+        self.classifier.reset_cache()
+
         content_output: List[list] = []
         try:
             for bbox, prob, class_id, roi_id in content:

@@ -64,5 +64,4 @@ class ExposureIdentificationRoi:
             res = self.model._infer(img)
             self.cache[rid] = res
             results.append(res)
-        self.cache.clear()
         return results
