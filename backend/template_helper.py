@@ -424,6 +424,7 @@ class TemplateHelper:
 
     def request_source_selection_decision(self, source_deploy):
         scheduler_hostname = NodeInfo.get_cloud_node()
+        PortInfo.force_refresh()
         scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
         scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
                                           port=scheduler_port,
