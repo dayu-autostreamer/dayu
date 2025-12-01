@@ -40,6 +40,7 @@ class VideoGenerator(Generator):
                 else:
                     LOGGER.debug("Services not in running state, wait for service deployment..")
                     time.sleep(0.5)
+                    continue
 
             # skip getter according to some specific requirements
             if not self.getter_filter(self):
