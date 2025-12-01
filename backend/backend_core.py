@@ -150,6 +150,8 @@ class BackendCore:
             self.save_component_yaml(first_docs_list)
         if not result:
             return False, msg
+        # Wait for scheduler to be ready
+        time.sleep(2)
 
         LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
         second_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
