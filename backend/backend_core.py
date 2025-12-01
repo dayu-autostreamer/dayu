@@ -305,8 +305,8 @@ class BackendCore:
             time.sleep(1)
         return _result, '' if _result else 'kubernetes api error'
 
-    @staticmethod
-    def check_and_update_docs_list(original_docs, update_docs):
+
+    def check_and_update_docs_list(self, original_docs, update_docs):
         """
         Intelligently compares and categorizes Kubernetes resource configurations
         :param original_docs: List of existing resource configurations
@@ -328,8 +328,9 @@ class BackendCore:
 
         # Detect resources to delete (present in original but missing in update)
         for name in list(original_dict.keys()):
-            if name not in update_dict:
+            if name not in (self.system_support_components + self.function_components) and name not in update_dict:
                 resources_to_delete.append(original_dict[name])
+                original_dict.pop(name)
 
         # Detect resources to add or update
         for name, new_doc in update_dict.items():
