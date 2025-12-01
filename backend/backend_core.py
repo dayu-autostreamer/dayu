@@ -265,8 +265,6 @@ class BackendCore:
 
     @timeout(200)
     def uninstall_processors(self, yaml_docs):
-        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
-                     not in (self.system_support_components + self.function_components)]
         if not yaml_docs:
             return True, 'no processors need to be installed.'
 

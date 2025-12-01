@@ -10,6 +10,9 @@ class NodeInfo:
     __node_info_ip = None
     __node_info_role = None
 
+    config.load_incluster_config()
+    v1 = client.CoreV1Api()
+
     @classmethod
     def get_node_info(cls):
         if not cls.__node_info_hostname:
@@ -34,11 +37,9 @@ class NodeInfo:
 
         return cls.__node_info_role
 
-    @staticmethod
-    def __extract_node_info():
-        config.load_incluster_config()
-        v1 = client.CoreV1Api()
-        nodes = v1.list_node().items
+    @classmethod
+    def __extract_node_info(cls):
+        nodes = cls.v1.list_node().items
 
         assert nodes, 'Invalid node config in KubeEdge system'
 
@@ -92,13 +93,16 @@ class NodeInfo:
                 return hostname
         raise Exception('No cloud node identified in system!')
 
-    @staticmethod
-    def get_edge_nodes() -> List[str]:
+    @classmethod
+    def get_edge_nodes(cls) -> List[str]:
+        pods = cls.v1.list_namespaced_pod(
+            namespace=Context.get_parameter('NAMESPACE'),
+            label_selector="metadata.labels.jointmultiedge.sedna.io/name=controller",
+        )
         node_role = NodeInfo.get_node_info_role()
-        edge_nodes = []
-        for hostname in node_role:
-            if node_role[hostname] == 'edge':
-                edge_nodes.append(hostname)
+        edge_nodes = {pod.spec.node_name for pod in pods.items
+                      if pod.spec.node_name and node_role.get(pod.spec.node_name) == 'edge'}
+
         return edge_nodes
 
     @staticmethod
@@ -108,4 +112,3 @@ class NodeInfo:
         assert device, 'Node Config is not found ("NODE_NAME")!'
 
         return device
-
