@@ -151,7 +151,7 @@ class BackendCore:
         if not result:
             return False, msg
         # Wait for scheduler to be ready
-        time.sleep(2)
+        time.sleep(1)
 
         LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
         second_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),

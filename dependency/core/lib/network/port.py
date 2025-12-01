@@ -39,6 +39,10 @@ class PortInfo:
     WARMUP_TIMEOUT = float(str(_warmup_raw).strip()) if _warmup_raw is not None else 3.0
 
     @classmethod
+    def force_refresh(cls):
+        cls._refresh_now()
+
+    @classmethod
     def _get_api(cls):
         if not cls._api:
             # Try in-cluster, then fallback to local kubeconfig for dev
