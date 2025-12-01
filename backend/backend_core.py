@@ -439,7 +439,8 @@ class BackendCore:
     def update_component_yaml(self, update_docs_list):
         original_docs_list = self.read_component_yaml()
         if not original_docs_list:
-            raise Exception('No valid components yaml docs found.')
+            LOGGER.warning('No valid components yaml docs found.')
+            return
         total_docs, _, _, _ = self.check_and_update_docs_list(original_docs_list, update_docs_list)
         self.save_component_yaml(total_docs)
 
@@ -774,14 +775,16 @@ class BackendCore:
                                                                                    scopes=['processor'])
 
                 self.uninstall_lock = True
-                res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
+                try:
+                    res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
 
-                if res:
-                    self.update_component_yaml(redeploy_docs_list)
-                    LOGGER.info(f'[Redeployment] Redeployment succeeded.')
-                else:
-                    LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
-                self.uninstall_lock = False
+                    if res:
+                        self.update_component_yaml(redeploy_docs_list)
+                        LOGGER.info(f'[Redeployment] Redeployment succeeded.')
+                    else:
+                        LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
+                finally:
+                    self.uninstall_lock = False
 
             except Exception as e:
                 LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {str(e)}')
