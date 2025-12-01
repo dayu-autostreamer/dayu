@@ -206,6 +206,9 @@ class BackendCore:
             return False, ''
 
         _, docs_to_add, docs_to_update, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
+        print('add:', docs_to_add)
+        print('update:', docs_to_update)
+        print('delete:', docs_to_delete)
 
         if docs_to_update:
             res, msg = self.update_processors(docs_to_update)
@@ -430,9 +433,11 @@ class BackendCore:
 
     def update_component_yaml(self, update_docs_list):
         original_docs_list = self.read_component_yaml()
+        print('original:', original_docs_list)
         if not original_docs_list:
             raise Exception('No valid components yaml docs found.')
         total_docs, _, _, _ = self.check_and_update_docs_list(original_docs_list, update_docs_list)
+        print('update:', total_docs)
         self.save_component_yaml(total_docs)
 
     def extract_service_from_source_deployment(self, source_deploy):
