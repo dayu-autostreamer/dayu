@@ -16,6 +16,11 @@ class ControllerServer:
         self.controller = Controller()
 
         self.app = FastAPI(routes=[
+            APIRoute(NetworkAPIPath.CONTROLLER_CHECK,
+                     self.check_processor_health,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.CONTROLLER_CHECK]
+                     ),
             APIRoute(NetworkAPIPath.CONTROLLER_TASK,
                      self.submit_task,
                      response_class=JSONResponse,
@@ -36,6 +41,10 @@ class ControllerServer:
         self.is_delete_temp_files = Context.get_parameter('DELETE_TEMP_FILES', direct=False)
 
         FileOps.clear_temp_directory()
+
+    async def check_processor_health(self):
+        """check if processor is healthy"""
+        return {'status': 'ok'} if self.controller.check_processor_health() else {'status': 'not ok'}
 
     async def submit_task(self, backtask: BackgroundTasks, file: UploadFile = File(...), data: str = Form(...)):
         file_data = await file.read()

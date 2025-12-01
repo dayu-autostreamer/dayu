@@ -24,6 +24,17 @@ class Controller:
         self.local_device = NodeInfo.get_local_device()
         self.cloud_device = NodeInfo.get_cloud_node()
 
+    def check_processor_health(self):
+        service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
+        for service, service_port in service_ports_dict.items():
+            processor_health_address = merge_address(NodeInfo.hostname2ip(self.local_device),
+                                                     port=service_port,
+                                                     path=NetworkAPIPath.PROCESSOR_HEALTH)
+            response = http_request(url=processor_health_address, method=NetworkAPIMethod.PROCESSOR_HEALTH)
+            if not response or response.get('status') != 'ok':
+                return False
+        return True
+
     def send_task_to_other_device(self, cur_task: Task, device: str = ''):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
         controller_address = merge_address(NodeInfo.hostname2ip(device),
