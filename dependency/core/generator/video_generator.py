@@ -1,6 +1,6 @@
 import time
 
-from core.lib.common import ClassType, ClassFactory, Context, LOGGER, KubeConfig
+from core.lib.common import ClassType, ClassFactory, Context, LOGGER, KubeConfig, HealthChecker
 
 from .generator import Generator
 
@@ -27,11 +27,20 @@ class VideoGenerator(Generator):
         # initialize with default schedule policy
         self.after_schedule_operation(self, None)
 
+        service_running_flag = True
         while True:
             if not KubeConfig.check_services_running():
+                service_running_flag = False
                 LOGGER.debug("Services not in running state, wait for service deployment..")
                 time.sleep(0.5)
                 continue
+            if not service_running_flag:
+                if HealthChecker.check_processors_health():
+                    service_running_flag = True
+                else:
+                    LOGGER.debug("Services not in running state, wait for service deployment..")
+                    time.sleep(0.5)
+
             # skip getter according to some specific requirements
             if not self.getter_filter(self):
                 LOGGER.info('[Filter Getter] step to next round of getter.')

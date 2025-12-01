@@ -1,7 +1,9 @@
 class NetworkAPIPath:
+    CONTROLLER_CHECK = '/check'
     CONTROLLER_TASK = '/submit_task'
     CONTROLLER_RETURN = '/process_return_task'
 
+    PROCESSOR_HEALTH = '/health'
     PROCESSOR_PROCESS = '/predict'
     PROCESSOR_PROCESS_LOCAL = '/predict_local'
     PROCESSOR_PROCESS_RETURN = '/predict_and_return'
@@ -56,9 +58,11 @@ class NetworkAPIPath:
 
 
 class NetworkAPIMethod:
+    CONTROLLER_CHECK= 'POST'
     CONTROLLER_TASK = 'POST'
     CONTROLLER_RETURN = 'POST'
 
+    PROCESSOR_HEALTH = 'GET'
     PROCESSOR_PROCESS = 'POST'
     PROCESSOR_PROCESS_LOCAL = 'POST'
     PROCESSOR_PROCESS_RETURN = 'POST'

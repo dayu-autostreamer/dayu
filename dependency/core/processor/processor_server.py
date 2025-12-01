@@ -14,7 +14,14 @@ from core.lib.estimation import TimeEstimator
 
 class ProcessorServer:
     def __init__(self):
+        self.processor = Context.get_algorithm('PROCESSOR')
+
         self.app = FastAPI(routes=[
+            APIRoute(NetworkAPIPath.PROCESSOR_HEALTH,
+                     self.health_check,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.PROCESSOR_HEALTH]
+                     ),
             APIRoute(NetworkAPIPath.PROCESSOR_PROCESS,
                      self.process_service,
                      response_class=JSONResponse,
@@ -47,8 +54,6 @@ class ProcessorServer:
             allow_methods=["*"], allow_headers=["*"],
         )
 
-        self.processor = Context.get_algorithm('PROCESSOR')
-
         self.task_queue = Context.get_algorithm('PRO_QUEUE')
 
         self.local_device = NodeInfo.get_local_device()
@@ -59,6 +64,9 @@ class ProcessorServer:
                                                 path=NetworkAPIPath.CONTROLLER_RETURN)
 
         threading.Thread(target=self.loop_process, name="ProcessorLoop", daemon=True).start()
+
+    async def health_check(self):
+        return {'status': 'ok'}
 
     async def process_service(self, backtask: BackgroundTasks, file: UploadFile = File(...), data: str = Form(...)):
         file_data = await file.read()
