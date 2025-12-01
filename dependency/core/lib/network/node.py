@@ -103,7 +103,7 @@ class NodeInfo:
         edge_nodes = {pod.spec.node_name for pod in pods.items
                       if pod.spec.node_name and node_role.get(pod.spec.node_name) == 'edge'}
 
-        return edge_nodes
+        return list(edge_nodes)
 
     @staticmethod
     def get_local_device() -> str:
