@@ -87,6 +87,9 @@ class BackendCore:
         # Threshold for flushing in-memory logs to file
         self.system_log_threshold = 1000
 
+        # Lock for uninstall operations to prevent inconsistent states
+        self.uninstall_lock = False
+
         self.default_visualization_image = 'default_visualization.png'
 
         self.system_support_components = ['backend', 'frontend', 'datasource', 'redis']
@@ -179,6 +182,10 @@ class BackendCore:
         return True, 'Install services successfully'
 
     def parse_and_delete_templates(self):
+        # Wait for uninstall lock release
+        while self.uninstall_lock:
+            time.sleep(0.5)
+            continue
 
         # End cycle deployment
         self.is_cycle_deploy = False
@@ -764,6 +771,7 @@ class BackendCore:
                                                                                    copy.deepcopy(self.source_deploy),
                                                                                    scopes=['processor'])
 
+                self.uninstall_lock = True
                 res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
 
                 if res:
@@ -771,6 +779,7 @@ class BackendCore:
                     LOGGER.info(f'[Redeployment] Redeployment succeeded.')
                 else:
                     LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
+                self.uninstall_lock = False
 
             except Exception as e:
                 LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {str(e)}')
