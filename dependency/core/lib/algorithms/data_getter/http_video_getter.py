@@ -62,8 +62,8 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
         delay = self.request_source_data(system, new_task_id)
 
         system.cumulative_scheduling_frame_count += (system.meta_data.get('buffer_size', 0) *
-                                                     system.meta_data.get('fps', 0) /
-                                                     system.raw_meta_data.get('fps', 1))
+                                                     system.raw_eta_data.get('fps', 0) /
+                                                     system.meta_data.get('fps', 1))
 
         sleep_time = self.compute_cost_time(system, delay)
         LOGGER.info(f'[Camera Simulation] source {system.source_id}: sleep {sleep_time}s')
