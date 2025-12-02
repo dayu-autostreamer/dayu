@@ -97,7 +97,7 @@ class NodeInfo:
     def get_edge_nodes(cls) -> List[str]:
         pods = cls.v1.list_namespaced_pod(
             namespace=Context.get_parameter('NAMESPACE'),
-            label_selector="metadata.labels.jointmultiedge.sedna.io/name=controller",
+            label_selector="jointmultiedge.sedna.io/name=controller",
         )
         node_role = NodeInfo.get_node_info_role()
         edge_nodes = {pod.spec.node_name for pod in pods.items
