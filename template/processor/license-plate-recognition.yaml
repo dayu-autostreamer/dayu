@@ -19,7 +19,7 @@ pod-template:
     - name: PRO_QUEUE_NAME
       value: "simple"
     - name: USE_TENSORRT
-      value: "True"
+      value: "False"
 cloud-pod-template:
   env:
     - name: CLASSIFIER_PARAMETERS
