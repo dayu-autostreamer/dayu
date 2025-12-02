@@ -25,14 +25,18 @@ class Controller:
         self.cloud_device = NodeInfo.get_cloud_node()
 
     def check_processor_health(self):
+        PortInfo.force_refresh()
         service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
+        LOGGER.debug(f'[HEALTH CHECK] health checking services: {service_ports_dict.keys()}')
         for service, service_port in service_ports_dict.items():
             processor_health_address = merge_address(NodeInfo.hostname2ip(self.local_device),
                                                      port=service_port,
                                                      path=NetworkAPIPath.PROCESSOR_HEALTH)
             response = http_request(url=processor_health_address, method=NetworkAPIMethod.PROCESSOR_HEALTH)
             if not response or response.get('status') != 'ok':
+                LOGGER.debug(f'[HEALTH CHECK] service {service} processor health check failed.')
                 return False
+            LOGGER.debug(f'[HEALTH CHECK] service {service} processor health check succeed.')
         return True
 
     def send_task_to_other_device(self, cur_task: Task, device: str = ''):
@@ -56,9 +60,11 @@ class Controller:
 
         service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
 
-        # Force refresh port cache
+        # Force refresh port cache and retry once
         if service not in service_ports_dict:
             PortInfo.force_refresh()
+            service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
+
         if service not in service_ports_dict:
             service_deployment = KubeConfig.get_service_nodes_dict()
             if service not in service_deployment or not service_deployment[service] or \
