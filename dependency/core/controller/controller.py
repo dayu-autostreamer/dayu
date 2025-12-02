@@ -56,6 +56,9 @@ class Controller:
 
         service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
 
+        # Force refresh port cache
+        if service not in service_ports_dict:
+            PortInfo.force_refresh()
         if service not in service_ports_dict:
             service_deployment = KubeConfig.get_service_nodes_dict()
             if service not in service_deployment or not service_deployment[service] or \
