@@ -27,7 +27,7 @@ class VideoGenerator(Generator):
         # initialize with default schedule policy
         self.after_schedule_operation(self, None)
 
-        service_running_flag = True
+        service_running_flag = False
         while True:
             if not KubeConfig.check_services_running():
                 service_running_flag = False
