@@ -29,11 +29,13 @@ class VideoGenerator(Generator):
 
         service_running_flag = False
         while True:
+            LOGGER.info('[TEST] before KubeConfig.check_services_running()')
             if not KubeConfig.check_services_running():
                 service_running_flag = False
                 LOGGER.debug("Services not in running state, wait for service deployment..")
                 time.sleep(0.5)
                 continue
+            LOGGER.info('[TEST] before service_running_flag')
             if not service_running_flag:
                 if HealthChecker.check_processors_health():
                     service_running_flag = True
@@ -41,14 +43,18 @@ class VideoGenerator(Generator):
                     LOGGER.debug("Services not in running state, wait for service deployment..")
                     time.sleep(0.5)
                     continue
-
+            LOGGER.info('[TEST] before getter_filter')
             # skip getter according to some specific requirements
             if not self.getter_filter(self):
                 LOGGER.info('[Filter Getter] step to next round of getter.')
                 continue
 
+            LOGGER.info('[TEST] before data getter')
+
             # get data from source
             self.data_getter(self)
+
+            LOGGER.info('[TEST] before scheduling check')
 
             # request schedule policy for subsequent tasks
             if self.cumulative_scheduling_frame_count > \
@@ -56,3 +62,5 @@ class VideoGenerator(Generator):
                 LOGGER.debug(f'[Scheduling Request] Request a Scheduling policy from scheduler.')
                 self.request_schedule_policy()
                 self.cumulative_scheduling_frame_count = 0
+
+            LOGGER.info('[TEST] after scheduling check')
