@@ -107,7 +107,7 @@ class SchedulerServer:
             source_plan = self.scheduler.get_source_node_selection_plan(source_id, source_data)
             plan[source_id] = source_plan
 
-        LOGGER.info(f'[Source Node Selection] (all sources) Selection policy: {plan}')
+        # LOGGER.info(f'[Source Node Selection] (all sources) Selection policy: {plan}')
         return {'plan': plan}
 
     async def generate_initial_deployment_plan(self, data: str = Form(...)):
@@ -123,7 +123,7 @@ class SchedulerServer:
                  for node in source_plan}
             )
 
-        LOGGER.info(f'[Initial Deployment] (all sources) Deploy policy: {plan}')
+        # LOGGER.info(f'[Initial Deployment] (all sources) Deploy policy: {plan}')
         return {'plan': plan}
 
     async def generate_redeployment_plan(self, data: str = Form(...)):
@@ -138,5 +138,5 @@ class SchedulerServer:
                  for node in source_plan}
             )
 
-        LOGGER.info(f'[Redeployment] (all sources) Deploy policy: {plan}')
+        # LOGGER.info(f'[Redeployment] (all sources) Deploy policy: {plan}')
         return {'plan': plan}
