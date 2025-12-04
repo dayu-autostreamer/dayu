@@ -1,8 +1,9 @@
 import abc
+import copy
 
 from .base_initial_deployment_policy import BaseInitialDeploymentPolicy
 
-from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, ConfigLoader, Context
+from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, ConfigLoader, Context, LOGGER
 from core.lib.content import Task
 from core.lib.algorithms.shared.hedger import Hedger
 
@@ -42,11 +43,30 @@ class HedgerInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
             self.hedger.register_deployment_agent()
 
     def __call__(self, info):
+        source_id = info['source']['id']
         dag = info['dag']
         node_set = info['node_set']
         source_device = info['source']['source_device']
 
         self.hedger.register_logical_topology(Task.extract_dag_from_dict(dag))
         self.hedger.register_physical_topology(list(node_set), source_device)
+        self.hedger.register_initial_deployment(self.default_deployment)
 
-        self.hedger.get_initial_deployment_decision()
+        deploy_plan = self.hedger.get_initial_deployment_plan()
+
+        if not deploy_plan:
+            deploy_plan = copy.deepcopy(self.default_deployment)
+            LOGGER.warning('No initial deployment plan, use default deployment policy.')
+
+        all_services = list(dag.keys())
+        for service in all_services:
+            if service in deploy_plan:
+                intersection_nodes = list(set(deploy_plan[service]) & set(node_set))
+                deploy_plan[service] = intersection_nodes
+            else:
+                deploy_plan[service] = list(node_set)
+
+        LOGGER.info(f'[Initial Deployment] (source {source_id}) Deploy policy: {deploy_plan}')
+
+
+

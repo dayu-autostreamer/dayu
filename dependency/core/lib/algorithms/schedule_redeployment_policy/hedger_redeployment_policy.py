@@ -1,8 +1,9 @@
 import abc
+import copy
 
 from .base_redeployment_policy import BaseRedeploymentPolicy
 
-from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, Context, ConfigLoader
+from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, Context, ConfigLoader, LOGGER
 from core.lib.content import Task
 from core.lib.algorithms.shared.hedger import Hedger
 
@@ -42,6 +43,7 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
         self.hedger.register_deployment_agent()
 
     def __call__(self, info):
+        source_id = info['source']['id']
         dag = info['dag']
         node_set = info['node_set']
         source_device = info['source']['source_device']
@@ -49,4 +51,19 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
         self.hedger.register_logical_topology(Task.extract_dag_from_dict(dag))
         self.hedger.register_physical_topology(list(node_set), source_device)
 
-        self.hedger.get_redeployment_decision()
+        deploy_plan = self.hedger.get_redeployment_plan()
+        if deploy_plan is None:
+            LOGGER.warning('None redeployment plan from Hedger, use default deployment policy.')
+            deploy_plan = copy.deepcopy(self.default_deployment)
+
+        all_services = list(dag.keys())
+        for service in all_services:
+            if service in deploy_plan:
+                intersection_nodes = list(set(deploy_plan[service]) & set(node_set))
+                deploy_plan[service] = intersection_nodes
+            else:
+                deploy_plan[service] = list(node_set)
+
+        LOGGER.info(f'[Redeployment] (source {source_id}) Deploy policy: {deploy_plan}')
+
+        return deploy_plan
