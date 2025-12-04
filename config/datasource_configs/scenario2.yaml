@@ -1,0 +1,13 @@
+source_name: "Traffic Cameras"
+source_type: "video"
+source_mode: "rtsp_video"
+source_list:
+  - name: "scenario2_camera"
+    url: ""
+    dir: "scenario2/"
+    metadata:
+      resolution: "1080p"
+      fps: 30
+      encoding: "mp4v"
+      buffer_size: 4
+
