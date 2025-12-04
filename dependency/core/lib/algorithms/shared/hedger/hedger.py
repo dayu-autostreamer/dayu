@@ -7,7 +7,7 @@ import time
 import os
 import glob
 
-from core.lib.common import LOGGER, FileOps, Context
+from core.lib.common import LOGGER, FileOps, Context, Recorder
 
 from .topology_encoder import TopologyEncoders
 from .ppo_agent import HedgerOffloadingPPO, HedgerDeploymentPPO
@@ -85,6 +85,10 @@ class Hedger:
 
         self.deployment_transitions: List[dict] = []
         self.offloading_transitions: List[dict] = []
+
+
+        self.dep_recorder = None
+        self.off_recorder = None
 
         self.cur_deploy_mask = None
 
@@ -306,6 +310,16 @@ class Hedger:
 
         LOGGER.info('[Hedger Deployment] Hedger Deployment Agent start training.')
 
+        self.dep_recorder = Recorder(
+            "deployment_train.csv",
+            fmt="csv",
+            fieldnames=["step", "epoch", "dep_updates", "dep_reward", "avg_off_reward",
+                        "dep_change_cost", "cap_relax_cnt", "dep_offload_weight",
+                        "dep_change_weight","cap_relax_weight"],
+            overwrite=True,
+            flush_every=1,
+        )
+
         # 静态 edge_index，可以一直复用
         logic_edge_index = torch.tensor(self.logical_topology.links, dtype=torch.long,
                                         device=self.device).t().contiguous()
@@ -372,8 +386,22 @@ class Hedger:
             phys_feats = new_phys_feats
             prev_deploy_mask = deploy_mask.detach().cpu()
 
+            self.dep_recorder.log(
+                step=step,
+                epoch=self._epoch,
+                dep_updates=self._deployment_update_steps,
+                dep_reward=reward,
+                avg_off_reward=metrics["avg_offloading_reward"],
+                dep_change_cost=metrics["deploy_change_cost"],
+                cap_relax_cnt=aux["capacity_relax_cnt"],
+                dep_offload_weight=self.deployment_agent_params["reward_dep_offload_weight"],
+                dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
+                cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
+            )
+
             step += 1
 
+        self.dep_recorder.close()
         LOGGER.info("Deployment training thread stopped.")
 
     def train_offloading_agent(self):
@@ -392,6 +420,17 @@ class Hedger:
             "Topologies must be registered before starting offloading training."
 
         LOGGER.info('[Hedger Offloading] Hedger Offloading Agent start training.')
+
+        self.off_recorder = Recorder(
+            "offloading_train.csv",
+            fmt="csv",
+            fieldnames=["step","epoch", "off_updates", "off_reward", "latency",
+                        "slo_violation", "cloud_fraction","aux_cost", "off_latency_weight",
+                        "off_slo_weight", "off_cloud_weight", "switch_cnt","relax_cnt",
+                        "switch_weight","relax_weight"],
+            overwrite=True,
+            flush_every=10,
+        )
 
         logic_edge_index = torch.tensor(self.logical_topology.links, dtype=torch.long,
                                         device=self.device).t().contiguous()
@@ -451,8 +490,27 @@ class Hedger:
             logic_feats = new_logic_feats
             phys_feats = new_phys_feats
 
+            self.off_recorder.log(
+                step=step,
+                epoch=self._epoch,
+                off_updates=self._offloading_update_steps,
+                off_reward=reward,
+                latency=metrics["latency"],
+                slo_violation=metrics["slo_violation"],
+                cloud_fraction=metrics["cloud_fraction"],
+                aux_cost=aux["aux_cost"],
+                off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
+                off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
+                off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
+                switch_cnt=aux["switch_cnt"],
+                relax_cnt=aux["relax_cnt"],
+                switch_weight=self.offloading_agent_params["penalty_switch"],
+                relax_weight=self.offloading_agent_params["penalty_relax"],
+            )
+
             step += 1
 
+        self.off_recorder.close()
         LOGGER.info("Offloading training thread stopped.")
 
     def _compute_offloading_reward(self, metrics, aux) -> float:
@@ -463,9 +521,9 @@ class Hedger:
         metrics = metrics or {}
 
         # 从 metrics 中提取关键指标
-        latency_ms = float(metrics.get("latency_ms", metrics.get("avg_latency_ms", 0.0)))
-        slo_v = float(metrics.get("slo_violation", metrics.get("slo_violation_rate", 0.0)))
-        cloud_frac = float(metrics.get("cloud_fraction", 0.0))
+        latency = float(metrics["latency"])
+        slo_v = float(metrics["slo_violation"])
+        cloud_frac = float(metrics["cloud_fraction"])
 
         # 权重从 hyper_params 里读，如果没有则用默认
         w_lat = float(self.offloading_agent_params["reward_off_latency_weight"])
@@ -474,7 +532,7 @@ class Hedger:
 
         # 基本 reward：倾向于降低延迟、降低 SLO 违约、降低上云比例
         reward = 0.0
-        reward -= w_lat * latency_ms
+        reward -= w_lat * latency
         reward -= w_slo * slo_v
         reward -= w_cloud * cloud_frac
 
@@ -493,32 +551,21 @@ class Hedger:
         """
         metrics = metrics or {}
 
-        avg_latency_ms = float(metrics["avg_latency_ms"])
-        slo_v = float(metrics["slo_violation_rate"])
-        cloud_frac = float(metrics["cloud_fraction"])
         avg_off_r = float(metrics["avg_offloading_reward"])
         deploy_change_cost = float(metrics["deploy_change_cost"])
 
-        # 权重可以在 hyper_params 中配置
-        w_lat = float(self.hyper_params.get("reward_dep_latency_weight", 1e-3))
-        w_slo = float(self.hyper_params.get("reward_dep_slo_weight", 1.0))
-        w_cloud = float(self.hyper_params.get("reward_dep_cloud_weight", 0.1))
-        w_change = float(self.hyper_params.get("reward_dep_change_weight", 0.1))
-        w_off = float(self.hyper_params.get("reward_dep_offload_weight", 0.1))
+        w_change = float(self.deployment_agent_params["reward_dep_change_weight"])
+        w_off = float(self.deployment_agent_params["reward_dep_offload_weight"])
 
         reward = 0.0
-        # 惩罚高延迟 / 高 SLO violation / 高 cloud 使用
-        reward -= w_lat * avg_latency_ms
-        reward -= w_slo * slo_v
-        reward -= w_cloud * cloud_frac
         reward -= w_change * deploy_change_cost
 
         # 利用下层 agent 的平均 reward 作为“自下而上”的反馈信号
         reward += w_off * avg_off_r
 
-        # 容量 relax 罚项（DeploymentConstraintCfg.penalty_capacity_relax）
-        cap_relax_cnt = float(aux.get("capacity_relax_cnt", 0.0))
-        penalty_capacity_relax = float(self.deployment_agent.cfg.penalty_capacity_relax)
+        # 容量 relax 罚项（penalty_capacity_relax）
+        cap_relax_cnt = float(aux["capacity_relax_cnt"])
+        penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
         reward -= penalty_capacity_relax * cap_relax_cnt
 
         return reward
