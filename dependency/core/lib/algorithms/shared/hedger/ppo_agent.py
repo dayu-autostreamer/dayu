@@ -34,6 +34,34 @@ class HedgerDeploymentPPO(nn.Module):
         self.cloud_idx = cloud_node_idx
         self.cfg = constraint_cfg
 
+    def _static_allowed_mask(
+            self,
+            phys_feats: Dict[str, torch.Tensor],
+            logic_feats: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """
+        To construct a "static physical mask": Filter out physically impossible deployment combinations based solely on the model size and the total memory of the device.
+
+        Return:
+
+        `static_allowed`: `[Ms, Np]` boolean array
+
+        `static_allowed[i, n]` = `True` indicates that service `i` can be physically accommodated on device `n`.
+        """
+        cap = phys_feats["mem_capacity"].float()  # [Np]
+        model_mem = logic_feats["model_mem"].float()  # [Ms]
+        Ms = model_mem.size(0)
+        Np = cap.size(0)
+
+        # [Ms, Np]
+        static_allowed = model_mem.view(Ms, 1) <= cap.view(1, Np)
+
+        # Cloud nodes are always treated as "feasible alternatives."
+        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
+        static_allowed[:, cloud_idx] = True
+
+        return static_allowed
+
     @staticmethod
     def topo_order(edge_index: torch.Tensor, num_nodes: int):
         row, col = edge_index
@@ -110,92 +138,120 @@ class HedgerDeploymentPPO(nn.Module):
         Ms, Np = h_s.size(0), h_p.size(0)
         if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
 
+        # Current deployment budget (consider baseline + uninstall old models)
         residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)  # [Np]
-        model_mem = logic_feats["model_mem"].float()  # [Ms] MB
-        probs = self.actor(h_s, h_p, mask=None)  # [Ms,Np] original Bernoulli probability
+        model_mem = logic_feats["model_mem"].float()  # [Ms]
         cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
 
-        deploy_mask = torch.zeros(Ms, Np, dtype=torch.bool, device=h_p.device)
-        logp_sum = torch.tensor(0., device=h_p.device)
-        ent_sum = torch.tensor(0., device=h_p.device)
+        # Static physical mask
+        static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
+
+        # Masking out physically impossible combinations using static masking
+        # The `static_allowed` parameter is passed to the actor, which then applies masked_fill to the attention scores.
+        probs_raw = self.actor(h_s, h_p, mask=static_allowed)  # [Ms, Np], probability after the sigmoid
+
+        # To ensure numerical stability, perform a slight trimming on the probabilities used for log_prob;
+        # For positions that are not allowed, replace 0 with a very small eps to avoid log(0)
+        eps = 1e-6
+        probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
+        probs_log = torch.where(static_allowed, probs_log, torch.full_like(probs_log, eps))
+
+        # Strictly Prohibit Sampling at Positions Marked as static_disallowed
+        probs_sample = torch.where(static_allowed, probs_raw, torch.zeros_like(probs_raw))
+
+        # Multilabel Bernoulli sampling
+        # Here, probs_log is used to construct the distribution, and probs_sample is used for actual sampling
+        # (positions that are not allowed will always sample 0)
+        dist = torch.distributions.Bernoulli(probs=probs_log)
+        acts = torch.rand_like(probs_sample) < probs_sample  # bool [Ms, Np]
+        deploy_mask = acts.clone()
+
+        # Each service must be deployed on at least one device (as a backup: deployed on the cloud).
+        row_sum = deploy_mask.sum(dim=1)  # [Ms]
+        need_cloud = (row_sum == 0)
+        if need_cloud.any():
+            deploy_mask[need_cloud, cloud_idx] = True
+
+        # Post-sampling capacity projection (post-projection)
         capacity_relax_cnt = 0
-
-        for i in topo_order:
-            # Capacity-based permission matrix: residual >= model_mem[i]
-            allowed = residual >= model_mem[i]
-            # The cloud always allows (resources are sufficient)
-            allowed[cloud_idx] = True
-
-            # If `enforce_capacity=True` and all other options are `False`, only the cloud option can be selected.
-            # Otherwise, multi-label sampling is possible.
-            if self.cfg.enforce_capacity and (allowed.sum() == 0 or (allowed.sum() == 1 and allowed[cloud_idx])):
-                # Available on cloud only
-                pm = torch.zeros(Np, device=h_p.device)
-                pm[cloud_idx] = 1.0
-                dist = torch.distributions.Bernoulli(probs=pm)
-                act = (pm > 0.5)  # Directly select cloud
-                logp_sum += dist.log_prob(act.float()).sum()
-                ent_sum += dist.entropy().mean()
-                deploy_mask[i] = act
-            else:
-                # Allow Bernoulli sampling (can be multiple copies) on allowed nodes
-                pm = probs[i].clone()
-                pm = torch.where(allowed, pm, torch.zeros_like(pm))
-                # Special circumstances: If all are zeroed (extreme), relax once-> Only cloud
-                if pm.sum() == 0:
-                    capacity_relax_cnt += 1
-                    pm = torch.zeros_like(pm)
-                    pm[cloud_idx] = 1.0
-                dist = torch.distributions.Bernoulli(probs=pm)
-                act = (torch.rand_like(pm) < pm).float()  # [Np]
-                # At least ensure cloud deployment
-                if act.sum() == 0:
-                    act[cloud_idx] = 1.0
-                logp_sum += dist.log_prob(act).sum()
-                ent_sum += dist.entropy().mean()
-                deploy_mask[i] = act.bool()
-
-            # Update remaining memory (deduction for non-cloud)
+        if self.cfg.enforce_capacity:
+            # Check each device to see if it exceeds the budget, and if it does, delete some copies.
             for n in range(Np):
                 if n == cloud_idx:
+                    # The cloud side can be considered as "infinity" or controlled individually;
+                    # here, no capacity trimming is performed.
                     continue
-                if deploy_mask[i, n]:
-                    residual[n] = torch.clamp(residual[n] - model_mem[i], min=0.0)
+
+                while True:
+                    # The current load of device n
+                    used_n = (deploy_mask[:, n].float() * model_mem).sum()
+
+                    # The budget has been met, exit the loop.
+                    if used_n <= residual[n] + 1e-6:
+                        break
+
+                    # Find all services currently deployed on device n.
+                    candidates = torch.nonzero(deploy_mask[:, n], as_tuple=False).view(-1)
+                    if candidates.numel() == 0:
+                        break
+
+                    # Strategy: Delete the service with the "minimum probability" of strategy on this device
+                    cand_probs = probs_log[candidates, n]
+                    drop_local_idx = torch.argmin(cand_probs)
+                    drop_service_idx = candidates[drop_local_idx]
+
+                    deploy_mask[drop_service_idx, n] = False
+                    capacity_relax_cnt += 1
+
+            # Capacity adjustment may cause some services to have no replicas at all,
+            # as a last resort: enforce cloud deployment.
+            row_sum = deploy_mask.sum(dim=1)
+            need_cloud = (row_sum == 0)
+            if need_cloud.any():
+                deploy_mask[need_cloud, cloud_idx] = True
+
+        # Calculate logp and entropy under the "static Bernoulli distribution"
+        act_float = deploy_mask.float()
+        logp = dist.log_prob(act_float)       # [Ms, Np]
+        ent = dist.entropy()                  # [Ms, Np]
+
+        logp_sum = logp.sum()
+        ent_sum = ent.mean()
 
         value = self.critic(h_s, h_p)
-        return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {"capacity_relax_cnt": capacity_relax_cnt}
+
+        return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {
+            "capacity_relax_cnt": capacity_relax_cnt
+        }
 
     def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
                  deploy_mask: torch.Tensor, topo_order: Optional[list] = None,
                  prev_deploy_mask: Optional[torch.Tensor] = None):
-        # Evaluate the log probability, entropy, and value of the given `deploy_mask` for use in PPO.
+        """
+        Under the current parameters, calculate log_prob, entropy, and value for the given deploy_mask:
+        - Policy distribution: Static physical mask + independent Bernoulli (consistent with the policy stage)
+        - The capacity constraint process is no longer replicated; capacity constraints are considered as a "projection" of the environment on actions.
+        """
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
-        residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)
-        model_mem = logic_feats["model_mem"].float()
-        probs = self.actor(h_s, h_p, mask=None)
-        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
-        if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
-        logp_sum = torch.tensor(0., device=h_p.device)
-        ent_sum = torch.tensor(0., device=h_p.device)
 
-        for i in topo_order:
-            allowed = residual >= model_mem[i]
-            allowed[cloud_idx] = True
-            pm = torch.where(allowed, probs[i], torch.zeros_like(probs[i]))
-            # Special case: If pm is all 0, set the cloud to 1
-            if pm.sum() == 0:
-                pm = torch.zeros_like(pm)
-                pm[cloud_idx] = 1.0
-            dist = torch.distributions.Bernoulli(probs=pm)
-            act = deploy_mask[i].float()
-            logp_sum += dist.log_prob(act).sum()
-            ent_sum += dist.entropy().mean()
-            for n in range(Np):
-                if n == cloud_idx:
-                    continue
-                if deploy_mask[i, n]: residual[n] = torch.clamp(residual[n] - model_mem[i], min=0.0)
+        # Static physical mask
+        static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
+
+        probs_raw = self.actor(h_s, h_p, mask=static_allowed)
+        eps = 1e-6
+        probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
+        probs_log = torch.where(static_allowed, probs_log, torch.full_like(probs_log, eps))
+
+        dist = torch.distributions.Bernoulli(probs=probs_log)
+
+        act_float = deploy_mask.float()
+        logp = dist.log_prob(act_float)     # [Ms, Np]
+        ent = dist.entropy()                # [Ms, Np]
+
+        logp_sum = logp.sum()
+        ent_sum = ent.mean()
 
         value = self.critic(h_s, h_p)
         return logp_sum, ent_sum, value.squeeze(0)
