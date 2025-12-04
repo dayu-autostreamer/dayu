@@ -111,7 +111,7 @@ class GPUFlopsMonitor(BaseMonitor, abc.ABC):
                 raise Exception(f"Unsupported device or computing capability: {capability} for {device_name}")
             total_flops += self.calculate_flops(mp_count, fp32_cores_per_sm, max_freq_hz, dual_factor)
 
-        return total_flops / cuda.Device.count() / 1e12
+        return total_flops / cuda.Device.count() / 1e9
 
     def get_gpu_flops(self):
         try:
