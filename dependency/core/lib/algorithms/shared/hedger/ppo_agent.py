@@ -125,8 +125,8 @@ class HedgerDeploymentPPO(nn.Module):
         """
         Perform a task-specific residual transformation on the (h_s, h_p) provided by the shared encoder
         """
-        h_s = h_s + self.s_adapter(h_s)
-        h_p = h_p + self.p_adapter(h_p)
+        h_s = self.service_adapter(h_s)
+        h_p = self.device_adapter(h_p)
         return h_s, h_p
 
     @torch.no_grad()
@@ -358,8 +358,8 @@ class HedgerOffloadingPPO(nn.Module):
         """
         Perform a task-specific residual transformation on the (h_s, h_p) provided by the shared encoder
         """
-        h_s = h_s + self.s_adapter(h_s)
-        h_p = h_p + self.p_adapter(h_p)
+        h_s = self.service_adapter(h_s)
+        h_p = self.device_adapter(h_p)
         return h_s, h_p
 
     @torch.no_grad()
@@ -368,6 +368,12 @@ class HedgerOffloadingPPO(nn.Module):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
+
+        row, col = logic_edge_index  # row: u, col: v,  u→v
+        parents = [[] for _ in range(Ms)]
+        for u, v in zip(row.tolist(), col.tolist()):
+            parents[v].append(u)
+        must_cloud = torch.zeros(Ms, dtype=torch.bool, device=h_p.device) # 服务 i 以及它的所有后代都必须在云上执行
 
         actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
         logp_sum = torch.tensor(0., device=h_p.device)
@@ -382,7 +388,15 @@ class HedgerOffloadingPPO(nn.Module):
 
         for i in topo_order:
             base = static_mask[i].clone()
-            if self.cfg.cloud_sticky and (last == self.cloud_idx):
+
+            # 先看它的父节点中是否有已经 "must_cloud" 的
+            parent_indices = parents[i]
+            parent_must_cloud = False
+            if self.cfg.cloud_sticky and parent_indices:
+                parent_must_cloud = bool(must_cloud[parent_indices].any())
+
+            # 如果父节点路径已经上云，则本节点只能在云上执行
+            if self.cfg.cloud_sticky and parent_must_cloud:
                 allowed = torch.zeros_like(base)
                 allowed[self.cloud_idx] = base[self.cloud_idx]
             else:
@@ -407,12 +421,18 @@ class HedgerOffloadingPPO(nn.Module):
                 else:
                     allowed = base
 
+            # 用 allowed 采样当前 a_i
             probs_i = self.actor(h_s[i:i + 1], h_p, allowed.unsqueeze(0))[0]
             dist = torch.distributions.Categorical(probs_i)
             a = dist.sample()
             actions[i] = a
             logp_sum += dist.log_prob(a)
             ent_sum += dist.entropy()
+
+            # 更新 must_cloud[i]，用于后续子节点的判断
+            if self.cfg.cloud_sticky:
+                # 如果父路径已经上云，或者当前节点直接选了云，则它自己也标记为 must_cloud
+                must_cloud[i] = parent_must_cloud or (a.item() == self.cloud_idx)
 
             if a != last:
                 switches += 1
@@ -430,6 +450,12 @@ class HedgerOffloadingPPO(nn.Module):
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
 
+        row, col = logic_edge_index  # row: u, col: v,  u→v
+        parents = [[] for _ in range(Ms)]
+        for u, v in zip(row.tolist(), col.tolist()):
+            parents[v].append(u)
+        must_cloud = torch.zeros(Ms, dtype=torch.bool, device=h_p.device) # 服务 i 以及它的所有后代都必须在云上执行
+
         logp_sum = torch.tensor(0., device=h_p.device)
         ent_sum = torch.tensor(0., device=h_p.device)
 
@@ -442,7 +468,14 @@ class HedgerOffloadingPPO(nn.Module):
 
         for i in topo_order:
             base = static_mask[i].clone()
-            if self.cfg.cloud_sticky and (last == self.cloud_idx):
+
+            # 先看它的父节点中是否有已经 "must_cloud" 的
+            parent_indices = parents[i]
+            parent_must_cloud = False
+            if self.cfg.cloud_sticky and parent_indices:
+                parent_must_cloud = bool(must_cloud[parent_indices].any())
+
+            if self.cfg.cloud_sticky and parent_must_cloud:
                 allowed = torch.zeros_like(base)
                 allowed[self.cloud_idx] = base[self.cloud_idx]
             else:
@@ -473,6 +506,11 @@ class HedgerOffloadingPPO(nn.Module):
             a = actions[i]
             logp_sum += dist.log_prob(a)
             ent_sum += dist.entropy()
+
+            # 更新 must_cloud[i]，用于后续子节点的判断
+            if self.cfg.cloud_sticky:
+                # 如果父路径已经上云，或者当前节点直接选了云，则它自己也标记为 must_cloud
+                must_cloud[i] = parent_must_cloud or (a.item() == self.cloud_idx)
 
             if a != last:
                 switches += 1

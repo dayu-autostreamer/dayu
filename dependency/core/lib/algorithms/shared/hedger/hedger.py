@@ -468,9 +468,9 @@ class Hedger:
         cloud_frac = float(metrics.get("cloud_fraction", 0.0))
 
         # 权重从 hyper_params 里读，如果没有则用默认
-        w_lat = float(self.hyper_params.get("reward_off_latency_weight", 1e-3))
-        w_slo = float(self.hyper_params.get("reward_off_slo_weight", 1.0))
-        w_cloud = float(self.hyper_params.get("reward_off_cloud_weight", 0.1))
+        w_lat = float(self.offloading_agent_params["reward_off_latency_weight"])
+        w_slo = float(self.offloading_agent_params["reward_off_slo_weight"])
+        w_cloud = float(self.offloading_agent_params["reward_off_cloud_weight"])
 
         # 基本 reward：倾向于降低延迟、降低 SLO 违约、降低上云比例
         reward = 0.0
@@ -479,7 +479,7 @@ class Hedger:
         reward -= w_cloud * cloud_frac
 
         # 来自约束的附加代价（切换次数 + relax 次数）
-        aux_cost = float(aux.get("aux_cost", 0.0))
+        aux_cost = float(aux["aux_cost"])
         reward -= aux_cost
 
         return reward
