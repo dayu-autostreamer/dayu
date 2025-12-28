@@ -1,12 +1,17 @@
 import re
 
 class ServiceConfig:
-    SERVICE_PATTERN = re.compile(r"^processor-(.+?)-[^-]+-(?:cloudworker|edgeworker)-")
+    SERVICE_PATTERN = [
+        re.compile(r"^processor-(?P<service>.+)-(?P<node>[^-]+)-(?:edgeworker|cloudworker)(?:-|$)"),
+        re.compile(r"^processor-(?P<service>.+)-(?P<node>[^-]+)-[^-]+$"),
+        re.compile(r"^processor-(?P<service>.+)-[^-]+$")
+        ]
+
 
     @classmethod
     def map_pod_name_to_service(cls, pod_name: str) -> str:
-        match = cls.SERVICE_PATTERN.match(pod_name)
-        if match:
-            return match.group(1)
-        else:
-            return None
+        for pattern in cls.SERVICE_PATTERN:
+            match = pattern.match(pod_name)
+            if match:
+                return match.group("service")
+        return None
