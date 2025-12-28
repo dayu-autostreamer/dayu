@@ -10,9 +10,6 @@ class NodeInfo:
     __node_info_ip = None
     __node_info_role = None
 
-    config.load_incluster_config()
-    v1 = client.CoreV1Api()
-
     @classmethod
     def get_node_info(cls):
         if not cls.__node_info_hostname:
@@ -39,7 +36,9 @@ class NodeInfo:
 
     @classmethod
     def __extract_node_info(cls):
-        nodes = cls.v1.list_node().items
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        nodes = v1.list_node().items
 
         assert nodes, 'Invalid node config in KubeEdge system'
 
@@ -95,7 +94,9 @@ class NodeInfo:
 
     @classmethod
     def get_edge_nodes(cls) -> List[str]:
-        pods = cls.v1.list_namespaced_pod(
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        pods = v1.list_namespaced_pod(
             namespace=Context.get_parameter('NAMESPACE'),
             label_selector="jointmultiedge.sedna.io/name=controller",
         )
