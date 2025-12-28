@@ -8,7 +8,9 @@ from .service import ServiceConfig
 
 
 class KubeConfig:
-    _api = None
+    _core_api = None
+    _custom_api = None
+
     NAMESPACE = Context.get_parameter('NAMESPACE')
 
     # Caching controls
@@ -50,11 +52,19 @@ class KubeConfig:
         _refresh_mode = 'never'
 
     @classmethod
-    def _get_api(cls):
-        if not cls._api:
+    def _get_core_api(cls):
+        if not cls._core_api:
             config.load_incluster_config()
-            cls._api = client.CoreV1Api()
-        return cls._api
+            cls._core_api = client.CoreV1Api()
+        return cls._core_api
+
+
+    @classmethod
+    def _get_custom_api(cls):
+        if not cls._custom_api:
+            config.load_incluster_config()
+            cls._custom_api = client.CustomObjectsApi()
+        return cls._custom_api
 
     @classmethod
     def force_refresh(cls):
@@ -122,7 +132,7 @@ class KubeConfig:
         """Perform a synchronous refresh from the Kubernetes API for pod topology only.
         Any API error will keep existing caches intact to be resilient.
         """
-        api = cls._get_api()
+        api = cls._get_core_api()
         pods = api.list_namespaced_pod(
             cls.NAMESPACE,
             label_selector=cls._label_selector,
@@ -328,7 +338,7 @@ class KubeConfig:
         Returns:
             state: bool
         """
-        api = cls._get_api()
+        api = cls._get_core_api()
 
         pods = api.list_namespaced_pod(
             cls.NAMESPACE,
@@ -354,7 +364,7 @@ class KubeConfig:
         Get the metrics of all pods in the specified namespace from metrics.k8s.io,
         Then filter out the target pods and calculate the total memory per pod (sum of all containers, in bytes).
         """
-        api = cls._get_api()
+        api = cls._get_custom_api()
         resp = api.list_namespaced_custom_object(
             group="metrics.k8s.io",
             version="v1beta1",
