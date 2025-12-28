@@ -18,6 +18,7 @@ class ModelMemoryMonitor(BaseMonitor, abc.ABC):
     def get_model_memory(self):
         KubeConfig.force_refresh()
         pods_list = KubeConfig.get_pods_on_node(self.local_device)
+        print(f'*****device: {self.local_device}, pods_list: {pods_list}')
         pod_memory_dict = KubeConfig.get_pod_memory_from_metrics(pods_list)
 
         service_memory_dict = {
