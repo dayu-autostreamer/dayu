@@ -28,4 +28,4 @@ class ModelMemoryMonitor(BaseMonitor, abc.ABC):
         return service_memory_dict
 
     def get_parameter_value(self):
-        return self.get_model_memory()
+        return self.get_model_memory() / 1e9
