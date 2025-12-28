@@ -1,6 +1,5 @@
 import abc
 
-
 from .base_monitor import BaseMonitor
 
 from core.lib.common import ClassFactory, ClassType, LOGGER
@@ -120,13 +119,16 @@ class GPUUsageMonitor(BaseMonitor, abc.ABC):
         import glob
         candidates = [
             '/sys/devices/gpu.0/load',
+            '/sys/devices/*gpu*/load',
+            '/sys/devices/*gv11b*/load',
+            '/sys/devices/platform/*gpu*/load',
+            '/sys/devices/platform/host1x/*gpu*/load',
             '/sys/devices/gpu.0/devfreq/*/load',
             '/sys/devices/*gpu*/devfreq/*/load',
-            '/sys/devices/*/*gpu*/devfreq/*/load',
-            '/sys/class/devfreq/*gpu*/load',
-            '/sys/devices/platform/*gpu*/devfreq/*/load',
-            '/sys/devices/*gv11b*/devfreq/*/load',  # Xavier family
+            '/sys/devices/*gv11b*/devfreq/*/load',
             '/sys/devices/*nvgpu*/devfreq/*/load',
+            '/sys/class/devfreq/*gpu*/load',
+            '/sys/class/devfreq/*nvgpu*/load',
         ]
         paths = []
         for pattern in candidates:
@@ -148,11 +150,12 @@ class GPUUsageMonitor(BaseMonitor, abc.ABC):
                 val = int(''.join(ch for ch in raw if ch.isdigit()))
                 # Heuristic scaling
                 if val <= 100:
-                    percent = float(val)
+                    percent = float(val)  # Already percent
+                elif val <= 1000:
+                    percent = val / 10.0  # Per-mille to percent (10*percentage)
                 elif val <= 255:
-                    percent = val / 255.0 * 100.0
+                    percent = val / 255.0 * 100.0 # Scale 0..255 to percent
                 else:
-                    # Assume per-mille (0..1000)
                     percent = val / 10.0
                 vals.append(percent)
             except Exception:
