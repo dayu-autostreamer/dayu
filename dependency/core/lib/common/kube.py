@@ -5,6 +5,7 @@ import threading
 
 from .context import Context
 from .service import ServiceConfig
+from .log import LOGGER
 
 
 class KubeConfig:
@@ -99,6 +100,7 @@ class KubeConfig:
             node_name = getattr(pod.spec, 'node_name', None)
             if not pod_name or not node_name:
                 continue
+            LOGGER.debug(f'*******pod_name: {pod_name}, node_name: {node_name}')
 
             service_name = ServiceConfig.map_pod_name_to_service(pod_name)
             if not service_name:
@@ -107,6 +109,8 @@ class KubeConfig:
             service_nodes[service_name].add(node_name)
             node_services[node_name].add(service_name)
             node_pods[node_name].add(pod_name)
+
+        LOGGER.debug(f'*****node_pods: {node_pods}')
 
         # Store as plain dicts of sets; create list views for fast reads
         service_nodes_cache = {svc: set(nodes) for svc, nodes in service_nodes.items()}
