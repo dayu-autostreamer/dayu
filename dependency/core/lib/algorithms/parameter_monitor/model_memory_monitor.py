@@ -21,11 +21,11 @@ class ModelMemoryMonitor(BaseMonitor, abc.ABC):
         pod_memory_dict = KubeConfig.get_pod_memory_from_metrics(pods_list)
 
         service_memory_dict = {
-            svc: memory
+            svc: memory /1e9
             for pod, memory in pod_memory_dict.items()
             if (svc := ServiceConfig.map_pod_name_to_service(pod)) is not None
         }
         return service_memory_dict
 
     def get_parameter_value(self):
-        return self.get_model_memory() / 1e9
+        return self.get_model_memory()
