@@ -1,3 +1,4 @@
+export REG=repo:5000
 docker pull "$REG"/dayuhub/monitor:v1.2-jp6
 docker tag "$REG"/dayuhub/monitor:v1.2-jp6 "$REG"/dayuhub/monitor:v1.2
 docker pull "$REG"/dayuhub/pedestrian-detection:v1.2-jp6

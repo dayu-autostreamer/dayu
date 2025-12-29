@@ -16,8 +16,8 @@ pod-template:
     - name: SCH_SELECTION_POLICY_PARAMETERS
       value: >
         {
-          'fixed_value':0,
-          'fixed_type':'position'
+          'fixed_value': 'edgexn12',
+          'fixed_type':'hostname'
         }
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
       value: fixed
