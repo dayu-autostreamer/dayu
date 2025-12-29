@@ -50,6 +50,7 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
 
         self.hedger.register_logical_topology(Task.extract_dag_from_dict(dag))
         self.hedger.register_physical_topology(list(node_set), source_device)
+        self.hedger.register_state_buffer()
 
         deploy_plan = self.hedger.get_redeployment_plan()
         if deploy_plan is None:

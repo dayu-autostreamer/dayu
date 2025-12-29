@@ -70,7 +70,7 @@ class PhysicalEncoder(nn.Module):
     """
     feats:
       - gpu_flops:     [Np]
-      - role_id:       [Np] (0=source edge / 1,...,Np-2=other edge  / Np-1=cloud)
+      - role_id:       [Np] (0=source edge / 1=other edge  / 2=cloud)
       - mem_capacity:  [Np] (MB)
       - bandwidth_seq: [Np,T]
       - gpu_util_seq:  [Np,T]

@@ -13,6 +13,7 @@ from .topology_encoder import TopologyEncoders
 from .ppo_agent import HedgerOffloadingPPO, HedgerDeploymentPPO
 from .hedger_config import from_partial_dict, OffloadingConstraintCfg, DeploymentConstraintCfg, LogicalTopology, \
     PhysicalTopology
+from .state_buffer import StateBuffer
 
 __all__ = ('Hedger',)
 
@@ -51,6 +52,8 @@ class Hedger:
         self.offloading_batch_size = hyper_params.get("offloading_batch_size", 16)
         self.deployment_batch_size = hyper_params.get("deployment_batch_size", 4)
 
+        self.max_state_buffer_size = hyper_params.get("max_state_buffer_size", 1000)
+
         self.offloading_agent_params = agent_params['offloading_agent']
         self.deployment_agent_params = agent_params['deployment_agent']
 
@@ -63,6 +66,8 @@ class Hedger:
         self.shared_topology_encoder = None
         self.deployment_agent = None
         self.offloading_agent = None
+
+        self.state_buffer = None
 
         self._deployment_update_steps = 0
         self._offloading_update_steps = 0
@@ -163,6 +168,18 @@ class Hedger:
 
         LOGGER.debug(f'[Hedger] Registered logical topology, nodes: {self.logical_topology.service_list}, '
                      f'links: {self.logical_topology.links}')
+
+    def register_state_buffer(self):
+        if self.state_buffer:
+            return
+
+        assert self.logical_topology, "Logical topology must be registered before registering state buffer."
+        assert self.physical_topology, "Physical topology must be registered before registering state buffer."
+
+        self.state_buffer = StateBuffer(self.max_state_buffer_size,
+                                        logical_topology=self.logical_topology,
+                                        physical_topology=self.physical_topology)
+
 
     def register_initial_deployment(self, deployment_plan):
         assert self.logical_topology, "Logical topology must be registered before registering initial deployment."
