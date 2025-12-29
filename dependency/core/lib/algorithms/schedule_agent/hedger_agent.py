@@ -1,5 +1,8 @@
 import abc
 import copy
+from statistics import mean
+
+import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, ConfigLoader, Context, LOGGER, \
     KubeConfig, TaskConstant
@@ -50,6 +53,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
 
         self.hedger.register_logical_topology(Task.extract_dag_from_dag_deployment(dag))
         self.hedger.register_physical_topology(all_edge_devices, source_edge_device)
+        self.hedger.register_state_buffer()
 
         configuration = copy.deepcopy(self.default_configuration)
         offloading = self.hedger.get_offloading_plan()
@@ -82,13 +86,35 @@ class HedgerAgent(BaseAgent, abc.ABC):
         pass
 
     def update_resource(self, device, resource):
-        pass
+        if resource['bandwidth'] != -1:
+            self.hedger.state_buffer.add_bandwidths(resource['bandwidth'])
+        self.hedger.state_buffer.add_gpu_flops(device, resource['gpu_flops'])
+        self.hedger.state_buffer.add_memory_capacity(device, resource['memory_capacity'])
+        self.hedger.state_buffer.add_gpu_utilization(device, resource['gpu_usage'])
+        self.hedger.state_buffer.add_memory_utilization(device, resource['memory_usage'])
+        for service in resource['model_flops']:
+            self.hedger.state_buffer.add_model_flops(service, resource['model_flops'][service])
+        for service in resource['model_memory']:
+            self.hedger.state_buffer.add_model_memory(service, resource['model_memory'][service])
 
     def update_policy(self, policy):
         pass
 
     def update_task(self, task):
-        pass
+        for service_name in task.get_dag().nodes:
+            if service_name in {TaskConstant.START.value, TaskConstant.END.value}:
+                continue
+
+            content = np.array(task.get_dag().get_node(service_name).service.get_content_data())
+            if content.ndim ==2:
+                complexity = mean([len(frame_content) for frame_content in content])
+            elif content.ndim ==3:
+                complexity = mean([len(frame_content[0]) for frame_content in content])
+            else:
+                raise TypeError(f'Dim of Input "content" must be 2 or 3, get dim {content.ndim}')
+            latency = task.get_dag().get_node(service_name).service.get_execute_time()
+            self.hedger.state_buffer.add_task_complexity(service_name, complexity)
+            self.hedger.state_buffer.add_task_latency(service_name, latency)
 
     def get_schedule_overhead(self):
         return 0

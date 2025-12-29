@@ -50,6 +50,7 @@ class HedgerInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
 
         self.hedger.register_logical_topology(Task.extract_dag_from_dict(dag))
         self.hedger.register_physical_topology(list(node_set), source_device)
+        self.hedger.register_state_buffer()
         self.hedger.register_initial_deployment(self.default_deployment)
 
         deploy_plan = self.hedger.get_initial_deployment_plan()
