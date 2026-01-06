@@ -77,7 +77,7 @@
           style="width: 58%; margin-top: 20px; margin-left: 4%"
           v-model="source.node_selected"
           @change="updateNodeSelection(index, source, source.node_selected)"
-          placeholder="Bind edge nodes (default all nodes)"
+          placeholder="Bind edge nodes"
           multiple
       >
         <template v-for="(option, index) in nodeOptions" :key="index">
@@ -475,18 +475,20 @@ export default {
         return;
       }
 
+      // Bind edge nodes must be selected for each source.
+      for (let i = 0; i < this.selectedSources.length; i++) {
+        const nodes = this.selectedSources[i]?.node_selected;
+        if (!Array.isArray(nodes) || nodes.length === 0) {
+          const sourceId = this.selectedSources[i]?.id ?? i;
+          const sourceName = this.selectedSources[i]?.name ?? '';
+          ElMessage.error(`Please bind edge nodes for source ${sourceId}${sourceName ? `: ${sourceName}` : ''}`);
+          return;
+        }
+      }
 
       const source_config_label =
           this.datasourceOptions[source_index].source_label;
       const policy_id = this.policyOptions[policy_index].policy_id;
-
-      // if user assigned none then add all.
-      for (let i = 0; i < this.selectedSources.length; i++) {
-        if (this.selectedSources[i].node_selected.length === 0) {
-          // this.selectedSources.node_selected = nodeOptions;
-          this.selectedSources[i].node_selected = this.nodeOptions.map(n => n.name);
-        }
-      }
 
       // selectedSources contains all map info
       const content = {
