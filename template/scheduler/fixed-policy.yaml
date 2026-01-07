@@ -26,10 +26,10 @@ pod-template:
         {
           'policy':{
             'pedestrian-detection':['edge5'],
-            'exposure-identification':['edgexn11','edgexn12'], 
+            'exposure-identification':['edge5'], 
             'vehicle-detection':['edge5'],
-            'category-identification':['edgexn8','edgexn11'],
-            'license-plate-recognition':['edgexn11','edgexn12']
+            'category-identification':['edge5'],
+            'license-plate-recognition':['edge5']
           }
         }
     - name: SCH_REDEPLOYMENT_POLICY_NAME
@@ -39,10 +39,10 @@ pod-template:
         {
           'policy':{
             'pedestrian-detection':['edge5'],
-            'exposure-identification':['edgexn11','edgexn12'], 
+            'exposure-identification':['edge5'], 
             'vehicle-detection':['edge5'],
-            'category-identification':['edgexn8','edgexn11'],
-            'license-plate-recognition':['edgexn11','edgexn12']
+            'category-identification':['edge5'],
+            'license-plate-recognition':['edge5']
           }
         }
     - name: SCH_AGENT_NAME
@@ -58,10 +58,10 @@ pod-template:
           },
           'offloading':{
             'pedestrian-detection':'edge5',
-            'exposure-identification':'edgexn11', 
+            'exposure-identification':'edge5', 
             'vehicle-detection':'edge5',
-            'category-identification':'edgexn8',
-            'license-plate-recognition':'edgexn12'
+            'category-identification':'edge5',
+            'license-plate-recognition':'edge5'
           }
         }
 port-open:
