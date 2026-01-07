@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN sed -i 's@http://\(archive\|security\).ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list; \
     if ls /etc/apt/sources.list.d/*.list >/dev/null 2>&1; then \
-      sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list || true \
+      sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list || true; \
     fi \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
