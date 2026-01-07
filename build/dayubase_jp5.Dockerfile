@@ -8,8 +8,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
-RUN sed -i 's@http://\(archive\|security\).ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list \
- && sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list \
+RUN sed -i 's@http://\(archive\|security\).ubuntu.com/ubuntu/@https://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list; \
+    if ls /etc/apt/sources.list.d/*.list >/dev/null 2>&1; then \
+      sed -i '/cuda-internal.nvidia.com/d' /etc/apt/sources.list.d/*.list || true \
+    fi \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential python3-dev g++ curl make autoconf automake libtool pkg-config git \
