@@ -314,3 +314,32 @@ class KubeHelper:
             'address': address,
             'port': port
         }
+
+    @staticmethod
+    def get_node_jetpack_labels(node_name:str) -> dict:
+        """
+        Read JetPack/L4T info from a given Kubernetes Node's labels.
+
+        Returns:
+            dict with keys:
+              - node
+              - jetpack_major (e.g. "4"/"5"/"6" or None)
+              - l4t_major (e.g. "32"/"35"/"36" or None)
+        """
+        if not node_name or not node_name.strip():
+            raise ValueError("node_name must be non-empty")
+
+        # In-cluster config (works inside a pod)
+        config.load_incluster_config()
+
+        v1 = client.CoreV1Api()
+        node_obj = v1.read_node(name=node_name)
+
+
+        labels = (node_obj.metadata.labels or {})
+        return {
+            "node": node_name,
+            "jetpack_major": labels.get("jetson.nvidia.com/jetpack.major"),
+            "l4t_major": labels.get("jetson.nvidia.com/l4t.major")
+        }
+
