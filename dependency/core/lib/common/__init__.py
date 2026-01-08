@@ -1,6 +1,6 @@
 from .log import LOGGER
 from .utils import *
-from .file_ops import FileOps
+from .file_ops import FileOps, FileCleaner
 from .video_ops import VideoOps
 from .yaml_ops import YamlOps
 from .hash_ops import HashOps
