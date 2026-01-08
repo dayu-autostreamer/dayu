@@ -236,11 +236,11 @@ dayu::buildx::build_special_arch() {
   local image="$1"
   local platform="$2"      # linux/amd64 or linux/arm64
   local dockerfile="$3"
-  local variant_tag="$4"   # TAG / TAG-jp4 / TAG-jp5 / TAG-jp6
+  local suffix_variant="$4"   # TAG / TAG-jp4 / TAG-jp5 / TAG-jp6
   local cache_option="$5"
 
   local arch="${platform##*/}"
-  local temp_tag="${REGISTRY}/${REPO}/${image}:${variant_tag}-${arch}"
+  local temp_tag="${REGISTRY}/${REPO}/${image}:${TAG}${suffix_variant}-${arch}"
   local context_dir="."
 
   echo "Building SPECIAL arch image: ${temp_tag} platform: ${platform} dockerfile: ${dockerfile} baseTAG: ${variant_tag} no-cache: ${NO_CACHE}"
@@ -249,7 +249,7 @@ dayu::buildx::build_special_arch() {
     docker buildx build \
       --platform "${platform}" \
       --build-arg REG="${REGISTRY}" \
-      --build-arg TAG="${variant_tag}" \
+      --build-arg TAG="${BASE_TAG}${suffix_variant}" \
       -t "${temp_tag}" \
       -f "${dockerfile}" \
       "${context_dir}" \
@@ -258,7 +258,7 @@ dayu::buildx::build_special_arch() {
     docker buildx build \
       --platform "${platform}" \
       --build-arg REG="${REGISTRY}" \
-      --build-arg TAG="${variant_tag}" \
+      --build-arg TAG="${BASE_TAG}${suffix_variant}" \
       -t "${temp_tag}" \
       -f "${dockerfile}" \
       "${context_dir}" \
@@ -285,19 +285,19 @@ dayu::buildx::build_special_image_all_variants() {
   local dockerfile="$3"
   local cache_option="$4"
 
-  local -a variants=("${BASE_TAG}" "${BASE_TAG}-jp4" "${BASE_TAG}-jp5" "${BASE_TAG}-jp6")
+  local -a suffix_variants=("" "-jp4" "-jp5" "-jp6")
 
   if [[ "${platform_csv}" != *","* ]]; then
     # Single-platform special image: build final tag directly (no manifest)
-    for vt in "${variants[@]}"; do
-      local image_tag="${REGISTRY}/${REPO}/${image}:${vt}"
+    for vt in "${suffix_variants[@]}"; do
+      local image_tag="${REGISTRY}/${REPO}/${image}:${TAG}${vt}"
       echo "Building SPECIAL single-platform image: ${image_tag} platform: ${platform_csv} dockerfile: ${dockerfile} baseTAG: ${vt}"
 
       if [[ -z "${cache_option}" ]]; then
         docker buildx build \
           --platform "${platform_csv}" \
           --build-arg REG="${REGISTRY}" \
-          --build-arg TAG="${vt}" \
+          --build-arg TAG="${BASE_TAG}${vt}" \
           -t "${image_tag}" \
           -f "${dockerfile}" \
           "." \
@@ -306,7 +306,7 @@ dayu::buildx::build_special_image_all_variants() {
         docker buildx build \
           --platform "${platform_csv}" \
           --build-arg REG="${REGISTRY}" \
-          --build-arg TAG="${vt}" \
+          --build-arg TAG="${BASE_TAG}${vt}" \
           -t "${image_tag}" \
           -f "${dockerfile}" \
           "." \
@@ -319,12 +319,12 @@ dayu::buildx::build_special_image_all_variants() {
 
   # Multi-arch special image: build per-arch temp tags then manifest per variant
   IFS=',' read -ra plats <<< "${platform_csv}"
-  for vt in "${variants[@]}"; do
+  for vt in "${suffix_variants[@]}"; do
     for p in "${plats[@]}"; do
       p="$(echo "$p" | xargs)"
       dayu::buildx::build_special_arch "${image}" "${p}" "${dockerfile}" "${vt}" "${cache_option}"
     done
-    dayu::buildx::create_and_push_manifest "${image}" "${vt}"
+    dayu::buildx::create_and_push_manifest "${image}" "${TAG}${vt}"
   done
 }
 
