@@ -86,6 +86,8 @@ RUN set -eux; \
     make -j"$(nproc)"; make install; ldconfig; \
     rm -rf /usr/src/tiff-4.5.0*
 
+ENV MAX_JOBS=1
+
 RUN  apt-get update \
   && apt-get remove -y python3-yaml python3-psutil \
   && pip3 install --upgrade pip \
