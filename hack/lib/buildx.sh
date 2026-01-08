@@ -243,7 +243,7 @@ dayu::buildx::build_special_arch() {
   local temp_tag="${REGISTRY}/${REPO}/${image}:${TAG}${suffix_variant}-${arch}"
   local context_dir="."
 
-  echo "Building SPECIAL arch image: ${temp_tag} platform: ${platform} dockerfile: ${dockerfile} baseTAG: ${variant_tag} no-cache: ${NO_CACHE}"
+  echo "Building SPECIAL arch image: ${temp_tag} platform: ${platform} dockerfile: ${dockerfile} baseTAG: ${BASE_TAG}${suffix_variant} no-cache: ${NO_CACHE}"
 
   if [[ -z "${cache_option}" ]]; then
     docker buildx build \
