@@ -1,6 +1,6 @@
 position: both
 pod-template:
-  image: gender-classification
+  image: gender-classification:shy
   imagePullPolicy: Always
   env:
     - name: PROCESSOR_NAME
@@ -8,7 +8,8 @@ pod-template:
     - name: ROI_CLASSIFIER_PARAMETERS
       value: > 
         {
-          'weights':'gender_resnet18.engine'
+          'trt_weights':'gender_resnet18.engine',
+          'non_trt_weights':'gender_resnet18.pt'
         }
     - name: SCENARIOS_EXTRACTORS
       value: > 
@@ -16,7 +17,7 @@ pod-template:
     - name: PRO_QUEUE_NAME
       value: "simple"
     - name: USE_TENSORRT
-      value: "True"
+      value: "False"
 port-open:
   pos: both
   port: 9000
