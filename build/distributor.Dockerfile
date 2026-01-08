@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM ${REG}/dayuhub/dayuhub/dayubase:latest
+FROM ${REG}/dayuhub/dayubase:latest
 
 LABEL authors="Wenhui Zhou"
 

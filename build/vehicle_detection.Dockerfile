@@ -1,6 +1,6 @@
 ARG REG=docker.io
 ARG TAG=latest
-FROM ${REG}/dayuhub/dayuhub/dayubase:${TAG}
+FROM ${REG}/dayuhub/dayubase:${TAG}
 
 LABEL authors="Haoyang Su"
 
