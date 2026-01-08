@@ -142,6 +142,7 @@ dayu::buildx::import_docker_info() {
 
 dayu::buildx::import_env_variables(){
   NO_CACHE=false
+  BASE_TAG="latest"
   SELECTED_FILES=""
 
   # Parse command line arguments
@@ -284,7 +285,7 @@ dayu::buildx::build_special_image_all_variants() {
   local dockerfile="$3"
   local cache_option="$4"
 
-  local -a variants=("${TAG}" "${TAG}-jp4" "${TAG}-jp5" "${TAG}-jp6")
+  local -a variants=("${BASE_TAG}" "${BASE_TAG}-jp4" "${BASE_TAG}-jp5" "${BASE_TAG}-jp6")
 
   if [[ "${platform_csv}" != *","* ]]; then
     # Single-platform special image: build final tag directly (no manifest)
