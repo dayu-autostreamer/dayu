@@ -331,15 +331,10 @@ class KubeHelper:
 
         # In-cluster config (works inside a pod)
         config.load_incluster_config()
-
         v1 = client.CoreV1Api()
         node_obj = v1.read_node(name=node_name)
-
         labels = (node_obj.metadata.labels or {})
-        LOGGER.debug(f"node name: {node_name}")
-        LOGGER.debug(f'*****k8s labels: {labels}')
-        # LOGGER.debug(f'*****node_obj: {node_obj}')
-        LOGGER.debug(f'*****node_obj.metadata.labels: {node_obj.metadata.labels}')
+
         return {
             "node": node_name,
             "jetpack_major": labels.get("jetson.nvidia.com/jetpack.major"),
