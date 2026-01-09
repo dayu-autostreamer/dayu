@@ -7,7 +7,7 @@ pod-template:
       value: "5"
     - name: MONITORS
       value: >
-        ['memory_capacity', 'memory_usage', 'gpu_usage', 'available_bandwidth',  'gpu_flops', 'model_flops', 'model_memory','queue_length']
+        ['memory_capacity','cpu_usage', 'memory_usage', 'gpu_usage', 'available_bandwidth',  'gpu_flops', 'model_flops', 'model_memory','queue_length']
 port-open:
   pos: cloud
   port: 9000
