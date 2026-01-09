@@ -280,6 +280,14 @@ class TemplateHelper:
         edge_workers = []
         for index, edge_node in enumerate(edge_nodes):
             new_edge_worker = copy.deepcopy(edge_worker_template)
+
+            image_name = new_edge_worker['template']['spec']['containers'][0]['image']
+            jetpack_major = self.get_device_jetpack_major_version(edge_node)
+            image_name = self.specify_jetpack_image(image_name, jetpack_major)
+            new_edge_worker['template']['spec']['containers'][0]['image'] = image_name
+            new_edge_worker['template']['spec']['containers'][0]['env'].append(
+                {'name': 'JETPACK', 'value': str(jetpack_major)})
+
             new_edge_worker['template']['spec']['nodeName'] = edge_node
             edge_workers.append(new_edge_worker)
 
@@ -362,8 +370,14 @@ class TemplateHelper:
 
                     new_edge_worker = copy.deepcopy(edge_worker_template)
                     new_edge_worker['template']['spec']['nodeName'] = edge_node
-                    new_edge_worker['template']['spec']['containers'][0]['env'].append({
-                        'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"})
+
+                    image_name = new_edge_worker['template']['spec']['containers'][0]['image']
+                    jetpack_major = self.get_device_jetpack_major_version(edge_node)
+                    image_name = self.specify_jetpack_image(image_name, jetpack_major)
+                    new_edge_worker['template']['spec']['containers'][0]['image'] = image_name
+                    new_edge_worker['template']['spec']['containers'][0]['env'].append(
+                        {'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"},
+                        {'name': 'JETPACK', 'value': str(jetpack_major)})
 
                     edge_yaml_doc['spec']['edgeWorker'] = [new_edge_worker]
                 else:
@@ -380,6 +394,13 @@ class TemplateHelper:
                 yaml_docs.append(edge_yaml_doc)
 
         return yaml_docs
+
+    @staticmethod
+    def specify_jetpack_image(image: str, jetpack_major: int) -> str:
+        if not jetpack_major or not isinstance(jetpack_major, int) or jetpack_major < 0:
+            # return original image if jetpack version is unknown
+            return image
+        return f'{image}-jp{jetpack_major}'
 
     def process_image(self, image: str) -> str:
         """
@@ -510,6 +531,17 @@ class TemplateHelper:
     def check_is_redeployment(self):
         base_info = self.load_base_info()
         return KubeHelper.check_pods_with_string_exists(base_info['namespace'], include_str_list=['processor'])
+
+    @staticmethod
+    def get_device_jetpack_major_version(node_name: str) -> int:
+        jetpack_labels = KubeHelper.get_node_jetpack_labels(node_name)
+        try:
+            if jetpack_labels.get('jetpack_major'):
+                return int(jetpack_labels.get('jetpack_major'))
+            else:
+                return -1
+        finally:
+            return -1
 
     @staticmethod
     def get_all_selected_edge_nodes(yaml_dict):
