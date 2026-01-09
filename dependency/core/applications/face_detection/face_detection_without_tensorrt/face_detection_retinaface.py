@@ -316,5 +316,6 @@ class FaceDetectionRetinaFace:
             
         except Exception as e:
             LOGGER.warning(f"Model inference failed: {e}, returning empty results")
+            LOGGER.exception(e)
             return [], [], [], []
 
