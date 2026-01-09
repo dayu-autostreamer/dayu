@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from typing import List
 
@@ -19,12 +20,32 @@ class FaceDetection:
         self._calculate_flops()
 
         if use_tensorrt:
-            from .face_detection_with_tensorrt import FaceDetectionTensorRT
-            self.model = FaceDetectionTensorRT(
-                weights=self.trt_weights,
-                plugin_library=self.trt_plugin_library,
-                device=self.device
-            )
+            # 检查 TensorRT 版本环境变量
+            trt_version = os.environ.get('version', '8')
+            
+            if trt_version == '10':
+                LOGGER.info('Using TensorRT 10')
+                from .face_detection_with_tensorrt import FaceDetectionTensorRT10
+                self.model = FaceDetectionTensorRT10(
+                    weights=self.trt_weights,
+                    plugin_library=self.trt_plugin_library,
+                    device=self.device
+                )
+            elif trt_version == '8':
+                LOGGER.info('Using TensorRT 8')
+                from .face_detection_with_tensorrt import FaceDetectionTensorRT8
+                self.model = FaceDetectionTensorRT8(
+                    weights=self.trt_weights,
+                    plugin_library=self.trt_plugin_library,
+                    device=self.device
+                )
+            else:
+                LOGGER.warning(f'不支持的 TensorRT 版本: {trt_version}，仅支持版本 8 和 10。将使用非 TensorRT 模式。')
+                from .face_detection_without_tensorrt import FaceDetectionRetinaFace
+                self.model = FaceDetectionRetinaFace(
+                    weights=self.non_trt_weights,
+                    device=self.device
+                )
         else:
             from .face_detection_without_tensorrt import FaceDetectionRetinaFace
             self.model = FaceDetectionRetinaFace(

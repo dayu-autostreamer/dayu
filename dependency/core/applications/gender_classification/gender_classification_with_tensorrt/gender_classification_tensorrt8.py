@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-from typing import List
 
 import pycuda.autoinit
 import pycuda.driver as cuda
@@ -9,7 +8,7 @@ import tensorrt as trt
 from core.lib.common import Context, LOGGER
 
 
-class ExposureIdentificationTensorRT:
+class GenderClassificationTensorRT8:
     def __init__(self, weights, device=0):
         self.weights = weights
 
@@ -58,7 +57,7 @@ class ExposureIdentificationTensorRT:
 
         self.warm_up_turns = 5
 
-        self.classes = ['Drawing', 'Hentai', 'Neutral', 'Porn', 'Sexy']
+        self.classes = ['Male', 'Female']
 
         self.warm_up()
 
@@ -81,6 +80,7 @@ class ExposureIdentificationTensorRT:
             h: original height
             w: original width
         """
+
         image_rgb = cv2.cvtColor(raw_bgr_image, cv2.COLOR_BGR2RGB)
 
         image_resized = cv2.resize(image_rgb, (self.input_w, self.input_h),
@@ -135,6 +135,6 @@ class ExposureIdentificationTensorRT:
         self.ctx.pop()
         # Here we use the first row of output in that batch_size = 1
         output = host_outputs[0]
-        age_output = np.argmax(output)
+        gender_output = np.argmax(output)
 
-        return self.classes[age_output]
+        return self.classes[gender_output]

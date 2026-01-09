@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from typing import List, Dict
 
@@ -18,8 +19,21 @@ class ExposureIdentification:
         self._calculate_flops()
 
         if use_tensorrt:
-            from .exposure_identification_with_tensorrt import ExposureIdentificationTensorRT
-            self.model = ExposureIdentificationTensorRT(weights=self.trt_weights, device=self.device)
+            # 检查 TensorRT 版本环境变量
+            trt_version = os.environ.get('version', '8')
+            
+            if trt_version == '10':
+                LOGGER.info('Using TensorRT 10')
+                from .exposure_identification_with_tensorrt import ExposureIdentificationTensorRT10
+                self.model = ExposureIdentificationTensorRT10(weights=self.trt_weights, device=self.device)
+            elif trt_version == '8':
+                LOGGER.info('Using TensorRT 8')
+                from .exposure_identification_with_tensorrt import ExposureIdentificationTensorRT8
+                self.model = ExposureIdentificationTensorRT8(weights=self.trt_weights, device=self.device)
+            else:
+                LOGGER.warning(f'不支持的 TensorRT 版本: {trt_version}，仅支持版本 8 和 10。将使用非 TensorRT 模式。')
+                from .exposure_identification_without_tensorrt import ExposureIdentificationResNet50
+                self.model = ExposureIdentificationResNet50(weights=self.non_trt_weights, device=self.device)
         else:
             from .exposure_identification_without_tensorrt import ExposureIdentificationResNet50
             self.model = ExposureIdentificationResNet50(weights=self.non_trt_weights, device=self.device)

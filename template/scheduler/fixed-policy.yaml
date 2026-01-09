@@ -25,14 +25,14 @@ pod-template:
       value: >
         {
           'policy':{
-            'face-detection':['edgex9'],
-            'gender-classification':['edgex9'],
-            'age-classification':['edgex9'], 
-            'pedestrian-detection':['edgex9'],
-            'exposure-identification':['edgex9'], 
-            'vehicle-detection':['edgex9'],
-            'category-identification':['edgex9'],
-            'license-plate-recognition':['edgex9']
+            'face-detection':['edgexn12'],
+            'gender-classification':['edgexn12'],
+            'age-classification':['edgexn12'], 
+            'pedestrian-detection':['edgexn12'],
+            'exposure-identification':['edgexn12'], 
+            'vehicle-detection':['edgexn12'],
+            'category-identification':['edgexn12'],
+            'license-plate-recognition':['edgexn12']
           }
         }
     - name: SCH_REDEPLOYMENT_POLICY_NAME
@@ -41,14 +41,14 @@ pod-template:
       value: >
         {
           'policy':{
-            'face-detection':['edgex9'],
-            'gender-classification':['edgex9'],
-            'age-classification':['edgex9'], 
-            'pedestrian-detection':['edgex9'],
-            'exposure-identification':['edgex9'], 
-            'vehicle-detection':['edgex9'],
-            'category-identification':['edgex9'],
-            'license-plate-recognition':['edgex9']
+            'face-detection':['edgexn12'],
+            'gender-classification':['edgexn12'],
+            'age-classification':['edgexn12'], 
+            'pedestrian-detection':['edgexn12'],
+            'exposure-identification':['edgexn12'], 
+            'vehicle-detection':['edgexn12'],
+            'category-identification':['edgexn12'],
+            'license-plate-recognition':['edgexn12']
           }
         }
     - name: SCH_AGENT_NAME
@@ -63,14 +63,14 @@ pod-template:
             'buffer_size': 4
           },
           'offloading':{
-            'face-detection':'cloud.kubeedge',
-            'gender-classification':'cloud.kubeedge',
-            'age-classification':'cloud.kubeedge', 
-            'pedestrian-detection':'cloud.kubeedge',
-            'exposure-identification':'cloud.kubeedge', 
-            'vehicle-detection':'cloud.kubeedge',
-            'category-identification':'cloud.kubeedge',
-            'license-plate-recognition':'cloud.kubeedge'
+            'face-detection':'edgexn12',
+            'gender-classification':'edgexn12',
+            'age-classification':'edgexn12', 
+            'pedestrian-detection':'edgexn12',
+            'exposure-identification':'edgexn12', 
+            'vehicle-detection':'edgexn12',
+            'category-identification':'edgexn12',
+            'license-plate-recognition':'edgexn12'
           }
         }
 port-open:

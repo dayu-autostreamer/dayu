@@ -8,9 +8,9 @@ from typing import List
 
 from core.lib.common import Context
 
-__all__ = ('PedestrianDetectionTensorRT',)
+__all__ = ('VehicleDetectionTensorRT',)
 
-class PedestrianDetectionTensorRT:
+class VehicleDetectionTensorRT10:
     def __init__(self, weights, plugin_library, device=0):
 
         self.weights = weights
@@ -30,24 +30,27 @@ class PedestrianDetectionTensorRT:
         self.cuda_inputs = []
         self.host_outputs = []
         self.cuda_outputs = []
-        self.bindings = []
+        self.input_binding_names = []
+        self.output_binding_names = []
 
-        for binding in self.engine:
-            size = trt.volume(self.engine.get_binding_shape(binding)) * self.engine.max_batch_size
-            dtype = trt.nptype(self.engine.get_binding_dtype(binding))
+        for binding_name in self.engine:
+            shape = self.engine.get_tensor_shape(binding_name)
+            size = trt.volume(shape)
+            dtype = trt.nptype(self.engine.get_tensor_dtype(binding_name))
             host_mem = cuda.pagelocked_empty(size, dtype)
             cuda_mem = cuda.mem_alloc(host_mem.nbytes)
-            self.bindings.append(int(cuda_mem))
-            if self.engine.binding_is_input(binding):
-                self.input_w = self.engine.get_binding_shape(binding)[-1]
-                self.input_h = self.engine.get_binding_shape(binding)[-2]
+            if self.engine.get_tensor_mode(binding_name) == trt.TensorIOMode.INPUT:
+                self.input_binding_names.append(binding_name)
+                self.input_w = shape[-1]
+                self.input_h = shape[-2]
                 self.host_inputs.append(host_mem)
                 self.cuda_inputs.append(cuda_mem)
-            else:
+            elif self.engine.get_tensor_mode(binding_name) == trt.TensorIOMode.OUTPUT:
+                self.output_binding_names.append(binding_name)
                 self.host_outputs.append(host_mem)
                 self.cuda_outputs.append(cuda_mem)
 
-        self.batch_size = 1
+        self.batch_size = self.engine.get_tensor_shape(self.input_binding_names[0])[0]
         self.det_output_length = self.host_outputs[0].shape[0]
 
         self.conf_thres = 0.5
@@ -67,14 +70,13 @@ class PedestrianDetectionTensorRT:
                   "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
                   "teddy bear",
                   "hair drier", "toothbrush"])  # 同原始COCO categories
-        self.target_categories = np.asarray(["person"])
-        self.class_id = 'Pedestrian'
+        self.target_categories = np.asarray(["car", "bus", "motorcycle", "bicycle", "truck"])
+        self.class_id = 'vehicle'
 
         self.DET_NUM = 6
         self.SEG_NUM = 32
         self.POSE_NUM = 17 * 3
-        self.OBB_NUM = 1
-        self.num_values_per_detection = self.DET_NUM + self.SEG_NUM + self.POSE_NUM + self.OBB_NUM
+        self.num_values_per_detection = self.DET_NUM + self.SEG_NUM + self.POSE_NUM
 
         self._warm_up()
 
@@ -100,7 +102,9 @@ class PedestrianDetectionTensorRT:
         np.copyto(self.host_inputs[0], batch_input_image.ravel())
 
         cuda.memcpy_htod_async(self.cuda_inputs[0], self.host_inputs[0], self.stream)
-        self.context.execute_async(batch_size=self.batch_size, bindings=self.bindings, stream_handle=self.stream.handle)
+        self.context.set_tensor_address(self.input_binding_names[0], self.cuda_inputs[0])
+        self.context.set_tensor_address(self.output_binding_names[0], self.cuda_outputs[0])
+        self.context.execute_async_v3(stream_handle=self.stream.handle)
         cuda.memcpy_dtoh_async(self.host_outputs[0], self.cuda_outputs[0], self.stream)
         self.stream.synchronize()
 
@@ -109,7 +113,7 @@ class PedestrianDetectionTensorRT:
         output = self.host_outputs[0]
         result_boxes, result_scores, result_classid = self.post_process(output, origin_h, origin_w)
 
-        # Filter Pedestrian classes
+        # Filter vehicle classes
         mask = np.isin(self.categories[result_classid.astype(int)], self.target_categories)
 
         result_boxes = result_boxes.astype(int)[mask].tolist()

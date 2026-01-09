@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 from typing import List, Dict
@@ -18,8 +19,21 @@ class AgeClassification:
         self._calculate_flops()
 
         if use_tensorrt:
-            from .age_classification_with_tensorrt import AgeClassificationTensorRT
-            self.model = AgeClassificationTensorRT(weights=self.trt_weights, device=self.device)
+            # 检查 TensorRT 版本环境变量
+            trt_version = os.environ.get('version', '8')
+            
+            if trt_version == '10':
+                LOGGER.info('Using TensorRT 10')
+                from .age_classification_with_tensorrt import AgeClassificationTensorRT10
+                self.model = AgeClassificationTensorRT10(weights=self.trt_weights, device=self.device)
+            elif trt_version == '8':
+                LOGGER.info('Using TensorRT 8')
+                from .age_classification_with_tensorrt import AgeClassificationTensorRT8
+                self.model = AgeClassificationTensorRT8(weights=self.trt_weights, device=self.device)
+            else:
+                LOGGER.warning(f'不支持的 TensorRT 版本: {trt_version}，仅支持版本 8 和 10。将使用非 TensorRT 模式。')
+                from .age_classification_without_tensorrt import AgeClassificationResNet18
+                self.model = AgeClassificationResNet18(weights=self.non_trt_weights, device=self.device)
         else:
             from .age_classification_without_tensorrt import AgeClassificationResNet18
             self.model = AgeClassificationResNet18(weights=self.non_trt_weights, device=self.device)

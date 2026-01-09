@@ -9,7 +9,7 @@ import tensorrt as trt
 from core.lib.common import Context, LOGGER
 
 
-class CategoryIdentificationTensorRT:
+class CategoryIdentificationTensorRT10:
     def __init__(self, weights, plugin_library, device=0):
         self.weights = weights
 
@@ -31,25 +31,30 @@ class CategoryIdentificationTensorRT:
         cuda_inputs = []
         host_outputs = []
         cuda_outputs = []
-        bindings = []
+        input_binding_names = []
+        output_binding_names = []
 
-        for binding in engine:
-            size = trt.volume(engine.get_binding_shape(binding)) * engine.max_batch_size
-            dtype = trt.nptype(engine.get_binding_dtype(binding))
+        for binding_name in engine:
+            shape = engine.get_tensor_shape(binding_name)
+            size = trt.volume(shape)
+            dtype = trt.nptype(engine.get_tensor_dtype(binding_name))
             # Allocate host and device buffers
             host_mem = cuda.pagelocked_empty(size, dtype)
             cuda_mem = cuda.mem_alloc(host_mem.nbytes)
-            # Append the device buffer to device bindings.
-            bindings.append(int(cuda_mem))
             # Append to the appropriate list.
-            if engine.binding_is_input(binding):
-                self.input_w = engine.get_binding_shape(binding)[-1]
-                self.input_h = engine.get_binding_shape(binding)[-2]
+            if engine.get_tensor_mode(binding_name) == trt.TensorIOMode.INPUT:
+                input_binding_names.append(binding_name)
+                self.input_w = shape[-1]
+                self.input_h = shape[-2]
                 host_inputs.append(host_mem)
                 cuda_inputs.append(cuda_mem)
-            else:
+            elif engine.get_tensor_mode(binding_name) == trt.TensorIOMode.OUTPUT:
+                output_binding_names.append(binding_name)
                 host_outputs.append(host_mem)
                 cuda_outputs.append(cuda_mem)
+            else:
+                # Unknown tensor mode, skip it
+                pass
 
         self.stream = stream
         self.context = context
@@ -58,7 +63,9 @@ class CategoryIdentificationTensorRT:
         self.cuda_inputs = cuda_inputs
         self.host_outputs = host_outputs
         self.cuda_outputs = cuda_outputs
-        self.bindings = bindings
+        self.input_binding_names = input_binding_names
+        self.output_binding_names = output_binding_names
+        self.batch_size = engine.get_tensor_shape(input_binding_names[0])[0]
 
         self.warm_up_turns = 5
 
@@ -116,12 +123,12 @@ class CategoryIdentificationTensorRT:
         # Restore
         stream = self.stream
         context = self.context
-        engine = self.engine
         host_inputs = self.host_inputs
         cuda_inputs = self.cuda_inputs
         host_outputs = self.host_outputs
         cuda_outputs = self.cuda_outputs
-        bindings = self.bindings
+        input_binding_names = self.input_binding_names
+        output_binding_names = self.output_binding_names
         # Do image preprocess
         input_image, image_raw, origin_h, origin_w = self.preprocess_image(raw_image)
 
@@ -130,7 +137,9 @@ class CategoryIdentificationTensorRT:
         # Transfer input data  to the GPU.
         cuda.memcpy_htod_async(cuda_inputs[0], host_inputs[0], stream)
         # Run inference.
-        context.execute_async(bindings=bindings, stream_handle=stream.handle)
+        context.set_tensor_address(input_binding_names[0], cuda_inputs[0])
+        context.set_tensor_address(output_binding_names[0], cuda_outputs[0])
+        context.execute_async_v3(stream_handle=stream.handle)
         # Transfer predictions back from the GPU.
         cuda.memcpy_dtoh_async(host_outputs[0], cuda_outputs[0], stream)
         # Synchronize the stream

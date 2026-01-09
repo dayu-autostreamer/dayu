@@ -8,7 +8,7 @@ import tensorrt as trt
 
 from core.lib.common import Context, LOGGER 
 
-class LicensePlateRecognitionTensorRT:
+class LicensePlateRecognitionTensorRT10:
     def __init__(self, detect_weights: str, recognize_weights: str, device=0):
         self.detect_weights = detect_weights
         self.recognize_weights = recognize_weights
@@ -23,8 +23,11 @@ class LicensePlateRecognitionTensorRT:
         self.detect_context = self.detect_engine.create_execution_context()
         self.detect_bindings = self._allocate_buffers(self.detect_engine)
         
-        self.detect_input_shape = self.detect_engine.get_binding_shape(0)
-        self.detect_output_shape = self.detect_engine.get_binding_shape(1)
+        # Get input/output tensor names and shapes for TensorRT 10
+        detect_input_name = self.detect_bindings['input_binding_names'][0]
+        detect_output_name = self.detect_bindings['output_binding_names'][0]
+        self.detect_input_shape = self.detect_engine.get_tensor_shape(detect_input_name)
+        self.detect_output_shape = self.detect_engine.get_tensor_shape(detect_output_name)
         LOGGER.info(f"Detection engine - Input: {self.detect_input_shape}, Output: {self.detect_output_shape}")
         
         LOGGER.info("Loading recognition engine...")
@@ -32,10 +35,12 @@ class LicensePlateRecognitionTensorRT:
         self.recognize_context = self.recognize_engine.create_execution_context()
         self.recognize_bindings = self._allocate_buffers(self.recognize_engine)
         
-
-        self.recognize_input_shape = self.recognize_engine.get_binding_shape(0)
-        self.recognize_output_shape = self.recognize_engine.get_binding_shape(1)
-        LOGGER.info(f"Recognition engine - Input: {self.recognize_input_shape}, Outputs: {self.recognize_engine.get_binding_shape(1)} and {self.recognize_engine.get_binding_shape(2)}")
+        # Get input/output tensor names and shapes for TensorRT 10
+        recognize_input_name = self.recognize_bindings['input_binding_names'][0]
+        recognize_output_names = self.recognize_bindings['output_binding_names']
+        self.recognize_input_shape = self.recognize_engine.get_tensor_shape(recognize_input_name)
+        self.recognize_output_shape = [self.recognize_engine.get_tensor_shape(name) for name in recognize_output_names]
+        LOGGER.info(f"Recognition engine - Input: {self.recognize_input_shape}, Outputs: {self.recognize_output_shape}")
         
         self.characters = '#京沪津渝冀晋蒙辽吉黑苏浙皖闽赣鲁豫鄂湘粤桂琼川贵云藏陕甘青宁新学警港澳挂使领民航危0123456789ABCDEFGHJKLMNPQRSTUVWXYZ险品'
         
@@ -61,33 +66,38 @@ class LicensePlateRecognitionTensorRT:
         cuda_inputs = []
         host_outputs = []
         cuda_outputs = []
-        bindings = []
+        input_binding_names = []
+        output_binding_names = []
         
-        for binding_idx in range(engine.num_bindings):
-            binding_name = engine.get_binding_name(binding_idx)
-            binding_shape = engine.get_binding_shape(binding_idx)
-            dtype = trt.nptype(engine.get_binding_dtype(binding_idx))
+        for binding_name in engine:
+            shape = engine.get_tensor_shape(binding_name)
+            size = trt.volume(shape)
+            dtype = trt.nptype(engine.get_tensor_dtype(binding_name))
             
-            size = trt.volume(binding_shape) * engine.max_batch_size
             host_mem = cuda.pagelocked_empty(size, dtype)
             cuda_mem = cuda.mem_alloc(host_mem.nbytes)
-            bindings.append(int(cuda_mem))
             
-            if engine.binding_is_input(binding_idx):
+            if engine.get_tensor_mode(binding_name) == trt.TensorIOMode.INPUT:
+                input_binding_names.append(binding_name)
                 host_inputs.append(host_mem)
                 cuda_inputs.append(cuda_mem)
-                LOGGER.info(f"Input binding {binding_idx}: name='{binding_name}', dtype={dtype}, shape={binding_shape}")
-            else:
+                LOGGER.info(f"Input tensor: name='{binding_name}', dtype={dtype}, shape={shape}")
+            elif engine.get_tensor_mode(binding_name) == trt.TensorIOMode.OUTPUT:
+                output_binding_names.append(binding_name)
                 host_outputs.append(host_mem)
                 cuda_outputs.append(cuda_mem)
-                LOGGER.info(f"Output binding {binding_idx}: name='{binding_name}', dtype={dtype}, shape={binding_shape}")
+                LOGGER.info(f"Output tensor: name='{binding_name}', dtype={dtype}, shape={shape}")
+            else:
+                # Unknown tensor mode, skip it
+                pass
         
         return {
             'host_inputs': host_inputs,
             'cuda_inputs': cuda_inputs,
             'host_outputs': host_outputs,
             'cuda_outputs': cuda_outputs,
-            'bindings': bindings
+            'input_binding_names': input_binding_names,
+            'output_binding_names': output_binding_names
         }
     
     def _preprocess(self, image: np.ndarray, target_size: Tuple[int, int], normalize=True):
@@ -113,13 +123,19 @@ class LicensePlateRecognitionTensorRT:
         cuda_inputs = bindings['cuda_inputs']
         host_outputs = bindings['host_outputs']
         cuda_outputs = bindings['cuda_outputs']
-        bindings_list = bindings['bindings']
+        input_binding_names = bindings['input_binding_names']
+        output_binding_names = bindings['output_binding_names']
         
         np.copyto(host_inputs[0], input_data.ravel())
         
         cuda.memcpy_htod_async(cuda_inputs[0], host_inputs[0], self.stream)
         
-        context.execute_async_v2(bindings=bindings_list, stream_handle=self.stream.handle)
+        # Set tensor addresses for TensorRT 10
+        context.set_tensor_address(input_binding_names[0], cuda_inputs[0])
+        for i, output_name in enumerate(output_binding_names):
+            context.set_tensor_address(output_name, cuda_outputs[i])
+        
+        context.execute_async_v3(stream_handle=self.stream.handle)
         
         outputs = []
         for i in range(len(host_outputs)):
