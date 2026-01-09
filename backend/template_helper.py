@@ -535,7 +535,6 @@ class TemplateHelper:
     @staticmethod
     def get_device_jetpack_major_version(node_name: str) -> int:
         jetpack_labels = KubeHelper.get_node_jetpack_labels(node_name)
-        LOGGER.debug(f'*****jetpack_labels: {jetpack_labels}')
         try:
             if jetpack_labels.get('jetpack_major'):
                 return int(jetpack_labels.get('jetpack_major'))
