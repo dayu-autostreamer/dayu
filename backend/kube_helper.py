@@ -335,10 +335,10 @@ class KubeHelper:
         v1 = client.CoreV1Api()
         node_obj = v1.read_node(name=node_name)
 
-
         labels = (node_obj.metadata.labels or {})
         LOGGER.debug(f"node name: {node_name}")
         LOGGER.debug('*****k8s labels:', labels)
+        LOGGER.debug('*****node_obj:', node_obj)
         LOGGER.debug('*****node_obj.metadata.labels:', node_obj.metadata.labels)
         return {
             "node": node_name,
