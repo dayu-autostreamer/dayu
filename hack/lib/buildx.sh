@@ -169,7 +169,7 @@ dayu::buildx::import_env_variables(){
               shift
               ;;
           --no-cache)
-              NO_CACHE=true
+              NO_CACHE=false
               ;;
           --) shift; break ;;
           *) break ;;
@@ -384,5 +384,3 @@ dayu::buildx::build_and_push_multi_platform_images(){
   echo ""
   echo "Done."
 }
-
-dayu::buildx::build_and_push_multi_platform_images "$@"
