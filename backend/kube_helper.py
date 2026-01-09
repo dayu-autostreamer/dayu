@@ -337,6 +337,7 @@ class KubeHelper:
 
 
         labels = (node_obj.metadata.labels or {})
+        LOGGER.debug('*****k8s labels:', labels)
         return {
             "node": node_name,
             "jetpack_major": labels.get("jetson.nvidia.com/jetpack.major"),
