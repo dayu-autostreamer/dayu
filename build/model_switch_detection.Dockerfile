@@ -21,7 +21,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --upgrade pip && \
-    pip3 install --use-pep517 -r lib_requirements.txt --ignore-installed -i https://mirrors.aliyun.com/pypi/simple && \
+    pip3 install --use-pep517 -r lib_requirements.txt -i https://mirrors.aliyun.com/pypi/simple && \
     pip3 install -r base_requirements.txt -i https://mirrors.aliyun.com/pypi/simple && \
     pip3 install -r app_requirements.txt -i https://mirrors.aliyun.com/pypi/simple
 
