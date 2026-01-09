@@ -541,7 +541,9 @@ class TemplateHelper:
                 return int(jetpack_labels.get('jetpack_major'))
             else:
                 return -1
-        finally:
+        except Exception as e:
+            LOGGER.warning(f'Get Jetpack major version error: {e}')
+            LOGGER.exception(e)
             return -1
 
     @staticmethod
