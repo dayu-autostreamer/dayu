@@ -169,7 +169,7 @@ dayu::buildx::import_env_variables(){
               shift
               ;;
           --no-cache)
-              NO_CACHE=true
+              NO_CACHE=false
               ;;
           --) shift; break ;;
           *) break ;;
