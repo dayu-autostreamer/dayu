@@ -21,23 +21,25 @@ class LicensePlateRecognition:
         self._calculate_flops()
 
         if use_tensorrt:
-            # 检查 TensorRT 版本环境变量
-            trt_version = os.environ.get('version', '8')
+            # 根据 JETPACK 版本选择 TensorRT 版本
+            jetpack_version = Context.get_parameter('JETPACK', direct=False)
             
-            if trt_version == '10':
-                LOGGER.info('Using TensorRT 10')
+            # JETPACK 6 使用 TensorRT 10，JETPACK 4/5 使用 TensorRT 8
+            if jetpack_version == 6:
+                LOGGER.info('Using TensorRT 10 (JetPack 6)')
                 from .license_plate_recognition_with_tensorrt import LicensePlateRecognitionTensorRT10
                 self.model = LicensePlateRecognitionTensorRT10(detect_weights=self.det_trt_weights,
                                                   recognize_weights=self.rec_trt_weights, device=self.device)
-            elif trt_version == '8':
-                LOGGER.info('Using TensorRT 8')
+            elif jetpack_version in [4, 5]:
+                LOGGER.info(f'Using TensorRT 8 (JetPack {jetpack_version})')
                 from .license_plate_recognition_with_tensorrt import LicensePlateRecognitionTensorRT8
                 self.model = LicensePlateRecognitionTensorRT8(detect_weights=self.det_trt_weights,
                                                   recognize_weights=self.rec_trt_weights, device=self.device)
             else:
-                LOGGER.warning(f'不支持的 TensorRT 版本: {trt_version}，仅支持版本 8 和 10。将使用非 TensorRT 模式。')
-                from .license_plate_recognition_without_tensorrt import LicensePlateRecognitionPT
-                self.model = LicensePlateRecognitionPT(detect_model_path=self.non_det_trt_weights, rec_model_path=self.non_rec_trt_weights, device=self.device)
+                LOGGER.warning(f'未知的 JETPACK 版本: {jetpack_version}，默认使用 TensorRT 8')
+                from .license_plate_recognition_with_tensorrt import LicensePlateRecognitionTensorRT8
+                self.model = LicensePlateRecognitionTensorRT8(detect_weights=self.det_trt_weights,
+                                                  recognize_weights=self.rec_trt_weights, device=self.device)
         else:
             from .license_plate_recognition_without_tensorrt import LicensePlateRecognitionPT
             self.model = LicensePlateRecognitionPT(detect_model_path=self.non_det_trt_weights, rec_model_path=self.non_rec_trt_weights, device=self.device)
