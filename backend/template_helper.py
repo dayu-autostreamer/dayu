@@ -375,9 +375,9 @@ class TemplateHelper:
                     jetpack_major = self.get_device_jetpack_major_version(edge_node)
                     image_name = self.specify_jetpack_image(image_name, jetpack_major)
                     new_edge_worker['template']['spec']['containers'][0]['image'] = image_name
-                    new_edge_worker['template']['spec']['containers'][0]['env'].append(
-                        {'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"},
-                        {'name': 'JETPACK', 'value': str(jetpack_major)})
+                    new_edge_worker['template']['spec']['containers'][0]['env'].extend(
+                        [{'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"},
+                        {'name': 'JETPACK', 'value': str(jetpack_major)}])
 
                     edge_yaml_doc['spec']['edgeWorker'] = [new_edge_worker]
                 else:
