@@ -19,21 +19,22 @@ class AgeClassification:
         self._calculate_flops()
 
         if use_tensorrt:
-            # 检查 TensorRT 版本环境变量
-            trt_version = os.environ.get('version', '8')
+            # 根据 JETPACK 版本选择 TensorRT 版本
+            jetpack_version = Context.get_parameter('JETPACK', direct=False)
             
-            if trt_version == '10':
-                LOGGER.info('Using TensorRT 10')
+            # JETPACK 6 使用 TensorRT 10，JETPACK 4/5 使用 TensorRT 8
+            if jetpack_version == 6:
+                LOGGER.info('Using TensorRT 10 (JetPack 6)')
                 from .age_classification_with_tensorrt import AgeClassificationTensorRT10
                 self.model = AgeClassificationTensorRT10(weights=self.trt_weights, device=self.device)
-            elif trt_version == '8':
-                LOGGER.info('Using TensorRT 8')
+            elif jetpack_version in [4, 5]:
+                LOGGER.info(f'Using TensorRT 8 (JetPack {jetpack_version})')
                 from .age_classification_with_tensorrt import AgeClassificationTensorRT8
                 self.model = AgeClassificationTensorRT8(weights=self.trt_weights, device=self.device)
             else:
-                LOGGER.warning(f'不支持的 TensorRT 版本: {trt_version}，仅支持版本 8 和 10。将使用非 TensorRT 模式。')
-                from .age_classification_without_tensorrt import AgeClassificationResNet18
-                self.model = AgeClassificationResNet18(weights=self.non_trt_weights, device=self.device)
+                LOGGER.warning(f'未知的 JETPACK 版本: {jetpack_version}，默认使用 TensorRT 8')
+                from .age_classification_with_tensorrt import AgeClassificationTensorRT8
+                self.model = AgeClassificationTensorRT8(weights=self.trt_weights, device=self.device)
         else:
             from .age_classification_without_tensorrt import AgeClassificationResNet18
             self.model = AgeClassificationResNet18(weights=self.non_trt_weights, device=self.device)
