@@ -384,5 +384,3 @@ dayu::buildx::build_and_push_multi_platform_images(){
   echo ""
   echo "Done."
 }
-
-dayu::buildx::build_and_push_multi_platform_images "$@"
