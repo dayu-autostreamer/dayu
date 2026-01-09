@@ -9,7 +9,7 @@ import tensorrt as trt
 from core.lib.common import Context, LOGGER
 
 
-class FaceDetectionTensorRT:
+class FaceDetectionTensorRT10:
 
     def __init__(self, weights, plugin_library, device=0):
         self.weights = weights
@@ -33,23 +33,34 @@ class FaceDetectionTensorRT:
         cuda_outputs = []
         bindings = []
 
-        for binding in engine:
-            size = trt.volume(engine.get_binding_shape(binding)) * engine.max_batch_size
-            dtype = trt.nptype(engine.get_binding_dtype(binding))
+        # TensorRT 10 uses new API
+        for i in range(engine.num_io_tensors):
+            tensor_name = engine.get_tensor_name(i)
+            shape = engine.get_tensor_shape(tensor_name)
+            dtype = trt.nptype(engine.get_tensor_dtype(tensor_name))
+            
+            # Calculate size
+            size = trt.volume(shape)
+            if size < 0:  # Dynamic shape
+                size = abs(size)
+            
             # Allocate host and device buffers
             host_mem = cuda.pagelocked_empty(size, dtype)
             cuda_mem = cuda.mem_alloc(host_mem.nbytes)
             # Append the device buffer to device bindings.
             bindings.append(int(cuda_mem))
+            
             # Append to the appropriate list.
-            if engine.binding_is_input(binding):
-                self.input_w = engine.get_binding_shape(binding)[-1]
-                self.input_h = engine.get_binding_shape(binding)[-2]
+            if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
+                self.input_w = shape[-1]
+                self.input_h = shape[-2]
                 host_inputs.append(host_mem)
                 cuda_inputs.append(cuda_mem)
+                self.input_tensor_name = tensor_name
             else:
                 host_outputs.append(host_mem)
                 cuda_outputs.append(cuda_mem)
+                self.output_tensor_name = tensor_name
 
         self.stream = stream
         self.context = context
@@ -269,8 +280,14 @@ class FaceDetectionTensorRT:
         np.copyto(host_inputs[0], input_image.ravel())
         # Transfer input data  to the GPU.
         cuda.memcpy_htod_async(cuda_inputs[0], host_inputs[0], stream)
-        # Run inference.
-        context.execute_async(bindings=bindings, stream_handle=stream.handle)
+        
+        # Set tensor address for TensorRT 10
+        context.set_tensor_address(self.input_tensor_name, int(cuda_inputs[0]))
+        context.set_tensor_address(self.output_tensor_name, int(cuda_outputs[0]))
+        
+        # Run inference using execute_async_v3 (TensorRT 10)
+        context.execute_async_v3(stream_handle=stream.handle)
+        
         # Transfer predictions back from the GPU.
         cuda.memcpy_dtoh_async(host_outputs[0], cuda_outputs[0], stream)
         # Synchronize the stream
@@ -292,4 +309,3 @@ class FaceDetectionTensorRT:
         result_roi_id = list(range(len(result_boxes)))
 
         return result_boxes, result_scores, result_class_id, result_roi_id
-

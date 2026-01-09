@@ -1,1 +1,4 @@
-from .exposure_identification_tensorrt import ExposureIdentificationTensorRT
+from .exposure_identification_tensorrt8 import ExposureIdentificationTensorRT8
+from .exposure_identification_tensorrt10 import ExposureIdentificationTensorRT10
+
+__all__ = ['ExposureIdentificationTensorRT8', 'ExposureIdentificationTensorRT10']

@@ -10,7 +10,7 @@ from core.lib.common import Context
 
 __all__ = ('VehicleDetectionTensorRT',)
 
-class VehicleDetectionTensorRT:
+class VehicleDetectionTensorRT8:
     def __init__(self, weights, plugin_library, device=0):
 
         self.weights = weights
