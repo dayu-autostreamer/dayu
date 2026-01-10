@@ -17,8 +17,7 @@ COPY ${base_dir}/requirements.txt ./base_requirements.txt
 COPY ${app_dir}/requirements.txt ./app_requirements.txt
 
 RUN pip3 install --upgrade pip && \
-    pip3 uninstall -y numpy && \
-    pip3 install -r lib_requirements.txt --ignore-installed -i https://mirrors.aliyun.com/pypi/simple && \
+    pip3 install -r lib_requirements.txt -i https://mirrors.aliyun.com/pypi/simple && \
     pip3 install -r base_requirements.txt -i https://mirrors.aliyun.com/pypi/simple && \
     pip3 install -r app_requirements.txt -i https://mirrors.aliyun.com/pypi/simple
 
