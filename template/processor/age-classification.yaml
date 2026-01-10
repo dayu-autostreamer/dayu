@@ -1,6 +1,6 @@
 position: both
 pod-template:
-  image: age-classification:shy
+  image: age-classification
   imagePullPolicy: Always
   env:
     - name: PROCESSOR_NAME
@@ -8,8 +8,7 @@ pod-template:
     - name: CLASSIFIER_PARAMETERS
       value: >
         {
-           'trt_weights': 'age_resnet18.engine',
-           'non_trt_weights': 'age_resnet18.pt'
+           'weights': 'age_resnet18.engine'
         }
     - name: SCENARIOS_EXTRACTORS
       value: >

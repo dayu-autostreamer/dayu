@@ -1,6 +1,6 @@
 position: both
 pod-template:
-  image: face-detection:shy
+  image: face-detection
   imagePullPolicy: Always
   env:
     - name: PROCESSOR_NAME
@@ -8,9 +8,8 @@ pod-template:
     - name: DETECTOR_PARAMETERS
       value: >
         {
-          'trt_weights':'retina_mnet.engine', 
-          'trt_plugin_library':'libdecodeplugin.so',
-          'non_trt_weights':'retinaface.pth'
+          'weights':'retina_mnet.engine', 
+          'plugin_library':'libdecodeplugin.so'
         }
     - name: SCENARIOS_EXTRACTORS
       value: >
