@@ -1,5 +1,6 @@
 ARG REG=docker.io
-FROM ${REG}/dayuhub/tensorrt:trt8
+ARG TAG=latest
+FROM ${REG}/dayuhub/dayubase:${TAG}
 
 LABEL authors="Wenhui Zhou"
 

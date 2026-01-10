@@ -1,6 +1,6 @@
 position: both
 pod-template:
-  image: face-detection
+  image: face-detection:shy
   imagePullPolicy: Always
   env:
     - name: PROCESSOR_NAME

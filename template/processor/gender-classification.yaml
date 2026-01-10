@@ -17,7 +17,7 @@ pod-template:
     - name: PRO_QUEUE_NAME
       value: "simple"
     - name: USE_TENSORRT
-      value: "False"
+      value: "True"
 port-open:
   pos: both
   port: 9000
