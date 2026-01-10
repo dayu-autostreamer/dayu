@@ -1,7 +1,7 @@
 # Base configuration template for dayu system
 
 # Namespace to distinguish different dayu deployments, please modify it when deploying multiple dayu systems in the same kubernetes cluster
-namespace: shy-dayu
+namespace: dayu
 # levels for container logging in dayu: DEBUG, INFO, WARNING, ERROR
 log-level: DEBUG
 # specify the downloaded log file name, if not set, log file name will be generated with timestamps, e.g., RESULT_LOG_DAYU_NAMESPACE_dayu_TIME_2025_11_04_01_46_26.json

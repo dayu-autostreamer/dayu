@@ -1,6 +1,6 @@
 position: both
 pod-template:
-  image: vehicle-detection:shy
+  image: vehicle-detection
   imagePullPolicy: Always
   env:
     - name: PROCESSOR_NAME
@@ -18,7 +18,7 @@ pod-template:
     - name: PRO_QUEUE_NAME
       value: "simple"
     - name: USE_TENSORRT
-      value: "True"
+      value: "False"
 cloud-pod-template:
   env:
     - name: DETECTOR_PARAMETERS
