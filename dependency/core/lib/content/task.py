@@ -443,6 +443,14 @@ class Task:
         current_service = self.get_current_service()
         current_service.record_time_ticket(tag=f'{type_tag}_{end_tag}', duration=time_ticket)
 
+    def erase_time_ticket_in_service(self, type_tag: str, is_end: bool):
+        assert self.__dag_flow, 'Task DAG is empty!'
+
+        end_tag = 'end' if is_end else 'start'
+
+        current_service = self.get_current_service()
+        current_service.erase_time_ticket(tag=f'{type_tag}_{end_tag}')
+
     def to_dict(self):
         return {
             'source_id': self.get_source_id(),
