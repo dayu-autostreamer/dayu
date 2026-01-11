@@ -85,6 +85,17 @@ class Service:
         assert tag not in self.__tmp_data, f'Time ticket "{tag}" already exists in temporary data!'
         self.__tmp_data[tag] = duration
 
+    def erase_time_ticket(self, tag: str):
+        """
+        Erase a time ticket from the temporary data.
+
+        :param tag: The name of the time ticket to erase.
+        """
+        assert tag in self.__tmp_data, f'Time ticket "{tag}" does not exist in temporary data!'
+
+        if tag in self.__tmp_data:
+            del self.__tmp_data[tag]
+
     def to_dict(self):
         return {
             'service_name': self.get_service_name(),

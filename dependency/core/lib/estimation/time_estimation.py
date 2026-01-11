@@ -86,16 +86,18 @@ class TimeEstimator:
         return duration, cur_time_ticket
 
     @staticmethod
-    def erase_dag_ts(task: Task, sub_tag: str) -> None:
+    def erase_dag_ts(task: Task, is_end: bool, sub_tag: str = 'transmit') -> None:
         """
         erase task timestamp in system
         :param task: dag task
+        :param is_end: if erasing the end of current timestamp
         :param sub_tag: name of time ticket
         :return: None
         """
         prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
         TimeEstimator.erase_ts(task.get_tmp_data(),
                                f'{prefix}:{sub_tag}_time_{task.get_flow_index()}')
+        task.erase_time_ticket_in_service(type_tag=sub_tag, is_end=is_end)
 
     @staticmethod
     def erase_ts(data: dict, tag: str) -> None:
@@ -107,25 +109,3 @@ class TimeEstimator:
         """
         assert tag in data, f'erase timestamp of {tag}, but timestamp does not exists!'
         del data[tag]
-
-    @staticmethod
-    def estimate_duration_time(func):
-        def wrapper(*args, **kw):
-            start = time.time()
-            func(*args, **kw)
-            end = time.time()
-
-            return end - start
-
-        return wrapper
-
-    @staticmethod
-    def estimate_duration_time_print(func):
-        def wrapper(*args, **kw):
-            start = time.time()
-            func(*args, **kw)
-            end = time.time()
-
-            print('function {} cost time {:.2f}s'.format(func.__name__, end - start))
-
-        return wrapper

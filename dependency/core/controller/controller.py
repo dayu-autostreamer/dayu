@@ -80,6 +80,7 @@ class Controller:
 
             cur_task.set_current_stage_device(self.cloud_device)
             self.erase_execute_ts(cur_task)
+            self.erase_transmit_ts(cur_task)
             self.submit_task(cur_task=cur_task)
             return 'transmit'
 
@@ -224,7 +225,8 @@ class Controller:
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
-            TimeEstimator.erase_dag_ts(cur_task, sub_tag=f'transmit')
+            TimeEstimator.erase_dag_ts(cur_task, is_end=False, sub_tag=f'transmit')
+            TimeEstimator.erase_dag_ts(cur_task, is_end=True, sub_tag=f'transmit')
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'erase transmit time of stage {cur_task.get_flow_index()}')
         except Exception as e:
@@ -236,7 +238,7 @@ class Controller:
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
-            TimeEstimator.erase_dag_ts(cur_task, sub_tag=f'execute')
+            TimeEstimator.erase_dag_ts(cur_task, is_end=False, sub_tag=f'execute')
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'erase execute time of stage {cur_task.get_flow_index()}')
         except Exception as e:
