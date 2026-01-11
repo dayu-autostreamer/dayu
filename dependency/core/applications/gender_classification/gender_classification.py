@@ -1,158 +1,64 @@
+import os
 import cv2
 import numpy as np
 from typing import List, Dict
 
-import pycuda.autoinit
-import pycuda.driver as cuda
-import tensorrt as trt
-
 from core.lib.common import Context, LOGGER
+from core.lib.estimation import FlopsEstimator
 
 
 class GenderClassification:
-    def __init__(self, weights, device=0):
-        self.weights = Context.get_file_path(weights)
+    def __init__(self, trt_weights, non_trt_weights, device=0):
 
-        self.ctx = cuda.Device(device).make_context()
-        stream = cuda.Stream()
-        TRT_LOGGER = trt.Logger(trt.Logger.INFO)
-        runtime = trt.Runtime(TRT_LOGGER)
+        use_tensorrt = Context.get_parameter('USE_TENSORRT', direct=False)
+        self.trt_weights = Context.get_file_path(trt_weights)
+        self.non_trt_weights = Context.get_file_path(non_trt_weights)
+        self.device = device
 
-        engine_file_path = self.weights
-        with open(engine_file_path, "rb") as f:
-            engine = runtime.deserialize_cuda_engine(f.read())
-        context = engine.create_execution_context()
+        self.flops = 0
+        self._calculate_flops()
 
-        host_inputs = []
-        cuda_inputs = []
-        host_outputs = []
-        cuda_outputs = []
-        bindings = []
-
-        for binding in engine:
-            size = trt.volume(engine.get_binding_shape(binding)) * engine.max_batch_size
-            dtype = trt.nptype(engine.get_binding_dtype(binding))
-            # Allocate host and device buffers
-            host_mem = cuda.pagelocked_empty(size, dtype)
-            cuda_mem = cuda.mem_alloc(host_mem.nbytes)
-            # Append the device buffer to device bindings.
-            bindings.append(int(cuda_mem))
-            # Append to the appropriate list.
-            if engine.binding_is_input(binding):
-                self.input_w = engine.get_binding_shape(binding)[-1]
-                self.input_h = engine.get_binding_shape(binding)[-2]
-                host_inputs.append(host_mem)
-                cuda_inputs.append(cuda_mem)
+        if use_tensorrt:
+            # 根据 JETPACK 版本选择 TensorRT 版本
+            jetpack_version = Context.get_parameter('JETPACK', direct=False)
+            
+            # JETPACK 6 使用 TensorRT 10，JETPACK 4/5 使用 TensorRT 8
+            if jetpack_version == 6:
+                LOGGER.info('Using TensorRT 10 (JetPack 6)')
+                from .gender_classification_with_tensorrt import GenderClassificationTensorRT10
+                self.model = GenderClassificationTensorRT10(weights=self.trt_weights, device=self.device)
+            elif jetpack_version in [4, 5]:
+                LOGGER.info(f'Using TensorRT 8 (JetPack {jetpack_version})')
+                from .gender_classification_with_tensorrt import GenderClassificationTensorRT8
+                self.model = GenderClassificationTensorRT8(weights=self.trt_weights, device=self.device)
             else:
-                host_outputs.append(host_mem)
-                cuda_outputs.append(cuda_mem)
+                LOGGER.warning(f'未知的 JETPACK 版本: {jetpack_version}，默认使用 TensorRT 8')
+                from .gender_classification_with_tensorrt import GenderClassificationTensorRT8
+                self.model = GenderClassificationTensorRT8(weights=self.trt_weights, device=self.device)
+        else:
+            from .gender_classification_without_tensorrt import GenderClassificationResNet18
+            self.model = GenderClassificationResNet18(weights=self.non_trt_weights, device=self.device)
 
-        self.stream = stream
-        self.context = context
-        self.engine = engine
-        self.host_inputs = host_inputs
-        self.cuda_inputs = cuda_inputs
-        self.host_outputs = host_outputs
-        self.cuda_outputs = cuda_outputs
-        self.bindings = bindings
-
-        self.warm_up_turns = 5
-
-        self.classes = ['Male', 'Female']
-
-        self.warm_up()
-
-    def __del__(self):
-        self.destroy()
-
-    def destroy(self):
-        # Remove any context from the top of the context stack, deactivating it.
-        self.ctx.pop()
-
-    def preprocess_image(self, raw_bgr_image):
-        """
-        description: Read an image from image path, resize and pad it to target size,
-                     normalize to [0,1],transform to NCHW format.
-        param:
-            input_image_path: str, image path
-        return:
-            image:  the processed image
-            image_raw: the original image
-            h: original height
-            w: original width
-        """
-
-        image_rgb = cv2.cvtColor(raw_bgr_image, cv2.COLOR_BGR2RGB)
-
-        image_resized = cv2.resize(image_rgb, (self.input_w, self.input_h),
-                                   interpolation=cv2.INTER_LINEAR)
-
-        image = image_resized.astype(np.float32) / 255.0
-
-        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        image = (image - mean) / std
-
-        image = np.transpose(image, [2, 0, 1])
-        image = np.expand_dims(image, axis=0)
-        image = np.ascontiguousarray(image)
-
-        return image, raw_bgr_image, image_resized.shape[0], image_resized.shape[1]
-
-    def warm_up(self):
-        LOGGER.info('Warming up...')
-        for i in range(self.warm_up_turns):
-            im = np.zeros([self.input_h, self.input_w, 3], dtype=np.uint8)
-            self.infer(im)
-            del im
-
-    def infer(self, raw_image):
-        # Make self the active context, pushing it on top of the context stack.
-        self.ctx.push()
-
-        # Restore
-        stream = self.stream
-        context = self.context
-        engine = self.engine
-        host_inputs = self.host_inputs
-        cuda_inputs = self.cuda_inputs
-        host_outputs = self.host_outputs
-        cuda_outputs = self.cuda_outputs
-        bindings = self.bindings
-        # Do image preprocess
-        input_image, image_raw, origin_h, origin_w = self.preprocess_image(raw_image)
-
-        # Copy input image to host buffer
-        np.copyto(host_inputs[0], input_image.ravel())
-        # Transfer input data  to the GPU.
-        cuda.memcpy_htod_async(cuda_inputs[0], host_inputs[0], stream)
-        # Run inference.
-        context.execute_async(bindings=bindings, stream_handle=stream.handle)
-        # Transfer predictions back from the GPU.
-        cuda.memcpy_dtoh_async(host_outputs[0], cuda_outputs[0], stream)
-        # Synchronize the stream
-        stream.synchronize()
-        # Remove any context from the top of the context stack, deactivating it.
-        self.ctx.pop()
-        # Here we use the first row of output in that batch_size = 1
-        output = host_outputs[0]
-        gender_output = np.argmax(output)
-
-        return self.classes[gender_output]
+    def _infer(self, image):
+        return self.model.infer(image)
 
     def __call__(self, faces: List[np.ndarray]):
         output = []
 
         for face in faces:
-            output.append(self.infer(face))
+            output.append(self._infer(face))
 
         return output
 
-    # TODO: add flops computing
-    @property
-    def flops(self):
-        LOGGER.warning('Flops computation is currently not supported in gender classification.')
-        return 0
+    def _calculate_flops(self):
+        try:
+            from .gender_classification_without_tensorrt import GenderClassificationResNet18
+            model = GenderClassificationResNet18(weights=self.non_trt_weights, device=self.device)
+            self.flops = FlopsEstimator(model=model.model, input_shape=(3, 224, 224)).compute_flops()
+            del model
+        except Exception as e:
+            LOGGER.warning(f'Get model FLOPs failed: {e}')
+            LOGGER.exception(e)
 
 
 class GenderClassificationRoi:
@@ -160,8 +66,8 @@ class GenderClassificationRoi:
     ROI-aware wrapper: caches classification result per roi_id to avoid redundant inference across frames.
     __call__(faces, roi_ids) -> list of results aligned with inputs.
     """
-    def __init__(self, weights, device=0):
-        self.model = GenderClassification(weights=weights, device=device)
+    def __init__(self, trt_weights, non_trt_weights, device=0):
+        self.model = GenderClassification(trt_weights=trt_weights, non_trt_weights=non_trt_weights, device=device)
         self.cache: Dict[int, str] = {}
 
     def reset_cache(self):
@@ -169,7 +75,7 @@ class GenderClassificationRoi:
 
     @property
     def flops(self):
-        return self.model.flops
+        return getattr(self.model, 'flops', 0)
 
     def __call__(self, faces: List[np.ndarray], roi_ids: List[int]):
         results = []
@@ -177,7 +83,7 @@ class GenderClassificationRoi:
             if rid in self.cache:
                 results.append(self.cache[rid])
                 continue
-            res = self.model.infer(face)
+            res = self.model._infer(face)
             self.cache[rid] = res
             results.append(res)
         return results

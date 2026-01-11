@@ -4,7 +4,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 from utils.general import xywh2xyxy, xyxy2xywh
-from utils.metrics import fitness
 
 # Settings
 matplotlib.rc('font', **{'size': 11})

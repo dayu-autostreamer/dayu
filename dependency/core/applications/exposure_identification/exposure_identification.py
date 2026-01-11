@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from typing import List, Dict
 
@@ -18,8 +19,22 @@ class ExposureIdentification:
         self._calculate_flops()
 
         if use_tensorrt:
-            from .exposure_identification_with_tensorrt import ExposureIdentificationTensorRT
-            self.model = ExposureIdentificationTensorRT(weights=self.trt_weights, device=self.device)
+            # 根据 JETPACK 版本选择 TensorRT 版本
+            jetpack_version = Context.get_parameter('JETPACK', direct=False)
+            
+            # JETPACK 6 使用 TensorRT 10，JETPACK 4/5 使用 TensorRT 8
+            if jetpack_version == 6:
+                LOGGER.info('Using TensorRT 10 (JetPack 6)')
+                from .exposure_identification_with_tensorrt import ExposureIdentificationTensorRT10
+                self.model = ExposureIdentificationTensorRT10(weights=self.trt_weights, device=self.device)
+            elif jetpack_version in [4, 5]:
+                LOGGER.info(f'Using TensorRT 8 (JetPack {jetpack_version})')
+                from .exposure_identification_with_tensorrt import ExposureIdentificationTensorRT8
+                self.model = ExposureIdentificationTensorRT8(weights=self.trt_weights, device=self.device)
+            else:
+                LOGGER.warning(f'未知的 JETPACK 版本: {jetpack_version}，默认使用 TensorRT 8')
+                from .exposure_identification_with_tensorrt import ExposureIdentificationTensorRT8
+                self.model = ExposureIdentificationTensorRT8(weights=self.trt_weights, device=self.device)
         else:
             from .exposure_identification_without_tensorrt import ExposureIdentificationResNet50
             self.model = ExposureIdentificationResNet50(weights=self.non_trt_weights, device=self.device)
