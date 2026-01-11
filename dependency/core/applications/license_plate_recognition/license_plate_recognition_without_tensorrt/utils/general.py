@@ -17,7 +17,6 @@ import torchvision
 import yaml
 
 from utils.google_utils import gsutil_getsize
-from utils.metrics import fitness
 from utils.torch_utils import init_torch_seeds
 
 # Settings
@@ -566,6 +565,7 @@ def strip_optimizer(f='weights/best.pt', s=''):  # from utils.general import *; 
 
 def print_mutation(hyp, results, yaml_file='hyp_evolved.yaml', bucket=''):
     # Print mutation results to evolve.txt (for use with train.py --evolve)
+    from utils.metrics import fitness  # 延迟导入，仅在训练时使用
     a = '%10s' * len(hyp) % tuple(hyp.keys())  # hyperparam keys
     b = '%10.3g' * len(hyp) % tuple(hyp.values())  # hyperparam values
     c = '%10.4g' * len(results) % results  # results (P, R, mAP@0.5, mAP@0.5:0.95, val_losses x 3)

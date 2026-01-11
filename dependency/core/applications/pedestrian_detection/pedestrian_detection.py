@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from typing import List
 
@@ -19,9 +20,25 @@ class PedestrianDetection:
         self._calculate_flops()
 
         if use_tensorrt:
-            from .pedestrian_detection_with_tensorrt import PedestrianDetectionTensorRT
-            self.model = PedestrianDetectionTensorRT(weights=self.trt_weights,
-                                              plugin_library=self.trt_plugin_library, device=self.device)
+            # 根据 JETPACK 版本选择 TensorRT 版本
+            jetpack_version = Context.get_parameter('JETPACK', direct=False)
+            
+            # JETPACK 6 使用 TensorRT 10，JETPACK 4/5 使用 TensorRT 8
+            if jetpack_version == 6:
+                LOGGER.info('Using TensorRT 10 (JetPack 6)')
+                from .pedestrian_detection_with_tensorrt import PedestrianDetectionTensorRT10
+                self.model = PedestrianDetectionTensorRT10(weights=self.trt_weights,
+                                                  plugin_library=self.trt_plugin_library, device=self.device)
+            elif jetpack_version in [4, 5]:
+                LOGGER.info(f'Using TensorRT 8 (JetPack {jetpack_version})')
+                from .pedestrian_detection_with_tensorrt import PedestrianDetectionTensorRT8
+                self.model = PedestrianDetectionTensorRT8(weights=self.trt_weights,
+                                                  plugin_library=self.trt_plugin_library, device=self.device)
+            else:
+                LOGGER.warning(f'未知的 JETPACK 版本: {jetpack_version}，默认使用 TensorRT 8')
+                from .pedestrian_detection_with_tensorrt import PedestrianDetectionTensorRT8
+                self.model = PedestrianDetectionTensorRT8(weights=self.trt_weights,
+                                                  plugin_library=self.trt_plugin_library, device=self.device)
         else:
             from .pedestrian_detection_without_tensorrt import PedestrianDetectionYoloV8
             self.model = PedestrianDetectionYoloV8(weights=self.non_trt_weights, device=self.device)
