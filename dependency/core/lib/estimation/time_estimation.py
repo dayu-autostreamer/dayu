@@ -95,17 +95,21 @@ class TimeEstimator:
         :return: None
         """
         prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
+
         TimeEstimator.erase_ts(task.get_tmp_data(),
-                               f'{prefix}:{sub_tag}_time_{task.get_flow_index()}')
+                               f'{prefix}:{sub_tag}_time_{task.get_flow_index()}',
+                               non_exist_ok=True)
         task.erase_time_ticket_in_service(type_tag=sub_tag, is_end=is_end)
 
     @staticmethod
-    def erase_ts(data: dict, tag: str) -> None:
+    def erase_ts(data: dict, tag: str, non_exist_ok=False) -> None:
         """
         erase timestamp in system
         :param data: time dictionary
         :param tag: name of time ticket
+        :param non_exist_ok: if True, do not raise error if tag does not exist
         :return: None
         """
-        assert tag in data, f'erase timestamp of {tag}, but timestamp does not exists!'
+        if not non_exist_ok and tag not in data:
+            raise KeyError(f'Timestamp {tag} is not existed when erasing!')
         del data[tag]
