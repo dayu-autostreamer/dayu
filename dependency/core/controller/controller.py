@@ -230,8 +230,8 @@ class Controller:
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'erase transmit time of stage {cur_task.get_flow_index()}')
         except Exception as e:
-            LOGGER.warning(f'Time erase failed for source {cur_task.get_source_id()} '
-                           f'task {cur_task.get_task_id()}: {str(e)}')
+            LOGGER.warning(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}]'
+                           f' Erase transmit time failed for stage {cur_task.get_flow_index()}: {str(e)}')
 
     @staticmethod
     def erase_execute_ts(cur_task: Task):
@@ -242,5 +242,5 @@ class Controller:
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'erase execute time of stage {cur_task.get_flow_index()}')
         except Exception as e:
-            LOGGER.warning(f'Time erase failed for source {cur_task.get_source_id()} '
-                           f'task {cur_task.get_task_id()}: {str(e)}')
+            LOGGER.warning(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}]'
+                           f' Erase execute time failed for stage {cur_task.get_flow_index()}: {str(e)}')

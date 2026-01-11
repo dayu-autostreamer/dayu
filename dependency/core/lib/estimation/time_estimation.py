@@ -112,4 +112,5 @@ class TimeEstimator:
         """
         if not non_exist_ok and tag not in data:
             raise KeyError(f'Timestamp {tag} is not existed when erasing!')
-        del data[tag]
+        if tag in data:
+            del data[tag]
