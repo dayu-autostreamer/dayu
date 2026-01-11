@@ -194,8 +194,8 @@ class Controller:
         try:
             duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='transmit')
         except Exception as e:
-            LOGGER.warning(f'Time record failed for source {cur_task.get_source_id()} '
-                           f'task {cur_task.get_task_id()}: {str(e)}')
+            LOGGER.warning(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
+                           f'transmit time record failed of stage {cur_task.get_flow_index()}: {str(e)}')
             duration = 0
 
         if is_end:
@@ -210,8 +210,8 @@ class Controller:
         try:
             duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='execute')
         except Exception as e:
-            LOGGER.warning(f'Time record failed for source {cur_task.get_source_id()} '
-                           f'task {cur_task.get_task_id()}: {str(e)}')
+            LOGGER.warning(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
+                           f'execute time record failed of stage {cur_task.get_flow_index()}: {str(e)}')
             duration = 0
 
         if is_end:
@@ -219,20 +219,14 @@ class Controller:
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'record execute time of stage {cur_task.get_flow_index()}: {duration:.3f}s')
 
-    def record_ts(self, task: Task, is_end: bool = False, action: str = ''):
-        if action == 'transmit':
-            self.record_transmit_ts(cur_task=task, is_end=is_end)
-        elif action == 'execute':
-            self.record_execute_ts(cur_task=task, is_end=is_end)
-        else:
-            raise ValueError(f'Action {action} not supported, only "transmit" and "execute" are supported."')
-
     @staticmethod
     def erase_transmit_ts(cur_task: Task):
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
             TimeEstimator.erase_dag_ts(cur_task, sub_tag=f'transmit')
+            LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
+                        f'erase transmit time of stage {cur_task.get_flow_index()}')
         except Exception as e:
             LOGGER.warning(f'Time erase failed for source {cur_task.get_source_id()} '
                            f'task {cur_task.get_task_id()}: {str(e)}')
@@ -243,18 +237,8 @@ class Controller:
 
         try:
             TimeEstimator.erase_dag_ts(cur_task, sub_tag=f'execute')
+            LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
+                        f'erase execute time of stage {cur_task.get_flow_index()}')
         except Exception as e:
             LOGGER.warning(f'Time erase failed for source {cur_task.get_source_id()} '
                            f'task {cur_task.get_task_id()}: {str(e)}')
-
-    def erase_ts(self, task: Task, action: str = ''):
-        if action == 'transmit':
-            self.erase_transmit_ts(cur_task=task)
-            LOGGER.info(f'[Source {task.get_source_id()} / Task {task.get_task_id()}] '
-                        f'erase transmit time of stage {task.get_flow_index()}')
-        elif action == 'execute':
-            self.erase_execute_ts(cur_task=task)
-            LOGGER.info(f'[Source {task.get_source_id()} / Task {task.get_task_id()}] '
-                        f'erase execute time of stage {task.get_flow_index()}')
-        else:
-            raise ValueError(f'Action {action} not supported, only "transmit" and "execute" are supported."')
