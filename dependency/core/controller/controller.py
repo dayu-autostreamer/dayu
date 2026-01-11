@@ -194,7 +194,8 @@ class Controller:
         try:
             duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='transmit')
         except Exception as e:
-            LOGGER.warning(f'Time record failed: {str(e)}')
+            LOGGER.warning(f'Time record failed for source {cur_task.get_source_id()} '
+                           f'task {cur_task.get_task_id()}: {str(e)}')
             duration = 0
 
         if is_end:
@@ -209,7 +210,8 @@ class Controller:
         try:
             duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='execute')
         except Exception as e:
-            LOGGER.warning(f'Time record failed: {str(e)}')
+            LOGGER.warning(f'Time record failed for source {cur_task.get_source_id()} '
+                           f'task {cur_task.get_task_id()}: {str(e)}')
             duration = 0
 
         if is_end:
@@ -232,7 +234,8 @@ class Controller:
         try:
             TimeEstimator.erase_dag_ts(cur_task, sub_tag=f'transmit')
         except Exception as e:
-            LOGGER.warning(f'Time erase failed: {str(e)}')
+            LOGGER.warning(f'Time erase failed for source {cur_task.get_source_id()} '
+                           f'task {cur_task.get_task_id()}: {str(e)}')
 
     @staticmethod
     def erase_execute_ts(cur_task: Task):
@@ -241,7 +244,8 @@ class Controller:
         try:
             TimeEstimator.erase_dag_ts(cur_task, sub_tag=f'execute')
         except Exception as e:
-            LOGGER.warning(f'Time erase failed: {str(e)}')
+            LOGGER.warning(f'Time erase failed for source {cur_task.get_source_id()} '
+                           f'task {cur_task.get_task_id()}: {str(e)}')
 
     def erase_ts(self, task: Task, action: str = ''):
         if action == 'transmit':
