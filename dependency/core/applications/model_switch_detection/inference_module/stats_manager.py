@@ -64,7 +64,7 @@ class StatsManager:
             self.stats.popleft()
 
         result_path = Context.get_file_path('stats.csv')
-        # 现有结果写入一个文件, csv格式
+        # Persist the current statistics to a CSV file
         with open(result_path, 'w') as f:
             f.write('timestamp,queue_length,cur_model_index,cur_model_accuracy,processing_latency,target_nums,avg_confidence,std_confidence,avg_size,std_size,brightness,contrast\n')
             for entry in self.stats:
@@ -77,12 +77,12 @@ class StatsManager:
         with self.lock:
             if not self.stats:
                 return None
-            # 如果请求的数量大于当前的数量，在列表前面补默认值
+            # If requested count is larger than what we have, pad with default values at the front
             elif len(self.stats) < nums:
                 return [StatsEntry()] * (nums - len(self.stats)) + list(self.stats)
             else:
-                return list(self.stats)[-nums:]  # 返回最新的nums个元素
-            
+                return list(self.stats)[-nums:]  # Return the latest `nums` entries
+
     def get_interval_stats(self, nums: int = 1, interval: float = 1.0):
         '''
         Get the statistics at intervals
@@ -96,13 +96,13 @@ class StatsManager:
             result = [StatsEntry()] * nums
             current_time = self.stats[-1].timestamp
             
-            # 使用二分查找优化查找过程
-            stats_list = list(self.stats)  # 转换为列表以支持索引访问
-            
+            # Use binary search for faster lookup
+            stats_list = list(self.stats)  # Convert to list for indexed access
+
             for i in range(nums):
                 target_time = current_time - i * interval
                 
-                # 二分查找找到最接近且不大于目标时间的统计数据
+                # Binary search for the closest stats entry with timestamp <= target_time
                 left, right = 0, len(stats_list) - 1
                 closest_index = -1
                 
@@ -115,7 +115,6 @@ class StatsManager:
                         right = mid - 1
                 
                 if closest_index != -1:
-                    result[nums - 1 - i] = stats_list[closest_index]  # 确保按时间从老到新排序
-                    
+                    result[nums - 1 - i] = stats_list[closest_index]  # Ensure the order is oldest -> newest
+
             return result
-            

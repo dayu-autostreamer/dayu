@@ -98,12 +98,12 @@ class OfaInference(BaseInference):
         for idx in range(self.subnet_nums):
             times = []
             self.switch_model(idx)
-            # 预热
+            # Warm up
             for _ in range(5):
                 with torch.no_grad():
                     self.model(dummy_input)
 
-            # 测量
+            # Measure
             for _ in range(10):
                 start_time = time.perf_counter()
                 with torch.no_grad():
@@ -150,7 +150,7 @@ class OfaInference(BaseInference):
         with torch.no_grad():
             results = self.model(processed_image)[0]
         inference_latency = time.perf_counter() - start_time
-        # 过滤低置信度的预测结果
+        # Filter low-confidence predictions
         mask = results['scores'] > 0.3
         boxes = results['boxes'][mask].cpu().numpy().tolist()
         labels = results['labels'][mask].cpu().numpy().tolist()
@@ -174,7 +174,7 @@ class OfaInference(BaseInference):
         rgb_image = cv2.cvtColor(raw_bgr_image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_image)
 
-        # 创建转换pipeline
+        # Create the transform pipeline
         transform = T.Compose([
             T.ToTensor(),
         ])
@@ -182,7 +182,7 @@ class OfaInference(BaseInference):
         # PIL Image -> Tensor
         image_tensor = transform(pil_image)
 
-        # 添加batch维度
+        # Add batch dimension
         image_tensor = image_tensor.unsqueeze(0)
 
         return image_tensor

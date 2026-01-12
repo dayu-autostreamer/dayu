@@ -8,7 +8,9 @@ pod-template:
     - name: ROI_CLASSIFIER_PARAMETERS
       value: >
         {
-           'weights': 'age_resnet18.engine'
+           'trt_weights': 'age_resnet18.engine',
+           'non_trt_weights': 'age_resnet18.pt',
+           'device':0
         }
     - name: SCENARIOS_EXTRACTORS
       value: >

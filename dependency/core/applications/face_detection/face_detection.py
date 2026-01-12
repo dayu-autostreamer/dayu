@@ -1,4 +1,3 @@
-import os
 import numpy as np
 from typing import List
 
@@ -20,10 +19,9 @@ class FaceDetection:
         self._calculate_flops()
 
         if use_tensorrt:
-            # 根据 JETPACK 版本选择 TensorRT 版本
             jetpack_version = Context.get_parameter('JETPACK', direct=False)
             
-            # JETPACK 6 使用 TensorRT 10，JETPACK 4/5 使用 TensorRT 8
+            # JETPACK 6 uses TensorRT10, JETPACK 4/5 uses TensorRT8
             if jetpack_version == 6:
                 LOGGER.info('Using TensorRT 10 (JetPack 6)')
                 from .face_detection_with_tensorrt import FaceDetectionTensorRT10
@@ -41,7 +39,7 @@ class FaceDetection:
                     device=self.device
                 )
             else:
-                LOGGER.warning(f'未知的 JETPACK 版本: {jetpack_version}，默认使用 TensorRT 8')
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
                 from .face_detection_with_tensorrt import FaceDetectionTensorRT8
                 self.model = FaceDetectionTensorRT8(
                     weights=self.trt_weights,
@@ -55,14 +53,14 @@ class FaceDetection:
                 device=self.device
             )
 
-    def _infer(self, image):
+    def infer(self, image):
         return self.model.infer(image)
 
     def __call__(self, images: List[np.ndarray]):
         output = []
 
         for image in images:
-            result_boxes, result_scores, result_class_id, result_roi_id = self._infer(image)
+            result_boxes, result_scores, result_class_id, result_roi_id = self.infer(image)
             output.append((result_boxes, result_scores, result_class_id, result_roi_id))
         return output
 

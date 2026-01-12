@@ -13,12 +13,10 @@ import tensorrt as trt
 
 import cv2
 
-from core.lib.common import Context
-
-__all__ = ('CarDetectionTensorRT',)
+__all__ = ('CarDetectionTensorRT10',)
 
 
-class CarDetectionTensorRT:
+class CarDetectionTensorRT10:
 
     def __init__(self, weights, plugin_library, device=0):
 
@@ -43,23 +41,33 @@ class CarDetectionTensorRT:
         cuda_outputs = []
         bindings = []
 
-        for binding in engine:
-            size = trt.volume(engine.get_binding_shape(binding)) * engine.max_batch_size
-            dtype = trt.nptype(engine.get_binding_dtype(binding))
+        for i in range(engine.num_io_tensors):
+            tensor_name = engine.get_tensor_name(i)
+            shape = engine.get_tensor_shape(tensor_name)
+            dtype = trt.nptype(engine.get_tensor_dtype(tensor_name))
+
+            # Calculate size
+            size = trt.volume(shape)
+            if size < 0:  # Dynamic shape
+                size = abs(size)
+
             # Allocate host and device buffers
             host_mem = cuda.pagelocked_empty(size, dtype)
             cuda_mem = cuda.mem_alloc(host_mem.nbytes)
             # Append the device buffer to device bindings.
             bindings.append(int(cuda_mem))
+
             # Append to the appropriate list.
-            if engine.binding_is_input(binding):
-                self.input_w = engine.get_binding_shape(binding)[-1]
-                self.input_h = engine.get_binding_shape(binding)[-2]
+            if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
+                self.input_w = shape[-1]
+                self.input_h = shape[-2]
                 host_inputs.append(host_mem)
                 cuda_inputs.append(cuda_mem)
+                self.input_tensor_name = tensor_name
             else:
                 host_outputs.append(host_mem)
                 cuda_outputs.append(cuda_mem)
+                self.output_tensor_name = tensor_name
 
         self.stream = stream
         self.context = context
@@ -357,4 +365,3 @@ class CarDetectionTensorRT:
         result_classid = np.full(len(result_boxes), self.class_id).tolist()
 
         return result_boxes, result_scores, result_classid
-

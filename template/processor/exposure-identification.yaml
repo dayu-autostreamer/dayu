@@ -9,7 +9,8 @@ pod-template:
       value: >
         {
           'trt_weights': 'resnet50.engine', 
-          'non_trt_weights':'Resnet50_e2_0.001.pth'
+          'non_trt_weights':'resnet50.pth',
+          'device':0
         }
     - name: SCENARIOS_EXTRACTORS
       value: >
@@ -18,24 +19,6 @@ pod-template:
       value: "simple"
     - name: USE_TENSORRT
       value: "False"
-cloud-pod-template:
-  env:
-    - name: CLASSIFIER_PARAMETERS
-      value: >
-        {
-          'trt_weights':'resnet50.engine',
-          'non_trt_weights':'Resnet50_e2_0.001.pth',
-          'device':0
-        }
-edge-pod-template:
-  env:
-    - name: CLASSIFIER_PARAMETERS
-      value: >
-        {
-         'trt_weights':'resnet50.engine',
-         'non_trt_weights':'Resnet50_e2_0.001.pth',
-         'device':0
-        }
 port-open:
   pos: both
   port: 9000

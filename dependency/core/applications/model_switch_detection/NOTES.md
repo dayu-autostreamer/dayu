@@ -1,12 +1,13 @@
-## 模块集成记录
+## Module Integration Notes
 
-### 应用模块开发
-1. `dependency/core/applications`目录下新建项目，代码参考car_detection，注意`__init__.py`导出模块。核心是编写一个包含`__call__`方法的类用以处理一组输入图像，注意输入输出类型。
-2. 本地测试方法：为应用编写主函数测试`__call__`方法调用是否正常。
+### Application Module Development
+1. Create a new project under `dependency/core/applications`. Use `car_detection` as a reference. Make sure `__init__.py` exports the module.
+   The core is to implement a class with a `__call__` method to process a batch of input images, and pay attention to input/output types.
+2. Local testing method: write a `main` function for the application and test whether calling `__call__` works correctly.
 
-#### 一些踩坑点：
+#### Common pitfalls
 
-1. 如果模块有子模块，包的导入可能会有问题，一种简单粗暴可行的写法：
+1. If the module has submodules, package imports may fail in different execution contexts. One simple (but practical) approach:
     ```python
     def _import_random_switch_module():
         if __name__ == '__main__':
@@ -15,9 +16,11 @@
             from .switch_module.random_switch import RandomSwitch
         return RandomSwitch
     ```
-    可以分别处理不同的context。
+    This can handle different contexts.
 
-2. 用`sys.path`添加模块可能会有重名包的导入，比如两个目标检测的项目实现都有`models`模块，这种情况会导致混乱，所以最好在初始化参数中做区分，避免同时导入不同项目中的同名模块：
+2. Adding modules via `sys.path` can cause imports of packages with the same name.
+   For example, two detection projects may both have a `models` module; this can lead to confusion.
+   It's best to distinguish them during initialization and avoid importing identically named modules from multiple projects at the same time:
     ```python
     if model_type == 'yolo':
         YoloInference = _import_yolo_inference_module()
@@ -30,7 +33,10 @@
         raise ValueError('Invalid type')
     ```
 
-3. 测试docker镜像构建时，实例化对象时无法传参（应用最后会在k8s中通过yaml文件启动），可以写无参初始化的测试类继承有参的类，再修改应用根目录下的`__init__.py`导出待测试的无参测试类：
+3. When testing Docker image builds, you may not be able to pass parameters when instantiating the object
+   (the application will eventually be started in k8s via YAML).
+   You can write a parameterless test class that inherits the parameterized class, then modify the app root `__init__.py`
+   to export the parameterless test class:
     ```
     from .detection_wrapper import ModelSwitchDetection as Detector
     # from .detection_wrapper import ModelSwitchDetectionTestYolo as Detector
@@ -38,12 +44,13 @@
     __all__ = ["Detector"]
     ```
 
-### 构建docker镜像
-1. `build`目录下新建应用的Dockerfile，注意需要区分架构（amd/arm），涉及到不同的基础镜像，构建流程不同。
-2. 本地测试镜像构建的一个模板：
+### Build Docker Images
+1. Create the application's Dockerfile under the `build` directory.
+   Note that you need to distinguish architectures (amd/arm) because the base images and build flows differ.
+2. A template for local image build testing:
     ```yaml
     ARG REG=docker.io
-    # TODO: 修改基础镜像tag
+    # TODO: update the base image tag
     FROM ${REG}/ultralytics/ultralytics:latest-arm64
 
     LABEL authors="Wenyi Dai"
@@ -53,7 +60,7 @@
     ARG base_dir=dependency/core/processor
     ARG code_dir=components/processor
 
-    # 修改为自己的应用目录
+    # Change to your own application directory
     ARG app_dir=dependency/core/applications/model_switch_detection
 
     ENV TZ=Asia/Shanghai
@@ -61,10 +68,10 @@
     COPY ${lib_dir}/requirements.txt ./lib_requirements.txt
     COPY ${base_dir}/requirements.txt ./base_requirements.txt
 
-    # 修改，添加两个requirements（arm/amd）
+    # Change: add two requirements files (arm/amd)
     COPY ${app_dir}/requirements_arm64.txt ./app_requirements.txt
 
-    # 修改 pip 安装命令，添加 --use-pep517 参数
+    # Change: add --use-pep517 to pip install commands
     RUN pip3 install --upgrade pip && \
         pip3 install --use-pep517 -r lib_requirements.txt --ignore-installed -i https://mirrors.aliyun.com/pypi/simple && \
         pip3 install -r base_requirements.txt -i https://mirrors.aliyun.com/pypi/simple && \
@@ -73,7 +80,7 @@
     COPY ${dependency_dir} /home/dependency
     ENV PYTHONPATH="/home/dependency"
 
-    # 注意SERVICE_NAME的格式为'processor-{你的应用名称}'，应用名称的'_'改为'-'
+    # Note: SERVICE_NAME should be 'processor-{your-app-name}', and replace '_' with '-'
     ENV PROCESSOR_NAME="detector_processor"
     ENV SERVICE_NAME="processor-model-switch-detection"
     ENV DETECTOR_PARAMETERS="{'key':'value'}"
@@ -85,23 +92,27 @@
     WORKDIR /app
     COPY  ${code_dir}/* /app/
 
-    # 修改，bin/bash
+    # Change: /bin/bash
     # CMD ["gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
     CMD ["/bin/bash"]
 
-    # 进入后跑main函数
+    # After entering the container, run the main function
     ```
-3. 运行，一个示例：
+3. Run (example):
     ```bash
     docker build -t dayu-test -f build/model_switch_detection_arm64.Dockerfile .
     docker run --rm -it -v $(pwd)/ofa_weights:/ofa_weights dayu-test
     ```
-    用`-v`把权重文件做映射进行测试，注意docker中的路径和无参测试类中的路径保持一致。进入后运行python：
+    Use `-v` to mount the weights file for testing. Make sure the paths inside Docker and in the parameterless test class match.
+    After entering, run Python:
     ```python
     from core.processor import ProcessorServer
     app = ProcessorServer().app
     ```
-    测试processor类是否初始化成功。
+    Verify that the processor initializes successfully.
 
-### 其他
-1. 一定要注意supernet的权重要和docker镜像中torch vision的具体detection类匹配，否则需要做网络转换，比如Faster RCNN的RPN head结构有微小变化，旧版本没有Conv2dNormActivation实现，要把Conv2dNormActivation里的Conv抠出来重新保存权重。
+### Other
+1. Make sure the supernet weights match the specific detection classes in the TorchVision version inside the Docker image,
+   otherwise you need to convert the network.
+   For example, the RPN head structure of Faster R-CNN may have minor changes.
+   Older versions do not have `Conv2dNormActivation`; you need to extract the Conv from `Conv2dNormActivation` and save weights again.

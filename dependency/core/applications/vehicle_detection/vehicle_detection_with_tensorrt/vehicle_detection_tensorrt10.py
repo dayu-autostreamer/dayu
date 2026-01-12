@@ -4,11 +4,9 @@ import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
 import cv2
-from typing import List
 
-from core.lib.common import Context
+__all__ = ('VehicleDetectionTensorRT10',)
 
-__all__ = ('VehicleDetectionTensorRT',)
 
 class VehicleDetectionTensorRT10:
     def __init__(self, weights, plugin_library, device=0):
@@ -56,20 +54,21 @@ class VehicleDetectionTensorRT10:
         self.conf_thres = 0.5
         self.iou_thres = 0.4
 
-        self.categories = np.array(["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
-                  "traffic light",
-                  "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
-                  "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase",
-                  "frisbee",
-                  "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
-                  "surfboard",
-                  "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
-                  "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
-                  "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard",
-                  "cell phone",
-                  "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
-                  "teddy bear",
-                  "hair drier", "toothbrush"])  # 同原始COCO categories
+        self.categories = np.array(
+            ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+             "traffic light",
+             "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+             "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase",
+             "frisbee",
+             "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
+             "surfboard",
+             "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+             "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+             "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard",
+             "cell phone",
+             "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
+             "teddy bear",
+             "hair drier", "toothbrush"])  # 同原始COCO categories
         self.target_categories = np.asarray(["car", "bus", "motorcycle", "bicycle", "truck"])
         self.class_id = 'vehicle'
 
@@ -211,4 +210,3 @@ class VehicleDetectionTensorRT10:
             keep_boxes.append(boxes[0])
             boxes = boxes[~invalid]
         return np.stack(keep_boxes, 0) if len(keep_boxes) else np.array([])
-

@@ -1,4 +1,4 @@
-from .age_classification import AgeClassificationResNet18
+from .age_classification_resnet18 import AgeClassificationResNet18
 
 __all__ = ['AgeClassificationResNet18']
 

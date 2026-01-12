@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 
 class ExposureIdentificationResNet50:
-    def __init__(self, weights, device='cpu'):      
+    def __init__(self, weights, device=0):
         self.model = resnet50(pretrained=False)
         self.model.fc = torch.nn.Linear(self.model.fc.in_features, 5)
         
