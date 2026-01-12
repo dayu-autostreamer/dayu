@@ -1,12 +1,11 @@
 import ctypes
-from typing import List
 import cv2
 import numpy as np
 import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
 
-from core.lib.common import Context, LOGGER
+from core.lib.common import LOGGER
 
 
 class FaceDetectionTensorRT8:

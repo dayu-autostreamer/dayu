@@ -9,7 +9,8 @@ pod-template:
       value: >
         {
           'weights':'retina_mnet.engine', 
-          'plugin_library':'libdecodeplugin.so'
+          'plugin_library':'libdecodeplugin.so',
+          'device':0
         }
     - name: SCENARIOS_EXTRACTORS
       value: >

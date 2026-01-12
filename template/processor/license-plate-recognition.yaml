@@ -11,7 +11,8 @@ pod-template:
           'det_trt_weights':'plate_detect.trt', 
           'non_det_trt_weights':'plate_detect.pt',
           'rec_trt_weights':'plate_rec.trt',
-          'non_rec_trt_weights':'plate_rec_color.pth'
+          'non_rec_trt_weights':'plate_rec_color.pth',
+          'device': 0
         }
     - name: SCENARIOS_EXTRACTORS
       value: >
@@ -20,28 +21,6 @@ pod-template:
       value: "simple"
     - name: USE_TENSORRT
       value: "False"
-cloud-pod-template:
-  env:
-    - name: CLASSIFIER_PARAMETERS
-      value: >
-        {
-          'det_trt_weights':'plate_detect.trt', 
-          'non_det_trt_weights':'plate_detect.pt',
-          'rec_trt_weights':'plate_rec.trt',
-          'non_rec_trt_weights':'plate_rec_color.pth',
-          'device':0
-        }
-edge-pod-template:
-  env:
-    - name: CLASSIFIER_PARAMETERS
-      value: >
-        {
-         'det_trt_weights':'plate_detect.trt', 
-         'non_det_trt_weights':'plate_detect.pt',
-         'rec_trt_weights':'plate_rec.trt',
-         'non_rec_trt_weights':'plate_rec_color.pth',
-         'device':0
-        }
 port-open:
   pos: both
   port: 9000

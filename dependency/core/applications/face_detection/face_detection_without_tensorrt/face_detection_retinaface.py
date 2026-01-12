@@ -1,10 +1,9 @@
 import torch
 import torch.backends.cudnn as cudnn
 import numpy as np
-import cv2
 import sys
 
-from core.lib.common import Context, LOGGER
+from core.lib.common import LOGGER
 
 # Import models module to make it available for torch.load
 from . import models

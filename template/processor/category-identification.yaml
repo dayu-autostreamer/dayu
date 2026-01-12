@@ -10,7 +10,8 @@ pod-template:
         {
           'trt_weights':'yolov8s-cls.engine', 
           'trt_plugin_library':'libmyplugins.so',
-          'non_trt_weights':'yolov8s-cls.pt'
+          'non_trt_weights':'yolov8s-cls.pt',
+          'device':0
         }
     - name: SCENARIOS_EXTRACTORS
       value: >
@@ -19,26 +20,6 @@ pod-template:
       value: "simple"
     - name: USE_TENSORRT
       value: "False"
-cloud-pod-template:
-  env:
-    - name: CLASSIFIER_PARAMETERS
-      value: >
-        {
-          'trt_weights':'yolov8s-cls.engine',
-          'trt_plugin_library':'libmyplugins.so',
-          'non_trt_weights':'yolov8s-cls.pt',
-          'device':0
-        }
-edge-pod-template:
-  env:
-    - name: CLASSIFIER_PARAMETERS
-      value: >
-        {
-         'trt_weights':'yolov8s-cls.engine',
-         'trt_plugin_library':'libmyplugins.so',
-         'non_trt_weights':'yolov8s-cls.pt',
-         'device':0
-        }
 port-open:
   pos: both
   port: 9000

@@ -21,9 +21,28 @@ class CarDetection:
         if use_tensorrt:
             jetpack_version = Context.get_parameter('JETPACK', direct=False)
 
-            from .car_detection_with_tensorrt import CarDetectionTensorRT
-            self.model = CarDetectionTensorRT(weights=self.trt_weights,
-                                              plugin_library=self.trt_plugin_library, device=self.device)
+            # JETPACK 6 uses TensorRT10, JETPACK 4/5 uses TensorRT8
+            if jetpack_version == 6:
+                LOGGER.info('Using TensorRT 10 (JetPack 6)')
+                from .car_detection_with_tensorrt import CarDetectionTensorRT10
+                self.model = CarDetectionTensorRT10(
+                    weights=self.trt_weights,
+                    plugin_library=self.trt_plugin_library,
+                    device=self.device)
+            elif jetpack_version in [4, 5]:
+                LOGGER.info(f'Using TensorRT 8 (JetPack {jetpack_version})')
+                from .car_detection_with_tensorrt import CarDetectionTensorRT8
+                self.model = CarDetectionTensorRT8(
+                    weights=self.trt_weights,
+                    plugin_library=self.trt_plugin_library,
+                    device=self.device)
+            else:
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
+                from .car_detection_with_tensorrt import CarDetectionTensorRT8
+                self.model = CarDetectionTensorRT8(
+                    weights=self.trt_weights,
+                    plugin_library=self.trt_plugin_library,
+                    device=self.device)
         else:
             from .car_detection_without_tensorrt import CarDetectionYoloV5
             self.model = CarDetectionYoloV5(weights=self.non_trt_weights, device=self.device)

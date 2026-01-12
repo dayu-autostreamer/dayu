@@ -1,12 +1,12 @@
 import cv2 
 import numpy as np 
-from typing import List, Tuple, Union
+from typing import List, Tuple
 
 import pycuda.autoinit 
 import pycuda.driver as cuda 
 import tensorrt as trt 
 
-from core.lib.common import Context, LOGGER 
+from core.lib.common import LOGGER
 
 class LicensePlateRecognitionTensorRT10:
     def __init__(self, detect_weights: str, recognize_weights: str, device=0):

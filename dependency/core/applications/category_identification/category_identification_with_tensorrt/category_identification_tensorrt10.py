@@ -1,12 +1,11 @@
 import cv2
 import numpy as np
-from typing import List
 import ctypes
 import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
 
-from core.lib.common import Context, LOGGER
+from core.lib.common import LOGGER
 
 
 class CategoryIdentificationTensorRT10:

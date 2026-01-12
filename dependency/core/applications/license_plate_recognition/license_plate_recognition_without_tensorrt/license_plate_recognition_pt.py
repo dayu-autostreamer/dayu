@@ -22,12 +22,12 @@ from plate_recognition.double_plate_split_merge import get_split_merge
 
 
 class LicensePlateRecognitionPT:
-    def __init__(self, detect_model_path, rec_model_path, device='cuda', img_size=640, is_color=True):
+    def __init__(self, detect_model_path, rec_model_path, device=0, img_size=640, is_color=True):
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.img_size = img_size
         self.is_color = is_color
 
-        # 加载模型
+        # Load models
         self.detect_model = attempt_load(detect_model_path, map_location=self.device)
         self.plate_rec_model = init_model(self.device, rec_model_path, is_color=is_color)
 
