@@ -1,4 +1,3 @@
-import os
 import numpy as np
 from typing import List
 
@@ -20,10 +19,9 @@ class PedestrianDetection:
         self._calculate_flops()
 
         if use_tensorrt:
-            # 根据 JETPACK 版本选择 TensorRT 版本
             jetpack_version = Context.get_parameter('JETPACK', direct=False)
             
-            # JETPACK 6 使用 TensorRT 10，JETPACK 4/5 使用 TensorRT 8
+            # JETPACK 6 uses TensorRT10, JETPACK 4/5 uses TensorRT8
             if jetpack_version == 6:
                 LOGGER.info('Using TensorRT 10 (JetPack 6)')
                 from .pedestrian_detection_with_tensorrt import PedestrianDetectionTensorRT10
@@ -35,7 +33,7 @@ class PedestrianDetection:
                 self.model = PedestrianDetectionTensorRT8(weights=self.trt_weights,
                                                   plugin_library=self.trt_plugin_library, device=self.device)
             else:
-                LOGGER.warning(f'未知的 JETPACK 版本: {jetpack_version}，默认使用 TensorRT 8')
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
                 from .pedestrian_detection_with_tensorrt import PedestrianDetectionTensorRT8
                 self.model = PedestrianDetectionTensorRT8(weights=self.trt_weights,
                                                   plugin_library=self.trt_plugin_library, device=self.device)

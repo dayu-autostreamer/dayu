@@ -46,14 +46,14 @@ from models.ops.dynamic_conv2d import DynamicConv2d
 class Resnet50Fpn(nn.Module):
     def __init__(self, backbone: nn.Module) -> None:
         super().__init__()
-        # 计算每个 stage 的通道数
+        # Compute the number of channels for each stage
         in_channels_stage2 = 256
         in_channels_list = [in_channels_stage2 * 2 ** (i - 1) for i in range(1, 5)]
         out_channels = 192
         extra_blocks = CustomLastLevelMaxPool()
         self.body = backbone
         
-        # 使用自定义 FPN 替换原来的 FPN
+        # Use a custom FPN to replace the original FPN
         self.fpn = CustomFPN(
             in_channels_list=in_channels_list,
             out_channels=out_channels,
@@ -67,7 +67,7 @@ class Resnet50Fpn(nn.Module):
             x = layer(x)
         x = self.body.max_pooling(x)
         
-        # 收集每个 stage 的特征
+        # Collect features for each stage
         mid_features = OrderedDict()
         for stage_id, block_idx in enumerate(self.body.grouped_block_index):
             depth_param = self.body.runtime_depth[stage_id]
@@ -75,7 +75,7 @@ class Resnet50Fpn(nn.Module):
             for idx in active_idx:
                 x = self.body.blocks[idx](x)
                 if idx == active_idx[-1]:
-                    # 直接使用 block 输出的特征，不再需要额外的 conv 和 bn
+                    # Use features directly from the block output; no extra conv/bn is needed
                     mid_features[str(stage_id)] = x
         
         x = self.fpn(mid_features)

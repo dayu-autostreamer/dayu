@@ -73,11 +73,11 @@ class YoloInference(BaseInference):
 
         for idx, model in enumerate(self.models):
             times = []
-            # 预热
+            # Warm up
             for _ in range(5):
                 model(dummy_input)
 
-            # 测量
+            # Measure
             for _ in range(10):
                 start_time = time.perf_counter()
                 with torch.no_grad():

@@ -19,6 +19,8 @@ class CarDetection:
         self._calculate_flops()
 
         if use_tensorrt:
+            jetpack_version = Context.get_parameter('JETPACK', direct=False)
+
             from .car_detection_with_tensorrt import CarDetectionTensorRT
             self.model = CarDetectionTensorRT(weights=self.trt_weights,
                                               plugin_library=self.trt_plugin_library, device=self.device)
