@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Dict
+from typing import List
 
 from core.lib.common import Context, LOGGER
 from core.lib.estimation import FlopsEstimator
@@ -18,7 +18,7 @@ class AgeClassification:
 
         if use_tensorrt:
             jetpack_version = Context.get_parameter('JETPACK', direct=False)
-            
+
             # JETPACK 6 uses TensorRT10, JETPACK 4/5 uses TensorRT8
             if jetpack_version == 6:
                 LOGGER.info('Using TensorRT 10 (JetPack 6)')
@@ -36,14 +36,14 @@ class AgeClassification:
             from .age_classification_without_tensorrt import AgeClassificationResNet18
             self.model = AgeClassificationResNet18(weights=self.non_trt_weights, device=self.device)
 
-    def _infer(self, image):
+    def infer(self, image):
         return self.model.infer(image)
 
     def __call__(self, faces: List[np.ndarray]):
         output = []
 
         for face in faces:
-            output.append(self._infer(face))
+            output.append(self.infer(face))
 
         return output
 
@@ -56,28 +56,3 @@ class AgeClassification:
         except Exception as e:
             LOGGER.warning(f'Get model FLOPs failed: {e}')
             LOGGER.exception(e)
-
-
-class AgeClassificationRoi:
-    """ROI-aware wrapper with simple per-roi_id cache."""
-    def __init__(self, trt_weights, non_trt_weights, device=0):
-        self.model = AgeClassification(trt_weights=trt_weights, non_trt_weights=non_trt_weights, device=device)
-        self.cache: Dict[int, str] = {}
-
-    def reset_cache(self):
-        self.cache.clear()
-
-    @property
-    def flops(self):
-        return getattr(self.model, 'flops', 0)
-
-    def __call__(self, faces: List[np.ndarray], roi_ids: List[int]):
-        results = []
-        for face, rid in zip(faces, roi_ids):
-            if rid in self.cache:
-                results.append(self.cache[rid])
-                continue
-            res = self.model._infer(face)
-            self.cache[rid] = res
-            results.append(res)
-        return results

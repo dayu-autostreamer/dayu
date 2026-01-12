@@ -6,7 +6,7 @@ import torchvision.models as models
 import torchvision.transforms as transforms
 import torch.backends.cudnn as cudnn
 
-from core.lib.common import Context, LOGGER
+from core.lib.common import LOGGER
 
 
 class GenderClassifier(nn.Module):

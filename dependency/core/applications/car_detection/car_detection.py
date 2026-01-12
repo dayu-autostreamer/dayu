@@ -47,14 +47,14 @@ class CarDetection:
             from .car_detection_without_tensorrt import CarDetectionYoloV5
             self.model = CarDetectionYoloV5(weights=self.non_trt_weights, device=self.device)
 
-    def _infer(self, image):
+    def infer(self, image):
         return self.model.infer(image)
 
     def __call__(self, images: List[np.ndarray]):
         output = []
 
         for image in images:
-            result_boxes, result_scores, result_class_id = self._infer(image)
+            result_boxes, result_scores, result_class_id = self.infer(image)
             result_roi_id = list(range(len(result_boxes)))
             output.append((result_boxes, result_scores, result_class_id, result_roi_id))
         return output

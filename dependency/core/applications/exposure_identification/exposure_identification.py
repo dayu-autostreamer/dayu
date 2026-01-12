@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Dict
+from typing import List
 
 from core.lib.common import Context, LOGGER
 from core.lib.estimation import FlopsEstimator
@@ -19,7 +19,7 @@ class ExposureIdentification:
 
         if use_tensorrt:
             jetpack_version = Context.get_parameter('JETPACK', direct=False)
-            
+
             # JETPACK 6 uses TensorRT10, JETPACK 4/5 uses TensorRT8
             if jetpack_version == 6:
                 LOGGER.info('Using TensorRT 10 (JetPack 6)')
@@ -37,14 +37,14 @@ class ExposureIdentification:
             from .exposure_identification_without_tensorrt import ExposureIdentificationResNet50
             self.model = ExposureIdentificationResNet50(weights=self.non_trt_weights, device=self.device)
 
-    def _infer(self, image):
+    def infer(self, image):
         return self.model.infer(image)
 
     def __call__(self, images: List[np.ndarray]):
         output = []
 
         for image in images:
-            output.append(self._infer(image))
+            output.append(self.infer(image))
         return output
 
     def _calculate_flops(self):
@@ -56,28 +56,3 @@ class ExposureIdentification:
         except Exception as e:
             LOGGER.warning(f'Get model FLOPs failed:{e}')
             LOGGER.exception(e)
-
-
-class ExposureIdentificationRoi:
-    """ROI-aware wrapper with per-roi_id cache."""
-    def __init__(self, trt_weights, non_trt_weights, device=0):
-        self.model = ExposureIdentification(trt_weights=trt_weights, non_trt_weights=non_trt_weights, device=device)
-        self.cache: Dict[int, any] = {}
-
-    def reset_cache(self):
-        self.cache.clear()
-
-    @property
-    def flops(self):
-        return getattr(self.model, 'flops', 0)
-
-    def __call__(self, images: List[np.ndarray], roi_ids: List[int]):
-        results = []
-        for img, rid in zip(images, roi_ids):
-            if rid in self.cache:
-                results.append(self.cache[rid])
-                continue
-            res = self.model._infer(img)
-            self.cache[rid] = res
-            results.append(res)
-        return results
