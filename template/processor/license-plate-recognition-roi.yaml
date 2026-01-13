@@ -11,7 +11,7 @@ pod-template:
           'det_trt_weights':'plate_detect.trt', 
           'non_det_trt_weights':'plate_detect.pt',
           'rec_trt_weights':'plate_rec.trt',
-          'non_rec_trt_weights':'plate_rec_color.pth'
+          'non_rec_trt_weights':'plate_rec_color.pth',
           'device':0
         }
     - name: SCENARIOS_EXTRACTORS
