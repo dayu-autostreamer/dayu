@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.lib.common import LOGGER, Counter, Queue, FileOps
+from core.lib.content import Task
 from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
 
 from backend_core import BackendCore
@@ -354,7 +355,8 @@ class BackendServer:
                 bandwidth = '-'
                 for hostname in resource_data:
                     single_resource_info = resource_data[hostname]
-                    if 'available_bandwidth' in single_resource_info and single_resource_info['available_bandwidth'] != -1:
+                    if 'available_bandwidth' in single_resource_info and single_resource_info[
+                        'available_bandwidth'] != -1:
                         bandwidth = f"{single_resource_info['available_bandwidth']:.2f}Mbps"
                 for single_info in info:
                     single_info['bandwidth'] = bandwidth
@@ -718,7 +720,7 @@ class BackendServer:
 
         log_content = self.server.download_system_log_content()
         with open(self.server.system_log_file_path, 'w') as f:
-            json.dump(log_content, f)
+            json.dump([Task.deserialize(log).to_dict() for log in log_content], f, indent=4)
         backtask.add_task(FileOps.remove_file, self.server.system_log_file_path)
         return FileResponse(
             path=self.server.system_log_file_path,

@@ -50,7 +50,7 @@ def parse_logs(record_file):
             json_data = json.load(f)
             tasks = []
             for task_data in json_data:
-                task = Task.deserialize(task_data)
+                task = Task.from_dict(task_data)
                 tasks.append(task)
     except Exception as e:
         print(f"Failed to parse log file {record_file}, this file is not exported from dayu system.")
