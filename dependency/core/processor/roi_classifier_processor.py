@@ -49,7 +49,7 @@ class RoiClassifierProcessor(Processor):
         except Exception as e:
             LOGGER.exception(e)
 
-        self.save_scenario(result, task)
+        self.save_scenario(content_output, task)
         task.set_current_content(content_output)
         return task
 
