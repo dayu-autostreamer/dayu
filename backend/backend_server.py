@@ -705,7 +705,7 @@ class BackendServer:
 
         log_content = self.server.download_log_file()
         with open(self.server.log_file_path, 'w') as f:
-            json.dump(log_content, f)
+            json.dump([Task.deserialize(log).to_dict() for log in log_content], f, indent=4)
         backtask.add_task(FileOps.remove_file, self.server.log_file_path)
         return FileResponse(
             path=self.server.log_file_path,
@@ -720,7 +720,7 @@ class BackendServer:
 
         log_content = self.server.download_system_log_content()
         with open(self.server.system_log_file_path, 'w') as f:
-            json.dump([Task.deserialize(log).to_dict() for log in log_content], f, indent=4)
+            json.dump(log_content, f)
         backtask.add_task(FileOps.remove_file, self.server.system_log_file_path)
         return FileResponse(
             path=self.server.system_log_file_path,
