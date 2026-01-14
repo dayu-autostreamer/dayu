@@ -15,7 +15,6 @@ class ObjectNumberExtraction(BaseExtraction, abc.ABC):
         obj_num = []
 
         for frame_result in result:
-            print('***frame_result:', frame_result)
             bboxes = frame_result[0]
             boxes_num = len(bboxes)
 
