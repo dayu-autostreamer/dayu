@@ -42,7 +42,7 @@ class ClassifierProcessor(Processor):
         except Exception as e:
             pass
 
-        task = self.get_scenario(content_output, task)
+        self.save_scenario(content_output, task)
         task.set_current_content(content_output)
 
         return task

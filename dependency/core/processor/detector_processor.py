@@ -36,7 +36,7 @@ class DetectorProcessor(Processor):
             return None
 
         result = self.infer(image_list)
-        task = self.get_scenario(result, task)
+        self.save_scenario(result, task)
         task.set_current_content(convert_ndarray_to_list(result))
 
         return task
