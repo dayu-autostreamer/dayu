@@ -355,4 +355,3 @@ class CarDetectionTensorRT8:
         result_classid = np.full(len(result_boxes), self.class_id).tolist()
 
         return result_boxes, result_scores, result_classid
-

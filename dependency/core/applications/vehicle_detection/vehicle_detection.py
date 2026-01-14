@@ -20,23 +20,23 @@ class VehicleDetection:
 
         if use_tensorrt:
             jetpack_version = Context.get_parameter('JETPACK', direct=False)
-            
+
             # JETPACK 6 uses TensorRT10, JETPACK 4/5 uses TensorRT8
             if jetpack_version == 6:
                 LOGGER.info('Using TensorRT 10 (JetPack 6)')
                 from .vehicle_detection_with_tensorrt import VehicleDetectionTensorRT10
                 self.model = VehicleDetectionTensorRT10(weights=self.trt_weights,
-                                                  plugin_library=self.trt_plugin_library, device=self.device)
+                                                        plugin_library=self.trt_plugin_library, device=self.device)
             elif jetpack_version in [4, 5]:
                 LOGGER.info(f'Using TensorRT 8 (JetPack {jetpack_version})')
                 from .vehicle_detection_with_tensorrt import VehicleDetectionTensorRT8
                 self.model = VehicleDetectionTensorRT8(weights=self.trt_weights,
-                                                  plugin_library=self.trt_plugin_library, device=self.device)
+                                                       plugin_library=self.trt_plugin_library, device=self.device)
             else:
                 LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
                 from .vehicle_detection_with_tensorrt import VehicleDetectionTensorRT8
                 self.model = VehicleDetectionTensorRT8(weights=self.trt_weights,
-                                                  plugin_library=self.trt_plugin_library, device=self.device)
+                                                       plugin_library=self.trt_plugin_library, device=self.device)
         else:
             from .vehicle_detection_without_tensorrt import VehicleDetectionYoloV8
             self.model = VehicleDetectionYoloV8(weights=self.non_trt_weights, device=self.device)
@@ -57,9 +57,9 @@ class VehicleDetection:
         try:
             from .vehicle_detection_without_tensorrt import VehicleDetectionYoloV8
             model = VehicleDetectionYoloV8(weights=self.non_trt_weights, device=self.device)
-            self.flops = FlopsEstimator(model = model.model, input_shape=(3, 640, 640)).compute_flops()
+            self.flops = FlopsEstimator(model=model.model, input_shape=(3, 640, 640)).compute_flops()
             del model
-            
+
         except Exception as e:
             LOGGER.warning(f'Get model FLOPs failed:{e}')
             LOGGER.exception(e)

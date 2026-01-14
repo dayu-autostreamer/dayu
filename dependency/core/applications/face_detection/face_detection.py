@@ -20,7 +20,7 @@ class FaceDetection:
 
         if use_tensorrt:
             jetpack_version = Context.get_parameter('JETPACK', direct=False)
-            
+
             # JETPACK 6 uses TensorRT10, JETPACK 4/5 uses TensorRT8
             if jetpack_version == 6:
                 LOGGER.info('Using TensorRT 10 (JetPack 6)')

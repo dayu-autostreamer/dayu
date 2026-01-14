@@ -33,18 +33,18 @@ class GenderClassificationTensorRT10:
             tensor_name = engine.get_tensor_name(i)
             shape = engine.get_tensor_shape(tensor_name)
             dtype = trt.nptype(engine.get_tensor_dtype(tensor_name))
-            
+
             # Calculate size
             size = trt.volume(shape)
             if size < 0:  # Dynamic shape
                 size = abs(size)
-            
+
             # Allocate host and device buffers
             host_mem = cuda.pagelocked_empty(size, dtype)
             cuda_mem = cuda.mem_alloc(host_mem.nbytes)
             # Append the device buffer to device bindings.
             bindings.append(int(cuda_mem))
-            
+
             # Append to the appropriate list.
             if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
                 self.input_w = shape[-1]
@@ -136,14 +136,14 @@ class GenderClassificationTensorRT10:
         np.copyto(host_inputs[0], input_image.ravel())
         # Transfer input data  to the GPU.
         cuda.memcpy_htod_async(cuda_inputs[0], host_inputs[0], stream)
-        
+
         # Set tensor address for TensorRT 10
         context.set_tensor_address(self.input_tensor_name, int(cuda_inputs[0]))
         context.set_tensor_address(self.output_tensor_name, int(cuda_outputs[0]))
-        
+
         # Run inference using execute_async_v3 (TensorRT 10)
         context.execute_async_v3(stream_handle=stream.handle)
-        
+
         # Transfer predictions back from the GPU.
         cuda.memcpy_dtoh_async(host_outputs[0], cuda_outputs[0], stream)
         # Synchronize the stream

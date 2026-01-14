@@ -147,16 +147,16 @@ class ExposureIdentificationTensorRT10:
         # Output shape should be [batch_size, num_classes] when flattened
         num_classes = len(self.classes)
         output = output.reshape(self.batch_size, -1)[0]
-        
+
         # Ensure we only use the first num_classes elements
         if len(output) > num_classes:
             output = output[:num_classes]
-        
+
         age_output = np.argmax(output)
-        
+
         # Ensure index is within valid range
         if age_output >= len(self.classes):
-            LOGGER.warning(f'Output index {age_output} out of range (max: {len(self.classes)-1}), using 0')
+            LOGGER.warning(f'Output index {age_output} out of range (max: {len(self.classes) - 1}), using 0')
             age_output = 0
 
         return self.classes[age_output]

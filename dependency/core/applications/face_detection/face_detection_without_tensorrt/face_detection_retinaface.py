@@ -7,9 +7,9 @@ from core.lib.common import LOGGER
 
 # Import models module to make it available for torch.load
 from . import models
+
 # Register models module in sys.modules so torch.load can find it
 sys.modules['models'] = models
-
 
 # Configuration for MobileNet backbone
 cfg_mnet = {
@@ -35,6 +35,7 @@ cfg_mnet = {
 
 class PriorBox(object):
     """Prior box generator for RetinaFace"""
+
     def __init__(self, cfg, image_size=None):
         super(PriorBox, self).__init__()
         self.min_sizes = cfg['min_sizes']
@@ -42,7 +43,7 @@ class PriorBox(object):
         self.clip = cfg['clip']
         self.image_size = image_size
         from math import ceil
-        self.feature_maps = [[ceil(self.image_size[0]/step), ceil(self.image_size[1]/step)] for step in self.steps]
+        self.feature_maps = [[ceil(self.image_size[0] / step), ceil(self.image_size[1] / step)] for step in self.steps]
 
     def forward(self):
         from itertools import product
@@ -118,22 +119,22 @@ def py_cpu_nms(dets, thresh):
 
 class FaceDetectionRetinaFace:
     """Face detection using RetinaFace model"""
-    
+
     def __init__(self, weights, device=0):
         self.weights = weights
         self.device_id = device
         self.class_id = 'face'
-        
+
         # Detection parameters
         self.confidence_threshold = 0.02
         self.top_k = 5000
         self.nms_threshold = 0.4
         self.keep_top_k = 750
         self.vis_thres = 0.6
-        
+
         # Use MobileNet configuration
         self.cfg = cfg_mnet
-        
+
         # Setup device
         if torch.cuda.is_available() and device >= 0:
             self.device = torch.device(f'cuda:{device}')
@@ -141,16 +142,16 @@ class FaceDetectionRetinaFace:
         else:
             self.device = torch.device('cpu')
             self.use_cpu = True
-            
+
         torch.set_grad_enabled(False)
         cudnn.benchmark = True
-        
+
         # Load model
         self.model = None
         self._load_model()
-        
+
         LOGGER.info(f"FaceDetectionRetinaFace initialized on device: {self.device}")
-        
+
         # Warmup
         self._warmup()
 
@@ -158,7 +159,7 @@ class FaceDetectionRetinaFace:
         """Load the RetinaFace model"""
         try:
             LOGGER.info(f'Loading RetinaFace model from {self.weights}')
-            
+
             # Load the entire model directly (compatible with older PyTorch versions)
             if self.use_cpu:
                 # For older PyTorch versions, don't use weights_only parameter
@@ -173,12 +174,12 @@ class FaceDetectionRetinaFace:
                 except TypeError:
                     # Fallback for very old versions
                     self.model = torch.load(self.weights, map_location=self.device)
-                
+
             self.model.eval()
             self.model = self.model.to(self.device)
-            
+
             LOGGER.info('Successfully loaded RetinaFace model')
-            
+
         except Exception as e:
             LOGGER.error(f'Error loading RetinaFace model: {e}')
             LOGGER.exception(e)
@@ -200,41 +201,41 @@ class FaceDetectionRetinaFace:
         """Preprocess image for inference"""
         img = np.float32(raw_image)
         im_height, im_width, _ = img.shape
-        
+
         # Subtract mean
         img -= (104, 117, 123)
-        
+
         # Transpose to CHW format
         img = img.transpose(2, 0, 1)
-        
+
         # Convert to tensor
         img = torch.from_numpy(img).unsqueeze(0)
         img = img.to(self.device)
-        
+
         return img, im_height, im_width
 
     def _post_process(self, loc, conf, landms, im_height, im_width):
         """Post-process model outputs"""
         resize = 1
-        
+
         # Create scale tensor
         scale = torch.Tensor([im_width, im_height, im_width, im_height])
         scale = scale.to(self.device)
-        
+
         # Generate priors
         priorbox = PriorBox(self.cfg, image_size=(im_height, im_width))
         priors = priorbox.forward()
         priors = priors.to(self.device)
         prior_data = priors.data
-        
+
         # Decode boxes
         boxes = decode(loc.data.squeeze(0), prior_data, self.cfg['variance'])
         boxes = boxes * scale / resize
         boxes = boxes.cpu().numpy()
-        
+
         # Get scores
         scores = conf.squeeze(0).data.cpu().numpy()[:, 1]
-        
+
         # Decode landmarks
         landms = decode_landm(landms.data.squeeze(0), prior_data, self.cfg['variance'])
         scale1 = torch.Tensor([im_width, im_height, im_width, im_height,
@@ -243,29 +244,29 @@ class FaceDetectionRetinaFace:
         scale1 = scale1.to(self.device)
         landms = landms * scale1 / resize
         landms = landms.cpu().numpy()
-        
+
         # Filter by confidence
         inds = np.where(scores > self.confidence_threshold)[0]
         boxes = boxes[inds]
         landms = landms[inds]
         scores = scores[inds]
-        
+
         # Keep top-K before NMS
         order = scores.argsort()[::-1][:self.top_k]
         boxes = boxes[order]
         landms = landms[order]
         scores = scores[order]
-        
+
         # NMS
         dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
         keep = py_cpu_nms(dets, self.nms_threshold)
         dets = dets[keep, :]
         landms = landms[keep]
-        
+
         # Keep top-K after NMS
         dets = dets[:self.keep_top_k, :]
         landms = landms[:self.keep_top_k, :]
-        
+
         return dets, landms
 
     def infer(self, raw_image):
@@ -284,37 +285,36 @@ class FaceDetectionRetinaFace:
             if self.model is None:
                 LOGGER.error("Model is not loaded")
                 return [], [], [], []
-            
+
             # Preprocess
             img, im_height, im_width = self._preprocess_image(raw_image)
-            
+
             # Forward pass
             loc, conf, landms = self.model(img)
-            
+
             # Post-process
             dets, landms = self._post_process(loc, conf, landms, im_height, im_width)
-            
+
             # Filter by visualization threshold and format output
             result_boxes = []
             result_scores = []
-            
+
             for det in dets:
                 if det[4] >= self.vis_thres:
                     # Box coordinates
                     box = [int(det[0]), int(det[1]), int(det[2]), int(det[3])]
                     score = float(det[4])
-                    
+
                     result_boxes.append(box)
                     result_scores.append(score)
-            
+
             # Create class IDs and ROI IDs
             result_class_id = [self.class_id] * len(result_boxes)
             result_roi_id = list(range(len(result_boxes)))
-            
+
             return result_boxes, result_scores, result_class_id, result_roi_id
-            
+
         except Exception as e:
             LOGGER.warning(f"Model inference failed: {e}, returning empty results")
             LOGGER.exception(e)
             return [], [], [], []
-

@@ -12,13 +12,11 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
-
 from models.experimental import attempt_load
 from utils.datasets import letterbox
 from utils.general import check_img_size, non_max_suppression_face, scale_coords
 from plate_recognition.plate_rec import get_plate_result, init_model
 from plate_recognition.double_plate_split_merge import get_split_merge
-
 
 
 class LicensePlateRecognitionPT:

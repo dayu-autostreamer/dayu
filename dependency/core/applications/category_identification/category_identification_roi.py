@@ -4,10 +4,9 @@ from typing import List, Dict
 from .category_identification import CategoryIdentification
 
 
-
-
 class CategoryIdentificationRoi:
     """ROI-aware wrapper with simple per-roi_id cache."""
+
     def __init__(self, trt_weights, trt_plugin_library, non_trt_weights, device=0):
         self.model = CategoryIdentification(trt_weights=trt_weights, trt_plugin_library=trt_plugin_library,
                                             non_trt_weights=non_trt_weights, device=device)

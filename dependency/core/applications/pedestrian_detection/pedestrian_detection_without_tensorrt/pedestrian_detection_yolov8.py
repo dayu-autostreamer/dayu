@@ -1,6 +1,7 @@
 import numpy as np
 from ultralytics import YOLO
 
+
 class PedestrianDetectionYoloV8:
     def __init__(self, weights, device='cuda'):
         self.model = YOLO(weights)
@@ -13,8 +14,7 @@ class PedestrianDetectionYoloV8:
         self.target_class_ids = set(self.class_name_to_id.values())
 
     def infer(self, img: np.ndarray):
-
-        results = self.model(img)[0]  
+        results = self.model(img)[0]
 
         boxes = results.boxes.xyxy.cpu().numpy()
         scores = results.boxes.conf.cpu().numpy()
@@ -22,7 +22,7 @@ class PedestrianDetectionYoloV8:
 
         keep_idx = [i for i, cid in enumerate(class_ids) if cid in self.target_class_ids]
 
-        result_boxes = np.round(boxes[keep_idx]).astype(int)   
+        result_boxes = np.round(boxes[keep_idx]).astype(int)
         result_scores = scores[keep_idx]
         result_classid = class_ids[keep_idx]
 
