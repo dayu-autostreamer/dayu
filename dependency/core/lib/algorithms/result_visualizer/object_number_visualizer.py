@@ -15,5 +15,5 @@ class ObjectNumberVisualizer(CurveVisualizer, abc.ABC):
 
     def __call__(self, task: Task):
         import numpy as np
-        result = float(np.mean(task.get_scenario_data()['obj_num']))
+        result = float(np.mean(task.get_first_scenario_data()['obj_num']))
         return {self.variables[0]: result}

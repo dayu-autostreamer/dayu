@@ -8,6 +8,7 @@ class Service:
                  execute_time=0,
                  real_execute_time=0,
                  content: object = None,
+                 scenario: dict = None,
                  temp=None):
         self.__service_name = service_name
         self.__execute_device = execute_device
@@ -22,6 +23,9 @@ class Service:
 
         # result data of service
         self.__content = content
+
+        # scenario data of service
+        self.__scenario_data = scenario if scenario else {}
 
         # temporary data (main for time tickets)
         self.__tmp_data = temp if temp else {}
@@ -69,6 +73,15 @@ class Service:
     def set_content_data(self, content):
         self.__content = content
 
+    def get_scenario_data(self):
+        return self.__scenario_data
+
+    def set_scenario_data(self, data: dict):
+        self.__scenario_data = data
+
+    def add_scenario(self, data: dict):
+        self.__scenario_data.update(data)
+
     def get_tmp_data(self):
         return self.__tmp_data
 
@@ -104,6 +117,7 @@ class Service:
                              'execute_time': self.get_execute_time(),
                              'real_execute_time': self.get_real_execute_time()},
             'content': self.get_content_data(),
+            'scenario': self.get_scenario_data(),
             'tmp_data': self.get_tmp_data()
         }
 
@@ -119,6 +133,7 @@ class Service:
         service.set_real_execute_time(dag_dict['execute_data']['real_execute_time']) \
             if 'execute_data' in dag_dict and 'real_execute_time' in dag_dict['execute_data'] else None
         service.set_content_data(dag_dict['content']) if 'content' in dag_dict else None
+        service.set_scenario_data(dag_dict['scenario']) if 'scenario' in dag_dict else None
         service.set_tmp_data(dag_dict['tmp_data']) if 'tmp_data' in dag_dict else None
         return service
 

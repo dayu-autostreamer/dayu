@@ -15,7 +15,7 @@ pod-template:
         }
     - name: SCENARIOS_EXTRACTORS
       value: >
-        ['obj_num', 'obj_size']
+        [ 'obj_num']
     - name: PRO_QUEUE_NAME
       value: "simple"
     - name: USE_TENSORRT

@@ -21,7 +21,6 @@ class Task:
                  past_flow_index: str = None,
                  metadata: dict = None,
                  raw_metadata: dict = None,
-                 scenario: dict = None,
                  temp: dict = None,
                  hash_data: list = None,
                  file_path: str = None,
@@ -60,9 +59,6 @@ class Task:
         self.__cur_flow_index = flow_index
         # past service name in dag
         self.__past_flow_index = past_flow_index
-
-        # scenario data extracted from processing
-        self.__scenario_data = scenario if scenario else {}
 
         # temporary data (main for time tickets)
         self.__tmp_data = temp if temp else {}
@@ -211,14 +207,24 @@ class Task:
     def set_raw_metadata(self, data: dict):
         self.__raw_metadata = data
 
-    def get_scenario_data(self):
-        return self.__scenario_data
+    def get_scenario_data(self, service_name):
+        return self.get_service(service_name).get_scenario_data()
+
+    def get_first_scenario_data(self):
+        first_service_names = self.__dag_flow.get_next_nodes(TaskConstant.START.value)
+        first_scenario_data = [self.__dag_flow.get_node(service_name).service.get_scenario_data()
+                               for service_name in first_service_names]
+
+        # return one of first non-empty scenario data
+        return next((scenario for scenario in first_scenario_data if scenario is not None), None)
 
     def set_scenario_data(self, data: dict):
-        self.__scenario_data = data
+        assert self.__dag_flow, 'Task DAG is empty!'
+        self.get_current_service().set_scenario_data(data)
 
     def add_scenario(self, data: dict):
-        self.__scenario_data.update(data)
+        assert self.__dag_flow, 'Task DAG is empty!'
+        self.get_current_service().add_scenario(data)
 
     def get_tmp_data(self):
         return self.__tmp_data
@@ -282,6 +288,10 @@ class Task:
                          for service_name in last_service_names]
         # return one of first non-empty content
         return next((content for content in last_contents if content is not None), None)
+
+    def get_service(self, service_name):
+        assert self.__dag_flow, 'Task DAG is empty!'
+        return self.__dag_flow.get_node(service_name).service
 
     def set_current_content(self, content):
         self.__dag_flow.get_node(self.__cur_flow_index).service.set_content_data(content)
@@ -463,7 +473,6 @@ class Task:
             'past_flow_index': self.get_past_flow_index(),
             'meta_data': self.get_metadata(),
             'raw_meta_data': self.get_raw_metadata(),
-            'scenario_data': self.get_scenario_data(),
             'tmp_data': self.get_tmp_data(),
             'hash_data': self.get_hash_data(),
             'file_path': self.get_file_path(),
@@ -485,7 +494,6 @@ class Task:
         task.set_past_flow_index(dag_dict['past_flow_index']) if 'past_flow_index' in dag_dict else None
         task.set_metadata(dag_dict['meta_data']) if 'meta_data' in dag_dict else None
         task.set_raw_metadata(dag_dict['raw_meta_data']) if 'raw_meta_data' in dag_dict else None
-        task.set_scenario_data(dag_dict['scenario_data']) if 'scenario_data' in dag_dict else None
         task.set_tmp_data(dag_dict['tmp_data']) if 'tmp_data' in dag_dict else None
         task.set_hash_data(dag_dict['hash_data']) if 'hash_data' in dag_dict else None
         task.set_file_path(dag_dict['file_path']) if 'file_path' in dag_dict else None

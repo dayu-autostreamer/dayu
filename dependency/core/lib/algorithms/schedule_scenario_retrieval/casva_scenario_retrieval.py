@@ -9,7 +9,7 @@ __all__ = ('CASVAScenarioRetrieval',)
 @ClassFactory.register(ClassType.SCH_SCENARIO_RETRIEVAL, alias='casva')
 class CASVAScenarioRetrieval(BaseScenarioRetrieval, abc.ABC):
     def __call__(self, task):
-        scenario = task.get_scenario_data()
+        scenario = task.get_first_scenario_data()
         delay = task.calculate_cloud_edge_transmit_time()
         tmp_data = task.get_tmp_data()
         meta_data = task.get_metadata()
