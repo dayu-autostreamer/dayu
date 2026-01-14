@@ -105,7 +105,7 @@ class AgeClassificationResNet18:
             LOGGER.info('Age classification model loaded successfully')
             
         except Exception as e:
-            LOGGER.error(f'Error loading age classification model: {e}')
+            LOGGER.warning(f'Loading age classification model failed: {e}')
             LOGGER.exception(e)
             raise
     
@@ -156,7 +156,7 @@ class AgeClassificationResNet18:
         """
         try:
             if self.model is None:
-                LOGGER.error("Model is not loaded")
+                LOGGER.warning("Model is not loaded")
                 return '21-30'  # Return default value
             
             # Preprocess image
@@ -173,5 +173,6 @@ class AgeClassificationResNet18:
             
         except Exception as e:
             LOGGER.warning(f"Age classification inference failed: {e}")
+            LOGGER.exception(e)
             return '21-30'  # Return default value
 
