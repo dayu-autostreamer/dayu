@@ -2,7 +2,7 @@
 
 ---
 
-## v1.2 (In Development)
+## v1.2
 
 ### Features
 - Add a cyclic redeployment mechanism of service processors for further flexible task processing.

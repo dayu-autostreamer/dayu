@@ -11,10 +11,11 @@ English | [简体中文](./README_zh.md)
 
 ![](static/dayu_logo.png)
 
-| <img src="static/news.svg" width="8%">  NEWS                                                                        |
-|---------------------------------------------------------------------------------------------------------------------|
-| (**Latest Release**) May. 7th, 2025. Dayu v1.1 Release. Please check the [CHANGELOG](CHANGELOG.md#v11) for details. |
-| Feb. 21th, 2025. Dayu v1.0 Release. Please check the [CHANGELOG](CHANGELOG.md#v10) for details.                     |
+| <img src="static/news.svg" width="8%">  NEWS                                                                         |
+|----------------------------------------------------------------------------------------------------------------------|
+| (**Latest Release**) Jan. 15th, 2026. Dayu v1.2 Release. Please check the [CHANGELOG](CHANGELOG.md#v12) for details. |
+| May. 7th, 2025. Dayu v1.1 Release. Please check the [CHANGELOG](CHANGELOG.md#v11) for details.                       |
+| Feb. 21th, 2025. Dayu v1.0 Release. Please check the [CHANGELOG](CHANGELOG.md#v10) for details.                      |
 
 ## Brief Introduction
 
