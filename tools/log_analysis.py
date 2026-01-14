@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         "--log",
         type=str,
         required=True,
-        default=None,  # 显式设置默认值
+        default=None,
         metavar="LOG_FILE_PATH",
         help="Specify the log file path"
     )
