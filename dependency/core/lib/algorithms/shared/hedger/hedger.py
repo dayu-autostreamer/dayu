@@ -91,7 +91,6 @@ class Hedger:
         self.deployment_transitions: List[dict] = []
         self.offloading_transitions: List[dict] = []
 
-
         self.dep_recorder = None
         self.off_recorder = None
 
@@ -179,7 +178,6 @@ class Hedger:
         self.state_buffer = StateBuffer(self.max_state_buffer_size,
                                         logical_topology=self.logical_topology,
                                         physical_topology=self.physical_topology)
-
 
     def register_initial_deployment(self, deployment_plan):
         assert self.logical_topology, "Logical topology must be registered before registering initial deployment."
@@ -289,7 +287,7 @@ class Hedger:
                 if updates_in_tick > 0:
                     prev_epoch = self._epoch
                     self._epoch += updates_in_tick
-                    # 当 _epoch 跨过 save_interval 的倍数时保存一次
+                    # Save once when _epoch crosses a multiple of save_interval
                     if (prev_epoch // self.save_interval) != (self._epoch // self.save_interval):
                         try:
                             self.save_checkpoint(epoch=self._epoch)
@@ -312,11 +310,11 @@ class Hedger:
 
     def train_deployment_agent(self):
         """
-        部署 agent 的采样线程：
-        - 周期性地收集当前拓扑状态（由 _collect_deployment_state 实现）
-        - 调用 deployment_agent.policy 采样新的部署 mask
-        - 让环境根据部署运行一段时间，统计指标，计算 reward
-        - 将 transition 放入 self.deployment_transitions，等待主线程 PPO 更新
+        Sampling thread for deploying the agent:
+            - Collect current topology state periodically
+            - Call deployment_agent.policy to sample the new deployment mask
+            - Let the environment run for a period of time based on deployment, count metrics, and calculate reward
+            - Put transition into self.deployment_transitions and wait for the main thread PPO update
         """
         if not self.train_deployment_flag:
             LOGGER.info("train_deployment_flag=False, deployment training thread will not run.")
@@ -332,7 +330,7 @@ class Hedger:
             fmt="csv",
             fieldnames=["step", "epoch", "dep_updates", "dep_reward", "avg_off_reward",
                         "dep_change_cost", "cap_relax_cnt", "dep_offload_weight",
-                        "dep_change_weight","cap_relax_weight"],
+                        "dep_change_weight", "cap_relax_weight"],
             overwrite=True,
             flush_every=1,
         )
@@ -423,11 +421,11 @@ class Hedger:
 
     def train_offloading_agent(self):
         """
-        卸载 agent 的采样线程：
-        - 以较短间隔（每次任务到来 / 小时间窗）收集当前拓扑与系统状态
-        - 调用 offloading_agent.policy 决策每个 service 的执行设备
-        - 环境执行该策略，返回该窗口内的 latency / SLO / cloud 使用等指标
-        - 计算 reward，并将 transition 放入 self.offloading_transitions
+        Uninstall the agent's sampling thread:
+            - Collect current topology and system state at short intervals (each task arrival/small time window)
+            - Call offloading_agent.policy to determine the execution device for each service
+            - The environment implements this policy and returns metrics such as latency / SLO / cloud usage in this window
+            - Calculate reward and put transition into self.offloading_transitions
         """
         if not self.train_offloading_flag:
             LOGGER.info("train_offloading_flag=False, offloading training thread will not run.")
@@ -441,10 +439,10 @@ class Hedger:
         self.off_recorder = Recorder(
             "offloading_train.csv",
             fmt="csv",
-            fieldnames=["step","epoch", "off_updates", "off_reward", "latency",
-                        "slo_violation", "cloud_fraction","aux_cost", "off_latency_weight",
-                        "off_slo_weight", "off_cloud_weight", "switch_cnt","relax_cnt",
-                        "switch_weight","relax_weight"],
+            fieldnames=["step", "epoch", "off_updates", "off_reward", "latency",
+                        "slo_violation", "cloud_fraction", "aux_cost", "off_latency_weight",
+                        "off_slo_weight", "off_cloud_weight", "switch_cnt", "relax_cnt",
+                        "switch_weight", "relax_weight"],
             overwrite=True,
             flush_every=10,
         )
@@ -532,28 +530,29 @@ class Hedger:
 
     def _compute_offloading_reward(self, metrics, aux) -> float:
         """
-        Offloading 的 reward：以“负延迟 + 惩罚项”的形式定义。
-        metrics 中应包含一些基础性能指标，aux 来自 offloading policy 内部（switch/relax 的惩罚）。
+        Offloading agent reward:
+        Defined in the form of "negative delay + penalty".
+        Metrics should include some basic performance indicators, aux from within the offloading policy (penalty of switch/relax).
         """
         metrics = metrics or {}
 
-        # 从 metrics 中提取关键指标
+        # Extract key metrics from metrics
         latency = float(metrics["latency"])
         slo_v = float(metrics["slo_violation"])
         cloud_frac = float(metrics["cloud_fraction"])
 
-        # 权重从 hyper_params 里读，如果没有则用默认
+        # The weight is read from hyper_params. If not, use the default.
         w_lat = float(self.offloading_agent_params["reward_off_latency_weight"])
         w_slo = float(self.offloading_agent_params["reward_off_slo_weight"])
         w_cloud = float(self.offloading_agent_params["reward_off_cloud_weight"])
 
-        # 基本 reward：倾向于降低延迟、降低 SLO 违约、降低上云比例
+        # Basic reward: Tending to reduce latency, reduce SLO breaches, reduce cloud adoption ratio
         reward = 0.0
         reward -= w_lat * latency
         reward -= w_slo * slo_v
         reward -= w_cloud * cloud_frac
 
-        # 来自约束的附加代价（切换次数 + relax 次数）
+        # Additional Cost from Constraints (Number of Switches + Number of Relaxations)
         aux_cost = float(aux["aux_cost"])
         reward -= aux_cost
 
@@ -561,10 +560,10 @@ class Hedger:
 
     def _compute_deployment_reward(self, metrics, aux) -> float:
         """
-        Deployment 的 reward：
-        - 利用宏观性能指标（平均延迟、SLO violation、cloud 使用）
-        - 加上来自 offloading 的汇总反馈（avg_offloading_reward）
-        - 再加上部署变更成本 + 容量 relax 惩罚，实现“自上而下 + 自下而上的双向反馈”
+        Deployment agent reward:
+            - Utilizing macro performance indicators (average latency, SLO violation, cloud usage)
+            - Plus aggregated feedback from offloading (avg_offloading_reward)
+            - Plus deployment change cost + capacity relax penalty, achieving "top-down + bottom-up two-way feedback"
         """
         metrics = metrics or {}
 
@@ -577,10 +576,10 @@ class Hedger:
         reward = 0.0
         reward -= w_change * deploy_change_cost
 
-        # 利用下层 agent 的平均 reward 作为“自下而上”的反馈信号
+        # Using the average reward of the lower-level agent as the "bottom-up" feedback signal
         reward += w_off * avg_off_r
 
-        # 容量 relax 罚项（penalty_capacity_relax）
+        # Penalty capacity relaxation
         cap_relax_cnt = float(aux["capacity_relax_cnt"])
         penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
         reward -= penalty_capacity_relax * cap_relax_cnt
@@ -636,12 +635,12 @@ class Hedger:
 
     def load_checkpoint(self, epoch: int = None):
         """
-        加载 encoder + agents + optimizers。
-        根据 hyper_params 中的开关，可以：
-        - 只加载 encoder
-        - 只加载某一个 agent
-        - 选择是否加载 optimizer 状态
-        - 选择是否重置 epoch / update step 计数器
+        Load encoder + agents + optimizers.
+        Based on the switches in hyper_params, it allows:
+            - Load only the encoder
+            - Load only a specific agent
+            - Choose whether to load optimizer state
+            - Choose whether to reset epoch / update step counter
         """
         if epoch is not None:
             ep_path = self._epoch_checkpoint_path(int(epoch))
@@ -660,7 +659,7 @@ class Hedger:
         ckpt = torch.load(target_path, map_location=self.device)
         LOGGER.info(f'[Hedger] Loading checkpoint from {target_path}')
 
-        # 加载 encode
+        # Load encoder parameters
         if self.load_encoder_flag:
             enc_state = ckpt.get('encoder', None)
             if enc_state:
@@ -671,7 +670,7 @@ class Hedger:
         else:
             LOGGER.info('[Hedger] Skipping encoder loading per config (load_encoder=False).')
 
-        # 加载 dual agent 的参数
+        # Load dual agent parameters
         # Deployment agent
         if self.load_deployment_agent_flag:
             dep_state = ckpt.get('deployment_agent', None)
@@ -694,9 +693,9 @@ class Hedger:
         else:
             LOGGER.info('[Hedger] Skipping offloading agent loading per config (load_offloading_agent=False).')
 
-        # 加载 optimizer 状态
+        # Load optimizer status
         if self.load_optimizer_flag:
-            # 只为那些我们实际加载了的 agent 加载对应 optimizer
+            # Load the corresponding optimizers for those agents that actually loaded
             if self.load_deployment_agent_flag and 'deployment_actor_opt' in ckpt:
                 self.deployment_agent.actor_opt.load_state_dict(ckpt['deployment_actor_opt'])
                 self._move_optimizer_state(self.deployment_agent.actor_opt, self.device)
@@ -719,11 +718,11 @@ class Hedger:
         else:
             LOGGER.info('[Hedger] Skipping optimizer states loading per config (load_optimizer=False).')
 
-        # 加载 / 重置 计数器
+        # Load / Reset counter
         meta = ckpt.get('meta', {})
 
         if self.reset_steps_on_load:
-            # 第二/第三阶段训练通常希望把计数器重新计数
+            # Reset counters in Phase 2/3 training
             self._deployment_update_steps = 0
             self._offloading_update_steps = 0
             self._epoch = 0
