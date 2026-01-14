@@ -35,6 +35,7 @@ exposure-identification, category-classification and license-plate-recognition.
 - Optimize local service processor by sharing temporary directory on local devices (`controller`/`processor`).
 - Add adjustable request scheduling interval in generator to avoid frequent scheduling (`generator`).
 - Add temporary file cleaning mechanism in local controller to avoid disk occupation (`controller`).
+- Add compatible docker image building for jp4/jp5/jp6 for processor in Nvidia Jetson devices (`processor`/`monitor`).
 - Update scenario data structure and processing (`processor`).
 
 ---
