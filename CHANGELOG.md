@@ -4,6 +4,13 @@
 
 ## v1.3 (In Development)
 
+### Features
+
+### Bug Fix
+- Fix iptable rule accumulation for edgemesh in incorrect dayu shutdowns with `dayu.sh` script correction.
+
+### Minor Update
+
 ---
 
 ## v1.2
