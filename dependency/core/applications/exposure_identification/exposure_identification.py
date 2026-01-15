@@ -30,7 +30,7 @@ class ExposureIdentification:
                 from .exposure_identification_with_tensorrt import ExposureIdentificationTensorRT8
                 self.model = ExposureIdentificationTensorRT8(weights=self.trt_weights, device=self.device)
             else:
-                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}, attempting to use TensorRT 8')
                 from .exposure_identification_with_tensorrt import ExposureIdentificationTensorRT8
                 self.model = ExposureIdentificationTensorRT8(weights=self.trt_weights, device=self.device)
         else:
@@ -54,5 +54,5 @@ class ExposureIdentification:
             self.flops = FlopsEstimator(model=model.model, input_shape=(3, 224, 224)).compute_flops()
             del model
         except Exception as e:
-            LOGGER.warning(f'Get model FLOPs failed:{e}')
+            LOGGER.warning(f'Get model FLOPs failed: {e}')
             LOGGER.exception(e)

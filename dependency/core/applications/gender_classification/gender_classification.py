@@ -29,7 +29,7 @@ class GenderClassification:
                 from .gender_classification_with_tensorrt import GenderClassificationTensorRT8
                 self.model = GenderClassificationTensorRT8(weights=self.trt_weights, device=self.device)
             else:
-                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}, attempting to use TensorRT 8')
                 from .gender_classification_with_tensorrt import GenderClassificationTensorRT8
                 self.model = GenderClassificationTensorRT8(weights=self.trt_weights, device=self.device)
         else:

@@ -316,6 +316,139 @@ stop_system() {
     fi
 }
 
+stop_system() {
+    local ns="${NAMESPACE}"
+    local svc_wait="${SVC_WAIT_SEC:-120}"
+    local mesh_wait="${MESH_WAIT_SEC:-180}"
+    local pod_wait="${POD_WAIT_SEC:-180}"
+    local ns_wait="${NS_WAIT_SEC:-180}"
+
+    echo "$(green_text [DAYU]) Stopping DAYU system in namespace ${ns}..."
+
+    # ---------------- helper: wait until a namespaced resource kind becomes empty ----------------
+    _wait_empty() {
+        local kind="$1"
+        local namespace="$2"
+        local timeout="$3"
+
+        local start_ts
+        start_ts="$(date +%s)"
+
+        while true; do
+            local out cnt
+            out="$(kubectl get "${kind}" -n "${namespace}" --no-headers 2>/dev/null || true)"
+            cnt="$(printf '%s' "${out}" | wc -l | tr -d ' ')"
+
+            if [[ "${cnt}" == "0" ]]; then
+                return 0
+            fi
+
+            if (( $(date +%s) - start_ts > timeout )); then
+                echo "$(red_text [DAYU]) ERROR: timeout waiting '${kind}' in '${namespace}' to be empty (still ${cnt})"
+                return 1
+            fi
+            sleep 2
+        done
+    }
+
+    # ---------------- helper: list all edgemesh-agent pods (ns/pod) ----------------
+    _list_edgemesh_pods() {
+        kubectl get pods -A --no-headers \
+            -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name 2>/dev/null \
+          | awk '$2 ~ /^edgemesh-agent/ {print $1"/"$2}'
+    }
+
+    # ---------------- helper: check if any edgemesh-agent still has iptables rules for this namespace ----------------
+    _edgemesh_has_rules() {
+        local namespace="$1"
+        local pods
+        pods="$(_list_edgemesh_pods || true)"
+
+        # No edgemesh-agent, as no rules
+        [[ -z "${pods}" ]] && return 1
+
+        while read -r item; do
+            [[ -z "${item}" ]] && continue
+            local pns="${item%%/*}"
+            local pname="${item##*/}"
+
+            # Exact match comment: --comment "namespace/xxx"
+            if kubectl exec -n "${pns}" "${pname}" -- sh -c \
+              "iptables -t nat -S 2>/dev/null | grep -F -- \"--comment \\\"${namespace}/\" >/dev/null" \
+              >/dev/null 2>&1; then
+              return 0
+            fi
+
+        done <<< "${pods}"
+
+        return 1
+    }
+
+    # ---------------- helper: wait until edgemesh removes iptables rules for this namespace ----------------
+    _wait_edgemesh_rules_gone() {
+        local namespace="$1"
+        local timeout="$2"
+        local pods
+        pods="$(_list_edgemesh_pods || true)"
+        if [[ -z "${pods}" ]]; then
+            echo "$(green_text [DAYU]) No edgemesh-agent pods found, skip EdgeMesh rule wait."
+            return 0
+        fi
+
+        local start_ts
+        start_ts="$(date +%s)"
+
+        while true; do
+            if ! _edgemesh_has_rules "${namespace}"; then
+                echo "$(green_text [DAYU]) OK: EdgeMesh iptables rules for '${namespace}' are gone."
+                return 0
+            fi
+
+            if (( $(date +%s) - start_ts > timeout )); then
+                echo "$(red_text [DAYU]) ERROR: EdgeMesh iptables rules for '${namespace}' still exist after ${timeout}s"
+                return 1
+            fi
+            sleep 2
+        done
+    }
+
+
+    echo "$(green_text [DAYU]) (0/5) Delete DAYU custom resources ($KIND) to stop controllers from recreating Services..."
+    kubectl delete "${KIND}" -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+
+    echo "$(green_text [DAYU]) (1/5) Delete Services/Endpoints..."
+    kubectl delete svc -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    kubectl delete endpoints -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    kubectl delete endpointslices -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    kubectl delete ingress -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+
+    echo "$(green_text [DAYU]) Waiting service/endpoints to be empty..."
+    _wait_empty svc "${ns}" "${svc_wait}" || true
+    _wait_empty endpoints "${ns}" "${svc_wait}" || true
+    _wait_empty endpointslices "${ns}" "${svc_wait}" || true
+
+    echo "$(green_text [DAYU]) (2/5) Waiting EdgeMesh to remove iptables rules for '${ns}'..."
+    if ! _wait_edgemesh_rules_gone "${ns}" "${mesh_wait}"; then
+        echo "$(red_text [DAYU]) WARN: EdgeMesh didn't cleanup rules in time."
+    fi
+
+    echo "$(green_text [DAYU]) (3/5) Delete workloads and remaining resources in namespace '${ns}'..."
+    kubectl delete deploy,sts,ds,rs,po,job,cronjob,hpa -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    kubectl delete cm,secret -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+
+    echo "$(green_text [DAYU]) Waiting pods to be gone..."
+    _wait_empty pods "${ns}" "${pod_wait}" || true
+
+    echo "$(green_text [DAYU]) (4/5) Delete service account binding..."
+    delete_service_account || true
+    kubectl delete sa -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    kubectl delete role,rolebinding -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+
+    echo "$(green_text [DAYU]) (5/5) Delete namespace '${ns}'..."
+    kubectl delete namespace "${ns}" --ignore-not-found=true --wait=true --timeout="${ns_wait}s" 2>/dev/null || true
+
+    echo "$(green_text DAYU system stop successfully.)"
+}
 
 show_prompt_infos() {
   sleep 1
