@@ -33,7 +33,7 @@ class PedestrianDetection:
                 self.model = PedestrianDetectionTensorRT8(weights=self.trt_weights,
                                                           plugin_library=self.trt_plugin_library, device=self.device)
             else:
-                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}, attempting to use TensorRT 8')
                 from .pedestrian_detection_with_tensorrt import PedestrianDetectionTensorRT8
                 self.model = PedestrianDetectionTensorRT8(weights=self.trt_weights,
                                                           plugin_library=self.trt_plugin_library, device=self.device)
@@ -61,5 +61,5 @@ class PedestrianDetection:
             del model
 
         except Exception as e:
-            LOGGER.warning(f'Get model FLOPs failed:{e}')
+            LOGGER.warning(f'Get model FLOPs failed: {e}')
             LOGGER.exception(e)

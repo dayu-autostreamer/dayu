@@ -36,7 +36,7 @@ class LicensePlateRecognition:
                                                               recognize_weights=self.rec_trt_weights,
                                                               device=self.device)
             else:
-                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}, attempting to use TensorRT 8')
                 from .license_plate_recognition_with_tensorrt import LicensePlateRecognitionTensorRT8
                 self.model = LicensePlateRecognitionTensorRT8(detect_weights=self.det_trt_weights,
                                                               recognize_weights=self.rec_trt_weights,
@@ -68,5 +68,5 @@ class LicensePlateRecognition:
             del model
 
         except Exception as e:
-            LOGGER.warning(f'Get model FLOPs failed:{e}')
+            LOGGER.warning(f'Get model FLOPs failed: {e}')
             LOGGER.exception(e)

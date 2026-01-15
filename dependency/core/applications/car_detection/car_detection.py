@@ -37,7 +37,7 @@ class CarDetection:
                     plugin_library=self.trt_plugin_library,
                     device=self.device)
             else:
-                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}, attempting to use TensorRT 8')
                 from .car_detection_with_tensorrt import CarDetectionTensorRT8
                 self.model = CarDetectionTensorRT8(
                     weights=self.trt_weights,
@@ -66,5 +66,5 @@ class CarDetection:
             self.flops = FlopsEstimator(model=model.model, input_shape=(3, 640, 640)).compute_flops()
             del model
         except Exception as e:
-            LOGGER.warning(f'Get model FLOPs failed:{e}')
+            LOGGER.warning(f'Get model FLOPs failed: {e}')
             LOGGER.exception(e)

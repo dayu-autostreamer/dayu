@@ -34,7 +34,7 @@ class CategoryIdentification:
                 self.model = CategoryIdentificationTensorRT8(weights=self.trt_weights,
                                                              plugin_library=self.trt_plugin_library, device=self.device)
             else:
-                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}, attempting to use TensorRT 8')
                 from .category_identification_with_tensorrt import CategoryIdentificationTensorRT8
                 self.model = CategoryIdentificationTensorRT8(weights=self.trt_weights,
                                                              plugin_library=self.trt_plugin_library, device=self.device)
@@ -60,5 +60,5 @@ class CategoryIdentification:
             del model
 
         except Exception as e:
-            LOGGER.warning(f'Get model FLOPs failed:{e}')
+            LOGGER.warning(f'Get model FLOPs failed: {e}')
             LOGGER.exception(e)

@@ -39,7 +39,7 @@ class FaceDetection:
                     device=self.device
                 )
             else:
-                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}，attempting to use TensorRT 8')
+                LOGGER.warning(f'Unknown JETPACK version: {jetpack_version}, attempting to use TensorRT 8')
                 from .face_detection_with_tensorrt import FaceDetectionTensorRT8
                 self.model = FaceDetectionTensorRT8(
                     weights=self.trt_weights,
