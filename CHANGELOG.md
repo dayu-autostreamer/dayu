@@ -2,6 +2,10 @@
 
 ---
 
+## v1.3 (In Development)
+
+---
+
 ## v1.2
 
 ### Features
