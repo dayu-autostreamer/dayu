@@ -1,7 +1,7 @@
 import json
 import time
 
-from core.lib.common import LOGGER, Context, ClassFactory, ClassType, SystemConstant, NodeRoleConstant
+from core.lib.common import LOGGER, Context, SystemConstant
 from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
@@ -11,6 +11,7 @@ class Monitor:
         self.resource_info = {}
 
         self.monitor_interval = Context.get_parameter('INTERVAL', direct=False)
+        self.last_monitor_ts = time.time()
 
         self.scheduler_hostname = NodeInfo.get_cloud_node()
         self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
@@ -19,11 +20,6 @@ class Monitor:
                                                path=NetworkAPIPath.SCHEDULER_POST_RESOURCE)
 
         self.local_device = NodeInfo.get_local_device()
-        self.is_iperf3_server = NodeInfo.get_node_role(NodeInfo.get_local_device()) == NodeRoleConstant.CLOUD.value
-        self.iperf3_server_ip = NodeInfo.hostname2ip(NodeInfo.get_cloud_node())
-
-        self.iperf3_port = PortInfo.get_component_port(SystemConstant.MONITOR.value)
-        self.iperf3_ports = [Context.get_parameter('GUNICORN_PORT')]
 
         monitor_parameters_text = Context.get_parameter('MONITORS', direct=False)
         self.monitor_parameters = []
@@ -42,7 +38,12 @@ class Monitor:
             thread.join()
 
     def wait_for_monitor(self):
-        time.sleep(self.monitor_interval)
+        current_ts = time.time()
+        if current_ts - self.last_monitor_ts < self.monitor_interval:
+            wait_time = self.monitor_interval - (current_ts - self.last_monitor_ts)
+            LOGGER.debug(f'[Monitor Interval] Waiting {wait_time} seconds for next monitor cycle.')
+            time.sleep(wait_time)
+        self.last_monitor_ts = current_ts
 
     def send_resource_state_to_scheduler(self):
 

@@ -3,7 +3,6 @@ from typing import List
 from kubernetes import client, config
 from core.lib.common import reverse_key_value_in_dict, Context
 from core.lib.network import find_all_ips
-from core.lib.common import Context
 
 
 class NodeInfo:
@@ -35,8 +34,8 @@ class NodeInfo:
 
         return cls.__node_info_role
 
-    @staticmethod
-    def __extract_node_info():
+    @classmethod
+    def __extract_node_info(cls):
         config.load_incluster_config()
         v1 = client.CoreV1Api()
         nodes = v1.list_node().items
@@ -91,15 +90,21 @@ class NodeInfo:
         for hostname in node_role:
             if node_role[hostname] == 'cloud':
                 return hostname
+        raise Exception('No cloud node identified in system!')
 
-    @staticmethod
-    def get_edge_nodes() -> List[str]:
+    @classmethod
+    def get_edge_nodes(cls) -> List[str]:
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        pods = v1.list_namespaced_pod(
+            namespace=Context.get_parameter('NAMESPACE'),
+            label_selector="jointmultiedge.sedna.io/name=controller",
+        )
         node_role = NodeInfo.get_node_info_role()
-        edge_nodes = []
-        for hostname in node_role:
-            if node_role[hostname] == 'edge':
-                edge_nodes.append(hostname)
-        return edge_nodes
+        edge_nodes = {pod.spec.node_name for pod in pods.items
+                      if pod.spec.node_name and node_role.get(pod.spec.node_name) == 'edge'}
+
+        return list(edge_nodes)
 
     @staticmethod
     def get_local_device() -> str:
@@ -108,4 +113,3 @@ class NodeInfo:
         assert device, 'Node Config is not found ("NODE_NAME")!'
 
         return device
-

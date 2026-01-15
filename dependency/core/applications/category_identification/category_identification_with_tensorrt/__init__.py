@@ -1,0 +1,4 @@
+from .category_identification_tensorrt8 import CategoryIdentificationTensorRT8
+from .category_identification_tensorrt10 import CategoryIdentificationTensorRT10
+
+__all__ = ['CategoryIdentificationTensorRT8', 'CategoryIdentificationTensorRT10']

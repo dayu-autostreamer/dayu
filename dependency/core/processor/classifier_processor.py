@@ -15,7 +15,7 @@ class ClassifierProcessor(Processor):
         self.classifier = Context.get_instance('Classifier')
 
     def __call__(self, task: Task):
-        data_file_path = task.get_file_path()
+        data_file_path = Context.get_temporary_file_path(task.get_file_path())
         cap = cv2.VideoCapture(data_file_path)
         content = task.get_prev_content()
         if content is None:
@@ -23,10 +23,10 @@ class ClassifierProcessor(Processor):
             return task
         content_output = []
         try:
-            for bbox, prob, class_id in content:
+            for bbox, prob, class_id, roi_id in content:
                 ret, frame = cap.read()
-                height, width, _ = frame.shape
-                if ret:
+                height, width, _ = frame.shape if frame is not None else (0, 0, 0)
+                if ret and frame is not None:
                     faces = []
                     for x_min, y_min, x_max, y_max in bbox:
                         x_min = int(max(x_min, 0))
@@ -42,6 +42,11 @@ class ClassifierProcessor(Processor):
         except Exception as e:
             pass
 
+        self.save_scenario(content_output, task)
         task.set_current_content(content_output)
 
         return task
+
+    @property
+    def flops(self):
+        return self.classifier.flops

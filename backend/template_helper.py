@@ -6,7 +6,7 @@ import uuid
 
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge
+from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant, NameMaintainer
 from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
@@ -63,7 +63,7 @@ class TemplateHelper:
             {'name': 'NAMESPACE', 'value': str(namespace)},
             {'name': 'KUBERNETES_SERVICE_HOST', 'value': str(k8s_endpoint['address'])},
             {'name': 'KUBERNETES_SERVICE_PORT', 'value': str(k8s_endpoint['port'])},
-
+            {'name': 'KUBE_CACHE_TTL', 'value': str(base_info['kube-cache-ttl'])},
         ])
         template['name'] = component_name
         template['image'] = self.process_image(template['image'])
@@ -101,45 +101,49 @@ class TemplateHelper:
         if pos == 'cloud':
             files_cloud = [self.prepare_file_path(file['path'])
                            for file in file_mount if file['pos'] in ('cloud', 'both')] \
-                if file_mount else None
+                if file_mount else []
+            files_cloud.append(self.prepare_file_path('temp/'))
 
             template_doc['spec'].update({
                 'cloudWorker': {
                     'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_cloud}} if files_cloud else {}),
+                    **({'file': {'paths': files_cloud}}),
                 }
             })
         elif pos == 'edge':
             files_edge = [self.prepare_file_path(file['path'])
                           for file in file_mount if file['pos'] in ('edge', 'both')] \
-                if file_mount else None
+                if file_mount else []
+            files_edge.append(self.prepare_file_path('temp/'))
 
             template_doc['spec'].update({
                 'edgeWorker': [{
                     'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_edge}} if files_edge else {}),
+                    **({'file': {'paths': files_edge}}),
                 }]
             })
         elif pos == 'both':
             files_cloud = [self.prepare_file_path(file['path'])
                            for file in file_mount if file['pos'] in ('cloud', 'both')] \
-                if file_mount else None
+                if file_mount else []
+            files_cloud.append(self.prepare_file_path('temp/'))
             files_edge = [self.prepare_file_path(file['path'])
                           for file in file_mount if file['pos'] in ('edge', 'both')] \
-                if file_mount else None
+                if file_mount else []
+            files_edge.append(self.prepare_file_path('temp/'))
 
             template_doc['spec'].update({
                 'edgeWorker': [{
                     'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_edge}} if files_edge else {}),
+                    **({'file': {'paths': files_edge}}),
                 }],
                 'cloudWorker': {
                     'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_cloud}} if files_cloud else {}),
+                    **({'file': {'paths': files_cloud}}),
                 }
             })
         else:
@@ -168,39 +172,7 @@ class TemplateHelper:
         return docs_list
 
     def finetune_generator_yaml(self, yaml_doc, source_deploy):
-        scheduler_hostname = NodeInfo.get_cloud_node()
-        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
-                                          port=scheduler_port,
-                                          path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODE)
-
-        params = []
-
-        for source_info in source_deploy:
-            SOURCE_ENV = source_info['source']
-            NODE_SET_ENV = source_info['node_set']
-            DAG_ENV = {}
-            dag = source_info['dag']
-
-            for key in dag.keys():
-                temp_node = {}
-                if key != '_start':
-                    temp_node['service'] = {'service_name': key}
-                    temp_node['next_nodes'] = dag[key]['succ']
-                    DAG_ENV[key] = temp_node
-            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
-
-        response = http_request(url=scheduler_address,
-                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODE,
-                                data={'data': json.dumps(params)},
-                                )
-
-        if response is None:
-            LOGGER.warning('[Source Node Selection] No response from scheduler.')
-            selection_plan = None
-        else:
-            selection_plan = response['plan']
-            selection_plan = {int(k): v for k, v in selection_plan.items()}
+        selection_plan = self.request_source_selection_decision(source_deploy)
 
         yaml_doc = self.fill_template(yaml_doc, 'generator')
 
@@ -217,7 +189,7 @@ class TemplateHelper:
                 LOGGER.warning("Using default selection plan.")
                 node = node_set[0]
 
-            source_info['source'].update({'deploy_node': node})
+            source_info['source'].update({'source_device': node})
 
             dag = source_info['dag']
 
@@ -230,8 +202,9 @@ class TemplateHelper:
             DAG_ENV = {}
             for key in dag.keys():
                 temp_node = {}
-                if key != '_start':
+                if key != TaskConstant.START.value:
                     temp_node['service'] = {'service_name': key}
+                    temp_node['prev_nodes'] = dag[key]['prev']
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
 
@@ -308,16 +281,14 @@ class TemplateHelper:
         for index, edge_node in enumerate(edge_nodes):
             new_edge_worker = copy.deepcopy(edge_worker_template)
 
+            image_name = new_edge_worker['template']['spec']['containers'][0]['image']
+            jetpack_major = self.get_device_jetpack_major_version(edge_node)
+            image_name = self.specify_jetpack_image(image_name, jetpack_major)
+            new_edge_worker['template']['spec']['containers'][0]['image'] = image_name
+            new_edge_worker['template']['spec']['containers'][0]['env'].append(
+                {'name': 'JETPACK', 'value': str(jetpack_major)})
+
             new_edge_worker['template']['spec']['nodeName'] = edge_node
-
-            # only test bandwidth for one edge
-            for parameter in new_edge_worker['template']['spec']['containers'][0]['env']:
-                if parameter['name'] == 'MONITORS':
-                    parameter_list = eval(parameter['value'])
-                    if index != 0 and 'bandwidth' in parameter_list:
-                        parameter_list.remove('bandwidth')
-                        parameter['value'] = str(parameter_list)
-
             edge_workers.append(new_edge_worker)
 
         new_cloud_worker = copy.deepcopy(cloud_worker_template)
@@ -329,68 +300,107 @@ class TemplateHelper:
         return yaml_doc
 
     def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy):
-        scheduler_hostname = NodeInfo.get_cloud_node()
-        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
-                                          port=scheduler_port,
-                                          path=NetworkAPIPath.SCHEDULER_INITIAL_DEPLOYMENT)
+        """Generate processor CRs with fine-grained units.
 
-        params = []
-        for source_info in source_deploy:
-            SOURCE_ENV = source_info['source']
-            NODE_SET_ENV = source_info['node_set']
-            DAG_ENV = {}
-            dag = source_info['dag']
+        For each logical processor service we generate:
+        - One cloud-only CR  with name
+          `processor-{service_name}-cloud`.
+        - One edge-only CR per edge node with name
+          `processor-{service_name}-{edge_node}`.
 
-            for key in dag.keys():
-                temp_node = {}
-                if key != '_start':
-                    temp_node['service'] = {'service_name': key}
-                    temp_node['next_nodes'] = dag[key]['succ']
-                    DAG_ENV[key] = temp_node
-            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
-
-        response = http_request(url=scheduler_address,
-                                method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
-                                data={'data': json.dumps(params)},
-                                )
-        if response is None:
-            LOGGER.warning('[Service Deployment] No response from scheduler.')
-            deployment_plan = {}
-        else:
-            deployment_plan = response['plan']
-
+        This enables independent redeployment for cloud and each edge node
+        while keeping the `processor-{service_name}` prefix so that
+        service-level queries by prefix still work.
+        """
+        deployment_plan = self.request_deployment_decision(source_deploy)
         yaml_docs = []
-        for index, service_id in enumerate(service_dict):
-            yaml_doc = service_dict[service_id]['service']
-            service_name = service_dict[service_id]['service_name']
-            yaml_doc = self.fill_template(yaml_doc, f'processor-{service_name}')
 
-            edge_nodes = service_dict[service_id]['node']
-            if service_id in deployment_plan:
-                edge_nodes = list(set(deployment_plan[service_id]) & set(edge_nodes))
+        for service_id, service_info in service_dict.items():
+            base_yaml_doc = service_info['service']
+            service_name = service_info['service_name']
+
+            # Original candidate edge nodes from DAG / services config
+            edge_nodes = service_info['node']
+
+            # Apply scheduler's deployment decision if available
+            if service_name in deployment_plan:
+                # Intersect with original edge_nodes to avoid unexpected nodes
+                edge_nodes = list(set(deployment_plan[service_name]) & set(edge_nodes))
             else:
-                LOGGER.warning("Using default service plan.")
+                LOGGER.warning(f"Using default service plan for service '{service_id}'.")
 
-            if edge_nodes:
-                edge_worker_template = yaml_doc['spec']['edgeWorker'][0]
-                edge_workers = []
-                for edge_node in edge_nodes:
+            # Cloud-only CR
+            # Create cloudWorker CR (processor must be deployed on cloud node)
+            cloud_component_name = f"processor-{service_name}-{NameMaintainer.standardize_device_name(cloud_node)}"
+            cloud_yaml_doc = copy.deepcopy(base_yaml_doc)
+            cloud_yaml_doc = self.fill_template(cloud_yaml_doc, cloud_component_name)
+
+            # Configure cloudWorker bound to cloud_node
+            if 'cloudWorker' in cloud_yaml_doc['spec'] and cloud_yaml_doc['spec']['cloudWorker']:
+                cloud_worker_template = cloud_yaml_doc['spec']['cloudWorker']
+                new_cloud_worker = copy.deepcopy(cloud_worker_template)
+                new_cloud_worker['template']['spec']['nodeName'] = cloud_node
+                new_cloud_worker['template']['spec']['containers'][0]['env'].append({
+                    'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"})
+                cloud_yaml_doc['spec']['cloudWorker'] = new_cloud_worker
+            else:
+                LOGGER.warning(f"Processor service '{service_name}' has no cloudWorker template; skip cloud CR.")
+
+            # Remove edgeWorker from cloud-only CR if present to avoid
+            # accidentally scheduling edge workloads here.
+            if 'edgeWorker' in cloud_yaml_doc['spec']:
+                cloud_yaml_doc['spec'].pop('edgeWorker', None)
+
+            yaml_docs.append(cloud_yaml_doc)
+
+            # If no edge nodes are selected, skip edge CR generation
+            if not edge_nodes:
+                continue
+
+            # Edge-only CRs per node
+            for edge_node in edge_nodes:
+                edge_component_name = f"processor-{service_name}-{NameMaintainer.standardize_device_name(edge_node)}"
+
+                edge_yaml_doc = copy.deepcopy(base_yaml_doc)
+                edge_yaml_doc = self.fill_template(edge_yaml_doc, edge_component_name)
+
+                # Configure edgeWorker for this specific node (single worker per CR)
+                if 'edgeWorker' in edge_yaml_doc['spec'] and edge_yaml_doc['spec']['edgeWorker']:
+                    edge_worker_template = edge_yaml_doc['spec']['edgeWorker'][0]
+
                     new_edge_worker = copy.deepcopy(edge_worker_template)
                     new_edge_worker['template']['spec']['nodeName'] = edge_node
-                    edge_workers.append(new_edge_worker)
-                yaml_doc['spec']['edgeWorker'] = edge_workers
-            else:
-                del yaml_doc['spec']['edgeWorker']
 
-            cloud_worker_template = yaml_doc['spec']['cloudWorker']
-            new_cloud_worker = copy.deepcopy(cloud_worker_template)
-            new_cloud_worker['template']['spec']['nodeName'] = cloud_node
-            yaml_doc['spec']['cloudWorker'] = new_cloud_worker
+                    image_name = new_edge_worker['template']['spec']['containers'][0]['image']
+                    jetpack_major = self.get_device_jetpack_major_version(edge_node)
+                    image_name = self.specify_jetpack_image(image_name, jetpack_major)
+                    new_edge_worker['template']['spec']['containers'][0]['image'] = image_name
+                    new_edge_worker['template']['spec']['containers'][0]['env'].extend(
+                        [{'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"},
+                        {'name': 'JETPACK', 'value': str(jetpack_major)}])
 
-            yaml_docs.append(yaml_doc)
+                    edge_yaml_doc['spec']['edgeWorker'] = [new_edge_worker]
+                else:
+                    LOGGER.warning(
+                        f"Processor service '{service_name}' has no edgeWorker template; skip node {edge_node}."
+                    )
+                    continue
+
+                # Remove cloudWorker from edge-only CR if present to avoid
+                # duplicating cloud workloads into each edge CR.
+                if 'cloudWorker' in edge_yaml_doc['spec']:
+                    edge_yaml_doc['spec'].pop('cloudWorker', None)
+
+                yaml_docs.append(edge_yaml_doc)
 
         return yaml_docs
+
+    @staticmethod
+    def specify_jetpack_image(image: str, jetpack_major: int) -> str:
+        if not jetpack_major or not isinstance(jetpack_major, int) or jetpack_major < 0:
+            # return original image if jetpack version is unknown
+            return image
+        return f'{image}-jp{jetpack_major}'
 
     def process_image(self, image: str) -> str:
         """
@@ -432,6 +442,108 @@ class TemplateHelper:
     def prepare_file_path(self, file_path: str) -> str:
         file_prefix = self.load_base_info()['default-file-mount-prefix']
         return os.path.join(file_prefix, file_path, "")
+
+    def request_source_selection_decision(self, source_deploy):
+        scheduler_hostname = NodeInfo.get_cloud_node()
+        PortInfo.force_refresh()
+        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
+        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                          port=scheduler_port,
+                                          path=NetworkAPIPath.SCHEDULER_SELECT_SOURCE_NODES)
+
+        params = []
+
+        for source_info in source_deploy:
+            SOURCE_ENV = source_info['source']
+            NODE_SET_ENV = source_info['node_set']
+            DAG_ENV = {}
+            dag = source_info['dag']
+
+            for key in dag.keys():
+                temp_node = {}
+                if key != TaskConstant.START.value:
+                    temp_node['service'] = {'service_name': key}
+                    temp_node['next_nodes'] = dag[key]['succ']
+                    DAG_ENV[key] = temp_node
+            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
+
+        response = http_request(url=scheduler_address,
+                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODES,
+                                data={'data': json.dumps(params)},
+                                )
+
+        if response is None:
+            LOGGER.warning('[Source Node Selection] No response from scheduler.')
+            selection_plan = None
+        else:
+            selection_plan = response['plan']
+            selection_plan = {int(k): v for k, v in selection_plan.items()}
+
+        return selection_plan
+
+    def request_deployment_decision(self, source_deploy):
+        scheduler_hostname = NodeInfo.get_cloud_node()
+        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
+        initial_deployment_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                                   port=scheduler_port,
+                                                   path=NetworkAPIPath.SCHEDULER_INITIAL_DEPLOYMENT)
+        redeployment_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
+                                             port=scheduler_port,
+                                             path=NetworkAPIPath.SCHEDULER_REDEPLOYMENT)
+
+        params = []
+        for source_info in source_deploy:
+            SOURCE_ENV = source_info['source']
+            NODE_SET_ENV = source_info['node_set']
+            DAG_ENV = {}
+            dag = source_info['dag']
+
+            for key in dag.keys():
+                temp_node = {}
+                if key != TaskConstant.START.value:
+                    temp_node['service'] = {'service_name': key}
+                    temp_node['next_nodes'] = dag[key]['succ']
+                    DAG_ENV[key] = temp_node
+            params.append({
+                "source": SOURCE_ENV,
+                "node_set": NODE_SET_ENV,
+                "dag": DAG_ENV})
+
+        if not self.check_is_redeployment():
+            # initial deployment
+            response = http_request(url=initial_deployment_address,
+                                    method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
+                                    data={'data': json.dumps(params)})
+        else:
+            # redeployment
+            response = http_request(url=redeployment_address,
+                                    method=NetworkAPIMethod.SCHEDULER_REDEPLOYMENT,
+                                    data={'data': json.dumps(params)})
+
+        if response is None:
+            LOGGER.warning('[Service Deployment] No response from scheduler.')
+            deployment_plan = {}
+        else:
+            deployment_plan = response['plan']
+
+        return deployment_plan
+
+    def check_is_redeployment(self):
+        base_info = self.load_base_info()
+        return KubeHelper.check_pods_with_string_exists(base_info['namespace'], include_str_list=['processor'])
+
+    @staticmethod
+    def get_device_jetpack_major_version(node_name: str) -> int:
+        jetpack_labels = KubeHelper.get_node_jetpack_labels(node_name)
+        try:
+            if jetpack_labels.get('jetpack_major'):
+                return int(jetpack_labels.get('jetpack_major'))
+            else:
+                return -1
+        except Exception as e:
+            LOGGER.warning(f'Get Jetpack major version error: {e}')
+            LOGGER.exception(e)
+            return -1
 
     @staticmethod
     def get_all_selected_edge_nodes(yaml_dict):

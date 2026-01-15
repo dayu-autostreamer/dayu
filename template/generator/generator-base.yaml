@@ -1,7 +1,7 @@
 position: edge
 pod-template:
   image: generator
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   env:
     - name: GEN_FILTER_NAME
       value: simple
@@ -17,3 +17,6 @@ pod-template:
       value: simple
     - name: GEN_ASO_NAME
       value: simple
+    # interval in source seconds to schedule requests (e.g, 1 request for 1s video), 0 for request at each task
+    - name: REQUEST_SCHEDULING_INTERVAL
+      value: "1"

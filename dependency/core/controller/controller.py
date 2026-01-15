@@ -1,14 +1,9 @@
 import os
 
 from core.lib.estimation import TimeEstimator
-from core.lib.network import http_request
-from core.lib.common import LOGGER
-from core.lib.common import Context
-from core.lib.common import SystemConstant
+from core.lib.network import http_request, merge_address, NodeInfo, PortInfo, NetworkAPIPath, NetworkAPIMethod
+from core.lib.common import LOGGER, Context, SystemConstant, KubeConfig, TaskConstant
 from core.lib.content import Task
-from core.lib.network import merge_address
-from core.lib.network import NodeInfo, PortInfo
-from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 
 from .task_coordinator import TaskCoordinator
 
@@ -19,7 +14,6 @@ class Controller:
 
         self.is_display = Context.get_parameter('DISPLAY', direct=False)
 
-        self.service_ports_dict = None
         self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
         self.distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
         self.distributor_hostname = NodeInfo.get_cloud_node()
@@ -28,6 +22,22 @@ class Controller:
                                                 path=NetworkAPIPath.DISTRIBUTOR_DISTRIBUTE)
 
         self.local_device = NodeInfo.get_local_device()
+        self.cloud_device = NodeInfo.get_cloud_node()
+
+    def check_processor_health(self):
+        PortInfo.force_refresh()
+        service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
+        LOGGER.debug(f'[HEALTH CHECK] health checking services: {service_ports_dict.keys()}')
+        for service, service_port in service_ports_dict.items():
+            processor_health_address = merge_address(NodeInfo.hostname2ip(self.local_device),
+                                                     port=service_port,
+                                                     path=NetworkAPIPath.PROCESSOR_HEALTH)
+            response = http_request(url=processor_health_address, method=NetworkAPIMethod.PROCESSOR_HEALTH)
+            if not response or response.get('status') != 'ok':
+                LOGGER.debug(f'[HEALTH CHECK] service {service} processor health check failed.')
+                return False
+            LOGGER.debug(f'[HEALTH CHECK] service {service} processor health check succeed.')
+        return True
 
     def send_task_to_other_device(self, cur_task: Task, device: str = ''):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
@@ -39,7 +49,7 @@ class Controller:
                      method=NetworkAPIMethod.CONTROLLER_TASK,
                      data={'data': cur_task.serialize()},
                      files={'file': (cur_task.get_file_path(),
-                                     open(cur_task.get_file_path(), 'rb'),
+                                     open(Context.get_temporary_file_path(cur_task.get_file_path()), 'rb'),
                                      'multipart/form-data')})
 
         LOGGER.info(f'[To Device {device}] source: {cur_task.get_source_id()}  '
@@ -48,38 +58,60 @@ class Controller:
     def send_task_to_service(self, cur_task: Task, service: str = ''):
         self.record_execute_ts(cur_task=cur_task, is_end=False)
 
-        self.service_ports_dict = PortInfo.get_service_ports_dict()
-        if service not in self.service_ports_dict:
-            LOGGER.warning(f'[Service Not Exist] Service {service} does not exist in {self.local_device} '
-                           f'(has service: {self.service_ports_dict.keys()})')
+        service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
+
+        # Force refresh port cache and retry once
+        if service not in service_ports_dict:
+            PortInfo.force_refresh()
+            service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
+
+        if service not in service_ports_dict:
+            service_deployment = KubeConfig.get_service_nodes_dict()
+            if service not in service_deployment or not service_deployment[service] or \
+                    self.cloud_device not in service_deployment[service]:
+                LOGGER.warning(f'[Service Not Exist] Service {service} does not exist in {self.local_device} '
+                               f'({self.local_device} has service: {service_ports_dict.keys()}).')
+                return 'error'
+
+            LOGGER.warning(f'[Service Not In Current Device] Service {service} does not exist in {self.local_device} '
+                           f'({self.local_device} has service: {service_ports_dict.keys()}, '
+                           f'Service {service} running on {service_deployment[service]})). '
+                           f'Transmit to cloud device {self.cloud_device} as default.')
+
+            cur_task.set_current_stage_device(self.cloud_device)
+            self.erase_execute_ts(cur_task)
+            self.erase_transmit_ts(cur_task)
+            self.submit_task(cur_task=cur_task)
+            return 'transmit'
 
         service_address = merge_address(NodeInfo.hostname2ip(self.local_device),
-                                        port=self.service_ports_dict[service],
-                                        path=NetworkAPIPath.PROCESSOR_PROCESS)
+                                        port=service_ports_dict[service],
+                                        path=NetworkAPIPath.PROCESSOR_PROCESS_LOCAL)
 
-        if not os.path.exists(cur_task.get_file_path()):
+        if not os.path.exists(Context.get_temporary_file_path(cur_task.get_file_path())):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
-                           f'task: {cur_task.get_task_id()} file: {cur_task.get_file_path()}')
-            return
+                           f'task: {cur_task.get_task_id()} '
+                           f'file: {Context.get_temporary_file_path(cur_task.get_file_path())}')
+            return 'error'
 
+        # Local fast path: only send metadata
         http_request(url=service_address,
-                     method=NetworkAPIMethod.PROCESSOR_PROCESS,
-                     data={'data': cur_task.serialize()},
-                     files={'file': (cur_task.get_file_path(),
-                                     open(cur_task.get_file_path(), 'rb'),
-                                     'multipart/form-data')}
-                     )
+                     method=NetworkAPIMethod.PROCESSOR_PROCESS_LOCAL,
+                     data={'data': cur_task.serialize()})
 
-        LOGGER.info(f'[To Service {service}] source: {cur_task.get_source_id()}  '
+        LOGGER.info(f'[To Service {service} Local] source: {cur_task.get_source_id()}  '
                     f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
+
+        return 'execute'
 
     def send_task_to_distributor(self, cur_task: Task):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
-        if not os.path.exists(cur_task.get_file_path()):
+        if not os.path.exists(Context.get_temporary_file_path(cur_task.get_file_path())):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
-                           f'task: {cur_task.get_task_id()} file: {cur_task.get_file_path()}')
+                           f'task: {cur_task.get_task_id()} '
+                           f'file: {Context.get_temporary_file_path(cur_task.get_file_path())}')
             return
-        file_content = open(cur_task.get_file_path(), 'rb') if self.is_display else b''
+        file_content = open(Context.get_temporary_file_path(cur_task.get_file_path()), 'rb') if self.is_display else b''
 
         http_request(url=self.distribute_address,
                      method=NetworkAPIMethod.DISTRIBUTOR_DISTRIBUTE,
@@ -92,7 +124,7 @@ class Controller:
     def submit_task(self, cur_task: Task):
         if not cur_task:
             LOGGER.warning('Current task is None')
-            return
+            return 'error'
 
         LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
                     f'current service: {cur_task.get_flow_index()}')
@@ -100,19 +132,18 @@ class Controller:
         service_name, _ = cur_task.get_current_service_info()
         dst_device = cur_task.get_current_stage_device()
 
-        if service_name == 'start':
+        if service_name == TaskConstant.START.value:
             next_tasks = cur_task.step_to_next_stage()
             actions = [self.submit_task(new_task) for new_task in next_tasks]
             action = 'execute' if 'execute' in actions else 'transmit'
-        elif service_name == 'end':
+        elif service_name == TaskConstant.END.value:
             self.send_task_to_distributor(cur_task)
             action = 'transmit'
         elif dst_device != self.local_device:
             self.send_task_to_other_device(cur_task, dst_device)
             action = 'transmit'
         else:
-            self.send_task_to_service(cur_task, service_name)
-            action = 'execute'
+            action = self.send_task_to_service(cur_task, service_name)
 
         return action
 
@@ -143,6 +174,7 @@ class Controller:
                                                                  required_parallel_task_count)
                 # something wrong causes invalid task retrieving
                 if not tasks:
+                    LOGGER.warning('Invalid task retrieving from task coordinator!')
                     actions.append('wait')
                     continue
 
@@ -163,7 +195,8 @@ class Controller:
         try:
             duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='transmit')
         except Exception as e:
-            LOGGER.warning(f'Time record failed: {str(e)}')
+            LOGGER.warning(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
+                           f'transmit time record failed of stage {cur_task.get_flow_index()}: {str(e)}')
             duration = 0
 
         if is_end:
@@ -178,7 +211,8 @@ class Controller:
         try:
             duration = TimeEstimator.record_dag_ts(cur_task, is_end=is_end, sub_tag='execute')
         except Exception as e:
-            LOGGER.warning(f'Time record failed: {str(e)}')
+            LOGGER.warning(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
+                           f'execute time record failed of stage {cur_task.get_flow_index()}: {str(e)}')
             duration = 0
 
         if is_end:
@@ -186,10 +220,27 @@ class Controller:
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'record execute time of stage {cur_task.get_flow_index()}: {duration:.3f}s')
 
-    def record_ts(self, task: Task, is_end: bool = False, action: str = ''):
-        if action == 'transmit':
-            self.record_transmit_ts(cur_task=task, is_end=is_end)
-        elif action == 'execute':
-            self.record_execute_ts(cur_task=task, is_end=is_end)
-        else:
-            raise ValueError(f'Action {action} not supported, only "transmit" and "execute" are supported."')
+    @staticmethod
+    def erase_transmit_ts(cur_task: Task):
+        assert cur_task, 'Current task of controller is NOT set!'
+
+        try:
+            TimeEstimator.erase_dag_ts(cur_task, is_end=False, sub_tag=f'transmit')
+            TimeEstimator.erase_dag_ts(cur_task, is_end=True, sub_tag=f'transmit')
+            LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
+                        f'erase transmit time of stage {cur_task.get_flow_index()}')
+        except Exception as e:
+            LOGGER.warning(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}]'
+                           f' Erase transmit time failed for stage {cur_task.get_flow_index()}: {str(e)}')
+
+    @staticmethod
+    def erase_execute_ts(cur_task: Task):
+        assert cur_task, 'Current task of controller is NOT set!'
+
+        try:
+            TimeEstimator.erase_dag_ts(cur_task, is_end=False, sub_tag=f'execute')
+            LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
+                        f'erase execute time of stage {cur_task.get_flow_index()}')
+        except Exception as e:
+            LOGGER.warning(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}]'
+                           f' Erase execute time failed for stage {cur_task.get_flow_index()}: {str(e)}')

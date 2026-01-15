@@ -10,6 +10,8 @@ __all__ = ('RandomSelectionPolicy',)
 
 @ClassFactory.register(ClassType.SCH_SELECTION_POLICY, alias='random')
 class RandomSelectionPolicy(BaseSelectionPolicy, abc.ABC):
+    def __init__(self, system, agent_id):
+        pass
     def __call__(self, info):
         node_set = info['node_set']
         source_id = info['source']['id']

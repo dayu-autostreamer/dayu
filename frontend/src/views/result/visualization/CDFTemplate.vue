@@ -11,7 +11,7 @@
 </template>
 
 <script>
-import {ref, computed, onMounted, onBeforeUnmount, watch, nextTick, toRaw} from 'vue'
+import {ref, computed, onMounted, onBeforeUnmount, watch, nextTick} from 'vue'
 import * as echarts from 'echarts'
 import {PieChart} from '@element-plus/icons-vue'
 
@@ -48,44 +48,34 @@ export default {
   },
 
   setup(props) {
-
     // Refs
     const chart = ref(null)
     const container = ref(null)
     const resizeObserver = ref(null)
     const isMounted = ref(true)
-    const forceUpdate = ref(0)
-
-    let renderRetryCount = 0
-
-    const animationConfig = {
-      duration: 800,
-      easing: 'quarticInOut'
-    }
 
     const cleanChart = () => {
       if (chart.value) {
         chart.value.dispose()
         chart.value = null
       }
+
+      if (container.value) {
+        container.value.innerHTML = ''
+      }
     }
 
     // Computed Properties
     const safeData = computed(() => {
       const result = {}
-
       const currentVariableStates = props.variableStates || {}
-
       if (!props.config.variables?.length) {
         console.warn('No variables defined in config')
         return result
       }
 
-
       props.config.variables?.forEach(varName => {
         if (currentVariableStates[varName] !== true) return
-
-        // 收集所有有效数值
         const allValues = props.data
             .map(d => d[varName])
             .filter(v => v !== undefined && v !== null && !isNaN(v))
@@ -93,58 +83,41 @@ export default {
             .sort((a, b) => a - b)
         if (allValues.length === 0) return
 
-        // 生成CDF点
-
         const n = allValues.length
-
         const uniqueValues = [...new Set(allValues)]
-        const cdfPoints = uniqueValues.map(value => ({
+        result[varName] = uniqueValues.map(value => ({
           value,
           probability: allValues.filter(v => v <= value).length / n
         }))
-
-        result[varName] = cdfPoints
       })
 
       return result
     })
 
-    const availableVariables = computed(() => {
-      if (!safeData.value.length) return []
-      return Object.keys(safeData.value[0])
-          .filter(k => k !== 'taskId' && props.config.variables?.includes(k))
-    })
-
     const activeVariables = computed(() => {
       return props.config.variables?.filter(varName =>
-          props.variableStates[varName] !== false
+          props.variableStates[varName] === true
       ) || []
     })
 
-
     const showEmptyState = computed(() => {
       const hasData = Object.values(safeData.value).some(arr => arr?.length > 0)
-      const hasActiveVars = activeVariables.value.length > 0
-      const hasValidData = hasData && activeVariables
-
-      return !hasValidData
+      const anyActive = activeVariables.value.length > 0
+      return !(hasData && anyActive)
     })
 
     const emptyMessage = computed(() => {
       if (props.data.length === 0) return 'No data available'
       if (activeVariables.value.length === 0) return 'No active variables selected'
-
-      const hasInvalidData = Object.values(safeData.value).every(arr => arr.length === 0)
+      const hasInvalidData = Object.values(safeData.value).every(arr => (arr?.length || 0) === 0)
       return hasInvalidData ? 'No valid numeric data available' : ''
     })
 
     // Methods
     const initChart = async () => {
       try {
-        // 三重等待确保 DOM 就绪
         await nextTick()
         if (!container.value) return false
-
         const isVisible = () => {
           const rect = container.value.getBoundingClientRect()
           return !(rect.width === 0 || rect.height === 0)
@@ -155,31 +128,23 @@ export default {
           await new Promise(r => setTimeout(r, 50))
           checks++
         }
-
         if (!isVisible()) {
           console.warn('Container remains invisible after retries')
           return false
         }
-
-        // 检查容器可见性
         const style = window.getComputedStyle(container.value)
         if (style.display === 'none' || style.visibility === 'hidden') {
           console.warn('Chart container is hidden')
           return false
         }
-
-        // 清理旧实例
         if (chart.value) {
           chart.value.dispose()
           chart.value = null
         }
-
         chart.value = echarts.init(container.value, null, {
           renderer: 'canvas',
           useDirtyRect: true
         })
-
-        // 标记容器状态
         container.value.dataset.chartReady = 'true'
         return true
       } catch (e) {
@@ -188,88 +153,33 @@ export default {
       }
     }
 
-
-    const renderChart = async () => {
-      try {
-
-        if (!chart.value) {
-          const success = await initChart()
-          if (!success) return
-        }
-
-        chart.value.setOption(getChartOption())
-
-        // 添加视觉连续性
-        chart.value.dispatchAction({
-          type: 'downplay',
-          seriesIndex: 'all'
-        })
-        chart.value.dispatchAction({
-          type: 'highlight',
-          seriesIndex: 0
-        })
-
-        renderRetryCount = 0 // 重置计数器
-      } catch (e) {
-        console.error('Render failed:', e)
-      }
-    }
-
-    const observer = new MutationObserver(() => {
-      forceUpdate.value++
-    })
-
-    const discreteValueMap = ref({})
-    const getDiscreteValue = (varName, value) => {
-      if (!discreteValueMap.value[varName]) {
-        discreteValueMap.value[varName] = {}
-      }
-      const map = discreteValueMap.value[varName]
-      if (!(value in map)) {
-        map[value] = Object.keys(map).length
-      }
-      return map[value]
-    }
-
     const getChartOption = () => {
       const hasData = Object.values(safeData.value).some(arr => arr?.length > 0)
-      if (!hasData) {
-        // 返回完全空配置清除坐标轴
+      if (!hasData || activeVariables.value.length === 0 || Object.keys(safeData.value).length === 0) {
         return {
-          xAxis: {show: false},
-          yAxis: {show: false},
-          series: []
+          xAxis: { type: 'value', show: false, splitLine: { show: false } },
+          yAxis: { type: 'value', show: false, splitLine: { show: false } },
+          series: [],
+          grid: { containLabel: true }
         }
       }
-      if (activeVariables.value.length === 0 || safeData.value.length === 0) {
-        return {
-          xAxis: {show: false},
-          yAxis: {show: false},
-          series: []
-        }
-      }
-
       const series = []
-
       Object.entries(safeData.value).forEach(([varName, points]) => {
         series.push({
           name: varName,
           type: 'line',
           data: points.map(p => [p.value, p.probability]),
           smooth: true,
-          areaStyle: {
-            opacity: 0.1
-          }
+          areaStyle: {opacity: 0.1}
         })
       })
-
       return {
         tooltip: {
           trigger: 'item',
           formatter: params => {
             return `${params.seriesName}<br/>
-            Value: ${params.value[0].toFixed(2)}<br/>
-            Probability: ${(params.value[1] * 100).toFixed(1)}%`
+            数值: ${params.value[0].toFixed(2)}<br/>
+            概率: ${(params.value[1] * 100).toFixed(1)}%`
           }
         },
         xAxis: {
@@ -278,34 +188,79 @@ export default {
           nameGap: 25,
           type: 'value',
           min: 'dataMin',
-          max: 'dataMax'
+          max: 'dataMax',
+          show: true
         },
         yAxis: {
           name: props.config.y_axis,
           type: 'value',
           min: 0,
           max: 1,
-          axisLabel: {
-            formatter: value => `${(value * 100).toFixed(0)}%`
-          }
+          axisLabel: {formatter: value => `${(value * 100).toFixed(0)}%`},
+          show: true
         },
+        grid: { containLabel: true },
         series,
-        legend: {
-          data: Object.keys(safeData.value)
-        }
+        legend: {data: Object.keys(safeData.value)}
       }
     }
 
-    const smoothUpdate = () => {
-      if (!chart.value) return
-      chart.value.setOption({
-        series: activeVariables.value.map(varName => ({
-          data: safeData.value.map(d => d[varName])
-        }))
-      }, {
-        replaceMerge: ['series'],
-        notMerge: false
+    const renderChart = async () => {
+      try {
+        // 空状态不渲染图表，并确保已清理
+        if (showEmptyState.value) {
+          cleanChart()
+          return
+        }
+        if (!chart.value) {
+          const success = await initChart()
+          if (!success) return
+        }
+        // 使用 notMerge 强制覆盖，避免首次空图隐藏坐标轴导致后续保持隐藏
+        chart.value.setOption(getChartOption(), true)
+        chart.value.dispatchAction({
+          type: 'downplay',
+          seriesIndex: 'all'
+        })
+        chart.value.dispatchAction({
+          type: 'highlight',
+          seriesIndex: 0
+        })
+      } catch (e) {
+        console.error('Render failed:', e)
+      }
+    }
+
+    // 在样式变化/尺寸变化时触发 resize
+    const mutationObserver = new MutationObserver(() => {
+      if (chart.value) {
+        chart.value.resize()
+      }
+    })
+
+    const setupResizeHandling = () => {
+      if (!container.value) return
+      // ResizeObserver 监听容器尺寸
+      try {
+        resizeObserver.value = new ResizeObserver(() => {
+          if (chart.value) {
+            chart.value.resize()
+          }
+        })
+        resizeObserver.value.observe(container.value)
+      } catch (e) {
+        // 某些环境可能没有 ResizeObserver
+        window.addEventListener('resize', resizeChart)
+      }
+      // 监听样式/类变化
+      mutationObserver.observe(container.value, {
+        attributes: true,
+        attributeFilter: ['style', 'class']
       })
+    }
+
+    const resizeChart = () => {
+      if (chart.value) chart.value.resize()
     }
 
     // Lifecycle Hooks
@@ -314,12 +269,14 @@ export default {
         renderChart()
       }
       if (container.value) {
-        observer.observe(container.value, {
-          attributes: true,
-          attributeFilter: ['style', 'class']
-        })
+        setupResizeHandling()
       }
-      setTimeout(renderChart, 300)
+      // 仅在非空状态下尝试延迟渲染
+      setTimeout(() => {
+        if (!showEmptyState.value) {
+          renderChart()
+        }
+      }, 300)
     })
 
     onBeforeUnmount(() => {
@@ -329,8 +286,10 @@ export default {
         chart.value = null
       }
       if (resizeObserver.value) {
-        resizeObserver.value.disconnect()
+        try { resizeObserver.value.disconnect() } catch {}
       }
+      try { mutationObserver.disconnect() } catch {}
+      window.removeEventListener('resize', resizeChart)
     })
 
     // Watchers
@@ -342,12 +301,22 @@ export default {
       }
     })
 
-
     watch(() => props.data, () => {
       if (isMounted.value && !showEmptyState.value) {
         renderChart()
+      } else if (isMounted.value && showEmptyState.value) {
+        cleanChart()
       }
     }, {deep: true, flush: 'post'})
+
+    // 当变量选择状态变化时也需要重绘
+    watch(() => props.variableStates, () => {
+      if (isMounted.value && !showEmptyState.value) {
+        renderChart()
+      } else if (isMounted.value && showEmptyState.value) {
+        cleanChart()
+      }
+    }, {deep: true})
 
     return {
       container,
@@ -378,8 +347,8 @@ export default {
   left: 50%;
   transform: translate(-50%, -50%);
   text-align: center;
+  color: var(--el-text-color-secondary, #909399);
   color: var(--el-text-color-secondary);
-  z-index: 10;
 }
 
 .empty-state p {

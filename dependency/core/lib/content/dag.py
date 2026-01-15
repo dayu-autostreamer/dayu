@@ -2,6 +2,8 @@ import copy
 import json
 from typing import List
 
+from core.lib.common import TaskConstant
+
 from .service import Service
 
 
@@ -58,6 +60,9 @@ class Node:
 class DAG:
     def __init__(self):
         self.nodes = {}
+
+    def __len__(self):
+        return len(self.nodes)
 
     def get_node(self, service_name: str) -> Node:
         if service_name not in self.nodes:
@@ -145,14 +150,14 @@ class DAG:
             self.add_edge(node.service, end_node)
 
     def get_start_node(self):
-        if 'start' not in self.nodes:
+        if TaskConstant.START.value not in self.nodes:
             raise ValueError(f'Start node "{self}" does not exist in DAG')
-        return self.nodes['start']
+        return self.nodes[TaskConstant.START.value]
 
     def get_end_node(self):
-        if 'end' not in self.nodes:
+        if TaskConstant.END.value not in self.nodes:
             raise ValueError(f'End node "{self}" does not exist in DAG')
-        return self.nodes['end']
+        return self.nodes[TaskConstant.END.value]
 
     def check_is_pipeline(self):
         """Check if DAG forms a linear pipeline."""
@@ -191,9 +196,9 @@ class DAG:
         self._check_connectivity()
 
     def _check_start_end_node(self):
-        if 'start' not in self.nodes:
+        if TaskConstant.START.value not in self.nodes:
             raise ValueError(f'Start node "{self}" does not exist in DAG')
-        if 'end' not in self.nodes:
+        if TaskConstant.END.value not in self.nodes:
             raise ValueError(f'End node "{self}" does not exist in DAG')
 
     def _check_duplicate_edges(self):

@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.lib.common import LOGGER, Counter, Queue, FileOps
+from core.lib.content import Task
 from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
 
 from backend_core import BackendCore
@@ -137,6 +138,11 @@ class BackendServer:
                      response_class=FileResponse,
                      methods=[NetworkAPIMethod.BACKEND_DOWNLOAD_LOG]
                      ),
+            APIRoute(NetworkAPIPath.BACKEND_DOWNLOAD_SYSTEM_LOG,
+                     self.download_system_log,
+                     response_class=FileResponse,
+                     methods=[NetworkAPIMethod.BACKEND_DOWNLOAD_SYSTEM_LOG]
+                     ),
             APIRoute(NetworkAPIPath.BACKEND_EDGE_NODE,
                      self.get_edge_nodes,
                      response_class=JSONResponse,
@@ -185,7 +191,7 @@ class BackendServer:
         service_list = [service['id'] for service in self.server.services]
         current_service_list = []
 
-        if KubeHelper.check_pods_running(self.server.namespace):
+        if self.server.check_pods_running_state():
             for service_id in service_list:
                 if KubeHelper.check_pod_name(service_id, namespace=self.server.namespace):
                     current_service_list.append(service_id)
@@ -197,16 +203,16 @@ class BackendServer:
         [
                     {
                         "dag_id":1,
-                        "dag_name":"headup",
+                        "dag_name":"...",
                         "dag":{
                             "node_id_A":{
-                                "id" : "skyrim's node",
+                                "id" : "...",
                                 "prev" : [],
                                 "succ" : ["node_id_B", ...],
                                 "service_id" : "car_detection"
                             },
                             "node_id_B":{
-                                "id" : "skyrim's node",
+                                "id" : "...",
                                 "prev" : ["node_id_A"],
                                 "succ" : [],
                                 "service_id" : "plate_recognition"
@@ -215,16 +221,16 @@ class BackendServer:
                     },
                     {
                         "dag_id":2,
-                        "dag_name":"headup",
+                        "dag_name":"...",
                         "dag":{
                             "node_id_A":{
-                                "id" : "skyrim's node",
+                                "id" : "...",
                                 "prev" : [],
                                 "succ" : ["node_id_B", ...],
                                 "service_id" : car_detection
                             },
                             "node_id_B":{
-                                "id" : "skyrim's node",
+                                "id" : "...",
                                 "prev" : ["node_id_A"],
                                 "succ" : [],
                                 "service_id" : plate_recognition
@@ -349,8 +355,9 @@ class BackendServer:
                 bandwidth = '-'
                 for hostname in resource_data:
                     single_resource_info = resource_data[hostname]
-                    if 'bandwidth' in single_resource_info and single_resource_info['bandwidth'] != 0:
-                        bandwidth = f"{single_resource_info['bandwidth']:.2f}Mbps"
+                    if 'available_bandwidth' in single_resource_info and single_resource_info[
+                        'available_bandwidth'] != -1:
+                        bandwidth = f"{single_resource_info['available_bandwidth']:.2f}Mbps"
                 for single_info in info:
                     single_info['bandwidth'] = bandwidth
         except Exception as e:
@@ -490,6 +497,7 @@ class BackendServer:
             result, msg = self.server.parse_and_apply_templates(policy, source_deploy)
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
+            LOGGER.exception(e)
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
 
@@ -527,8 +535,7 @@ class BackendServer:
         {'state':'install/uninstall'}
         """
 
-        state = 'install' if KubeHelper.check_component_pods_exist(self.server.namespace) else 'uninstall'
-        return {'state': state}
+        return {'state': 'install' if self.server.check_install_state() else 'uninstall'}
 
     async def submit_query(self, data=Body(...)):
         """
@@ -633,7 +640,7 @@ class BackendServer:
         source_config = self.server.find_datasource_configuration_by_label(self.server.source_label)
         for source in source_config['source_list']:
             source_id = source['id']
-            ans[source_id] = self.server.task_results[source_id].get_all()
+            ans[source_id] = self.server.fetch_visualization_data(source_id)
 
         return ans
 
@@ -694,14 +701,29 @@ class BackendServer:
         file_name = self.server.get_log_file_name()
         if not file_name:
             formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-            file_name = f'LOG_SYSTEM_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
+            file_name = f'RESULT_LOG_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
 
         log_content = self.server.download_log_file()
         with open(self.server.log_file_path, 'w') as f:
-            json.dump(log_content, f)
+            json.dump([Task.deserialize(log).to_dict() for log in log_content], f, indent=4)
         backtask.add_task(FileOps.remove_file, self.server.log_file_path)
         return FileResponse(
             path=self.server.log_file_path,
             filename=f'{file_name}.json',
-            background=backtask.add_task(FileOps.remove_file, self.server.log_file_path)
+            background=backtask
+        )
+
+    async def download_system_log(self, backtask: BackgroundTasks):
+        """Download accumulated system visualization logs and clear the cache."""
+        formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        file_name = f'SYSTEM_LOG_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
+
+        log_content = self.server.download_system_log_content()
+        with open(self.server.system_log_file_path, 'w') as f:
+            json.dump(log_content, f)
+        backtask.add_task(FileOps.remove_file, self.server.system_log_file_path)
+        return FileResponse(
+            path=self.server.system_log_file_path,
+            filename=f'{file_name}.json',
+            background=backtask
         )

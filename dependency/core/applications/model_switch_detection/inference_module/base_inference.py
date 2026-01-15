@@ -13,15 +13,16 @@ class BaseInference(ABC):
     @abstractmethod
     def __init__(self, *args, **kwargs):
         '''
-        Load all models, do all the necessary initializations.
-        Notice that the models should be a sorted list of pareto optimal models, so that the switcher can switch between them.
+        Load all models and perform necessary initialization.
+
+        Note: The model list should be a sorted Pareto-optimal sequence so that the switcher can switch among them.
         '''
         self.stats_manager = StatsManager()
         
     @abstractmethod
     def switch_model(self, index: int):
         '''
-        Switch the model to the one specified in the arguments.
+        Switch the current model to the model specified by the parameter.
         '''
         pass
 
@@ -35,23 +36,25 @@ class BaseInference(ABC):
     @abstractmethod
     def get_models_accuracy(self):
         '''
-        Get the accuracy of the models.
-        Returns a list of floats.
+        Get accuracy for each model.
+
+        Returns: a list of floats.
         '''
         pass
 
     @abstractmethod
     def get_models_latency(self):
         '''
-        Get the latency of the models.
-        Returns a list of floats.
+        Get latency for each model.
+
+        Returns: a list of floats.
         '''
         pass
 
     @abstractmethod
     def infer(self, image: np.ndarray):
         '''
-        Do the inference on the image.
+        Run inference on the input image.
         '''
         pass
 
@@ -74,7 +77,7 @@ class BaseInference(ABC):
     @abstractmethod
     def prepare_update_stats(self, image: np.ndarray, boxes, scores, labels, inference_latency):
         '''
-        Prepare the stats for updating.
+        Prepare for updating statistics.
         '''
         # prepare the stats entry
         stats_entry = StatsEntry()
@@ -90,11 +93,11 @@ class BaseInference(ABC):
         else:
             stats_entry.avg_confidence = 0
             stats_entry.std_confidence = 0
-        # 获取图像尺寸
+        # Get image size
         image_height, image_width = image.shape[:2]
         image_area = image_height * image_width
         
-        # 计算相对尺寸（框面积/图像面积）
+        # Compute relative size (box area / image area)
         boxes = np.array(boxes)
         if len(boxes) > 0:
             box_areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])

@@ -1,20 +1,35 @@
 position: cloud
 pod-template:
   image: scheduler
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   env:
-    - name: SCH_CONFIG_NAME
+    - name: SCH_CONFIG_EXTRACTION_NAME
       value: simple
-    - name: SCH_SCENARIO_NAME
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
       value: simple
-    - name: SCH_STARTUP_NAME
+    - name: SCH_STARTUP_POLICY_NAME
       value: fixed
-    - name: SCH_POLICY_NAME
+    - name: SCH_POLICY_RETRIEVAL_NAME
       value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: full
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: non
     - name: SCH_AGENT_NAME
       value: fixed
     - name: SCH_AGENT_PARAMETERS
-      value: "{'adaptive':{'resolution': '720p','fps': 15,'encoding': 'mp4v','buffer_size': 16,'pipeline':0}}"
+      value: >
+        {
+          'configuration':
+            {
+              'resolution': '720p',
+              'fps': 15,
+              'encoding': 'mp4v',
+              'buffer_size': 16
+            }
+        }
 port-open:
   pos: cloud
   port: 9000

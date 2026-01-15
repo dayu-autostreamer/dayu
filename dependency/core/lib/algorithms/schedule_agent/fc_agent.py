@@ -24,7 +24,7 @@ class FCAgent(BaseAgent, abc.ABC):
                  window_length: int = 20,
                  delay_constraint: float = 0.2,
                  theta: float = 3):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
@@ -46,7 +46,7 @@ class FCAgent(BaseAgent, abc.ABC):
         self.theta_high = 0
         self.theta_low = 0 - theta / 1000 * self.window_length
 
-        self.overhead_estimator = OverheadEstimator('FC', 'scheduler/fc')
+        self.overhead_estimator = OverheadEstimator('FC', 'scheduler/fc', agent_id=self.agent_id)
 
     def get_schedule_plan(self, info):
         if len(self.history_window) < self.window_length:

@@ -1,12 +1,13 @@
 position: both
 pod-template:
   image: monitor
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   env:
     - name: INTERVAL
       value: "5"
     - name: MONITORS
-      value: "['cpu', 'memory', 'bandwidth']"
+      value: >
+        ['memory_capacity','cpu_usage', 'memory_usage', 'gpu_usage', 'available_bandwidth',  'gpu_flops', 'model_flops', 'model_memory','queue_length']
 port-open:
   pos: cloud
   port: 9000

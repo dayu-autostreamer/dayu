@@ -4,8 +4,7 @@ import os.path
 import time
 import numpy as np
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
-from core.lib.common import VideoOps
+from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, VideoOps, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
 
 from .base_agent import BaseAgent
@@ -36,7 +35,7 @@ class CASVAAgent(BaseAgent, abc.ABC):
                  load_model: bool = False,
                  load_model_episode: int = 0,
                  acc_gt_dir: str = ''):
-        super().__init__()
+        super().__init__(system, agent_id)
         from .casva import DualClippedPPO, RandomBuffer, Adapter, StateBuffer
 
         assert streaming_mode in ['latency_first', 'delivery_first'], \
@@ -90,7 +89,7 @@ class CASVAAgent(BaseAgent, abc.ABC):
         self.past_buffer_size_value = 0
         self.latest_skip_count = 0
 
-        self.overhead_estimator = OverheadEstimator('CASVA', 'scheduler/casva')
+        self.overhead_estimator = OverheadEstimator('CASVA', 'scheduler/casva', agent_id=self.agent_id)
 
         self.reward_file = Context.get_file_path(os.path.join('scheduler/casva', 'reward.txt'))
         FileOps.remove_file(self.reward_file)
@@ -122,7 +121,6 @@ class CASVAAgent(BaseAgent, abc.ABC):
                                    'qp': self.qp_list[qp_index],
                                    'buffer_size': math.ceil(self.fps_list[fps_index] * self.segment_length)
                                    })
-
 
         dag = self.latest_policy['dag']
         for service_name in dag:
@@ -185,7 +183,7 @@ class CASVAAgent(BaseAgent, abc.ABC):
             transmit_delay_list.append(task.calculate_cloud_edge_transmit_time())
 
             if not self.acc_estimator:
-                self.create_acc_estimator(service_name=dag.get_next_nodes('start')[0])
+                self.create_acc_estimator(service_name=dag.get_next_nodes(TaskConstant.START.value)[0])
             acc = self.acc_estimator.calculate_accuracy(hash_data, content, resolution_ratio, fps_ratio)
             acc_list.append(acc)
 
@@ -279,8 +277,8 @@ class CASVAAgent(BaseAgent, abc.ABC):
             raise e
 
     def update_resource(self, device, resource):
-        bandwidth = resource['bandwidth']
-        if bandwidth != 0:
+        bandwidth = resource['available_bandwidth']
+        if bandwidth != -1:
             self.state_buffer.add_resource_buffer([bandwidth])
 
     def update_policy(self, policy):

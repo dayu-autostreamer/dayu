@@ -1,16 +1,24 @@
 position: both
 pod-template:
   image: age-classification
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   env:
     - name: PROCESSOR_NAME
       value: "classifier_processor"
     - name: CLASSIFIER_PARAMETERS
-      value: "{'weights':'age_resnet18.engine'}"
+      value: >
+        {
+           'trt_weights': 'age_resnet18.engine',
+           'non_trt_weights': 'age_resnet18.pt',
+           'device':0
+        }
     - name: SCENARIOS_EXTRACTORS
-      value: "['obj_num', 'obj_size']"
+      value: >
+        [ 'obj_num']
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "True"
 port-open:
   pos: both
   port: 9000

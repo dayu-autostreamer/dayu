@@ -8,10 +8,10 @@ from typing import Tuple
 
 class CustomLastLevelMaxPool(nn.Module):
     """
-    自定义最后一层的 MaxPool
+    Custom MaxPool for the last level.
     """
     def forward(self, x: List[Tensor], y: List[str], z: Dict[str, Tensor]) -> Tuple[List[Tensor], List[str]]:
-        names = y.copy()  # 创建副本以免修改原始列表
+        names = y.copy()  # Create a copy to avoid modifying the original list
         names.append('pool')
         x.append(F.max_pool2d(x[-1], 1, 2, 0))  # stride=2
         return x, names
@@ -25,14 +25,14 @@ class CustomFPN(nn.Module):
     ):
         super().__init__()
 
-        # lateral connections (用 dynamic conv 替换原来的 1x1 conv)
+        # lateral connections (replace the original 1x1 conv with dynamic conv)
         self.lateral_convs = nn.ModuleList()
         for in_channels in in_channels_list:
             self.lateral_convs.append(
                 DynamicConv2d(in_channels, out_channels, kernel_size=1)
             )
 
-        # output convs (保持原来的 3x3 conv)
+        # output convs (keep the original 3x3 conv)
         self.output_convs = nn.ModuleList()
         for _ in range(len(in_channels_list)):
             self.output_convs.append(
@@ -44,19 +44,19 @@ class CustomFPN(nn.Module):
         self.extra_blocks = extra_blocks
 
     def get_result_from_inner_blocks(self, x: Tensor, idx: int) -> Tensor:
-        """获取 lateral connection 的结果"""
+        """Get the result of a lateral connection."""
         return self.lateral_convs[idx](x)
 
     def get_result_from_layer_blocks(self, x: Tensor, idx: int) -> Tensor:
-        """获取输出 conv 的结果"""
+        """Get the result of an output conv."""
         return self.output_convs[idx](x)
 
     def forward(self, x: Dict[str, Tensor]) -> Dict[str, Tensor]:
-        # 把输入特征图按名字排序
+        # Sort input feature maps by name
         names = list(x.keys())
         x_names = sorted(names)  
 
-        # 从最后一层开始自顶向下处理
+        # Top-down pathway starting from the last level
         last_inner = self.get_result_from_inner_blocks(x[x_names[-1]], -1)
         results = []
         results.append(self.get_result_from_layer_blocks(last_inner, -1))
@@ -71,6 +71,6 @@ class CustomFPN(nn.Module):
         if self.extra_blocks is not None:
             results, x_names = self.extra_blocks(results, x_names, x)
 
-        # 返回 OrderedDict
+        # Return an OrderedDict
         out = OrderedDict([(k, v) for k, v in zip(x_names, results)])
         return out

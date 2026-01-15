@@ -1,7 +1,7 @@
 """
 Dayu Log Analysis Tool
 
-Tool script to parse and analyse log exported from dayu system.
+Tool script to parse and analyze log exported from dayu system.
 
 Log files can be downloaded from frontend ui (in "Result Display" module , click the "Export Log" button).
 
@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         "--log",
         type=str,
         required=True,
-        default=None,  # 显式设置默认值
+        default=None,
         metavar="LOG_FILE_PATH",
         help="Specify the log file path"
     )
@@ -50,7 +50,7 @@ def parse_logs(record_file):
             json_data = json.load(f)
             tasks = []
             for task_data in json_data:
-                task = Task.deserialize(task_data)
+                task = Task.from_dict(task_data)
                 tasks.append(task)
     except Exception as e:
         print(f"Failed to parse log file {record_file}, this file is not exported from dayu system.")

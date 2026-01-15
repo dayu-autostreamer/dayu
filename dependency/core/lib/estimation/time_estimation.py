@@ -6,6 +6,7 @@ from core.lib.common import LOGGER, NameMaintainer
 class Timer:
     def __init__(self, label=""):
         self.label = label
+        self.elapsed_time = 0
 
     def __enter__(self):
         self.start_time = time.time()
@@ -25,7 +26,7 @@ class Timer:
 
 class TimeEstimator:
     @staticmethod
-    def record_dag_ts(task: Task, is_end: bool, sub_tag: str = 'transmit') -> (Task, float):
+    def record_dag_ts(task: Task, is_end: bool, sub_tag: str = 'transmit'):
         """
         record dag timestamp in system
         :param task: dag task
@@ -36,13 +37,14 @@ class TimeEstimator:
 
         """
         prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
-        duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                           f'{prefix}:{sub_tag}_time_{task.get_flow_index()}',
-                                           is_end=is_end)
+        duration, time_ticket = TimeEstimator.record_ts(task.get_tmp_data(),
+                                                        f'{prefix}:{sub_tag}_time_{task.get_flow_index()}',
+                                                        is_end=is_end)
+        task.record_time_ticket_in_service(type_tag=sub_tag, is_end=is_end, time_ticket=time_ticket)
         return duration
 
     @staticmethod
-    def record_task_ts(task: Task, tag: str, is_end: bool = False) -> (Task, float):
+    def record_task_ts(task: Task, tag: str, is_end: bool = False):
         """
 
         :param task: dag task
@@ -53,13 +55,13 @@ class TimeEstimator:
         """
 
         prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
-        duration = TimeEstimator.record_ts(task.get_tmp_data(),
-                                           tag=f'{prefix}:{tag}',
-                                           is_end=is_end)
+        duration, _ = TimeEstimator.record_ts(task.get_tmp_data(),
+                                              tag=f'{prefix}:{tag}',
+                                              is_end=is_end)
         return duration
 
     @staticmethod
-    def record_ts(data: dict, tag: str, is_end: bool = False) -> (dict, float):
+    def record_ts(data: dict, tag: str, is_end: bool = False):
         """
         record timestamp in system
         :param data: time dictionary
@@ -69,39 +71,46 @@ class TimeEstimator:
                  duration: time estimation result
 
         """
-
+        cur_time_ticket = time.time()
         if is_end:
             assert tag in data, f'record end timestamp of {tag}, but start timestamp does not exists!'
             start_time = data[tag]
-            end_time = time.time()
+            end_time = cur_time_ticket
             del data[tag]
             duration = end_time - start_time
         else:
             assert tag not in data, f'record start timestamp of {tag}, but start timestamp has existed in system!'
-            data[tag] = time.time()
+            data[tag] = cur_time_ticket
             duration = 0
 
-        return duration
+        return duration, cur_time_ticket
 
     @staticmethod
-    def estimate_duration_time(func):
-        def wrapper(*args, **kw):
-            start = time.time()
-            func(*args, **kw)
-            end = time.time()
+    def erase_dag_ts(task: Task, is_end: bool, sub_tag: str = 'transmit') -> None:
+        """
+        erase task timestamp in system
+        :param task: dag task
+        :param is_end: if erasing the end of current timestamp
+        :param sub_tag: name of time ticket
+        :return: None
+        """
+        prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
 
-            return end - start
-
-        return wrapper
+        TimeEstimator.erase_ts(task.get_tmp_data(),
+                               f'{prefix}:{sub_tag}_time_{task.get_flow_index()}',
+                               non_exist_ok=True)
+        task.erase_time_ticket_in_service(type_tag=sub_tag, is_end=is_end)
 
     @staticmethod
-    def estimate_duration_time_print(func):
-        def wrapper(*args, **kw):
-            start = time.time()
-            func(*args, **kw)
-            end = time.time()
-
-            print('function {} cost time {:.2f}s'.format(func.__name__, end - start))
-
-        return wrapper
-
+    def erase_ts(data: dict, tag: str, non_exist_ok=False) -> None:
+        """
+        erase timestamp in system
+        :param data: time dictionary
+        :param tag: name of time ticket
+        :param non_exist_ok: if True, do not raise error if tag does not exist
+        :return: None
+        """
+        if not non_exist_ok and tag not in data:
+            raise KeyError(f'Timestamp {tag} is not existed when erasing!')
+        if tag in data:
+            del data[tag]

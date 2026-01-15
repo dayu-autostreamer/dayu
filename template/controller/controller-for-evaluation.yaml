@@ -1,12 +1,12 @@
 position: both
 pod-template:
   image: controller
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   env:
     - name: DISPLAY
       value: "False"
     - name: DELETE_TEMP_FILES
-      value: "False"
+      value: "True"
 port-open:
   pos: both
   port: 9000

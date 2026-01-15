@@ -14,11 +14,23 @@ from core.lib.estimation import TimeEstimator
 
 class ProcessorServer:
     def __init__(self):
+        self.processor = Context.get_algorithm('PROCESSOR')
+
         self.app = FastAPI(routes=[
+            APIRoute(NetworkAPIPath.PROCESSOR_HEALTH,
+                     self.health_check,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.PROCESSOR_HEALTH]
+                     ),
             APIRoute(NetworkAPIPath.PROCESSOR_PROCESS,
                      self.process_service,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.PROCESSOR_PROCESS]
+                     ),
+            APIRoute(NetworkAPIPath.PROCESSOR_PROCESS_LOCAL,
+                     self.process_local_service,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.PROCESSOR_PROCESS_LOCAL]
                      ),
             APIRoute(NetworkAPIPath.PROCESSOR_PROCESS_RETURN,
                      self.process_return_service,
@@ -30,14 +42,17 @@ class ProcessorServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.PROCESSOR_QUEUE_LENGTH]
                      ),
+            APIRoute(NetworkAPIPath.PROCESSOR_MODEL_FLOPS,
+                     self.query_model_flops,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.PROCESSOR_MODEL_FLOPS]
+                     ),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
             CORSMiddleware, allow_origins=["*"], allow_credentials=True,
             allow_methods=["*"], allow_headers=["*"],
         )
-
-        self.processor = Context.get_algorithm('PROCESSOR')
 
         self.task_queue = Context.get_algorithm('PRO_QUEUE')
 
@@ -48,22 +63,32 @@ class ProcessorServer:
                                                 port=self.controller_port,
                                                 path=NetworkAPIPath.CONTROLLER_RETURN)
 
-        threading.Thread(target=self.loop_process).start()
+        threading.Thread(target=self.loop_process, name="ProcessorLoop", daemon=True).start()
+
+    async def health_check(self):
+        return {'status': 'ok'}
 
     async def process_service(self, backtask: BackgroundTasks, file: UploadFile = File(...), data: str = Form(...)):
         file_data = await file.read()
-        cur_task = Task.deserialize(data)
         backtask.add_task(self.process_service_background, data, file_data)
-        LOGGER.debug(f'[Monitor Task] (Process Request) '
-                     f'Source: {cur_task.get_source_id()} / Task: {cur_task.get_task_id()} ')
 
     def process_service_background(self, data, file_data):
         cur_task = Task.deserialize(data)
-        FileOps.save_data_file(cur_task, file_data)
+        FileOps.save_task_file_in_temp(cur_task, file_data)
         self.task_queue.put(cur_task)
         LOGGER.debug(f'[Task Queue] Queue Size (receive request): {self.task_queue.size()}')
         LOGGER.debug(f'[Monitor Task] (Process Request Background) '
                      f'Source: {cur_task.get_source_id()} / Task: {cur_task.get_task_id()} ')
+
+    async def process_local_service(self, backtask: BackgroundTasks, data: str = Form(...)):
+        """
+            Process local services without transmitting files.
+        """
+        backtask.add_task(self.process_local_service_background, data)
+
+    def process_local_service_background(self, data):
+        cur_task = Task.deserialize(data)
+        self.task_queue.put(cur_task)
 
     async def process_return_service(self, file: UploadFile = File(...),
                                      data: str = Form(...)):
@@ -71,16 +96,20 @@ class ProcessorServer:
         cur_task = Task.deserialize(data)
         LOGGER.info(f'[Process Return Background] Process task: source {cur_task.get_source_id()}  / '
                     f'task {cur_task.get_task_id()}')
-        FileOps.save_data_file(cur_task, file_data)
+        FileOps.save_task_file_in_temp(cur_task, file_data)
 
         new_task = self.processor(cur_task)
         LOGGER.debug(f'[Processor Return completed] content length: {len(new_task.get_current_content())}')
-        FileOps.remove_data_file(cur_task)
+        FileOps.remove_task_file_in_temp(cur_task)
         if new_task:
             return new_task.serialize()
+        return None
 
     async def query_queue_length(self):
         return self.task_queue.size()
+
+    async def query_model_flops(self):
+        return self.processor.flops
 
     def loop_process(self):
         LOGGER.info('Start processing loop..')
@@ -101,7 +130,9 @@ class ProcessorServer:
 
             if new_task:
                 self.send_result_back_to_controller(new_task)
-            FileOps.remove_data_file(task)
+
+            # # Share file with local controller
+            # FileOps.remove_task_file_in_temp(task)
 
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')

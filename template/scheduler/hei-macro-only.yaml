@@ -1,28 +1,40 @@
 position: cloud
 pod-template:
   image: scheduler
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   env:
     - name: SCH_CONFIG_EXTRACTION_NAME
       value: hei_drl
     - name: SCH_CONFIG_EXTRACTION_PARAMETERS
-      value: "{'hei_drl_config':'drl_parameters.yaml', 'hei_hyper_config':'hyper_parameters.yaml'}"
-    - name: SCH_SCENARIO_EXTRACTION_NAME
+      value: >
+        {
+          'hei_drl_config':'drl_parameters.yaml',
+          'hei_hyper_config':'hyper_parameters.yaml'
+        }
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
       value: simple
     - name: SCH_STARTUP_POLICY_NAME
       value: fixed
-    - name: SCH_POLICY_EXTRACTION_NAME
+    - name: SCH_POLICY_RETRIEVAL_NAME
       value: simple
     - name: SCH_SELECTION_POLICY_NAME
       value: fixed
-    - name: SCH_SELECTION_POLICY_PARAMETERS
-      value: "{'fixed_value':0, 'fixed_type':'position'}"
-    - name: SCH_DEPLOYMENT_POLICY_NAME
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
       value: full
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: non
     - name: SCH_AGENT_NAME
       value: hei_drl
     - name: SCH_AGENT_PARAMETERS
-      value: "{'window_size':8, 'mode':'train', 'model_dir':'model_hei_drl_road_dense_low_1', 'load_model':False, 'load_model_episode':0,'acc_gt_dir':'acc-gt-dense'}"
+      value: >
+        {
+          'window_size':8, 
+          'mode':'train',
+          'model_dir':'model_hei_drl_road_dense_low_1', 
+          'load_model':False, 
+          'load_model_episode':0,
+          'acc_gt_dir':'acc-gt-dense'
+        }
 port-open:
   pos: cloud
   port: 9000

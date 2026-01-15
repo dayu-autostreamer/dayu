@@ -1,12 +1,12 @@
 import abc
 import json
 import time
+import copy
 
 from .base_getter import BaseDataGetter
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, Counter, NameMaintainer
 from core.lib.network import http_request
-from core.lib.estimation import TimeEstimator
 
 __all__ = ('HttpVideoGetter',)
 
@@ -24,7 +24,8 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
 
         self.file_suffix = 'mp4'
 
-    @TimeEstimator.estimate_duration_time
+        self.time_record = 0
+
     def request_source_data(self, system, task_id):
         data = {
             'source_id': system.source_id,
@@ -44,6 +45,8 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
 
             if self.hash_codes:
                 response = http_request(system.video_data_source + '/file', method='GET', no_decode=True)
+            else:
+                time.sleep(1)
 
         self.file_name = NameMaintainer.get_task_data_file_name(system.source_id, task_id, self.file_suffix)
 
@@ -56,13 +59,24 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
 
     def __call__(self, system):
         new_task_id = Counter.get_count('task_id')
-        delay = self.request_source_data(system, new_task_id)
 
+        self.request_source_data(system, new_task_id)
+
+        system.cumulative_scheduling_frame_count += (system.meta_data.get('buffer_size', 0) *
+                                                     system.raw_meta_data.get('fps', 0) /
+                                                     system.meta_data.get('fps', 1))
+
+        new_time_record = time.time()
+        delay = new_time_record - self.time_record if self.time_record else 0
+        self.time_record = new_time_record
         sleep_time = self.compute_cost_time(system, delay)
         LOGGER.info(f'[Camera Simulation] source {system.source_id}: sleep {sleep_time}s')
         time.sleep(sleep_time)
 
-        new_task = system.generate_task(new_task_id, system.task_dag, system.meta_data, self.file_name, self.hash_codes)
+        new_task = system.generate_task(new_task_id, copy.deepcopy(system.task_dag),
+                                        copy.deepcopy(system.service_deployment),
+                                        copy.deepcopy(system.meta_data),
+                                        self.file_name, self.hash_codes)
         system.submit_task_to_controller(new_task)
 
         FileOps.remove_file(self.file_name)

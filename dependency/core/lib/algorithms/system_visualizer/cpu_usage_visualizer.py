@@ -17,7 +17,8 @@ class CPUUsageVisualizer(CurveVisualizer, abc.ABC):
     def request_resource_info(self):
         self.get_resource_url()
 
-        return http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE) if self.resource_url else None
+        return http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE) \
+            if self.resource_url else None
 
     def get_resource_url(self):
         cloud_hostname = NodeInfo.get_cloud_node()
@@ -29,16 +30,18 @@ class CPUUsageVisualizer(CurveVisualizer, abc.ABC):
                                           port=scheduler_port,
                                           path=NetworkAPIPath.SCHEDULER_GET_RESOURCE)
 
-    def __call__(self):
-        resource = self.request_resource_info()
+    def __call__(self, resource=None):
+        # Use pre-fetched resource if provided to avoid duplicate requests
+        if resource is None:
+            resource = self.request_resource_info()
 
         if self.variables:
             if not resource:
                 return {device: 0 for device in self.variables}
-            return {device: resource[device]['cpu'] if device in resource else 0 for device in self.variables}
+            return {device: resource[device]['cpu_usage'] if device in resource else 0 for device in self.variables}
 
         else:
             if not resource:
-                return {'no device':0}
+                return {'no device': 0}
             else:
-                return {device:resource[device]['cpu'] for device in resource}
+                return {device: resource[device]['cpu_usage'] for device in resource}

@@ -1,10 +1,10 @@
 '''
-删除原模型中的多余部分，只保留backbone
+Remove redundant parts from the original model and keep only the backbone.
 '''
 
 import torch.nn as nn
 
-# 设置一个空操作
+# Define a no-op operation
 class Identity(nn.Module):
     def __init__(self):
         super().__init__()

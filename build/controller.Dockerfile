@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM ${REG}/dayuhub/tensorrt:trt8
+FROM ${REG}/dayuhub/dayubase:latest
 
 LABEL authors="Wenhui Zhou"
 
@@ -26,5 +26,5 @@ WORKDIR /app
 COPY  ${code_dir}/* /app/
 
 
-CMD ["gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
+CMD ["python3", "-m", "gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
 

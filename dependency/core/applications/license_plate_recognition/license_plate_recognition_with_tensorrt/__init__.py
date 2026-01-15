@@ -1,0 +1,4 @@
+from .license_plate_recognition_tensorrt8 import LicensePlateRecognitionTensorRT8
+from .license_plate_recognition_tensorrt10 import LicensePlateRecognitionTensorRT10
+
+__all__ = ['LicensePlateRecognitionTensorRT8', 'LicensePlateRecognitionTensorRT10']

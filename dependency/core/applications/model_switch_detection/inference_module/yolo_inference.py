@@ -4,6 +4,7 @@ from typing import List
 import numpy as np
 import os
 import sys
+
 cur_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(f"{cur_dir}/yolov5")
 from models.common import AutoShape
@@ -17,6 +18,7 @@ from core.lib.common import Context
 
 warnings.filterwarnings("ignore")
 
+
 class YoloInference(BaseInference):
     def __init__(self, *args, **kwargs):
         '''
@@ -26,7 +28,7 @@ class YoloInference(BaseInference):
         # models should be a sorted list of pareto optimal models, so that the switcher can switch between them.
         self.allowed_yolo_models = kwargs['model_names']
         # official mAP values.
-        self.model_accuracy =kwargs['model_accuracy']
+        self.model_accuracy = kwargs['model_accuracy']
         # assert len(self.allowed_yolo_models) == len(self.model_accuracy), 'Model names and accuracies do not match'
         self.model_latency = []
         # ema_alpha for model latency updates
@@ -59,7 +61,7 @@ class YoloInference(BaseInference):
                 print(f'Model loaded: {model_name}.')
             except Exception as e:
                 print(f'Error loading model {model_name}: {str(e)}!')
-            
+
         print('All models loaded.')
         with self.model_switch_lock:
             self.current_model_index = 0
@@ -68,14 +70,14 @@ class YoloInference(BaseInference):
     def _measure_initial_latencies(self):
         print("Measuring initial latencies...")
         dummy_input = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
-        
+
         for idx, model in enumerate(self.models):
             times = []
-            # 预热
+            # Warm up
             for _ in range(5):
                 model(dummy_input)
-            
-            # 测量
+
+            # Measure
             for _ in range(10):
                 start_time = time.perf_counter()
                 with torch.no_grad():
@@ -99,21 +101,21 @@ class YoloInference(BaseInference):
         Get the number of models.
         '''
         return len(self.models)
-    
+
     def get_models_accuracy(self):
         '''
         Get the accuracy of the models.
         Returns a list of floats.
         '''
         return self.model_accuracy
-    
+
     def get_models_latency(self):
         '''
         Get the latency of the models.
         Returns a list of floats.
         '''
         return self.model_latency
-    
+
     def get_current_model_index(self):
         '''
         Get the current model index.
@@ -131,22 +133,23 @@ class YoloInference(BaseInference):
                 results = model(image)
             inference_latency = time.perf_counter() - start_time
             # use ema to update latency
-            self.model_latency[self.current_model_index] = self.ema_alpha * inference_latency + (1 - self.ema_alpha) * self.model_latency[self.current_model_index]
+            self.model_latency[self.current_model_index] = self.ema_alpha * inference_latency + (1 - self.ema_alpha) * \
+                                                           self.model_latency[self.current_model_index]
             boxes, scores, labels = self.process_results(results)
-        
+
         # start a new thread to update stats
-        update_stats_thread = threading.Thread(target=self.prepare_update_stats, args=(image, boxes, scores, labels, inference_latency))
+        update_stats_thread = threading.Thread(target=self.prepare_update_stats,
+                                               args=(image, boxes, scores, labels, inference_latency))
         update_stats_thread.start()
-        
-        return boxes, scores, labels
-    
+
+        return boxes, scores, labels, list(range(len(boxes)))
+
     def prepare_update_stats(self, image: np.ndarray, boxes, scores, labels, inference_latency):
         '''
         Prepare the stats for updating.
         '''
         super().prepare_update_stats(image, boxes, scores, labels, inference_latency)
 
-        
     def process_results(self, results):
         '''
         Extract from yolo detection results three np lists: boxes, scores, labels

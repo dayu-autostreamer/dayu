@@ -10,7 +10,7 @@ from core.lib.estimation import TimeEstimator
 
 
 class Generator:
-    def __init__(self, source_id: int, metadata: dict, task_dag: list, ):
+    def __init__(self, source_id: int, metadata: dict, task_dag: dict, ):
         """ Initialize the generator."""
 
         """task base information"""
@@ -18,6 +18,8 @@ class Generator:
         self.source_id = source_id
         # task_dag contains offloading decisions
         self.task_dag = Task.extract_dag_from_dict(task_dag)
+        # service_deployment contains service deployment situations in system
+        self.service_deployment = None
         # raw_meta_data contains meta configuration of source
         self.raw_meta_data = metadata.copy()
         # meta_data contains data configuration decisions
@@ -40,6 +42,7 @@ class Generator:
         self.after_schedule_operation = Context.get_algorithm('GEN_ASO')
         self.data_getter = Context.get_algorithm('GEN_GETTER')
         self.before_submit_task_operation = Context.get_algorithm('GEN_BSTO')
+        self.request_scheduling_interval = Context.get_parameter('REQUEST_SCHEDULING_INTERVAL', direct=False)
 
     def request_schedule_policy(self):
         params = self.before_schedule_operation(self)
@@ -60,13 +63,14 @@ class Generator:
                                     is_end=False,
                                     sub_tag='transmit')
 
-    def generate_task(self, task_id, task_dag, meta_data, compressed_path, hash_codes):
+    def generate_task(self, task_id, task_dag, service_deployment, meta_data, compressed_path, hash_codes):
         """generate a new task"""
         return Task(source_id=self.source_id,
                     task_id=task_id,
                     source_device=self.local_device,
                     all_edge_devices=self.all_edge_devices,
                     dag=task_dag,
+                    deployment=service_deployment,
                     metadata=meta_data,
                     raw_metadata=self.raw_meta_data,
                     hash_data=hash_codes,

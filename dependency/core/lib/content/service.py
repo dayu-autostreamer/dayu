@@ -2,8 +2,14 @@ import json
 
 
 class Service:
-    def __init__(self, service_name, execute_device='',
-                 transmit_time=0, execute_time=0, real_execute_time=0, content: object = None):
+    def __init__(self, service_name,
+                 execute_device='',
+                 transmit_time=0,
+                 execute_time=0,
+                 real_execute_time=0,
+                 content: object = None,
+                 scenario: dict = None,
+                 temp=None):
         self.__service_name = service_name
         self.__execute_device = execute_device
         self.__transmit_time = transmit_time
@@ -17,6 +23,12 @@ class Service:
 
         # result data of service
         self.__content = content
+
+        # scenario data of service
+        self.__scenario_data = scenario if scenario else {}
+
+        # temporary data (main for time tickets)
+        self.__tmp_data = temp if temp else {}
 
     def get_service_name(self):
         return self.__service_name
@@ -61,6 +73,42 @@ class Service:
     def set_content_data(self, content):
         self.__content = content
 
+    def get_scenario_data(self):
+        return self.__scenario_data
+
+    def set_scenario_data(self, data: dict):
+        self.__scenario_data = data
+
+    def add_scenario(self, data: dict):
+        self.__scenario_data.update(data)
+
+    def get_tmp_data(self):
+        return self.__tmp_data
+
+    def set_tmp_data(self, tmp):
+        self.__tmp_data = tmp
+
+    def record_time_ticket(self, tag: str, duration: float):
+        """
+        Record a time ticket in the temporary data.
+
+        :param tag: The name of the time ticket.
+        :param duration: The duration to record for the time ticket.
+        """
+        assert tag not in self.__tmp_data, f'Time ticket "{tag}" already exists in temporary data!'
+        self.__tmp_data[tag] = duration
+
+    def erase_time_ticket(self, tag: str):
+        """
+        Erase a time ticket from the temporary data.
+
+        :param tag: The name of the time ticket to erase.
+        """
+        assert tag in self.__tmp_data, f'Time ticket "{tag}" does not exist in temporary data!'
+
+        if tag in self.__tmp_data:
+            del self.__tmp_data[tag]
+
     def to_dict(self):
         return {
             'service_name': self.get_service_name(),
@@ -68,7 +116,9 @@ class Service:
             'execute_data': {'transmit_time': self.get_transmit_time(),
                              'execute_time': self.get_execute_time(),
                              'real_execute_time': self.get_real_execute_time()},
-            'content': self.get_content_data()
+            'content': self.get_content_data(),
+            'scenario': self.get_scenario_data(),
+            'tmp_data': self.get_tmp_data()
         }
 
     @classmethod
@@ -83,6 +133,8 @@ class Service:
         service.set_real_execute_time(dag_dict['execute_data']['real_execute_time']) \
             if 'execute_data' in dag_dict and 'real_execute_time' in dag_dict['execute_data'] else None
         service.set_content_data(dag_dict['content']) if 'content' in dag_dict else None
+        service.set_scenario_data(dag_dict['scenario']) if 'scenario' in dag_dict else None
+        service.set_tmp_data(dag_dict['tmp_data']) if 'tmp_data' in dag_dict else None
         return service
 
     def serialize(self):

@@ -4,18 +4,24 @@
     <el-row class="viz-controls-row mb15">
       <el-col :span="24">
         <div class="viz-controls-panel">
-          <div class="control-group">
-            <h4>Active Visualizations:</h4>
-            <el-checkbox-group v-model="currentActiveVisualizationsArray">
-              <el-checkbox
-                  v-for="viz in visualizationConfig"
-                  :key="viz.id"
-                  :label="viz.id"
-                  class="module-checkbox"
-              >
-                {{ viz.name }}
-              </el-checkbox>
-            </el-checkbox-group>
+          <div class="control-group"
+               style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+            <div>
+              <h4>Active Visualizations:</h4>
+              <el-checkbox-group v-model="currentActiveVisualizationsArray">
+                <el-checkbox
+                    v-for="viz in visualizationConfig"
+                    :key="viz.id"
+                    :label="viz.id"
+                    class="module-checkbox"
+                >
+                  {{ viz.name }}
+                </el-checkbox>
+              </el-checkbox-group>
+            </div>
+            <div>
+              <el-button type="primary" @click="exportSystemLog">Export System Log</el-button>
+            </div>
           </div>
         </div>
       </el-col>
@@ -70,30 +76,31 @@
 </template>
 
 <script>
-import {markRaw, reactive, toRaw} from 'vue'
+import {markRaw, reactive} from 'vue'
 import mitt from 'mitt'
+import { useSystemParametersStore } from '/@/stores/systemParameters'
 
 const emitter = mitt()
 
 export default {
   data() {
     return {
-      bufferedTaskCache: reactive([]),
-      maxBufferedTaskCacheSize: 20,
       componentsLoaded: false,
       visualizationConfig: [],
       activeVisualizations: new Set(),
       variableStates: {},
       visualizationComponents: {},
       vizControls: {},
-      pollingInterval: null,
+      // stores
+      sysParamsStore: null,
     }
   },
   computed: {
     processedData() {
+      const buffer = this.sysParamsStore?.bufferedTaskCache || []
       const result = {}
       this.visualizationConfig.forEach(viz => {
-        result[viz.id] = this.processVizData(viz)
+        result[viz.id] = this.processVizData(viz, buffer)
       })
       return result
     },
@@ -111,10 +118,21 @@ export default {
   },
 
   async created() {
+    // init store
+    this.sysParamsStore = useSystemParametersStore()
+
     await this.autoRegisterComponents()
     this.componentsLoaded = true
     await this.fetchVisualizationConfig()
-    this.setupDataPolling()
+
+    // watch buffer to keep variable sets in sync with backend
+    this.$watch(
+        () => this.sysParamsStore.bufferedTaskCache,
+        (buffer) => {
+          this.syncVariablesFromBuffer(buffer || [])
+        },
+        { deep: true, immediate: true }
+    )
 
     emitter.on('force-update-charts', () => {
       this.$nextTick(() => {
@@ -128,7 +146,7 @@ export default {
 
   methods: {
     calculateVariablesHash(variables) {
-      return [...variables].sort().join('|');
+      return [...(variables || [])].sort().join('|');
     },
 
     getVizKey(viz) {
@@ -177,11 +195,11 @@ export default {
       }
     },
 
-    processVizData(vizConfig) {
-      if (!this.bufferedTaskCache.length) return []
+    processVizData(vizConfig, buffer) {
+      if (!buffer.length) return []
 
       try {
-        return this.bufferedTaskCache
+        return buffer
             .filter(task => {
               return task.data?.some(item =>
                   String(item.id) === String(vizConfig.id))
@@ -190,6 +208,7 @@ export default {
               const vizDataItem = task.data.find(
                   item => String(item.id) === String(vizConfig.id))
               return {
+                taskId: task.timestamp,
                 timestamp: task.timestamp,
                 ...(vizDataItem?.data || {})
               }
@@ -237,80 +256,74 @@ export default {
       }
     },
 
-    async getLatestSystemData() {
-      try {
-        const response = await fetch('/api/system_parameters')
-        const data = await response.json()
+    exportSystemLog() {
+      fetch('/api/download_system_log')
+          .then(async (response) => {
+            const disposition = response.headers.get('content-disposition') || '';
+            let filename = 'system_log.json';
 
-        const now = new Date();
-        const hours = String(now.getHours()).padStart(2, '0');
-        const minutes = String(now.getMinutes()).padStart(2, '0');
-        const seconds = String(now.getSeconds()).padStart(2, '0');
-
-        const newTasks = data.flatMap(task => ({
-          ...task,
-          timestamp: `${hours}:${minutes}:${seconds}`,
-          data: task.data.map(item => ({
-            id: String(item.id),
-            data: item.data
-          }))
-        }))
-
-        newTasks.forEach(task => {
-          task.data.forEach(item => {
-            const vizId = item.id;
-            const newVariables = Object.keys(item.data);
-
-            if (newVariables && Array.isArray(newVariables)) {
-              const vizIndex = this.visualizationConfig.findIndex(v => v.id === vizId);
-              if (vizIndex !== -1) {
-                const currentViz = this.visualizationConfig[vizIndex];
-
-                // 比较variables差异
-                if (!this.arraysEqual(currentViz.variables, newVariables)) {
-                  // 更新可视化配置
-                  const updatedViz = {
-                    ...currentViz,
-                    variables: [...newVariables],
-                    variablesHash: this.calculateVariablesHash(newVariables)
-                  };
-                  this.visualizationConfig.splice(vizIndex, 1, updatedViz);
-
-                  // 同步更新变量状态
-                  const currentState = this.variableStates[vizId] || {};
-                  this.variableStates[vizId] = newVariables.reduce((acc, varName) => {
-                    acc[varName] = varName in currentState ? currentState[varName] : true;
-                    return acc;
-                  }, {});
-                }
+            let match = disposition.match(/filename\*\s*=\s*(?:UTF-8''|'')?([^;]+)/i);
+            if (match && match[1]) {
+              try {
+                filename = decodeURIComponent(match[1].replace(/(^")|("$)/g, ''));
+              } catch {
+                filename = match[1].replace(/(^")|("$)/g, '');
+              }
+            } else {
+              match = disposition.match(/filename\s*=\s*([^;]+)/i);
+              if (match && match[1]) {
+                filename = match[1].trim().replace(/(^")|("$)/g, '');
               }
             }
+
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', filename);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
           });
-        });
-
-        this.bufferedTaskCache = reactive([
-          ...this.bufferedTaskCache,
-          ...newTasks
-        ].slice(-this.maxBufferedTaskCacheSize))
-
-        this.$nextTick(() => {
-          emitter.emit('force-update-charts')
-        })
-      } catch (error) {
-        console.error('Data fetch failed:', error)
-      }
     },
 
-    setupDataPolling() {
-      this.getLatestSystemData()
-      this.pollingInterval = setInterval(() => {
-        this.getLatestSystemData()
-      }, 2000)
+    syncVariablesFromBuffer(buffer) {
+      try {
+        const latestByViz = new Map()
+        buffer.forEach(task => {
+          (task.data || []).forEach(item => {
+            const vizId = String(item.id)
+            latestByViz.set(vizId, Object.keys(item.data || {}))
+          })
+        })
+        latestByViz.forEach((newVars, vizId) => {
+          const vizIndex = this.visualizationConfig.findIndex(v => v.id === vizId)
+          if (vizIndex !== -1) {
+            const curr = this.visualizationConfig[vizIndex]
+            if (!this.arraysEqual(curr.variables, newVars)) {
+              const updatedViz = {
+                ...curr,
+                variables: [...newVars],
+                variablesHash: this.calculateVariablesHash(newVars)
+              }
+              this.visualizationConfig.splice(vizIndex, 1, reactive(updatedViz))
+
+              const currentState = this.variableStates[vizId] || {}
+              this.variableStates[vizId] = newVars.reduce((acc, name) => {
+                acc[name] = name in currentState ? currentState[name] : true
+                return acc
+              }, {})
+            }
+          }
+        })
+      } catch (e) {
+        // no-op
+      }
     },
   },
 
   beforeUnmount() {
-    clearInterval(this.pollingInterval)
     emitter.off('force-update-charts')
   }
 }

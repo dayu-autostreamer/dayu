@@ -16,7 +16,7 @@ class HEINFAgent(BaseAgent, abc.ABC):
     def __init__(self, system,
                  agent_id: int,
                  window_size: int = 10):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         from .hei_nf import NegativeFeedback_Single
 
@@ -41,7 +41,7 @@ class HEINFAgent(BaseAgent, abc.ABC):
         self.latest_task_delay = None
         self.schedule_plan = None
 
-        self.overhead_estimator = OverheadEstimator('HEI-Micro-Only', 'scheduler/hei')
+        self.overhead_estimator = OverheadEstimator('HEI-Micro-Only', 'scheduler/hei', agent_id=self.agent_id)
 
     def update_scenario(self, scenario):
         try:

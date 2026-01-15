@@ -11,7 +11,7 @@
 </template>
 
 <script>
-import {ref, computed, onMounted, onBeforeUnmount, watch, nextTick, toRaw} from 'vue'
+import {ref, computed, onMounted, onBeforeUnmount, watch, nextTick} from 'vue'
 import * as echarts from 'echarts'
 import {PieChart} from '@element-plus/icons-vue'
 
@@ -27,7 +27,7 @@ export default {
         name: '',
         type: 'curve',
         variables: [],
-        x_axis: 'Time',
+        x_axis: 'Task Index',
         y_axis: ''
       })
     },
@@ -36,7 +36,7 @@ export default {
       required: true,
       validator: value => {
         return Array.isArray(value) && value.every(item =>
-            item.timestamp !== undefined
+            item.taskId !== undefined
         )
       }
     },
@@ -73,7 +73,7 @@ export default {
     // Computed Properties
     const safeData = computed(() => {
       return (props.data || []).map(item => {
-        const cleanItem = {timestamp: item.timestamp}
+        const cleanItem = {taskId: item.taskId}
 
         props.config.variables?.forEach(varName => {
           const rawValue = item[varName]
@@ -81,14 +81,9 @@ export default {
           cleanItem[varName] = rawValue !== null && rawValue !== undefined ?
               rawValue : 0
         })
+
         return cleanItem
       })
-    })
-
-    const availableVariables = computed(() => {
-      if (!safeData.value.length) return []
-      return Object.keys(safeData.value[0])
-          .filter(k => k !== 'timestamp' && props.config.variables?.includes(k))
     })
 
     const activeVariables = computed(() => {
@@ -100,7 +95,6 @@ export default {
 
     const showEmptyState = computed(() => {
       const hasData = safeData.value.length > 0
-      const hasActiveVars = activeVariables.value.length > 0
       const hasValidData = hasData && activeVariables.value.some(v =>
           safeData.value.some(d => d[v] !== undefined)
       )
@@ -215,6 +209,11 @@ export default {
       }
       return map[value]
     }
+    const getOriginalDiscreteLabel = (varName, code) => {
+      const map = discreteValueMap.value[varName] || {}
+      const entry = Object.entries(map).find(([, v]) => v === code)
+      return entry ? entry[0] : code
+    }
 
     const getChartOption = () => {
       if (activeVariables.value.length === 0 || safeData.value.length === 0) {
@@ -229,10 +228,10 @@ export default {
         alignTicks: true,
         axisLabel: {
           formatter: value => {
-            // 处理字符串类型数据
-            if (valueTypes.value[activeVariables.value[0]] === 'string') {
+            // 处理离散字符串类型数据
+            if (valueTypes.value[activeVariables.value[0]] === 'category') {
               const entry = Object.entries(discreteValueMap.value[activeVariables.value[0]])
-                  .find(([k, v]) => v === value)
+                  .find(([, v]) => v === value)
               return entry ? entry[0] : value
             }
             return Number(value).toFixed(2)
@@ -249,7 +248,7 @@ export default {
           yAxisIndex: 0,
           data: values.map(v => {
             if (v === undefined) return null
-            return valueTypes.value[varName] === 'string'
+            return valueTypes.value[varName] === 'category'
                 ? getDiscreteValue(varName, v)
                 : Number(v)
           }),
@@ -268,13 +267,16 @@ export default {
         animationDuration: animationConfig.duration,
         animationEasing: animationConfig.easing,
         tooltip: {
-          trigger: 'axis',
+          trigger: 'item',
           formatter: params => {
-            if (!params || !params.length) return ''
-            return `${params[0].axisValue}<br/>` +
-                params.map(p =>
-                    `${p.marker} ${p.seriesName}: ${Number(p.value).toFixed(2)}`
-                ).join('<br>')
+            if (!params) return ''
+            const name = params.name
+            const seriesName = params.seriesName
+            const varType = valueTypes.value[seriesName]
+            const yValue = varType === 'category'
+                ? getOriginalDiscreteLabel(seriesName, params.value)
+                : Number(params.value).toFixed(2)
+            return `${name}<br/>${params.marker} ${seriesName}: ${yValue}`
           }
         },
         legend: {
@@ -292,7 +294,7 @@ export default {
           name: props.config.x_axis,
           nameLocation: 'center',
           nameGap: 25,
-          data: safeData.value.map(d => d.timestamp),
+          data: safeData.value.map(d => d.taskId),
           axisLabel: {
             formatter: value => value.length > 8 ? `${value.slice(0, 8)}...` : value
           },
@@ -305,18 +307,6 @@ export default {
         yAxis: yAxisConfig,
         series: seriesConfig
       }
-    }
-
-    const smoothUpdate = () => {
-      if (!chart.value) return
-      chart.value.setOption({
-        series: activeVariables.value.map(varName => ({
-          data: safeData.value.map(d => d[varName])
-        }))
-      }, {
-        replaceMerge: ['series'],
-        notMerge: false
-      })
     }
 
     // Lifecycle Hooks
@@ -390,7 +380,6 @@ export default {
   transform: translate(-50%, -50%);
   text-align: center;
   color: var(--el-text-color-secondary);
-  z-index: 10;
 }
 
 .empty-state p {

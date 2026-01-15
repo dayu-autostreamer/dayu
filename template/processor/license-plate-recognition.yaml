@@ -1,0 +1,29 @@
+position: both
+pod-template:
+  image: license-plate-recognition
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "classifier_processor"
+    - name: CLASSIFIER_PARAMETERS
+      value: >
+        {
+          'det_trt_weights':'plate_detect.trt', 
+          'non_det_trt_weights':'plate_detect.pt',
+          'rec_trt_weights':'plate_rec.trt',
+          'non_rec_trt_weights':'plate_rec_color.pth',
+          'device': 0
+        }
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        [ 'obj_num']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/license-plate-recognition/"

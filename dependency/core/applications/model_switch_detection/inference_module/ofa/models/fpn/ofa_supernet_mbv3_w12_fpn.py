@@ -19,8 +19,8 @@ from models.ops.dynamic_conv2d import DynamicConv2d
 #             extra_blocks=extra_blocks
 #         )
 #         self.out_channels = out_channels
-
-#         # 添加bn层
+#
+#         # Add BN layers
 #         self.dynamic_convs = nn.ModuleList()
 #         self.bns = nn.ModuleList()
 #         for i in range(len(in_channels_list)):
@@ -28,7 +28,7 @@ from models.ops.dynamic_conv2d import DynamicConv2d
 #                 DynamicConv2d(in_channels_list[i], in_channels_list[i], kernel_size=1)
 #             )
 #             self.bns.append(nn.BatchNorm2d(in_channels_list[i]))
-
+#
 #     def forward(self, x: Tensor) -> Dict[str, Tensor]:
 #         mid_features = OrderedDict()
 #         x = self.body.first_conv(x)
@@ -57,7 +57,7 @@ class Mbv3W12Fpn(nn.Module):
         out_channels = 192
         extra_blocks = CustomLastLevelMaxPool()
         self.body = backbone
-        # 使用自定义 FPN
+        # Use a custom FPN
         self.fpn = CustomFPN(
             in_channels_list=in_channels_list,
             out_channels=out_channels,
@@ -75,7 +75,7 @@ class Mbv3W12Fpn(nn.Module):
             for idx in active_idx:
                 x = self.body.blocks[idx](x)
                 if idx == active_idx[-1] and stage_id > 0:
-                    # 直接使用 backbone 输出的特征
+                    # Use features directly from the backbone output
                     mid_features[str(stage_id-1)] = x
         
         x = self.fpn(mid_features)

@@ -1,0 +1,28 @@
+position: both
+pod-template:
+  image: vehicle-detection
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "detector_tracker_processor"
+    - name: DETECTOR_PARAMETERS
+      value: >
+        {
+          'trt_weights':'yolov8s.engine', 
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'yolov8s.pt',
+          'device':0
+        }
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        ['obj_num', 'obj_size']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/vehicle-detection/"

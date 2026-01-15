@@ -3,7 +3,7 @@ import os.path
 import time
 import numpy as np
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
+from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
 from core.lib.common import VideoOps
 
@@ -28,7 +28,7 @@ class HEISYNAgent(BaseAgent, abc.ABC):
                  punishment_bound: float = -2,
                  reward_bound: float = 0.5,
                  reward_coefficient: float = 0.3, ):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         from .hei import SoftActorCritic, RandomBuffer, Adapter, NegativeFeedback, StateBuffer
 
@@ -80,8 +80,8 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         self.latest_task_delay = None
         self.schedule_plan = None
 
-        self.macro_overhead_estimator = OverheadEstimator('HEI-Macro-Syn', 'scheduler/hei')
-        self.micro_overhead_estimator = OverheadEstimator('HEI-Micro-Syn', 'scheduler/hei')
+        self.macro_overhead_estimator = OverheadEstimator('HEI-Macro-Syn', 'scheduler/hei', agent_id=self.agent_id)
+        self.micro_overhead_estimator = OverheadEstimator('HEI-Micro-Syn', 'scheduler/hei', agent_id=self.agent_id)
 
     def get_drl_state_buffer(self):
         while True:
@@ -151,7 +151,7 @@ class HEISYNAgent(BaseAgent, abc.ABC):
             fps_ratio = meta_data['fps'] / raw_metadata['fps']
 
             if not self.acc_estimator:
-                self.create_acc_estimator(service_name=dag.get_next_nodes('start')[0])
+                self.create_acc_estimator(service_name=dag.get_next_nodes(TaskConstant.START.value)[0])
 
             acc = self.acc_estimator.calculate_accuracy(hash_data, content, resolution_ratio, fps_ratio)
             acc_list.append(acc)
@@ -230,8 +230,8 @@ class HEISYNAgent(BaseAgent, abc.ABC):
             LOGGER.warning(f'Wrong scenario from Distributor: {str(e)}')
 
     def update_resource(self, device, resource):
-        bandwidth = resource['bandwidth']
-        if bandwidth != 0:
+        bandwidth = resource['available_bandwidth']
+        if bandwidth != -1:
             self.state_buffer.add_resource_buffer([bandwidth])
 
     def update_policy(self, policy):

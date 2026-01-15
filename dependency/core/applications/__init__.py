@@ -2,7 +2,7 @@ def import_application():
     import os
     from importlib import import_module
 
-    service_name = os.getenv('SERVICE_NAME')
+    service_name = os.getenv('PROCESSOR_SERVICE_NAME')
     if service_name and service_name.startswith('processor-'):
         processor = service_name[len('processor-'):].replace('-', '_')
         module = import_module(f"core.applications.{processor}")

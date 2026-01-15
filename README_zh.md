@@ -9,13 +9,21 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10523/badge)](https://www.bestpractices.dev/projects/10523)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
-![](pics/dayu_logo.png)
+![](static/dayu_logo.png)
+
+| <img src="static/news.svg" width="8%">  NEWS                            |
+|-------------------------------------------------------------------------|
+| (**最新版本**) 2026.1.15. 大禹 v1.2 发布， 详细信息请查阅 [CHANGELOG](CHANGELOG.md#v12) |
+| 2025.5.7. 大禹 v1.1 发布， 详细信息请查阅 [CHANGELOG](CHANGELOG.md#v11)             |
+| 2025.2.21. 大禹 v1.0 发布， 详细信息请查阅 [CHANGELOG](CHANGELOG.md#v10)            |
 
 ## 简介
 
-大禹是一款用于边缘计算中的流数据处理自适应调度系统，大禹系统支持多数据流的流水线服务处理，并专注于边缘计算中的调度策略。它基于 KubeEdge 开发，可以在不同平台之间轻松迁移。
+大禹是一款用于边缘计算中的流数据处理自适应调度系统，大禹系统支持多数据流的流水线服务处理，并专注于边缘计算中的调度策略。它基于
+KubeEdge 开发，可以在不同平台之间轻松迁移。
 
 ## 相关框架
+
 - [Docker Container](https://github.com/docker/docker-ce)
 - [Kubernetes](https://github.com/kubernetes/kubernetes)
 - [KubeEdge](https://github.com/kubeedge/kubeedge)
@@ -27,25 +35,28 @@
 
 大禹由五个层次组成：
 
-- **基础系统层**：该层采用 `KubeEdge` 架构，部署在云边环境的所有分布式节点上。`KubeEdge` 是华为为边缘场景提出的 `Kubernetes` 扩展，能很好地部署在资源有限、性能低下的设备上。
+- **基础系统层**：该层采用 `KubeEdge` 架构，部署在云边环境的所有分布式节点上。`KubeEdge` 是华为为边缘场景提出的
+  `Kubernetes` 扩展，能很好地部署在资源有限、性能低下的设备上。
 - **中间接口层**：通过修改和扩展官方接口组件 `Sedna` 和通信组件 `Edgemesh`，提供定制化服务安装和组件通信。
 - **系统支持层**：为用户提供交互式界面（前端）、自动安装（后端）和模拟数据源（数据源）。
 - **协同调度层**：由我们自主开发的功能组件组成，完成流水线任务执行和调度协作等功能。
 - **应用服务层**：接收用户定义的服务应用。只要用户根据平台定义的接口需求开发服务，就可以以容器形式嵌入平台并完成云边节点之间的执行。
 
-![](pics/dayu-layer-structure.png)
+![](static/dayu-layer-structure.png)
 
 ### 基础系统层与中间接口层
 
-- **基础系统层** 
-  - `KubeEdge` 使用 CloudCore 和 EdgeCore 实现云边环境中的容器化应用编排和设备管理。
-- **中间接口层** 
-  - `Sedna` 使用全局管理器（GM）和本地控制器（LC）实现云边协同应用。根据平台的部署需求，我们修改了 `Sedna` 中 GM 和 LC 的 CRD 控制器（[链接](https://github.com/dayu-autostreamer/dayu-sedna)）。
-  - `Edgemesh` 为系统中的 Pod 间通信提供高效方式。根据大禹的需求，我们修改了 `Edgemesh` 的负载均衡策略（[链接](https://github.com/dayu-autostreamer/dayu-edgemesh)）。
+- **基础系统层**
+    - `KubeEdge` 使用 CloudCore 和 EdgeCore 实现云边环境中的容器化应用编排和设备管理。
+- **中间接口层**
+    - `Sedna` 使用全局管理器（GM）和本地控制器（LC）实现云边协同应用。根据平台的部署需求，我们修改了 `Sedna` 中 GM 和 LC 的
+      CRD 控制器（[链接](https://github.com/dayu-autostreamer/dayu-sedna)）。
+    - `Edgemesh` 为系统中的 Pod 间通信提供高效方式。根据大禹的需求，我们修改了 `Edgemesh`
+      的负载均衡策略（[链接](https://github.com/dayu-autostreamer/dayu-edgemesh)）。
 
 *注意：为便于理解与区分，我们将 `Sedna` 的 "本地控制器（Local Controller）" 转换为结构中的 "本地管理器（Local Manager）"。*
 
-![](pics/dayu-lower-layer-structure.png)
+![](static/dayu-lower-layer-structure.png)
 
 ### 系统支持层
 
@@ -70,7 +81,7 @@
 
 同时，`processor` 可以封装用户定义的单阶段或多阶段（流水线）的应用服务，构成应用服务层。
 
-![](pics/dayu-upper-layer-structure.png)
+![](static/dayu-upper-layer-structure.png)
 
 ## 特性
 
@@ -94,11 +105,16 @@
 - [谢磊 lxie@nju.edu.cn](mailto:lxie@nju.edu.cn)
 - [周文晖 whzhou@smail.nju.edu.cn](mailto:whzhou@smail.nju.edu.cn)
 
-## 贡献
-
-如果您有兴趣成为贡献者并希望参与大禹系统代码的开发，请参阅[CONTRIBUTING](CONTRIBUTING.md)，了解提交补丁和贡献流程的详细信息。
-
 ## 许可证
 
 大禹系统遵循Apache 2.0许可证,请参阅[LICENSE](LICENSE)以获取详细信息。
 
+## 贡献
+
+如果您有兴趣成为贡献者并希望参与大禹系统代码的开发，请参阅[CONTRIBUTING](CONTRIBUTING.md)，了解提交补丁和贡献流程的详细信息。
+
+感谢以下开发者对大禹系统的贡献：
+
+<a href="https://github.com/dayu-autostreamer/dayu/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu"  alt=""/>
+</a>

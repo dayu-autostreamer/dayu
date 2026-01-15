@@ -1,0 +1,28 @@
+position: both
+pod-template:
+  image: category-identification
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "classifier_processor"
+    - name: CLASSIFIER_PARAMETERS
+      value: >
+        {
+          'trt_weights':'yolov8s-cls.engine', 
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'yolov8s-cls.pt',
+          'device':0
+        }
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        [ 'obj_num']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/category-identification/"

@@ -39,7 +39,6 @@ build:
 
 # Build all images
 all:
-	@echo "Running build images of $(WHAT)"
 	@echo "Current registry is: $(REGISTRY)"
 	@echo "Current repository is: $(REPOSITORY)"
 	@echo "Current image tag is: $(IMAGE_TAG)"

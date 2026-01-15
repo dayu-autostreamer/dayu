@@ -93,6 +93,18 @@ class KubeHelper:
         return KubeHelper.delete_custom_resources(docs)
 
     @staticmethod
+    def update_custom_resources(docs):
+        raise NotImplementedError(
+            'Update resource is not implemented, please use deleting resource and creating resource to replace.')
+
+    @staticmethod
+    def update_custom_resources_by_file(yaml_file_path):
+        with open(yaml_file_path, 'r') as file:
+            docs = YamlOps.read_all_yaml(file)
+
+        return KubeHelper.update_custom_resources(docs)
+
+    @staticmethod
     def check_pods_running(namespace):
         config.load_incluster_config()
         v1 = client.CoreV1Api()
@@ -103,22 +115,49 @@ class KubeHelper:
         for pod in pods.items:
             if pod.status.phase != "Running" or not all([c.ready for c in pod.status.container_statuses]):
                 all_running = False
+                break
 
         return all_running
 
     @staticmethod
-    def check_component_pods_exist(namespace):
+    def check_specific_pods_running(namespace, specific_pods):
         config.load_incluster_config()
         v1 = client.CoreV1Api()
-        except_pod_name = ['backend', 'frontend', 'datasource', 'redis']
+
+        pods = v1.list_namespaced_pod(namespace)
+        all_running = True
+        for pod in pods.items:
+            if any(specific_pod in pod.metadata.name for specific_pod in specific_pods):
+                if pod.status.phase != "Running" or not all([c.ready for c in pod.status.container_statuses]):
+                    all_running = False
+                    break
+
+        return all_running
+
+    @staticmethod
+    def check_pods_without_string_exists(namespace: str, exclude_str_list: list) -> bool:
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+
         pods = v1.list_namespaced_pod(namespace)
         for pod in pods.items:
-            if not any(except_name in pod.metadata.name for except_name in except_pod_name):
+            if not any(except_name in pod.metadata.name for except_name in exclude_str_list):
                 return True
         return False
 
     @staticmethod
-    def check_pos_exist(namespace):
+    def check_pods_with_string_exists(namespace: str, include_str_list: list) -> bool:
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+
+        pods = v1.list_namespaced_pod(namespace)
+        for pod in pods.items:
+            if any(specific_pod in pod.metadata.name for specific_pod in include_str_list):
+                return True
+        return False
+
+    @staticmethod
+    def check_pods_exist(namespace):
         config.load_incluster_config()
         v1 = client.CoreV1Api()
 
@@ -210,7 +249,7 @@ class KubeHelper:
             if node.metadata.name == hostname:
                 return int(node.status.capacity['cpu'][-1])
 
-        assert None, f'hostname of {hostname} not exists'
+        raise Exception(f'hostname of {hostname} not exists')
 
     @staticmethod
     def create_namespace(namespace_name):
@@ -275,3 +314,30 @@ class KubeHelper:
             'address': address,
             'port': port
         }
+
+    @staticmethod
+    def get_node_jetpack_labels(node_name:str) -> dict:
+        """
+        Read JetPack/L4T info from a given Kubernetes Node's labels.
+
+        Returns:
+            dict with keys:
+              - node
+              - jetpack_major (e.g. "4"/"5"/"6" or None)
+              - l4t_major (e.g. "32"/"35"/"36" or None)
+        """
+        if not node_name or not node_name.strip():
+            raise ValueError("node_name must be non-empty")
+
+        # In-cluster config (works inside a pod)
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        node_obj = v1.read_node(name=node_name)
+        labels = (node_obj.metadata.labels or {})
+
+        return {
+            "node": node_name,
+            "jetpack_major": labels.get("jetson.nvidia.com/jetpack.major"),
+            "l4t_major": labels.get("jetson.nvidia.com/l4t.major")
+        }
+

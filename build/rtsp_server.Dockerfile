@@ -5,7 +5,8 @@ LABEL authors="skyrim"
 
 ENV TZ=Asia/Shanghai
 
-RUN apt-get update && \
+RUN rm -rf /etc/apt/sources.list.d/ros-latest.list && \
+    apt-get update && \
     apt-get install -y ffmpeg && \
     apt-get clean
 
@@ -29,6 +30,5 @@ RUN sed -i \
   -e 's/rtcpAddress: :8001/rtcpAddress: :7001/'  \
   -e 's/writeQueueSize: 512/writeQueueSize: 32768/' \
   mediamtx.yml
-
 
 CMD ["/bin/bash"]

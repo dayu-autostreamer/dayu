@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 def set_running_statistics(model, image_loader, max_iters=10):
-    # 对于bn测量，可以用gpu加速
+    # For BN calibration, GPU can speed up measurement
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model = model.to(device)
     bn_mean = {}
@@ -79,12 +79,11 @@ def set_running_statistics(model, image_loader, max_iters=10):
             m.running_var.data[:feature_dim].copy_(bn_var[name].avg)
 
 def save_bn_statistics(model, save_path):
-    """
-    保存模型中所有BN层的running_mean和running_var到文件
-    
+    """Save running_mean and running_var for all BN layers in the model to a file.
+
     Args:
-        model: 神经网络模型
-        save_path: 保存统计数据的文件路径(.pth)
+        model: Neural network model.
+        save_path: File path to save statistics (.pth).
     """
     bn_stats = {}
     for name, m in model.named_modules():
@@ -98,12 +97,11 @@ def save_bn_statistics(model, save_path):
     print(f"BN statistics saved to {save_path}")
 
 def load_bn_statistics(model, stats_path):
-    """
-    从文件加载BN统计数据并应用到模型
-    
+    """Load BN statistics from a file and apply them to the model.
+
     Args:
-        model: 神经网络模型
-        stats_path: 包含BN统计数据的文件路径(.pth)
+        model: Neural network model.
+        stats_path: Path to the file containing BN statistics (.pth).
     """
     bn_stats = torch.load(stats_path)
     
@@ -112,7 +110,7 @@ def load_bn_statistics(model, stats_path):
             stats = bn_stats[name]
             feature_dim = stats['running_mean'].shape[0]
             
-            # 将统计数据加载到模型中
+            # Load statistics into the model
             m.running_mean.data[:feature_dim].copy_(torch.from_numpy(stats['running_mean']).to(m.running_mean.device))
             m.running_var.data[:feature_dim].copy_(torch.from_numpy(stats['running_var']).to(m.running_var.device))
     

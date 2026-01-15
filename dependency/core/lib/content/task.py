@@ -6,7 +6,7 @@ from .service import Service
 from .dag import DAG
 
 from core.lib.solver import LCASolver, IntermediateNodeSolver, PathSolver
-from core.lib.common import NameMaintainer
+from core.lib.common import NameMaintainer, TaskConstant
 
 
 class Task:
@@ -16,11 +16,11 @@ class Task:
                  source_device: str,
                  all_edge_devices: list,
                  dag: DAG = None,
-                 flow_index: str = 'start',
+                 deployment: dict = None,
+                 flow_index: str = TaskConstant.START.value,
                  past_flow_index: str = None,
                  metadata: dict = None,
                  raw_metadata: dict = None,
-                 scenario: dict = None,
                  temp: dict = None,
                  hash_data: list = None,
                  file_path: str = None,
@@ -52,14 +52,13 @@ class Task:
 
         # dag info of task
         self.__dag_flow = dag
+        # deployment info
+        self.__deployment = deployment
 
         # current service name in dag (work as pointer)
         self.__cur_flow_index = flow_index
         # past service name in dag
         self.__past_flow_index = past_flow_index
-
-        # scenario data extracted from processing
-        self.__scenario_data = scenario if scenario else {}
 
         # temporary data (main for time tickets)
         self.__tmp_data = temp if temp else {}
@@ -71,7 +70,9 @@ class Task:
         self.__file_path = file_path
 
     @staticmethod
-    def extract_dag_from_dict(dag_dict: dict, start_node_name='start', end_node_name='end'):
+    def extract_dag_from_dict(dag_dict: dict,
+                              start_node_name=TaskConstant.START.value,
+                              end_node_name=TaskConstant.END.value):
         """transfer DAG dict in to DAG class"""
         dag_flow = DAG.from_dict(dag_dict)
         if start_node_name not in dag_dict:
@@ -114,18 +115,15 @@ class Task:
             raise ValueError('Current DAG is not a pipeline structure.')
 
         pipeline_deployment_info = []
-        start = 'start'
-        end = 'end'
+        start = TaskConstant.START.value
+        end = TaskConstant.END.value
         current = dag_flow.get_next_nodes(start)[0]
         while current != end:
             pipeline_deployment_info.append(
                 {'service_name': dag_flow.get_node(current).service.get_service_name(),
                  'execute_device': dag_flow.get_node(current).service.get_execute_device()}
             )
-        pipeline_deployment_info.append(
-            {'service_name': dag_flow.get_node(current).service.get_service_name(),
-             'execute_device': dag_flow.get_node(current).service.get_execute_device()}
-        )
+            current = dag_flow.get_next_nodes(current)[0]
 
         return pipeline_deployment_info
 
@@ -138,7 +136,7 @@ class Task:
                 'next_nodes': [],
             }
         prev_node = None
-        for service in pipeline_deployment[-2::-1]:
+        for service in pipeline_deployment[::-1]:
             if prev_node:
                 dag_dict[service['service_name']]['next_nodes'].append(prev_node)
             prev_node = service['service_name']
@@ -179,6 +177,12 @@ class Task:
     def set_dag(self, dag):
         self.__dag_flow = dag
 
+    def get_deployment(self):
+        return self.__deployment
+
+    def set_deployment(self, deployment):
+        self.__deployment = deployment
+
     def get_flow_index(self):
         return self.__cur_flow_index
 
@@ -203,14 +207,24 @@ class Task:
     def set_raw_metadata(self, data: dict):
         self.__raw_metadata = data
 
-    def get_scenario_data(self):
-        return self.__scenario_data
+    def get_scenario_data(self, service_name):
+        return self.get_service(service_name).get_scenario_data()
+
+    def get_first_scenario_data(self):
+        first_service_names = self.__dag_flow.get_next_nodes(TaskConstant.START.value)
+        first_scenario_data = [self.__dag_flow.get_node(service_name).service.get_scenario_data()
+                               for service_name in first_service_names]
+
+        # return one of first non-empty scenario data
+        return next((scenario for scenario in first_scenario_data if scenario is not None), None)
 
     def set_scenario_data(self, data: dict):
-        self.__scenario_data = data
+        assert self.__dag_flow, 'Task DAG is empty!'
+        self.get_current_service().set_scenario_data(data)
 
     def add_scenario(self, data: dict):
-        self.__scenario_data.update(data)
+        assert self.__dag_flow, 'Task DAG is empty!'
+        self.get_current_service().add_scenario(data)
 
     def get_tmp_data(self):
         return self.__tmp_data
@@ -262,21 +276,29 @@ class Task:
         return next((content for content in prev_contents if content is not None), None)
 
     def get_first_content(self):
-        first_service_names = self.__dag_flow.get_next_nodes('start')
+        first_service_names = self.__dag_flow.get_next_nodes(TaskConstant.START.value)
         first_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
                           for service_name in first_service_names]
         # return one of first non-empty content
         return next((content for content in first_contents if content is not None), None)
 
     def get_last_content(self):
-        last_service_names = self.__dag_flow.get_prev_nodes('end')
+        last_service_names = self.__dag_flow.get_prev_nodes(TaskConstant.END.value)
         last_contents = [self.__dag_flow.get_node(service_name).service.get_content_data()
-                          for service_name in last_service_names]
+                         for service_name in last_service_names]
         # return one of first non-empty content
         return next((content for content in last_contents if content is not None), None)
 
+    def get_service(self, service_name):
+        assert self.__dag_flow, 'Task DAG is empty!'
+        return self.__dag_flow.get_node(service_name).service
+
     def set_current_content(self, content):
         self.__dag_flow.get_node(self.__cur_flow_index).service.set_content_data(content)
+
+    def get_current_service(self):
+        assert self.__dag_flow, 'Task DAG is empty!'
+        return self.__dag_flow.get_node(self.__cur_flow_index).service
 
     def get_current_service_info(self):
         assert self.__dag_flow, 'Task DAG is empty!'
@@ -311,26 +333,27 @@ class Task:
 
     def calculate_total_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
-        assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
+        assert self.__cur_flow_index == TaskConstant.END.value, f'DAG is not completed, current service: {self.__cur_flow_index}'
 
-        total_time, _ = PathSolver(self.__dag_flow).get_weighted_longest_path('start', 'end',
-                                                                               lambda x: x.get_service_total_time())
+        total_time, _ = PathSolver(self.__dag_flow).get_weighted_longest_path(TaskConstant.START.value,
+                                                                              TaskConstant.END.value,
+                                                                              lambda x: x.get_service_total_time())
         return total_time
 
     def calculate_cloud_edge_transmit_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
-        assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
+        assert self.__cur_flow_index == TaskConstant.END.value, f'DAG is not completed, current service: {self.__cur_flow_index}'
 
         # get the longest transmitting time as cloud-edge transmitting time
         transmit_time = 0
-        for service_name in self.__dag_flow:
+        for service_name in self.__dag_flow.nodes:
             service = self.__dag_flow.get_node(service_name).service
             transmit_time = max(transmit_time, service.get_transmit_time())
         return transmit_time
 
     def get_delay_info(self):
         assert self.__dag_flow, 'Task DAG is empty!'
-        assert self.__cur_flow_index == 'end', f'DAG is not completed, current service: {self.__cur_flow_index}'
+        assert self.__cur_flow_index == TaskConstant.END.value, f'DAG is not completed, current service: {self.__cur_flow_index}'
 
         delay_info = ''
         total_time = self.calculate_total_time()
@@ -340,6 +363,7 @@ class Task:
             service = self.__dag_flow.get_node(service_name).service
             delay_info += f'stage[{service.get_service_name()}] -> (device:{service.get_execute_device()})    ' \
                           f'execute delay:{service.get_execute_time():.4f}s    ' \
+                          f'real execute delay:{service.get_real_execute_time():.4f}s    ' \
                           f'transmit delay:{service.get_transmit_time():.4f}s\n'
         delay_info += (f'total delay:{total_time:.4f}s  '
                        f'average delay: {total_time / self.get_metadata()["buffer_size"]:.4f}s\n')
@@ -378,6 +402,10 @@ class Task:
         assert self.__dag_flow, 'Task DAG is empty!'
         return self.__dag_flow.get_node(self.__cur_flow_index).service.get_execute_device()
 
+    def set_current_stage_device(self, dst_device):
+        assert self.__dag_flow, 'Task DAG is empty!'
+        return self.__dag_flow.get_node(self.__cur_flow_index).service.set_execute_device(dst_device)
+
     def set_initial_execute_device(self, device):
         Task.set_execute_device(self.__dag_flow, device)
 
@@ -400,7 +428,8 @@ class Task:
         return new_task
 
     def merge_task(self, other_task: 'Task'):
-        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_past_flow_index(), other_task.get_past_flow_index())
+        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_past_flow_index(),
+                                                               other_task.get_past_flow_index())
 
         merged_dag = self.get_dag()
         other_dag = other_task.get_dag()
@@ -416,6 +445,22 @@ class Task:
 
         self.set_dag(merged_dag)
 
+    def record_time_ticket_in_service(self, type_tag: str, is_end: bool, time_ticket: float):
+        assert self.__dag_flow, 'Task DAG is empty!'
+
+        end_tag = 'end' if is_end else 'start'
+
+        current_service = self.get_current_service()
+        current_service.record_time_ticket(tag=f'{type_tag}_{end_tag}', duration=time_ticket)
+
+    def erase_time_ticket_in_service(self, type_tag: str, is_end: bool):
+        assert self.__dag_flow, 'Task DAG is empty!'
+
+        end_tag = 'end' if is_end else 'start'
+
+        current_service = self.get_current_service()
+        current_service.erase_time_ticket(tag=f'{type_tag}_{end_tag}')
+
     def to_dict(self):
         return {
             'source_id': self.get_source_id(),
@@ -423,11 +468,11 @@ class Task:
             'source_device': self.get_source_device(),
             'all_edge_devices': self.get_all_edge_devices(),
             'dag': self.get_dag().to_dict() if self.get_dag() else None,
+            'deployment': self.get_deployment(),
             'cur_flow_index': self.get_flow_index(),
             'past_flow_index': self.get_past_flow_index(),
             'meta_data': self.get_metadata(),
             'raw_meta_data': self.get_raw_metadata(),
-            'scenario_data': self.get_scenario_data(),
             'tmp_data': self.get_tmp_data(),
             'hash_data': self.get_hash_data(),
             'file_path': self.get_file_path(),
@@ -444,11 +489,11 @@ class Task:
                    all_edge_devices=dag_dict['all_edge_devices'])
 
         task.set_dag(DAG.from_dict(dag_dict['dag'])) if 'dag' in dag_dict and dag_dict['dag'] else None
+        task.set_deployment(dag_dict['deployment']) if 'deployment' in dag_dict else None
         task.set_flow_index(dag_dict['cur_flow_index']) if 'cur_flow_index' in dag_dict else None
         task.set_past_flow_index(dag_dict['past_flow_index']) if 'past_flow_index' in dag_dict else None
         task.set_metadata(dag_dict['meta_data']) if 'meta_data' in dag_dict else None
         task.set_raw_metadata(dag_dict['raw_meta_data']) if 'raw_meta_data' in dag_dict else None
-        task.set_scenario_data(dag_dict['scenario_data']) if 'scenario_data' in dag_dict else None
         task.set_tmp_data(dag_dict['tmp_data']) if 'tmp_data' in dag_dict else None
         task.set_hash_data(dag_dict['hash_data']) if 'hash_data' in dag_dict else None
         task.set_file_path(dag_dict['file_path']) if 'file_path' in dag_dict else None

@@ -71,7 +71,7 @@ spec:
       spec:
         containers:
           - image: $REGISTRY/redis:latest
-            imagePullPolicy: IfNotPresent
+            imagePullPolicy: Always
             name: redis
             ports:
               - containerPort: 6379
@@ -101,6 +101,7 @@ spec:
     - file:
         paths:
           - $DATASOURCE_DATA_ROOT
+          - $DEFAULT_FILE_MOUNT_PREFIX/temp/
       logLevel:
         level: "DEBUG"
       template:
@@ -119,10 +120,12 @@ spec:
                   value: "$KUBERNETES_SERVICE_PORT"
                 - name: GUNICORN_PORT
                   value: "8000"
+                - name: KUBE_CACHE_TTL
+                  value: "$KUBE_CACHE_TTL"
                 - name: FILE_PREFIX
                   value: "$DATASOURCE_DATA_ROOT"
               image: $REGISTRY/$REPOSITORY/datasource:$TAG
-              imagePullPolicy: IfNotPresent
+              imagePullPolicy: Always
               name: datasource
               ports:
                 - containerPort: 8000
@@ -155,6 +158,7 @@ spec:
     file:
       paths:
       - $TEMPLATE
+      - $DEFAULT_FILE_MOUNT_PREFIX/temp/
     logLevel:
       level: "DEBUG"
     template:
@@ -163,8 +167,10 @@ spec:
           - env:
             - name: GUNICORN_PORT
               value: "8000"
+            - name: KUBE_CACHE_TTL
+              value: "$KUBE_CACHE_TTL"
             image: $REGISTRY/$REPOSITORY/backend:$TAG
-            imagePullPolicy: IfNotPresent
+            imagePullPolicy: Always
             name: backend
             ports:
               - containerPort: 8000
@@ -210,7 +216,7 @@ spec:
             - name: VITE_PUBLIC_PATH
               value: /vue-next-admin-preview/
             image: $REGISTRY/$REPOSITORY/frontend:$TAG
-            imagePullPolicy: IfNotPresent
+            imagePullPolicy: Always
             name: frontend
             ports:
               - containerPort: 8000
@@ -396,9 +402,11 @@ import_config() {
     CLUSTER_ROLE_BINDING=$(yq e '.pod-permission.cluster-role-binding' "$TMP_FILE")
     API_VERSION=$(yq e '.crd-meta.api-version' "$TMP_FILE")
     KIND=$(yq e '.crd-meta.kind' "$TMP_FILE")
+    KUBE_CACHE_TTL=$(yq e '.kube-cache-ttl' "$TMP_FILE")
     REGISTRY=$(yq e '.default-image-meta.registry' "$TMP_FILE")
     REPOSITORY=$(yq e '.default-image-meta.repository' "$TMP_FILE")
     TAG=$(yq e '.default-image-meta.tag' "$TMP_FILE")
+    DEFAULT_FILE_MOUNT_PREFIX=$(yq e '.default-file-mount-prefix' "$TMP_FILE")
     DATASOURCE_USE_SIMULATION=$(yq e '.datasource.use-simulation' "$TMP_FILE")
     DATASOURCE_DATA_ROOT=$(yq e '.datasource.data-root' "$TMP_FILE")
     DATASOURCE_NODE=$(yq e '.datasource.node' "$TMP_FILE")
@@ -472,7 +480,7 @@ get_kubernetes_service_endpoint() {
 
 display_config() {
     echo "----------------------------------------"
-    echo "        Configuration imported"
+    echo "        Configuration Imported"
     echo "----------------------------------------"
     echo "  Namespace: $NAMESPACE"
     echo "  Log Level: $LOG_LEVEL"
@@ -480,9 +488,11 @@ display_config() {
     echo "  Cluster Role Binding: $CLUSTER_ROLE_BINDING"
     echo "  API Version: $API_VERSION"
     echo "  Kind: $KIND"
+    echo "  Kube Cache TTL: $KUBE_CACHE_TTL"
     echo "  Registry: $REGISTRY"
     echo "  Repository: $REPOSITORY"
     echo "  Tag: $TAG"
+    echo "  Default File Mount Prefix: $DEFAULT_FILE_MOUNT_PREFIX"
     echo "  Datasource Simulation: $DATASOURCE_USE_SIMULATION"
     echo "  Datasource Data Root: $DATASOURCE_DATA_ROOT"
     echo "  Datasource Node: $DATASOURCE_NODE"

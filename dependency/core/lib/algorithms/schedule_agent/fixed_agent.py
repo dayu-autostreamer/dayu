@@ -1,5 +1,5 @@
 import abc
-from core.lib.common import ClassFactory, ClassType, KubeConfig, Context, ConfigLoader
+from core.lib.common import ClassFactory, ClassType, KubeConfig, Context, ConfigLoader, TaskConstant
 from core.lib.estimation import OverheadEstimator
 
 from .base_agent import BaseAgent
@@ -11,7 +11,7 @@ __all__ = ('FixedAgent',)
 class FixedAgent(BaseAgent, abc.ABC):
 
     def __init__(self, system, agent_id: int, configuration=None, offloading=None):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
@@ -28,9 +28,9 @@ class FixedAgent(BaseAgent, abc.ABC):
         elif isinstance(offloading, str):
             self.fixed_offloading = ConfigLoader.load(Context.get_file_path(offloading))
         else:
-            raise TypeError(f'Input "offloading" must be of type str or dict, get type {type(configuration)}')
+            raise TypeError(f'Input "offloading" must be of type str or dict, get type {type(offloading)}')
 
-        self.overhead_estimator = OverheadEstimator('Fixed', 'scheduler/fixed')
+        self.overhead_estimator = OverheadEstimator('Fixed', 'scheduler/fixed', agent_id=self.agent_id)
 
     def get_schedule_plan(self, info):
         if self.fixed_configuration is None or self.fixed_offloading is None:
@@ -53,7 +53,7 @@ class FixedAgent(BaseAgent, abc.ABC):
                 if service_name in service_info and service_name in self.fixed_offloading \
                         and self.fixed_offloading[service_name] in all_devices:
                     dag[service_name]['service']['execute_device'] = self.fixed_offloading[service_name]
-                elif service_name == 'start':
+                elif service_name == TaskConstant.START.value:
                     dag[service_name]['service']['execute_device'] = source_edge_device
                 else:
                     dag[service_name]['service']['execute_device'] = cloud_device

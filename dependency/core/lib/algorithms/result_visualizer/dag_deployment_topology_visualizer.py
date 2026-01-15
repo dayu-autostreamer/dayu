@@ -20,4 +20,4 @@ class DAGDeploymentTopologyVisualizer(TopologyVisualizer, abc.ABC):
             service_name = service["service_name"]
             service["data"] = '\n'.join(KubeConfig.get_nodes_for_service(service_name))
 
-        return {'topology': result}
+        return {self.variables[0]: result}

@@ -1,10 +1,8 @@
 import abc
 import os
 
-from core.lib.common import ClassFactory, ClassType, Context, LOGGER, EncodeOps
-from core.lib.common import VideoOps
+from core.lib.common import ClassFactory, ClassType, Context, LOGGER, EncodeOps, VideoOps, Queue, FileOps, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
-from core.lib.common import Queue, FileOps
 from core.lib.network import NodeInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, PortInfo, http_request
 from core.lib.content import Task
 
@@ -20,7 +18,7 @@ Implementation of Chameleon
 
 Jiang J, Ananthanarayanan G, Bodik P, et al. Chameleon: scalable adaptation of video analytics[C]//Proceedings of the 2018 conference of the ACM special interest group on data communication. 2018: 253-266.
 
-* Only suuport in http_video mode (need accuracy information)
+* Only support in http_video mode (needs accuracy information)
 """
 
 
@@ -30,7 +28,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
     def __init__(self, system, agent_id: int, fixed_policy: dict, acc_gt_dir: str,
                  best_num: int = 5, threshold=0.1,
                  profile_window=16, segment_size=4, calculate_time=1):
-        super().__init__()
+        super().__init__(system, agent_id)
 
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
@@ -41,32 +39,35 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         self.fps_list = system.fps_list.copy()
         self.resolution_list = system.resolution_list.copy()
 
+        self.local_device = NodeInfo.get_local_device()
+
         self.schedule_knobs = {'resolution': self.resolution_list,
                                'fps': self.fps_list}
 
         self.processor_address = None
 
-        # 大周期、小周期(段)、计算best_num个配置所允许的最大耗时
-        # 一个大周期里包含 profile_window / segment_size个段
-        # 为一个新的大周期求best_num个配置的耗时不能超过calculate_time
+
+        # Windowing configuration:
+        # - A large profiling window contains (profile_window / segment_size) segments
+        # - Computing the best_num configs at the start of a new window must finish within calculate_time
         self.profile_window = profile_window
         self.segment_size = segment_size
         self.calculate_time = calculate_time
 
-        # 每一个大周期需要选择的配置数
+        # Number of configurations to select per large window
         self.best_num = best_num
 
-        # best_config_list记录当前大周期已选好的best_num个配置,与其F1得分[(config,score),]
-        # 初始化的时候从get_default_profile()中获取, 用于在冷启动的第一个大周期里确定best_num个配置
+        # best_config_list stores the selected best_num configs for the current window with their F1 scores [(config, score),]
+        # Initialized from get_default_profile() for cold start to populate the first window
         self.best_config_list = self.get_default_profile()
 
-        # 所有旋钮值的排列组合, 用于在每个大周期开头的第一个段里求出best_num个最优配置
+        # Cartesian product of all knob values, used to search top best_num configs at the first segment of each window
         self.all_config_list = self.get_all_knob_combinations()
 
-        # 默认的"黄金配置"(精度最高、消耗最高的那个), 用于计算F1 score来对配置进行选择和排序
+        # Default "golden configuration" (highest accuracy and cost), used for computing F1 scores to rank configs
         self.golden_config = {'resolution': self.resolution_list[-1], 'fps': self.fps_list[-1]}
 
-        # 选择配置时所需的最新视频帧,一般数量也就几十帧
+        # Recent frames used during profiling and selection (usually a few dozen)
         self.raw_frames = Queue(maxsize=30)
         self.profiling_video_path = 'profiling_video.mp4'
 
@@ -76,13 +77,13 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         self.current_analytics = ''
 
-        # 对F1_score进行排序时用到的阈值
+        # Threshold used when ranking by F1 score
         self.threshold = threshold
 
         self.acc_gt_dir = acc_gt_dir
         self.acc_estimator = None
 
-        self.overhead_estimator = OverheadEstimator('Chameleon', 'scheduler/chameleon')
+        self.overhead_estimator = OverheadEstimator('Chameleon', 'scheduler/chameleon', agent_id=self.agent_id)
 
     def get_all_knob_combinations(self):
         all_config_list = []
@@ -91,81 +92,82 @@ class ChameleonAgent(BaseAgent, abc.ABC):
                 all_config_list.append({'resolution': resolution, 'fps': fps})
         return all_config_list
 
-    # 用途：每一个大周期开始时，执行此函数，更新最优的best_num个配置
-    # 注意: 该函数执行时间不能超过calculate_time
+    # Purpose: At the beginning of each large window, update the top best_num configurations.
+    # Note: This function must complete within calculate_time.
     def update_best_config_list_for_window(self):
-        # 待填充列表，用于存储self.all_config_list中每一种配置组合的得分
+        # Buffer to store the score for every combination in self.all_config_list
         target_config_list = []
 
-        # 为了比较各种配置旋钮的优劣，需要将其和黄金配置下的效果相比较
-        # 由于配置空间很大，为每一种配置都重新根据raw_video计算F1十分困难，而且会导致性能严重下降, 所以采用了一个偷懒的方法
-        # 即，为每一种配置的每一种取值打分；对于一种配置组合，将配置组合中每一个配置值对应的得分相乘，作为这个配置组合的得分，也就是config_score
-        # 比如，给reso={360p, 480p, 720p} 分别打分0.8 0.9 0.95，给fps={10, 20,30}分别打分0.6 0.7 0.8，从而(360p, 10fps)的得分就是0.8*0.6=0.48
-        # 这样一来就不用对配置空间中的每一种配置组合都分别计算F1分数，也可以间接比较不同配置的优劣了。
+        # To compare different knob settings, we compare them against the golden configuration.
+        # The configuration space can be large; recomputing F1 for every combination on raw video is expensive.
+        # Instead, we score each individual knob value by substituting it into the golden config to form new_config
+        # and computing its F1 on the current raw video. Then, for a config combination, we multiply the scores of
+        # its constituent knob values to approximate the combination's score (config_score).
+        # Example: if reso={360p, 480p, 720p} have scores 0.8, 0.9, 0.95 and fps={10, 20, 30} have scores 0.6, 0.7, 0.8,
+        # then the score for (360p, 10fps) is 0.8 * 0.6 = 0.48.
 
-        # 具体的，如何为每一种配置的取值打分呢？
-        # 答案是用这种取值代替黄金配置golden_config中的相应配置得到new_config，
-        # 然后计算new_config在当前raw_video下ground_truth的F1 score
-        # 由于new_config是基于黄金配置修改得到的，性能表现不会很差
-        # 假设黄金配置是(720p, 30)，那么360p的得分就是(360p, 30)在raw_video下实际运行后与groud_truth相比得到的F1_score
-        # 从而配置空间中某个普通配置(360p, 10)的配置得分就是(360p, 30)的F1分数与(720p, 10)的F1分数的乘积
-        each_knob_score = {}  # 存储每一种配置的每一种取值的得分
+        # Specifically, scoring each knob value is done by replacing the corresponding field in golden_config to get
+        # new_config, then computing the F1 score against the ground truth on the current raw video. Because new_config
+        # is close to the golden config, performance is acceptable.
+        # For example, if golden is (720p, 30fps), then the score of 360p is the F1 of (360p, 30fps) on the raw video.
+        # The score of a general config like (360p, 10fps) is the product of the F1 of (360p, 30fps) and (720p, 10fps).
+        each_knob_score = {}  # Stores the score for every value of each knob
         for knob in self.schedule_knobs:
             for value in self.schedule_knobs[knob]:
-                new_config = self.golden_config
+                new_config = self.golden_config.copy()
                 new_config.update({knob: value})
                 score = self.get_f1_score(new_config)
                 each_knob_score[value] = score
 
-        # 计算每一种配置组合的得分config_score
+        # Compute config_score for every combination
         for config in self.all_config_list:
             target_config_list.append((config, self.calculate_config_score(config, each_knob_score)))
         LOGGER.debug(f'[Config List] {target_config_list}')
-        # 根据score为所有配置进行排序, 排序的时候过滤掉得分小于等于阈值的, 最后根据排序结果取最优的best_num个。
-        # target_config_list中的每一个元素都是二元组，分别是配置以及得分
+        # Sort by score in descending order, filter out those with score <= threshold, and take the top best_num
+        # Each element of target_config_list is a tuple: (config, score)
         target_config_list = [x for x in sorted(target_config_list, key=lambda x: x[1], reverse=True) if
                               x[1] > self.threshold][:self.best_num]
 
-        # 提取 target_config_list中的配置，忽略配置的得分
+        # Extract the configs only and drop the scores
         self.best_config_list = [x[0] for x in target_config_list]
 
-    # 用途：从一个大周期的第二个segment开始，执行此函数，从已有的best_num个配置里选择一个最优的
-    # 注意: 该函数执行时间不能超过calculate_time
+    # Purpose: From the second segment of a window onward, rank and select among the existing best_num configs.
+    # Note: This function must complete within calculate_time.
     def update_best_config_list_for_segment(self):
 
         target_config_list = []
         each_knob_score = {}
         for knob in self.schedule_knobs:
             for value in self.schedule_knobs[knob]:
-                new_config = self.golden_config
+                new_config = self.golden_config.copy()
                 new_config.update({knob: value})
                 score = self.get_f1_score(new_config)
                 each_knob_score[value] = score
 
         LOGGER.debug(f'[Knob Score] {each_knob_score}')
 
-        # 为已有的best_num个配置打分
+        # Score the existing best_num configs
         for config in self.best_config_list:
             target_config_list.append((config, self.calculate_config_score(config, each_knob_score)))
         LOGGER.debug(f'[Config List] {target_config_list}')
-        # 从已有的配置来选择最优的，不需要机械能筛选
+        # Choose the best among existing configs; no additional filtering
         target_config_list = [x for x in sorted(target_config_list, key=lambda x: x[1], reverse=True)]
 
-        # 得到重新排序的best_config_list
+        # Update the reordered best_config_list
         self.best_config_list = [x[0] for x in target_config_list]
 
-        # 为每一个配置计算分数，用于给配置排序
+        # Compute a score for each config to enable ranking
 
     @staticmethod
     def calculate_config_score(config, knob_value):
         res = 1
-        # 遍历旋钮值
+        # Iterate over knob values
         for value in config.values():
             res *= knob_value[value]
         return res
 
-    # 使用raw_data, 计算target_config相对于groud_truth的F1得分
-    # 一般需要实际运行
+    # Use raw data to compute the F1 score of target_config relative to the ground truth.
+    # Typically requires actually running the analytics.
     def get_f1_score(self, target_config):
         try:
             resolution = target_config['resolution']
@@ -174,7 +176,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
             resolution = VideoOps.text2resolution(resolution)
             resolution_ratio = (resolution[0] / raw_resolution[0], resolution[1] / raw_resolution[1])
             frames, hash_data = self.process_video(resolution, fps)
-            LOGGER.debug(f'[FRAMES] length of frames:{len(frames)}')
+            LOGGER.debug(f'[FRAMES] length of frames: {len(frames)}')
             results = self.execute_analytics(frames)
             # LOGGER.debug(f'[Analysis results] {results}')
             LOGGER.debug(f'[Hash codes] {hash_data}')
@@ -203,7 +205,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         frame_count = 0
         frame_list = []
         frames_info = self.profiling_frames.copy()
-        LOGGER.debug(f'[FRAMES] get from profiling frames num: {len(frames_info)}')
+        LOGGER.debug(f'[FRAMES] number of profiling frames: {len(frames_info)}')
         new_frame_hash_codes = []
         for frame, hash_code in frames_info:
             frame_count += 1
@@ -221,14 +223,14 @@ class ChameleonAgent(BaseAgent, abc.ABC):
     def execute_analytics(self, frames):
         if not self.processor_address:
             processor_hostname = NodeInfo.get_cloud_node()
-            processor_port = PortInfo.get_service_port(self.current_analytics)
+            processor_port = PortInfo.get_service_port(self.local_device, self.current_analytics)
             self.processor_address = merge_address(NodeInfo.hostname2ip(processor_hostname),
                                                    port=processor_port,
                                                    path=NetworkAPIPath.PROCESSOR_PROCESS_RETURN)
 
         cur_path = self.compress_video(frames)
 
-        tmp_task = Task(source_id=0, task_id=0, source_device='', all_edge_devices=[], dag=self.task_dag)
+        tmp_task = Task(source_id=-1, task_id=-1, source_device='', all_edge_devices=[], dag=self.task_dag)
         tmp_task.set_file_path(cur_path)
         response = http_request(url=self.processor_address,
                                 method=NetworkAPIMethod.PROCESSOR_PROCESS_RETURN,
@@ -237,7 +239,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
                                                 open(tmp_task.get_file_path(), 'rb'),
                                                 'multipart/form-data')}
                                 )
-        FileOps.remove_data_file(tmp_task)
+        FileOps.remove_file(tmp_task.get_file_path())
         if response:
             task = Task.deserialize(response)
             return task.get_first_content()
@@ -281,7 +283,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         if frame_encoded:
             self.raw_frames.put((EncodeOps.decode_image(frame_encoded), frame_hash_code))
-            LOGGER.info('[Fetch Frame] Fetch a frame from generator..')
+            LOGGER.info('[Fetch Frame] Fetch a frame from generator.')
 
         if not self.best_config_list:
             LOGGER.info('[No best config list] the length of best_config_list is 0!')
@@ -290,7 +292,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         policy = self.fixed_policy.copy()
         cloud_device = self.cloud_device
 
-        self.current_analytics = self.task_dag.get_next_nodes('start')[0]
+        self.current_analytics = self.task_dag.get_next_nodes(TaskConstant.START.value)[0]
         for service_name in dag:
             dag[service_name]['service']['execute_device'] = cloud_device
 
@@ -302,18 +304,18 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         return policy
 
     def run(self):
-        # wait for video data
+        # Wait for video data
         while self.raw_frames.empty() or not self.current_analytics:
             time.sleep(1)
 
         LOGGER.info('[Chameleon Agent] Chameleon Agent Started')
-        segment_num = 0  # 判断当前是第几个大周期里的第几个小周期了
+        segment_num = 0  # Track which segment within which large window
 
         time.sleep(self.segment_size)
 
         while True:
 
-            # profiling frames has a number lower bound
+            # Profiling requires at least a certain number of frames
             if not self.raw_frames.full():
                 continue
 
@@ -322,13 +324,13 @@ class ChameleonAgent(BaseAgent, abc.ABC):
             with self.overhead_estimator:
                 self.profiling_frames = self.raw_frames.get_all_without_drop()
 
-                # 冷启动时， 为初始化的best_num个配置排序
+                # Cold start: rank the initial best_num configs
                 if segment_num == 1:
                     self.update_best_config_list_for_segment()
-                # 非冷启动且属于当前大周期开头时，重新选择best_num个配置并排序
+                # Non-cold start and at the beginning of a new large window: select and rank best_num configs
                 elif segment_num % (self.profile_window / self.segment_size) == 1:
                     self.update_best_config_list_for_window()
-                # 非冷启动且不位于大周期开头时, 为已经选好的best_num个配置排序
+                # Non-cold start and not at a window boundary: re-rank existing best_num configs
                 else:
                     self.update_best_config_list_for_segment()
             time_cost = self.overhead_estimator.get_latest_overhead()
@@ -338,7 +340,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
                 time.sleep(self.segment_size - time_cost)
 
     def get_default_profile(self):
-        # extract from offline experiment
+        # Extracted from offline experiments
         return [{'resolution': '1080p', 'fps': 30},
                 {'resolution': '1080p', 'fps': 10},
                 {'resolution': '900p', 'fps': 30},

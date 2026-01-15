@@ -1,6 +1,6 @@
 import threading
 
-from core.lib.common import Context, LOGGER
+from core.lib.common import Context, LOGGER, ResourceLockManager, KubeConfig, TaskConstant
 from core.lib.network import NodeInfo
 
 
@@ -9,17 +9,25 @@ class Scheduler:
         self.schedule_table = {}
         self.resource_table = {}
 
+        self.resource_lock_manager = ResourceLockManager()
+
         self.cloud_device = NodeInfo.get_cloud_node()
 
         self.config_extraction = Context.get_algorithm('SCH_CONFIG_EXTRACTION')
-        self.scenario_extraction = Context.get_algorithm('SCH_SCENARIO_EXTRACTION')
-        self.policy_extraction = Context.get_algorithm('SCH_POLICY_EXTRACTION')
+        self.scenario_retrieval = Context.get_algorithm('SCH_SCENARIO_RETRIEVAL')
+        self.policy_retrieval = Context.get_algorithm('SCH_POLICY_RETRIEVAL')
         self.startup_policy = Context.get_algorithm('SCH_STARTUP_POLICY')
 
-        self.extract_configuration()
+        self.extract_necessary_configuration_setting()
 
-    def extract_configuration(self):
+    def extract_necessary_configuration_setting(self):
         self.config_extraction(self)
+
+    def get_scenario_from_task(self, task):
+        return self.scenario_retrieval(task)
+
+    def get_policy_from_task(self, task):
+        return self.policy_retrieval(task)
 
     def get_startup_policy(self, info):
         return self.startup_policy(info)
@@ -28,9 +36,6 @@ class Scheduler:
         agent = Context.get_algorithm('SCH_AGENT', system=self, agent_id=source_id)
         threading.Thread(target=agent.run).start()
         self.schedule_table[source_id] = agent
-
-    def extract_scenario(self, task):
-        return self.scenario_extraction(task)
 
     def register_schedule_table(self, source_id):
         if source_id in self.schedule_table:
@@ -47,7 +52,19 @@ class Scheduler:
             LOGGER.debug('No schedule plan, use startup policy')
             plan = self.get_startup_policy(info)
 
-        LOGGER.info(f'[Schedule Plan] Source {source_id}: {plan}')
+        if not KubeConfig.check_services_running():
+            plan = self.set_backup_offloading_plan(plan)
+            LOGGER.debug('[Backup Offloading Plan] Processor not in running state (maybe in redeployment), '
+                         'using backup offloading plan (all cloud).')
+
+        # LOGGER.info(f'[Schedule Plan] Source {source_id}: {plan}')
+
+        return plan
+
+    def set_backup_offloading_plan(self, plan):
+        for service_name in plan['dag']:
+            if service_name != TaskConstant.START.value:
+                plan['dag'][service_name]['service']['execute_device'] = self.cloud_device
 
         return plan
 
@@ -56,13 +73,13 @@ class Scheduler:
         if source_id not in self.schedule_table:
             LOGGER.warning(f'Scheduler agent for source {source_id} not exists!')
             return
-        scenario = self.extract_scenario(task)
-        policy = self.policy_extraction(task)
+        scenario = self.get_scenario_from_task(task)
+        policy = self.get_policy_from_task(task)
         agent = self.schedule_table[source_id]
         agent.update_scenario(scenario)
         agent.update_policy(policy)
         agent.update_task(task)
-        LOGGER.info(f'[Update Scenario] Source {source_id}: {scenario}')
+        # LOGGER.info(f'[Update Scenario] Source {source_id}: {scenario}')
 
     def register_resource_table(self, device):
         if device in self.resource_table:
@@ -78,19 +95,29 @@ class Scheduler:
             agent = self.schedule_table[source_id]
             agent.update_resource(device, resource)
 
-        LOGGER.info(f'[Update Resource] Device {device}: {resource}')
+        # LOGGER.info(f'[Update Resource] Device {device}: {resource}')
 
     def get_scheduler_resource(self):
         return self.resource_table
+
+    async def get_resource_lock(self, info):
+        return await self.resource_lock_manager.acquire_lock(
+            info['resource'], info['device']
+        )
 
     def get_source_node_selection_plan(self, source_id, data):
         agent = self.schedule_table[source_id]
         plan = agent.get_source_selection_plan(data)
         return plan
 
-    def get_deployment_plan(self, source_id, data):
+    def get_initial_deployment_plan(self, source_id, data):
         agent = self.schedule_table[source_id]
-        plan = agent.get_service_deployment_plan(data)
+        plan = agent.get_initial_deployment_plan(data)
+        return plan
+
+    def get_redeployment_plan(self, source_id, data):
+        agent = self.schedule_table[source_id]
+        plan = agent.get_redeployment_plan(data)
         return plan
 
     def get_schedule_overhead(self):
