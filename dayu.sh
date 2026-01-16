@@ -19,10 +19,14 @@ check_install_yq() {
 NO_COLOR='\033[0m'
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+
 green_text() {
   echo -ne "$GREEN$@$NO_COLOR"
 }
-
+yellow_text() {
+  echo -ne "$YELLOW$@$NO_COLOR"
+}
 red_text() {
   echo -ne "$RED$@$NO_COLOR"
 }
@@ -296,7 +300,7 @@ delete_service_account() {
 stop_system() {
     local ns="${NAMESPACE}"
     local svc_wait="${SVC_WAIT_SEC:-120}"
-    local mesh_wait="${MESH_WAIT_SEC:-180}"
+    local mesh_wait="${MESH_WAIT_SEC:-30}"
     local pod_wait="${POD_WAIT_SEC:-180}"
     local ns_wait="${NS_WAIT_SEC:-180}"
 
@@ -382,7 +386,7 @@ stop_system() {
             fi
 
             if (( $(date +%s) - start_ts > timeout )); then
-                echo "$(red_text [DAYU]) ERROR: EdgeMesh iptables rules for '${namespace}' still exist after ${timeout}s"
+                echo "[DAYU] EdgeMesh iptables rules for '${namespace}' still exist after ${timeout}s"
                 return 1
             fi
             sleep 2
@@ -406,13 +410,12 @@ stop_system() {
 
     echo "$(green_text [DAYU]) (2/5) Waiting EdgeMesh to remove iptables rules for '${ns}'..."
     if ! _wait_edgemesh_rules_gone "${ns}" "${mesh_wait}"; then
-        echo "$(red_text [DAYU]) WARN: EdgeMesh didn't cleanup rules in time."
+        echo "[DAYU] WARN: EdgeMesh didn't cleanup rules in time."
 
         _force_remove_rules_in_edgemesh "${ns}"
 
         if ! _wait_edgemesh_rules_gone "${ns}" 20; then
-            echo "$(red_text [DAYU]) ERROR: rules keep coming back -> edge side likely still has dirty metadata (edgecore.db)."
-            echo "$(red_text [DAYU]) Dirty data leaves, continue anyway."
+            echo "[DAYU] WARN: Dirty data remains in edgecore.db, continue anyway."
         fi
     fi
 
