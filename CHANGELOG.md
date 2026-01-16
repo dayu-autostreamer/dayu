@@ -7,7 +7,7 @@
 ### Features
 
 ### Bug Fix
-- Fix iptable rule accumulation for edgemesh in incorrect dayu shutdowns with `dayu.sh` script correction.
+- Fix iptables rule accumulation for edgemesh in incorrect dayu shutdowns with `dayu.sh` script correction.
 
 ### Minor Update
 
