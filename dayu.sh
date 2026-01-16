@@ -292,29 +292,6 @@ delete_service_account() {
 }
 
 
-stop_system() {
-    echo "$(green_text [DAYU]) Stopping and cleaning up DAYU system in namespace $NAMESPACE..."
-    if check_namespace_existence; then
-        delete_service_account
-
-        echo "$(green_text [DAYU]) Delete resources in namespace $NAMESPACE"
-        kubectl delete pods,services,deployments,replicasets,statefulsets,horizontalpodautoscalers,jobs,cronjobs,configmaps,secrets --all -n "$NAMESPACE"
-
-        echo "Waiting for all resources to be deleted..."
-        while kubectl get all -n "$NAMESPACE" | grep -q .; do
-            sleep 1
-        done
-
-        echo "$(green_text [DAYU]) Delete namespace $NAMESPACE"
-        kubectl delete namespace "$NAMESPACE"
-
-        echo "$(green_text DAYU system stop successfully.)"
-
-    else
-        echo "Namespace $(red_text "$NAMESPACE") does not exist. No need to clean up resources."
-        exit 1
-    fi
-}
 
 stop_system() {
     local ns="${NAMESPACE}"
