@@ -4,18 +4,6 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-
-check_install_yq() {
-    if ! command -v yq &> /dev/null; then
-        echo "yq could not be found, installing..."
-        wget -O /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.6.1/yq_linux_amd64
-        chmod +x /usr/local/bin/yq
-        echo "yq installed successfully."
-    fi
-}
-
-
-
 NO_COLOR='\033[0m'
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -31,6 +19,14 @@ red_text() {
   echo -ne "$RED$@$NO_COLOR"
 }
 
+check_install_yq() {
+    if ! command -v yq &> /dev/null; then
+        echo "yq could not be found, installing..."
+        wget -O /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.6.1/yq_linux_amd64
+        chmod +x /usr/local/bin/yq
+        echo "yq installed successfully."
+    fi
+}
 
 check_namespace_existence() {
     kubectl get namespace "$NAMESPACE" > /dev/null 2>&1
@@ -46,7 +42,6 @@ check_and_create_namespace() {
         kubectl create namespace "$NAMESPACE"
     fi
 }
-
 
 create_service_account() {
     echo "$(green_text [DAYU]) Creating service account and cluster role binding..."
@@ -87,8 +82,6 @@ spec:
     pos: cloud
     targetPort: 6379
 EOF
-
-
 }
 
 create_datasource() {
@@ -145,8 +138,6 @@ EOF
     else
         echo "Skipping creation of datasource since DATASOURCE_USE_SIMULATION is false."
     fi
-
-
 }
 
 create_backend() {
@@ -186,7 +177,6 @@ spec:
     pos: cloud
     targetPort: 8000
 EOF
-
 
 }
 
@@ -233,9 +223,7 @@ spec:
     targetPort: 8000
 EOF
 
-
 }
-
 
 wait_for_pods_running() {
     local namespace=$NAMESPACE
@@ -262,7 +250,6 @@ wait_for_pods_running() {
     done
 }
 
-
 start_system() {
     echo "$(green_text [DAYU]) Starting DAYU system in namespace $NAMESPACE..."
     check_and_create_namespace
@@ -273,9 +260,7 @@ start_system() {
     create_datasource
     wait_for_pods_running
     show_prompt_infos
-
 }
-
 
 delete_service_account() {
   INDEX=$(kubectl get clusterrolebinding "$CLUSTER_ROLE_BINDING" -o json | jq '.subjects | to_entries | map(select(.value.kind == "ServiceAccount" and .value.name == "'"$SERVICE_ACCOUNT"'" and .value.namespace == "'"$NAMESPACE"'")) | .[0].key')
@@ -292,19 +277,21 @@ delete_service_account() {
         echo "$(green_text [DAYU]) Delete clusterrolebinding $CLUSTER_ROLE_BINDING since no other service accounts are left."
     fi
   fi
-
 }
-
-
 
 stop_system() {
     local ns="${NAMESPACE}"
     local svc_wait="${SVC_WAIT_SEC:-120}"
-    local mesh_wait="${MESH_WAIT_SEC:-30}"
-    local pod_wait="${POD_WAIT_SEC:-180}"
-    local ns_wait="${NS_WAIT_SEC:-180}"
+    local mesh_wait="${MESH_WAIT_SEC:-20}"
+    local pod_wait="${POD_WAIT_SEC:-120}"
+    local ns_wait="${NS_WAIT_SEC:-120}"
 
     echo "$(green_text [DAYU]) Stopping DAYU system in namespace ${ns}..."
+
+    if ! check_namespace_existence; then
+      echo "Namespace $(red_text "$NAMESPACE") does not exist. No need to clean up resources."
+        exit 1
+    fi
 
     # ---------------- helper: wait until a namespaced resource kind becomes empty ----------------
     _wait_empty() {
@@ -325,7 +312,7 @@ stop_system() {
             fi
 
             if (( $(date +%s) - start_ts > timeout )); then
-                echo "$(red_text [DAYU]) ERROR: timeout waiting '${kind}' in '${namespace}' to be empty (still ${cnt})"
+                echo "$(red_text [DAYU]) timeout waiting '${kind}' in '${namespace}' to be empty (still ${cnt})"
                 return 1
             fi
             sleep 2
@@ -386,41 +373,12 @@ stop_system() {
             fi
 
             if (( $(date +%s) - start_ts > timeout )); then
-                echo "[DAYU] EdgeMesh iptables rules for '${namespace}' still exist after ${timeout}s"
+                echo "EdgeMesh iptables rules for '${namespace}' still exist after ${timeout}s"
                 return 1
             fi
             sleep 2
         done
     }
-
-    # ---------------- helper: force remove rules inside each edgemesh-agent (fallback) ----------------
-    _force_remove_rules_in_edgemesh() {
-        local namespace="$1"
-        local pods
-        pods="$(_list_edgemesh_pods || true)"
-        [[ -z "${pods}" ]] && return 0
-
-        echo "$(red_text [DAYU]) WARN: forcing iptables cleanup inside edgemesh-agent (fallback)..."
-
-        while read -r item; do
-            [[ -z "${item}" ]] && continue
-            local pns="${item%%/*}"
-            local pname="${item##*/}"
-
-            echo "$(green_text [DAYU]) -> force cleanup on ${pns}/${pname}"
-
-            kubectl exec -n "${pns}" "${pname}" -- sh -c "
-                set +e
-                iptables -t nat -S 2>/dev/null \
-                  | grep -F -- \"--comment \\\"${namespace}/\" \
-                  | sed 's/^-A /-D /' \
-                  | while read -r rule; do
-                      eval \"iptables -t nat \$rule\" >/dev/null 2>&1 || true
-                    done
-            " || true
-        done <<< "${pods}"
-    }
-
 
     echo "$(green_text [DAYU]) (0/5) Delete DAYU custom resources ($KIND) to stop controllers from recreating Services..."
     kubectl delete "${KIND}" -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
@@ -438,13 +396,7 @@ stop_system() {
 
     echo "$(green_text [DAYU]) (2/5) Waiting EdgeMesh to remove iptables rules for '${ns}'..."
     if ! _wait_edgemesh_rules_gone "${ns}" "${mesh_wait}"; then
-        echo "[DAYU] WARN: EdgeMesh didn't cleanup rules in time."
-
-        _force_remove_rules_in_edgemesh "${ns}"
-
-        if ! _wait_edgemesh_rules_gone "${ns}" 20; then
-            echo "[DAYU] WARN: Dirty data remains in edgecore.db, continue anyway."
-        fi
+        echo "WARN: EdgeMesh didn't cleanup rules in time, continue anyway."
     fi
 
     echo "$(green_text [DAYU]) (3/5) Delete workloads and remaining resources in namespace '${ns}'..."
