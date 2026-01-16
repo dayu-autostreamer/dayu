@@ -393,6 +393,34 @@ stop_system() {
         done
     }
 
+    # ---------------- helper: force remove rules inside each edgemesh-agent (fallback) ----------------
+    _force_remove_rules_in_edgemesh() {
+        local namespace="$1"
+        local pods
+        pods="$(_list_edgemesh_pods || true)"
+        [[ -z "${pods}" ]] && return 0
+
+        echo "$(red_text [DAYU]) WARN: forcing iptables cleanup inside edgemesh-agent (fallback)..."
+
+        while read -r item; do
+            [[ -z "${item}" ]] && continue
+            local pns="${item%%/*}"
+            local pname="${item##*/}"
+
+            echo "$(green_text [DAYU]) -> force cleanup on ${pns}/${pname}"
+
+            kubectl exec -n "${pns}" "${pname}" -- sh -c "
+                set +e
+                iptables -t nat -S 2>/dev/null \
+                  | grep -F -- \"--comment \\\"${namespace}/\" \
+                  | sed 's/^-A /-D /' \
+                  | while read -r rule; do
+                      eval \"iptables -t nat \$rule\" >/dev/null 2>&1 || true
+                    done
+            " || true
+        done <<< "${pods}"
+    }
+
 
     echo "$(green_text [DAYU]) (0/5) Delete DAYU custom resources ($KIND) to stop controllers from recreating Services..."
     kubectl delete "${KIND}" -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
