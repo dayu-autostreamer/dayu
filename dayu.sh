@@ -430,6 +430,13 @@ stop_system() {
     echo "$(green_text [DAYU]) (2/5) Waiting EdgeMesh to remove iptables rules for '${ns}'..."
     if ! _wait_edgemesh_rules_gone "${ns}" "${mesh_wait}"; then
         echo "$(red_text [DAYU]) WARN: EdgeMesh didn't cleanup rules in time."
+
+        _force_remove_rules_in_edgemesh "${ns}"
+
+        if ! _wait_edgemesh_rules_gone "${ns}" 20; then
+            echo "$(red_text [DAYU]) ERROR: rules keep coming back -> edge side likely still has dirty metadata (edgecore.db)."
+            echo "$(red_text [DAYU]) Dirty data leaves, continue anyway."
+        fi
     fi
 
     echo "$(green_text [DAYU]) (3/5) Delete workloads and remaining resources in namespace '${ns}'..."
