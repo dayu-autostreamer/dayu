@@ -5,6 +5,9 @@ REPOSITORY := $(or $(REPO),dayuhub)
 IMAGE_REPO ?= $(REGISTRY)/$(REPOSITORY)
 IMAGE_TAG ?= $(or $(TAG),v1.2)
 
+NO_CACHE ?= $(or $(NO_CACHE),0)
+BUILD_NO_CACHE_FLAG := $(if $(filter 1 true TRUE yes YES,$(NO_CACHE)),--no-cache,)
+
 .EXPORT_ALL_VARIABLES:
 
 define BUILD_HELP_INFO
@@ -35,13 +38,11 @@ build:
 	@echo "Current registry is: $(REGISTRY)"
 	@echo "Current repository is: $(REPOSITORY)"
 	@echo "Current image tag is: $(IMAGE_TAG)"
-	bash hack/make-rules/cross-build.sh --files $(WHAT) --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY)
+	bash hack/make-rules/cross-build.sh --files $(WHAT) --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY) $(BUILD_NO_CACHE_FLAG)
 
 # Build all images
 all:
 	@echo "Current registry is: $(REGISTRY)"
 	@echo "Current repository is: $(REPOSITORY)"
 	@echo "Current image tag is: $(IMAGE_TAG)"
-	bash hack/make-rules/cross-build.sh --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY)
-
-
+	bash hack/make-rules/cross-build.sh --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY) $(BUILD_NO_CACHE_FLAG)
