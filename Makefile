@@ -5,8 +5,8 @@ REPOSITORY := $(or $(REPO),dayuhub)
 IMAGE_REPO ?= $(REGISTRY)/$(REPOSITORY)
 IMAGE_TAG ?= $(or $(TAG),v1.2)
 
-NO_CACHE ?= $(or $(NO_CACHE),0)
-BUILD_NO_CACHE_FLAG := $(if $(filter 1 true TRUE yes YES,$(NO_CACHE)),--no-cache,)
+NOCACHE ?= $(or $(NO_CACHE),0)
+BUILD_NO_CACHE_FLAG := $(if $(filter 1 true TRUE yes YES,$(NOCACHE)),--no-cache,)
 
 .EXPORT_ALL_VARIABLES:
 
