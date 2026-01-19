@@ -20,7 +20,7 @@ kube-cache-ttl: 5.0
 default-image-meta:
   registry: repo:5000
   repository: dayuhub
-  tag: v1.3
+  tag: v1.2
 # default file mount prefix for dayu containers
 default-file-mount-prefix: "/data/dayu-files"
 # datasource configuration

@@ -3,6 +3,7 @@ name: Build & Push Images
 on:
   pull_request:
     branches: [ main ]
+    types: [ closed ]
   push:
     branches: [ main ]
   schedule:
@@ -19,9 +20,6 @@ jobs:
   build-and-push:
     name: make all (buildx + push)
     runs-on: ubuntu-latest
-
-    # Only run when the PR was actually merged
-    if: ${{ github.event.pull_request.merged == true }}
 
     env:
       REG: docker.io
