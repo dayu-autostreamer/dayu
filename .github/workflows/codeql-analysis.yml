@@ -13,13 +13,11 @@ name: "CodeQL"
 
 on:
   pull_request:
-    # The branches below must be a subset of the branches above
     branches: [ main ]
   push:
     branches: [ main ]
   schedule:
-    # Weekly on Sundays.
-    - cron: '20 1 * * 0'
+    - cron: '20 1 1 * *' # Monthly on the 1st day.
 
 # Declare default permissions as read only.
 permissions: read-all
