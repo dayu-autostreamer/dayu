@@ -61,4 +61,4 @@ jobs:
             df -h
 
       - name: Build and push (make all)
-        run: make all REG=${{ env.REG }} REPO=${{ env.REPO }}
+        run: make all REG=${{ env.REG }} REPO=${{ env.REPO }} NO_CACHE=true
