@@ -1,11 +1,12 @@
-name: Build & Push Docker images (DockerHub)
+name: Build & Push Images
 
 on:
   pull_request:
-    branches:
-      - main
-    types:
-      - closed
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '20 1 1 * *' # Monthly on the 1st day.
 
 concurrency:
   group: dockerhub-build-${{ github.ref }}

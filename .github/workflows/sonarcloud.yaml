@@ -2,8 +2,7 @@ name: Sonarcloud Scan
 
 on:
   schedule:
-    # Weekly on Saturdays.
-    - cron: '20 1 * * 6'
+    - cron: '20 1 1 * *' # Monthly on the 1st day.
   push:
     branches: [ main ]
   pull_request:
