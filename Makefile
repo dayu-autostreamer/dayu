@@ -3,7 +3,7 @@ SHELL=/bin/bash
 REGISTRY := $(or $(REG),docker.io)
 REPOSITORY := $(or $(REPO),dayuhub)
 IMAGE_REPO ?= $(REGISTRY)/$(REPOSITORY)
-IMAGE_TAG ?= $(or $(TAG),v1.2)
+IMAGE_TAG ?= $(or $(TAG),v1.3)
 
 NOCACHE ?= $(or $(NO_CACHE),0)
 BUILD_NO_CACHE_FLAG := $(if $(filter 1 true TRUE yes YES,$(NOCACHE)),--no-cache,)
