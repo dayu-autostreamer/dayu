@@ -169,7 +169,7 @@ dayu::buildx::import_env_variables(){
               shift
               ;;
           --no-cache)
-              NO_CACHE=false
+              NO_CACHE=true
               ;;
           --) shift; break ;;
           *) break ;;
@@ -287,46 +287,35 @@ dayu::buildx::build_special_image_all_variants() {
 
   local -a suffix_variants=("" "-jp4" "-jp5" "-jp6")
 
-  if [[ "${platform_csv}" != *","* ]]; then
-    # Single-platform special image: build final tag directly (no manifest)
-    for vt in "${suffix_variants[@]}"; do
-      local image_tag="${REGISTRY}/${REPO}/${image}:${TAG}${vt}"
-      echo "Building SPECIAL single-platform image: ${image_tag} platform: ${platform_csv} dockerfile: ${dockerfile} baseTAG: ${vt}"
-
-      if [[ -z "${cache_option}" ]]; then
-        docker buildx build \
-          --platform "${platform_csv}" \
-          --build-arg REG="${REGISTRY}" \
-          --build-arg TAG="${BASE_TAG}${vt}" \
-          -t "${image_tag}" \
-          -f "${dockerfile}" \
-          "." \
-          --push
-      else
-        docker buildx build \
-          --platform "${platform_csv}" \
-          --build-arg REG="${REGISTRY}" \
-          --build-arg TAG="${BASE_TAG}${vt}" \
-          -t "${image_tag}" \
-          -f "${dockerfile}" \
-          "." \
-          "${cache_option}" \
-          --push
-      fi
-    done
-    return 0
-  fi
-
-  # Multi-arch special image: build per-arch temp tags then manifest per variant
-  IFS=',' read -ra plats <<< "${platform_csv}"
   for vt in "${suffix_variants[@]}"; do
-    for p in "${plats[@]}"; do
-      p="$(echo "$p" | xargs)"
-      dayu::buildx::build_special_arch "${image}" "${p}" "${dockerfile}" "${vt}" "${cache_option}"
-    done
-    dayu::buildx::create_and_push_manifest "${image}" "${TAG}${vt}"
+    local image_tag="${REGISTRY}/${REPO}/${image}:${TAG}${vt}"
+
+    echo "Building SPECIAL multi-arch image (single shot): ${image_tag}"
+    echo "platforms: ${platform_csv} dockerfile: ${dockerfile} baseTAG: ${BASE_TAG}${vt}"
+
+    if [[ -z "${cache_option}" ]]; then
+      docker buildx build \
+        --platform "${platform_csv}" \
+        --build-arg REG="${REGISTRY}" \
+        --build-arg TAG="${BASE_TAG}${vt}" \
+        -t "${image_tag}" \
+        -f "${dockerfile}" \
+        "." \
+        --push
+    else
+      docker buildx build \
+        --platform "${platform_csv}" \
+        --build-arg REG="${REGISTRY}" \
+        --build-arg TAG="${BASE_TAG}${vt}" \
+        -t "${image_tag}" \
+        -f "${dockerfile}" \
+        "." \
+        "${cache_option}" \
+        --push
+    fi
   done
 }
+
 
 # ------------------------------------------------------------
 # Main entry
