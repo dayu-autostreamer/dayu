@@ -8,17 +8,69 @@ on:
     branches: [ main ]
 
 concurrency:
-  group: dockerhub-build-${{ github.ref }}-${{ github.event_name }}
+  group: dockerhub-build-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  gate:
+    name: monthly gate
+    runs-on: dayu-runner
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
+      reason: ${{ steps.check.outputs.reason }}
+    steps:
+      - id: check
+        name: Check if already ran this month
+        uses: actions/github-script@v7
+        env:
+
+          WORKFLOW_FILE: dockerhub_build.yml
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflow_id = process.env.WORKFLOW_FILE;
+            
+            const resp = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id,
+              branch: "main",
+              per_page: 50
+            });
+            
+            const runs = resp.data.workflow_runs || [];
+            const thisRunId = context.runId;
+            
+            const now = new Date();
+            const nowMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2, "0")}`;
+            
+            const last = runs.find(r => r.id !== thisRunId);
+            if (!last) {
+              core.setOutput("allowed", "true");
+              core.setOutput("reason", "no previous run found");
+              return;
+            }
+            
+            const lastDate = new Date(last.created_at);
+            const lastMonth = `${lastDate.getUTCFullYear()}-${String(lastDate.getUTCMonth()+1).padStart(2, "0")}`;
+            
+            if (lastMonth === nowMonth) {
+              core.setOutput("allowed", "false");
+              core.setOutput("reason", `already ran this month (${nowMonth}), last run: #${last.run_number}`);
+            } else {
+              core.setOutput("allowed", "true");
+              core.setOutput("reason", `last run month (${lastMonth}) != current month (${nowMonth})`);
+            }
   build-and-push:
     name: make all (buildx + push)
     runs-on: dayu-runner
-    if: github.event_name == 'push' || github.event_name == 'pull_request' && github.event.pull_request.merged == true
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true' && (github.event_name == 'push' || github.event.pull_request.merged == true)
 
     env:
       REG: docker.io
@@ -42,3 +94,12 @@ jobs:
 
       - name: Build and push (make all)
         run: make all REG=${{ env.REG }} REPO=${{ env.REPO }}
+
+  skipped:
+    name: skipped (already ran this month)
+    runs-on: dayu-runner
+    needs: gate
+    if: needs.gate.outputs.allowed != 'true'
+    steps:
+      - name: Notify skipped
+        run: echo "Skip build: ${{ needs.gate.outputs.reason }}"
