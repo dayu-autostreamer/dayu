@@ -216,8 +216,6 @@ dayu::buildx::build_normal_image() {
     docker buildx build \
       --platform "${platform}" \
       --build-arg REG="${REGISTRY}" \
-      --cache-from=type=registry,ref="${REGISTRY}"/"${REPO}"/buildcache:"${image}" \
-      --cache-to=type=registry,ref="${REGISTRY}"/"${REPO}"/buildcache:"${image}",mode=max \
       -t "${image_tag}" \
       -f "${dockerfile}" \
       "${context_dir}" \
@@ -252,8 +250,6 @@ dayu::buildx::build_special_arch() {
       --platform "${platform}" \
       --build-arg REG="${REGISTRY}" \
       --build-arg TAG="${BASE_TAG}${suffix_variant}" \
-      --cache-from=type=registry,ref="${REGISTRY}"/"${REPO}"/buildcache:"${image}" \
-      --cache-to=type=registry,ref="${REGISTRY}"/"${REPO}"/buildcache:"${image}",mode=max \
       -t "${temp_tag}" \
       -f "${dockerfile}" \
       "${context_dir}" \
@@ -302,8 +298,6 @@ dayu::buildx::build_special_image_all_variants() {
         --platform "${platform_csv}" \
         --build-arg REG="${REGISTRY}" \
         --build-arg TAG="${BASE_TAG}${vt}" \
-        --cache-from=type=registry,ref="${REGISTRY}"/"${REPO}"/buildcache:"${image}" \
-        --cache-to=type=registry,ref="${REGISTRY}"/"${REPO}"/buildcache:"${image}",mode=max \
         -t "${image_tag}" \
         -f "${dockerfile}" \
         "." \
