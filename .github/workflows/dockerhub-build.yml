@@ -19,6 +19,7 @@ jobs:
   gate:
     name: monthly gate
     runs-on: dayu-runner
+    if: github.event_name == 'push' || github.event.pull_request.merged == true
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
       reason: ${{ steps.check.outputs.reason }}
@@ -27,7 +28,6 @@ jobs:
         name: Check if already ran this month
         uses: actions/github-script@v7
         env:
-
           WORKFLOW_FILE: dockerhub_build.yml
         with:
           script: |
@@ -102,4 +102,5 @@ jobs:
     if: needs.gate.outputs.allowed != 'true'
     steps:
       - name: Notify skipped
-        run: echo "Skip build: ${{ needs.gate.outputs.reason }}"
+        run: |
+          echo "Skip build: ${{ needs.gate.outputs.reason }}"
