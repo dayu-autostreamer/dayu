@@ -18,7 +18,7 @@ permissions:
 jobs:
   gate:
     name: monthly gate
-    runs-on: dayu-runner
+    runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.merged == true
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
@@ -28,7 +28,7 @@ jobs:
         name: Check if already ran this month
         uses: actions/github-script@v7
         env:
-          WORKFLOW_FILE: dockerhub_build.yml
+          WORKFLOW_FILE: dockerhub-build.yml
         with:
           script: |
             const owner = context.repo.owner;
@@ -97,7 +97,7 @@ jobs:
 
   skipped:
     name: skipped (already ran this month)
-    runs-on: dayu-runner
+    runs-on: ubuntu-latest
     needs: gate
     if: needs.gate.outputs.allowed != 'true'
     steps:
