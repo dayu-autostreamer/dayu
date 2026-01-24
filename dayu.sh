@@ -293,6 +293,43 @@ stop_system() {
         exit 1
     fi
 
+    # ---------------- helper: run a command with timeout (best-effort, portable) ----------------
+    _run_with_timeout() {
+        local seconds="$1"; shift
+
+        # Prefer GNU coreutils timeout if available.
+        if command -v timeout >/dev/null 2>&1; then
+            timeout "${seconds}" "$@"
+            return $?
+        fi
+        # macOS users may have gtimeout via coreutils.
+        if command -v gtimeout >/dev/null 2>&1; then
+            gtimeout "${seconds}" "$@"
+            return $?
+        fi
+
+        # Fallback: run in background and kill if it exceeds the budget.
+        "$@" &
+        local pid=$!
+        local start_ts
+        start_ts="$(date +%s)"
+
+        while kill -0 "${pid}" >/dev/null 2>&1; do
+            if (( $(date +%s) - start_ts >= seconds )); then
+                kill "${pid}" >/dev/null 2>&1 || true
+                # Try harder if it doesn't stop quickly.
+                sleep 0.2
+                kill -9 "${pid}" >/dev/null 2>&1 || true
+                wait "${pid}" >/dev/null 2>&1 || true
+                return 124
+            fi
+            sleep 0.2
+        done
+
+        wait "${pid}"
+        return $?
+    }
+
     # ---------------- helper: wait until a namespaced resource kind becomes empty ----------------
     _wait_empty() {
         local kind="$1"
@@ -319,11 +356,12 @@ stop_system() {
         done
     }
 
-    # ---------------- helper: list all edgemesh-agent pods (ns/pod) ----------------
+    # ---------------- helper: list Ready edgemesh-agent pods (ns/pod) ----------------
     _list_edgemesh_pods() {
+        # Only consider Running/Ready pods to avoid kubectl exec hanging on terminating/unready agents.
         kubectl get pods -A --no-headers \
-            -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name 2>/dev/null \
-          | awk '$2 ~ /^edgemesh-agent/ {print $1"/"$2}'
+            -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,READY:.status.containerStatuses[0].ready 2>/dev/null \
+          | awk '$2 ~ /^edgemesh-agent/ && $3=="Running" && $4=="true" {print $1"/"$2}'
     }
 
     # ---------------- helper: check if any edgemesh-agent still has iptables rules for this namespace ----------------
@@ -340,11 +378,15 @@ stop_system() {
             local pns="${item%%/*}"
             local pname="${item##*/}"
 
-            # Exact match comment: --comment "namespace/xxx"
-            if kubectl exec -n "${pns}" "${pname}" -- sh -c \
-              "iptables -t nat -S 2>/dev/null | grep -F -- \"--comment \\\"${namespace}/\" >/dev/null" \
-              >/dev/null 2>&1; then
-              return 0
+            # NOTE:
+            # - "kubectl exec" itself can hang if apiserver->kubelet tunnel is broken.
+            # - Bound the probe, so outer mesh_wait timeout will actually work.
+            # - Treat probe failures as NOT blocking stop (return 1 for this pod).
+            if _run_with_timeout 5 \
+                kubectl --request-timeout=5s exec -n "${pns}" "${pname}" -- sh -c \
+                "iptables -t nat -S 2>/dev/null | grep -F -- \"--comment \\\"${namespace}/\" >/dev/null" \
+                >/dev/null 2>&1; then
+                return 0
             fi
 
         done <<< "${pods}"
@@ -359,7 +401,7 @@ stop_system() {
         local pods
         pods="$(_list_edgemesh_pods || true)"
         if [[ -z "${pods}" ]]; then
-            echo "$(green_text [DAYU]) No edgemesh-agent pods found, skip EdgeMesh rule wait."
+            echo "$(green_text [DAYU]) No Ready edgemesh-agent pods found, skip EdgeMesh rule wait."
             return 0
         fi
 
