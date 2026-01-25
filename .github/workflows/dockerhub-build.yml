@@ -1,15 +1,13 @@
 name: Dayu Images Build
 
 on:
-  pull_request:
-    branches: [ main ]
-    types: [ closed ]
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 concurrency:
   group: dockerhub-build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -49,7 +47,13 @@ jobs:
             const now = new Date();
             const nowMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2, "0")}`;
             
-            const last = runs.find(r => r.id !== thisRunId);
+            const last = runs.find(r =>
+              r.id !== thisRunId &&
+              (r.event === "push" || r.event === "workflow_dispatch") &&
+              r.status === "completed" &&
+              r.conclusion === "success"
+            );
+            
             if (!last) {
               core.setOutput("allowed", "true");
               core.setOutput("reason", "no previous run found");
