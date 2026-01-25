@@ -43,7 +43,7 @@
     "vue-clipboard3": "^2.0.0",
     "vue-demi": "^0.13.11",
     "vue-grid-layout": "^3.0.0-beta1",
-    "vue-i18n": "^9.14.3",
+    "vue-i18n": "^9.14.5",
     "vue-router": "^4.1.6",
     "vuedraggable": "^2.24.3"
   },
