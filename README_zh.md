@@ -9,7 +9,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10523/badge)](https://www.bestpractices.dev/projects/10523)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
-![](static/dayu_logo.png)
+![](static/dayu-logo-horizontal.svg)
 
 | <img src="static/news.svg" width="8%">  NEWS                            |
 |-------------------------------------------------------------------------|
