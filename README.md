@@ -142,7 +142,7 @@ Dayu is under the Apache 2.0 license. See the [LICENSE](LICENSE) file for detail
 
 If you're interested in being a contributor and want to get involved in developing the Dayu code, please
 see [CONTRIBUTING](CONTRIBUTING.md) for details on submitting patches and the contribution workflow. 
-If you're interested in contributing to the documentation, please click 'Edit this page' at the bottom of any doc in our [homepage](https://dayu-autostreamer.github.io/)
+If you're interested in contributing to the documentation, please click 'Edit this page' at the bottom of any doc in our [homepage](https://dayu-autostreamer.github.io/).
 
 Thanks for the following contributors:
 

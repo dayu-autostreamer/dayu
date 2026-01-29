@@ -112,7 +112,7 @@ KubeEdge 开发，可以在不同平台之间轻松迁移。
 ## 贡献
 
 如果您有兴趣成为贡献者并希望参与大禹系统代码的开发，请参阅[CONTRIBUTING](CONTRIBUTING.md)，了解提交补丁和贡献流程的详细信息。
-如果您有兴趣贡献文档，请点击我们[主页](https://dayu-autostreamer.github.io/)上任何文档底部的 “Edit this page”。
+如果您有兴趣贡献文档，请点击我们[主页](https://dayu-autostreamer.github.io/)上任何文档底部的“Edit this page”。
 
 感谢以下开发者对大禹系统的贡献：
 
