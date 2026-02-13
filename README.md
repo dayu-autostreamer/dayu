@@ -121,11 +121,11 @@ It makes up of Application Service Layer.
 To get detailed instructions about our dayu system, please refer to the documentation on
 the [homepage](https://dayu-autostreamer.github.io/).
 
-Please refer to our [quick start tutorial](https://dayu-autostreamer.github.io/docs/getting-started/) for a quick start
+Please refer to our [quick start tutorial](https://dayu-autostreamer.github.io/docs/) for a quick start
 of the dayu system.
 
 If you want to further develop dayu for your needs, please refer to
-our [development tutorial](https://dayu-autostreamer.github.io/docs/developer-guide/).
+our [development tutorial](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop).
 
 ## Contact
 
