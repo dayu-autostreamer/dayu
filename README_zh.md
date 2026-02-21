@@ -9,7 +9,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10523/badge)](https://www.bestpractices.dev/projects/10523)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
-![](static/dayu_logo.png)
+![](static/dayu-logo-horizontal.svg)
 
 | <img src="static/news.svg" width="8%">  NEWS                            |
 |-------------------------------------------------------------------------|
@@ -92,9 +92,9 @@ KubeEdge 开发，可以在不同平台之间轻松迁移。
 
 ## 使用
 
-请参照我们的[快速开始教程](https://dayu-autostreamer.github.io/docs/getting-started/)来快速尝试大禹系统。
+请参照我们的[教程](https://dayu-autostreamer.github.io/docs/)来快速尝试大禹系统。
 
-如果你需要进一步开发大禹系统来适应你的需求，请参照我们的[开发教程](https://dayu-autostreamer.github.io/docs/developer-guide/)。
+如果你需要进一步开发大禹系统来适应你的需求，请参照我们的[开发教程](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop)。
 
 要获取关于大禹系统的详细说明，请参阅[项目主页](https://dayu-autostreamer.github.io/)上的文档。
 
@@ -112,9 +112,16 @@ KubeEdge 开发，可以在不同平台之间轻松迁移。
 ## 贡献
 
 如果您有兴趣成为贡献者并希望参与大禹系统代码的开发，请参阅[CONTRIBUTING](CONTRIBUTING.md)，了解提交补丁和贡献流程的详细信息。
+如果您有兴趣贡献文档，请点击我们[主页](https://dayu-autostreamer.github.io/)上任何文档底部的“Edit this page”。
 
 感谢以下开发者对大禹系统的贡献：
 
 <a href="https://github.com/dayu-autostreamer/dayu/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu"  alt=""/>
+</a>
+
+感谢以下开发者对大禹系统文档的贡献：
+
+<a href="https://github.com/dayu-autostreamer/dayu-autostreamer.github.io/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu-autostreamer.github.io"  alt=""/>
 </a>

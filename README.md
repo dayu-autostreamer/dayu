@@ -9,7 +9,7 @@ English | [简体中文](./README_zh.md)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10523/badge)](https://www.bestpractices.dev/projects/10523)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
-![](static/dayu_logo.png)
+![](static/dayu-logo-horizontal.svg)
 
 | <img src="static/news.svg" width="8%">  NEWS                                                                         |
 |----------------------------------------------------------------------------------------------------------------------|
@@ -121,11 +121,11 @@ It makes up of Application Service Layer.
 To get detailed instructions about our dayu system, please refer to the documentation on
 the [homepage](https://dayu-autostreamer.github.io/).
 
-Please refer to our [quick start tutorial](https://dayu-autostreamer.github.io/docs/getting-started/) for a quick start
+Please refer to our [quick start tutorial](https://dayu-autostreamer.github.io/docs/) for a quick start
 of the dayu system.
 
 If you want to further develop dayu for your needs, please refer to
-our [development tutorial](https://dayu-autostreamer.github.io/docs/developer-guide/).
+our [development tutorial](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop).
 
 ## Contact
 
@@ -141,11 +141,19 @@ Dayu is under the Apache 2.0 license. See the [LICENSE](LICENSE) file for detail
 ## Contributing
 
 If you're interested in being a contributor and want to get involved in developing the Dayu code, please
-see [CONTRIBUTING](CONTRIBUTING.md) for details on submitting patches and the contribution workflow.
+see [CONTRIBUTING](CONTRIBUTING.md) for details on submitting patches and the contribution workflow. 
+If you're interested in contributing to the documentation, please click 'Edit this page' at the bottom of any doc in our [homepage](https://dayu-autostreamer.github.io/).
 
 Thanks for the following contributors:
 
 <a href="https://github.com/dayu-autostreamer/dayu/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu"  alt=""/>
 </a>
+
+Thanks for the following documentation contributors:
+
+<a href="https://github.com/dayu-autostreamer/dayu-autostreamer.github.io/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu-autostreamer.github.io"  alt=""/>
+</a>
+
 
