@@ -17,6 +17,7 @@ describes governance guidelines and responsibilities.
 | Maintainer  | GitHub ID                              | Affiliation        | Email                     |
 |-------------|----------------------------------------|--------------------|---------------------------|
 | Wenhui Zhou | @[zwh2119](https://github.com/zwh2119) | Nanjing University | <whzhou@smail.nju.edu.cn> |
+| Haoyang Su  | @[ShyEdge](https://github.com/ShyEdge) | Nanjing University | <shyshy@smail.nju.edu.cn> |
 
 ## Committers
 
@@ -24,13 +25,15 @@ describes governance guidelines and responsibilities.
 |-------------|--------------------------------------------------|--------------------|---------------------------|
 | Wenhui Zhou | @[zwh2119](https://github.com/zwh2119)           | Nanjing University | <whzhou@smail.nju.edu.cn> |
 | Hao Wu      | @[skyrimforest](https://github.com/skyrimforest) | Nanjing University | <hitskyrim@qq.com>        |
+| Haoyang Su  | @[ShyEdge](https://github.com/ShyEdge)           | Nanjing University | <shyshy@smail.nju.edu.cn> |
 
 ## Contributors
 
-| Contributor  | GitHub ID                                        | Affiliation        | Email                     |
-|--------------|--------------------------------------------------|--------------------|---------------------------|
-| Wenhui Zhou  | @[zwh2119](https://github.com/zwh2119)           | Nanjing University | <whzhou@smail.nju.edu.cn> |
-| Bingyun Yang | @[AdaYangOlzz](https://github.com/AdaYangOlzz)   | Nanjing University | <adayangolzz@163.com>     |
-| Hao Wu       | @[skyrimforest](https://github.com/skyrimforest) | Nanjing University | <hitskyrim@qq.com>        |
-| Wenyi Dai    | @[kangarin](https://github.com/kangarin)         | Nanjing University | <wydai@smail.nju.edu.cn>  |
-
+| Contributor  | GitHub ID                                              | Affiliation        | Email                        |
+|--------------|--------------------------------------------------------|--------------------|------------------------------|
+| Wenhui Zhou  | @[zwh2119](https://github.com/zwh2119)                 | Nanjing University | <whzhou@smail.nju.edu.cn>    |
+| Bingyun Yang | @[AdaYangOlzz](https://github.com/AdaYangOlzz)         | Nanjing University | <adayangolzz@163.com>        |
+| Hao Wu       | @[skyrimforest](https://github.com/skyrimforest)       | Nanjing University | <hitskyrim@qq.com>           |
+| Wenyi Dai    | @[kangarin](https://github.com/kangarin)               | Nanjing University | <wydai@smail.nju.edu.cn>     |
+| Haoyang Su   | @[ShyEdge](https://github.com/ShyEdge)                 | Nanjing University | <shyshy@smail.nju.edu.cn>    |
+| Junyu Hou    | @[SiliconMangrove](https://github.com/SiliconMangrove) | Nanjing University | <221220151@smail.nju.edu.cn> |
