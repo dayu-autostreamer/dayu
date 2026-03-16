@@ -15,37 +15,52 @@ permissions:
 
 jobs:
   gate:
-    name: monthly gate
+    name: triggering gate
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.merged == true
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
       reason: ${{ steps.check.outputs.reason }}
     steps:
       - id: check
-        name: Check if already ran this month
+        name: Check if already ran in the last 60 days
         uses: actions/github-script@v7
         env:
           WORKFLOW_FILE: dockerhub-build.yml
+          GATE_WINDOW_DAYS: "60"
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const workflow_id = process.env.WORKFLOW_FILE;
+            const gateWindowDays = Number(process.env.GATE_WINDOW_DAYS || "60");
+            const gateWindowMs = gateWindowDays * 24 * 60 * 60 * 1000;
             
-            const resp = await github.rest.actions.listWorkflowRuns({
-              owner,
-              repo,
-              workflow_id,
-              branch: "main",
-              per_page: 50
-            });
+            const runs = [];
+            const perPage = 100;
+            let page = 1;
             
-            const runs = resp.data.workflow_runs || [];
+            while (true) {
+              const resp = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id,
+                branch: "main",
+                per_page: perPage,
+                page
+              });
+              const pageRuns = resp.data.workflow_runs || [];
+              runs.push(...pageRuns);
+              
+              if (pageRuns.length < perPage) {
+                break;
+              }
+              
+              page += 1;
+            }
             const thisRunId = context.runId;
             
             const now = new Date();
-            const nowMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2, "0")}`;
             
             const last = runs.find(r =>
               r.id !== thisRunId &&
@@ -61,20 +76,21 @@ jobs:
             }
             
             const lastDate = new Date(last.created_at);
-            const lastMonth = `${lastDate.getUTCFullYear()}-${String(lastDate.getUTCMonth()+1).padStart(2, "0")}`;
+            const elapsedMs = now.getTime() - lastDate.getTime();
+            const elapsedDays = Math.floor(elapsedMs / (24 * 60 * 60 * 1000));
             
-            if (lastMonth === nowMonth) {
+            if (elapsedMs < gateWindowMs) {
               core.setOutput("allowed", "false");
-              core.setOutput("reason", `already ran this month (${nowMonth}), last run: #${last.run_number}`);
+              core.setOutput("reason", `already ran within the last ${gateWindowDays} days, last run: #${last.run_number} at ${last.created_at} (${elapsedDays} days ago)`);
             } else {
               core.setOutput("allowed", "true");
-              core.setOutput("reason", `last run month (${lastMonth}) != current month (${nowMonth})`);
+              core.setOutput("reason", `last successful run was outside the last ${gateWindowDays} days (${last.created_at})`);
             }
   build-and-push:
     name: make all (buildx + push)
     runs-on: dayu-runner
     needs: gate
-    if: needs.gate.outputs.allowed == 'true' && (github.event_name == 'push' || github.event.pull_request.merged == true)
+    if: needs.gate.outputs.allowed == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true)
 
     env:
       REG: docker.io
@@ -100,7 +116,7 @@ jobs:
         run: make all REG=${{ env.REG }} REPO=${{ env.REPO }}
 
   skipped:
-    name: skipped (already ran this month)
+    name: skipped (already ran in the last 60 days)
     runs-on: ubuntu-latest
     needs: gate
     if: needs.gate.outputs.allowed != 'true'
