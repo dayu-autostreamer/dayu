@@ -380,7 +380,7 @@
 				</div>
 				<div class="copy-config">
 					<el-alert :title="$t('message.layout.tipText')" type="warning" :closable="false"> </el-alert>
-					<el-button size="default" class="copy-config-btn" type="primary" ref="copyConfigBtnRef" @click="onCopyConfigClick">
+					<el-button size="default" class="copy-config-btn" type="primary" @click="onCopyConfigClick">
 						<el-icon class="mr5">
 							<ele-CopyDocument />
 						</el-icon>
@@ -405,7 +405,6 @@ import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
 import { useThemeConfig } from '/@/stores/themeConfig';
 import { useChangeColor } from '/@/utils/theme';
-import { verifyAndSpace } from '/@/utils/toolsValidate';
 import { Local } from '/@/utils/storage';
 import commonFunction from '/@/utils/commonFunction';
 import other from '/@/utils/other';
@@ -423,7 +422,7 @@ const state = reactive({
 const getThemeConfig = computed(() => themeConfig.value);
 
 const onColorPickerChange = () => {
-	if (!getThemeConfig.value.primary) return ElMessage.warning('全局主题 primary 颜色值不能为空');
+	if (!getThemeConfig.value.primary) return ElMessage.warning('The global primary color cannot be empty.');
 	document.documentElement.style.setProperty('--el-color-primary-dark-2', `${getDarkColor(getThemeConfig.value.primary, 0.1)}`);
 	document.documentElement.style.setProperty('--el-color-primary', getThemeConfig.value.primary);
 	for (let i = 1; i <= 9; i++) {

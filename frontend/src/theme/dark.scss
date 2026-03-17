@@ -1,7 +1,7 @@
-/* 深色模式样式
+/* Dark theme
 ------------------------------- */
 [data-theme='dark'] {
-	// 变量(自定义时，只需修改这里的值)
+	// Core palette
 	--next-bg-main: #1f1f1f;
 	--next-color-white: #ffffff;
 	--next-color-disabled: #191919;
@@ -96,12 +96,11 @@
 		background: var(--next-color-primary-lighter);
 	}
 
-	// alert / notice-bar
+	// alert
 	.home-card-item {
 		border: 1px solid var(--next-border-color-light) !important;
 	}
-	.el-alert,
-	.notice-bar {
+	.el-alert {
 		border: 1px solid var(--next-border-color) !important;
 		background-color: var(--next-color-disabled) !important;
 	}
@@ -175,7 +174,7 @@
 	.el-pagination.is-background .el-pager li {
 		background-color: var(--next-bg-color);
 	}
-	/*深色模式时分页高亮问题*/
+	/* Keep active pagination items readable in dark mode. */
 	.el-pagination.is-background .btn-next.is-active,
 	.el-pagination.is-background .btn-prev.is-active,
 	.el-pagination.is-background .el-pager li.is-active {
@@ -194,27 +193,6 @@
 	// countup
 	.countup-card-item-flex {
 		color: var(--el-text-color-primary) !important;
-	}
-
-	// editor
-	.editor-container {
-		.w-e-toolbar {
-			background: var(--el-color-white) !important;
-			border: 1px solid var(--next-border-color-light) !important;
-			.w-e-menu:hover {
-				background: var(--next-color-user-hover) !important;
-				i {
-					color: var(--el-text-color-primary) !important;
-				}
-			}
-		}
-		.w-e-text-container {
-			border: 1px solid var(--next-border-color-light) !important;
-			border-top: none !important;
-			.w-e-text {
-				background: var(--el-color-white) !important;
-			}
-		}
 	}
 
 	// date-picker
