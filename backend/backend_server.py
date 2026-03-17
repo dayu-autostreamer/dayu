@@ -263,9 +263,13 @@ class BackendServer:
         service_dict = {}
         services = self.server.services
         for service in services:
-            service['description'] = (service['description'] + ' (in:' + service['input']
-                                      + ', out: ' + service['output'] + ')')
-            service_dict[service['id']] = service if service['id'] not in service_dict else service_dict[service['id']]
+            service_view = copy.deepcopy(service)
+            service_view['description'] = (
+                service_view['description'] + ' (in:' + service_view['input'] + ', out: ' + service_view['output'] + ')'
+            )
+            service_dict[service_view['id']] = (
+                service_view if service_view['id'] not in service_dict else service_dict[service_view['id']]
+            )
         return [service_dict[service_id] for service_id in service_dict]
 
     async def update_dag_workflows(self, data=Body(...)):

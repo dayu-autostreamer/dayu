@@ -17,7 +17,6 @@ jobs:
   gate:
     name: triggering gate
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
       reason: ${{ steps.check.outputs.reason }}
@@ -90,7 +89,7 @@ jobs:
     name: make all (buildx + push)
     runs-on: dayu-runner
     needs: gate
-    if: needs.gate.outputs.allowed == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true)
+    if: needs.gate.outputs.allowed == 'true'
 
     env:
       REG: docker.io
