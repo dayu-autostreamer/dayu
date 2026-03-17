@@ -67,9 +67,18 @@ To submit a proposed change, please develop the code/fix and add new test cases.
 Before opening a PR, please run the Python test suite locally:
 
 ```bash
-python -m pip install -r dependency/core/lib/requirements.txt -r backend/requirements.txt -r tests/requirements.txt
-PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m "not e2e"
+python -m pip install -r dependency/core/lib/requirements.txt -r dependency/core/controller/requirements.txt -r backend/requirements.txt -r tests/requirements.txt
+PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m "unit or integration"
+PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m component
 PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m e2e
+```
+
+For frontend changes, also run the basic quality checks from the `frontend` directory:
+
+```bash
+npm install
+npm run lint
+npm run format:check
 ```
 
 
