@@ -404,6 +404,7 @@ class BackendCore:
                         if not isinstance(worker_item, dict):
                             continue
 
+                        worker_item.pop('logLevel', None)
                         worker_item.pop('file', None)
 
                         if 'template' in worker_item and 'spec' in worker_item['template']:

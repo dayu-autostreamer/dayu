@@ -1,7 +1,6 @@
 import vue from "@vitejs/plugin-vue";
 import { resolve } from "path";
 import { defineConfig, ConfigEnv } from "vite";
-// import vueSetupExtend from "vite-plugin-vue-setup-extend-plus";
 import viteCompression from "vite-plugin-compression";
 import { buildConfig } from "./src/utils/build";
 import EnvironmentPlugin from "vite-plugin-environment";
@@ -22,7 +21,6 @@ const viteConfig = defineConfig((mode: ConfigEnv) => {
   return {
     plugins: [
       vue(),
-      // vueSetupExtend(),
       viteCompression(),
       JSON.parse(String(process.env.VITE_OPEN_CDN)) ? buildConfig.cdn() : null,
       EnvironmentPlugin([

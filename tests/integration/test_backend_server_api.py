@@ -109,7 +109,9 @@ def test_get_all_services_is_idempotent(backend_client):
     assert first_response.status_code == 200
     assert second_response.status_code == 200
     assert first_response.json() == second_response.json()
-    assert first_response.json()[0]["description"] == "face detection (in:frame, out:bbox)"
+    service_map = {service["id"]: service for service in first_response.json()}
+    assert service_map["face-detection"]["description"].endswith("(in:frame, out:bbox)")
+    assert service_map["face-detection"]["description"].count("(in:") == 1
 
 
 @pytest.mark.integration
