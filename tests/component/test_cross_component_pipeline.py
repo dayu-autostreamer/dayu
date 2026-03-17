@@ -6,9 +6,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from fastapi import FastAPI, Form, Response
 from fastapi.testclient import TestClient
 
-from core.lib.common import Queue
+from core.lib.common import Context, Queue
 from core.lib.content import Task
 
 
@@ -103,6 +104,24 @@ class FakeProcessor:
         return 128.0
 
 
+class StreamAwareProcessor:
+    def __call__(self, task):
+        payload = Path(Context.get_temporary_file_path(task.get_file_path())).read_bytes().decode("utf-8")
+        task.set_current_content(
+            {
+                "service": task.get_flow_index(),
+                "payload": payload,
+                "frames": task.get_hash_data(),
+            }
+        )
+        task.add_scenario({"obj_num": len(task.get_hash_data()), "payload": payload})
+        return task
+
+    @property
+    def flops(self):
+        return 256.0
+
+
 class FakeMonitorWorker(threading.Thread):
     def __init__(self, system, metric_name, value):
         super().__init__(daemon=True)
@@ -114,17 +133,44 @@ class FakeMonitorWorker(threading.Thread):
         self.system.resource_info[self.metric_name] = self.value
 
 
+class FakeStreamDataSource:
+    def __init__(self):
+        self.source_requests = []
+        self.pending_payload = b""
+        self.batch_id = 0
+        self.app = FastAPI()
+
+        @self.app.get("/stream-0/source")
+        async def get_source_data(data: str = Form(...)):
+            request_payload = json.loads(data)
+            self.source_requests.append(copy.deepcopy(request_payload))
+
+            buffer_size = request_payload["meta_data"]["buffer_size"]
+            start_frame = self.batch_id * buffer_size
+            frames_index = list(range(start_frame, start_frame + buffer_size))
+
+            self.pending_payload = f"stream-batch-{self.batch_id}".encode("utf-8")
+            self.batch_id += 1
+            return frames_index
+
+        @self.app.get("/stream-0/file")
+        async def get_source_file():
+            return Response(content=self.pending_payload, media_type="application/octet-stream")
+
+
 class ComponentRouter:
-    def __init__(self, scheduler_server, controller_server, processor_server, distributor_server):
+    def __init__(self, scheduler_server, controller_server, processor_server, distributor_server, source_app=None):
         self.scheduler_server = scheduler_server
         self.controller_server = controller_server
         self.processor_server = processor_server
         self.distributor_server = distributor_server
+        self.source_app = source_app
 
         self.scheduler_client = TestClient(scheduler_server.app)
         self.controller_client = TestClient(controller_server.app)
         self.processor_client = TestClient(processor_server.app)
         self.distributor_client = TestClient(distributor_server.app)
+        self.source_client = TestClient(source_app) if source_app else None
 
         self.client_by_port = {
             "9001": self.scheduler_client,
@@ -132,12 +178,16 @@ class ComponentRouter:
             "9003": self.distributor_client,
             "9004": self.processor_client,
         }
+        if self.source_client:
+            self.client_by_port["9010"] = self.source_client
 
     def close(self):
         self.scheduler_client.close()
         self.controller_client.close()
         self.processor_client.close()
         self.distributor_client.close()
+        if self.source_client:
+            self.source_client.close()
 
     def request(self, url, method=None, no_decode=False, binary=True, **kwargs):
         method = method or "GET"
@@ -293,6 +343,185 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
         assert len(scheduler_server.scheduler.scenario_tasks) == 1
         scenario_task = scheduler_server.scheduler.scenario_tasks[0]
         assert scenario_task.get_scenario_data("face-detection") == {"obj_num": 1}
+    finally:
+        router.close()
+
+
+@pytest.mark.component
+def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_runtime, monkeypatch, tmp_path):
+    generator_module = importlib.import_module("core.generator.generator")
+    video_generator_module = importlib.import_module("core.generator.video_generator")
+    controller_module = importlib.import_module("core.controller.controller")
+    controller_server_module = importlib.import_module("core.controller.controller_server")
+    task_coordinator_module = importlib.import_module("core.controller.task_coordinator")
+    network_module = importlib.import_module("core.lib.network")
+    http_video_getter_module = importlib.import_module("core.lib.algorithms.data_getter.http_video_getter")
+    processor_server_module = importlib.import_module("core.processor.processor_server")
+    distributor_module = importlib.import_module("core.distributor.distributor")
+    distributor_server_module = importlib.import_module("core.distributor.distributor_server")
+    scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NODE_NAME", "edge-node")
+    monkeypatch.setenv("ALL_EDGE_DEVICES", "['edge-node']")
+    monkeypatch.setenv("REQUEST_SCHEDULING_INTERVAL", "1")
+    monkeypatch.setenv("GUNICORN_PORT", "9004")
+    monkeypatch.setenv("DISPLAY", "True")
+    monkeypatch.setenv("GEN_FILTER_NAME", "simple")
+    monkeypatch.setenv("GEN_PROCESS_NAME", "simple")
+    monkeypatch.setenv("GEN_COMPRESS_NAME", "simple")
+
+    for module in (
+        generator_module,
+        controller_module,
+        task_coordinator_module,
+        processor_server_module,
+        distributor_module,
+    ):
+        monkeypatch.setattr(module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
+        monkeypatch.setattr(module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
+        monkeypatch.setattr(module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
+
+    monkeypatch.setattr(controller_module.KubeConfig, "get_service_nodes_dict", staticmethod(lambda: {}))
+    monkeypatch.setattr(scheduler_server_module.KubeConfig, "get_service_nodes_dict", staticmethod(lambda: {}))
+    monkeypatch.setattr(network_module.PortInfo, "force_refresh", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        network_module.PortInfo,
+        "get_component_port",
+        staticmethod(
+            lambda component: {
+                "controller": 9002,
+                "distributor": 9003,
+                "scheduler": 9001,
+                "redis": 6379,
+            }[component]
+        ),
+    )
+    monkeypatch.setattr(
+        network_module.PortInfo,
+        "get_service_ports_dict",
+        staticmethod(lambda device: {"face-detection": 9004}),
+    )
+
+    monkeypatch.setattr(processor_server_module.ProcessorServer, "loop_process", lambda self: None)
+    monkeypatch.setattr(scheduler_server_module, "Scheduler", FakeScheduler)
+    monkeypatch.setattr(http_video_getter_module.time, "sleep", lambda _: None)
+
+    fake_queue = Queue()
+
+    def fake_get_algorithm(algorithm, al_name=None, **kwargs):
+        if algorithm == "GEN_BSO":
+            return lambda system: {
+                "source_id": system.source_id,
+                "meta_data": system.raw_meta_data,
+                "source_device": system.local_device,
+                "all_edge_devices": system.all_edge_devices,
+                "dag": Task.extract_dag_deployment_from_dag(system.task_dag),
+            }
+        if algorithm == "GEN_ASO":
+            def after_schedule(system, scheduler_response):
+                if scheduler_response is None:
+                    system.service_deployment = {"edge-node": ["face-detection"]}
+                    return
+                dag = Task.extract_dag_from_dag_deployment(scheduler_response["plan"]["dag"])
+                dag.get_start_node().service.set_execute_device(system.local_device)
+                dag.get_end_node().service.set_execute_device("cloud-node")
+                system.task_dag = dag
+                system.service_deployment = {"edge-node": ["face-detection"]}
+                system.meta_data.update({"buffer_size": scheduler_response["plan"]["buffer_size"]})
+            return after_schedule
+        if algorithm == "GEN_BSTO":
+            return lambda system, task: None
+        if algorithm == "GEN_GETTER":
+            return http_video_getter_module.HttpVideoGetter()
+        if algorithm == "GEN_GETTER_FILTER":
+            return lambda system: True
+        if algorithm in {"GEN_FILTER", "GEN_PROCESS", "GEN_COMPRESS"}:
+            return object()
+        if algorithm == "PROCESSOR":
+            return StreamAwareProcessor()
+        if algorithm == "PRO_QUEUE":
+            return fake_queue
+        raise AssertionError(f"Unexpected algorithm request: {algorithm}")
+
+    monkeypatch.setattr(generator_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
+    monkeypatch.setattr(video_generator_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
+    monkeypatch.setattr(processor_server_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
+
+    scheduler_server = scheduler_server_module.SchedulerServer()
+    controller_server = controller_server_module.ControllerServer()
+    processor_server = processor_server_module.ProcessorServer()
+    distributor_server = distributor_server_module.DistributorServer()
+    source_server = FakeStreamDataSource()
+
+    router = ComponentRouter(
+        scheduler_server,
+        controller_server,
+        processor_server,
+        distributor_server,
+        source_app=source_server.app,
+    )
+    for module in (
+        generator_module,
+        http_video_getter_module,
+        controller_module,
+        processor_server_module,
+        distributor_module,
+    ):
+        monkeypatch.setattr(module, "http_request", router.request)
+
+    class BoundedVideoGenerator(video_generator_module.VideoGenerator):
+        def run_stream(self, rounds):
+            self.after_schedule_operation(self, None)
+            self.request_schedule_policy()
+
+            for _ in range(rounds):
+                assert self.getter_filter(self)
+                self.data_getter(self)
+
+                if self.cumulative_scheduling_frame_count > \
+                        self.request_scheduling_interval * self.raw_meta_data.get("fps", 0):
+                    self.request_schedule_policy()
+                    self.cumulative_scheduling_frame_count = 0
+
+    try:
+        generator = BoundedVideoGenerator(
+            source_id=0,
+            source_url="http://stream-host:9010/stream-0",
+            source_metadata={
+                "buffer_size": 1,
+                "fps": 2,
+                "resolution": "720p",
+                "encoding": "mp4v",
+            },
+            dag=Task.extract_dict_from_dag(build_single_service_task().get_dag()),
+        )
+        generator.run_stream(rounds=3)
+
+        query_response = router.distributor_client.get("/all_result")
+        assert query_response.status_code == 200
+        assert query_response.json()["size"] == 3
+
+        stored_tasks = [Task.deserialize(task_json) for task_json in query_response.json()["result"]]
+        assert [task.get_task_id() for task in stored_tasks] == [0, 1, 2]
+        assert [task.get_last_content()["payload"] for task in stored_tasks] == [
+            "stream-batch-0",
+            "stream-batch-1",
+            "stream-batch-2",
+        ]
+        assert [task.get_last_content()["frames"] for task in stored_tasks] == [[0], [1], [2]]
+
+        assert len(source_server.source_requests) == 3
+        assert all(request["gen_filter_name"] == "simple" for request in source_server.source_requests)
+        assert all(request["gen_process_name"] == "simple" for request in source_server.source_requests)
+        assert all(request["gen_compress_name"] == "simple" for request in source_server.source_requests)
+
+        assert len(scheduler_server.scheduler.schedule_calls) == 2
+        assert len(scheduler_server.scheduler.scenario_tasks) == 3
+        assert scheduler_server.scheduler.scenario_tasks[-1].get_scenario_data("face-detection") == {
+            "obj_num": 1,
+            "payload": "stream-batch-2",
+        }
     finally:
         router.close()
 
