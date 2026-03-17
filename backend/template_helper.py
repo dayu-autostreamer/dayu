@@ -252,9 +252,26 @@ class TemplateHelper:
     def finetune_distributor_yaml(self, yaml_doc, cloud_node):
         yaml_doc = self.fill_template(yaml_doc, 'distributor')
 
+        base_info = self.load_base_info()
+        log_export = base_info.get('log-export', {})
+        result_log_export = log_export.get('result', {})
+
         cloud_worker_template = yaml_doc['spec']['cloudWorker']
         new_cloud_worker = copy.deepcopy(cloud_worker_template)
         new_cloud_worker['template']['spec']['nodeName'] = cloud_node
+        new_cloud_worker['template']['spec']['containers'][0]['env'].extend([
+            {
+                'name': 'RESULT_LOG_RETENTION_RECORDS',
+                'value': str(result_log_export.get('retention-records', 0))
+            },
+            {
+                'name': 'RESULT_LOG_RETENTION_PRUNE_INTERVAL',
+                'value': str(result_log_export.get('retention-prune-interval', 200))
+            },
+            {
+                'name': 'RESULT_LOG_EXPORT_BATCH_SIZE',
+                'value': str(result_log_export.get('batch-size', 500))
+            }, ])
 
         yaml_doc['spec']['cloudWorker'] = new_cloud_worker
 
@@ -377,7 +394,7 @@ class TemplateHelper:
                     new_edge_worker['template']['spec']['containers'][0]['image'] = image_name
                     new_edge_worker['template']['spec']['containers'][0]['env'].extend(
                         [{'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"},
-                        {'name': 'JETPACK', 'value': str(jetpack_major)}])
+                         {'name': 'JETPACK', 'value': str(jetpack_major)}])
 
                     edge_yaml_doc['spec']['edgeWorker'] = [new_edge_worker]
                 else:

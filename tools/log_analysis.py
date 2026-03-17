@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import sys
 from collections import Counter, defaultdict
@@ -41,10 +42,23 @@ def load_tasks(log_file: str | Path) -> list[dict[str, Any]]:
     if not log_path.is_file():
         raise ValueError(f"Log path '{log_path}' is not a file.")
 
-    try:
-        records = json.loads(log_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Log file '{log_path}' is not valid JSON.") from exc
+    opener = gzip.open if log_path.suffix == ".gz" else open
+    with opener(log_path, "rt", encoding="utf-8") as fh:
+        sample = ""
+        while True:
+            char = fh.read(1)
+            if not char or not char.isspace():
+                sample = char
+                break
+        fh.seek(0)
+
+        try:
+            if sample == "[":
+                records = json.load(fh)
+            else:
+                records = [json.loads(line) for line in fh if line.strip()]
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Log file '{log_path}' is not valid JSON.") from exc
 
     if not isinstance(records, list):
         raise ValueError(f"Log file '{log_path}' does not contain a task list.")

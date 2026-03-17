@@ -1,3 +1,4 @@
+import gzip
 import json
 
 import pytest
@@ -85,6 +86,21 @@ def test_load_tasks_reads_exported_log_file(tmp_path):
     assert len(tasks) == 1
     assert tasks[0]["source_device"] == "camera-a"
     assert tasks[0]["dag"]["detector"]["service"]["execute_device"] == "edge-a"
+
+
+@pytest.mark.unit
+def test_load_tasks_reads_gzipped_jsonl_export(tmp_path):
+    log_file = tmp_path / "sample-log.jsonl.gz"
+    with gzip.open(log_file, "wt", encoding="utf-8") as fh:
+        fh.write(json.dumps(_task_record(1, "camera-a", [("detector", "edge-a", 0.5, 1.5, 1.0)])))
+        fh.write("\n")
+        fh.write(json.dumps(_task_record(2, "camera-b", [("tracker", "edge-b", 0.2, 0.8, 0.7)])))
+        fh.write("\n")
+
+    tasks = log_analysis.load_tasks(log_file)
+
+    assert [task["task_id"] for task in tasks] == [1, 2]
+    assert tasks[1]["dag"]["tracker"]["service"]["execute_device"] == "edge-b"
 
 
 @pytest.mark.unit

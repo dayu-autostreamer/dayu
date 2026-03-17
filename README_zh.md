@@ -91,6 +91,14 @@ KubeEdge 开发，可以在不同平台之间轻松迁移。
 - **支持细粒度实时调度**：平台根据工作条件和资源情况实时生成任务数据配置和任务卸载决策，从而完成任务的细粒度实时调度。
 - **支持多数据流的并行处理**：平台支持多数据流的并行处理（例如，不同路口的摄像头同时处理交通流量任务），这些任务在处理阶段不区分数据流，等效处理。
 
+## 项目文档
+
+仓库内维护的技术文档位于 [`docs/`](docs/README.md)：
+
+- [`docs/api/README.md`](docs/api/README.md)：后端控制面 API 与内部运行时 API
+- [`docs/hooks/README.md`](docs/hooks/README.md)：hook 机制、执行链路与扩展方式
+- [`docs/hooks/catalog.md`](docs/hooks/catalog.md)：已注册 hook 实现目录
+
 ## 开发环境
 
 为保证本地开发环境与 CI 一致，建议使用仓库中声明的工具链版本：
@@ -135,8 +143,8 @@ make frontend-build
 仓库提供了一个用于分析系统导出日志的命令行工具：
 
 ```bash
-python tools/log_analysis.py --log path/to/exported-log.json
-python tools/log_analysis.py --log path/to/exported-log.json --output-format json
+python tools/log_analysis.py --log path/to/exported-log.json.gz
+python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format json
 ```
 
 ## 使用

@@ -1,7 +1,25 @@
+import gzip
 import importlib
+import json
+import os
+import tempfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+class FakeStreamResponse:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+        self.headers = {"content-length": str(len(payload))}
+
+    def iter_content(self, chunk_size=8192):
+        for idx in range(0, len(self._payload), chunk_size):
+            yield self._payload[idx: idx + chunk_size]
+
+    def close(self):
+        return None
 
 
 class FakeBackendCore:
@@ -39,6 +57,7 @@ class FakeBackendCore:
         self.source_open = False
         self.source_label = ""
         self.inner_datasource = True
+        self._export_payload = gzip.compress(json.dumps([{"task_id": 1}]).encode("utf-8"))
 
     def parse_base_info(self):
         return None
@@ -69,6 +88,20 @@ class FakeBackendCore:
 
     def check_install_state(self):
         return False
+
+    def get_log_file_name(self):
+        return None
+
+    def open_result_log_export_stream(self):
+        return FakeStreamResponse(self._export_payload)
+
+    def create_system_log_export_file(self):
+        fd, export_path = tempfile.mkstemp(prefix="dayu-system-log-test-", suffix=".json.gz")
+        os.close(fd)
+        export_file = Path(export_path)
+        with gzip.open(export_file, "wt", encoding="utf-8") as fh:
+            json.dump([{"timestamp": "00:00:00", "data": []}], fh)
+        return str(export_file)
 
 
 @pytest.fixture
@@ -155,3 +188,17 @@ def test_dag_and_query_related_routes_return_expected_payloads(backend_client):
     assert client.get("/system_parameters").json() == {"namespace": "dayu-test"}
     assert client.get("/result_visualization_config/1").json() == [{"id": 0, "source_id": 1}]
     assert client.get("/system_visualization_config").json() == [{"name": "CPU Usage"}]
+
+
+@pytest.mark.integration
+def test_download_routes_stream_gzipped_exports(backend_client):
+    _, client = backend_client
+
+    result_response = client.get("/download_log")
+    assert result_response.status_code == 200
+    assert gzip.decompress(result_response.content) == b'[{"task_id": 1}]'
+
+    system_response = client.get("/download_system_log")
+    assert system_response.status_code == 200
+    system_payload = json.loads(gzip.decompress(system_response.content).decode("utf-8"))
+    assert system_payload == [{"timestamp": "00:00:00", "data": []}]

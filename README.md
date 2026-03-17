@@ -117,6 +117,14 @@ It makes up of Application Service Layer.
   streams (for example, cameras at different intersections process traffic flow tasks at the same time). These tasks do
   not distinguish between data streams during the processing stage and are processed equivalently.
 
+## Documentation
+
+Repository-maintained technical docs now live under [`docs/`](docs/README.md):
+
+- [`docs/api/README.md`](docs/api/README.md): backend control-plane and internal runtime APIs
+- [`docs/hooks/README.md`](docs/hooks/README.md): hook mechanism, lifecycle, and extension guide
+- [`docs/hooks/catalog.md`](docs/hooks/catalog.md): registered hook implementation catalog
+
 ## Development Environment
 
 To align local development with CI, use the toolchain versions tracked in the repository:
@@ -162,8 +170,8 @@ development.
 The repository includes a CLI log summary tool for exported system traces:
 
 ```bash
-python tools/log_analysis.py --log path/to/exported-log.json
-python tools/log_analysis.py --log path/to/exported-log.json --output-format json
+python tools/log_analysis.py --log path/to/exported-log.json.gz
+python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format json
 ```
 
 ## Guides

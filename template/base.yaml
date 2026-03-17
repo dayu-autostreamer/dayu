@@ -4,8 +4,22 @@
 namespace: dayu
 # levels for container logging in dayu: DEBUG, INFO, WARNING, ERROR
 log-level: DEBUG
-# specify the downloaded log file name, if not set, log file name will be generated with timestamps, e.g., RESULT_LOG_DAYU_NAMESPACE_dayu_TIME_2025_11_04_01_46_26.json
+# specify the downloaded result log file name, if not set, log file name will be generated with timestamps, e.g., RESULT_LOG_DAYU_NAMESPACE_dayu_TIME_2025_11_04_01_46_26.json.gz
 log-file-name:
+# export/retention controls for result logs and system logs
+log-export:
+  result:
+    # keep the latest N task results in distributor storage to avoid unbounded growth, 0 means no limit
+    retention-records: 100000
+    # prune stale result records every N writes
+    retention-prune-interval: 10000
+    # batch size used when generating compressed export files
+    batch-size: 500
+  system:
+    # keep the latest N system snapshots in backend storage, 0 means no limit
+    retention-records: 100000
+    # compact the append-only store after it exceeds retention by this many records
+    compact-interval: 10000
 # pod permission configuration for dayu containers
 pod-permission:
   service-account: worker-admin
@@ -45,5 +59,4 @@ result-visualizations:
 # import system visualization configurations
 system-visualizations:
   !include system-visualizations.yaml
-
 

@@ -1,7 +1,10 @@
 import copy
-import re
 import json
+import gzip
+import shutil
+import tempfile
 import threading
+import re
 from collections import deque
 from func_timeout import func_set_timeout as timeout
 import func_timeout.exceptions as timeout_exceptions
@@ -16,6 +19,10 @@ from core.lib.estimation import Timer
 
 from kube_helper import KubeHelper
 from template_helper import TemplateHelper
+
+
+def _indent_json_block(text, prefix='    '):
+    return '\n'.join(f'{prefix}{line}' if line else prefix for line in text.splitlines())
 
 
 class BackendCore:
@@ -58,7 +65,6 @@ class BackendCore:
         self.result_file_url = None
         self.resource_url = None
         self.log_fetch_url = None
-        self.log_clear_url = None
 
         self.inner_datasource = self.check_simulation_datasource()
         self.source_open = False
@@ -77,15 +83,17 @@ class BackendCore:
 
         self.cur_yaml_docs = None
         self.save_yaml_path = 'resources.yaml'
-        self.log_file_path = 'log.json'
-        # File path for system visualization logs (ephemeral download file)
-        self.system_log_file_path = 'system_log.json'
-        # In-memory system logs storage
-        self.system_logs = []
-        # Persistent store for system logs (append-only JSON Lines)
         self.system_log_store_path = 'system_log_store.jsonl'
-        # Threshold for flushing in-memory logs to file
-        self.system_log_threshold = 1000
+        self.system_log_lock = threading.Lock()
+        self.system_log_retention_records = max(
+            0,
+            int(Context.get_parameter('SYSTEM_LOG_RETENTION_RECORDS', 0, direct=False))
+        )
+        self.system_log_compact_interval = max(
+            1,
+            int(Context.get_parameter('SYSTEM_LOG_COMPACT_INTERVAL', 200, direct=False))
+        )
+        self.system_log_record_count = self._count_jsonl_records(self.system_log_store_path)
 
         # Lock for uninstall operations to prevent inconsistent states
         self.uninstall_lock = False
@@ -807,41 +815,114 @@ class BackendCore:
                 LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {str(e)}')
                 LOGGER.exception(e)
 
-    def _flush_system_logs_to_file(self):
-        """Append in-memory logs to persistent JSONL file and clear memory buffer."""
-        if not self.system_logs:
+    @staticmethod
+    def _count_jsonl_records(file_path):
+        if not os.path.exists(file_path):
+            return 0
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return sum(1 for line in f if line.strip())
+
+    def _append_system_log_snapshot(self, snapshot):
+        with open(self.system_log_store_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(snapshot, ensure_ascii=False))
+            f.write('\n')
+
+    def _maybe_compact_system_log_store_locked(self):
+        if not self.system_log_retention_records:
             return
+        if self.system_log_record_count <= self.system_log_retention_records + self.system_log_compact_interval:
+            return
+
+        recent_lines = deque(maxlen=self.system_log_retention_records)
         try:
-            with open(self.system_log_store_path, 'a', encoding='utf-8') as f:
-                for item in self.system_logs:
-                    f.write(json.dumps(item, ensure_ascii=False))
-                    f.write('\n')
-            # Clear in-memory after successful flush
-            self.system_logs.clear()
+            with open(self.system_log_store_path, 'r', encoding='utf-8') as src:
+                for line in src:
+                    line = line.strip()
+                    if line:
+                        recent_lines.append(line)
+
+            temp_handle = tempfile.NamedTemporaryFile(
+                prefix='dayu-system-log-compact-',
+                suffix='.jsonl',
+                delete=False
+            )
+            temp_path = temp_handle.name
+            temp_handle.close()
+
+            try:
+                with open(temp_path, 'w', encoding='utf-8') as dst:
+                    for line in recent_lines:
+                        dst.write(line)
+                        dst.write('\n')
+                os.replace(temp_path, self.system_log_store_path)
+            except Exception:
+                FileOps.remove_file(temp_path)
+                raise
+
+            self.system_log_record_count = len(recent_lines)
+            LOGGER.info(f'[Backend] Compacted system log store to {self.system_log_record_count} records.')
         except Exception as e:
-            LOGGER.warning(f'Flush system logs to file failed: {str(e)}')
+            LOGGER.warning(f'Compact system log store failed: {str(e)}')
             LOGGER.exception(e)
 
-    def _load_system_logs_from_file(self):
-        """Load all persisted logs from JSONL file into a list."""
-        logs = []
-        if not os.path.exists(self.system_log_store_path):
-            return logs
+    def _create_system_log_snapshot_file(self):
+        snapshot_handle = tempfile.NamedTemporaryFile(
+            prefix='dayu-system-log-snapshot-',
+            suffix='.jsonl',
+            delete=False
+        )
+        snapshot_path = snapshot_handle.name
+        snapshot_handle.close()
+
+        with self.system_log_lock:
+            if os.path.exists(self.system_log_store_path):
+                shutil.copyfile(self.system_log_store_path, snapshot_path)
+            else:
+                with open(snapshot_path, 'w', encoding='utf-8'):
+                    pass
+
+        return snapshot_path
+
+    def create_system_log_export_file(self):
+        snapshot_path = self._create_system_log_snapshot_file()
+        export_handle = tempfile.NamedTemporaryFile(
+            prefix='dayu-system-log-',
+            suffix='.json.gz',
+            delete=False
+        )
+        export_path = export_handle.name
+        export_handle.close()
+
         try:
-            with open(self.system_log_store_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        logs.append(json.loads(line))
-                    except Exception:
-                        # Skip malformed line
-                        continue
-        except Exception as e:
-            LOGGER.warning(f'Read system log store failed: {str(e)}')
-            LOGGER.exception(e)
-        return logs
+            with gzip.open(export_path, 'wt', encoding='utf-8') as fh:
+                fh.write('[\n')
+                first = True
+                with open(snapshot_path, 'r', encoding='utf-8') as src:
+                    for line in src:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            LOGGER.warning('[Backend] Skip malformed system log record during export.')
+                            continue
+
+                        if not first:
+                            fh.write(',\n')
+                        fh.write(_indent_json_block(json.dumps(record, ensure_ascii=False, indent=4)))
+                        first = False
+
+                if not first:
+                    fh.write('\n')
+                fh.write(']\n')
+        except Exception:
+            FileOps.remove_file(export_path)
+            raise
+        finally:
+            FileOps.remove_file(snapshot_path)
+
+        return export_path
 
     def get_system_parameters(self):
         # Skip system parameters retrieving when not installed
@@ -854,33 +935,16 @@ class BackendCore:
         data = self.prepare_system_visualizations_data()
         snapshot = {"timestamp": timestamp, "data": data}
 
-        # Append to in-memory system logs; flush to file when threshold is reached
         try:
-            self.system_logs.append(copy.deepcopy(snapshot))
-            if len(self.system_logs) >= self.system_log_threshold:
-                self._flush_system_logs_to_file()
+            with self.system_log_lock:
+                self._append_system_log_snapshot(snapshot)
+                self.system_log_record_count += 1
+                self._maybe_compact_system_log_store_locked()
         except Exception as e:
             LOGGER.warning(f'Append system log failed: {str(e)}')
             LOGGER.exception(e)
 
         return [snapshot]
-
-    def download_system_log_content(self):
-        """Return current system logs (file + memory) and clear them afterwards."""
-        # Ensure any pending in-memory logs are flushed so we don't lose data
-        try:
-            self._flush_system_logs_to_file()
-        except Exception:
-            pass
-
-        # Load all logs from file
-        file_logs = self._load_system_logs_from_file()
-        # Combine with any remaining in-memory logs (should be empty after flush)
-        combined = file_logs + list(self.system_logs)
-        # Clear in-memory buffer and delete the store file
-        self.system_logs.clear()
-        FileOps.remove_file(self.system_log_store_path)
-        return combined
 
     def check_datasource_config(self, config_path):
         if not YamlOps.is_yaml_file(config_path):
@@ -977,10 +1041,7 @@ class BackendCore:
 
         self.log_fetch_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
                                            port=distributor_port,
-                                           path=NetworkAPIPath.DISTRIBUTOR_ALL_RESULT)
-        self.log_clear_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                           port=distributor_port,
-                                           path=NetworkAPIPath.DISTRIBUTOR_CLEAR_DATABASE)
+                                           path=NetworkAPIPath.DISTRIBUTOR_EXPORT_RESULT_LOG)
 
     def get_file_result(self, file_name):
         if not self.result_file_url:
@@ -998,21 +1059,22 @@ class BackendCore:
                 file_out.write(chunk)
         return file_name
 
-    def download_log_file(self):
+    def open_result_log_export_stream(self):
         self.parse_base_info()
         self.get_log_url()
         if not self.log_fetch_url:
-            return ''
+            return None
 
-        response = http_request(self.log_fetch_url, method=NetworkAPIMethod.DISTRIBUTOR_ALL_RESULT, )
+        response = http_request(
+            self.log_fetch_url,
+            method=NetworkAPIMethod.DISTRIBUTOR_EXPORT_RESULT_LOG,
+            no_decode=True,
+            stream=True
+        )
         if response is None:
             self.log_fetch_url = None
-            return ''
-        results = response['result']
-
-        http_request(self.log_clear_url, method=NetworkAPIMethod.DISTRIBUTOR_CLEAR_DATABASE)
-
-        return results
+            return None
+        return response
 
     def get_result_visualization_config(self, source_id):
         self.parse_base_info()

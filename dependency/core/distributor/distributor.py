@@ -1,11 +1,18 @@
 import os
+import json
+import gzip
 import sqlite3
+import tempfile
 from datetime import datetime
 
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
-from core.lib.common import LOGGER, FileNameConstant, FileOps, SystemConstant
+from core.lib.common import LOGGER, FileNameConstant, FileOps, SystemConstant, Context
 from core.lib.network import http_request, NodeInfo, merge_address, NetworkAPIMethod, NetworkAPIPath, PortInfo
+
+
+def _indent_json_block(text, prefix='    '):
+    return '\n'.join(f'{prefix}{line}' if line else prefix for line in text.splitlines())
 
 
 class Distributor:
@@ -21,6 +28,9 @@ class Distributor:
     _BUSY_TIMEOUT_MS = 5000  # PRAGMA busy_timeout: how long SQLite will wait for locks inside a connection
     _JOURNAL_MODE = "WAL"  # Better read/write concurrency
     _SYNCHRONOUS = "NORMAL"  # Reasonable durability with good throughput (can be "FULL" if you prefer)
+    _DEFAULT_RESULT_LOG_EXPORT_BATCH_SIZE = 500 # Batch size used when generating compressed export files
+    _DEFAULT_RESULT_LOG_RETENTION_RECORDS = 0 # Keep the latest N task results in distributor storage to avoid unbounded growth
+    _DEFAULT_RESULT_LOG_RETENTION_PRUNE_INTERVAL = 200 # Prune stale result records every N writes
 
     def __init__(self):
         self.scheduler_hostname = NodeInfo.get_cloud_node()
@@ -31,6 +41,31 @@ class Distributor:
             path=NetworkAPIPath.SCHEDULER_SCENARIO
         )
         self.record_path = FileNameConstant.DISTRIBUTOR_RECORD.value
+        self.result_log_export_batch_size = max(
+            1,
+            int(Context.get_parameter(
+                'RESULT_LOG_EXPORT_BATCH_SIZE',
+                self._DEFAULT_RESULT_LOG_EXPORT_BATCH_SIZE,
+                direct=False
+            ))
+        )
+        self.result_log_retention_records = max(
+            0,
+            int(Context.get_parameter(
+                'RESULT_LOG_RETENTION_RECORDS',
+                self._DEFAULT_RESULT_LOG_RETENTION_RECORDS,
+                direct=False
+            ))
+        )
+        self.result_log_retention_prune_interval = max(
+            1,
+            int(Context.get_parameter(
+                'RESULT_LOG_RETENTION_PRUNE_INTERVAL',
+                self._DEFAULT_RESULT_LOG_RETENTION_PRUNE_INTERVAL,
+                direct=False
+            ))
+        )
+        self._writes_since_prune = 0
 
         # Initialize DB schema and indexes
         self._init_db()
@@ -129,6 +164,12 @@ class Distributor:
             LOGGER.warning(
                 f'[Task Name Conflict] source_id: {task_source_id}, task_id: {task_task_id} already exists.'
             )
+            return
+
+        self._writes_since_prune += 1
+        if self.result_log_retention_records and self._writes_since_prune >= self.result_log_retention_prune_interval:
+            self._prune_old_records()
+            self._writes_since_prune = 0
 
     @staticmethod
     def record_total_end_ts(cur_task):
@@ -266,6 +307,26 @@ class Distributor:
 
         return {'result': results, 'size': len(results)}
 
+    def create_result_log_export_file(self):
+        snapshot_path = self._create_result_log_snapshot()
+        export_handle = tempfile.NamedTemporaryFile(
+            prefix='dayu-result-log-',
+            suffix='.json.gz',
+            delete=False
+        )
+        export_path = export_handle.name
+        export_handle.close()
+
+        try:
+            self._write_result_log_export(snapshot_path, export_path)
+        except Exception:
+            FileOps.remove_file(export_path)
+            raise
+        finally:
+            FileOps.remove_file(snapshot_path)
+
+        return export_path
+
     def clear_database(self):
         """Remove the DB file entirely."""
         FileOps.remove_file(self.record_path)
@@ -275,3 +336,85 @@ class Distributor:
     def is_database_empty(self):
         """Quick existence check."""
         return not os.path.exists(self.record_path)
+
+    def _create_result_log_snapshot(self):
+        snapshot_handle = tempfile.NamedTemporaryFile(
+            prefix='dayu-result-log-snapshot-',
+            suffix='.db',
+            delete=False
+        )
+        snapshot_path = snapshot_handle.name
+        snapshot_handle.close()
+
+        try:
+            with self._connect() as source_conn:
+                with sqlite3.connect(snapshot_path) as snapshot_conn:
+                    source_conn.backup(snapshot_conn)
+                    snapshot_conn.commit()
+        except Exception:
+            FileOps.remove_file(snapshot_path)
+            raise
+
+        return snapshot_path
+
+    def _iter_snapshot_records(self, snapshot_path):
+        with sqlite3.connect(snapshot_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT json
+                FROM records
+                ORDER BY ctime ASC, source_id ASC, task_id ASC
+                """
+            )
+
+            while True:
+                rows = c.fetchmany(self.result_log_export_batch_size)
+                if not rows:
+                    break
+                for row in rows:
+                    yield row[0]
+
+    def _write_result_log_export(self, snapshot_path, export_path):
+        with gzip.open(export_path, 'wt', encoding='utf-8') as fh:
+            fh.write('[\n')
+            first = True
+            for payload in self._iter_snapshot_records(snapshot_path):
+                try:
+                    record = json.loads(payload)
+                except json.JSONDecodeError:
+                    LOGGER.warning('[Distributor] Skip malformed result log record during export.')
+                    continue
+
+                if not first:
+                    fh.write(',\n')
+                fh.write(_indent_json_block(json.dumps(record, ensure_ascii=False, indent=4)))
+                first = False
+
+            if not first:
+                fh.write('\n')
+            fh.write(']\n')
+
+    def _prune_old_records(self):
+        try:
+            with self._connect() as conn:
+                c = conn.cursor()
+                c.execute(
+                    """
+                    DELETE FROM records
+                    WHERE rowid IN (
+                        SELECT rowid
+                        FROM records
+                        ORDER BY ctime DESC, source_id DESC, task_id DESC
+                        LIMIT -1 OFFSET ?
+                    )
+                    """,
+                    (self.result_log_retention_records,)
+                )
+                deleted_rows = c.rowcount if c.rowcount and c.rowcount > 0 else 0
+                conn.commit()
+                if deleted_rows:
+                    LOGGER.info(f'[Distributor] Pruned {deleted_rows} stale result log records.')
+        except Exception as e:
+            LOGGER.warning(f'[Distributor] Prune old result log records failed: {e}')
+            LOGGER.exception(e)

@@ -1,4 +1,5 @@
 import importlib
+import gzip
 import json
 
 import pytest
@@ -282,4 +283,11 @@ def test_distributor_server_persists_records_and_queries_incrementally(monkeypat
         all_response = client.get("/all_result")
         assert all_response.status_code == 200
         assert all_response.json()["size"] == 1
+
+        export_response = client.get("/export_result_log")
+        assert export_response.status_code == 200
+        exported_tasks = json.loads(gzip.decompress(export_response.content).decode("utf-8"))
+        assert len(exported_tasks) == 1
+        assert exported_tasks[0]["task_id"] == 0
+        assert client.get("/all_result").json()["size"] == 1
         assert client.get("/is_database_empty").json() is False

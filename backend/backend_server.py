@@ -4,14 +4,13 @@ import threading
 import time
 from datetime import datetime
 
-from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks, HTTPException
 from fastapi.routing import APIRoute
-from starlette.responses import JSONResponse, FileResponse
+from starlette.responses import JSONResponse, FileResponse, StreamingResponse
 
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.lib.common import LOGGER, Counter, Queue, FileOps
-from core.lib.content import Task
 from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
 
 from backend_core import BackendCore
@@ -135,7 +134,7 @@ class BackendServer:
                      ),
             APIRoute(NetworkAPIPath.BACKEND_DOWNLOAD_LOG,
                      self.download_log,
-                     response_class=FileResponse,
+                     response_class=StreamingResponse,
                      methods=[NetworkAPIMethod.BACKEND_DOWNLOAD_LOG]
                      ),
             APIRoute(NetworkAPIPath.BACKEND_DOWNLOAD_SYSTEM_LOG,
@@ -697,7 +696,7 @@ class BackendServer:
     async def reset_datasource(self):
         self.server.source_open = False
 
-    async def download_log(self, backtask: BackgroundTasks):
+    async def download_log(self):
         """
         :return:
         file
@@ -707,27 +706,42 @@ class BackendServer:
             formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
             file_name = f'RESULT_LOG_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
 
-        log_content = self.server.download_log_file()
-        with open(self.server.log_file_path, 'w') as f:
-            json.dump([Task.deserialize(log).to_dict() for log in log_content], f, indent=4)
-        backtask.add_task(FileOps.remove_file, self.server.log_file_path)
-        return FileResponse(
-            path=self.server.log_file_path,
-            filename=f'{file_name}.json',
-            background=backtask
+        upstream_response = self.server.open_result_log_export_stream()
+        if upstream_response is None:
+            raise HTTPException(status_code=503, detail='Result log export is temporarily unavailable')
+
+        headers = {
+            'Content-Disposition': f'attachment; filename="{file_name}.json.gz"',
+            'Cache-Control': 'no-store',
+        }
+        content_length = upstream_response.headers.get('content-length')
+        if content_length:
+            headers['Content-Length'] = content_length
+
+        def iter_chunks():
+            try:
+                for chunk in upstream_response.iter_content(chunk_size=8192):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream_response.close()
+
+        return StreamingResponse(
+            iter_chunks(),
+            media_type='application/gzip',
+            headers=headers
         )
 
     async def download_system_log(self, backtask: BackgroundTasks):
-        """Download accumulated system visualization logs and clear the cache."""
+        """Download accumulated system visualization logs without clearing the store."""
         formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         file_name = f'SYSTEM_LOG_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
 
-        log_content = self.server.download_system_log_content()
-        with open(self.server.system_log_file_path, 'w') as f:
-            json.dump(log_content, f)
-        backtask.add_task(FileOps.remove_file, self.server.system_log_file_path)
+        export_path = self.server.create_system_log_export_file()
+        backtask.add_task(FileOps.remove_file, export_path)
         return FileResponse(
-            path=self.server.system_log_file_path,
-            filename=f'{file_name}.json',
+            path=export_path,
+            filename=f'{file_name}.json.gz',
+            media_type='application/gzip',
             background=backtask
         )
