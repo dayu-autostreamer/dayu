@@ -3,10 +3,6 @@
 		<div class="login-left">
 			<div class="login-left-logo">
 				<img :src="logoMini" />
-				<!-- <div class="login-left-logo-text">
-					<span>{{ getThemeConfig.globalViceTitle }}</span>
-					<span class="login-left-logo-text-msg">{{ getThemeConfig.globalViceTitleMsg }}</span>
-				</div> -->
 			</div>
 			<div class="login-left-img">
 				<img :src="loginMain" />
@@ -20,14 +16,11 @@
 				<div class="login-right-warp-mian">
 					<div class="login-right-warp-main-title">{{ getThemeConfig.globalTitle }}</div>
 					<div class="login-right-warp-main-form">
-
-							<el-tabs v-model="state.tabsActiveName">
-								<el-tab-pane :label="$t('message.label.one1')" name="account">
-									<Account />
-								</el-tab-pane>
-
-							</el-tabs>
-
+						<el-tabs v-model="state.tabsActiveName">
+							<el-tab-pane :label="$t('message.label.one1')" name="account">
+								<Account />
+							</el-tab-pane>
+						</el-tabs>
 					</div>
 				</div>
 			</div>
@@ -44,24 +37,16 @@ import logoMini from '/@/assets/logo-mini.svg';
 import loginMain from '/@/assets/logo.svg';
 import loginBg from '/@/assets/login-bg.svg';
 
-// 引入组件
 const Account = defineAsyncComponent(() => import('/@/views/login/component/account.vue'));
-// const Mobile = defineAsyncComponent(() => import('/@/views/login/component/mobile.vue'));
-// const Scan = defineAsyncComponent(() => import('/@/views/login/component/scan.vue'));
 
-// 定义变量内容
 const storesThemeConfig = useThemeConfig();
 const { themeConfig } = storeToRefs(storesThemeConfig);
 const state = reactive({
 	tabsActiveName: 'account',
-	isScan: false,
 });
 
-// 获取布局配置信息
-const getThemeConfig = computed(() => {
-	return themeConfig.value;
-});
-// 页面加载时
+const getThemeConfig = computed(() => themeConfig.value);
+
 onMounted(() => {
 	NextLoading.done();
 });
@@ -87,19 +72,6 @@ onMounted(() => {
 			img {
 				width: 52px;
 				height: 52px;
-			}
-			.login-left-logo-text {
-				display: flex;
-				flex-direction: column;
-				span {
-					margin-left: 10px;
-					font-size: 28px;
-					color: #26a59a;
-				}
-				.login-left-logo-text-msg {
-					font-size: 12px;
-					color: #32a99e;
-				}
 			}
 		}
 		.login-left-img {

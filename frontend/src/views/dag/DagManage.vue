@@ -420,14 +420,13 @@ export default {
 
               return {
                 ...dag,
-                nodeList: layoutNodes,  // 添加布局后的节点
-                lineList               // 添加边数据
+                nodeList: layoutNodes,
+                lineList
               };
             });
           })
           .catch((error) => {
             console.error('Error fetching data:', error);
-            // console.error("Error fetching data");
           });
     },
     fetchData() {
@@ -625,12 +624,6 @@ export default {
     getServiceInterval();
 
     this.getServiceList();
-
-    // this.$nextTick(() => {
-    //   if (this.flowNodes.length > 0) {
-    //     this.layoutGraph('LR')
-    //   }
-    // })
   }
   ,
 }
@@ -653,7 +646,6 @@ form {
   padding: 20px;
   background-color: #fff;
   border-radius: 8px;
-  /* box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1); */
 }
 
 h3 {
@@ -702,11 +694,9 @@ input[type="file"] {
 }
 
 .outline {
-  /* max-width: 600px; */
   padding: 20px;
   background-color: #fff;
   border-radius: 8px;
-  /* box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1); */
 }
 
 .new-dag-font-style {
@@ -732,7 +722,7 @@ input[type="file"] {
 }
 
 .vue-flow__node-input {
-  border: 1px solid #e2e8f0; /* 柔和的蓝灰色 */
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
@@ -743,7 +733,7 @@ input[type="file"] {
 }
 
 .vue-flow__node-input:hover {
-  border-color: #94a3b8; /* 悬停时稍深的颜色 */
+  border-color: #94a3b8;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
 }
 

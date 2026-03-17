@@ -10,15 +10,12 @@ import { defineAsyncComponent, computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useThemeConfig } from '/@/stores/themeConfig';
 
-// 引入组件
 const BreadcrumbIndex = defineAsyncComponent(() => import('/@/layout/navBars/topBar/index.vue'));
 const TagsView = defineAsyncComponent(() => import('/@/layout/navBars/tagsView/tagsView.vue'));
 
-// 定义变量内容
 const storesThemeConfig = useThemeConfig();
 const { themeConfig } = storeToRefs(storesThemeConfig);
 
-// 是否显示 tagsView
 const setShowTagsView = computed(() => {
 	let { layout, isTagsview } = themeConfig.value;
 	return layout !== 'classic' && isTagsview;
