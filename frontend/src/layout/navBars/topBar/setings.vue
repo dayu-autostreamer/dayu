@@ -9,7 +9,6 @@
 			@close="onDrawerClose"
 		>
 			<el-scrollbar class="layout-breadcrumb-seting-bar">
-				<!-- 全局主题 -->
 				<el-divider content-position="left">{{ $t('message.layout.oneTitle') }}</el-divider>
 				<div class="layout-breadcrumb-seting-bar-flex">
 					<div class="layout-breadcrumb-seting-bar-flex-label">primary</div>
@@ -24,7 +23,6 @@
 					</div>
 				</div>
 
-				<!-- 顶栏设置 -->
 				<el-divider content-position="left">{{ $t('message.layout.twoTopTitle') }}</el-divider>
 				<div class="layout-breadcrumb-seting-bar-flex">
 					<div class="layout-breadcrumb-seting-bar-flex-label">{{ $t('message.layout.twoTopBar') }}</div>
@@ -45,7 +43,6 @@
 					</div>
 				</div>
 
-				<!-- 菜单设置 -->
 				<el-divider content-position="left">{{ $t('message.layout.twoMenuTitle') }}</el-divider>
 				<div class="layout-breadcrumb-seting-bar-flex">
 					<div class="layout-breadcrumb-seting-bar-flex-label">{{ $t('message.layout.twoMenuBar') }}</div>
@@ -77,7 +74,6 @@
 					</div>
 				</div>
 
-				<!-- 分栏设置 -->
 				<el-divider content-position="left" :style="{ opacity: getThemeConfig.layout !== 'columns' ? 0.5 : 1 }">{{
 					$t('message.layout.twoColumnsTitle')
 				}}</el-divider>
@@ -128,7 +124,6 @@
 					</div>
 				</div>
 
-				<!-- 界面设置 -->
 				<el-divider content-position="left">{{ $t('message.layout.threeTitle') }}</el-divider>
 				<div class="layout-breadcrumb-seting-bar-flex" :style="{ opacity: getThemeConfig.layout === 'transverse' ? 0.5 : 1 }">
 					<div class="layout-breadcrumb-seting-bar-flex-label">{{ $t('message.layout.threeIsCollapse') }}</div>
@@ -192,7 +187,6 @@
 					</div>
 				</div>
 
-				<!-- 界面显示 -->
 				<el-divider content-position="left">{{ $t('message.layout.fourTitle') }}</el-divider>
 				<div class="layout-breadcrumb-seting-bar-flex mt15">
 					<div class="layout-breadcrumb-seting-bar-flex-label">{{ $t('message.layout.fourIsShowLogo') }}</div>
@@ -255,12 +249,6 @@
 						<el-switch v-model="getThemeConfig.isShareTagsView" size="small" @change="onShareTagsViewChange"></el-switch>
 					</div>
 				</div>
-				<!-- <div class="layout-breadcrumb-seting-bar-flex mt15">
-					<div class="layout-breadcrumb-seting-bar-flex-label">{{ $t('message.layout.fourIsFooter') }}</div>
-					<div class="layout-breadcrumb-seting-bar-flex-value">
-						<el-switch v-model="getThemeConfig.isFooter" size="small" @change="setLocalThemeConfig"></el-switch>
-					</div>
-				</div> -->
 				<div class="layout-breadcrumb-seting-bar-flex mt15">
 					<div class="layout-breadcrumb-seting-bar-flex-label">{{ $t('message.layout.fourIsGrayscale') }}</div>
 					<div class="layout-breadcrumb-seting-bar-flex-value">
@@ -273,20 +261,6 @@
 						<el-switch v-model="getThemeConfig.isInvert" size="small" @change="onAddFilterChange('invert')"></el-switch>
 					</div>
 				</div>
-				<!-- <div class="layout-breadcrumb-seting-bar-flex mt15">
-					<div class="layout-breadcrumb-seting-bar-flex-label">{{ $t('message.layout.fourIsWartermark') }}</div>
-					<div class="layout-breadcrumb-seting-bar-flex-value">
-						<el-switch v-model="getThemeConfig.isWartermark" size="small" @change="onWartermarkChange"></el-switch>
-					</div>
-				</div>
-				<div class="layout-breadcrumb-seting-bar-flex mt14">
-					<div class="layout-breadcrumb-seting-bar-flex-label">{{ $t('message.layout.fourWartermarkText') }}</div>
-					<div class="layout-breadcrumb-seting-bar-flex-value">
-						<el-input v-model="getThemeConfig.wartermarkText" size="default" style="width: 90px" @input="onWartermarkTextInput"></el-input>
-					</div>
-				</div> -->
-
-				<!-- 其它设置 -->
 				<el-divider content-position="left">{{ $t('message.layout.fiveTitle') }}</el-divider>
 				<div class="layout-breadcrumb-seting-bar-flex mt15">
 					<div class="layout-breadcrumb-seting-bar-flex-label">{{ $t('message.layout.fiveTagsStyle') }}</div>
@@ -341,10 +315,8 @@
 					</div>
 				</div>
 
-				<!-- 布局切换 -->
 				<el-divider content-position="left">{{ $t('message.layout.sixTitle') }}</el-divider>
 				<div class="layout-drawer-content-flex">
-					<!-- defaults 布局 -->
 					<div class="layout-drawer-content-item" @click="onSetLayout('defaults')">
 						<section class="el-container el-circular" :class="{ 'drawer-layout-active': getThemeConfig.layout === 'defaults' }">
 							<aside class="el-aside" style="width: 20px"></aside>
@@ -359,7 +331,6 @@
 							</div>
 						</div>
 					</div>
-					<!-- classic 布局 -->
 					<div class="layout-drawer-content-item" @click="onSetLayout('classic')">
 						<section class="el-container is-vertical el-circular" :class="{ 'drawer-layout-active': getThemeConfig.layout === 'classic' }">
 							<header class="el-header" style="height: 10px"></header>
@@ -376,7 +347,6 @@
 							</div>
 						</div>
 					</div>
-					<!-- transverse 布局 -->
 					<div class="layout-drawer-content-item" @click="onSetLayout('transverse')">
 						<section class="el-container is-vertical el-circular" :class="{ 'drawer-layout-active': getThemeConfig.layout === 'transverse' }">
 							<header class="el-header" style="height: 10px"></header>
@@ -392,7 +362,6 @@
 							</div>
 						</div>
 					</div>
-					<!-- columns 布局 -->
 					<div class="layout-drawer-content-item" @click="onSetLayout('columns')">
 						<section class="el-container el-circular" :class="{ 'drawer-layout-active': getThemeConfig.layout === 'columns' }">
 							<aside class="el-aside-dark" style="width: 10px"></aside>
@@ -442,7 +411,6 @@ import commonFunction from '/@/utils/commonFunction';
 import other from '/@/utils/other';
 import mittBus from '/@/utils/mitt';
 
-// 定义变量内容
 const { locale } = useI18n();
 const storesThemeConfig = useThemeConfig();
 const { themeConfig } = storeToRefs(storesThemeConfig);
@@ -452,23 +420,18 @@ const state = reactive({
 	isMobile: false,
 });
 
-// 获取布局配置信息
-const getThemeConfig = computed(() => {
-	return themeConfig.value;
-});
-// 1、全局主题
+const getThemeConfig = computed(() => themeConfig.value);
+
 const onColorPickerChange = () => {
 	if (!getThemeConfig.value.primary) return ElMessage.warning('全局主题 primary 颜色值不能为空');
-	// 颜色加深
 	document.documentElement.style.setProperty('--el-color-primary-dark-2', `${getDarkColor(getThemeConfig.value.primary, 0.1)}`);
 	document.documentElement.style.setProperty('--el-color-primary', getThemeConfig.value.primary);
-	// 颜色变浅
 	for (let i = 1; i <= 9; i++) {
 		document.documentElement.style.setProperty(`--el-color-primary-light-${i}`, `${getLightColor(getThemeConfig.value.primary, i / 10)}`);
 	}
 	setDispatchThemeConfig();
 };
-// 2、菜单 / 顶栏
+
 const onBgColorPickerChange = (bg: string) => {
 	document.documentElement.style.setProperty(`--next-bg-${bg}`, themeConfig.value[bg]);
 	if (bg === 'menuBar') {
@@ -479,73 +442,73 @@ const onBgColorPickerChange = (bg: string) => {
 	onColumnsMenuBarGradualChange();
 	setDispatchThemeConfig();
 };
-// 2、菜单 / 顶栏 --> 顶栏背景渐变
+
 const onTopBarGradualChange = () => {
-	setGraduaFun('.layout-navbars-breadcrumb-index', getThemeConfig.value.isTopBarColorGradual, getThemeConfig.value.topBar);
+	setGradientStyle('.layout-navbars-breadcrumb-index', getThemeConfig.value.isTopBarColorGradual, getThemeConfig.value.topBar);
 };
-// 2、菜单 / 顶栏 --> 菜单背景渐变
+
 const onMenuBarGradualChange = () => {
-	setGraduaFun('.layout-container .el-aside', getThemeConfig.value.isMenuBarColorGradual, getThemeConfig.value.menuBar);
+	setGradientStyle('.layout-container .el-aside', getThemeConfig.value.isMenuBarColorGradual, getThemeConfig.value.menuBar);
 };
-// 2、菜单 / 顶栏 --> 分栏菜单背景渐变
+
 const onColumnsMenuBarGradualChange = () => {
-	setGraduaFun('.layout-container .layout-columns-aside', getThemeConfig.value.isColumnsMenuBarColorGradual, getThemeConfig.value.columnsMenuBar);
+	setGradientStyle('.layout-container .layout-columns-aside', getThemeConfig.value.isColumnsMenuBarColorGradual, getThemeConfig.value.columnsMenuBar);
 };
-// 2、菜单 / 顶栏 --> 背景渐变函数
-const setGraduaFun = (el: string, bool: boolean, color: string) => {
+
+const setGradientStyle = (selector: string, enabled: boolean, color: string) => {
 	nextTick(() => {
 		setTimeout(() => {
-			let els = document.querySelector(el);
-			if (!els) return false;
+			const element = document.querySelector(selector);
+			if (!element) return;
 			document.documentElement.style.setProperty('--el-menu-bg-color', document.documentElement.style.getPropertyValue('--next-bg-menuBar'));
-			if (bool) els.setAttribute('style', `background:linear-gradient(to bottom , ${color}, ${getLightColor(color, 0.5)})`);
-			else els.setAttribute('style', ``);
+			if (enabled) element.setAttribute('style', `background:linear-gradient(to bottom , ${color}, ${getLightColor(color, 0.5)})`);
+			else element.setAttribute('style', '');
 			setLocalThemeConfig();
 		}, 300);
 	});
 };
-// 2、分栏设置 ->
+
 const onColumnsMenuHoverPreloadChange = () => {
 	setLocalThemeConfig();
 };
-// 3、界面设置 --> 菜单水平折叠
+
 const onThemeConfigChange = () => {
 	setDispatchThemeConfig();
 };
-// 3、界面设置 --> 固定 Header
+
 const onIsFixedHeaderChange = () => {
 	getThemeConfig.value.isFixedHeaderChange = getThemeConfig.value.isFixedHeader ? false : true;
 	setLocalThemeConfig();
 };
-// 3、界面设置 --> 经典布局分割菜单
+
 const onClassicSplitMenuChange = () => {
 	getThemeConfig.value.isBreadcrumb = false;
 	setLocalThemeConfig();
 	mittBus.emit('getBreadcrumbIndexSetFilterRoutes');
 };
-// 4、界面显示 --> 侧边栏 Logo
+
 const onIsShowLogoChange = () => {
 	getThemeConfig.value.isShowLogoChange = getThemeConfig.value.isShowLogo ? false : true;
 	setLocalThemeConfig();
 };
-// 4、界面显示 --> 面包屑 Breadcrumb
+
 const onIsBreadcrumbChange = () => {
 	if (getThemeConfig.value.layout === 'classic') {
 		getThemeConfig.value.isClassicSplitMenu = false;
 	}
 	setLocalThemeConfig();
 };
-// 4、界面显示 --> 开启 TagsView 拖拽
+
 const onSortableTagsViewChange = () => {
 	mittBus.emit('openOrCloseSortable');
 	setLocalThemeConfig();
 };
-// 4、界面显示 --> 开启 TagsView 共用
+
 const onShareTagsViewChange = () => {
 	mittBus.emit('openShareTagsView');
 	setLocalThemeConfig();
 };
-// 4、界面显示 --> 灰色模式/色弱模式
+
 const onAddFilterChange = (attr: string) => {
 	if (attr === 'grayscale') {
 		if (getThemeConfig.value.isGrayscale) getThemeConfig.value.isInvert = false;
@@ -558,22 +521,22 @@ const onAddFilterChange = (attr: string) => {
 	appEle.setAttribute('style', `filter: ${cssAttr}`);
 	setLocalThemeConfig();
 };
-// 4、界面显示 --> 深色模式
+
 const onAddDarkChange = () => {
 	const body = document.documentElement as HTMLElement;
 	if (getThemeConfig.value.isIsDark) body.setAttribute('data-theme', 'dark');
 	else body.setAttribute('data-theme', '');
 };
-// 5、布局切换
+
 const onSetLayout = (layout: string) => {
 	Local.set('oldLayout', layout);
-	if (getThemeConfig.value.layout === layout) return false;
+	if (getThemeConfig.value.layout === layout) return;
 	if (layout === 'transverse') getThemeConfig.value.isCollapse = false;
 	getThemeConfig.value.layout = layout;
 	getThemeConfig.value.isDrawer = false;
 	initLayoutChangeFun();
 };
-// 设置布局切换函数
+
 const initLayoutChangeFun = () => {
 	onBgColorPickerChange('menuBar');
 	onBgColorPickerChange('menuBarColor');
@@ -583,88 +546,81 @@ const initLayoutChangeFun = () => {
 	onBgColorPickerChange('columnsMenuBar');
 	onBgColorPickerChange('columnsMenuBarColor');
 };
-// 关闭弹窗时，初始化变量。变量用于处理 layoutScrollbarRef.value.update() 更新滚动条高度
+
 const onDrawerClose = () => {
 	getThemeConfig.value.isFixedHeaderChange = false;
 	getThemeConfig.value.isShowLogoChange = false;
 	getThemeConfig.value.isDrawer = false;
 	setLocalThemeConfig();
 };
-// 布局配置弹窗打开
+
 const openDrawer = () => {
 	getThemeConfig.value.isDrawer = true;
 };
-// 触发 store 布局配置更新
+
 const setDispatchThemeConfig = () => {
 	setLocalThemeConfig();
 	setLocalThemeConfigStyle();
 };
-// 存储布局配置
+
 const setLocalThemeConfig = () => {
 	Local.remove('themeConfig');
 	Local.set('themeConfig', getThemeConfig.value);
 };
-// 存储布局配置全局主题样式（html根标签）
+
 const setLocalThemeConfigStyle = () => {
 	Local.set('themeConfigStyle', document.documentElement.style.cssText);
 };
-// 一键复制配置
+
 const onCopyConfigClick = () => {
-	let copyThemeConfig = Local.get('themeConfig');
-	copyThemeConfig.isDrawer = false;
+	const copyThemeConfig = {
+		...getThemeConfig.value,
+		isDrawer: false,
+	};
 	copyText(JSON.stringify(copyThemeConfig)).then(() => {
 		getThemeConfig.value.isDrawer = false;
 	});
 };
-// 一键恢复默认
+
 const onResetConfigClick = () => {
 	Local.clear();
 	window.location.reload();
 	// @ts-ignore
 	Local.set('version', __NEXT_VERSION__);
 };
-// 初始化菜单样式等
+
 const initSetStyle = () => {
-	// 2、菜单 / 顶栏 --> 顶栏背景渐变
 	onTopBarGradualChange();
-	// 2、菜单 / 顶栏 --> 菜单背景渐变
 	onMenuBarGradualChange();
-	// 2、菜单 / 顶栏 --> 分栏菜单背景渐变
 	onColumnsMenuBarGradualChange();
 };
+
+const handleLayoutMobileResize = (res: LayoutMobileResize) => {
+	getThemeConfig.value.layout = res.layout;
+	getThemeConfig.value.isDrawer = false;
+	initLayoutChangeFun();
+	state.isMobile = other.isMobile();
+};
+
 onMounted(() => {
 	nextTick(() => {
-		// 判断当前布局是否不相同，不相同则初始化当前布局的样式，防止监听窗口大小改变时，布局配置logo、菜单背景等部分布局失效问题
 		if (!Local.get('frequency')) initLayoutChangeFun();
 		Local.set('frequency', 1);
-		// 监听窗口大小改变，非默认布局，设置成默认布局（适配移动端）
-		mittBus.on('layoutMobileResize', (res: LayoutMobileResize) => {
-			getThemeConfig.value.layout = res.layout;
-			getThemeConfig.value.isDrawer = false;
-			initLayoutChangeFun();
-			state.isMobile = other.isMobile();
-		});
+		state.isMobile = other.isMobile();
+		mittBus.on('layoutMobileResize', handleLayoutMobileResize);
 		setTimeout(() => {
-			// 默认样式
 			onColorPickerChange();
-			// 灰色模式
 			if (getThemeConfig.value.isGrayscale) onAddFilterChange('grayscale');
-			// 色弱模式
 			if (getThemeConfig.value.isInvert) onAddFilterChange('invert');
-			// 深色模式
 			if (getThemeConfig.value.isIsDark) onAddDarkChange();
-			// 语言国际化
 			if (Local.get('themeConfig')) locale.value = Local.get('themeConfig').globalI18n;
-			// 初始化菜单样式等
 			initSetStyle();
 		}, 100);
 	});
 });
 onUnmounted(() => {
-	mittBus.off('layoutMobileResize', () => {});
+	mittBus.off('layoutMobileResize', handleLayoutMobileResize);
 });
-
-// 暴露变量
 defineExpose({
 	openDrawer,
 });
