@@ -3,6 +3,7 @@ English | [简体中文](./README_zh.md)
 # Dayu
 
 [![Version](https://img.shields.io/github/release/dayu-autostreamer/dayu)](https://github.com/dayu-autostreamer/dayu/releases)
+[![CI](https://github.com/dayu-autostreamer/dayu/actions/workflows/ci.yml/badge.svg)](https://github.com/dayu-autostreamer/dayu/actions/workflows/ci.yml)
 [![Licence](https://img.shields.io/github/license/dayu-autostreamer/dayu.svg)](https://github.com/dayu-autostreamer/dayu/blob/main/LICENSE)
 [![Homepage](https://img.shields.io/website?url=https%3A%2F%2Fdayu-autostreamer.github.io%2F&label=homepage)](https://dayu-autostreamer.github.io/)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/dayu-autostreamer/dayu/badge)](https://scorecard.dev/viewer/?uri=github.com/dayu-autostreamer/dayu)
@@ -155,5 +156,4 @@ Thanks for the following documentation contributors:
 <a href="https://github.com/dayu-autostreamer/dayu-autostreamer.github.io/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu-autostreamer.github.io"  alt=""/>
 </a>
-
 

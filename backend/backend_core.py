@@ -406,8 +406,8 @@ class BackendCore:
 
                         worker_item.pop('file', None)
 
-                        if 'template' in worker and 'spec' in worker['template']:
-                            template_spec = worker['template']['spec']
+                        if 'template' in worker_item and 'spec' in worker_item['template']:
+                            template_spec = worker_item['template']['spec']
                             # Remove fields that don't require pod recreation
                             template_spec.pop('dnsPolicy', None)
                             template_spec.pop('serviceAccountName', None)

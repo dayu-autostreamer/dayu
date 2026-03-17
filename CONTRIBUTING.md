@@ -62,6 +62,16 @@ Pull requests are often called simply "PR".
 Dayu generally follows the standard [GitHub pull request](https://help.github.com/articles/about-pull-requests/) process.
 To submit a proposed change, please develop the code/fix and add new test cases.
 
+## Running Tests Locally
+
+Before opening a PR, please run the Python test suite locally:
+
+```bash
+python -m pip install -r dependency/core/lib/requirements.txt -r backend/requirements.txt -r tests/requirements.txt
+PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m "not e2e"
+PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m e2e
+```
+
 
 ## Code Review
 

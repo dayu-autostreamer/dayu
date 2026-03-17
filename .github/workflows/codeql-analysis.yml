@@ -14,15 +14,22 @@ name: "CodeQL"
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
   schedule:
-    - cron: '20 1 1 * *' # Monthly on the 1st day.
+    - cron: '20 1 * * 1' # Weekly on Monday.
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Declare default permissions as read only.
 permissions: read-all
 
 jobs:
   analyze:
-    name: Analyze
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -32,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [ 'python' ]
+        language: [ 'python', 'javascript' ]
         # CodeQL supports [ 'cpp', 'csharp', 'go', 'java', 'javascript', 'python' ]
         # Learn more:
         # https://docs.github.com/en/free-pro-team@latest/github/finding-security-vulnerabilities-and-errors-in-your-code/configuring-code-scanning#changing-the-languages-that-are-analyzed
