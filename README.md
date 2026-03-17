@@ -117,6 +117,55 @@ It makes up of Application Service Layer.
   streams (for example, cameras at different intersections process traffic flow tasks at the same time). These tasks do
   not distinguish between data streams during the processing stage and are processed equivalently.
 
+## Development Environment
+
+To align local development with CI, use the toolchain versions tracked in the repository:
+
+- Python `3.10` via [`.python-version`](.python-version)
+- Node.js `20` via [`.nvmrc`](.nvmrc)
+- `make` as the primary local task entry point
+
+Python developer dependencies are collected in [`requirements-dev.txt`](requirements-dev.txt), and Python lint
+configuration lives in [`pyproject.toml`](pyproject.toml).
+
+## Local Quality Checks
+
+Use the provided `Makefile` targets for local feedback loops:
+
+```bash
+make install-python-dev
+make python-syntax
+make test-unit-integration
+make test-component
+make test-e2e
+make frontend-install
+make frontend-lint
+make frontend-format-check
+make frontend-build
+```
+
+`make check` runs the shared syntax, Python unit/integration, and frontend lint/format checks used in daily
+development.
+
+## Repository Layout
+
+- `backend`: installation APIs and backend orchestration helpers
+- `frontend`: Vue-based web UI and user-facing workflows
+- `datasource`: simulated data sources for demos and testing
+- `components`: runtime entry points for generator/controller/processor/distributor/scheduler/monitor
+- `dependency/core`: shared core libraries, scheduling logic, and component implementations
+- `tests`: unit, integration, component, and e2e coverage
+- `tools`: small developer and operations utilities
+
+## Developer Tools
+
+The repository includes a CLI log summary tool for exported system traces:
+
+```bash
+python tools/log_analysis.py --log path/to/exported-log.json
+python tools/log_analysis.py --log path/to/exported-log.json --output-format json
+```
+
 ## Guides
 
 To get detailed instructions about our dayu system, please refer to the documentation on
@@ -156,4 +205,3 @@ Thanks for the following documentation contributors:
 <a href="https://github.com/dayu-autostreamer/dayu-autostreamer.github.io/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu-autostreamer.github.io"  alt=""/>
 </a>
-

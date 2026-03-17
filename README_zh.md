@@ -91,6 +91,54 @@ KubeEdge 开发，可以在不同平台之间轻松迁移。
 - **支持细粒度实时调度**：平台根据工作条件和资源情况实时生成任务数据配置和任务卸载决策，从而完成任务的细粒度实时调度。
 - **支持多数据流的并行处理**：平台支持多数据流的并行处理（例如，不同路口的摄像头同时处理交通流量任务），这些任务在处理阶段不区分数据流，等效处理。
 
+## 开发环境
+
+为保证本地开发环境与 CI 一致，建议使用仓库中声明的工具链版本：
+
+- Python `3.10`，见 [`.python-version`](.python-version)
+- Node.js `20`，见 [`.nvmrc`](.nvmrc)
+- 使用 `make` 作为本地开发任务入口
+
+Python 侧开发依赖汇总在 [`requirements-dev.txt`](requirements-dev.txt)，Python lint 配置统一放在
+[`pyproject.toml`](pyproject.toml) 中。
+
+## 本地质量检查
+
+建议通过 `Makefile` 提供的命令执行本地检查：
+
+```bash
+make install-python-dev
+make python-syntax
+make test-unit-integration
+make test-component
+make test-e2e
+make frontend-install
+make frontend-lint
+make frontend-format-check
+make frontend-build
+```
+
+其中 `make check` 会执行日常开发最常用的语法检查、Python 单元/集成测试，以及前端 lint/format 检查。
+
+## 仓库结构
+
+- `backend`：安装接口与后端编排逻辑
+- `frontend`：基于 Vue 的 Web UI 与用户交互流程
+- `datasource`：用于演示和测试的模拟数据源
+- `components`：generator/controller/processor/distributor/scheduler/monitor 的运行入口
+- `dependency/core`：核心共享库、调度逻辑与组件实现
+- `tests`：单元、集成、组件与 e2e 测试
+- `tools`：开发与运维辅助工具
+
+## 开发工具
+
+仓库提供了一个用于分析系统导出日志的命令行工具：
+
+```bash
+python tools/log_analysis.py --log path/to/exported-log.json
+python tools/log_analysis.py --log path/to/exported-log.json --output-format json
+```
+
 ## 使用
 
 请参照我们的[教程](https://dayu-autostreamer.github.io/docs/)来快速尝试大禹系统。

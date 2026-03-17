@@ -64,22 +64,43 @@ To submit a proposed change, please develop the code/fix and add new test cases.
 
 ## Running Tests Locally
 
+Please align with the repository toolchain before opening a PR:
+
+- Python `3.10` from [`.python-version`](.python-version)
+- Node.js `20` from [`.nvmrc`](.nvmrc)
+
+Bootstrap the Python development environment:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+```
+
+Or use the provided shortcut:
+
+```bash
+make install-python-dev
+```
+
 Before opening a PR, please run the Python test suite locally:
 
 ```bash
-python -m pip install -r dependency/core/lib/requirements.txt -r dependency/core/controller/requirements.txt -r backend/requirements.txt -r tests/requirements.txt
-PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m "unit or integration"
-PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m component
-PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m e2e
+make python-syntax
+make test-unit-integration
+make test-component
+make test-e2e
 ```
 
-For frontend changes, also run the basic quality checks from the `frontend` directory:
+For frontend changes, also run the basic quality checks:
 
 ```bash
-npm install
-npm run lint
-npm run format:check
+make frontend-install
+make frontend-lint
+make frontend-format-check
+make frontend-build
 ```
+
+`make check` combines the most common Python and frontend verification steps for day-to-day development.
 
 
 ## Code Review
