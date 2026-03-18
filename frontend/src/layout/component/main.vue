@@ -1,5 +1,8 @@
 <template>
-	<el-main class="layout-main" :style="isFixedHeader ? `height: calc(100% - ${setMainHeight})` : `minHeight: calc(100% - ${setMainHeight})`">
+	<el-main
+		class="layout-main"
+		:style="isFixedHeader ? `height: calc(100% - ${setMainHeight})` : `minHeight: calc(100% - ${setMainHeight})`"
+	>
 		<el-scrollbar
 			ref="layoutMainScrollbarRef"
 			class="layout-main-scroll layout-backtop-header-fixed"

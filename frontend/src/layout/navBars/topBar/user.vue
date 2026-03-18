@@ -1,60 +1,60 @@
 <template>
 	<div class="layout-navbars-breadcrumb-user pr15" :style="{ flex: layoutUserFlexNum }">
-<!--		<el-dropdown :show-timeout="70" :hide-timeout="50" trigger="click" @command="onComponentSizeChange">-->
-<!--			<div class="layout-navbars-breadcrumb-user-icon">-->
-<!--				<i class="iconfont icon-ziti" :title="$t('message.user.title0')"></i>-->
-<!--			</div>-->
-<!--			<template #dropdown>-->
-<!--				<el-dropdown-menu>-->
-<!--					<el-dropdown-item command="large" :disabled="state.disabledSize === 'large'">{{ $t('message.user.dropdownLarge') }}</el-dropdown-item>-->
-<!--					<el-dropdown-item command="default" :disabled="state.disabledSize === 'default'">{{ $t('message.user.dropdownDefault') }}</el-dropdown-item>-->
-<!--					<el-dropdown-item command="small" :disabled="state.disabledSize === 'small'">{{ $t('message.user.dropdownSmall') }}</el-dropdown-item>-->
-<!--				</el-dropdown-menu>-->
-<!--			</template>-->
-<!--		</el-dropdown>-->
-<!--		<el-dropdown :show-timeout="70" :hide-timeout="50" trigger="click" @command="onLanguageChange">-->
-<!--			<div class="layout-navbars-breadcrumb-user-icon">-->
-<!--				<i-->
-<!--					class="iconfont"-->
-<!--					:class="state.disabledI18n === 'en' ? 'icon-fuhao-yingwen' : 'icon-fuhao-zhongwen'"-->
-<!--					:title="$t('message.user.title1')"-->
-<!--				></i>-->
-<!--			</div>-->
-<!--			<template #dropdown>-->
-<!--				<el-dropdown-menu>-->
-<!--					<el-dropdown-item command="zh-cn" :disabled="state.disabledI18n === 'zh-cn'">简体中文</el-dropdown-item>-->
-<!--					<el-dropdown-item command="en" :disabled="state.disabledI18n === 'en'">English</el-dropdown-item>-->
-<!--					<el-dropdown-item command="zh-tw" :disabled="state.disabledI18n === 'zh-tw'">繁體中文</el-dropdown-item>-->
-<!--				</el-dropdown-menu>-->
-<!--			</template>-->
-<!--		</el-dropdown>-->
-<!--		<div class="layout-navbars-breadcrumb-user-icon" @click="onSearchClick">-->
-<!--			<el-icon :title="$t('message.user.title2')">-->
-<!--				<ele-Search />-->
-<!--			</el-icon>-->
-<!--		</div>-->
-<!--		<div class="layout-navbars-breadcrumb-user-icon" @click="onLayoutSetingClick">-->
-<!--			<i class="icon-skin iconfont" :title="$t('message.user.title3')"></i>-->
-<!--		</div>-->
-<!--		<el-popover-->
-<!--			ref="userNewsRef"-->
-<!--			:virtual-ref="userNewsBadgeRef"-->
-<!--			placement="bottom"-->
-<!--			trigger="click"-->
-<!--			transition="el-zoom-in-top"-->
-<!--			virtual-triggering-->
-<!--			:width="300"-->
-<!--			:persistent="false"-->
-<!--		>-->
-<!--			&lt;!&ndash; <UserNews /> &ndash;&gt;-->
-<!--		</el-popover>-->
-<!--		<div class="layout-navbars-breadcrumb-user-icon mr10" @click="onScreenfullClick">-->
-<!--			<i-->
-<!--				class="iconfont"-->
-<!--				:title="state.isScreenfull ? $t('message.user.title6') : $t('message.user.title5')"-->
-<!--				:class="!state.isScreenfull ? 'icon-fullscreen' : 'icon-tuichuquanping'"-->
-<!--			></i>-->
-<!--		</div>-->
+		<!--		<el-dropdown :show-timeout="70" :hide-timeout="50" trigger="click" @command="onComponentSizeChange">-->
+		<!--			<div class="layout-navbars-breadcrumb-user-icon">-->
+		<!--				<i class="iconfont icon-ziti" :title="$t('message.user.title0')"></i>-->
+		<!--			</div>-->
+		<!--			<template #dropdown>-->
+		<!--				<el-dropdown-menu>-->
+		<!--					<el-dropdown-item command="large" :disabled="state.disabledSize === 'large'">{{ $t('message.user.dropdownLarge') }}</el-dropdown-item>-->
+		<!--					<el-dropdown-item command="default" :disabled="state.disabledSize === 'default'">{{ $t('message.user.dropdownDefault') }}</el-dropdown-item>-->
+		<!--					<el-dropdown-item command="small" :disabled="state.disabledSize === 'small'">{{ $t('message.user.dropdownSmall') }}</el-dropdown-item>-->
+		<!--				</el-dropdown-menu>-->
+		<!--			</template>-->
+		<!--		</el-dropdown>-->
+		<!--		<el-dropdown :show-timeout="70" :hide-timeout="50" trigger="click" @command="onLanguageChange">-->
+		<!--			<div class="layout-navbars-breadcrumb-user-icon">-->
+		<!--				<i-->
+		<!--					class="iconfont"-->
+		<!--					:class="state.disabledI18n === 'en' ? 'icon-fuhao-yingwen' : 'icon-fuhao-zhongwen'"-->
+		<!--					:title="$t('message.user.title1')"-->
+		<!--				></i>-->
+		<!--			</div>-->
+		<!--			<template #dropdown>-->
+		<!--				<el-dropdown-menu>-->
+		<!--					<el-dropdown-item command="zh-cn" :disabled="state.disabledI18n === 'zh-cn'">简体中文</el-dropdown-item>-->
+		<!--					<el-dropdown-item command="en" :disabled="state.disabledI18n === 'en'">English</el-dropdown-item>-->
+		<!--					<el-dropdown-item command="zh-tw" :disabled="state.disabledI18n === 'zh-tw'">繁體中文</el-dropdown-item>-->
+		<!--				</el-dropdown-menu>-->
+		<!--			</template>-->
+		<!--		</el-dropdown>-->
+		<!--		<div class="layout-navbars-breadcrumb-user-icon" @click="onSearchClick">-->
+		<!--			<el-icon :title="$t('message.user.title2')">-->
+		<!--				<ele-Search />-->
+		<!--			</el-icon>-->
+		<!--		</div>-->
+		<!--		<div class="layout-navbars-breadcrumb-user-icon" @click="onLayoutSetingClick">-->
+		<!--			<i class="icon-skin iconfont" :title="$t('message.user.title3')"></i>-->
+		<!--		</div>-->
+		<!--		<el-popover-->
+		<!--			ref="userNewsRef"-->
+		<!--			:virtual-ref="userNewsBadgeRef"-->
+		<!--			placement="bottom"-->
+		<!--			trigger="click"-->
+		<!--			transition="el-zoom-in-top"-->
+		<!--			virtual-triggering-->
+		<!--			:width="300"-->
+		<!--			:persistent="false"-->
+		<!--		>-->
+		<!--			&lt;!&ndash; <UserNews /> &ndash;&gt;-->
+		<!--		</el-popover>-->
+		<!--		<div class="layout-navbars-breadcrumb-user-icon mr10" @click="onScreenfullClick">-->
+		<!--			<i-->
+		<!--				class="iconfont"-->
+		<!--				:title="state.isScreenfull ? $t('message.user.title6') : $t('message.user.title5')"-->
+		<!--				:class="!state.isScreenfull ? 'icon-fullscreen' : 'icon-tuichuquanping'"-->
+		<!--			></i>-->
+		<!--		</div>-->
 		<el-dropdown :show-timeout="70" :hide-timeout="50" @command="onHandleCommandClick">
 			<span class="layout-navbars-breadcrumb-user-link">
 				<img :src="userInfos.photo" class="layout-navbars-breadcrumb-user-link-photo mr5" />
@@ -172,9 +172,9 @@ const onHandleCommandClick = (path: string) => {
 			.catch(() => {});
 	} else if (path === 'wareHouse') {
 		window.open('https://github.com/dayu-autostreamer/dayu');
-	} else if(path === 'homepage') {
-    window.open('https://dayu-autostreamer.github.io');
-  } else {
+	} else if (path === 'homepage') {
+		window.open('https://dayu-autostreamer.github.io');
+	} else {
 		router.push(path);
 	}
 };

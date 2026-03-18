@@ -1,7 +1,13 @@
 <template>
 	<div class="layout-padding layout-padding-unset layout-iframe">
 		<div class="layout-padding-auto layout-padding-view">
-			<div class="w100" v-for="v in setIframeList" :key="v.path" v-loading="v.meta.loading" element-loading-background="white">
+			<div
+				class="w100"
+				v-for="v in setIframeList"
+				:key="v.path"
+				v-loading="v.meta.loading"
+				element-loading-background="white"
+			>
 				<transition-group :name="name">
 					<iframe
 						:src="v.meta.isLink"

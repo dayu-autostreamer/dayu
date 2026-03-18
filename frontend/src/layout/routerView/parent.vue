@@ -8,7 +8,13 @@
 			</transition>
 		</router-view>
 		<transition :name="setTransitionName" mode="out-in">
-			<Iframes class="w100" v-show="isIframePage" :refreshKey="state.iframeRefreshKey" :name="setTransitionName" :list="state.iframeList" />
+			<Iframes
+				class="w100"
+				v-show="isIframePage"
+				:refreshKey="state.iframeRefreshKey"
+				:name="setTransitionName"
+				:list="state.iframeList"
+			/>
 		</transition>
 	</div>
 </template>

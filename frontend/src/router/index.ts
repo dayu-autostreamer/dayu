@@ -50,7 +50,14 @@ export function formatTwoStageRoutes(arr: any) {
 	const cacheList: Array<string> = [];
 	arr.forEach((v: any) => {
 		if (v.path === '/') {
-			newArr.push({ component: v.component, name: v.name, path: v.path, redirect: v.redirect, meta: v.meta, children: [] });
+			newArr.push({
+				component: v.component,
+				name: v.name,
+				path: v.path,
+				redirect: v.redirect,
+				meta: v.meta,
+				children: [],
+			});
 		} else {
 			if (v.path.indexOf('/:') > -1) {
 				v.meta['isDynamic'] = true;

@@ -1,6 +1,5 @@
 <template>
 	<div class="home-container layout-pd">
-
 		Dayu: An auto scheduling system for stream data processing on distributed cloud-edge platforms
 	</div>
 </template>

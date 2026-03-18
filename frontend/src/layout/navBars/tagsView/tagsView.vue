@@ -1,5 +1,8 @@
 <template>
-	<div class="layout-navbars-tagsview" :class="{ 'layout-navbars-tagsview-shadow': getThemeConfig.layout === 'classic' }">
+	<div
+		class="layout-navbars-tagsview"
+		:class="{ 'layout-navbars-tagsview-shadow': getThemeConfig.layout === 'classic' }"
+	>
 		<el-scrollbar ref="scrollbarRef" @wheel.prevent="onHandleScroll">
 			<ul class="layout-navbars-tagsview-ul" :class="setTagsStyle" ref="tagsUlRef">
 				<li
@@ -47,7 +50,18 @@
 </template>
 
 <script setup lang="ts" name="layoutTagsView">
-import { defineAsyncComponent, reactive, onMounted, computed, ref, nextTick, onBeforeUpdate, onBeforeMount, onUnmounted, watch } from 'vue';
+import {
+	defineAsyncComponent,
+	reactive,
+	onMounted,
+	computed,
+	ref,
+	nextTick,
+	onBeforeUpdate,
+	onBeforeMount,
+	onUnmounted,
+	watch,
+} from 'vue';
 import { useRoute, useRouter, onBeforeRouteUpdate } from 'vue-router';
 import Sortable from 'sortablejs';
 import { ElMessage } from 'element-plus';
@@ -226,7 +240,11 @@ const closeCurrentTagsView = (path: string) => {
 				storesKeepALiveNames.delCachedView(v);
 				state.tagsViewList.splice(k, 1);
 				setTimeout(() => {
-					if (state.tagsViewList.length === k && getThemeConfig.value.isShareTagsView ? state.routePath === path : state.routeActive === path) {
+					if (
+						state.tagsViewList.length === k && getThemeConfig.value.isShareTagsView
+							? state.routePath === path
+							: state.routeActive === path
+					) {
 						if (arr[arr.length - 1].meta.isDynamic) {
 							if (k !== arr.length) router.push({ name: arr[k].name, params: arr[k].params });
 							else router.push({ name: arr[arr.length - 1].name, params: arr[arr.length - 1].params });
@@ -235,7 +253,11 @@ const closeCurrentTagsView = (path: string) => {
 							else router.push({ path: arr[arr.length - 1].path, query: arr[arr.length - 1].query });
 						}
 					} else {
-						if (state.tagsViewList.length !== k && getThemeConfig.value.isShareTagsView ? state.routePath === path : state.routeActive === path) {
+						if (
+							state.tagsViewList.length !== k && getThemeConfig.value.isShareTagsView
+								? state.routePath === path
+								: state.routeActive === path
+						) {
 							if (arr[k].meta.isDynamic) {
 								router.push({ name: arr[k].name, params: arr[k].params });
 							} else {
@@ -280,7 +302,9 @@ const closeAllTagsView = () => {
 };
 
 const openCurrenFullscreen = async (path: string) => {
-	const item = state.tagsViewList.find((v: RouteItem) => (getThemeConfig.value.isShareTagsView ? v.path === path : v.url === path));
+	const item = state.tagsViewList.find((v: RouteItem) =>
+		getThemeConfig.value.isShareTagsView ? v.path === path : v.url === path
+	);
 	if (!item) return;
 	if (item.meta.isDynamic) await router.push({ name: item.name, params: item.params });
 	else await router.push({ name: item.name, query: item.query });

@@ -16,12 +16,7 @@ const app = createApp(App);
 directive(app);
 other.elSvg(app);
 
-app
-	.use(pinia)
-	.use(router)
-	.use(ElementPlus)
-	.use(i18n)
-	.mount('#app');
+app.use(pinia).use(router).use(ElementPlus).use(i18n).mount('#app');
 
 try {
 	const sysParams = useSystemParametersStore();

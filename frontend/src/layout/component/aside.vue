@@ -2,7 +2,12 @@
 	<div class="h100" v-show="!isTagsViewCurrenFull">
 		<el-aside class="layout-aside" :class="setCollapseStyle">
 			<Logo v-if="setShowLogo" />
-			<el-scrollbar class="flex-auto" ref="layoutAsideScrollbarRef" @mouseenter="onAsideEnterLeave(true)" @mouseleave="onAsideEnterLeave(false)">
+			<el-scrollbar
+				class="flex-auto"
+				ref="layoutAsideScrollbarRef"
+				@mouseenter="onAsideEnterLeave(true)"
+				@mouseleave="onAsideEnterLeave(false)"
+			>
 				<Vertical :menuList="state.menuList" />
 			</el-scrollbar>
 		</el-aside>
@@ -148,7 +153,12 @@ onUnmounted(() => {
 });
 
 watch(
-	() => [themeConfig.value.isShowLogoChange, themeConfig.value.isShowLogo, themeConfig.value.layout, themeConfig.value.isClassicSplitMenu],
+	() => [
+		themeConfig.value.isShowLogoChange,
+		themeConfig.value.isShowLogo,
+		themeConfig.value.layout,
+		themeConfig.value.isClassicSplitMenu,
+	],
 	([isShowLogoChange, isShowLogo, layout, isClassicSplitMenu]) => {
 		if (isShowLogoChange !== isShowLogo) {
 			if (layoutAsideScrollbarRef.value) layoutAsideScrollbarRef.value.update();

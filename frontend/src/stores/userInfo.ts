@@ -55,10 +55,7 @@ export const useUserInfo = defineStore('userInfo', {
 					// 用户信息模拟数据
 					const userInfos = {
 						userName: userName,
-						photo:
-							userName === 'dayu'
-								? '/images/avatar.jpg'
-								: '/images/avatar.jpg',
+						photo: userName === 'dayu' ? '/images/avatar.jpg' : '/images/avatar.jpg',
 						time: new Date().getTime(),
 						roles: defaultRoles,
 						authBtnList: defaultAuthBtnList,

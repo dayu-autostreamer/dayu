@@ -8,14 +8,25 @@
 		/>
 		<el-breadcrumb class="layout-navbars-breadcrumb-hide">
 			<transition-group name="breadcrumb">
-				<el-breadcrumb-item v-for="(v, k) in state.breadcrumbList" :key="!v.meta.tagsViewName ? v.meta.title : v.meta.tagsViewName">
+				<el-breadcrumb-item
+					v-for="(v, k) in state.breadcrumbList"
+					:key="!v.meta.tagsViewName ? v.meta.title : v.meta.tagsViewName"
+				>
 					<span v-if="k === state.breadcrumbList.length - 1" class="layout-navbars-breadcrumb-span">
-						<SvgIcon :name="v.meta.icon" class="layout-navbars-breadcrumb-iconfont" v-if="themeConfig.isBreadcrumbIcon" />
+						<SvgIcon
+							:name="v.meta.icon"
+							class="layout-navbars-breadcrumb-iconfont"
+							v-if="themeConfig.isBreadcrumbIcon"
+						/>
 						<div v-if="!v.meta.tagsViewName">{{ $t(v.meta.title) }}</div>
 						<div v-else>{{ v.meta.tagsViewName }}</div>
 					</span>
 					<a v-else @click.prevent="onBreadcrumbClick(v)">
-						<SvgIcon :name="v.meta.icon" class="layout-navbars-breadcrumb-iconfont" v-if="themeConfig.isBreadcrumbIcon" />{{ $t(v.meta.title) }}
+						<SvgIcon
+							:name="v.meta.icon"
+							class="layout-navbars-breadcrumb-iconfont"
+							v-if="themeConfig.isBreadcrumbIcon"
+						/>{{ $t(v.meta.title) }}
 					</a>
 				</el-breadcrumb-item>
 			</transition-group>
@@ -91,9 +102,12 @@ const initRouteSplit = (path: string) => {
 	state.routeSplitFirst = `/${state.routeSplit[0]}`;
 	state.routeSplitIndex = 1;
 	getBreadcrumbList(routesList.value);
-	if (route.name === 'home' || (route.name === 'notFound' && state.breadcrumbList.length > 1)) state.breadcrumbList.shift();
+	if (route.name === 'home' || (route.name === 'notFound' && state.breadcrumbList.length > 1))
+		state.breadcrumbList.shift();
 	if (state.breadcrumbList.length > 0)
-		state.breadcrumbList[state.breadcrumbList.length - 1].meta.tagsViewName = other.setTagsViewNameI18n(<RouteToFrom>route);
+		state.breadcrumbList[state.breadcrumbList.length - 1].meta.tagsViewName = other.setTagsViewNameI18n(
+			<RouteToFrom>route
+		);
 };
 // 页面加载时
 onMounted(() => {
