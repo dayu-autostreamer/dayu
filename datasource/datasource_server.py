@@ -15,11 +15,6 @@ class DataSource:
 
         self.process_list = []
 
-        self.command_headers = {
-            'rtsp_video': 'bash video_source.sh',
-            'http_video': 'python3 video_source.py',
-        }
-
         self.backend_hostname = NodeInfo.get_cloud_node()
         self.backend_port = PortInfo.get_component_port(SystemConstant.BACKEND.value)
         self.backend_address = merge_address(NodeInfo.hostname2ip(self.backend_hostname),
@@ -41,8 +36,8 @@ class DataSource:
         if self.source_open:
             return
 
-        if mode not in self.command_headers:
-            LOGGER.warning(f'Datasource Mode of "{mode}" does not exist. (Only {self.command_headers.keys()})')
+        if not os.path.exists(f'{mode}.py'):
+            LOGGER.warning(f'Datasource Mode of "{mode}" does not exist. ({mode}.py)')
             return
 
         LOGGER.info(f'Open Datasource: {modal}/{label}..')
@@ -54,7 +49,7 @@ class DataSource:
                 return
             url = re.sub(r'(?<=:)\d+', str(self.inner_port), source['url'])
             url = re.sub(r'\d+\.\d+\.\d+\.\d+', '127.0.0.1', url)
-            command = (f'{self.command_headers[mode]} '
+            command = (f'python {mode}.py '
                        f'--root {datasource_dir} --address {url} --play_mode {self.play_mode}')
             process = ScriptHelper.start_script(command)
             self.process_list.append(process)

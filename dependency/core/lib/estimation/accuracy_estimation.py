@@ -71,8 +71,9 @@ class AccEstimator:
         return frame_gt
 
     def search_frame_index(self, hash_data):
-        # closest_frame_index = self.hash_table.get_nns_by_vector(np.array(hash_data, dtype=int), 1)[0]
-        closest_frame_index = hash_data
+        # hash_data is the ground-truth frame index emitted by datasource/video_source.py.
+        # Keep this mapping explicit so accuracy calculation stays aligned with manifest indexing.
+        closest_frame_index = int(hash_data)
         return closest_frame_index
 
     @staticmethod

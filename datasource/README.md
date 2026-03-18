@@ -1,80 +1,120 @@
 # Datasource for Dayu System
 
-## HTTP Video Storage
+## Unified Dataset Layout
 
-`http_video` now supports compressed video files as the primary storage format.
-The datasource keeps the external HTTP contract unchanged:
-
-- `/source` still returns the sampled frame index list
-- `/file` still returns the task video file consumed by generators/processors
-
-This removes the need to pre-split every source video into `frames/*.jpg`, which
-reduces storage pressure and makes it easier to add new datasets.
-
-### Recommended layout
-
-Store the source data directly under each `http_video/` directory:
+`http_video` and `rtsp_video` now use the same dataset organization:
 
 ```text
-<camera-dir>/
+<source-dir>/
+  data/
+    clips/
+      000001.mp4
+      000002.mp4
+      000003.mp4
   http_video/
-    videos/
-      0001.mp4
-      0002.mp4
-      0003.mp4
+    manifest.json
+  rtsp_video/
+    manifest.json
 ```
 
-The datasource will recursively discover supported video files and play them in
-natural filename order (`2.mp4` before `10.mp4`).
+Design goals:
 
-### Optional manifest
+- media files are stored only once under `data/`
+- `http_video` and `rtsp_video` keep separate playback manifests
+- manifests act as the transport-facing index layer
+- `hash_data` stays aligned with ground-truth frame indices
 
-If you need a custom play order, add `manifest.json` (or
-`datasource_manifest.json`) under `http_video/`:
+This follows the common pattern used by mature video systems:
+
+- compressed videos are the primary storage unit and decoded on demand
+- manifests/index files are separated from the media payload
+- playback order is explicitly defined by a playlist-like file
+
+## Manifest Format
+
+Each mode directory must contain a `manifest.json`.
+
+Recommended schema:
 
 ```json
 {
-  "files": [
-    "videos/clip_b.mp4",
-    "videos/clip_a.mp4"
+  "version": 1,
+  "type": "video_sequence",
+  "media_root": "../data",
+  "sequence": [
+    {
+      "name": "road-segment-000001",
+      "path": "clips/000001.mp4",
+      "frame_count": 900,
+      "start_frame_index": 0
+    },
+    {
+      "name": "road-segment-000002",
+      "path": "clips/000002.mp4",
+      "frame_count": 900
+    }
   ]
 }
 ```
 
-Each entry can be either:
+Field meanings:
 
-- a relative file path string
-- an object with a `path` field
+- `version`: manifest schema version, currently `1`
+- `type`: recommended value `video_sequence`
+- `media_root`: path from the manifest directory to the shared media directory
+- `sequence`: ordered clip list for this mode
+- `sequence[].path`: clip path relative to `media_root`
+- `sequence[].frame_count`: optional but strongly recommended to avoid startup probing
+- `sequence[].start_frame_index`: optional global ground-truth start index for this clip
 
-Example:
+If `start_frame_index` is omitted, Dayu assigns it cumulatively from the previous
+clip. That is suitable when your ground-truth file is indexed over the same
+concatenated clip order starting at frame `0`.
 
-```json
-{
-  "files": [
-    {"path": "videos/morning.mp4"},
-    {"path": "videos/noon.mp4"}
-  ]
-}
-```
+## Frame Index and Hash Data
 
-### Legacy layout
+For `http_video`, the returned `hash_data` is now the real frame index in
+ground-truth space.
 
-The old frame directory is still supported for backward compatibility:
+More concretely:
 
-```text
-<camera-dir>/
-  http_video/
-    frames/
-      0.jpg
-      1.jpg
-      2.jpg
-```
+- the first decoded frame of a clip maps to `start_frame_index`
+- the second decoded frame maps to `start_frame_index + 1`
+- and so on
 
-If `frames/` exists, the datasource will keep using the legacy reader.
+This is the index consumed by
+`dependency/core/lib/estimation/accuracy_estimation.py`, where
+`search_frame_index()` directly treats `hash_data` as the ground-truth frame
+index.
 
-### Supported video formats
+That means:
 
-Common containers such as `.mp4`, `.avi`, `.mov`, `.mkv`, `.m4v`, `.ts`,
-`.webm`, and `.flv` are supported.
+- if your `gt_file.txt` is indexed from `0`, keep the first clip at `start_frame_index: 0`
+- if your clips are extracted from a longer original recording, set each clip's
+  `start_frame_index` to the corresponding original frame offset
 
+## Mode Behavior
 
+### `http_video`
+
+- reads the ordered clip sequence from `http_video/manifest.json`
+- decodes frames on demand from compressed video files
+- samples frames according to the current generator policy
+- returns sampled frame indices aligned with `gt_file.txt`
+
+### `rtsp_video`
+
+- reads the ordered clip sequence from `rtsp_video/manifest.json`
+- streams the listed clips in manifest order to RTSP
+- reuses the same underlying `data/` media files as `http_video`
+
+## Recommended Practice
+
+For best stability:
+
+- keep all clips in a single codec/container family, ideally `.mp4`
+- keep `frame_count` in the manifest so startup does not need probing
+- set `start_frame_index` explicitly whenever ground-truth indexing is not a
+  simple contiguous `0..N-1`
+- if `http_video` and `rtsp_video` need the same clip order, reuse the same
+  manifest content or create one as a symlink/copy of the other

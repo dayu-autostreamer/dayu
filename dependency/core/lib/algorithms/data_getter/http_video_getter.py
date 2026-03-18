@@ -42,6 +42,8 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
         while not self.hash_codes or not response:
             self.hash_codes = http_request(system.video_data_source + '/source', method='GET',
                                            data={'data': json.dumps(data)})
+            if self.hash_codes == []:
+                return False
 
             if self.hash_codes:
                 response = http_request(system.video_data_source + '/file', method='GET', no_decode=True)
@@ -52,24 +54,32 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
 
         with open(self.file_name, 'wb') as f:
             f.write(response.content)
+        return True
 
     @staticmethod
-    def compute_cost_time(system, cost):
-        return max(1 / system.meta_data['fps'] * system.meta_data['buffer_size'] - cost, 0)
+    def compute_cost_time(system, cost, actual_buffer_size=None):
+        buffer_size = actual_buffer_size if actual_buffer_size is not None else system.meta_data['buffer_size']
+        return max(1 / system.meta_data['fps'] * buffer_size - cost, 0)
 
     def __call__(self, system):
         new_task_id = Counter.get_count('task_id')
 
-        self.request_source_data(system, new_task_id)
+        if not self.request_source_data(system, new_task_id):
+            LOGGER.info(f'[Camera Simulation] source {system.source_id}: datasource exhausted, skip current round')
+            time.sleep(1)
+            return
 
-        system.cumulative_scheduling_frame_count += (system.meta_data.get('buffer_size', 0) *
-                                                     system.raw_meta_data.get('fps', 0) /
-                                                     system.meta_data.get('fps', 1))
+        actual_buffer_size = len(self.hash_codes) if self.hash_codes else 0
+        system.cumulative_scheduling_frame_count += (
+            actual_buffer_size *
+            system.raw_meta_data.get('fps', 0) /
+            system.meta_data.get('fps', 1)
+        )
 
         new_time_record = time.time()
         delay = new_time_record - self.time_record if self.time_record else 0
         self.time_record = new_time_record
-        sleep_time = self.compute_cost_time(system, delay)
+        sleep_time = self.compute_cost_time(system, delay, actual_buffer_size=actual_buffer_size)
         LOGGER.info(f'[Camera Simulation] source {system.source_id}: sleep {sleep_time}s')
         time.sleep(sleep_time)
 
