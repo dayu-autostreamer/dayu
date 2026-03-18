@@ -1,5 +1,8 @@
 import copy
+import gzip
 import importlib
+import json
+from pathlib import Path
 
 import pytest
 
@@ -124,3 +127,35 @@ def test_has_significant_changes_ignores_non_deployment_fields():
         "repo:5000/dayuhub/face-detection:v1.4"
     )
     assert backend_core_module.BackendCore.has_significant_changes(old_doc, new_doc) is True
+
+
+@pytest.mark.unit
+def test_system_log_export_uses_repeatable_snapshot_files(backend_core_instance, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    backend_core_instance.installed_running_state = True
+    backend_core_instance.install_state = True
+    monkeypatch.setattr(
+        backend_core_instance,
+        "prepare_system_visualizations_data",
+        lambda: [{"id": 0, "data": {"cpu_usage": 0.42}}],
+    )
+
+    backend_core_instance.get_system_parameters()
+    backend_core_instance.get_system_parameters()
+
+    export_path = Path(backend_core_instance.create_system_log_export_file())
+    try:
+        with gzip.open(export_path, "rt", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        assert len(payload) == 2
+        assert payload[0]["data"][0]["data"]["cpu_usage"] == 0.42
+    finally:
+        export_path.unlink(missing_ok=True)
+
+    second_export_path = Path(backend_core_instance.create_system_log_export_file())
+    try:
+        with gzip.open(second_export_path, "rt", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        assert len(payload) == 2
+    finally:
+        second_export_path.unlink(missing_ok=True)

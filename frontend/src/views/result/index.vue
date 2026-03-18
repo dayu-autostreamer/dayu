@@ -522,35 +522,12 @@ export default {
     },
 
     exportTaskLog() {
-      fetch('/api/download_log')
-          .then(async (response) => {
-            const disposition = response.headers.get('content-disposition') || '';
-            let filename = 'task_log.json';
-
-            let match = disposition.match(/filename\*\s*=\s*(?:UTF-8''|'')?([^;]+)/i);
-            if (match && match[1]) {
-              try {
-                filename = decodeURIComponent(match[1].replace(/(^")|("$)/g, ''));
-              } catch {
-                filename = match[1].replace(/(^")|("$)/g, '');
-              }
-            } else {
-              match = disposition.match(/filename\s*=\s*([^;]+)/i);
-              if (match && match[1]) {
-                filename = match[1].trim().replace(/(^")|("$)/g, '');
-              }
-            }
-
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.setAttribute('download', filename);
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            window.URL.revokeObjectURL(url);
-          });
+      const link = document.createElement('a');
+      link.href = '/api/download_log';
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
     },
 
     showMsg(state, msg) {

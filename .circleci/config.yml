@@ -1,0 +1,133 @@
+version: 2.1
+
+executors:
+  python-executor:
+    docker:
+      - image: cimg/python:3.10
+    working_directory: ~/project
+    environment:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_COLOR: "1"
+      DELETE_TEMP_FILES: "False"
+      LOG_LEVEL: "INFO"
+
+  node-executor:
+    docker:
+      - image: cimg/node:20.18
+    working_directory: ~/project
+    environment:
+      CI: "true"
+      VITE_BACKEND_ADDRESS: "http://127.0.0.1:8000"
+      VITE_OPEN: "false"
+      VITE_OPEN_CDN: "false"
+      VITE_PORT: "5173"
+      VITE_PUBLIC_PATH: "/"
+
+commands:
+  install-python-deps:
+    steps:
+      - restore_cache:
+          keys:
+            - v1-pip-{{ arch }}-{{ checksum "requirements-dev.txt" }}
+            - v1-pip-{{ arch }}-
+      - run:
+          name: Install Python development dependencies
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements-dev.txt
+      - save_cache:
+          key: v1-pip-{{ arch }}-{{ checksum "requirements-dev.txt" }}
+          paths:
+            - ~/.cache/pip
+
+  install-frontend-deps:
+    steps:
+      - restore_cache:
+          keys:
+            - v1-npm-{{ arch }}-{{ checksum "frontend/package.json" }}
+            - v1-npm-{{ arch }}-
+      - run:
+          name: Install frontend dependencies
+          command: make frontend-install
+      - save_cache:
+          key: v1-npm-{{ arch }}-{{ checksum "frontend/package.json" }}
+          paths:
+            - ~/.npm
+
+jobs:
+  python-lint:
+    executor: python-executor
+    steps:
+      - checkout
+      - install-python-deps
+      - run:
+          name: Run Python lint
+          command: make lint-python
+
+  python-syntax:
+    executor: python-executor
+    steps:
+      - checkout
+      - run:
+          name: Run Python syntax checks
+          command: make python-syntax
+
+  python-tests:
+    executor: python-executor
+    steps:
+      - checkout
+      - install-python-deps
+      - run:
+          name: Run unit and integration tests with coverage
+          command: |
+            mkdir -p test-results
+            make coverage-python PYTEST_ARGS="--junitxml=test-results/python-tests.xml"
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: coverage.xml
+
+  python-component-tests:
+    executor: python-executor
+    steps:
+      - checkout
+      - install-python-deps
+      - run:
+          name: Run component interaction tests
+          command: |
+            mkdir -p test-results
+            make test-component PYTEST_ARGS="--junitxml=test-results/python-component.xml"
+      - store_test_results:
+          path: test-results
+
+  python-e2e-smoke:
+    executor: python-executor
+    steps:
+      - checkout
+      - install-python-deps
+      - run:
+          name: Run e2e smoke tests
+          command: |
+            mkdir -p test-results
+            make test-e2e PYTEST_ARGS="--junitxml=test-results/python-e2e.xml"
+      - store_test_results:
+          path: test-results
+
+  frontend-checks:
+    executor: node-executor
+    steps:
+      - checkout
+      - install-frontend-deps
+      - run:
+          name: Run frontend checks
+          command: make frontend-check
+
+workflows:
+  ci:
+    jobs:
+      - python-lint
+      - python-syntax
+      - python-tests
+      - python-component-tests
+      - python-e2e-smoke
+      - frontend-checks

@@ -64,22 +64,52 @@ To submit a proposed change, please develop the code/fix and add new test cases.
 
 ## Running Tests Locally
 
-Before opening a PR, please run the Python test suite locally:
+Please align with the repository toolchain before opening a PR:
+
+- Python `3.10` from [`.python-version`](.python-version)
+- Node.js `20` from [`.nvmrc`](.nvmrc)
+
+Bootstrap the Python development environment:
 
 ```bash
-python -m pip install -r dependency/core/lib/requirements.txt -r dependency/core/controller/requirements.txt -r backend/requirements.txt -r tests/requirements.txt
-PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m "unit or integration"
-PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m component
-PYTHONPATH="$(pwd)/backend:$(pwd)/dependency" python -m pytest -m e2e
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
 ```
 
-For frontend changes, also run the basic quality checks from the `frontend` directory:
+Or use the provided shortcut:
 
 ```bash
-npm install
-npm run lint
-npm run format:check
+make install-python-dev
 ```
+
+Before opening a PR, please run the Python checks locally:
+
+```bash
+make lint-python
+make python-syntax
+make test-python
+make test-unit-integration
+make test-component
+make test-e2e
+make coverage-python
+```
+
+For frontend changes, also run the frontend checks:
+
+```bash
+make frontend-install
+make frontend-check
+```
+
+`make ci-python` mirrors the Python CI gates, and `make check` combines the common Python and frontend verification steps for day-to-day development.
+
+## Hosted CI Integrations
+
+This repository ships with both GitHub Actions and CircleCI definitions:
+
+* GitHub Actions remains the primary CI entry point and uploads `coverage.xml` to Codecov through OIDC.
+* CircleCI replays the same `make` targets from [`.circleci/config.yml`](./.circleci/config.yml) so hosted checks stay aligned with local development commands.
+* Codecov behavior is configured in [`codecov.yml`](./codecov.yml). The current defaults keep project coverage compared against the base commit and require patch coverage on changed lines.
 
 
 ## Code Review

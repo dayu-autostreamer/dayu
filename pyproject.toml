@@ -1,0 +1,30 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+force-exclude = true
+src = [
+    "backend",
+    "components",
+    "datasource",
+    "tests",
+    "tools",
+    "dependency/core/controller",
+    "dependency/core/lib",
+]
+extend-exclude = [
+    ".git",
+    ".idea",
+    ".pytest_cache",
+    ".cache",
+    "build",
+    "frontend",
+    "static",
+    "template",
+    "dependency/core/applications",
+]
+
+[tool.ruff.lint]
+select = ["F"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["F401"]

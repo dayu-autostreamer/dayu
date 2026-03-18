@@ -164,6 +164,10 @@ spec:
               value: "8000"
             - name: KUBE_CACHE_TTL
               value: "$KUBE_CACHE_TTL"
+            - name: SYSTEM_LOG_RETENTION_RECORDS
+              value: "$SYSTEM_LOG_RETENTION_RECORDS"
+            - name: SYSTEM_LOG_COMPACT_INTERVAL
+              value: "$SYSTEM_LOG_COMPACT_INTERVAL"
             image: $REGISTRY/$REPOSITORY/backend:$TAG
             imagePullPolicy: Always
             name: backend
@@ -640,6 +644,8 @@ import_config() {
     DATASOURCE_DATA_ROOT=$(yq e '.datasource.data-root' "$TMP_FILE")
     DATASOURCE_NODE=$(yq e '.datasource.node' "$TMP_FILE")
     DATASOURCE_PLAY_MODE=$(yq e '.datasource.play-mode' "$TMP_FILE")
+    SYSTEM_LOG_RETENTION_RECORDS=$(yq e '.log-export.system.retention-records' "$TMP_FILE")
+    SYSTEM_LOG_COMPACT_INTERVAL=$(yq e '.log-export.system.compact-interval' "$TMP_FILE")
 
     rm "$TMP_FILE"
 

@@ -10,7 +10,7 @@
 - Fix iptables rule accumulation for edgemesh in incorrect dayu shutdowns with `dayu.sh` script correction.
 
 ### Minor Update
-
+- Update log export mode to support large logs in multi-stream scenarios (`backend`/`distributor`).
 ---
 
 ## v1.2

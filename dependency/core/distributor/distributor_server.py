@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.routing import APIRoute
@@ -42,6 +43,11 @@ class DistributorServer:
                      self.query_all_result,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.DISTRIBUTOR_ALL_RESULT]
+                     ),
+            APIRoute(NetworkAPIPath.DISTRIBUTOR_EXPORT_RESULT_LOG,
+                     self.export_result_log,
+                     response_class=FileResponse,
+                     methods=[NetworkAPIMethod.DISTRIBUTOR_EXPORT_RESULT_LOG]
                      ),
             # clear database
             APIRoute(NetworkAPIPath.DISTRIBUTOR_CLEAR_DATABASE,
@@ -98,6 +104,17 @@ class DistributorServer:
 
     async def query_all_result(self):
         return self.distributor.query_all_result()
+
+    async def export_result_log(self, backtask: BackgroundTasks):
+        export_path = self.distributor.create_result_log_export_file()
+        formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        backtask.add_task(FileOps.remove_file, export_path)
+        return FileResponse(
+            path=export_path,
+            filename=f'DAYU_RESULT_LOG_{formatted_time}.json.gz',
+            media_type='application/gzip',
+            background=backtask
+        )
 
     async def clear_database(self):
         self.distributor.clear_database()

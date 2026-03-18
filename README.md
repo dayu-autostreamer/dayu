@@ -4,6 +4,8 @@ English | [简体中文](./README_zh.md)
 
 [![Version](https://img.shields.io/github/release/dayu-autostreamer/dayu)](https://github.com/dayu-autostreamer/dayu/releases)
 [![CI](https://github.com/dayu-autostreamer/dayu/actions/workflows/ci.yml/badge.svg)](https://github.com/dayu-autostreamer/dayu/actions/workflows/ci.yml)
+[![CircleCI](https://dl.circleci.com/status-badge/img/gh/dayu-autostreamer/dayu/tree/main.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/gh/dayu-autostreamer/dayu/tree/main)
+[![Codecov](https://codecov.io/gh/dayu-autostreamer/dayu/graph/badge.svg)](https://codecov.io/gh/dayu-autostreamer/dayu)
 [![Licence](https://img.shields.io/github/license/dayu-autostreamer/dayu.svg)](https://github.com/dayu-autostreamer/dayu/blob/main/LICENSE)
 [![Homepage](https://img.shields.io/website?url=https%3A%2F%2Fdayu-autostreamer.github.io%2F&label=homepage)](https://dayu-autostreamer.github.io/)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/dayu-autostreamer/dayu/badge)](https://scorecard.dev/viewer/?uri=github.com/dayu-autostreamer/dayu)
@@ -117,6 +119,63 @@ It makes up of Application Service Layer.
   streams (for example, cameras at different intersections process traffic flow tasks at the same time). These tasks do
   not distinguish between data streams during the processing stage and are processed equivalently.
 
+## Documentation
+
+Repository-maintained technical docs now live under [`docs/`](docs/README.md):
+
+- [`docs/api/README.md`](docs/api/README.md): backend control-plane and internal runtime APIs
+- [`docs/hooks/README.md`](docs/hooks/README.md): hook mechanism, lifecycle, and extension guide
+- [`docs/hooks/catalog.md`](docs/hooks/catalog.md): registered hook implementation catalog
+
+## Development Environment
+
+To align local development with CI, use the toolchain versions tracked in the repository:
+
+- Python `3.10` via [`.python-version`](.python-version)
+- Node.js `20` via [`.nvmrc`](.nvmrc)
+- `make` as the primary local task entry point
+
+Python developer dependencies are collected in [`requirements-dev.txt`](requirements-dev.txt), and Python lint
+configuration lives in [`pyproject.toml`](pyproject.toml).
+
+## Local Quality Checks
+
+Use the provided `Makefile` targets for local feedback loops:
+
+```bash
+make install-python-dev
+make python-syntax
+make test-unit-integration
+make test-component
+make test-e2e
+make frontend-install
+make frontend-lint
+make frontend-format-check
+make frontend-build
+```
+
+`make check` runs the shared syntax, Python unit/integration, and frontend lint/format checks used in daily
+development.
+
+## Repository Layout
+
+- `backend`: installation APIs and backend orchestration helpers
+- `frontend`: Vue-based web UI and user-facing workflows
+- `datasource`: simulated data sources for demos and testing
+- `components`: runtime entry points for generator/controller/processor/distributor/scheduler/monitor
+- `dependency/core`: shared core libraries, scheduling logic, and component implementations
+- `tests`: unit, integration, component, and e2e coverage
+- `tools`: small developer and operations utilities
+
+## Developer Tools
+
+The repository includes a CLI log summary tool for exported system traces:
+
+```bash
+python tools/log_analysis.py --log path/to/exported-log.json.gz
+python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format json
+```
+
 ## Guides
 
 To get detailed instructions about our dayu system, please refer to the documentation on
@@ -156,4 +215,3 @@ Thanks for the following documentation contributors:
 <a href="https://github.com/dayu-autostreamer/dayu-autostreamer.github.io/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=dayu-autostreamer/dayu-autostreamer.github.io"  alt=""/>
 </a>
-
