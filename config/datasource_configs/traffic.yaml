@@ -4,7 +4,7 @@ source_mode: "rtsp_video"
 source_list:
   - name: "traffic_camera"
     url: ""
-    dir: "shy_traffic/"
+    dir: "traffic/"
     metadata:
       resolution: "1080p"
       fps: 30
