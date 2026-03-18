@@ -99,9 +99,10 @@ For frontend changes, also run the frontend checks:
 ```bash
 make frontend-install
 make frontend-check
+make frontend-lint
 ```
 
-`make ci-python` mirrors the Python CI gates, and `make check` combines the common Python and frontend verification steps for day-to-day development.
+`make ci-python` mirrors the Python CI gates, and `make check` combines the common Python and frontend verification steps for day-to-day development. `make frontend-check` is the blocking gate used by hosted CI, while `make frontend-lint` stays available for incremental cleanup of the existing frontend lint backlog.
 
 ## Hosted CI Integrations
 

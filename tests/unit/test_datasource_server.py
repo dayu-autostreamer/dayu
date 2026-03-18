@@ -1,4 +1,5 @@
 import importlib
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,7 @@ def configure_runtime(monkeypatch, module, tmp_path):
     monkeypatch.setenv("REQUEST_INTERVAL", "1")
     monkeypatch.setenv("START_INTERVAL", "0")
     monkeypatch.setenv("GUNICORN_PORT", "19010")
+    monkeypatch.chdir(Path(module.__file__).resolve().parent)
     monkeypatch.setattr(module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
     monkeypatch.setattr(module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
     monkeypatch.setattr(module.PortInfo, "get_component_port", staticmethod(lambda component: 9000))
@@ -45,6 +47,8 @@ def test_open_datasource_rewrites_source_urls_and_tracks_processes(monkeypatch, 
     assert datasource.source_label == "demo-source"
     assert datasource.process_list == ["process-1", "process-2"]
     assert len(started_commands) == 2
+    assert started_commands[0].startswith("python3 http_video.py ")
+    assert started_commands[1].startswith("python3 http_video.py ")
     assert "--address http://127.0.0.1:19010/stream-0" in started_commands[0]
     assert "--address http://127.0.0.1:19010/stream-1" in started_commands[1]
     assert str(tmp_path / "video" / "camera-a" / "http_video") in started_commands[0]

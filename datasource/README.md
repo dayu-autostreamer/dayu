@@ -40,7 +40,7 @@ Recommended schema:
 {
   "version": 1,
   "type": "video_sequence",
-  "media_root": "../data",
+  "video_root": "../data",
   "sequence": [
     {
       "name": "road-segment-000001",
@@ -61,9 +61,9 @@ Field meanings:
 
 - `version`: manifest schema version, currently `1`
 - `type`: recommended value `video_sequence`
-- `media_root`: path from the manifest directory to the shared media directory
+- `video_root`: path from the manifest directory to the shared media directory
 - `sequence`: ordered clip list for this mode
-- `sequence[].path`: clip path relative to `media_root`
+- `sequence[].path`: clip path relative to `video_root`
 - `sequence[].frame_count`: optional but strongly recommended to avoid startup probing
 - `sequence[].start_frame_index`: optional global ground-truth start index for this clip
 
