@@ -1,10 +1,10 @@
-# Datasource for Dayu System
+# Datasource Datasets and Manifests
 
-This guide is also mirrored under [`docs/datasource/README.md`](../docs/datasource/README.md) so datasource contracts stay discoverable from the repository documentation index.
+This document mirrors the datasource runtime guide so datasource contracts are discoverable from the repository-level `docs/` index.
 
 ## Unified Dataset Layout
 
-`http_video` and `rtsp_video` now use the same dataset organization:
+`http_video` and `rtsp_video` use the same dataset organization:
 
 ```text
 <source-dir>/
@@ -69,14 +69,11 @@ Field meanings:
 - `sequence[].frame_count`: optional but strongly recommended to avoid startup probing
 - `sequence[].start_frame_index`: optional global ground-truth start index for this clip
 
-If `start_frame_index` is omitted, Dayu assigns it cumulatively from the previous
-clip. That is suitable when your ground-truth file is indexed over the same
-concatenated clip order starting at frame `0`.
+If `start_frame_index` is omitted, Dayu assigns it cumulatively from the previous clip. That is suitable when your ground-truth file is indexed over the same concatenated clip order starting at frame `0`.
 
 ## Frame Index and Hash Data
 
-For `http_video`, the returned `hash_data` is now the real frame index in
-ground-truth space.
+For `http_video`, the returned `hash_data` is the real frame index in ground-truth space.
 
 More concretely:
 
@@ -84,16 +81,12 @@ More concretely:
 - the second decoded frame maps to `start_frame_index + 1`
 - and so on
 
-This is the index consumed by
-`dependency/core/lib/estimation/accuracy_estimation.py`, where
-`search_frame_index()` directly treats `hash_data` as the ground-truth frame
-index.
+This is the index consumed by `dependency/core/lib/estimation/accuracy_estimation.py`, where `search_frame_index()` directly treats `hash_data` as the ground-truth frame index.
 
 That means:
 
 - if your `gt_file.txt` is indexed from `0`, keep the first clip at `start_frame_index: 0`
-- if your clips are extracted from a longer original recording, set each clip's
-  `start_frame_index` to the corresponding original frame offset
+- if your clips are extracted from a longer original recording, set each clip's `start_frame_index` to the corresponding original frame offset
 
 ## Mode Behavior
 
@@ -116,7 +109,5 @@ For best stability:
 
 - keep all clips in a single codec/container family, ideally `.mp4`
 - keep `frame_count` in the manifest so startup does not need probing
-- set `start_frame_index` explicitly whenever ground-truth indexing is not a
-  simple contiguous `0..N-1`
-- if `http_video` and `rtsp_video` need the same clip order, reuse the same
-  manifest content or create one as a symlink/copy of the other
+- set `start_frame_index` explicitly whenever ground-truth indexing is not a simple contiguous `0..N-1`
+- if `http_video` and `rtsp_video` need the same clip order, reuse the same manifest content or create one as a symlink/copy of the other
