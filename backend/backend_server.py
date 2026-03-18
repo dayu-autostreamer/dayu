@@ -523,7 +523,7 @@ class BackendServer:
             LOGGER.warning(f'Uninstall services failed: {str(e)}')
             LOGGER.exception(e)
             result = False
-            msg = f'unexpected system error, please refer to logs in backend'
+            msg = 'unexpected system error, please refer to logs in backend'
 
         self.server.clear_yaml_docs()
 

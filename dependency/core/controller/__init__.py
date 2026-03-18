@@ -1,1 +1,1 @@
-from .controller_server import ControllerServer
+from .controller_server import ControllerServer as ControllerServer
