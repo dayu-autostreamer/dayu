@@ -91,19 +91,27 @@ python-syntax:
 		$(PYTHON) -m compileall -q backend datasource components tools tests dependency/core
 
 test-unit-integration:
-	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m "unit or integration" $(PYTEST_ARGS)
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
+		tests/unit tests/integration \
+		-m "unit or integration" $(PYTEST_ARGS)
 
 test-component:
-	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m component $(PYTEST_ARGS)
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
+		tests/component \
+		-m component $(PYTEST_ARGS)
 
 test-e2e:
-	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m e2e $(PYTEST_ARGS)
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
+		tests/e2e \
+		-m e2e $(PYTEST_ARGS)
 
 test-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest $(PYTEST_ARGS)
 
 coverage-python:
-	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m "unit or integration" \
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
+		tests/unit tests/integration \
+		-m "unit or integration" \
 		$(PYTEST_ARGS) \
 		--cov=backend \
 		--cov=datasource \
