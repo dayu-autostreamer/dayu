@@ -165,7 +165,7 @@ spec:
             - name: KUBE_CACHE_TTL
               value: "$KUBE_CACHE_TTL"
             - name: SYSTEM_LOG_RETENTION_RECORDS
-            	value: "$SYSTEM_LOG_RETENTION_RECORDS"
+              value: "$SYSTEM_LOG_RETENTION_RECORDS"
             - name: SYSTEM_LOG_COMPACT_INTERVAL
               value: "$SYSTEM_LOG_COMPACT_INTERVAL"
             image: $REGISTRY/$REPOSITORY/backend:$TAG
