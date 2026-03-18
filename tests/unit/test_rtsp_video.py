@@ -11,8 +11,8 @@ def write_manifest(path: Path, payload: dict):
 
 
 @pytest.mark.unit
-def test_rtsp_source_streams_clips_in_manifest_order(monkeypatch, tmp_path):
-    rtsp_source_module = importlib.import_module("rtsp_source")
+def test_rtsp_video_streams_clips_in_manifest_order(monkeypatch, tmp_path):
+    rtsp_video_module = importlib.import_module("rtsp_video")
 
     clip_a = tmp_path / "data" / "clips" / "a.mp4"
     clip_b = tmp_path / "data" / "clips" / "b.mp4"
@@ -24,7 +24,7 @@ def test_rtsp_source_streams_clips_in_manifest_order(monkeypatch, tmp_path):
         tmp_path / "rtsp_video" / "manifest.json",
         {
             "version": 1,
-            "media_root": "../data",
+            "video_root": "../data",
             "sequence": [
                 {"path": "clips/b.mp4", "frame_count": 1},
                 {"path": "clips/a.mp4", "frame_count": 1},
@@ -32,7 +32,7 @@ def test_rtsp_source_streams_clips_in_manifest_order(monkeypatch, tmp_path):
         },
     )
 
-    monkeypatch.setattr(rtsp_source_module.RtspSource, "ensure_mediamtx", lambda self: None)
+    monkeypatch.setattr(rtsp_video_module.RtspSource, "ensure_mediamtx", lambda self: None)
 
     commands = []
 
@@ -47,12 +47,16 @@ def test_rtsp_source_streams_clips_in_manifest_order(monkeypatch, tmp_path):
             return 0
 
     monkeypatch.setattr(
-        rtsp_source_module.subprocess,
+        rtsp_video_module.subprocess,
         "Popen",
         lambda command, **kwargs: commands.append(command) or DummyProcess(command),
     )
 
-    source = rtsp_source_module.RtspSource(str(tmp_path / "rtsp_video"), "rtsp://127.0.0.1:8554/live", "non-cycle")
+    source = rtsp_video_module.RtspSource(
+        str(tmp_path / "rtsp_video"),
+        "rtsp://127.0.0.1:8554/live",
+        "non-cycle",
+    )
     source.run()
 
     assert [Path(command[4]).name for command in commands] == ["b.mp4", "a.mp4"]

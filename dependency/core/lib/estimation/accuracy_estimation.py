@@ -71,7 +71,7 @@ class AccEstimator:
         return frame_gt
 
     def search_frame_index(self, hash_data):
-        # hash_data is the ground-truth frame index emitted by datasource/video_source.py.
+        # hash_data is the ground-truth frame index emitted by datasource/http_video.py.
         # Keep this mapping explicit so accuracy calculation stays aligned with manifest indexing.
         closest_frame_index = int(hash_data)
         return closest_frame_index
