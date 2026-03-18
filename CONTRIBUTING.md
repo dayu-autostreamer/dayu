@@ -103,6 +103,14 @@ make frontend-check
 
 `make ci-python` mirrors the Python CI gates, and `make check` combines the common Python and frontend verification steps for day-to-day development.
 
+## Hosted CI Integrations
+
+This repository ships with both GitHub Actions and CircleCI definitions:
+
+* GitHub Actions remains the primary CI entry point and uploads `coverage.xml` to Codecov through OIDC.
+* CircleCI replays the same `make` targets from [`.circleci/config.yml`](./.circleci/config.yml) so hosted checks stay aligned with local development commands.
+* Codecov behavior is configured in [`codecov.yml`](./codecov.yml). The current defaults keep project coverage compared against the base commit and require patch coverage on changed lines.
+
 
 ## Code Review
 

@@ -9,6 +9,8 @@ NPM ?= npm
 FRONTEND_DIR ?= frontend
 PYTHONPATH_VALUE := $(CURDIR)/backend:$(CURDIR)/dependency:$(CURDIR)/datasource
 PYTHONPYCACHEPREFIX ?= $(CURDIR)/.cache/pycache
+PYTEST_ARGS ?=
+COVERAGE_XML ?= coverage.xml
 
 NOCACHE ?= $(or $(NO_CACHE),0)
 BUILD_NO_CACHE_FLAG := $(if $(filter 1 true TRUE yes YES,$(NOCACHE)),--no-cache,)
@@ -81,19 +83,20 @@ python-syntax:
 		$(PYTHON) -m compileall -q backend datasource components tools tests dependency/core
 
 test-unit-integration:
-	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m "unit or integration"
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m "unit or integration" $(PYTEST_ARGS)
 
 test-component:
-	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m component
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m component $(PYTEST_ARGS)
 
 test-e2e:
-	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m e2e
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m e2e $(PYTEST_ARGS)
 
 test-python:
-	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest $(PYTEST_ARGS)
 
 coverage-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m "unit or integration" \
+		$(PYTEST_ARGS) \
 		--cov=backend \
 		--cov=datasource \
 		--cov=dependency/core/controller \
@@ -101,7 +104,7 @@ coverage-python:
 		--cov=tools \
 		--cov-branch \
 		--cov-report=term-missing \
-		--cov-report=xml
+		--cov-report=xml:$(COVERAGE_XML)
 
 ci-python: lint-python python-syntax test-python
 
