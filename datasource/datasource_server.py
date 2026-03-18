@@ -49,7 +49,7 @@ class DataSource:
                 return
             url = re.sub(r'(?<=:)\d+', str(self.inner_port), source['url'])
             url = re.sub(r'\d+\.\d+\.\d+\.\d+', '127.0.0.1', url)
-            command = (f'python {mode}.py '
+            command = (f'python3 {mode}.py '
                        f'--root {datasource_dir} --address {url} --play_mode {self.play_mode}')
             process = ScriptHelper.start_script(command)
             self.process_list.append(process)
