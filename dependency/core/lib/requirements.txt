@@ -2,12 +2,13 @@ colorlog
 requests
 kubernetes==20.11.0a1
 python-multipart
-fastapi
-starlette
+anyio>=3.7.1,<4
+typing_extensions>=4.8,<5
+fastapi>=0.104,<0.105
+starlette>=0.27,<0.28
 uvicorn
 gunicorn
 joblib
 imagehash
 pillow
 func_timeout
-

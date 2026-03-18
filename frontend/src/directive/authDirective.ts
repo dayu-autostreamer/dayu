@@ -20,7 +20,9 @@ export function authDirective(app: App) {
 	app.directive('auths', {
 		mounted(el: HTMLElement, binding) {
 			const stores = useUserInfo();
-			const hasPermission = binding.value.some((permission: string) => stores.userInfos.authBtnList.includes(permission));
+			const hasPermission = binding.value.some((permission: string) =>
+				stores.userInfos.authBtnList.includes(permission)
+			);
 			if (!hasPermission) removeElement(el);
 		},
 	});

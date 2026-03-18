@@ -144,9 +144,8 @@ class BackendCore:
                                                                         scopes=first_stage_components)
         try:
             result, msg = self.install_yaml_templates(first_docs_list)
-        except timeout_exceptions.FunctionTimedOut as e:
-            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            LOGGER.exception(e)
+        except timeout_exceptions.FunctionTimedOut:
+            LOGGER.warning('Parse and apply templates failed: first-stage install timeout after 100 seconds')
             result = False
             msg = 'first-stage install timeout after 100 seconds'
         except Exception as e:
@@ -167,9 +166,8 @@ class BackendCore:
                                                                          scopes=second_stage_components)
         try:
             result, msg = self.install_yaml_templates(second_docs_list)
-        except timeout_exceptions.FunctionTimedOut as e:
-            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            LOGGER.exception(e)
+        except timeout_exceptions.FunctionTimedOut:
+            LOGGER.warning('Parse and apply templates failed: second-stage install timeout after 100 seconds')
             result = False
             msg = 'second-stage install timeout after 100 seconds'
         except Exception as e:
@@ -203,7 +201,7 @@ class BackendCore:
         docs = self.read_component_yaml()
         try:
             result, msg = self.uninstall_yaml_templates(docs)
-        except timeout_exceptions.FunctionTimedOut as e:
+        except timeout_exceptions.FunctionTimedOut:
             msg = 'timeout after 200 seconds'
             result = False
             LOGGER.warning(f'Uninstall services failed: {msg}')
@@ -211,7 +209,7 @@ class BackendCore:
             LOGGER.warning(f'Uninstall services failed: {str(e)}')
             LOGGER.exception(e)
             result = False
-            msg = f'unexpected system error, please refer to logs in backend'
+            msg = 'unexpected system error, please refer to logs in backend'
 
         return result, msg
 
@@ -805,7 +803,7 @@ class BackendCore:
 
                     if res:
                         self.update_component_yaml(redeploy_docs_list)
-                        LOGGER.info(f'[Redeployment] Redeployment succeeded.')
+                        LOGGER.info('[Redeployment] Redeployment succeeded.')
                     else:
                         LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
                 finally:
@@ -952,16 +950,16 @@ class BackendCore:
 
         config = YamlOps.read_yaml(config_path)
         try:
-            source_name = config['source_name']
-            source_type = config['source_type']
-            source_mode = config['source_mode']
+            _ = config['source_name']
+            _ = config['source_type']
+            _ = config['source_mode']
             for camera in config['source_list']:
-                name = camera['name']
+                _ = camera['name']
                 if self.inner_datasource:
-                    directory = camera['dir']
+                    _ = camera['dir']
                 else:
-                    url = camera['url']
-                metadata = camera['metadata']
+                    _ = camera['url']
+                _ = camera['metadata']
 
         except Exception as e:
             LOGGER.warning(f'Datasource config file format error: {str(e)}')

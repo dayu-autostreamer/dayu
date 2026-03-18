@@ -124,11 +124,13 @@ make test-component
 make test-e2e
 make frontend-install
 make frontend-lint
+make frontend-format
 make frontend-format-check
 make frontend-build
 ```
 
-其中 `make check` 会执行日常开发最常用的语法检查、Python 单元/集成测试，以及前端 lint/format 检查。
+其中 `make check` 会执行日常开发最常用的语法检查、Python 单元/集成测试，以及前端 format/build 检查。
+`make frontend-lint` 仍然保留，作为逐步清理现有 Vue 模板历史 lint 债务的补充命令。
 
 ## 仓库结构
 

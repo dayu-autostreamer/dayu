@@ -1,5 +1,3 @@
-import os
-import cv2
 import json
 import uvicorn
 import argparse
@@ -16,6 +14,7 @@ from starlette.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.lib.common import FileOps, LOGGER, Context, NameMaintainer
+from video_dataset import VideoDatasetPlayer
 
 app = FastAPI()
 app.add_middleware(
@@ -38,13 +37,8 @@ class VideoSource:
         self.router.add_api_route('/file', self.get_source_file, methods=['GET'])
 
         self.data_root = data_root
-        self.data_dir = os.path.join(self.data_root, 'frames')
-
         self.play_mode = play_mode
-
-        self.frame_count = 0
-        self.is_end = False
-        self.frame_max_count = len(os.listdir(self.data_dir))
+        self.player = VideoDatasetPlayer(self.data_root, self.play_mode)
 
         self.file_name = None
 
@@ -58,22 +52,13 @@ class VideoSource:
         self.frame_compress = None
 
         self.file_suffix = 'mp4'
+        self.sampled_frame_indices = []
 
     def get_one_frame(self):
-        frame = cv2.imread(os.path.join(self.data_dir, f'{self.frame_count}.jpg'))
-        self.frame_count += 1
-        if self.frame_count >= self.frame_max_count:
-            if self.play_mode == 'non-cycle':
-                self.is_end = True
-                LOGGER.info('A video play cycle ends. Video play ends in non-cycle mode.')
-            else:
-                LOGGER.info('A video play cycle ends. Replay video in cycle mode.')
-        self.frame_count %= self.frame_max_count
-        return frame
+        return self.player.read_frame()
 
     def get_source_data(self, data: str = Form(...)):
-
-        if self.is_end:
+        if self.player.is_end:
             return []
 
         data = json.loads(data)
@@ -96,24 +81,33 @@ class VideoSource:
         self.frame_compress = Context.get_algorithm('GEN_COMPRESS', al_name=frame_compress_name) \
             if self.frame_compress is None else self.frame_compress
 
-        frames_index = []
+        self.sampled_frame_indices = []
         frames_buffer = []
         while len(frames_buffer) < buffer_size:
-            frame = self.get_one_frame()
+            frame, frame_index = self.get_one_frame()
+            if frame is None:
+                break
             if self.frame_filter(self, frame):
                 frames_buffer.append(frame)
-                frames_index.append(self.frame_count)
+                # hash_data is the real ground-truth frame index used by accuracy_estimation.
+                self.sampled_frame_indices.append(frame_index)
+
+        if not frames_buffer:
+            return JSONResponse([])
 
         frames_buffer = [
             self.frame_process(self, frame, self.raw_meta_data['resolution'], self.meta_data['resolution'])
             for frame in frames_buffer
         ]
 
-        self.file_name = NameMaintainer.get_task_data_file_name(self.source_id, self.task_id,
-                                                                file_suffix=self.file_suffix)
+        self.file_name = NameMaintainer.get_task_data_file_name(
+            self.source_id,
+            self.task_id,
+            file_suffix=self.file_suffix
+        )
         self.frame_compress(self, frames_buffer, self.file_name)
 
-        return JSONResponse(frames_index)
+        return JSONResponse(self.sampled_frame_indices)
 
     def get_source_file(self, backtask: BackgroundTasks):
         backtask.add_task(FileOps.remove_file, self.file_name)
@@ -178,10 +172,8 @@ if __name__ == '__main__':
     server_path = args.address.split('/')[-1]
 
     if is_port_in_use(server_port):
-        # server already in running
         register_source(args.root, server_path, args.play_mode)
     else:
-        # first run server
         server_thread = threading.Thread(target=run_server, args=(server_port,), daemon=True)
         server_thread.start()
         if wait_for_port(server_port):

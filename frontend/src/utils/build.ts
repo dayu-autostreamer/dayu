@@ -32,9 +32,5 @@ export const buildConfig = {
 			],
 		});
 	},
-	external: [
-		'vue',
-		'vue-router',
-		'element-plus',
-	],
+	external: ['vue', 'vue-router', 'element-plus'],
 };

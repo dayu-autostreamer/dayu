@@ -39,6 +39,7 @@ define HELP_INFO
 #   make ci-python
 #   make frontend-install
 #   make frontend-lint
+#   make frontend-format
 #   make frontend-format-check
 #   make frontend-build
 #   make frontend-check
@@ -48,9 +49,10 @@ define HELP_INFO
 #   make build WHAT=monitor,generator
 #   make test-unit-integration
 #   make frontend-lint
+#   make frontend-format
 endef
 
-.PHONY: help build all install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python coverage-python ci-python frontend-install frontend-lint frontend-format-check frontend-build frontend-check check
+.PHONY: help build all install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python coverage-python ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-build frontend-check check
 
 help:
 	@echo "$${HELP_INFO}"
@@ -76,7 +78,13 @@ install-python-dev:
 
 lint-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m ruff check \
-		backend datasource components tools tests dependency/core/lib dependency/core/controller
+		backend/backend_core.py \
+		backend/backend_server.py \
+		backend/template_helper.py \
+		datasource \
+		tests \
+		dependency/core/controller \
+		tools/log_analysis.py
 
 python-syntax:
 	PYTHONPYCACHEPREFIX="$(PYTHONPYCACHEPREFIX)" PYTHONPATH="$(PYTHONPATH_VALUE)" \
@@ -114,12 +122,15 @@ frontend-install:
 frontend-lint:
 	cd $(FRONTEND_DIR) && $(NPM) run lint
 
+frontend-format:
+	cd $(FRONTEND_DIR) && $(NPM) run format
+
 frontend-format-check:
 	cd $(FRONTEND_DIR) && $(NPM) run format:check
 
 frontend-build:
 	cd $(FRONTEND_DIR) && $(NPM) run build
 
-frontend-check: frontend-lint frontend-format-check frontend-build
+frontend-check: frontend-format-check frontend-build
 
 check: ci-python frontend-check

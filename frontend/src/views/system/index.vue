@@ -1,401 +1,391 @@
 <template>
-  <div class="home-container layout-pd">
-    <!-- Visualization Controls Row -->
-    <el-row class="viz-controls-row mb15">
-      <el-col :span="24">
-        <div class="viz-controls-panel">
-          <div class="control-group"
-               style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-            <div>
-              <h4>Active Visualizations:</h4>
-              <el-checkbox-group v-model="currentActiveVisualizationsArray">
-                <el-checkbox
-                    v-for="viz in visualizationConfig"
-                    :key="viz.id"
-                    :label="viz.id"
-                    class="module-checkbox"
-                >
-                  {{ viz.name }}
-                </el-checkbox>
-              </el-checkbox-group>
-            </div>
-            <div>
-              <el-button type="primary" @click="exportSystemLog">Export System Log</el-button>
-            </div>
-          </div>
-        </div>
-      </el-col>
-    </el-row>
+	<div class="home-container layout-pd">
+		<!-- Visualization Controls Row -->
+		<el-row class="viz-controls-row mb15">
+			<el-col :span="24">
+				<div class="viz-controls-panel">
+					<div
+						class="control-group"
+						style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap"
+					>
+						<div>
+							<h4>Active Visualizations:</h4>
+							<el-checkbox-group v-model="currentActiveVisualizationsArray">
+								<el-checkbox v-for="viz in visualizationConfig" :key="viz.id" :label="viz.id" class="module-checkbox">
+									{{ viz.name }}
+								</el-checkbox>
+							</el-checkbox-group>
+						</div>
+						<div>
+							<el-button type="primary" @click="exportSystemLog">Export System Log</el-button>
+						</div>
+					</div>
+				</div>
+			</el-col>
+		</el-row>
 
-    <!-- Visualization Modules Row -->
-    <el-row :gutter="15" class="home-card-two mb15">
-      <template v-if="componentsLoaded">
-        <el-col
-            v-for="viz in visualizationConfig"
-            :key="getVizKey(viz)"
-            :xs="24"
-            :sm="24"
-            :md="getVisualizationSpan(viz.size, 'md')"
-            :lg="getVisualizationSpan(viz.size, 'lg')"
-            :xl="getVisualizationSpan(viz.size, 'xl')"
-            v-show="currentActiveVisualizations.has(viz.id)"
-        >
-          <div class="home-card-item viz-module">
-            <div class="viz-module-header">
-              <h3 class="viz-title">{{ viz.name }}</h3>
-              <component
-                  :is="vizControls[viz.type]"
-                  :key="viz.type + '-' + viz.variablesHash"
-                  :config="viz"
-                  :variable-states="variableStates[viz.id] || {}"
-                  @update:variable-states="updateVariableStates(viz.id, $event)"
-              />
-            </div>
+		<!-- Visualization Modules Row -->
+		<el-row :gutter="15" class="home-card-two mb15">
+			<template v-if="componentsLoaded">
+				<el-col
+					v-for="viz in visualizationConfig"
+					:key="getVizKey(viz)"
+					:xs="24"
+					:sm="24"
+					:md="getVisualizationSpan(viz.size, 'md')"
+					:lg="getVisualizationSpan(viz.size, 'lg')"
+					:xl="getVisualizationSpan(viz.size, 'xl')"
+					v-show="currentActiveVisualizations.has(viz.id)"
+				>
+					<div class="home-card-item viz-module">
+						<div class="viz-module-header">
+							<h3 class="viz-title">{{ viz.name }}</h3>
+							<component
+								:is="vizControls[viz.type]"
+								:key="viz.type + '-' + viz.variablesHash"
+								:config="viz"
+								:variable-states="variableStates[viz.id] || {}"
+								@update:variable-states="updateVariableStates(viz.id, $event)"
+							/>
+						</div>
 
-            <component
-                :is="visualizationComponents[viz.type]"
-                v-if="visualizationComponents[viz.type]"
-                :key="`${viz.type}-${viz.id}-${viz.variablesHash}`"
-                :config="viz"
-                :data="processedData[viz.id]"
-                :variable-states="variableStates[viz.id] || {}"
-            />
-          </div>
-        </el-col>
-      </template>
+						<component
+							:is="visualizationComponents[viz.type]"
+							v-if="visualizationComponents[viz.type]"
+							:key="`${viz.type}-${viz.id}-${viz.variablesHash}`"
+							:config="viz"
+							:data="processedData[viz.id]"
+							:variable-states="variableStates[viz.id] || {}"
+						/>
+					</div>
+				</el-col>
+			</template>
 
-      <template v-else>
-        <el-col :span="24">
-          <div class="skeleton-loading">
-            <div class="skeleton-item" v-for="n in 3" :key="n"></div>
-          </div>
-        </el-col>
-      </template>
-    </el-row>
-  </div>
+			<template v-else>
+				<el-col :span="24">
+					<div class="skeleton-loading">
+						<div class="skeleton-item" v-for="n in 3" :key="n"></div>
+					</div>
+				</el-col>
+			</template>
+		</el-row>
+	</div>
 </template>
 
 <script>
-import {markRaw, reactive} from 'vue'
-import mitt from 'mitt'
-import { useSystemParametersStore } from '/@/stores/systemParameters'
+import { markRaw, reactive } from 'vue';
+import mitt from 'mitt';
+import { useSystemParametersStore } from '/@/stores/systemParameters';
 
-const emitter = mitt()
+const emitter = mitt();
 
 export default {
-  data() {
-    return {
-      componentsLoaded: false,
-      visualizationConfig: [],
-      activeVisualizations: new Set(),
-      variableStates: {},
-      visualizationComponents: {},
-      vizControls: {},
-      // stores
-      sysParamsStore: null,
-    }
-  },
-  computed: {
-    processedData() {
-      const buffer = this.sysParamsStore?.bufferedTaskCache || []
-      const result = {}
-      this.visualizationConfig.forEach(viz => {
-        result[viz.id] = this.processVizData(viz, buffer)
-      })
-      return result
-    },
-    currentActiveVisualizations() {
-      return this.activeVisualizations || new Set()
-    },
-    currentActiveVisualizationsArray: {
-      get() {
-        return Array.from(this.activeVisualizations)
-      },
-      set(newVal) {
-        this.activeVisualizations = new Set(newVal)
-      }
-    },
-  },
+	data() {
+		return {
+			componentsLoaded: false,
+			visualizationConfig: [],
+			activeVisualizations: new Set(),
+			variableStates: {},
+			visualizationComponents: {},
+			vizControls: {},
+			// stores
+			sysParamsStore: null,
+		};
+	},
+	computed: {
+		processedData() {
+			const buffer = this.sysParamsStore?.bufferedTaskCache || [];
+			const result = {};
+			this.visualizationConfig.forEach((viz) => {
+				result[viz.id] = this.processVizData(viz, buffer);
+			});
+			return result;
+		},
+		currentActiveVisualizations() {
+			return this.activeVisualizations || new Set();
+		},
+		currentActiveVisualizationsArray: {
+			get() {
+				return Array.from(this.activeVisualizations);
+			},
+			set(newVal) {
+				this.activeVisualizations = new Set(newVal);
+			},
+		},
+	},
 
-  async created() {
-    // init store
-    this.sysParamsStore = useSystemParametersStore()
+	async created() {
+		// init store
+		this.sysParamsStore = useSystemParametersStore();
 
-    await this.autoRegisterComponents()
-    this.componentsLoaded = true
-    await this.fetchVisualizationConfig()
+		await this.autoRegisterComponents();
+		this.componentsLoaded = true;
+		await this.fetchVisualizationConfig();
 
-    // watch buffer to keep variable sets in sync with backend
-    this.$watch(
-        () => this.sysParamsStore.bufferedTaskCache,
-        (buffer) => {
-          this.syncVariablesFromBuffer(buffer || [])
-        },
-        { deep: true, immediate: true }
-    )
+		// watch buffer to keep variable sets in sync with backend
+		this.$watch(
+			() => this.sysParamsStore.bufferedTaskCache,
+			(buffer) => {
+				this.syncVariablesFromBuffer(buffer || []);
+			},
+			{ deep: true, immediate: true }
+		);
 
-    emitter.on('force-update-charts', () => {
-      this.$nextTick(() => {
-        this.visualizationConfig.forEach(viz => {
-          this.variableStates[viz.id] =
-              {...this.variableStates[viz.id]}
-        })
-      })
-    })
-  },
+		emitter.on('force-update-charts', () => {
+			this.$nextTick(() => {
+				this.visualizationConfig.forEach((viz) => {
+					this.variableStates[viz.id] = { ...this.variableStates[viz.id] };
+				});
+			});
+		});
+	},
 
-  methods: {
-    calculateVariablesHash(variables) {
-      return [...(variables || [])].sort().join('|');
-    },
+	methods: {
+		calculateVariablesHash(variables) {
+			return [...(variables || [])].sort().join('|');
+		},
 
-    getVizKey(viz) {
-      return `${viz.id}-${viz.variablesHash}-${viz.size}`;
-    },
+		getVizKey(viz) {
+			return `${viz.id}-${viz.variablesHash}-${viz.size}`;
+		},
 
-    arraysEqual(a, b) {
-      if (a === b) return true;
-      if (!Array.isArray(a) || !Array.isArray(b)) return false;
-      if (a.length !== b.length) return false;
-      const sortedA = [...a].sort();
-      const sortedB = [...b].sort();
-      return sortedA.every((val, i) => val === sortedB[i]);
-    },
-    getVisualizationSpan(size, breakpoint) {
-      const baseSize = size || 1
-      switch (breakpoint) {
-        case 'xl':
-          return Math.min(24, baseSize * 8)
-        case 'lg':
-          return Math.min(24, (baseSize > 2 ? 24 : baseSize * 8))
-        default:
-          return baseSize > 1 ? 24 : 8
-      }
-    },
+		arraysEqual(a, b) {
+			if (a === b) return true;
+			if (!Array.isArray(a) || !Array.isArray(b)) return false;
+			if (a.length !== b.length) return false;
+			const sortedA = [...a].sort();
+			const sortedB = [...b].sort();
+			return sortedA.every((val, i) => val === sortedB[i]);
+		},
+		getVisualizationSpan(size, breakpoint) {
+			const baseSize = size || 1;
+			switch (breakpoint) {
+				case 'xl':
+					return Math.min(24, baseSize * 8);
+				case 'lg':
+					return Math.min(24, baseSize > 2 ? 24 : baseSize * 8);
+				default:
+					return baseSize > 1 ? 24 : 8;
+			}
+		},
 
-    async autoRegisterComponents() {
-      try {
-        const modules = import.meta.glob('./visualization/*Template.vue')
-        const controls = import.meta.glob('./visualization/*Controls.vue')
+		async autoRegisterComponents() {
+			try {
+				const modules = import.meta.glob('./visualization/*Template.vue');
+				const controls = import.meta.glob('./visualization/*Controls.vue');
 
-        await Promise.all([
-          ...Object.entries(modules).map(async ([path, loader]) => {
-            const type = path.split('/').pop().replace('Template.vue', '').toLowerCase()
-            const comp = await loader()
-            this.visualizationComponents[type] = markRaw(comp.default)
-          }),
-          ...Object.entries(controls).map(async ([path, loader]) => {
-            const type = path.split('/').pop().replace('Controls.vue', '').toLowerCase()
-            const comp = await loader()
-            this.vizControls[type] = markRaw(comp.default)
-          })
-        ])
-      } catch (error) {
-        console.error('Component registration failed:', error)
-      }
-    },
+				await Promise.all([
+					...Object.entries(modules).map(async ([path, loader]) => {
+						const type = path.split('/').pop().replace('Template.vue', '').toLowerCase();
+						const comp = await loader();
+						this.visualizationComponents[type] = markRaw(comp.default);
+					}),
+					...Object.entries(controls).map(async ([path, loader]) => {
+						const type = path.split('/').pop().replace('Controls.vue', '').toLowerCase();
+						const comp = await loader();
+						this.vizControls[type] = markRaw(comp.default);
+					}),
+				]);
+			} catch (error) {
+				console.error('Component registration failed:', error);
+			}
+		},
 
-    processVizData(vizConfig, buffer) {
-      if (!buffer.length) return []
+		processVizData(vizConfig, buffer) {
+			if (!buffer.length) return [];
 
-      try {
-        return buffer
-            .filter(task => {
-              return task.data?.some(item =>
-                  String(item.id) === String(vizConfig.id))
-            })
-            .map(task => {
-              const vizDataItem = task.data.find(
-                  item => String(item.id) === String(vizConfig.id))
-              return {
-                taskId: task.timestamp,
-                timestamp: task.timestamp,
-                ...(vizDataItem?.data || {})
-              }
-            })
-      } catch (error) {
-        console.error('Data process error:', error)
-      }
+			try {
+				return buffer
+					.filter((task) => {
+						return task.data?.some((item) => String(item.id) === String(vizConfig.id));
+					})
+					.map((task) => {
+						const vizDataItem = task.data.find((item) => String(item.id) === String(vizConfig.id));
+						return {
+							taskId: task.timestamp,
+							timestamp: task.timestamp,
+							...(vizDataItem?.data || {}),
+						};
+					});
+			} catch (error) {
+				console.error('Data process error:', error);
+			}
+		},
 
-    },
+		updateVariableStates(vizId, newStates) {
+			const validVars = this.visualizationConfig.find((v) => v.id === vizId)?.variables || [];
+			this.variableStates[vizId] = validVars.reduce((acc, varName) => {
+				acc[varName] = newStates[varName] ?? true;
+				return acc;
+			}, {});
 
-    updateVariableStates(vizId, newStates) {
-      const validVars = this.visualizationConfig.find(v => v.id === vizId)?.variables || [];
-      this.variableStates[vizId] = validVars.reduce((acc, varName) => {
-        acc[varName] = newStates[varName] ?? true;
-        return acc;
-      }, {});
+			emitter.emit('force-update-charts');
+		},
 
-      emitter.emit('force-update-charts')
-    },
+		async fetchVisualizationConfig() {
+			try {
+				const response = await fetch('/api/system_visualization_config');
+				const data = await response.json();
 
-    async fetchVisualizationConfig() {
-      try {
-        const response = await fetch('/api/system_visualization_config')
-        const data = await response.json()
+				this.visualizationConfig = data.map((viz) =>
+					reactive({
+						...viz,
+						id: String(viz.id),
+						size: Math.min(3, Math.max(1, parseInt(viz.size) || 1)),
+						variables: [...(viz.variables || [])],
+						variablesHash: this.calculateVariablesHash(viz.variables),
+					})
+				);
 
-        this.visualizationConfig = data.map(viz => reactive({
-          ...viz,
-          id: String(viz.id),
-          size: Math.min(3, Math.max(1, parseInt(viz.size) || 1)),
-          variables: [...(viz.variables || [])],
-          variablesHash: this.calculateVariablesHash(viz.variables)
-        }));
+				this.activeVisualizations = new Set(this.visualizationConfig.map((viz) => viz.id));
 
-        this.activeVisualizations = new Set(this.visualizationConfig.map(viz => viz.id))
+				this.variableStates = this.visualizationConfig.reduce((acc, viz) => {
+					acc[viz.id] = viz.variables.reduce((vars, varName) => {
+						vars[varName] = true;
+						return vars;
+					}, {});
+					return acc;
+				}, {});
+			} catch (error) {
+				console.error('Failed to fetch visualization config:', error);
+			}
+		},
 
-        this.variableStates = this.visualizationConfig.reduce((acc, viz) => {
-          acc[viz.id] = viz.variables.reduce((vars, varName) => {
-            vars[varName] = true
-            return vars
-          }, {})
-          return acc
-        }, {})
-      } catch (error) {
-        console.error('Failed to fetch visualization config:', error)
-      }
-    },
+		exportSystemLog() {
+			const link = document.createElement('a');
+			link.href = '/api/download_system_log';
+			link.rel = 'noopener';
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+		},
 
-    exportSystemLog() {
-      const link = document.createElement('a');
-      link.href = '/api/download_system_log';
-      link.rel = 'noopener';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    },
+		syncVariablesFromBuffer(buffer) {
+			try {
+				const latestByViz = new Map();
+				buffer.forEach((task) => {
+					(task.data || []).forEach((item) => {
+						const vizId = String(item.id);
+						latestByViz.set(vizId, Object.keys(item.data || {}));
+					});
+				});
+				latestByViz.forEach((newVars, vizId) => {
+					const vizIndex = this.visualizationConfig.findIndex((v) => v.id === vizId);
+					if (vizIndex !== -1) {
+						const curr = this.visualizationConfig[vizIndex];
+						if (!this.arraysEqual(curr.variables, newVars)) {
+							const updatedViz = {
+								...curr,
+								variables: [...newVars],
+								variablesHash: this.calculateVariablesHash(newVars),
+							};
+							this.visualizationConfig.splice(vizIndex, 1, reactive(updatedViz));
 
-    syncVariablesFromBuffer(buffer) {
-      try {
-        const latestByViz = new Map()
-        buffer.forEach(task => {
-          (task.data || []).forEach(item => {
-            const vizId = String(item.id)
-            latestByViz.set(vizId, Object.keys(item.data || {}))
-          })
-        })
-        latestByViz.forEach((newVars, vizId) => {
-          const vizIndex = this.visualizationConfig.findIndex(v => v.id === vizId)
-          if (vizIndex !== -1) {
-            const curr = this.visualizationConfig[vizIndex]
-            if (!this.arraysEqual(curr.variables, newVars)) {
-              const updatedViz = {
-                ...curr,
-                variables: [...newVars],
-                variablesHash: this.calculateVariablesHash(newVars)
-              }
-              this.visualizationConfig.splice(vizIndex, 1, reactive(updatedViz))
+							const currentState = this.variableStates[vizId] || {};
+							this.variableStates[vizId] = newVars.reduce((acc, name) => {
+								acc[name] = name in currentState ? currentState[name] : true;
+								return acc;
+							}, {});
+						}
+					}
+				});
+			} catch (e) {
+				// no-op
+			}
+		},
+	},
 
-              const currentState = this.variableStates[vizId] || {}
-              this.variableStates[vizId] = newVars.reduce((acc, name) => {
-                acc[name] = name in currentState ? currentState[name] : true
-                return acc
-              }, {})
-            }
-          }
-        })
-      } catch (e) {
-        // no-op
-      }
-    },
-  },
-
-  beforeUnmount() {
-    emitter.off('force-update-charts')
-  }
-}
+	beforeUnmount() {
+		emitter.off('force-update-charts');
+	},
+};
 </script>
 
 <style scoped>
 .home-container {
-  overflow: hidden;
-  padding: 16px;
+	overflow: hidden;
+	padding: 16px;
 }
 
 .viz-controls-row {
-  margin-top: 20px;
+	margin-top: 20px;
 }
 
 .viz-controls-panel {
-  background: var(--el-bg-color);
-  border-radius: 4px;
-  padding: 15px;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, .1);
+	background: var(--el-bg-color);
+	border-radius: 4px;
+	padding: 15px;
+	box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
 }
 
 .control-group {
-  margin-bottom: 8px;
+	margin-bottom: 8px;
 }
 
 .control-group h4 {
-  margin-bottom: 10px;
-  color: var(--el-text-color-primary);
+	margin-bottom: 10px;
+	color: var(--el-text-color-primary);
 }
 
 .module-checkbox {
-  margin-right: 20px;
-  margin-bottom: 8px;
+	margin-right: 20px;
+	margin-bottom: 8px;
 }
 
 .viz-module {
-  height: 500px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  margin-top: 15px;
-  transition: all 0.3s ease;
+	height: 500px;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	margin-top: 15px;
+	transition: all 0.3s ease;
 }
 
 .viz-module-header {
-  padding: 12px;
-  border-bottom: 1px solid var(--el-border-color-light);
+	padding: 12px;
+	border-bottom: 1px solid var(--el-border-color-light);
 }
 
 .viz-title {
-  margin: 0 0 8px 0;
-  font-size: 1.1em;
-  color: var(--el-text-color-primary);
-  text-align: center;
+	margin: 0 0 8px 0;
+	font-size: 1.1em;
+	color: var(--el-text-color-primary);
+	text-align: center;
 }
 
 .home-card-item {
-  background: var(--el-bg-color);
-  border-radius: 4px;
-  border: 1px solid var(--el-border-color-light);
+	background: var(--el-bg-color);
+	border-radius: 4px;
+	border: 1px solid var(--el-border-color-light);
 }
 
 .skeleton-loading {
-  padding: 20px;
+	padding: 20px;
 }
 
 .skeleton-item {
-  height: 200px;
-  background: #f5f7fa;
-  border-radius: 4px;
-  margin-bottom: 15px;
-  position: relative;
-  overflow: hidden;
+	height: 200px;
+	background: #f5f7fa;
+	border-radius: 4px;
+	margin-bottom: 15px;
+	position: relative;
+	overflow: hidden;
 }
 
 .skeleton-item::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(
-      90deg,
-      transparent,
-      rgba(255, 255, 255, 0.6),
-      transparent
-  );
-  animation: skeleton-flash 1.5s infinite;
+	content: '';
+	position: absolute;
+	top: 0;
+	left: -100%;
+	width: 100%;
+	height: 100%;
+	background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.6), transparent);
+	animation: skeleton-flash 1.5s infinite;
 }
 
 @keyframes skeleton-flash {
-  100% {
-    left: 100%;
-  }
+	100% {
+		left: 100%;
+	}
 }
 </style>

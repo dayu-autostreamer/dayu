@@ -225,8 +225,8 @@ class Controller:
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
-            TimeEstimator.erase_dag_ts(cur_task, is_end=False, sub_tag=f'transmit')
-            TimeEstimator.erase_dag_ts(cur_task, is_end=True, sub_tag=f'transmit')
+            TimeEstimator.erase_dag_ts(cur_task, is_end=False, sub_tag='transmit')
+            TimeEstimator.erase_dag_ts(cur_task, is_end=True, sub_tag='transmit')
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'erase transmit time of stage {cur_task.get_flow_index()}')
         except Exception as e:
@@ -238,7 +238,7 @@ class Controller:
         assert cur_task, 'Current task of controller is NOT set!'
 
         try:
-            TimeEstimator.erase_dag_ts(cur_task, is_end=False, sub_tag=f'execute')
+            TimeEstimator.erase_dag_ts(cur_task, is_end=False, sub_tag='execute')
             LOGGER.info(f'[Source {cur_task.get_source_id()} / Task {cur_task.get_task_id()}] '
                         f'erase execute time of stage {cur_task.get_flow_index()}')
         except Exception as e:

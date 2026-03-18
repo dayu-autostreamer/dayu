@@ -35,10 +35,20 @@ export function formatDate(date: Date, format: string): string {
 	};
 
 	if (/(W+)/.test(format)) {
-		format = format.replace(RegExp.$1, RegExp.$1.length > 1 ? (RegExp.$1.length > 2 ? `星期${weekLabels[weekday]}` : `周${weekLabels[weekday]}`) : weekLabels[weekday]);
+		format = format.replace(
+			RegExp.$1,
+			RegExp.$1.length > 1
+				? RegExp.$1.length > 2
+					? `星期${weekLabels[weekday]}`
+					: `周${weekLabels[weekday]}`
+				: weekLabels[weekday]
+		);
 	}
 	if (/(Q+)/.test(format)) {
-		format = format.replace(RegExp.$1, RegExp.$1.length === 4 ? `第${quarterLabels[quarterNumber]}季度` : quarterLabels[quarterNumber]);
+		format = format.replace(
+			RegExp.$1,
+			RegExp.$1.length === 4 ? `第${quarterLabels[quarterNumber]}季度` : quarterLabels[quarterNumber]
+		);
 	}
 	if (/(Z+)/.test(format)) {
 		format = format.replace(RegExp.$1, RegExp.$1.length === 3 ? `第${weekNumber}周` : weekNumber);
@@ -47,7 +57,10 @@ export function formatDate(date: Date, format: string): string {
 	for (const key in tokens) {
 		const match = new RegExp(`(${key})`).exec(format);
 		if (match) {
-			format = format.replace(match[1], RegExp.$1.length === 1 ? tokens[key] : tokens[key].padStart(RegExp.$1.length, '0'));
+			format = format.replace(
+				match[1],
+				RegExp.$1.length === 1 ? tokens[key] : tokens[key].padStart(RegExp.$1.length, '0')
+			);
 		}
 	}
 

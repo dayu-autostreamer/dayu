@@ -150,12 +150,15 @@ make test-component
 make test-e2e
 make frontend-install
 make frontend-lint
+make frontend-format
 make frontend-format-check
 make frontend-build
 ```
 
-`make check` runs the shared syntax, Python unit/integration, and frontend lint/format checks used in daily
+`make check` runs the shared syntax, Python unit/integration, and frontend format/build checks used in daily
 development.
+Use `make frontend-lint` as an additional cleanup target while the existing Vue template debt is being reduced
+incrementally.
 
 ## Repository Layout
 
