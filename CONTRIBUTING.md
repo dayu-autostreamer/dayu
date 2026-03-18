@@ -82,25 +82,26 @@ Or use the provided shortcut:
 make install-python-dev
 ```
 
-Before opening a PR, please run the Python test suite locally:
+Before opening a PR, please run the Python checks locally:
 
 ```bash
+make lint-python
 make python-syntax
+make test-python
 make test-unit-integration
 make test-component
 make test-e2e
+make coverage-python
 ```
 
-For frontend changes, also run the basic quality checks:
+For frontend changes, also run the frontend checks:
 
 ```bash
 make frontend-install
-make frontend-lint
-make frontend-format-check
-make frontend-build
+make frontend-check
 ```
 
-`make check` combines the most common Python and frontend verification steps for day-to-day development.
+`make ci-python` mirrors the Python CI gates, and `make check` combines the common Python and frontend verification steps for day-to-day development.
 
 
 ## Code Review

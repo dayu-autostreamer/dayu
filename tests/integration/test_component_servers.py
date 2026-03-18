@@ -291,3 +291,60 @@ def test_distributor_server_persists_records_and_queries_incrementally(monkeypat
         assert exported_tasks[0]["task_id"] == 0
         assert client.get("/all_result").json()["size"] == 1
         assert client.get("/is_database_empty").json() is False
+
+
+@pytest.mark.integration
+def test_controller_server_accepts_health_submit_and_return_contracts(mounted_runtime, monkeypatch, tmp_path):
+    controller_server_module = importlib.import_module("core.controller.controller_server")
+    monkeypatch.chdir(tmp_path)
+
+    submitted_tasks = []
+    returned_tasks = []
+    transmit_records = []
+    execute_records = []
+
+    class FakeController:
+        def check_processor_health(self):
+            return True
+
+        @staticmethod
+        def record_transmit_ts(task, is_end=False):
+            transmit_records.append((task.get_task_id(), is_end, task.get_file_path()))
+
+        @staticmethod
+        def record_execute_ts(task, is_end=False):
+            execute_records.append((task.get_task_id(), is_end))
+
+        def submit_task(self, task):
+            submitted_tasks.append(task)
+
+        def process_return(self, task):
+            returned_tasks.append(task)
+
+    monkeypatch.setattr(controller_server_module, "Controller", FakeController)
+
+    server = controller_server_module.ControllerServer()
+    task = build_task(file_path="controller-input.bin")
+
+    with TestClient(server.app) as client:
+        health_response = client.post("/check")
+        assert health_response.status_code == 200
+        assert health_response.json() == {"status": "ok"}
+
+        submit_response = client.post(
+            "/submit_task",
+            data={"data": task.serialize()},
+            files={"file": ("controller-input.bin", b"controller-payload", "application/octet-stream")},
+        )
+        assert submit_response.status_code == 200
+        assert submitted_tasks and submitted_tasks[0].get_task_id() == task.get_task_id()
+        assert transmit_records == [(task.get_task_id(), True, "controller-input.bin")]
+
+        temp_file_path = controller_server_module.Context.get_temporary_file_path("controller-input.bin")
+        with open(temp_file_path, "rb") as fh:
+            assert fh.read() == b"controller-payload"
+
+        return_response = client.post("/process_return_task", data={"data": task.serialize()})
+        assert return_response.status_code == 200
+        assert returned_tasks and returned_tasks[0].get_task_id() == task.get_task_id()
+        assert execute_records == [(task.get_task_id(), True)]

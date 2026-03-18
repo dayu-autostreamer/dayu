@@ -7,7 +7,7 @@ IMAGE_TAG ?= $(or $(TAG),v1.3)
 PYTHON ?= python3
 NPM ?= npm
 FRONTEND_DIR ?= frontend
-PYTHONPATH_VALUE := $(CURDIR)/backend:$(CURDIR)/dependency
+PYTHONPATH_VALUE := $(CURDIR)/backend:$(CURDIR)/dependency:$(CURDIR)/datasource
 PYTHONPYCACHEPREFIX ?= $(CURDIR)/.cache/pycache
 
 NOCACHE ?= $(or $(NO_CACHE),0)
@@ -27,14 +27,19 @@ define HELP_INFO
 #
 # Quality:
 #   make install-python-dev
+#   make lint-python
 #   make python-syntax
+#   make test-python
 #   make test-unit-integration
 #   make test-component
 #   make test-e2e
+#   make coverage-python
+#   make ci-python
 #   make frontend-install
 #   make frontend-lint
 #   make frontend-format-check
 #   make frontend-build
+#   make frontend-check
 #   make check
 #
 # Examples:
@@ -43,7 +48,7 @@ define HELP_INFO
 #   make frontend-lint
 endef
 
-.PHONY: help build all install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e frontend-install frontend-lint frontend-format-check frontend-build check
+.PHONY: help build all install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python coverage-python ci-python frontend-install frontend-lint frontend-format-check frontend-build frontend-check check
 
 help:
 	@echo "$${HELP_INFO}"
@@ -73,7 +78,7 @@ lint-python:
 
 python-syntax:
 	PYTHONPYCACHEPREFIX="$(PYTHONPYCACHEPREFIX)" PYTHONPATH="$(PYTHONPATH_VALUE)" \
-		$(PYTHON) -m compileall -q backend datasource components tools tests
+		$(PYTHON) -m compileall -q backend datasource components tools tests dependency/core
 
 test-unit-integration:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m "unit or integration"
@@ -83,6 +88,22 @@ test-component:
 
 test-e2e:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m e2e
+
+test-python:
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest
+
+coverage-python:
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest -m "unit or integration" \
+		--cov=backend \
+		--cov=datasource \
+		--cov=dependency/core/controller \
+		--cov=dependency/core/lib \
+		--cov=tools \
+		--cov-branch \
+		--cov-report=term-missing \
+		--cov-report=xml
+
+ci-python: lint-python python-syntax test-python
 
 frontend-install:
 	cd $(FRONTEND_DIR) && $(NPM) install --legacy-peer-deps --no-audit --no-fund --no-package-lock
@@ -96,4 +117,6 @@ frontend-format-check:
 frontend-build:
 	cd $(FRONTEND_DIR) && $(NPM) run build
 
-check: python-syntax test-unit-integration frontend-lint frontend-format-check
+frontend-check: frontend-lint frontend-format-check frontend-build
+
+check: ci-python frontend-check

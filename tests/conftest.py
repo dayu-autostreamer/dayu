@@ -8,8 +8,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = REPO_ROOT / "backend"
 DEPENDENCY_DIR = REPO_ROOT / "dependency"
+DATASOURCE_DIR = REPO_ROOT / "datasource"
 
-for path in (str(BACKEND_DIR), str(DEPENDENCY_DIR), str(REPO_ROOT)):
+for path in (str(BACKEND_DIR), str(DEPENDENCY_DIR), str(DATASOURCE_DIR), str(REPO_ROOT)):
     if path not in sys.path:
         sys.path.insert(0, path)
 

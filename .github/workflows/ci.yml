@@ -30,6 +30,30 @@ jobs:
       - name: Lint GitHub Actions workflows
         run: ./actionlint -color
 
+  python-lint:
+    name: Python lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install Python development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run Python lint
+        run: make lint-python
+
   python-syntax:
     name: Python syntax check
     runs-on: ubuntu-latest
@@ -45,7 +69,7 @@ jobs:
           python-version: "3.10"
 
       - name: Compile Python sources
-        run: python -m compileall -q backend datasource components dependency/core
+        run: make python-syntax
 
   python-tests:
     name: Python tests
@@ -54,7 +78,7 @@ jobs:
     env:
       DELETE_TEMP_FILES: "False"
       LOG_LEVEL: "INFO"
-      PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/dependency
+      PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/dependency:${{ github.workspace }}/datasource
 
     steps:
       - name: Checkout repository
@@ -65,28 +89,15 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements.txt
-            dependency/core/lib/requirements.txt
-            dependency/core/controller/requirements.txt
-            tests/requirements.txt
+          cache-dependency-path: requirements-dev.txt
 
       - name: Install Python test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install \
-            -r dependency/core/lib/requirements.txt \
-            -r dependency/core/controller/requirements.txt \
-            -r backend/requirements.txt \
-            -r tests/requirements.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Run unit and integration tests
-        run: |
-          python -m pytest -m "unit or integration" \
-            --cov=backend \
-            --cov=dependency/core/lib \
-            --cov-report=term-missing \
-            --cov-report=xml
+        run: make coverage-python
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -102,7 +113,7 @@ jobs:
     env:
       DELETE_TEMP_FILES: "False"
       LOG_LEVEL: "INFO"
-      PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/dependency
+      PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/dependency:${{ github.workspace }}/datasource
 
     steps:
       - name: Checkout repository
@@ -113,23 +124,15 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements.txt
-            dependency/core/lib/requirements.txt
-            dependency/core/controller/requirements.txt
-            tests/requirements.txt
+          cache-dependency-path: requirements-dev.txt
 
       - name: Install Python test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install \
-            -r dependency/core/lib/requirements.txt \
-            -r dependency/core/controller/requirements.txt \
-            -r backend/requirements.txt \
-            -r tests/requirements.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Run e2e smoke tests
-        run: python -m pytest -m e2e -q
+        run: make test-e2e
 
   python-component-tests:
     name: Python component tests
@@ -138,7 +141,7 @@ jobs:
     env:
       DELETE_TEMP_FILES: "False"
       LOG_LEVEL: "INFO"
-      PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/dependency
+      PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/dependency:${{ github.workspace }}/datasource
 
     steps:
       - name: Checkout repository
@@ -149,31 +152,20 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements.txt
-            dependency/core/lib/requirements.txt
-            dependency/core/controller/requirements.txt
-            tests/requirements.txt
+          cache-dependency-path: requirements-dev.txt
 
       - name: Install Python test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install \
-            -r dependency/core/lib/requirements.txt \
-            -r dependency/core/controller/requirements.txt \
-            -r backend/requirements.txt \
-            -r tests/requirements.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Run component interaction tests
-        run: python -m pytest -m component -q
+        run: make test-component
 
-  frontend-build:
-    name: Frontend build
+  frontend-checks:
+    name: Frontend checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: frontend
     env:
       CI: "true"
       VITE_BACKEND_ADDRESS: "http://127.0.0.1:8000"
@@ -192,7 +184,7 @@ jobs:
           node-version: "20"
 
       - name: Install frontend dependencies
-        run: npm install --legacy-peer-deps --no-audit --no-fund --no-package-lock
+        run: make frontend-install
 
-      - name: Build frontend
-        run: npm run build
+      - name: Run frontend checks
+        run: make frontend-check
