@@ -105,6 +105,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
+          python -m pip install -r .github/requirements/torch-cpu.txt
 
       - name: Run unit and integration tests
         run: make test-unit-integration
@@ -132,6 +133,7 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements-dev.txt
+            .github/requirements/torch-cpu.txt
             backend/requirements.txt
             dependency/core/lib/requirements.txt
             dependency/core/controller/requirements.txt
@@ -141,6 +143,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
+          python -m pip install -r .github/requirements/torch-cpu.txt
 
       - name: Run full Python suite with coverage
         run: make coverage-python

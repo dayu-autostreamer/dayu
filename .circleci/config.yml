@@ -40,6 +40,23 @@ commands:
           paths:
             - ~/.cache/pip
 
+  install-python-test-deps:
+    steps:
+      - restore_cache:
+          keys:
+            - v1-pip-tests-{{ arch }}-{{ checksum "requirements-dev.txt" }}-{{ checksum ".github/requirements/torch-cpu.txt" }}
+            - v1-pip-tests-{{ arch }}-
+      - run:
+          name: Install Python test dependencies
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements-dev.txt
+            python -m pip install -r .github/requirements/torch-cpu.txt
+      - save_cache:
+          key: v1-pip-tests-{{ arch }}-{{ checksum "requirements-dev.txt" }}-{{ checksum ".github/requirements/torch-cpu.txt" }}
+          paths:
+            - ~/.cache/pip
+
   install-frontend-deps:
     steps:
       - restore_cache:
@@ -76,7 +93,7 @@ jobs:
     executor: python-executor
     steps:
       - checkout
-      - install-python-deps
+      - install-python-test-deps
       - run:
           name: Run unit and integration tests with coverage
           command: |
