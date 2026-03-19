@@ -80,6 +80,39 @@ jobs:
     name: Python tests
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      DELETE_TEMP_FILES: "False"
+      LOG_LEVEL: "INFO"
+      PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/dependency:${{ github.workspace }}/datasource
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            backend/requirements.txt
+            dependency/core/lib/requirements.txt
+            dependency/core/controller/requirements.txt
+            tests/requirements.txt
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run unit and integration tests
+        run: make test-unit-integration
+
+  python-coverage:
+    name: Python coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -109,14 +142,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Run unit and integration tests
+      - name: Run full Python suite with coverage
         run: make coverage-python
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           files: coverage.xml
-          flags: unit-integration
+          flags: full-suite
           name: github-actions-python
           use_oidc: true
           fail_ci_if_error: false

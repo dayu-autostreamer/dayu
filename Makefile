@@ -36,6 +36,7 @@ define HELP_INFO
 #   make test-component
 #   make test-e2e
 #   make coverage-python
+#   make coverage-python-unit-integration
 #   make ci-python
 #   make frontend-install
 #   make frontend-lint
@@ -52,7 +53,7 @@ define HELP_INFO
 #   make frontend-format
 endef
 
-.PHONY: help build all install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python coverage-python ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-build frontend-check check
+.PHONY: help build all install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-build frontend-check check
 
 help:
 	@echo "$${HELP_INFO}"
@@ -109,6 +110,19 @@ test-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest $(PYTEST_ARGS)
 
 coverage-python:
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
+		tests \
+		$(PYTEST_ARGS) \
+		--cov=backend \
+		--cov=datasource \
+		--cov=dependency/core/controller \
+		--cov=dependency/core/lib \
+		--cov=tools \
+		--cov-branch \
+		--cov-report=term-missing \
+		--cov-report=xml:$(COVERAGE_XML)
+
+coverage-python-unit-integration:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
 		tests/unit tests/integration \
 		-m "unit or integration" \

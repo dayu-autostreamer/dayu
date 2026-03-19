@@ -94,6 +94,13 @@ make test-e2e
 make coverage-python
 ```
 
+The Python test suite is organized as a small testing pyramid:
+
+* `make test-unit-integration` validates pure logic, backend API contracts, datasource adapters, and shared runtime helpers.
+* `make test-component` exercises cross-component flows such as `generator -> scheduler -> controller -> processor -> distributor`.
+* `make test-e2e` keeps a template-driven deployment smoke test for the main Dayu orchestration path.
+* `make coverage-python` runs the full Python suite and produces the `coverage.xml` artifact uploaded by hosted CI.
+
 For frontend changes, also run the frontend checks:
 
 ```bash

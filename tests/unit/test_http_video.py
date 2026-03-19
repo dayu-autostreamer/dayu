@@ -145,3 +145,37 @@ def test_http_video_respects_explicit_ground_truth_offsets(monkeypatch, tmp_path
     assert decode_payload(response) == [100, 101, 200, 201]
     assert len(compressed_batches) == 1
     assert_batch_close(compressed_batches[0], [50, 60, 150, 160])
+
+
+@pytest.mark.unit
+def test_http_video_returns_empty_when_player_has_ended(monkeypatch):
+    http_video_module = importlib.import_module("http_video")
+
+    class EndedPlayer:
+        is_end = True
+
+    monkeypatch.setattr(http_video_module, "VideoDatasetPlayer", lambda root, mode: EndedPlayer())
+
+    source = http_video_module.VideoSource("/tmp/http_video", "non-cycle")
+    response = source.get_source_data(build_request(buffer_size=2))
+
+    assert response == []
+
+
+@pytest.mark.unit
+def test_http_video_returns_empty_json_when_no_frames_are_available(monkeypatch, tmp_path):
+    http_video_module = importlib.import_module("http_video")
+    configure_algorithms(monkeypatch, http_video_module, tmp_path)
+
+    class EmptyPlayer:
+        is_end = False
+
+        def read_frame(self):
+            return None, None
+
+    monkeypatch.setattr(http_video_module, "VideoDatasetPlayer", lambda root, mode: EmptyPlayer())
+
+    source = http_video_module.VideoSource("/tmp/http_video", "non-cycle")
+    response = source.get_source_data(build_request(buffer_size=2))
+
+    assert decode_payload(response) == []
