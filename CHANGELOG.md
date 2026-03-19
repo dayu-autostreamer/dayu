@@ -13,6 +13,7 @@
 - Update log export mode to support large logs in multi-stream scenarios (`backend`/`distributor`).
 - Change storage mode of http video datasource from video frame to video to avoid disk occupation (`datasource`).
 - Reconstruct the dataset format for datasource to support more flexible video data organization and processing (`datasource`).
+  - Change generator selection scope to optional for node set or all edge nodes (`backend`/`scheduler`).
 
 ---
 
