@@ -28,6 +28,7 @@ def test_fixed_selection_policy_can_select_from_all_edge_nodes_scope():
 
 @pytest.mark.unit
 def test_physical_topology_accepts_source_device_outside_processing_node_set(monkeypatch):
+    pytest.importorskip("torch", reason="Hedger topology tests require torch in the test environment")
     module = importlib.import_module("core.lib.algorithms.shared.hedger.hedger_config")
     monkeypatch.setattr(module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-master"))
 
@@ -40,6 +41,7 @@ def test_physical_topology_accepts_source_device_outside_processing_node_set(mon
 
 @pytest.mark.unit
 def test_hedger_initial_deployment_policy_returns_processing_plan_when_source_is_external(monkeypatch):
+    pytest.importorskip("torch", reason="Hedger policy tests require torch in the test environment")
     module = importlib.import_module(
         "core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy"
     )

@@ -27,7 +27,7 @@ pod-template:
         {
           'policy':{
             'pedestrian-detection':['edge5'],
-            'exposure-identification':['edgexn11','edgexn12'], 
+            'exposure-identification':['edgexn11','edgexn12'],
             'vehicle-detection':['edge5'],
             'category-identification':['edgexn8','edgexn11'],
             'license-plate-recognition':['edgexn11','edgexn12']
@@ -40,7 +40,7 @@ pod-template:
         {
           'policy':{
             'pedestrian-detection':['edge5'],
-            'exposure-identification':['edgexn11','edgexn12'], 
+            'exposure-identification':['edgexn11','edgexn12'],
             'vehicle-detection':['edge5'],
             'category-identification':['edgexn8','edgexn11'],
             'license-plate-recognition':['edgexn11','edgexn12']
@@ -59,7 +59,7 @@ pod-template:
           },
           'offloading':{
             'pedestrian-detection':'edge5',
-            'exposure-identification':'edgexn11', 
+            'exposure-identification':'edgexn11',
             'vehicle-detection':'edge5',
             'category-identification':'edgexn8',
             'license-plate-recognition':'edgexn12'
