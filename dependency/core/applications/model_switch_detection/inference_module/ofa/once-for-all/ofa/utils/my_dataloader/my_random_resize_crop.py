@@ -9,13 +9,21 @@ import torchvision.transforms as transforms
 
 __all__ = ["MyRandomResizedCrop", "MyResizeRandomCrop", "MyResize"]
 
+_pil_resampling = getattr(Image, "Resampling", Image)
+_pil_nearest = getattr(_pil_resampling, "NEAREST", Image.NEAREST)
+_pil_bilinear = getattr(_pil_resampling, "BILINEAR", Image.BILINEAR)
+_pil_bicubic = getattr(_pil_resampling, "BICUBIC", Image.BICUBIC)
+_pil_lanczos = getattr(_pil_resampling, "LANCZOS", Image.LANCZOS)
+_pil_hamming = getattr(_pil_resampling, "HAMMING", Image.HAMMING)
+_pil_box = getattr(_pil_resampling, "BOX", Image.BOX)
+
 _pil_interpolation_to_str = {
-    Image.NEAREST: "PIL.Image.NEAREST",
-    Image.BILINEAR: "PIL.Image.BILINEAR",
-    Image.BICUBIC: "PIL.Image.BICUBIC",
-    Image.LANCZOS: "PIL.Image.LANCZOS",
-    Image.HAMMING: "PIL.Image.HAMMING",
-    Image.BOX: "PIL.Image.BOX",
+    _pil_nearest: "PIL.Image.NEAREST",
+    _pil_bilinear: "PIL.Image.BILINEAR",
+    _pil_bicubic: "PIL.Image.BICUBIC",
+    _pil_lanczos: "PIL.Image.LANCZOS",
+    _pil_hamming: "PIL.Image.HAMMING",
+    _pil_box: "PIL.Image.BOX",
 }
 
 
@@ -35,7 +43,7 @@ class MyRandomResizedCrop(transforms.RandomResizedCrop):
         size,
         scale=(0.08, 1.0),
         ratio=(3.0 / 4.0, 4.0 / 3.0),
-        interpolation=Image.BILINEAR,
+        interpolation=_pil_bilinear,
     ):
         if not isinstance(size, int):
             size = size[0]
@@ -98,7 +106,7 @@ class MyRandomResizedCrop(transforms.RandomResizedCrop):
 class MyResizeRandomCrop(object):
     def __init__(
         self,
-        interpolation=Image.BILINEAR,
+        interpolation=_pil_bilinear,
         use_padding=False,
         pad_if_needed=False,
         fill=0,
@@ -147,7 +155,7 @@ class MyResizeRandomCrop(object):
 
 
 class MyResize(object):
-    def __init__(self, interpolation=Image.BILINEAR):
+    def __init__(self, interpolation=_pil_bilinear):
         self.interpolation = interpolation
 
     def __call__(self, img):

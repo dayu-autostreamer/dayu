@@ -134,4 +134,4 @@ class Context:
             instance = globals()[class_name](**instance_params)
             return instance
         else:
-            raise ValueError("Class '{class_name}' is not defined or imported.")
+            raise ValueError(f"Class '{class_name}' is not defined or imported.")

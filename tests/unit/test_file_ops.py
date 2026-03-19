@@ -1,4 +1,5 @@
 import importlib
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -144,3 +145,48 @@ def test_file_cleaner_supports_timestamp_conversion_and_thread_lifecycle(monkeyp
     assert numeric_ts == 12.5
     with pytest.raises(TypeError):
         file_ops_module.FileCleaner._to_timestamp("invalid")
+
+
+@pytest.mark.unit
+def test_file_ops_cover_directory_guards_temp_dirs_and_invalid_archives(monkeypatch, tmp_path):
+    file_ops_module = importlib.import_module("core.lib.common.file_ops")
+
+    existing_file = tmp_path / "existing.txt"
+    existing_file.write_text("payload", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="is a FILE"):
+        file_ops_module.FileOps.create_directory(str(existing_file))
+
+    removable_dir = tmp_path / "removable"
+    removable_dir.mkdir()
+    (removable_dir / "child.txt").write_text("child", encoding="utf-8")
+    file_ops_module.FileOps.remove_file(str(removable_dir))
+    assert not removable_dir.exists()
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    created_temp_dir = file_ops_module.FileOps.create_temp_directory("runtime-cache")
+    assert Path(created_temp_dir).is_dir()
+
+    file_ops_module.FileOps.remove_file(str(tmp_path / "missing.bin"))
+
+    with pytest.raises(ValueError, match="Invalid zip file path"):
+        file_ops_module.FileOps.unzip_file(str(tmp_path / "missing.txt"), str(tmp_path / "out"))
+
+
+@pytest.mark.unit
+def test_file_cleaner_logs_missing_and_non_directory_targets(monkeypatch, tmp_path):
+    file_ops_module = importlib.import_module("core.lib.common.file_ops")
+    warnings = []
+
+    monkeypatch.setattr(file_ops_module.LOGGER, "warning", lambda message: warnings.append(message))
+
+    missing_cleaner = file_ops_module.FileCleaner(tmp_path / "missing-folder", ttl_seconds=1)
+    missing_cleaner._clean_once()
+
+    plain_file = tmp_path / "plain.txt"
+    plain_file.write_text("payload", encoding="utf-8")
+    file_cleaner = file_ops_module.FileCleaner(plain_file, ttl_seconds=1)
+    file_cleaner._clean_once()
+
+    assert any("Folder not found" in message for message in warnings)
+    assert any("Not a directory" in message for message in warnings)

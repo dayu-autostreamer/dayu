@@ -130,7 +130,7 @@ class Task:
     @staticmethod
     def extract_dag_from_pipeline_deployment(pipeline_deployment: list):
         dag_dict = {}
-        for service in pipeline_deployment[:-1]:
+        for service in pipeline_deployment:
             dag_dict[service['service_name']] = {
                 'service': service,
                 'next_nodes': [],
@@ -325,7 +325,7 @@ class Task:
         tag_prefix = NameMaintainer.get_time_ticket_tag_prefix(self)
         if f'{tag_prefix}:total_start_time' not in self.__tmp_data:
             raise ValueError(f'Timestamp of task starting lacks: "{tag_prefix}:total_start_time"')
-        if f'{tag_prefix}:total_start_time' not in self.__tmp_data:
+        if f'{tag_prefix}:total_end_time' not in self.__tmp_data:
             raise ValueError(f'Timestamp of task ending lacks: "{tag_prefix}:total_end_time"')
 
         return (self.__tmp_data[f'{tag_prefix}:total_end_time'] -

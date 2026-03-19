@@ -1,4 +1,4 @@
-opencv-python-headless
+opencv-python-headless==4.13.0.92
 
 # The following packages has been pre-installed in the  base image
 # opencv-python
