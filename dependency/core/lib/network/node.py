@@ -106,6 +106,11 @@ class NodeInfo:
 
         return list(edge_nodes)
 
+    @classmethod
+    def get_all_edge_nodes(cls) -> List[str]:
+        node_role = cls.get_node_info_role()
+        return sorted([hostname for hostname, role in node_role.items() if role == 'edge'])
+
     @staticmethod
     def get_local_device() -> str:
         device = Context.get_parameter('NODE_NAME')
