@@ -1,7 +1,7 @@
 colorlog
 requests==2.32.4
 kubernetes==20.11.0a1
-python-multipart==0.0.22
+python-multipart==0.0.20
 anyio>=3.7.1,<4
 typing_extensions>=4.8,<5
 fastapi==0.135.1
