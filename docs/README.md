@@ -10,6 +10,7 @@ This directory contains the repository-managed technical documentation for Dayu.
 | [`datasource/`](./datasource/README.md) | Datasource dataset layout, manifest schema, and runtime behavior for `http_video` and `rtsp_video`. |
 | [`hooks/`](./hooks/README.md) | Hook system overview, configuration model, lifecycle, and extension guidance. |
 | [`hooks/catalog.md`](./hooks/catalog.md) | Alias-by-alias catalog of registered hook implementations and their roles. |
+| [`testing/`](./testing/README.md) | Test pyramid, hook-focused coverage strategy, and recommended placement for new tests. |
 
 ## Scope
 
@@ -31,3 +32,4 @@ The hook documents cover the dynamic extension mechanism used across generator, 
 3. Read [`api/runtime-services.md`](./api/runtime-services.md) if you are modifying generator, scheduler, controller, processor, distributor, or datasource behavior.
 4. Read [`datasource/README.md`](./datasource/README.md) if you are changing datasource manifests, `http_video`, `rtsp_video`, or clip indexing behavior.
 5. Read [`hooks/README.md`](./hooks/README.md) and then [`hooks/catalog.md`](./hooks/catalog.md) if you are changing scheduling policies, generators, monitors, processors, or visualization plugins.
+6. Read [`testing/README.md`](./testing/README.md) if you are expanding coverage, adjusting CI test scopes, or adding new hooks and want to place tests consistently.

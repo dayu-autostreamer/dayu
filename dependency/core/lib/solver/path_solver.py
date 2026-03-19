@@ -169,10 +169,6 @@ class PathSolver:
             # Convert back the current distance
             current_dist = -current_dist
 
-            # Early exit if destination is reached
-            if current_node == dest:
-                break
-
             # Skip processed nodes with outdated distances
             if current_dist < distances[current_node]:
                 continue

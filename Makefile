@@ -11,6 +11,17 @@ PYTHONPATH_VALUE := $(CURDIR)/backend:$(CURDIR)/dependency:$(CURDIR)/datasource
 PYTHONPYCACHEPREFIX ?= $(CURDIR)/.cache/pycache
 PYTEST_ARGS ?=
 COVERAGE_XML ?= coverage.xml
+PYTHON_COVERAGE_PATHS := \
+	--cov=backend \
+	--cov=datasource \
+	--cov=dependency/core/controller \
+	--cov=dependency/core/distributor \
+	--cov=dependency/core/generator \
+	--cov=dependency/core/lib \
+	--cov=dependency/core/monitor \
+	--cov=dependency/core/processor \
+	--cov=dependency/core/scheduler \
+	--cov=tools
 
 NOCACHE ?= $(or $(NO_CACHE),0)
 BUILD_NO_CACHE_FLAG := $(if $(filter 1 true TRUE yes YES,$(NOCACHE)),--no-cache,)
@@ -113,11 +124,7 @@ coverage-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
 		tests \
 		$(PYTEST_ARGS) \
-		--cov=backend \
-		--cov=datasource \
-		--cov=dependency/core/controller \
-		--cov=dependency/core/lib \
-		--cov=tools \
+		$(PYTHON_COVERAGE_PATHS) \
 		--cov-branch \
 		--cov-report=term-missing \
 		--cov-report=xml:$(COVERAGE_XML)
@@ -127,11 +134,7 @@ coverage-python-unit-integration:
 		tests/unit tests/integration \
 		-m "unit or integration" \
 		$(PYTEST_ARGS) \
-		--cov=backend \
-		--cov=datasource \
-		--cov=dependency/core/controller \
-		--cov=dependency/core/lib \
-		--cov=tools \
+		$(PYTHON_COVERAGE_PATHS) \
 		--cov-branch \
 		--cov-report=term-missing \
 		--cov-report=xml:$(COVERAGE_XML)
