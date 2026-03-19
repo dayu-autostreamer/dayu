@@ -5,7 +5,7 @@ python-multipart==0.0.20
 anyio>=3.7.1,<4
 typing_extensions>=4.8,<5
 fastapi==0.124.4
-starlette==0.52.1
+starlette==0.44.0
 uvicorn==0.42.0
 gunicorn==25.1.0
 joblib
