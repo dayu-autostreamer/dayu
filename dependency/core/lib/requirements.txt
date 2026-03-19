@@ -10,5 +10,5 @@ uvicorn==0.33.0
 gunicorn==23.0.0
 joblib
 imagehash
-pillow==12.1.1
+pillow==10.4.0
 func_timeout
