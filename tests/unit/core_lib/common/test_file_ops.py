@@ -190,3 +190,112 @@ def test_file_cleaner_logs_missing_and_non_directory_targets(monkeypatch, tmp_pa
 
     assert any("Folder not found" in message for message in warnings)
     assert any("Not a directory" in message for message in warnings)
+
+
+@pytest.mark.unit
+def test_file_cleaner_requires_expiry_policy_and_handles_loop_failures(monkeypatch, tmp_path):
+    file_ops_module = importlib.import_module("core.lib.common.file_ops")
+
+    with pytest.raises(ValueError, match="At least one of 'ttl_seconds'"):
+        file_ops_module.FileCleaner(tmp_path, ttl_seconds=None, expiry_resolver=None)
+
+    warnings = []
+    exceptions = []
+    sleeps = []
+    cleaner = file_ops_module.FileCleaner(tmp_path, poll_seconds=0.25, ttl_seconds=1)
+
+    class DummyEvent:
+        def __init__(self):
+            self.polls = 0
+
+        def is_set(self):
+            self.polls += 1
+            return self.polls > 1
+
+        def wait(self, timeout):
+            return False
+
+    monkeypatch.setattr(cleaner, "_stop_event", DummyEvent())
+    monkeypatch.setattr(
+        cleaner,
+        "_clean_once",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    monkeypatch.setattr(file_ops_module.LOGGER, "warning", lambda message: warnings.append(message))
+    monkeypatch.setattr(file_ops_module.LOGGER, "exception", lambda exc: exceptions.append(str(exc)))
+    monkeypatch.setattr(file_ops_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    cleaner._run()
+
+    assert warnings == ["[FileCleaner] Unexpected error in cleaner loop, continue next round."]
+    assert exceptions == ["boom"]
+    assert sleeps == [0.25]
+
+
+@pytest.mark.unit
+def test_file_cleaner_supports_recursive_iteration_and_path_level_error_branches(monkeypatch, tmp_path):
+    file_ops_module = importlib.import_module("core.lib.common.file_ops")
+
+    nested_dir = tmp_path / "nested"
+    nested_dir.mkdir()
+    (tmp_path / "root.log").write_text("root", encoding="utf-8")
+    (nested_dir / "child.log").write_text("child", encoding="utf-8")
+
+    recursive_cleaner = file_ops_module.FileCleaner(tmp_path, ttl_seconds=1, recursive=True, pattern="*.log")
+    assert sorted(path.name for path in recursive_cleaner._iter_files(tmp_path)) == ["child.log", "root.log"]
+
+    warnings = []
+    exceptions = []
+    cleaner = file_ops_module.FileCleaner(tmp_path, ttl_seconds=1)
+
+    class FakePath:
+        def __init__(self, name, exc=None, is_file=True):
+            self.name = name
+            self.exc = exc
+            self._is_file = is_file
+
+        def is_file(self):
+            if self.exc == "missing":
+                raise FileNotFoundError
+            if self.exc == "permission":
+                raise PermissionError("denied")
+            if self.exc == "boom":
+                raise RuntimeError("boom")
+            return self._is_file
+
+        def match(self, pattern):
+            return True
+
+        def __str__(self):
+            return self.name
+
+    monkeypatch.setattr(
+        cleaner,
+        "_iter_files",
+        lambda folder: iter(
+            [
+                FakePath("missing.log", exc="missing"),
+                FakePath("deny.log", exc="permission"),
+                FakePath("broken.log", exc="boom"),
+                FakePath("folder", is_file=False),
+            ]
+        ),
+    )
+    monkeypatch.setattr(file_ops_module.LOGGER, "warning", lambda message: warnings.append(message))
+    monkeypatch.setattr(file_ops_module.LOGGER, "exception", lambda exc: exceptions.append(str(exc)))
+
+    cleaner._clean_once()
+
+    class BadPath:
+        def unlink(self, missing_ok=True):
+            raise OSError("unlink failed")
+
+        def __str__(self):
+            return "bad.log"
+
+    cleaner._safe_delete(BadPath())
+
+    assert any("Permission denied: deny.log" in message for message in warnings)
+    assert any("Error processing file: broken.log" in message for message in warnings)
+    assert any("Failed to delete: bad.log" in message for message in warnings)
+    assert exceptions == ["boom", "unlink failed"]

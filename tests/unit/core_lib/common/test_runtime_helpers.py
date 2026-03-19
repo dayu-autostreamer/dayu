@@ -308,6 +308,45 @@ def test_recorder_supports_csv_jsonl_and_append_validation(tmp_path):
 
 
 @pytest.mark.unit
+def test_recorder_supports_explicit_fieldnames_timestamps_and_repeated_flushes(monkeypatch, tmp_path):
+    csv_path = tmp_path / "timestamped.csv"
+    monkeypatch.setattr(record_module.time, "time", lambda: 123.456)
+
+    recorder = Recorder(
+        str(csv_path),
+        fmt="csv",
+        fieldnames=["step", "wall_time"],
+        add_timestamp=True,
+        flush_every=0,
+    )
+    recorder.log(step=1, ignored="value")
+    recorder.flush()
+    recorder.close()
+    recorder.flush()
+    recorder.close()
+
+    append_recorder = Recorder(
+        str(csv_path),
+        fmt="csv",
+        fieldnames=["step", "wall_time"],
+        overwrite=False,
+        add_timestamp=False,
+    )
+    append_recorder.log(step=2, wall_time=456.0, ignored="value")
+    append_recorder.close()
+
+    with csv_path.open("r", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows == [
+        {"step": "1", "wall_time": "123.456"},
+        {"step": "2", "wall_time": "456.0"},
+    ]
+
+    with pytest.raises(AssertionError, match="Unsupported format"):
+        Recorder(str(tmp_path / "broken.log"), fmt="tsv")
+
+
+@pytest.mark.unit
 def test_http_request_handles_success_redirects_and_failures(monkeypatch):
     class FakeResponse:
         def __init__(self, status_code, payload=None, content=b"text", url="http://redirect"):

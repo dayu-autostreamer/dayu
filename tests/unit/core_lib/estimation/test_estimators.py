@@ -189,3 +189,58 @@ def test_flops_estimator_prefers_model_info_and_falls_back_to_ptflops(monkeypatc
         pass
 
     assert FlopsEstimator(PlainModel(), (3, 32, 32)).compute_flops() == 24.0
+
+
+@pytest.mark.unit
+def test_overhead_estimator_handles_missing_logs_empty_files_and_lock_fallback(monkeypatch, tmp_path):
+    class FakeTimer:
+        def __init__(self, label=""):
+            self.label = label
+            self.start_time = None
+            self.end_time = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return None
+
+        def get_elapsed_time(self):
+            return 1.25
+
+    monkeypatch.setattr(overhead_module, "Timer", FakeTimer)
+    monkeypatch.setattr(
+        overhead_module.Context,
+        "get_file_path",
+        staticmethod(lambda relative_path: str(tmp_path / relative_path)),
+    )
+    monkeypatch.setattr(overhead_module.os, "fsync", lambda fd: None)
+
+    estimator = OverheadEstimator("processor", "metrics")
+    overhead_file = tmp_path / "metrics" / "processor_Overhead.txt"
+
+    overhead_file.unlink()
+    assert estimator.get_average_overhead() == 0.0
+
+    overhead_file.write_text("", encoding="utf-8")
+    estimator._ensure_file_initialized()
+    assert overhead_file.read_text(encoding="utf-8").startswith("# Overhead Log for processor")
+
+    monkeypatch.setattr(overhead_module, "fcntl", None)
+    with overhead_file.open("r", encoding="utf-8") as handle:
+        with estimator._lock_file_shared(handle):
+            pass
+    with overhead_file.open("a", encoding="utf-8") as handle:
+        with estimator._lock_file(handle):
+            handle.write("")
+
+    with overhead_file.open("a", encoding="utf-8") as handle:
+        handle.write("invalid-line\n")
+        handle.write("legacy-text\n")
+
+    estimator.write_overhead(1.25)
+
+    file_lines = overhead_file.read_text(encoding="utf-8").splitlines()
+    assert file_lines[-1].startswith("0,")
+    assert ",,," in file_lines[-1]
+    assert estimator.get_average_overhead() == 1.25

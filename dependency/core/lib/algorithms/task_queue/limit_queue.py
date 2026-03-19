@@ -24,10 +24,10 @@ class LimitQueue(BaseQueue, abc.ABC):
 
     def put(self, task: Task) -> None:
         with self.lock:
-            if self.size() > self.max_size:
+            if self.size() >= self.max_size:
                 for _ in range(self.size()//2):
                     self._queue.get()
-                self._queue.put(task)
+            self._queue.put(task)
 
     def size(self) -> int:
         return self._queue.qsize()

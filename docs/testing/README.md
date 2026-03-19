@@ -33,12 +33,25 @@ Mature infrastructure-style Python repositories usually keep the test pyramid, b
 
 | Layer | Recommended grouping | Why it fits Dayu |
 | --- | --- | --- |
-| Unit | `tests/unit/core_lib/` for runtime library contracts, `tests/unit/runtime_services/` for monitor/processor/controller service contracts, `tests/unit/` root for legacy or cross-cutting unit tests | Dayu has both reusable runtime helpers and long-lived service shells; splitting those two concerns keeps unit tests easier to navigate |
+| Unit | `tests/unit/core_lib/` for runtime library contracts, `tests/unit/runtime_services/` for monitor/processor/controller service contracts, `tests/unit/backend/` for control-plane orchestration contracts, `tests/unit/` root for legacy or cross-cutting unit tests | Dayu has both reusable runtime helpers and long-lived service shells; separating shared library, backend control plane, and runtime services keeps unit tests easier to navigate |
 | Integration | `tests/integration/` grouped by API or cross-module boundary | Backend/server contracts already map well to this |
 | Component | `tests/component/` grouped by pipeline slice or multi-service collaboration | Best place to prove generator/controller/processor interplay |
 | E2E smoke | `tests/e2e/` for template/catalog/render smoke checks only | Keeps end-to-end tests fast and low-maintenance |
 
 The important part is not a big-bang file move. New tests can start using `tests/unit/core_lib/` and `tests/unit/runtime_services/` immediately, and existing tests can migrate gradually. This is fully compatible with the current `pytest` discovery and therefore with both GitHub Actions and CircleCI, because CI only calls the existing `make test-unit-integration`, `make test-component`, `make test-e2e`, and `make coverage-python` targets.
+
+The `core_lib` unit tree should now mirror the production package layout more directly:
+
+| Production area | Test home |
+| --- | --- |
+| `dependency/core/lib/common/` | `tests/unit/core_lib/common/` |
+| `dependency/core/lib/content/` | `tests/unit/core_lib/content/` |
+| `dependency/core/lib/network/` | `tests/unit/core_lib/network/` |
+| `dependency/core/lib/estimation/` | `tests/unit/core_lib/estimation/` |
+| `dependency/core/lib/solver/` | `tests/unit/core_lib/solver/` |
+| `dependency/core/lib/algorithms/` | `tests/unit/core_lib/algorithms/` |
+
+This mirrors the structure used in mature infrastructure-style repositories: tests live near the conceptual ownership boundary of the code they protect, so contributors can add or find a unit test without scanning unrelated packages first.
 
 ## Hook-Centric Test Matrix
 
@@ -95,9 +108,18 @@ For service-layer code, the most useful unit tests are not “does FastAPI work�
 - `monitor` unit tests should prove how monitor workers are instantiated, scheduled, joined, and posted to the scheduler API.
 - `distributor` unit tests should prove persistence ordering, incremental reads, export behavior, and scheduler forwarding without needing a full pipeline run.
 - `generator_server` unit tests should prove context parameters are collected and passed into the selected generator hook correctly.
+- `scheduler` unit tests should prove startup-policy fallback, backup offloading, scenario/resource propagation, and resource-lock passthrough without depending on research agents.
+- package `__init__` tests should prove optional imports degrade gracefully when third-party dependencies are absent, while real core import errors still surface immediately.
 - `*_server` unit tests should prove queueing, background handling, serialization, timing hooks, and outbound request contracts.
 
 This is now reflected in `tests/unit/runtime_services/`, which gives Dayu a clearer place for service-shell behavior without pushing everything into slower integration tests.
+
+For backend code, mature open source projects also usually keep orchestration tests close to the control plane instead of mixing them into generic helper tests. Dayu can follow that pattern with `tests/unit/backend/`, where the important contracts are:
+
+- deployment state machines such as install, uninstall, and redeploy flows
+- polling loops such as result fetching and cycle deploy control
+- config validation, snapshot export, and state persistence helpers
+- backend-only failure handling that should not require component or end-to-end tests
 
 So the answer to “is everything outside `algorithms/` covered?” is now: almost all meaningful runtime logic is covered directly, but not literally every environment-specific branch is exhausted. The remaining light spots are mostly Kubernetes/live-environment failure paths and other code that is better protected by integration coverage than by brittle mocks.
 
