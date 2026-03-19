@@ -8,7 +8,7 @@ fastapi==0.124.4
 starlette==0.44.0
 uvicorn==0.33.0
 gunicorn==23.0.0
-joblib
+joblib==1.4.2
 imagehash
 pillow==10.4.0
 func_timeout
