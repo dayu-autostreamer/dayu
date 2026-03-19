@@ -46,6 +46,7 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements-dev.txt
+            .github/requirements/torch-cpu.txt
             backend/requirements.txt
             dependency/core/lib/requirements.txt
             dependency/core/controller/requirements.txt
