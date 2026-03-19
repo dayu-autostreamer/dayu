@@ -9,7 +9,8 @@ __all__ = ('FixedSelectionPolicy',)
 
 @ClassFactory.register(ClassType.SCH_SELECTION_POLICY, alias='fixed')
 class FixedSelectionPolicy(BaseSelectionPolicy, abc.ABC):
-    def __init__(self, system, agent_id, fixed_value=0, fixed_type="position"):
+    def __init__(self, system, agent_id, fixed_value=0, fixed_type="position", scope='node_set'):
+        super().__init__(system=system, agent_id=agent_id, scope=scope)
         self.fixed_value = fixed_value
         self.fixed_type = fixed_type
 
@@ -28,7 +29,7 @@ class FixedSelectionPolicy(BaseSelectionPolicy, abc.ABC):
             self.fixed_type = 'position'
 
     def __call__(self, info):
-        node_set = info['node_set']
+        node_set = self.get_candidate_node_set(info)
         source_id = info['source']['id']
         if not node_set:
             LOGGER.warning(f"[Source Node Selection] (source {source_id}) Node set is empty.")
@@ -37,18 +38,18 @@ class FixedSelectionPolicy(BaseSelectionPolicy, abc.ABC):
         if self.fixed_type == "position":
             if self.fixed_value < len(node_set):
                 LOGGER.info(f'[Source Node Selection] (source {source_id}) Select node {self.fixed_value} from '
-                            f'node set {node_set} (position:{self.fixed_value})).')
+                            f'candidate node set {node_set} (position:{self.fixed_value}, scope:{self.scope})).')
                 return node_set[self.fixed_value]
             else:
                 LOGGER.warning(f'[Source Node Selection] (source {source_id}) Position value {self.fixed_value} '
-                               f'is out of node_set range ({node_set}), select the first node {node_set[0]}.')
+                               f'is out of candidate node set range ({node_set}), select the first node {node_set[0]}.')
                 return node_set[0]
         elif self.fixed_type == "hostname":
             if self.fixed_value in node_set:
                 LOGGER.info(f'[Source Node Selection] (source {source_id}) Select node {self.fixed_value} from '
-                            f'node set {node_set} (hostname:{self.fixed_value})).')
+                            f'candidate node set {node_set} (hostname:{self.fixed_value}, scope:{self.scope})).')
                 return self.fixed_value
             else:
                 LOGGER.warning(f'[Source Node Selection] (source {source_id}) Hostname value {self.fixed_value} '
-                               f'is not in node_set ({node_set}), select the first node {node_set[0]}.')
+                               f'is not in candidate node set ({node_set}), select the first node {node_set[0]}.')
                 return node_set[0]

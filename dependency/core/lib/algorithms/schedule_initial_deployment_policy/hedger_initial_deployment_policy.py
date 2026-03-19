@@ -68,6 +68,4 @@ class HedgerInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
                 deploy_plan[service] = list(node_set)
 
         LOGGER.info(f'[Initial Deployment] (source {source_id}) Deploy policy: {deploy_plan}')
-
-
-
+        return deploy_plan

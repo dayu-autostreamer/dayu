@@ -462,6 +462,7 @@ class TemplateHelper:
 
     def request_source_selection_decision(self, source_deploy):
         scheduler_hostname = NodeInfo.get_cloud_node()
+        all_edge_nodes = NodeInfo.get_all_edge_nodes()
         PortInfo.force_refresh()
         scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
         scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
@@ -482,7 +483,12 @@ class TemplateHelper:
                     temp_node['service'] = {'service_name': key}
                     temp_node['next_nodes'] = dag[key]['succ']
                     DAG_ENV[key] = temp_node
-            params.append({"source": SOURCE_ENV, "node_set": NODE_SET_ENV, "dag": DAG_ENV})
+            params.append({
+                "source": SOURCE_ENV,
+                "node_set": NODE_SET_ENV,
+                "all_edge_nodes": all_edge_nodes,
+                "dag": DAG_ENV
+            })
 
         response = http_request(url=scheduler_address,
                                 method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODES,

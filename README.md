@@ -148,6 +148,7 @@ make python-syntax
 make test-unit-integration
 make test-component
 make test-e2e
+make coverage-python
 make frontend-install
 make frontend-lint
 make frontend-format
@@ -157,6 +158,8 @@ make frontend-build
 
 `make check` runs the shared syntax, Python unit/integration, and frontend format/build checks used in daily
 development.
+`make coverage-python` runs the full Python suite used for Codecov, while `make test-component` and `make test-e2e`
+cover the cross-component pipeline and template-driven smoke path separately.
 Use `make frontend-lint` as an additional cleanup target while the existing Vue template debt is being reduced
 incrementally.
 

@@ -23,6 +23,7 @@ pod-template:
     - name: SCH_SELECTION_POLICY_PARAMETERS
       value: >
         {
+          'scope': 'all_edge_nodes',
           'fixed_value': 'edgexn12',
           'fixed_type': 'hostname'
         }
@@ -77,4 +78,3 @@ port-open:
 file-mount:
   - pos: cloud
     path: 'scheduler/hedger/'
-
