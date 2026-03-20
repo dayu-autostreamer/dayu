@@ -1,4 +1,8 @@
 import importlib
+import importlib.util
+import math
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +11,34 @@ import pytest
 def build_service(name, service_type, node_port=None):
     ports = [] if node_port is None else [SimpleNamespace(node_port=node_port)]
     return SimpleNamespace(metadata=SimpleNamespace(name=name), spec=SimpleNamespace(type=service_type, ports=ports))
+
+
+PORT_MODULE_PATH = (
+    Path(__file__).resolve().parents[4]
+    / "dependency"
+    / "core"
+    / "lib"
+    / "network"
+    / "port.py"
+)
+
+
+def load_port_module(monkeypatch, package_name, parameters):
+    context_module = importlib.import_module("core.lib.common.context")
+    monkeypatch.setattr(
+        context_module.Context,
+        "get_parameter",
+        staticmethod(lambda key: parameters.get(key)),
+    )
+
+    spec = importlib.util.spec_from_file_location(package_name, PORT_MODULE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[package_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(package_name, None)
+    return module
 
 
 @pytest.fixture
@@ -135,3 +167,86 @@ def test_port_info_handles_refresh_failures_and_cache_state_helpers(port_info_mo
     port_info_module.PortInfo._warmup_blocking_if_needed()
 
     assert warmup_calls == ["refresh"]
+
+
+@pytest.mark.unit
+def test_port_info_import_time_configuration_uses_repo_relative_loading(monkeypatch):
+    ttl_module = load_port_module(
+        monkeypatch,
+        "dayu_test_port_info_ttl",
+        {
+            "NAMESPACE": "dayu",
+            "KUBE_SERVICE_LABEL_SELECTOR": "app=dayu",
+            "KUBE_CACHE_TTL": "7.5",
+            "KUBE_CACHE_WARMUP_TIMEOUT": "1.2",
+        },
+    )
+    assert ttl_module.PortInfo._namespace == "dayu"
+    assert ttl_module.PortInfo._service_label_selector == "app=dayu"
+    assert ttl_module.PortInfo._refresh_mode == "ttl"
+    assert ttl_module.PortInfo.CACHE_TTL == 7.5
+    assert ttl_module.PortInfo.WARMUP_TIMEOUT == 1.2
+
+    never_module = load_port_module(
+        monkeypatch,
+        "dayu_test_port_info_never",
+        {
+            "NAMESPACE": "dayu",
+            "KUBE_CACHE_TTL": None,
+            "KUBE_CACHE_WARMUP_TIMEOUT": None,
+        },
+    )
+    assert never_module.PortInfo._refresh_mode == "never"
+    assert math.isinf(never_module.PortInfo.CACHE_TTL)
+    assert never_module.PortInfo.WARMUP_TIMEOUT == 3.0
+
+    invalid_module = load_port_module(
+        monkeypatch,
+        "dayu_test_port_info_invalid",
+        {
+            "NAMESPACE": "dayu",
+            "KUBE_CACHE_TTL": "not-a-number",
+            "KUBE_CACHE_WARMUP_TIMEOUT": "2.0",
+        },
+    )
+    assert invalid_module.PortInfo._refresh_mode == "never"
+    assert math.isinf(invalid_module.PortInfo.CACHE_TTL)
+
+
+@pytest.mark.unit
+def test_port_info_api_loading_and_cache_management_cover_force_and_error_paths(port_info_module, monkeypatch):
+    load_calls = []
+    fake_api = object()
+
+    monkeypatch.setattr(
+        port_info_module.k8s.config,
+        "load_incluster_config",
+        lambda: (_ for _ in ()).throw(RuntimeError("no in-cluster config")),
+    )
+    monkeypatch.setattr(port_info_module.k8s.config, "load_kube_config", lambda: load_calls.append("kubeconfig"))
+    monkeypatch.setattr(port_info_module.k8s.client, "CoreV1Api", lambda: fake_api)
+
+    assert port_info_module.PortInfo._get_api() is fake_api
+    assert port_info_module.PortInfo._get_api() is fake_api
+    assert load_calls == ["kubeconfig"]
+
+    refresh_calls = []
+    monkeypatch.setattr(port_info_module.PortInfo, "_refresh_now", classmethod(lambda cls: refresh_calls.append("refresh")))
+    monkeypatch.setattr(port_info_module.PortInfo, "_refresh_mode", "never")
+    monkeypatch.setattr(port_info_module.PortInfo, "_nodeport_services_cache", {"processor-face-edgex1-0": 31000})
+
+    port_info_module.PortInfo._refresh_cache_if_needed()
+    port_info_module.PortInfo._refresh_cache_if_needed(force=True)
+    assert refresh_calls == ["refresh"]
+
+    port_info_module.PortInfo.invalidate_cache()
+    assert port_info_module.PortInfo._nodeport_services_cache is None
+    assert port_info_module.PortInfo._last_refresh_monotonic == 0.0
+
+    monkeypatch.setattr(port_info_module.PortInfo, "_refresh_now", classmethod(lambda cls: refresh_calls.append("force-refresh")))
+    port_info_module.PortInfo.force_refresh()
+    assert refresh_calls[-1] == "force-refresh"
+
+    monkeypatch.setattr(port_info_module.PortInfo, "get_all_ports", staticmethod(lambda keyword: {}))
+    with pytest.raises(Exception, match="does not exist"):
+        port_info_module.PortInfo.get_component_port("processor")

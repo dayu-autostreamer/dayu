@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 
 
-PROCESSOR_INIT_PATH = Path("/Users/onecheck/PycharmProjects/dayu-inner-dev/dependency/core/processor/__init__.py")
+PROCESSOR_INIT_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "dependency"
+    / "core"
+    / "processor"
+    / "__init__.py"
+)
 
 
 def load_processor_package(monkeypatch, package_name, import_behavior):
