@@ -6,6 +6,7 @@ executors:
       - image: cimg/python:3.10
     working_directory: ~/project
     environment:
+      PYTHON: "python3"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PIP_NO_COLOR: "1"
       DELETE_TEMP_FILES: "False"
@@ -33,8 +34,9 @@ commands:
       - run:
           name: Install Python development dependencies
           command: |
-            python -m pip install --upgrade pip
-            python -m pip install -r requirements-dev.txt
+            ${PYTHON} -m ensurepip --upgrade || true
+            ${PYTHON} -m pip install --upgrade pip
+            ${PYTHON} -m pip install -r requirements-dev.txt
       - save_cache:
           key: v1-pip-{{ arch }}-{{ checksum "requirements-dev.txt" }}
           paths:
@@ -49,9 +51,10 @@ commands:
       - run:
           name: Install Python test dependencies
           command: |
-            python -m pip install --upgrade pip
-            python -m pip install -r requirements-dev.txt
-            python -m pip install -r .github/requirements/torch-cpu.txt
+            ${PYTHON} -m ensurepip --upgrade || true
+            ${PYTHON} -m pip install --upgrade pip
+            ${PYTHON} -m pip install -r requirements-dev.txt
+            ${PYTHON} -m pip install -r .github/requirements/torch-cpu.txt
       - save_cache:
           key: v1-pip-tests-{{ arch }}-{{ checksum "requirements-dev.txt" }}-{{ checksum ".github/requirements/torch-cpu.txt" }}
           paths:
@@ -79,7 +82,7 @@ jobs:
       - install-python-deps
       - run:
           name: Run Python lint
-          command: make lint-python
+          command: make lint-python PYTHON=${PYTHON}
 
   python-syntax:
     executor: python-executor
@@ -87,7 +90,7 @@ jobs:
       - checkout
       - run:
           name: Run Python syntax checks
-          command: make python-syntax
+          command: make python-syntax PYTHON=${PYTHON}
 
   python-tests:
     executor: python-executor
@@ -98,7 +101,7 @@ jobs:
           name: Run unit and integration tests with coverage
           command: |
             mkdir -p test-results
-            make coverage-python PYTEST_ARGS="--junitxml=test-results/python-tests.xml"
+            make coverage-python PYTHON=${PYTHON} PYTEST_ARGS="--junitxml=test-results/python-tests.xml"
       - store_test_results:
           path: test-results
       - store_artifacts:
@@ -113,7 +116,7 @@ jobs:
           name: Run component interaction tests
           command: |
             mkdir -p test-results
-            make test-component PYTEST_ARGS="--junitxml=test-results/python-component.xml"
+            make test-component PYTHON=${PYTHON} PYTEST_ARGS="--junitxml=test-results/python-component.xml"
       - store_test_results:
           path: test-results
 
@@ -126,7 +129,7 @@ jobs:
           name: Run e2e smoke tests
           command: |
             mkdir -p test-results
-            make test-e2e PYTEST_ARGS="--junitxml=test-results/python-e2e.xml"
+            make test-e2e PYTHON=${PYTHON} PYTEST_ARGS="--junitxml=test-results/python-e2e.xml"
       - store_test_results:
           path: test-results
 

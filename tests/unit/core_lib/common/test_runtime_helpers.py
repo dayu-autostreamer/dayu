@@ -274,6 +274,55 @@ def test_config_bound_instance_cache_prunes_idle_entries_and_enforces_capacity(m
 
 
 @pytest.mark.unit
+def test_cache_key_and_hash_helpers_cover_identity_and_behavior_fields():
+    assert cache_module.default_stable_key_fn({"id": "camera-1", "name": "ignored"}) == "id:camera-1"
+    assert cache_module.default_stable_key_fn({"name": "detector"}) == "name:detector"
+    assert cache_module.default_stable_key_fn({"type": "visualizer", "variables": ["fps"]}) == 'visualizer|vars:["fps"]'
+    assert cache_module.default_stable_key_fn({"hook_name": "simple"}) == "simple|vars:{}"
+    assert cache_module.default_stable_key_fn({}) == "unknown|vars:{}"
+
+    first_hash = cache_module.default_config_hash_fn({"id": "a", "name": "alpha", "fps": 25})
+    second_hash = cache_module.default_config_hash_fn({"id": "b", "name": "beta", "fps": 25})
+    third_hash = cache_module.default_config_hash_fn({"id": "b", "name": "beta", "fps": 30})
+    custom_hash = cache_module.default_config_hash_fn({"slot": "a", "fps": 25}, ignored_keys=("slot",))
+
+    assert first_hash == second_hash
+    assert first_hash != third_hash
+    assert custom_hash == cache_module.default_config_hash_fn({"slot": "b", "fps": 25}, ignored_keys=("slot",))
+
+
+@pytest.mark.unit
+def test_config_bound_instance_cache_uses_default_namespace_and_swallows_cleanup_errors(monkeypatch):
+    timestamps = iter([10.0, 11.0, 12.0, 13.0])
+    monkeypatch.setattr(cache_module.time, "time", lambda: next(timestamps))
+
+    closed = []
+
+    def closer(instance):
+        closed.append(instance.name)
+        if instance.name == "alpha":
+            raise RuntimeError("close failed")
+
+    cache = ConfigBoundInstanceCache(
+        factory=lambda cfg: SimpleNamespace(name=cfg["name"]),
+        closer=closer,
+        default_namespace="visualizers",
+    )
+
+    [alpha] = cache.sync_and_get([{"name": "alpha"}])
+    assert alpha.name == "alpha"
+    assert cache.get_existing("name:alpha").name == "alpha"
+    assert cache.get_existing("name:missing") is None
+
+    cache.remove("name:missing")
+    cache.clear_namespace(namespace="missing")
+    cache.clear_namespace()
+
+    assert closed == ["alpha"]
+    assert cache.get_existing("name:alpha") is None
+
+
+@pytest.mark.unit
 def test_recorder_supports_csv_jsonl_and_append_validation(tmp_path):
     csv_path = tmp_path / "metrics.csv"
     with Recorder(str(csv_path), fmt="csv", add_timestamp=False) as recorder:
