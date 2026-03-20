@@ -272,6 +272,45 @@ def test_system_visualizers_fetch_resource_snapshots_and_overhead(monkeypatch):
 
 
 @pytest.mark.unit
+def test_system_visualizers_cover_missing_scheduler_ports_and_default_views(monkeypatch):
+    monkeypatch.setattr(cpu_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
+    monkeypatch.setattr(cpu_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
+    monkeypatch.setattr(
+        cpu_visualizer_module.PortInfo,
+        "get_component_port",
+        staticmethod(lambda component: (_ for _ in ()).throw(AssertionError("missing scheduler"))),
+    )
+    cpu_visualizer = cpu_visualizer_module.CPUUsageVisualizer(variables=["edge-a"])
+    assert cpu_visualizer.request_resource_info() is None
+    assert cpu_visualizer(resource=None) == {"edge-a": 0}
+    cpu_visualizer.variables = []
+    assert cpu_visualizer(resource={"edge-a": {"cpu_usage": 12.0}}) == {"edge-a": 12.0}
+
+    monkeypatch.setattr(memory_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
+    monkeypatch.setattr(memory_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
+    monkeypatch.setattr(
+        memory_visualizer_module.PortInfo,
+        "get_component_port",
+        staticmethod(lambda component: (_ for _ in ()).throw(AssertionError("missing scheduler"))),
+    )
+    memory_visualizer = memory_visualizer_module.MemoryUsageVisualizer(variables=["edge-a"])
+    assert memory_visualizer.request_resource_info() is None
+    assert memory_visualizer(resource=None) == {"edge-a": 0}
+    memory_visualizer.variables = []
+    assert memory_visualizer(resource={"edge-a": {"memory_usage": 22.0}}) == {"edge-a": 22.0}
+
+    monkeypatch.setattr(overhead_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
+    monkeypatch.setattr(overhead_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
+    monkeypatch.setattr(
+        overhead_visualizer_module.PortInfo,
+        "get_component_port",
+        staticmethod(lambda component: (_ for _ in ()).throw(AssertionError("missing scheduler"))),
+    )
+    overhead_visualizer = overhead_visualizer_module.ScheduleOverheadVisualizer(variables=["overhead"])
+    assert overhead_visualizer() == {"overhead": 0}
+
+
+@pytest.mark.unit
 def test_image_helpers_validate_inputs_and_extract_first_frame(monkeypatch):
     import cv2
 
