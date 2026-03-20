@@ -3,6 +3,7 @@ import glob
 import shutil
 import subprocess
 import sys
+from types import ModuleType
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 
 available_bandwidth_module = importlib.import_module("core.lib.algorithms.parameter_monitor.available_bandwidth_monitor")
 cpu_flops_module = importlib.import_module("core.lib.algorithms.parameter_monitor.cpu_flops_monitor")
+gpu_flops_module = importlib.import_module("core.lib.algorithms.parameter_monitor.gpu_flops_monitor")
 gpu_usage_module = importlib.import_module("core.lib.algorithms.parameter_monitor.gpu_usage_monitor")
 
 
@@ -130,3 +132,26 @@ def test_gpu_usage_helper_methods_cover_empty_devices_invalid_cli_and_scaling(mo
     monkeypatch.setattr(shutil, "which", lambda binary: "/usr/bin/tegrastats")
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: DummyProc())
     assert gpu_usage_module.GPUUsageMonitor._get_usage_via_tegrastats() is None
+
+
+@pytest.mark.unit
+def test_gpu_flops_monitor_covers_pycuda_loading_and_arm_jetson_detection(monkeypatch):
+    init_calls = []
+    fake_driver = ModuleType("pycuda.driver")
+    fake_driver.init = lambda: init_calls.append("init")
+
+    fake_pycuda = ModuleType("pycuda")
+    fake_pycuda.driver = fake_driver
+
+    monkeypatch.setitem(sys.modules, "pycuda", fake_pycuda)
+    monkeypatch.setitem(sys.modules, "pycuda.driver", fake_driver)
+    assert gpu_flops_module.GPUFlopsMonitor.load_pycuda() is fake_driver
+    assert init_calls == ["init"]
+
+    monkeypatch.setattr(gpu_flops_module.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(
+        gpu_flops_module.os.path,
+        "exists",
+        lambda path: path == "/sys/module/tegra_fuse/parameters/tegra_chip_id",
+    )
+    assert gpu_flops_module.GPUFlopsMonitor.is_jetson_device() is True

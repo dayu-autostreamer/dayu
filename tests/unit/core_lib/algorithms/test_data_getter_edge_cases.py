@@ -132,3 +132,46 @@ def test_rtsp_video_getter_recovers_even_if_previous_capture_release_fails(monke
 
     frame = getter.get_one_frame(SimpleNamespace(source_id=8, video_data_source="rtsp://camera"))
     assert frame.shape == (2, 2, 3)
+
+
+@pytest.mark.unit
+def test_rtsp_video_getter_call_retries_until_filtered_buffer_is_filled(monkeypatch):
+    getter = rtsp_getter_module.RtspVideoGetter()
+    frames = iter(
+        [
+            np.zeros((2, 2, 3), dtype=np.uint8),
+            np.ones((2, 2, 3), dtype=np.uint8),
+            np.full((2, 2, 3), 2, dtype=np.uint8),
+        ]
+    )
+    filter_results = iter([False, True, True])
+    started = []
+
+    class DummyProcess:
+        def __init__(self, target=None, args=None):
+            self.target = target
+            self.args = args or ()
+
+        def start(self):
+            started.append((self.target, self.args))
+
+    monkeypatch.setattr(getter, "get_one_frame", lambda system: next(frames))
+    monkeypatch.setattr(getter, "filter_frame", lambda system, frame: next(filter_results))
+    monkeypatch.setattr(rtsp_getter_module.Counter, "get_count", staticmethod(lambda name: 6))
+    monkeypatch.setattr(rtsp_getter_module.multiprocessing, "Process", DummyProcess)
+
+    system = SimpleNamespace(
+        source_id=4,
+        meta_data={"buffer_size": 2, "fps": 10},
+        raw_meta_data={"fps": 20},
+        cumulative_scheduling_frame_count=0,
+        task_dag={"detector": ["edge-a"]},
+        service_deployment={"detector": ["edge-a"]},
+    )
+
+    getter(system)
+
+    assert system.cumulative_scheduling_frame_count == 4
+    assert len(started) == 1
+    assert len(started[0][1][1]) == 2
+    assert getter.frame_buffer == []

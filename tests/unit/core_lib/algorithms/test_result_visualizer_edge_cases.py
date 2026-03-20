@@ -50,10 +50,16 @@ def build_visualization_task():
 def test_image_visualizer_validates_coordinate_values_and_first_frame_reads(monkeypatch):
     frame = np.zeros((8, 8, 3), dtype=np.uint8)
 
+    with pytest.raises(NotImplementedError):
+        image_visualizer_module.ImageVisualizer(variables=["image"])(build_visualization_task())
     with pytest.raises(ValueError, match="convertible to integers"):
         image_visualizer_module.ImageVisualizer.draw_bboxes(frame.copy(), [["a", 1, 2, 3]])
     with pytest.raises(ValueError, match="out of frame bounds"):
         image_visualizer_module.ImageVisualizer.draw_bboxes(frame.copy(), [[0, 0, 9, 9]])
+    with pytest.raises(ValueError, match="numpy array"):
+        image_visualizer_module.ImageVisualizer.draw_bboxes_and_labels("not-a-frame", [[0, 0, 1, 1]], ["car"])
+    with pytest.raises(ValueError, match="4-element tuples/lists"):
+        image_visualizer_module.ImageVisualizer.draw_bboxes_and_labels(frame.copy(), "bad-boxes", ["car"])
     with pytest.raises(ValueError, match="must be numeric"):
         image_visualizer_module.ImageVisualizer.draw_bboxes_and_labels(frame.copy(), [["a", 1, 2, 3]], ["car"])
     with pytest.raises(ValueError, match="Invalid coordinates"):
@@ -78,6 +84,22 @@ def test_image_visualizer_validates_coordinate_values_and_first_frame_reads(monk
     monkeypatch.setattr(cv2, "VideoCapture", lambda path: DummyCap(True, False))
     with pytest.raises(ValueError, match="Failed to read the first frame"):
         image_visualizer_module.ImageVisualizer.get_first_frame_from_video("demo.mp4")
+
+    text_positions = []
+    monkeypatch.setattr(cv2, "rectangle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cv2, "getTextSize", lambda text, font, scale, thickness: ((3, 2), 0))
+    monkeypatch.setattr(
+        cv2,
+        "putText",
+        lambda image, text, org, font, scale, color, thickness, line_type: text_positions.append(org),
+    )
+    result = image_visualizer_module.ImageVisualizer.draw_bboxes_and_labels(
+        np.zeros((12, 12, 3), dtype=np.uint8),
+        [[1, 10, 5, 11]],
+        ["car"],
+    )
+    assert result.shape == (12, 12, 3)
+    assert text_positions == [(1, 5)]
 
 
 @pytest.mark.unit
@@ -207,3 +229,77 @@ def test_roi_label_and_multiple_roi_visualizers_fall_back_to_default_task_conten
         ("label", [[1, 1, 5, 5]], ["car"]),
         ("multi", [[1, 1, 5, 5]]),
     ]
+
+
+@pytest.mark.unit
+def test_roi_visualizers_use_default_content_when_services_are_not_configured(monkeypatch):
+    task = build_visualization_task()
+    draw_calls = []
+    encode_calls = []
+
+    def fake_encode(_image):
+        encode_calls.append(True)
+        return "roi-label" if len(encode_calls) == 1 else "multi"
+
+    monkeypatch.setattr(roi_label_visualizer_module.EncodeOps, "encode_image", staticmethod(fake_encode))
+    monkeypatch.setattr(multiple_roi_visualizer_module.EncodeOps, "encode_image", staticmethod(fake_encode))
+    monkeypatch.setattr(
+        roi_label_visualizer_module.ROILabelFrameVisualizer,
+        "get_first_frame_from_video",
+        staticmethod(lambda path: np.zeros((8, 8, 3), dtype=np.uint8)),
+    )
+    monkeypatch.setattr(
+        multiple_roi_visualizer_module.ROIFrameVisualizer,
+        "get_first_frame_from_video",
+        staticmethod(lambda path: np.zeros((8, 8, 3), dtype=np.uint8)),
+    )
+    monkeypatch.setattr(
+        roi_label_visualizer_module.ROILabelFrameVisualizer,
+        "draw_bboxes_and_labels",
+        staticmethod(lambda image, boxes, labels: draw_calls.append(("label", list(boxes), list(labels))) or image),
+    )
+    monkeypatch.setattr(
+        multiple_roi_visualizer_module.ROIFrameVisualizer,
+        "draw_bboxes",
+        staticmethod(lambda image, boxes: draw_calls.append(("multi", list(boxes))) or image),
+    )
+
+    label_visualizer = roi_label_visualizer_module.ROILabelFrameVisualizer(variables=["labeled"])
+    multiple_visualizer = multiple_roi_visualizer_module.ROIFrameVisualizer(variables=["multi"])
+
+    assert label_visualizer(task) == {"labeled": "roi-label"}
+    assert multiple_visualizer(task) == {"multi": "multi"}
+    assert draw_calls == [
+        ("label", [[1, 1, 5, 5]], ["car"]),
+        ("multi", [[1, 1, 5, 5]]),
+    ]
+
+
+@pytest.mark.unit
+def test_multiple_roi_visualizer_uses_default_image_when_rendering_fails(monkeypatch):
+    task = build_visualization_task()
+    warnings = []
+    exceptions = []
+
+    monkeypatch.setattr(multiple_roi_visualizer_module.EncodeOps, "encode_image", staticmethod(lambda image: "fallback"))
+    monkeypatch.setattr(
+        multiple_roi_visualizer_module.ROIFrameVisualizer,
+        "get_first_frame_from_video",
+        staticmethod(lambda path: np.zeros((8, 8, 3), dtype=np.uint8)),
+    )
+    monkeypatch.setattr(
+        multiple_roi_visualizer_module.ROIFrameVisualizer,
+        "draw_bboxes",
+        staticmethod(lambda image, boxes: (_ for _ in ()).throw(ValueError("multi render failed"))),
+    )
+    monkeypatch.setattr(multiple_roi_visualizer_module.LOGGER, "warning", lambda message: warnings.append(message))
+    monkeypatch.setattr(multiple_roi_visualizer_module.LOGGER, "exception", lambda exc: exceptions.append(str(exc)))
+
+    import cv2
+
+    monkeypatch.setattr(cv2, "imread", lambda path: np.ones((4, 4, 3), dtype=np.uint8))
+
+    visualizer = multiple_roi_visualizer_module.ROIFrameVisualizer(variables=["multi"])
+    assert visualizer(task) == {"multi": "fallback"}
+    assert len(warnings) == 1
+    assert exceptions == ["multi render failed"]

@@ -320,3 +320,128 @@ def test_adaptive_compress_dqn_agent_supports_explore_exploit_and_buffer_updates
     assert len(exploiting_agent.memory) == 1
     exploiting_agent.update()
     assert exploiting_agent.steps == 0
+
+
+@pytest.mark.unit
+def test_adaptive_compress_helper_functions_cover_image_analysis_and_update_path(monkeypatch):
+    adaptive_module = load_frame_compress_module("adaptive_compress", monkeypatch, with_fake_torch=True)
+    frame = np.arange(48, dtype=np.uint8).reshape(4, 4, 3)
+
+    monkeypatch.setattr(adaptive_module.cv2, "cvtColor", lambda image, code: image[:, :, 0])
+    monkeypatch.setattr(adaptive_module.cv2, "Canny", lambda gray, low, high: np.ones_like(gray))
+    assert adaptive_module.AdaptiveCompress.calculate_edge_density(frame) == 16
+    assert adaptive_module.AdaptiveCompress.calculate_edge_density(frame, (0, 0, 2, 2)) == 4
+
+    fake_feature = ModuleType("skimage.feature")
+    fake_feature.graycomatrix = lambda gray, distances, angles, levels, symmetric=True, normed=True: {"gray": gray.shape}
+    fake_feature.graycoprops = lambda glcm, metric: np.array([[3.5]])
+    fake_skimage = ModuleType("skimage")
+    fake_skimage.feature = fake_feature
+    monkeypatch.setitem(sys.modules, "skimage", fake_skimage)
+    monkeypatch.setitem(sys.modules, "skimage.feature", fake_feature)
+    assert adaptive_module.AdaptiveCompress.calculate_texture_complexity(frame) == 3.5
+    assert adaptive_module.AdaptiveCompress.calculate_texture_complexity(frame, (1, 1, 3, 3)) == 3.5
+
+    class FakeTensor:
+        def __init__(self, value):
+            self.value = float(value)
+
+        def unsqueeze(self, _axis):
+            return self
+
+        def gather(self, _dim, _index):
+            return self
+
+        def squeeze(self):
+            return self
+
+        def max(self, _dim):
+            return (FakeTensor(4.0), None)
+
+        def __add__(self, other):
+            return FakeTensor(self.value + (other.value if isinstance(other, FakeTensor) else other))
+
+        __radd__ = __add__
+
+        def __mul__(self, other):
+            return FakeTensor(self.value * (other.value if isinstance(other, FakeTensor) else other))
+
+        __rmul__ = __mul__
+
+        def __sub__(self, other):
+            return FakeTensor(self.value - (other.value if isinstance(other, FakeTensor) else other))
+
+        def __rsub__(self, other):
+            return FakeTensor((other.value if isinstance(other, FakeTensor) else other) - self.value)
+
+    class FakeLoss:
+        def __init__(self):
+            self.backward_called = False
+
+        def backward(self):
+            self.backward_called = True
+
+    class FakeModel:
+        def __init__(self, value):
+            self.value = value
+            self.loaded_state = None
+
+        def __call__(self, _tensor):
+            return FakeTensor(self.value)
+
+        def state_dict(self):
+            return {"value": self.value}
+
+        def load_state_dict(self, state):
+            self.loaded_state = state
+
+    class FakeOptimizer:
+        def __init__(self):
+            self.zero_calls = 0
+            self.step_calls = 0
+
+        def zero_grad(self):
+            self.zero_calls += 1
+
+        def step(self):
+            self.step_calls += 1
+
+    class DummyNoGrad:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    loss_box = []
+    monkeypatch.setattr(adaptive_module.random, "sample", lambda memory, batch_size: list(memory)[:batch_size])
+    monkeypatch.setattr(adaptive_module.torch, "FloatTensor", lambda data: FakeTensor(2.0))
+    monkeypatch.setattr(adaptive_module.torch, "LongTensor", lambda data: FakeTensor(1.0))
+    monkeypatch.setattr(adaptive_module.torch, "no_grad", lambda: DummyNoGrad())
+    monkeypatch.setattr(
+        adaptive_module.nn,
+        "MSELoss",
+        lambda: (lambda q_values, targets: loss_box.append(FakeLoss()) or loss_box[-1]),
+        raising=False,
+    )
+
+    agent = adaptive_module.DQNAgent.__new__(adaptive_module.DQNAgent)
+    agent.gamma = 0.9
+    agent.batch_size = 2
+    agent.memory = [
+        ([1, 2], 0, 1.0, [3, 4], False),
+        ([5, 6], 1, 2.0, [7, 8], True),
+    ]
+    agent.model = FakeModel(3.0)
+    agent.target_model = FakeModel(4.0)
+    agent.optimizer = FakeOptimizer()
+    agent.update_target_freq = 1
+    agent.steps = 0
+
+    agent.update()
+
+    assert agent.optimizer.zero_calls == 1
+    assert agent.optimizer.step_calls == 1
+    assert loss_box and loss_box[0].backward_called is True
+    assert agent.target_model.loaded_state == {"value": 3.0}
+    assert agent.steps == 1
