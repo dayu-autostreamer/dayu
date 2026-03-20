@@ -231,3 +231,51 @@ def test_port_info_supports_api_fallback_warmup_and_missing_component_errors(por
     monkeypatch.setattr(port_info, "_refresh_now", classmethod(lambda cls: None))
     with pytest.raises(Exception, match="does not exist"):
         port_info.get_component_port("processor")
+
+
+@pytest.mark.unit
+def test_kube_config_handles_cache_miss_refreshes_and_never_mode(kube_config, monkeypatch):
+    refresh_calls = []
+    original_refresh_cache_if_needed = kube_module.KubeConfig.__dict__["_refresh_cache_if_needed"]
+
+    def fake_refresh(cls):
+        refresh_calls.append("refresh")
+        cls._service_nodes_cache = {"face-detection": {"edge-a"}}
+        cls._node_services_cache = {"edge-a": {"face-detection"}}
+        cls._node_pods_cache = {"edge-a": {"processor-face-detection-edge-a-0"}}
+        cls._service_nodes_list_cache = {"face-detection": ["edge-a"]}
+        cls._node_services_list_cache = {"edge-a": ["face-detection"]}
+        cls._node_pods_list_cache = {"edge-a": ["processor-face-detection-edge-a-0"]}
+
+    monkeypatch.setattr(kube_config, "_refresh_cache_if_needed", classmethod(lambda cls, force=False: None))
+    monkeypatch.setattr(kube_config, "_refresh_now", classmethod(fake_refresh))
+    monkeypatch.setattr(kube_config, "_service_nodes_cache", {})
+    monkeypatch.setattr(kube_config, "_node_services_cache", {})
+    monkeypatch.setattr(kube_config, "_node_pods_cache", {})
+    monkeypatch.setattr(kube_config, "_service_nodes_list_cache", {})
+    monkeypatch.setattr(kube_config, "_node_services_list_cache", {})
+    monkeypatch.setattr(kube_config, "_node_pods_list_cache", {})
+
+    assert kube_config._is_cache_empty() is True
+    assert kube_config.get_services_on_node("edge-a") == ["face-detection"]
+    assert kube_config.get_nodes_for_service("face-detection") == ["edge-a"]
+    assert kube_config.get_pods_on_node("edge-a") == ["processor-face-detection-edge-a-0"]
+    assert refresh_calls == ["refresh"]
+
+    monkeypatch.setattr(kube_config, "_refresh_cache_if_needed", original_refresh_cache_if_needed)
+
+    never_mode_calls = []
+    monkeypatch.setattr(kube_config, "_refresh_mode", "never")
+    monkeypatch.setattr(kube_config, "_service_nodes_cache", None)
+    monkeypatch.setattr(kube_config, "_node_services_cache", None)
+    monkeypatch.setattr(kube_config, "_node_pods_cache", None)
+    monkeypatch.setattr(
+        kube_config,
+        "_refresh_now",
+        classmethod(lambda cls: never_mode_calls.append("refresh")),
+    )
+    kube_config._refresh_cache_if_needed()
+    kube_config._refresh_cache_if_needed(force=True)
+    kube_config._warmup_blocking_if_needed()
+
+    assert never_mode_calls == ["refresh", "refresh"]

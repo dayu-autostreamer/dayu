@@ -131,7 +131,7 @@ Repository-maintained technical docs now live under [`docs/`](docs/README.md):
 
 To align local development with CI, use the toolchain versions tracked in the repository:
 
-- Python `3.10` via [`.python-version`](.python-version)
+- Python `3.8` via [`.python-version`](.python-version)
 - Node.js `20` via [`.nvmrc`](.nvmrc)
 - `make` as the primary local task entry point
 

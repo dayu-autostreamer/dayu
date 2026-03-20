@@ -28,6 +28,7 @@ class RandomInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
                     LOGGER.warning(f"[Initial Deployment] (source {source_id}) Service '{service}' cannot be deployed，"
                                    f"please check max_service_num (current:{self.max_service_num}) "
                                    f"or add nodes (current: {node_set})")
+                    available_nodes = list(node_set)
                 node = random.choice(available_nodes)
             else:
                 node = random.choice(list(node_set))

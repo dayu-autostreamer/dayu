@@ -88,7 +88,7 @@ class AdaptiveProcess(BaseProcess, abc.ABC):
     def generate_roi_message(self, rois: List[Tuple[int, int, int, int]]) -> str:
         num_regions = min(len(rois), 8)
         message = f"{num_regions} "
-        for (x1, y1, x2, y2) in rois:
+        for (x1, y1, x2, y2) in rois[:num_regions]:
             message += f"-10 {x1} {y1} {x2 - x1} {y2 - y1} "
         return message
 

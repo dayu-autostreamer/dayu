@@ -7,6 +7,7 @@ from core.lib.content import DAG, Service, Task
 from core.lib.solver import PathSolver
 
 
+dag_module = importlib.import_module("core.lib.content.dag")
 time_estimation_module = importlib.import_module("core.lib.estimation.time_estimation")
 
 
@@ -232,3 +233,69 @@ def test_task_delay_calculation_time_tickets_and_estimator_helpers(monkeypatch):
     del task.get_tmp_data()[f"{prefix}:total_end_time"]
     with pytest.raises(ValueError, match="ending lacks"):
         task.get_real_end_to_end_time()
+
+
+@pytest.mark.unit
+def test_node_and_dag_cover_error_branches_and_structural_helpers():
+    node = dag_module.Node(Service("decode"))
+    node.add_prev_node(Service(TaskConstant.START.value))
+    node.add_next_node(Service("infer"))
+
+    restored = dag_module.Node.deserialize(node.serialize())
+    assert restored.to_dict() == node.to_dict()
+    assert repr(restored) == "decode"
+
+    dag = DAG()
+    dag.add_node(Service("decode", execute_device="edge-a"))
+    dag.set_node_service("decode", Service("decode", execute_device="cloud-a"))
+    assert dag.get_node("decode").service.get_execute_device() == "cloud-a"
+
+    with pytest.raises(ValueError, match='already exists'):
+        dag.add_node(Service("decode"))
+    with pytest.raises(TypeError, match="Expected input type"):
+        dag.add_node("decode")
+    with pytest.raises(KeyError, match="does not exist"):
+        dag.get_node("missing")
+    with pytest.raises(KeyError, match="does not exist"):
+        dag.get_next_nodes("missing")
+    with pytest.raises(KeyError, match="does not exist"):
+        dag.get_prev_nodes("missing")
+    with pytest.raises(ValueError, match="Start node"):
+        dag.get_start_node()
+    with pytest.raises(ValueError, match="End node"):
+        dag.get_end_node()
+
+    start = TaskConstant.START.value
+    end = TaskConstant.END.value
+    pipeline_like = DAG.from_dict(
+        {
+            start: service_entry(start, next_nodes=["decode"]),
+            "decode": service_entry("decode", next_nodes=[end]),
+            end: service_entry(end, prev_nodes=["decode"]),
+        }
+    )
+    assert "decode -> [_end]" in repr(pipeline_like)
+
+    with pytest.raises(ValueError, match='already exists'):
+        pipeline_like.add_start_node(Service(start))
+    with pytest.raises(ValueError, match='already exists'):
+        pipeline_like.add_end_node(Service(end))
+
+    invalid_child = DAG.from_dict(
+        {
+            start: service_entry(start, next_nodes=["missing"]),
+            end: service_entry(end),
+        }
+    )
+    with pytest.raises(ValueError, match="child node doesn't exist"):
+        invalid_child._check_edge_consistency()
+
+    invalid_parent = DAG.from_dict(
+        {
+            start: service_entry(start),
+            "decode": service_entry("decode", prev_nodes=["ghost"]),
+            end: service_entry(end),
+        }
+    )
+    with pytest.raises(ValueError, match="parent node doesn't exist"):
+        invalid_parent._check_edge_consistency()

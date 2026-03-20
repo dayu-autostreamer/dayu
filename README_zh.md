@@ -105,7 +105,7 @@ KubeEdge 开发，可以在不同平台之间轻松迁移。
 
 为保证本地开发环境与 CI 一致，建议使用仓库中声明的工具链版本：
 
-- Python `3.10`，见 [`.python-version`](.python-version)
+- Python `3.8`，见 [`.python-version`](.python-version)
 - Node.js `20`，见 [`.nvmrc`](.nvmrc)
 - 使用 `make` 作为本地开发任务入口
 

@@ -99,3 +99,39 @@ def test_port_info_starts_background_refresh_when_ttl_cache_expires(port_info_mo
     assert refresh_calls == [True]
     assert started_threads == [("PortInfoCacheRefresh", True)]
     assert port_info_module.PortInfo._refresh_in_progress is False
+
+
+@pytest.mark.unit
+def test_port_info_handles_refresh_failures_and_cache_state_helpers(port_info_module, monkeypatch):
+    monkeypatch.setattr(port_info_module.PortInfo, "_get_api", classmethod(lambda cls: None))
+    port_info_module.PortInfo._refresh_now()
+    assert port_info_module.PortInfo._nodeport_services_cache is None
+
+    failing_api = SimpleNamespace(
+        list_namespaced_service=lambda namespace, label_selector=None: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    monkeypatch.setattr(port_info_module.PortInfo, "_get_api", classmethod(lambda cls: failing_api))
+    port_info_module.PortInfo._refresh_now()
+    assert port_info_module.PortInfo._nodeport_services_cache is None
+
+    monkeypatch.setattr(port_info_module.time, "monotonic", lambda: 10.0)
+    monkeypatch.setattr(port_info_module.PortInfo, "_nodeport_services_cache", {})
+    monkeypatch.setattr(port_info_module.PortInfo, "_last_refresh_monotonic", 5.0)
+    assert port_info_module.PortInfo._is_cache_initialized() is True
+    assert port_info_module.PortInfo._is_cache_empty() is True
+    assert port_info_module.PortInfo._cache_expired() is False
+
+    warmup_calls = []
+    monkeypatch.setattr(
+        port_info_module.PortInfo,
+        "_refresh_now",
+        classmethod(lambda cls: warmup_calls.append("refresh")),
+    )
+    monkeypatch.setattr(port_info_module.PortInfo, "_refresh_mode", "never")
+    port_info_module.PortInfo._warmup_blocking_if_needed()
+    monkeypatch.setattr(port_info_module.PortInfo, "_refresh_mode", "ttl")
+    port_info_module.PortInfo._warmup_blocking_if_needed()
+    monkeypatch.setattr(port_info_module.PortInfo, "_nodeport_services_cache", None)
+    port_info_module.PortInfo._warmup_blocking_if_needed()
+
+    assert warmup_calls == ["refresh"]

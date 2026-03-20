@@ -33,7 +33,7 @@ def restore_class_registry():
 
 def load_algorithms_module(monkeypatch, packages, import_side_effect):
     module_path = (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[4]
         / "dependency"
         / "core"
         / "lib"
