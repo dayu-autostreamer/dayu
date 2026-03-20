@@ -53,6 +53,14 @@ The `core_lib` unit tree should now mirror the production package layout more di
 
 This mirrors the structure used in mature infrastructure-style repositories: tests live near the conceptual ownership boundary of the code they protect, so contributors can add or find a unit test without scanning unrelated packages first.
 
+Within each mirrored area, keep file names and test names behavior-oriented instead of generic. The current preferred pattern is:
+
+- file names like `test_<family>_algorithms.py`, `test_<module>_edge_cases.py`, or `test_<service>_runtime.py`
+- test function names like `test_<behavior>_<expected_result>`
+- one file per closely related family of hooks or helpers, instead of mixing getters, queues, monitors, and visualizers in a single large file unless they truly share the same contract surface
+
+This is the same tradeoff many mature Python projects make: keep the directory tree aligned with the production ownership boundary, then keep individual test files narrow enough that a contributor can understand intent from the filename alone.
+
 ## Hook-Centric Test Matrix
 
 Dayu's most important extension seam is:
