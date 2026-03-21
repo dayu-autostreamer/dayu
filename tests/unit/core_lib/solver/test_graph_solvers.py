@@ -63,3 +63,21 @@ def test_lca_solver_handles_ancestor_shortcuts_caching_and_disconnected_graphs()
 
     with pytest.raises(ValueError, match="No LCA"):
         LCASolver(disconnected).find_lca("leaf1", "leaf2")
+
+
+@pytest.mark.unit
+def test_lca_solver_finds_candidates_from_forward_search_before_backward_queue_drains():
+    dag = DAG.from_dict(
+        {
+            "root": service_entry("root", next_nodes=["left1", "right_a", "right_b"]),
+            "left1": service_entry("left1", prev_nodes=["root"], next_nodes=["left2"]),
+            "left2": service_entry("left2", prev_nodes=["left1"], next_nodes=["left_leaf"]),
+            "left_leaf": service_entry("left_leaf", prev_nodes=["left2"]),
+            "right_a": service_entry("right_a", prev_nodes=["root"], next_nodes=["right_leaf"]),
+            "right_b": service_entry("right_b", prev_nodes=["root"], next_nodes=["right_leaf"]),
+            "right_leaf": service_entry("right_leaf", prev_nodes=["right_a", "right_b"]),
+        }
+    )
+
+    solver = LCASolver(dag)
+    assert solver.find_lca("left_leaf", "right_leaf") == "root"

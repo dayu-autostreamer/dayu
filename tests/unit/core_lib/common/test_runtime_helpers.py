@@ -12,6 +12,7 @@ import pytest
 
 cache_module = importlib.import_module("core.lib.common.cache")
 config_module = importlib.import_module("core.lib.common.config")
+counter_module = importlib.import_module("core.lib.common.counter")
 health_module = importlib.import_module("core.lib.common.health")
 instance_module = importlib.import_module("core.lib.common.instance")
 queue_module = importlib.import_module("core.lib.common.queue")
@@ -25,6 +26,7 @@ node_module = importlib.import_module("core.lib.network.node")
 
 ConfigBoundInstanceCache = cache_module.ConfigBoundInstanceCache
 ConfigLoader = config_module.ConfigLoader
+Counter = counter_module.Counter
 GlobalInstanceManager = instance_module.GlobalInstanceManager
 Queue = queue_module.Queue
 Recorder = record_module.Recorder
@@ -168,6 +170,27 @@ def test_resource_lock_manager_creates_async_lock_only_inside_running_event_loop
 
 
 @pytest.mark.unit
+def test_resource_lock_manager_reuses_single_async_lock_within_same_event_loop(monkeypatch):
+    created_locks = []
+    real_lock = asyncio.Lock
+
+    def tracking_lock():
+        created_locks.append("created")
+        return real_lock()
+
+    monkeypatch.setattr(resource_module.asyncio, "Lock", tracking_lock)
+    manager = ResourceLockManager()
+
+    async def run_sequence():
+        assert await manager.acquire_lock("camera-2", "edge-a") == "edge-a"
+        assert await manager.acquire_lock("camera-2", "edge-b") == "edge-a"
+        assert await manager.release_lock("camera-2", "edge-a") is True
+
+    asyncio.run(run_sequence())
+    assert created_locks == ["created"]
+
+
+@pytest.mark.unit
 def test_global_instance_manager_scopes_instances_by_class_and_id():
     class Demo:
         init_calls = 0
@@ -192,6 +215,24 @@ def test_global_instance_manager_scopes_instances_by_class_and_id():
 
     GlobalInstanceManager.release_all_instances(Demo)
     assert GlobalInstanceManager.get_all_instances(Demo) == {}
+
+
+@pytest.mark.unit
+def test_counter_and_instance_manager_ignore_missing_namespaces_and_instances():
+    Counter.reset_count("missing")
+    assert Counter.get_all_counts() == {}
+    assert Counter.get_count("alpha") == 0
+    assert Counter.get_count("alpha") == 1
+    Counter.reset_count("alpha")
+    Counter.reset_count("alpha")
+    assert Counter.get_all_counts() == {}
+
+    class Demo:
+        pass
+
+    GlobalInstanceManager.release_instance(Demo, "missing")
+    GlobalInstanceManager.release_all_instances(Demo)
+    assert GlobalInstanceManager.has_instance(Demo, "missing") is False
 
 
 @pytest.mark.unit
@@ -241,6 +282,15 @@ def test_service_config_and_common_utils_cover_patterns_and_nested_merges():
     second = DemoSingleton(2)
     assert first is second
     assert second.value == 1
+
+    merged_named_append = utils_module.deep_merge(
+        [{"name": "alpha", "value": 1}],
+        [{"name": "beta", "value": 2}],
+    )
+    assert merged_named_append == [{"name": "alpha", "value": 1}, {"name": "beta", "value": 2}]
+
+    assert utils_module.deep_merge("left", {"right": True}) == {"right": True}
+    assert cache_module._canonical_json({"b": 1, "a": 2}) == cache_module._canonical_json({"a": 2, "b": 1})
 
 
 @pytest.mark.unit
@@ -299,6 +349,36 @@ def test_config_bound_instance_cache_reconfigures_rebuilds_and_cleans_up():
     cache.clear_all()
     assert cache.get_existing("name:alpha") is None
     assert len(created) == 4
+
+
+@pytest.mark.unit
+def test_config_bound_instance_cache_rebuilds_when_reconfigure_raises(monkeypatch):
+    timestamps = iter([100.0, 101.0, 102.0])
+    monkeypatch.setattr(cache_module.time, "time", lambda: next(timestamps))
+
+    created = []
+    closed = []
+
+    def factory(cfg):
+        instance = SimpleNamespace(name=cfg["name"], version=cfg["version"])
+        created.append((instance.name, instance.version))
+        return instance
+
+    def reconfigure(instance, cfg):
+        raise RuntimeError("boom")
+
+    cache = ConfigBoundInstanceCache(
+        factory=factory,
+        reconfigure=reconfigure,
+        closer=lambda instance: closed.append((instance.name, instance.version)),
+    )
+
+    [first] = cache.sync_and_get([{"name": "alpha", "version": 1}])
+    [second] = cache.sync_and_get([{"name": "alpha", "version": 2}])
+
+    assert second is not first
+    assert created == [("alpha", 1), ("alpha", 2)]
+    assert closed == [("alpha", 1)]
 
 
 @pytest.mark.unit
@@ -373,6 +453,7 @@ def test_config_bound_instance_cache_uses_default_namespace_and_swallows_cleanup
     assert cache.get_existing("name:missing") is None
 
     cache.remove("name:missing")
+    cache.remove("name:missing", namespace="ghost")
     cache.clear_namespace(namespace="missing")
     cache.clear_namespace()
 
@@ -454,6 +535,40 @@ def test_recorder_supports_explicit_fieldnames_timestamps_and_repeated_flushes(m
 
 
 @pytest.mark.unit
+def test_recorder_skips_flush_until_threshold_and_swallows_del_close_errors(tmp_path, monkeypatch):
+    jsonl_path = tmp_path / "delayed.jsonl"
+    recorder = Recorder(str(jsonl_path), fmt="jsonl", add_timestamp=False, flush_every=2)
+
+    flush_calls = []
+
+    class FakeFile:
+        def __init__(self):
+            self.closed = False
+            self.buffer = []
+
+        def write(self, content):
+            self.buffer.append(content)
+
+        def flush(self):
+            flush_calls.append("flush")
+
+        def close(self):
+            self.closed = True
+
+    fake_file = FakeFile()
+    recorder._f.close()
+    recorder._f = fake_file
+
+    recorder.log(step=1)
+    assert flush_calls == []
+    recorder.log(step=2)
+    assert flush_calls == ["flush"]
+
+    monkeypatch.setattr(recorder, "close", lambda: (_ for _ in ()).throw(RuntimeError("close failed")))
+    recorder.__del__()
+
+
+@pytest.mark.unit
 def test_http_request_handles_success_redirects_and_failures(monkeypatch):
     class FakeResponse:
         def __init__(self, status_code, payload=None, content=b"text", url="http://redirect"):
@@ -481,6 +596,13 @@ def test_http_request_handles_success_redirects_and_failures(monkeypatch):
         network_client_module.requests,
         "request",
         lambda **kwargs: FakeResponse(302),
+    )
+    assert http_request("http://service") is None
+
+    monkeypatch.setattr(
+        network_client_module.requests,
+        "request",
+        lambda **kwargs: FakeResponse(404),
     )
     assert http_request("http://service") is None
 

@@ -124,6 +124,21 @@ def test_accuracy_estimator_covers_frame_mapping_ground_truth_and_map_calculatio
     assert AccEstimator.calculate_map([], []) == 1
     assert AccEstimator.calculate_map([], [{"bbox": [0, 0, 1, 1], "class": 1}]) == 0
 
+    low_ranked_match = AccEstimator.calculate_map(
+        predictions=[
+            {"bbox": [50, 50, 60, 60], "prob": 0.9, "class": 1},
+            {"bbox": [0, 0, 10, 10], "prob": 0.8, "class": 1},
+        ],
+        ground_truths=[{"bbox": [0, 0, 10, 10], "class": 1}],
+    )
+    assert low_ranked_match == pytest.approx(0.5)
+
+    mismatched_ground_truth = tmp_path / "mismatched_ground_truth.txt"
+    mismatched_ground_truth.write_text("5 0 0 1 1\n", encoding="utf-8")
+    mismatch_estimator = AccEstimator(str(mismatched_ground_truth))
+    with pytest.raises(AssertionError, match="frame index 0 is not equal"):
+        mismatch_estimator.get_frame_ground_truth(0, (1.0, 1.0))
+
 
 @pytest.mark.unit
 def test_overhead_estimator_initializes_logs_tracks_context_manager_and_parses_average(tmp_path, monkeypatch):
@@ -246,8 +261,10 @@ def test_overhead_estimator_handles_missing_logs_empty_files_and_lock_fallback(m
             handle.write("")
 
     with overhead_file.open("a", encoding="utf-8") as handle:
+        handle.write("\n")
         handle.write("invalid-line\n")
         handle.write("legacy-text\n")
+        handle.write("1,bad,bad,bad,not-a-number\n")
 
     estimator.write_overhead(1.25)
 

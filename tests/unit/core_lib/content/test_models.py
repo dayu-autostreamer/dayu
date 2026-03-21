@@ -82,6 +82,26 @@ def test_service_supports_roundtrip_and_time_ticket_guards():
 
 
 @pytest.mark.unit
+def test_service_from_dict_supports_partial_payloads_and_non_service_equality():
+    service = Service.from_dict(
+        {
+            "service_name": "tracker",
+            "execute_data": {"execute_time": 1.5},
+        }
+    )
+
+    assert service.get_service_name() == "tracker"
+    assert service.get_execute_time() == 1.5
+    assert service.get_execute_device() == ""
+    assert service.get_transmit_time() == 0
+    assert service.get_real_execute_time() == 0
+    assert service.get_content_data() is None
+    assert service.get_scenario_data() == {}
+    assert service.get_tmp_data() == {}
+    assert (service == "tracker") is False
+
+
+@pytest.mark.unit
 def test_dag_validation_repairs_missing_edges_and_rejects_invalid_graphs():
     start = TaskConstant.START.value
     end = TaskConstant.END.value
@@ -430,3 +450,72 @@ def test_node_and_dag_cover_error_branches_and_structural_helpers():
     )
     with pytest.raises(ValueError, match="parent node doesn't exist"):
         invalid_parent._check_edge_consistency()
+
+
+@pytest.mark.unit
+def test_dag_private_validators_cover_pipeline_edge_cases_and_manual_mismatch_guards():
+    start = TaskConstant.START.value
+    end = TaskConstant.END.value
+
+    revisit_cycle = DAG.from_dict(
+        {
+            start: service_entry(start, next_nodes=["a"]),
+            "a": service_entry("a", prev_nodes=[start], next_nodes=["a"]),
+            end: service_entry(end),
+        }
+    )
+    assert revisit_cycle.check_is_pipeline() is False
+
+    broken_prev_link = DAG.from_dict(
+        {
+            start: service_entry(start, next_nodes=["a"]),
+            "a": service_entry("a", prev_nodes=[], next_nodes=[end]),
+            end: service_entry(end, prev_nodes=["a"]),
+        }
+    )
+    assert broken_prev_link.check_is_pipeline() is False
+
+    broken_end = DAG.from_dict(
+        {
+            start: service_entry(start, next_nodes=["a"]),
+            "a": service_entry("a", prev_nodes=[start], next_nodes=[end]),
+            end: service_entry(end, prev_nodes=["a"], next_nodes=["tail"]),
+            "tail": service_entry("tail", prev_nodes=[end]),
+        }
+    )
+    assert broken_end.check_is_pipeline() is False
+
+    with pytest.raises(ValueError, match="Start node"):
+        DAG()._check_start_end_node()
+
+    with pytest.raises(ValueError, match="End node"):
+        DAG.from_dict({start: service_entry(start)})._check_start_end_node()
+
+    empty_dag = DAG()
+    empty_dag._check_connectivity()
+
+    class NonAppendingList(list):
+        def append(self, value):
+            return None
+
+    mismatch_child = DAG.from_dict(
+        {
+            start: service_entry(start, next_nodes=["decode"]),
+            "decode": service_entry("decode", prev_nodes=[], next_nodes=[end]),
+            end: service_entry(end, prev_nodes=["decode"]),
+        }
+    )
+    mismatch_child.get_node("decode").prev_nodes = NonAppendingList()
+    with pytest.raises(ValueError, match="doesn't list"):
+        mismatch_child._check_edge_consistency()
+
+    mismatch_parent = DAG.from_dict(
+        {
+            start: service_entry(start, next_nodes=[]),
+            "decode": service_entry("decode", prev_nodes=[start], next_nodes=[end]),
+            end: service_entry(end, prev_nodes=["decode"]),
+        }
+    )
+    mismatch_parent.get_node(start).next_nodes = NonAppendingList()
+    with pytest.raises(ValueError, match="doesn't list"):
+        mismatch_parent._check_edge_consistency()

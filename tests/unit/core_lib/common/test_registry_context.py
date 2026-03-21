@@ -177,9 +177,18 @@ def test_context_file_path_resolution_handles_mounted_volumes_and_temp_files(mon
 
     monkeypatch.setenv("VOLUME_NUM", "2")
     monkeypatch.setenv("VOLUME_0", str(volume0))
+    assert Context.get_file_path(str(volume0 / "nested" / "file.txt")) == str(
+        mount_prefix / "volume0" / "nested" / "file.txt"
+    )
+    assert Context.get_file_path("templates/nested/file.txt") == str(
+        mount_prefix / "volume0" / "nested" / "file.txt"
+    )
     assert Context.get_file_path("relative/file.txt") == str(
         mount_prefix / "volume0" / "relative" / "file.txt"
     )
+
+    with pytest.raises(FileNotMountedError, match="not mounted"):
+        Context.get_file_path("/outside/single-volume.mp4")
 
     temp_path = Path(Context.get_temporary_file_path("payload.bin"))
     assert temp_path == mount_prefix / "volume1" / "temp_files" / "payload.bin"

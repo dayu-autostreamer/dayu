@@ -86,6 +86,22 @@ def patch_processor_scenarios(monkeypatch):
 
 
 @pytest.mark.unit
+def test_processor_base_initializes_extractors_saves_scenarios_and_enforces_abstract_contracts(
+    patch_processor_scenarios,
+):
+    processor = processor_base_module.Processor()
+    task = build_task(["detector"], "detector")
+
+    processor.save_scenario([{"bbox": [0, 0, 1, 1]}], task)
+
+    assert task.get_scenario_data("detector") == {"objects": 1}
+    with pytest.raises(NotImplementedError):
+        processor(task)
+    with pytest.raises(NotImplementedError):
+        _ = processor.flops
+
+
+@pytest.mark.unit
 def test_detector_processor_reads_frames_runs_detector_and_saves_scenario(patch_processor_scenarios, monkeypatch):
     class FakeDetector:
         flops = 321.0
