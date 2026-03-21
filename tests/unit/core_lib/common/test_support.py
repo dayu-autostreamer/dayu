@@ -81,6 +81,14 @@ def test_encode_hash_name_and_video_helpers_cover_success_and_validation(monkeyp
     with pytest.raises(ValueError, match="Invalid base64"):
         EncodeOps.decode_image("data:image/jpg;base64,not-base64")
 
+    raw_base64 = encoded.split(",", 1)[1]
+    roundtrip_from_raw = EncodeOps.decode_image(raw_base64)
+    assert roundtrip_from_raw.shape == frame.shape
+
+    monkeypatch.setattr(cv2, "imdecode", lambda data, mode: None)
+    with pytest.raises(ValueError, match="Invalid base64 string or incompatible image data"):
+        EncodeOps.decode_image(raw_base64)
+
     assert str(HashOps.get_frame_hash(frame)) == str(imagehash.phash(Image.fromarray(frame)))
 
     task = DummyNameTask()

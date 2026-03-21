@@ -159,3 +159,64 @@ def test_retrieve_task_data_rejects_conflicting_joint_service_names():
     tasks = coordinator.retrieve_task_data(first_task.get_root_uuid(), "join", required_count=2)
 
     assert tasks is None
+
+
+@pytest.mark.unit
+def test_task_coordinator_initializes_redis_clients_from_runtime_configuration(monkeypatch):
+    task_coordinator_module = importlib.import_module("core.controller.task_coordinator")
+    pool_calls = []
+
+    monkeypatch.setattr(
+        task_coordinator_module.Context,
+        "get_parameter",
+        staticmethod(
+            lambda name, default=None, direct=False: {
+                "MAX_REDIS_CONNECTIONS": "12",
+                "REDIS_STORAGE_TIMEOUT": "900",
+            }.get(name, default)
+        ),
+    )
+    monkeypatch.setattr(task_coordinator_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
+    monkeypatch.setattr(task_coordinator_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.9"))
+    monkeypatch.setattr(task_coordinator_module.PortInfo, "get_component_port", staticmethod(lambda component: 6379))
+    monkeypatch.setattr(
+        task_coordinator_module.redis,
+        "ConnectionPool",
+        lambda **kwargs: pool_calls.append(kwargs) or {"pool": kwargs},
+    )
+    monkeypatch.setattr(task_coordinator_module.redis, "Redis", lambda connection_pool: {"redis": connection_pool})
+
+    coordinator = task_coordinator_module.TaskCoordinator()
+
+    assert coordinator.max_connections == "12"
+    assert coordinator.storage_timeout == "900"
+    assert pool_calls == [{"host": "10.0.0.9", "port": 6379, "max_connections": "12"}]
+    assert coordinator.redis == {"redis": {"pool": pool_calls[0]}}
+
+
+@pytest.mark.unit
+def test_store_task_data_returns_none_when_redis_pipeline_raises():
+    task = build_join_task("detector-a")
+
+    class BrokenRedis:
+        def pipeline(self):
+            raise RuntimeError("boom")
+
+    coordinator = build_coordinator(BrokenRedis())
+
+    assert coordinator.store_task_data(task, "join") is None
+
+
+@pytest.mark.unit
+def test_retrieve_task_data_returns_none_when_conditions_are_not_met_or_redis_fails():
+    task = build_join_task("detector-a")
+    coordinator = build_coordinator(FakeRedis(eval_result=None))
+
+    assert coordinator.retrieve_task_data(task.get_root_uuid(), "join", required_count=2) is None
+
+    class BrokenRedis(FakeRedis):
+        def eval(self, script, num_keys, storage_key, required_count):
+            raise RuntimeError("boom")
+
+    broken = build_coordinator(BrokenRedis())
+    assert broken.retrieve_task_data(task.get_root_uuid(), "join", required_count=2) is None

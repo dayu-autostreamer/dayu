@@ -76,6 +76,26 @@ def test_port_info_refreshes_nodeport_cache_from_kubernetes_api(port_info_module
 
 
 @pytest.mark.unit
+def test_port_info_refresh_skips_invalid_nodeports_and_service_iteration_errors(port_info_module, monkeypatch):
+    broken_service = SimpleNamespace(
+        metadata=SimpleNamespace(name="broken"),
+        spec=SimpleNamespace(type="NodePort", ports=[object()]),
+    )
+    zero_port_service = build_service("processor-zero-edgex1-0", "NodePort", 0)
+    valid_service = build_service("processor-valid-edgex1-0", "NodePort", 32000)
+    fake_services = SimpleNamespace(items=[broken_service, zero_port_service, valid_service])
+    fake_api = SimpleNamespace(list_namespaced_service=lambda namespace, label_selector=None: fake_services)
+
+    monkeypatch.setattr(port_info_module.PortInfo, "_get_api", classmethod(lambda cls: fake_api))
+    monkeypatch.setattr(port_info_module.time, "monotonic", lambda: 55.0)
+
+    port_info_module.PortInfo._refresh_now()
+
+    assert port_info_module.PortInfo._nodeport_services_cache == {"processor-valid-edgex1-0": 32000}
+    assert port_info_module.PortInfo._last_refresh_monotonic == 55.0
+
+
+@pytest.mark.unit
 def test_port_info_retries_refresh_on_cache_miss_and_returns_component_port(port_info_module, monkeypatch):
     monkeypatch.setattr(port_info_module.PortInfo, "_refresh_mode", "never")
     monkeypatch.setattr(port_info_module.PortInfo, "_nodeport_services_cache", {"controller-main": 30000})
@@ -192,7 +212,7 @@ def test_port_info_import_time_configuration_uses_repo_relative_loading(monkeypa
         "dayu_test_port_info_never",
         {
             "NAMESPACE": "dayu",
-            "KUBE_CACHE_TTL": None,
+            "KUBE_CACHE_TTL": "never",
             "KUBE_CACHE_WARMUP_TIMEOUT": None,
         },
     )
@@ -230,6 +250,21 @@ def test_port_info_api_loading_and_cache_management_cover_force_and_error_paths(
     assert port_info_module.PortInfo._get_api() is fake_api
     assert load_calls == ["kubeconfig"]
 
+    second_module = importlib.import_module("core.lib.network.port")
+    monkeypatch.setattr(second_module.PortInfo, "_api", None)
+    monkeypatch.setattr(
+        second_module.k8s.config,
+        "load_incluster_config",
+        lambda: (_ for _ in ()).throw(RuntimeError("no in-cluster config")),
+    )
+    monkeypatch.setattr(
+        second_module.k8s.config,
+        "load_kube_config",
+        lambda: (_ for _ in ()).throw(RuntimeError("no kube config")),
+    )
+    monkeypatch.setattr(second_module.k8s.client, "CoreV1Api", lambda: fake_api)
+    assert second_module.PortInfo._get_api() is fake_api
+
     refresh_calls = []
     monkeypatch.setattr(port_info_module.PortInfo, "_refresh_now", classmethod(lambda cls: refresh_calls.append("refresh")))
     monkeypatch.setattr(port_info_module.PortInfo, "_refresh_mode", "never")
@@ -242,6 +277,42 @@ def test_port_info_api_loading_and_cache_management_cover_force_and_error_paths(
     port_info_module.PortInfo.invalidate_cache()
     assert port_info_module.PortInfo._nodeport_services_cache is None
     assert port_info_module.PortInfo._last_refresh_monotonic == 0.0
+
+
+@pytest.mark.unit
+def test_port_info_ttl_refresh_skips_when_cache_is_fresh_or_refresh_already_running(port_info_module, monkeypatch):
+    refresh_calls = []
+    started_threads = []
+
+    class DummyThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            started_threads.append((self.name, self.daemon))
+            self.target()
+
+    monkeypatch.setattr(port_info_module.threading, "Thread", DummyThread)
+    monkeypatch.setattr(port_info_module.PortInfo, "_refresh_mode", "ttl")
+    monkeypatch.setattr(port_info_module.PortInfo, "_nodeport_services_cache", {"processor-a": 30001})
+    monkeypatch.setattr(port_info_module.PortInfo, "_is_cache_initialized", classmethod(lambda cls: True))
+    monkeypatch.setattr(port_info_module.PortInfo, "_refresh_now", classmethod(lambda cls: refresh_calls.append("refresh")))
+
+    monkeypatch.setattr(port_info_module.PortInfo, "_cache_expired", classmethod(lambda cls: False))
+    port_info_module.PortInfo._refresh_cache_if_needed()
+    assert refresh_calls == []
+
+    monkeypatch.setattr(port_info_module.PortInfo, "_cache_expired", classmethod(lambda cls: True))
+    monkeypatch.setattr(port_info_module.PortInfo, "_refresh_in_progress", True)
+    port_info_module.PortInfo._refresh_cache_if_needed()
+    assert refresh_calls == []
+    assert started_threads == []
+
+    monkeypatch.setattr(port_info_module.PortInfo, "_refresh_in_progress", False)
+    port_info_module.PortInfo._refresh_cache_if_needed(force=True)
+    assert refresh_calls == ["refresh"]
 
     monkeypatch.setattr(port_info_module.PortInfo, "_refresh_now", classmethod(lambda cls: refresh_calls.append("force-refresh")))
     port_info_module.PortInfo.force_refresh()

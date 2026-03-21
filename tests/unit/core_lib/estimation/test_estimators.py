@@ -48,7 +48,7 @@ class DummyTimingTask:
 
 @pytest.mark.unit
 def test_time_estimator_and_timer_cover_recording_erasing_and_logging(monkeypatch):
-    timestamps = iter([10.0, 10.25, 20.0, 20.5, 30.0, 31.0, 40.0, 50.0])
+    timestamps = iter([10.0, 10.25, 20.0, 20.5, 30.0, 31.0, 40.0, 50.0, 60.0, 70.0])
     logs = []
 
     monkeypatch.setattr(time_module.time, "time", lambda: next(timestamps))
@@ -60,14 +60,19 @@ def test_time_estimator_and_timer_cover_recording_erasing_and_logging(monkeypatc
     assert timer.get_elapsed_time() == 0.25
     assert logs[-1].startswith("[unit-test-stage] Execution time:")
 
+    with Timer() as plain_timer:
+        pass
+    assert plain_timer.get_elapsed_time() == 0.5
+    assert logs[-1].startswith("Execution time:")
+
     data = {}
     duration, start_ts = TimeEstimator.record_ts(data, "task-start")
     assert duration == 0
-    assert start_ts == 20.0
+    assert start_ts == 30.0
 
     duration, end_ts = TimeEstimator.record_ts(data, "task-start", is_end=True)
-    assert duration == 0.5
-    assert end_ts == 20.5
+    assert duration == 1.0
+    assert end_ts == 31.0
     assert data == {}
 
     task = DummyTimingTask()
@@ -118,6 +123,21 @@ def test_accuracy_estimator_covers_frame_mapping_ground_truth_and_map_calculatio
     assert AccEstimator.compute_ap(np.array([0.5, 1.0]), np.array([1.0, 0.5])) == 0.75
     assert AccEstimator.calculate_map([], []) == 1
     assert AccEstimator.calculate_map([], [{"bbox": [0, 0, 1, 1], "class": 1}]) == 0
+
+    low_ranked_match = AccEstimator.calculate_map(
+        predictions=[
+            {"bbox": [50, 50, 60, 60], "prob": 0.9, "class": 1},
+            {"bbox": [0, 0, 10, 10], "prob": 0.8, "class": 1},
+        ],
+        ground_truths=[{"bbox": [0, 0, 10, 10], "class": 1}],
+    )
+    assert low_ranked_match == pytest.approx(0.5)
+
+    mismatched_ground_truth = tmp_path / "mismatched_ground_truth.txt"
+    mismatched_ground_truth.write_text("5 0 0 1 1\n", encoding="utf-8")
+    mismatch_estimator = AccEstimator(str(mismatched_ground_truth))
+    with pytest.raises(AssertionError, match="frame index 0 is not equal"):
+        mismatch_estimator.get_frame_ground_truth(0, (1.0, 1.0))
 
 
 @pytest.mark.unit
@@ -190,6 +210,12 @@ def test_flops_estimator_prefers_model_info_and_falls_back_to_ptflops(monkeypatc
 
     assert FlopsEstimator(PlainModel(), (3, 32, 32)).compute_flops() == 24.0
 
+    class BrokenInfoModel:
+        def info(self):
+            raise RuntimeError("unsupported")
+
+    assert FlopsEstimator(BrokenInfoModel(), (3, 32, 32)).compute_flops() == 24.0
+
 
 @pytest.mark.unit
 def test_overhead_estimator_handles_missing_logs_empty_files_and_lock_fallback(monkeypatch, tmp_path):
@@ -235,8 +261,10 @@ def test_overhead_estimator_handles_missing_logs_empty_files_and_lock_fallback(m
             handle.write("")
 
     with overhead_file.open("a", encoding="utf-8") as handle:
+        handle.write("\n")
         handle.write("invalid-line\n")
         handle.write("legacy-text\n")
+        handle.write("1,bad,bad,bad,not-a-number\n")
 
     estimator.write_overhead(1.25)
 

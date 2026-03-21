@@ -126,3 +126,48 @@ def test_node_info_extracts_cluster_metadata_and_validates_non_empty_nodes(monke
     )
     with pytest.raises(AssertionError, match="Invalid node config"):
         NodeInfo._NodeInfo__extract_node_info()
+
+
+@pytest.mark.unit
+def test_node_info_refreshes_missing_cached_maps_and_skips_non_internal_addresses(monkeypatch):
+    extracted = []
+
+    def fake_extract():
+        extracted.append("called")
+        return (
+            {"edge-a": "10.0.0.2"},
+            {"10.0.0.2": "edge-a"},
+            {"edge-a": "edge"},
+        )
+
+    NodeInfo._NodeInfo__node_info_hostname = {"stale": "10.0.0.9"}
+    NodeInfo._NodeInfo__node_info_ip = None
+    NodeInfo._NodeInfo__node_info_role = None
+    monkeypatch.setattr(NodeInfo, "_NodeInfo__extract_node_info", staticmethod(fake_extract))
+
+    assert NodeInfo.get_node_info_reverse() == {"10.0.0.2": "edge-a"}
+    assert NodeInfo.get_node_info_role() == {"edge-a": "edge"}
+    assert extracted == ["called"]
+
+    nodes = [
+        SimpleNamespace(
+            metadata=SimpleNamespace(name="edge-a", labels={"node-role.kubernetes.io/edge": ""}),
+            status=SimpleNamespace(
+                addresses=[
+                    SimpleNamespace(type="ExternalIP", address="1.1.1.1"),
+                    SimpleNamespace(type="InternalIP", address="10.0.0.2"),
+                ]
+            ),
+        )
+    ]
+    monkeypatch.setattr(node_module.config, "load_incluster_config", lambda: None)
+    monkeypatch.setattr(
+        node_module.client,
+        "CoreV1Api",
+        lambda: SimpleNamespace(list_node=lambda: SimpleNamespace(items=nodes)),
+    )
+
+    hostname_map, reverse_map, role_map = NodeInfo._NodeInfo__extract_node_info()
+    assert hostname_map == {"edge-a": "10.0.0.2"}
+    assert reverse_map == {"10.0.0.2": "edge-a"}
+    assert role_map == {"edge-a": "edge"}

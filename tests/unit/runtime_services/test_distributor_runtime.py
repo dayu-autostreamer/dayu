@@ -167,6 +167,87 @@ def test_distributor_records_transmit_time_and_forwards_scenario(distributor_ins
 
 
 @pytest.mark.unit
+def test_distributor_handles_empty_queries_scheduler_failures_and_export_cleanup(distributor_instance, monkeypatch, tmp_path):
+    distributor = distributor_instance.instance
+    warnings = []
+    exceptions = []
+    removed_paths = []
+
+    monkeypatch.setattr(distributor_module.LOGGER, "warning", lambda message: warnings.append(message))
+    monkeypatch.setattr(distributor_module.LOGGER, "exception", lambda exc: exceptions.append(str(exc)))
+    monkeypatch.setattr(
+        distributor_module,
+        "http_request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("scheduler unavailable")),
+    )
+    monkeypatch.setattr(
+        distributor_module.FileOps,
+        "remove_file",
+        lambda path: removed_paths.append(path),
+    )
+
+    assert distributor.query_result(time_ticket=0, size=10) == {"result": [], "time_ticket": 0, "size": 0}
+    assert distributor.query_results_by_time(0, 1) == {"result": [], "size": 0}
+    assert distributor.query_all_result() == {"result": [], "size": 0}
+
+    task = build_task(task_id=11)
+    distributor.distribute_data(task)
+
+    assert any("Send scenario to scheduler failed" in message for message in warnings)
+    assert exceptions == ["scheduler unavailable"]
+
+    snapshot_path = tmp_path / "snapshot.db"
+    export_path = tmp_path / "export.json.gz"
+    monkeypatch.setattr(distributor, "_create_result_log_snapshot", lambda: str(snapshot_path))
+
+    def fail_write(snapshot, export):
+        raise RuntimeError("export failed")
+
+    monkeypatch.setattr(distributor, "_write_result_log_export", fail_write)
+    monkeypatch.setattr(
+        distributor_module.tempfile,
+        "NamedTemporaryFile",
+        lambda **kwargs: SimpleNamespace(name=str(export_path), close=lambda: None),
+    )
+
+    with pytest.raises(RuntimeError, match="export failed"):
+        distributor.create_result_log_export_file()
+
+    assert removed_paths == [str(export_path), str(snapshot_path)]
+
+
+@pytest.mark.unit
+def test_distributor_snapshot_and_export_helpers_cover_cleanup_and_separator_rules(distributor_instance, monkeypatch, tmp_path):
+    distributor = distributor_instance.instance
+    removed_paths = []
+    warnings = []
+    monkeypatch.setattr(distributor_module.FileOps, "remove_file", lambda path: removed_paths.append(path))
+    monkeypatch.setattr(distributor_module.LOGGER, "warning", lambda message: warnings.append(message))
+    original_connect = distributor._connect
+
+    with pytest.raises(Exception):
+        monkeypatch.setattr(distributor, "_connect", lambda: (_ for _ in ()).throw(RuntimeError("backup failed")))
+        distributor._create_result_log_snapshot()
+    assert removed_paths, "snapshot cleanup should remove the temporary db on backup failure"
+
+    export_path = tmp_path / "export.json.gz"
+    monkeypatch.setattr(
+        distributor,
+        "_iter_snapshot_records",
+        lambda snapshot_path: iter(['{"task": 1}', "{bad json", '{"task": 2}']),
+    )
+    distributor._write_result_log_export("snapshot", str(export_path))
+    exported = gzip.open(export_path, "rt", encoding="utf-8").read()
+    assert exported.startswith("[\n")
+    assert exported.endswith("]\n")
+    assert '"task": 1' in exported and '"task": 2' in exported
+    assert "    },\n    {" in exported
+    assert warnings == ["[Distributor] Skip malformed result log record during export."]
+
+    monkeypatch.setattr(distributor, "_connect", original_connect)
+
+
+@pytest.mark.unit
 def test_distributor_server_covers_background_queries_download_and_export(monkeypatch, tmp_path):
     calls = []
     export_path = tmp_path / "results.json.gz"
