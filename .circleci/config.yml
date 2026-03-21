@@ -3,10 +3,12 @@ version: 2.1
 executors:
   python-executor:
     docker:
-      - image: cimg/python:3.10
+      - image: cimg/python:3.8
     working_directory: ~/project
     environment:
-      PYTHON: "python3"
+      # cimg/python exposes the pyenv-managed interpreter as `python`.
+      # `python3` can resolve to the system interpreter without pip/ensurepip.
+      PYTHON: "python"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PIP_NO_COLOR: "1"
       DELETE_TEMP_FILES: "False"
@@ -34,7 +36,10 @@ commands:
       - run:
           name: Install Python development dependencies
           command: |
+            command -v ${PYTHON}
+            ${PYTHON} --version
             ${PYTHON} -m ensurepip --upgrade || true
+            ${PYTHON} -m pip --version
             ${PYTHON} -m pip install --upgrade pip
             ${PYTHON} -m pip install -r requirements-dev.txt
       - save_cache:
@@ -51,7 +56,10 @@ commands:
       - run:
           name: Install Python test dependencies
           command: |
+            command -v ${PYTHON}
+            ${PYTHON} --version
             ${PYTHON} -m ensurepip --upgrade || true
+            ${PYTHON} -m pip --version
             ${PYTHON} -m pip install --upgrade pip
             ${PYTHON} -m pip install -r requirements-dev.txt
             ${PYTHON} -m pip install -r .github/requirements/torch-cpu.txt
