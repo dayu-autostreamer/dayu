@@ -48,7 +48,7 @@ class DummyTimingTask:
 
 @pytest.mark.unit
 def test_time_estimator_and_timer_cover_recording_erasing_and_logging(monkeypatch):
-    timestamps = iter([10.0, 10.25, 20.0, 20.5, 30.0, 31.0, 40.0, 50.0])
+    timestamps = iter([10.0, 10.25, 20.0, 20.5, 30.0, 31.0, 40.0, 50.0, 60.0, 70.0])
     logs = []
 
     monkeypatch.setattr(time_module.time, "time", lambda: next(timestamps))
@@ -60,14 +60,19 @@ def test_time_estimator_and_timer_cover_recording_erasing_and_logging(monkeypatc
     assert timer.get_elapsed_time() == 0.25
     assert logs[-1].startswith("[unit-test-stage] Execution time:")
 
+    with Timer() as plain_timer:
+        pass
+    assert plain_timer.get_elapsed_time() == 0.5
+    assert logs[-1].startswith("Execution time:")
+
     data = {}
     duration, start_ts = TimeEstimator.record_ts(data, "task-start")
     assert duration == 0
-    assert start_ts == 20.0
+    assert start_ts == 30.0
 
     duration, end_ts = TimeEstimator.record_ts(data, "task-start", is_end=True)
-    assert duration == 0.5
-    assert end_ts == 20.5
+    assert duration == 1.0
+    assert end_ts == 31.0
     assert data == {}
 
     task = DummyTimingTask()
@@ -189,6 +194,12 @@ def test_flops_estimator_prefers_model_info_and_falls_back_to_ptflops(monkeypatc
         pass
 
     assert FlopsEstimator(PlainModel(), (3, 32, 32)).compute_flops() == 24.0
+
+    class BrokenInfoModel:
+        def info(self):
+            raise RuntimeError("unsupported")
+
+    assert FlopsEstimator(BrokenInfoModel(), (3, 32, 32)).compute_flops() == 24.0
 
 
 @pytest.mark.unit

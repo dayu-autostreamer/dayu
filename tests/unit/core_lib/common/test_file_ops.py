@@ -299,3 +299,69 @@ def test_file_cleaner_supports_recursive_iteration_and_path_level_error_branches
     assert any("Error processing file: broken.log" in message for message in warnings)
     assert any("Failed to delete: bad.log" in message for message in warnings)
     assert exceptions == ["boom", "unlink failed"]
+
+
+@pytest.mark.unit
+def test_file_cleaner_honors_stop_signals_delete_limits_and_custom_expiry(monkeypatch, tmp_path):
+    file_ops_module = importlib.import_module("core.lib.common.file_ops")
+
+    expired_a = tmp_path / "expired-a.log"
+    expired_b = tmp_path / "expired-b.log"
+    skipped = tmp_path / "skipped.log"
+    for path in (expired_a, expired_b, skipped):
+        path.write_text(path.name, encoding="utf-8")
+
+    cleaner = file_ops_module.FileCleaner(
+        tmp_path,
+        ttl_seconds=None,
+        recursive=True,
+        max_delete_per_round=1,
+        expiry_resolver=lambda path: datetime.now(tz=timezone.utc) - timedelta(seconds=1)
+        if path.name != "skipped.log"
+        else None,
+    )
+    cleaner._clean_once()
+
+    assert sum(path.exists() for path in (expired_a, expired_b)) == 1
+    assert skipped.exists()
+
+    class StopAfterFirstCheck:
+        def __init__(self):
+            self.calls = 0
+
+        def is_set(self):
+            self.calls += 1
+            return self.calls > 1
+
+        def wait(self, timeout):
+            return True
+
+        def set(self):
+            return None
+
+        def clear(self):
+            return None
+
+    wait_break_cleaner = file_ops_module.FileCleaner(tmp_path, ttl_seconds=1)
+    wait_break_cleaner._stop_event = StopAfterFirstCheck()
+    wait_break_cleaner._clean_once = lambda: (_ for _ in ()).throw(AssertionError("should not clean"))
+    wait_break_cleaner._run()
+
+    break_cleaner = file_ops_module.FileCleaner(tmp_path, ttl_seconds=1)
+    break_cleaner._stop_event = StopAfterFirstCheck()
+    break_cleaner._iter_files = lambda folder: iter([expired_a, expired_b])
+
+    deleted = []
+    monkeypatch.setattr(break_cleaner, "_is_expired", lambda path, now_ts: True)
+    monkeypatch.setattr(break_cleaner, "_safe_delete", lambda path: deleted.append(path.name))
+    break_cleaner._clean_once()
+
+    assert deleted == ["expired-a.log"]
+    assert cleaner._is_expired(skipped, datetime.now(tz=timezone.utc).timestamp()) is False
+
+    numeric_expiry_cleaner = file_ops_module.FileCleaner(
+        tmp_path,
+        ttl_seconds=None,
+        expiry_resolver=lambda path: 1.0,
+    )
+    assert numeric_expiry_cleaner._is_expired(expired_a, now_ts=2.0) is True

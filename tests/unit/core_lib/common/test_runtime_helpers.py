@@ -2,6 +2,7 @@ import asyncio
 import csv
 import importlib
 import json
+import queue as py_queue
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -95,6 +96,44 @@ def test_queue_drops_oldest_items_and_exposes_non_destructive_snapshots():
     queue.put("tail")
     queue.clear()
     assert queue.empty() is True
+
+
+@pytest.mark.unit
+def test_queue_and_instance_manager_cover_exception_swallowing_and_registry_snapshots(monkeypatch):
+    queue = Queue(maxsize=1)
+
+    class FakeInternalQueue:
+        @staticmethod
+        def full():
+            return True
+
+        @staticmethod
+        def get_nowait():
+            raise py_queue.Empty
+
+        @staticmethod
+        def put_nowait(item):
+            raise py_queue.Full
+
+    monkeypatch.setattr(queue, "_Queue__queue", FakeInternalQueue())
+    queue.put("payload")
+
+    class Alpha:
+        pass
+
+    class Beta:
+        pass
+
+    alpha = GlobalInstanceManager.get_instance(Alpha, "alpha")
+    beta = GlobalInstanceManager.get_instance(Beta, "beta")
+    snapshot = GlobalInstanceManager.get_all_instances()
+
+    assert snapshot[Alpha]["alpha"] is alpha
+    assert snapshot[Beta]["beta"] is beta
+
+    snapshot[Alpha].clear()
+    assert GlobalInstanceManager.has_instance(Alpha, "alpha") is True
+    assert GlobalInstanceManager.get_all_instances(dict) == {}
 
 
 @pytest.mark.unit

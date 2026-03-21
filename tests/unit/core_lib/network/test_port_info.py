@@ -192,7 +192,7 @@ def test_port_info_import_time_configuration_uses_repo_relative_loading(monkeypa
         "dayu_test_port_info_never",
         {
             "NAMESPACE": "dayu",
-            "KUBE_CACHE_TTL": None,
+            "KUBE_CACHE_TTL": "never",
             "KUBE_CACHE_WARMUP_TIMEOUT": None,
         },
     )
@@ -229,6 +229,21 @@ def test_port_info_api_loading_and_cache_management_cover_force_and_error_paths(
     assert port_info_module.PortInfo._get_api() is fake_api
     assert port_info_module.PortInfo._get_api() is fake_api
     assert load_calls == ["kubeconfig"]
+
+    second_module = importlib.import_module("core.lib.network.port")
+    monkeypatch.setattr(second_module.PortInfo, "_api", None)
+    monkeypatch.setattr(
+        second_module.k8s.config,
+        "load_incluster_config",
+        lambda: (_ for _ in ()).throw(RuntimeError("no in-cluster config")),
+    )
+    monkeypatch.setattr(
+        second_module.k8s.config,
+        "load_kube_config",
+        lambda: (_ for _ in ()).throw(RuntimeError("no kube config")),
+    )
+    monkeypatch.setattr(second_module.k8s.client, "CoreV1Api", lambda: fake_api)
+    assert second_module.PortInfo._get_api() is fake_api
 
     refresh_calls = []
     monkeypatch.setattr(port_info_module.PortInfo, "_refresh_now", classmethod(lambda cls: refresh_calls.append("refresh")))

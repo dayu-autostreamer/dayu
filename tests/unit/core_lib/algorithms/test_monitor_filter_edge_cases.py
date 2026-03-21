@@ -12,6 +12,7 @@ import pytest
 casva_bsto_module = importlib.import_module("core.lib.algorithms.before_submit_task_operation.casva_operation")
 dynamic_filter_module = importlib.import_module("core.lib.algorithms.frame_filter.dynamic_filter")
 available_bandwidth_module = importlib.import_module("core.lib.algorithms.parameter_monitor.available_bandwidth_monitor")
+base_monitor_module = importlib.import_module("core.lib.algorithms.parameter_monitor.base_monitor")
 cpu_flops_module = importlib.import_module("core.lib.algorithms.parameter_monitor.cpu_flops_monitor")
 gpu_flops_module = importlib.import_module("core.lib.algorithms.parameter_monitor.gpu_flops_monitor")
 gpu_usage_module = importlib.import_module("core.lib.algorithms.parameter_monitor.gpu_usage_monitor")
@@ -150,6 +151,68 @@ def test_available_bandwidth_monitor_retries_permission_and_handles_client_error
     assert client_monitor.get_parameter_value() == 0
     assert any("bandwidth error" in message for message in warnings)
     assert any("iperf crashed" in message for message in exceptions)
+
+
+@pytest.mark.unit
+def test_base_monitor_and_available_bandwidth_init_cover_runtime_contracts(monkeypatch):
+    class DummyMonitor(base_monitor_module.BaseMonitor):
+        def __init__(self, system):
+            super().__init__(system)
+            self.name = "dummy"
+
+        def get_parameter_value(self):
+            return 42
+
+    system = SimpleNamespace(resource_info={})
+    monitor = DummyMonitor(system)
+    thread = monitor()
+    assert thread._target == monitor.run_monitor
+    monitor.run_monitor(system)
+    assert system.resource_info == {"dummy": 42}
+
+    with pytest.raises(NotImplementedError):
+        base_monitor_module.BaseMonitor(SimpleNamespace(resource_info={})).get_parameter_value()
+
+    started_ports = []
+    warnings = []
+    exceptions = []
+
+    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_local_device", staticmethod(lambda: "cloud-node"))
+    monkeypatch.setattr(
+        available_bandwidth_module.NodeInfo,
+        "get_node_role",
+        staticmethod(lambda device: available_bandwidth_module.NodeRoleConstant.CLOUD.value),
+    )
+    monkeypatch.setattr(available_bandwidth_module.Context, "get_parameter", staticmethod(lambda key, default=None: 5201))
+    monkeypatch.setattr(
+        available_bandwidth_module.AvailableBandwidthMonitor,
+        "run_iperf_server",
+        lambda self: started_ports.extend(self.iperf3_ports),
+    )
+
+    server_monitor = available_bandwidth_module.AvailableBandwidthMonitor(SimpleNamespace(resource_info={}))
+    assert server_monitor.is_server is True
+    assert started_ports == [5201]
+
+    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
+    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_node_role", staticmethod(lambda device: "edge"))
+    monkeypatch.setattr(available_bandwidth_module.PortInfo, "get_component_port", staticmethod(lambda component: 7777))
+    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.9"))
+    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
+    monkeypatch.setattr(
+        available_bandwidth_module.AvailableBandwidthMonitor,
+        "request_for_bandwidth_permission",
+        lambda self: (_ for _ in ()).throw(RuntimeError("permission denied")),
+    )
+    monkeypatch.setattr(available_bandwidth_module.LOGGER, "warning", lambda message: warnings.append(message))
+    monkeypatch.setattr(available_bandwidth_module.LOGGER, "exception", lambda exc: exceptions.append(str(exc)))
+
+    client_monitor = available_bandwidth_module.AvailableBandwidthMonitor(SimpleNamespace(resource_info={}))
+    assert client_monitor.is_server is False
+    assert client_monitor.iperf3_port == 7777
+    assert client_monitor.iperf3_server_ip == "10.0.0.9"
+    assert any("Request bandwidth resource permission failed" in message for message in warnings)
+    assert exceptions == ["permission denied"]
 
 
 @pytest.mark.unit

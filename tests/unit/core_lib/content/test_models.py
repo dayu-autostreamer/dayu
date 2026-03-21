@@ -75,7 +75,10 @@ def test_service_supports_roundtrip_and_time_ticket_guards():
     restored = Service.deserialize(service.serialize())
     assert restored.to_dict() == service.to_dict()
     assert restored == Service("detector")
-    assert repr(restored) == "detector"
+    restored.set_service_name("detector-v2")
+    assert restored.get_service_name() == "detector-v2"
+    assert hash(restored) == hash("detector-v2")
+    assert repr(restored) == "detector-v2"
 
 
 @pytest.mark.unit
@@ -121,6 +124,53 @@ def test_dag_validation_repairs_missing_edges_and_rejects_invalid_graphs():
     )
     with pytest.raises(ValueError, match="disconnected components"):
         disconnected.validate_dag()
+
+
+@pytest.mark.unit
+def test_dag_helpers_cover_node_access_auto_connections_and_duplicate_edges():
+    start = TaskConstant.START.value
+    end = TaskConstant.END.value
+
+    node = dag_module.Node(Service("decode"), prev_nodes=[start], next_nodes=["infer"])
+    assert node.get_prev_nodes() == [start]
+    assert node.get_next_nodes() == ["infer"]
+    assert dag_module.Node.deserialize(node.serialize()).to_dict() == node.to_dict()
+
+    dag = DAG()
+    dag.add_edge(Service("decode"), Service("infer"))
+    dag.add_start_node(Service(start))
+    dag.add_end_node(Service(end))
+
+    assert dag.get_start_node().service.get_service_name() == start
+    assert dag.get_end_node().service.get_service_name() == end
+    assert dag.get_prev_nodes("decode") == [start]
+    assert dag.get_next_nodes("infer") == [end]
+
+    with pytest.raises(ValueError, match='already exists in DAG'):
+        dag.add_node(dag_module.Node(Service("decode")))
+    with pytest.raises(ValueError, match='already exists'):
+        dag.add_start_node(Service(start))
+    with pytest.raises(ValueError, match='already exists'):
+        dag.add_end_node(Service(end))
+    with pytest.raises(TypeError, match="Expected input type Service or Node"):
+        dag.add_node("invalid")
+
+    boundaryless = DAG()
+    with pytest.raises(ValueError, match='Start node'):
+        boundaryless.get_start_node()
+    with pytest.raises(ValueError, match='End node'):
+        boundaryless.get_end_node()
+
+    duplicate = DAG.from_dict(
+        {
+            start: service_entry(start, next_nodes=["decode"]),
+            "decode": service_entry("decode", prev_nodes=[start], next_nodes=[end]),
+            end: service_entry(end, prev_nodes=["decode"]),
+        }
+    )
+    duplicate.add_edge(Service(start), Service("decode"))
+    with pytest.raises(ValueError, match="Duplicate edge"):
+        duplicate.validate_dag()
 
 
 @pytest.mark.unit
@@ -233,6 +283,87 @@ def test_task_delay_calculation_time_tickets_and_estimator_helpers(monkeypatch):
     del task.get_tmp_data()[f"{prefix}:total_end_time"]
     with pytest.raises(ValueError, match="ending lacks"):
         task.get_real_end_to_end_time()
+
+
+@pytest.mark.unit
+def test_task_service_and_content_helpers_cover_stage_updates_and_time_ticket_operations():
+    pipeline = [
+        {"service_name": "decode", "execute_device": "edge-a"},
+        {"service_name": "infer", "execute_device": "cloud-a"},
+    ]
+    pipeline_task = Task(
+        source_id=8,
+        task_id=9,
+        source_device="edge-a",
+        all_edge_devices=["edge-a"],
+        dag=Task.extract_dag_from_pipeline_deployment(pipeline),
+    )
+    assert pipeline_task.get_pipeline_deployment_info() == pipeline
+    assert Task.extract_dict_from_dag(pipeline_task.get_dag()) == pipeline_task.get_dag().to_dict()
+
+    task = build_branching_task()
+    branches = {branch.get_flow_index(): branch for branch in task.step_to_next_stage()}
+    branch = branches["a"]
+
+    branch.add_hash_data("hash-1")
+    branch.set_current_content({"boxes": 2})
+    branch.set_scenario_data({"objects": 2})
+    branch.add_scenario({"speed": 3})
+    branch.save_transmit_time(0.2)
+    branch.save_execute_time(0.4)
+    branch.save_real_execute_time(0.3)
+    branch.record_time_ticket_in_service("queue", is_end=False, time_ticket=1.0)
+    branch.record_time_ticket_in_service("queue", is_end=True, time_ticket=1.2)
+
+    assert branch.get_current_content() == {"boxes": 2}
+    assert branch.get_current_service_info() == ("a", "edge-a")
+    assert branch.get_current_stage_device() == "edge-a"
+
+    branch.set_current_stage_device("edge-c")
+    assert branch.get_current_stage_device() == "edge-c"
+
+    assert branch.get_scenario_data("a") == {"objects": 2, "speed": 3}
+    assert branch.get_first_scenario_data() == {"objects": 2, "speed": 3}
+    assert branch.get_first_content() == {"boxes": 2}
+
+    join_task = branch.step_to_next_stage()[0]
+    assert join_task.get_prev_content() == {"boxes": 2}
+
+    join_task.set_current_content({"merged": True})
+    join_task.set_flow_index(TaskConstant.END.value)
+    assert join_task.get_last_content() == {"merged": True}
+    assert join_task.calculate_cloud_edge_transmit_time() == pytest.approx(0.2)
+
+    updated_dag = Task.set_execute_device(join_task.get_dag(), "uniform-device")
+    assert all(
+        updated_dag.get_node(node_name).service.get_execute_device() == "uniform-device"
+        for node_name in updated_dag.nodes
+    )
+    join_task.set_initial_execute_device("initial-device")
+    assert all(
+        join_task.get_dag().get_node(node_name).service.get_execute_device() == "initial-device"
+        for node_name in join_task.get_dag().nodes
+    )
+    assert branch.get_hash_data() == ["hash-1"]
+
+    join_task.record_time_ticket_in_service("queue", is_end=False, time_ticket=2.0)
+    join_task.erase_time_ticket_in_service("queue", is_end=False)
+    with pytest.raises(AssertionError, match="does not exist"):
+        join_task.erase_time_ticket_in_service("queue", is_end=False)
+
+    missing_start_task = Task(
+        source_id=5,
+        task_id=6,
+        source_device="edge-a",
+        all_edge_devices=["edge-a"],
+        dag=Task.extract_dag_from_dict({"decode": service_entry("decode", execute_device="edge-a")}),
+    )
+    with pytest.raises(ValueError, match="starting lacks"):
+        missing_start_task.get_real_end_to_end_time()
+
+    cloned = join_task.fork_task(join_task.get_flow_index())
+    assert cloned.get_flow_index() == join_task.get_flow_index()
+    assert cloned.get_parent_uuid() == join_task.get_task_uuid()
 
 
 @pytest.mark.unit
