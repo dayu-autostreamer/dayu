@@ -110,6 +110,25 @@ def test_resource_lock_manager_enforces_single_holder_per_resource():
 
 
 @pytest.mark.unit
+def test_resource_lock_manager_creates_async_lock_only_inside_running_event_loop(monkeypatch):
+    created_loops = []
+    real_lock = asyncio.Lock
+
+    def tracking_lock():
+        created_loops.append(id(asyncio.get_running_loop()))
+        return real_lock()
+
+    monkeypatch.setattr(resource_module.asyncio, "Lock", tracking_lock)
+
+    manager = ResourceLockManager()
+
+    assert asyncio.run(manager.acquire_lock("camera-1", "edge-a")) == "edge-a"
+    assert asyncio.run(manager.get_current_holder("camera-1")) == "edge-a"
+    assert len(created_loops) == 2
+    assert created_loops[0] != created_loops[1]
+
+
+@pytest.mark.unit
 def test_global_instance_manager_scopes_instances_by_class_and_id():
     class Demo:
         init_calls = 0
