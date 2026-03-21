@@ -6,7 +6,7 @@ English | [简体中文](./README_zh.md)
 [![CI](https://github.com/dayu-autostreamer/dayu/actions/workflows/ci.yml/badge.svg)](https://github.com/dayu-autostreamer/dayu/actions/workflows/ci.yml)
 [![CircleCI Project](https://circleci.com/gh/dayu-autostreamer/dayu.svg?style=svg)](https://app.circleci.com/pipelines/gh/dayu-autostreamer/dayu)
 [![Codecov](https://codecov.io/gh/dayu-autostreamer/dayu/graph/badge.svg)](https://codecov.io/gh/dayu-autostreamer/dayu)
-[![Licence](https://img.shields.io/github/license/dayu-autostreamer/dayu.svg)](https://github.com/dayu-autostreamer/dayu/blob/main/LICENSE)
+[![Licence](https://img.shields.io/github/license/dayu-autostreamer/dayu.svg)](LICENSE)
 [![Homepage](https://img.shields.io/website?url=https%3A%2F%2Fdayu-autostreamer.github.io%2F&label=homepage)](https://dayu-autostreamer.github.io/)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/dayu-autostreamer/dayu/badge)](https://scorecard.dev/viewer/?uri=github.com/dayu-autostreamer/dayu)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10523/badge)](https://www.bestpractices.dev/projects/10523)
@@ -20,22 +20,19 @@ English | [简体中文](./README_zh.md)
 | May. 7th, 2025. Dayu v1.1 Release. Please check the [CHANGELOG](CHANGELOG.md#v11) for details.                       |
 | Feb. 21th, 2025. Dayu v1.0 Release. Please check the [CHANGELOG](CHANGELOG.md#v10) for details.                      |
 
-## Brief Introduction
+Dayu is a cloud-edge stream analytics platform for deploying, scheduling, and operating DAG-based AI
+pipelines across heterogeneous nodes. It combines a backend control plane, a Vue frontend, simulated datasources, and a
+runtime collaboration layer for generator, scheduler, controller, processor, distributor, and monitor services.
 
-Dayu is an automated scheduling system for edge computing in stream data processing. Dayu supports dag service
-processing of multi data stream and focus on the scheduling policy in edge computing. It's developed based on KubeEdge
-and can be easily migrated.
+## Why Dayu
 
-## Related Framework
+- DAG-based multi-stage stream analytics with dynamic task configuration and offloading
+- Hook-based runtime extension for generator, scheduler, processor, monitor, and visualization behavior
+- Built-in deployment composition using policy catalogs, component templates, and processor service templates
+- Backend-managed result visualization, system telemetry snapshots, and compressed log export
+- Compatibility with heterogeneous cloud and edge nodes through a KubeEdge and Sedna oriented deployment model
 
-- [Docker Container](https://github.com/docker/docker-ce)
-- [Kubernetes](https://github.com/kubernetes/kubernetes)
-- [KubeEdge](https://github.com/kubeedge/kubeedge)
-- [Sedna](https://github.com/kubeedge/sedna)
-- [EdgeMesh](https://github.com/kubeedge/edgemesh)
-- [TensorRT](https://github.com/NVIDIA/TensorRT)
-
-## Architecture
+## Architecture at a Glance
 
 Dayu is composed of five layers:
 
@@ -55,134 +52,7 @@ Dayu is composed of five layers:
 
 ![](static/dayu-layer-structure.png)
 
-### Basic System Layer & Intermediate Interface Layer
-
-- Basic System Layer
-    - `KubeEdge` use CloudCore and EdgeCore to complete containerized application orchestration and device management
-      among cloud-edge environment.
-- Intermediate Interface Layer
-    - `Sedna` uses Global Manager (GM) and Local Controller (LC) to implement across edge-cloud collaborative
-      applications. According to deployment requirements of platform, we modify the CRD controller in GM and LC of
-      `Sedna` ([link](https://github.com/dayu-autostreamer/dayu-sedna)).
-    - `Edgemesh` offers an efficient way for network communication between pods in system. According to the requirements
-      of dayu, we modify the balance policy of `Edgemesh` ([link](https://github.com/dayu-autostreamer/dayu-edgemesh)).
-
-*NOTE: For better understanding, we transform 'Local Controller' of `Sedna` as 'Local Manager' in the structure*
-
-![](static/dayu-lower-layer-structure.png)
-
-### System Support Layer
-
-It is composed of **backend**, **frontend** and **datasource**.
-
-- `frontend`: offer a graphic user interface (as the form of web) with vue.
-- `backend`: interact with frontend to offer necessary data and install components automatically according to
-  instructions from frontend.
-- `datasource`: offer a simulated datasource which play the role of sources (e.g., cameras).
-
-### Collaboration Scheduling Layer & Application Service Layer
-
-Components in Collaboration Scheduling Layer and Application Service Layer work as Workers in Intermediate Interface
-Layer.
-
-- `generator`: bind to a data stream and complete the segmentation of data package based on schedule policy from
-  scheduler.
-- `controller`: control the whole process of data dealing and forwarding among cloud and edge devices.
-- `processor`: process data with AI algorithms, a service pipeline may include more than one stage processor.
-- `distributor`: collect data processing results and processing information from multi data stream and distribute
-  according to different requirements.
-- `scheduler`: generate schedule policy based on resource state and task state, schedule policy includes task offloading
-  and data configuration.
-- `monitor`: monitor resource usage like CPU usage, memory usage and network bandwidth.
-
-Among these components, `generator`,`controller`,`distributor`,`scheduler` and `monitor` are embedded in the platform to
-offer file-grained pipeline task organization and scheduling, and they are invisible to users. The following components
-make up of the Collaboration Scheduling Layer.
-
-Meanwhile, `processor` can be equipped with user-defined application services of single-stage or multi-stage (pipeline).
-It makes up of Application Service Layer.
-
-![](static/dayu-upper-layer-structure.png)
-
-## Features
-
-- **Make application services as stateless microservices**: User application services on the platform are all in the
-  form of stateless microservices. Services have nothing to do with the data flow status and system status. They are
-  automatically deployed in containers by the framework and have no node environment dependencies.
-- **Compatible across heterogeneous nodes**: The platform is compatible with distributed nodes with different hardware
-  architectures (such as x86/arm64), different performance configurations, and different resource configurations. It can
-  adapt to different physical distances and communication quality among nodes.
-- **Support fine-grained real-time scheduling**: The platform can generate task data configuration and task offloading
-  decisions in real time based on working conditions and resource situations, thereby completing fine-grained real-time
-  scheduling of tasks.
-- **Support parallel processing of multiple data streams**: The platform supports parallel processing of multiple data
-  streams (for example, cameras at different intersections process traffic flow tasks at the same time). These tasks do
-  not distinguish between data streams during the processing stage and are processed equivalently.
-
-## Documentation
-
-Repository-maintained technical docs now live under [`docs/`](docs/README.md):
-
-- [`docs/api/README.md`](docs/api/README.md): backend control-plane and internal runtime APIs
-- [`docs/hooks/README.md`](docs/hooks/README.md): hook mechanism, lifecycle, and extension guide
-- [`docs/hooks/catalog.md`](docs/hooks/catalog.md): registered hook implementation catalog
-
-## Development Environment
-
-To align local development with CI, use the toolchain versions tracked in the repository:
-
-- Python `3.8` via [`.python-version`](.python-version)
-- Node.js `20` via [`.nvmrc`](.nvmrc)
-- `make` as the primary local task entry point
-
-Python developer dependencies are collected in [`requirements-dev.txt`](requirements-dev.txt), and Python lint
-configuration lives in [`pyproject.toml`](pyproject.toml).
-
-## Local Quality Checks
-
-Use the provided `Makefile` targets for local feedback loops:
-
-```bash
-make install-python-dev
-make python-syntax
-make test-unit-integration
-make test-component
-make test-e2e
-make coverage-python
-make frontend-install
-make frontend-lint
-make frontend-format
-make frontend-format-check
-make frontend-build
-```
-
-`make check` runs the shared syntax, Python unit/integration, and frontend format/build checks used in daily
-development.
-`make coverage-python` runs the full Python suite used for Codecov, while `make test-component` and `make test-e2e`
-cover the cross-component pipeline and template-driven smoke path separately.
-Use `make frontend-lint` as an additional cleanup target while the existing Vue template debt is being reduced
-incrementally.
-
-## Repository Layout
-
-- `backend`: installation APIs and backend orchestration helpers
-- `frontend`: Vue-based web UI and user-facing workflows
-- `datasource`: simulated data sources for demos and testing
-- `components`: runtime entry points for generator/controller/processor/distributor/scheduler/monitor
-- `dependency/core`: shared core libraries, scheduling logic, and component implementations
-- `tests`: unit, integration, component, and e2e coverage
-- `tools`: small developer and operations utilities
-
-## Developer Tools
-
-The repository includes a CLI log summary tool for exported system traces:
-
-```bash
-python tools/log_analysis.py --log path/to/exported-log.json.gz
-python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format json
-```
-
-## Guides
+## Tutorials and Guides
 
 To get detailed instructions about our dayu system, please refer to the documentation on
 the [homepage](https://dayu-autostreamer.github.io/).
@@ -193,6 +63,94 @@ of the dayu system.
 If you want to further develop dayu for your needs, please refer to
 our [development tutorial](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop).
 
+## Implementation Documentation
+
+Dayu now keeps implementation-facing technical documentation in the repository, while the public website remains the
+best place for tutorials and end-user walkthroughs.
+
+| If you want to...                                             | Start here                                                                                          |
+|---------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
+| understand the system design                                  | [`docs/architecture/README.md`](docs/architecture/README.md)                                        |
+| understand how policies, templates, and env vars fit together | [`docs/configuration/README.md`](docs/configuration/README.md)                                      |
+| inspect backend and runtime APIs                              | [`docs/api/README.md`](docs/api/README.md)                                                          |
+| understand the hook model and built-in aliases                | [`docs/hooks/README.md`](docs/hooks/README.md) and [`docs/hooks/catalog.md`](docs/hooks/catalog.md) |
+| work on datasource playback and manifests                     | [`docs/datasource/README.md`](docs/datasource/README.md)                                            |
+| navigate the repository as a contributor                      | [`docs/development/README.md`](docs/development/README.md)                                          |
+| understand test layers and where to add coverage              | [`docs/testing/README.md`](docs/testing/README.md)                                                  |
+| follow end-user deployment tutorials                          | [project documentation site](https://dayu-autostreamer.github.io/docs/)                             |
+
+The repository docs index lives at [`docs/README.md`](docs/README.md).
+
+## Ecosystem
+
+Dayu is designed around the following ecosystem:
+
+- [Docker Container](https://github.com/docker/docker-ce)
+- [Kubernetes](https://github.com/kubernetes/kubernetes)
+- [KubeEdge](https://github.com/kubeedge/kubeedge)
+- [Sedna](https://github.com/kubeedge/sedna)
+- [EdgeMesh](https://github.com/kubeedge/edgemesh)
+- [TensorRT](https://github.com/NVIDIA/TensorRT)
+
+Dayu also depends on the maintained companion work around Sedna and EdgeMesh integration:
+
+- [dayu-sedna](https://github.com/dayu-autostreamer/dayu-sedna)
+- [dayu-edgemesh](https://github.com/dayu-autostreamer/dayu-edgemesh)
+
+## Local Testing
+
+To align local testing with CI, use the repository-declared toolchain:
+
+- Python `3.8` via [`.python-version`](.python-version)
+- Node.js `20` via [`.nvmrc`](.nvmrc)
+- `make` as the primary local task entry point
+
+Python developer dependencies are collected in [`requirements-dev.txt`](requirements-dev.txt), and Python lint
+configuration lives in [`pyproject.toml`](pyproject.toml).
+
+Use the provided `Makefile` targets for local feedback loops:
+
+```bash
+make install-python-dev
+make lint-python
+make python-syntax
+make test-unit-integration
+make test-component
+make test-e2e
+make coverage-python
+make frontend-install
+make frontend-check
+make check
+```
+
+`make check` is the day-to-day aggregate gate. `make coverage-python` mirrors the Python coverage run used by hosted CI.
+`make frontend-lint` remains available as a cleanup target while the frontend template debt continues to be reduced
+incrementally.
+
+## Repository Layout
+
+| Path               | Purpose                                                                                          |
+|--------------------|--------------------------------------------------------------------------------------------------|
+| `backend/`         | backend APIs, orchestration, deployment rendering, visualization, and log export                 |
+| `frontend/`        | Vue-based control-plane UI                                                                       |
+| `datasource/`      | datasource supervisor, HTTP video source, RTSP source, and manifest-driven dataset loader        |
+| `components/`      | thin container-facing service entrypoints                                                        |
+| `dependency/core/` | runtime services, shared libraries, hook implementations, and application services               |
+| `template/`        | deployment catalogs, component templates, processor templates, and default visualization configs |
+| `config/`          | sample datasource and visualization inputs                                                       |
+| `docs/`            | repository-managed technical documentation                                                       |
+| `tests/`           | unit, integration, component, and e2e tests                                                      |
+| `tools/`           | developer and operations utilities                                                               |
+
+## Developer Tooling
+
+The repository includes an offline CLI for summarizing exported logs:
+
+```bash
+python tools/log_analysis.py --log path/to/exported-log.json.gz
+python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format json
+```
+
 ## Contact
 
 If you have questions, feel free to reach out to us in the following ways:
@@ -202,13 +160,15 @@ If you have questions, feel free to reach out to us in the following ways:
 
 ## License
 
-Dayu is under the Apache 2.0 license. See the [LICENSE](LICENSE) file for details.
+Dayu is licensed under Apache 2.0. See the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
-If you're interested in being a contributor and want to get involved in developing the Dayu code, please
-see [CONTRIBUTING](CONTRIBUTING.md) for details on submitting patches and the contribution workflow. 
-If you're interested in contributing to the documentation, please click 'Edit this page' at the bottom of any doc in our [homepage](https://dayu-autostreamer.github.io/).
+If you want to contribute code, docs, or tests:
+
+- read [CONTRIBUTING](CONTRIBUTING.md) for the patch and review workflow
+- use the repository docs under [`docs/`](docs/README.md) as the implementation-facing reference
+- use the dayu [homepage](https://dayu-autostreamer.github.io) for tutorial-oriented content and end-user guidance
 
 Thanks for the following contributors:
 
