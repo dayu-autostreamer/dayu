@@ -349,7 +349,23 @@ def test_file_cleaner_honors_stop_signals_delete_limits_and_custom_expiry(monkey
 
     break_cleaner = file_ops_module.FileCleaner(tmp_path, ttl_seconds=1)
     break_cleaner._stop_event = StopAfterFirstCheck()
-    break_cleaner._iter_files = lambda folder: iter([expired_a, expired_b])
+
+    class FakeCandidatePath:
+        def __init__(self, name):
+            self.name = name
+
+        def is_file(self):
+            return True
+
+        def match(self, pattern):
+            return True
+
+        def __str__(self):
+            return self.name
+
+    break_cleaner._iter_files = lambda folder: iter(
+        [FakeCandidatePath("expired-a.log"), FakeCandidatePath("expired-b.log")]
+    )
 
     deleted = []
     monkeypatch.setattr(break_cleaner, "_is_expired", lambda path, now_ts: True)
