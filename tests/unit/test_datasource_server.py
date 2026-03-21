@@ -99,3 +99,83 @@ def test_open_datasource_ignores_unknown_modes_and_missing_directories(monkeypat
 
     assert started_commands == []
     assert datasource.source_open is False
+
+
+@pytest.mark.unit
+def test_datasource_init_rejects_invalid_play_mode(monkeypatch, tmp_path):
+    datasource_server_module = importlib.import_module("datasource_server")
+    configure_runtime(monkeypatch, datasource_server_module, tmp_path)
+    monkeypatch.setenv("PLAY_MODE", "broken-mode")
+
+    with pytest.raises(ValueError, match="play_mode must be cycle or non-cycle"):
+        datasource_server_module.DataSource()
+
+
+@pytest.mark.unit
+def test_open_datasource_returns_immediately_when_source_is_already_open(monkeypatch, tmp_path):
+    datasource_server_module = importlib.import_module("datasource_server")
+    configure_runtime(monkeypatch, datasource_server_module, tmp_path)
+
+    started_commands = []
+    monkeypatch.setattr(
+        datasource_server_module.ScriptHelper,
+        "start_script",
+        staticmethod(lambda command: started_commands.append(command) or "process-1"),
+    )
+
+    datasource = datasource_server_module.DataSource()
+    datasource.source_open = True
+    datasource.process_list = ["process-1"]
+
+    datasource.open_datasource("video", "demo-source", "http_video", build_source_list())
+
+    assert started_commands == []
+    assert datasource.process_list == ["process-1"]
+
+
+@pytest.mark.unit
+def test_run_reacts_to_backend_state_changes_and_missing_responses(monkeypatch, tmp_path):
+    datasource_server_module = importlib.import_module("datasource_server")
+    configure_runtime(monkeypatch, datasource_server_module, tmp_path)
+
+    datasource = datasource_server_module.DataSource()
+    events = []
+    responses = iter(
+        [
+            {
+                "state": "open",
+                "source_type": "video",
+                "source_label": "demo-source",
+                "source_mode": "http_video",
+                "source_list": build_source_list(),
+            },
+            {"state": "close"},
+            None,
+        ]
+    )
+    sleep_calls = []
+
+    monkeypatch.setattr(datasource_server_module, "http_request", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(
+        datasource,
+        "open_datasource",
+        lambda modal, label, mode, source_list: events.append(("open", modal, label, mode, len(source_list))),
+    )
+    monkeypatch.setattr(datasource, "close_datasource", lambda: events.append(("close",)))
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        if len(sleep_calls) == 3:
+            raise RuntimeError("stop-loop")
+
+    monkeypatch.setattr(datasource_server_module.time, "sleep", fake_sleep)
+
+    with pytest.raises(RuntimeError, match="stop-loop"):
+        datasource.run()
+
+    assert events == [
+        ("open", "video", "demo-source", "http_video", 2),
+        ("close",),
+        ("close",),
+    ]
+    assert sleep_calls == [1, 1, 1]

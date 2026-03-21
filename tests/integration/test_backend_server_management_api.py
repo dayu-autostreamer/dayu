@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import gzip
 import importlib
 import json
 
@@ -12,6 +13,21 @@ def make_dag():
         "_start": ["face-detection"],
         "face-detection": {"id": "face-detection", "prev": [], "succ": []},
     }
+
+
+class FakeStreamResponse:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+        self.headers = {"content-length": str(len(payload))}
+        self.closed = False
+
+    def iter_content(self, chunk_size=8192):
+        for idx in range(0, len(self._payload), chunk_size):
+            yield self._payload[idx: idx + chunk_size]
+
+    def close(self):
+        self.closed = True
+        return None
 
 
 class FakeBackendCoreManagement:
@@ -68,6 +84,7 @@ class FakeBackendCoreManagement:
                 "hook_name": "delay",
             }
         ]
+        self.export_stream = FakeStreamResponse(gzip.compress(json.dumps([{"task_id": 1}]).encode("utf-8")))
 
     def parse_base_info(self):
         return None
@@ -144,6 +161,12 @@ class FakeBackendCoreManagement:
 
     def get_resource_url(self):
         self.resource_url = "http://scheduler/resource"
+
+    def get_log_file_name(self):
+        return None
+
+    def open_result_log_export_stream(self):
+        return self.export_stream
 
 
 @pytest.fixture
@@ -358,3 +381,27 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
     assert client.get("/install_state").json() == {"state": "install"}
     backend.server.install_state = False
     assert client.get("/install_state").json() == {"state": "uninstall"}
+
+
+@pytest.mark.integration
+def test_backend_server_covers_disabled_query_state_and_service_info_fallbacks(management_backend, monkeypatch):
+    backend_server_module, backend, client, _ = management_backend
+
+    backend.server.inner_datasource = False
+    assert client.get("/query_state").json() == {"state": "disabled", "source_label": ""}
+
+    backend.server.resource_url = None
+    monkeypatch.setattr(backend.server, "get_resource_url", lambda: None)
+    assert asyncio.run(backend.get_service_info("face-detection")) == []
+
+    monkeypatch.setattr(
+        backend_server_module.KubeHelper,
+        "get_service_info",
+        staticmethod(lambda service_name, namespace: (_ for _ in ()).throw(RuntimeError("boom"))),
+    )
+    assert asyncio.run(backend.get_service_info("face-detection")) == []
+
+    monkeypatch.setattr(backend.server, "open_result_log_export_stream", lambda: None)
+    unavailable_log = client.get("/download_log")
+    assert unavailable_log.status_code == 503
+    assert unavailable_log.json() == {"detail": "Result log export is temporarily unavailable"}
