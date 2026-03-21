@@ -66,7 +66,7 @@ To submit a proposed change, please develop the code/fix and add new test cases.
 
 Please align with the repository toolchain before opening a PR:
 
-- Python `3.10` from [`.python-version`](.python-version)
+- Python `3.8` from [`.python-version`](.python-version)
 - Node.js `20` from [`.nvmrc`](.nvmrc)
 
 Bootstrap the Python development environment:
