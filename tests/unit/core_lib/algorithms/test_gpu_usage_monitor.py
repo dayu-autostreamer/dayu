@@ -143,6 +143,47 @@ def test_gpu_usage_helpers_cover_jetson_sysfs_and_tegrastats_paths(monkeypatch, 
     )
     assert gpu_usage_module.GPUUsageMonitor._get_usage_via_tegrastats() is None
 
+    monkeypatch.setattr(shutil, "which", lambda binary: None)
+    assert gpu_usage_module.GPUUsageMonitor._get_usage_via_tegrastats() is None
+
+    class EmptyStdoutProc:
+        def __init__(self):
+            self.stdout = SimpleNamespace(readline=lambda: "")
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setattr(shutil, "which", lambda binary: "/usr/bin/tegrastats")
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: EmptyStdoutProc())
+    assert gpu_usage_module.GPUUsageMonitor._get_usage_via_tegrastats() is None
+
+    monkeypatch.setattr(glob, "glob", lambda pattern: [])
+    assert gpu_usage_module.GPUUsageMonitor._get_usage_via_jetson_sysfs() is None
+
+    class NoDevicePynvml:
+        @staticmethod
+        def nvmlInit():
+            return None
+
+        @staticmethod
+        def nvmlShutdown():
+            return None
+
+        @staticmethod
+        def nvmlDeviceGetCount():
+            return 0
+
+    monkeypatch.setitem(sys.modules, "pynvml", NoDevicePynvml)
+    assert gpu_usage_module.GPUUsageMonitor._get_usage_via_nvml() == 0
+
+    class BrokenPynvml:
+        @staticmethod
+        def nvmlInit():
+            raise RuntimeError("init failed")
+
+    monkeypatch.setitem(sys.modules, "pynvml", BrokenPynvml)
+    assert gpu_usage_module.GPUUsageMonitor._get_usage_via_nvml() is None
+
 
 @pytest.mark.unit
 def test_gpu_usage_monitor_returns_first_non_none_backend_value(monkeypatch):
@@ -163,3 +204,34 @@ def test_gpu_usage_monitor_returns_first_non_none_backend_value(monkeypatch):
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_jetson_sysfs", staticmethod(lambda: None))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_tegrastats", staticmethod(lambda: 18))
     assert monitor.get_parameter_value() == 18
+
+
+@pytest.mark.unit
+def test_gpu_usage_monitor_ignores_backend_exceptions_and_keeps_fallback_order(monkeypatch):
+    warnings = []
+    monitor = gpu_usage_module.GPUUsageMonitor(SimpleNamespace(resource_info={}))
+
+    monkeypatch.setattr(gpu_usage_module.LOGGER, "warning", lambda message: warnings.append(message))
+    monkeypatch.setattr(
+        gpu_usage_module.GPUUsageMonitor,
+        "_get_usage_via_nvml",
+        staticmethod(lambda: (_ for _ in ()).throw(RuntimeError("nvml failed"))),
+    )
+    monkeypatch.setattr(
+        gpu_usage_module.GPUUsageMonitor,
+        "_get_usage_via_nvidia_smi",
+        staticmethod(lambda timeout_sec=1.0: (_ for _ in ()).throw(RuntimeError("smi failed"))),
+    )
+    monkeypatch.setattr(
+        gpu_usage_module.GPUUsageMonitor,
+        "_get_usage_via_jetson_sysfs",
+        staticmethod(lambda: (_ for _ in ()).throw(RuntimeError("sysfs failed"))),
+    )
+    monkeypatch.setattr(
+        gpu_usage_module.GPUUsageMonitor,
+        "_get_usage_via_tegrastats",
+        staticmethod(lambda: 33),
+    )
+
+    assert monitor.get_parameter_value() == 33
+    assert warnings == []

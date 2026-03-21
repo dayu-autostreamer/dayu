@@ -56,6 +56,19 @@ def test_video_dataset_helpers_cover_extensions_probe_failures_and_missing_manif
     )
     assert video_dataset_module.probe_video_frame_count("demo.mp4") == 0
 
+    class CountCapture:
+        def isOpened(self):
+            return True
+
+        def get(self, key):
+            return 12
+
+        def release(self):
+            return None
+
+    monkeypatch.setattr(video_dataset_module.cv2, "VideoCapture", lambda path: CountCapture())
+    assert video_dataset_module.probe_video_frame_count("direct.mp4") == 12
+
     with pytest.raises(ValueError, match="Missing manifest file"):
         video_dataset_module.VideoDataset(tmp_path / "missing_manifest")
 
@@ -139,6 +152,11 @@ def test_video_dataset_player_handles_capture_seek_failures_and_clip_advances(mo
     assert player.current_clip_index == 0
     assert player.current_frame_offset == 0
 
+    player.current_clip_index = 0
+    player.capture = OpenCapture()
+    assert player._advance_to_next_clip() is True
+    assert player.current_clip_index == 1
+
     player.play_mode = "non-cycle"
     player.current_clip_index = 1
     player.capture = OpenCapture()
@@ -169,3 +187,40 @@ def test_video_dataset_player_handles_capture_seek_failures_and_clip_advances(mo
     monkeypatch.setattr(video_dataset_module.cv2, "VideoCapture", lambda path: ClosedCapture())
     with pytest.raises(ValueError, match='Failed to open video "clip-a.mp4"'):
         player._ensure_capture()
+
+
+@pytest.mark.unit
+def test_video_dataset_player_retries_next_clip_when_current_capture_returns_no_frame(monkeypatch):
+    clip_a = video_dataset_module.VideoClip("a", "clip-a.mp4", frame_count=1, start_frame_index=10)
+    clip_b = video_dataset_module.VideoClip("b", "clip-b.mp4", frame_count=1, start_frame_index=20)
+
+    captures = {
+        "clip-a.mp4": SimpleNamespace(
+            isOpened=lambda: True,
+            read=lambda: (False, None),
+            set=lambda key, value: None,
+            release=lambda: None,
+        ),
+        "clip-b.mp4": SimpleNamespace(
+            isOpened=lambda: True,
+            read=lambda: (True, "frame-b"),
+            set=lambda key, value: None,
+            release=lambda: None,
+        ),
+    }
+
+    monkeypatch.setattr(video_dataset_module.cv2, "VideoCapture", lambda path: captures[path])
+
+    player = object.__new__(video_dataset_module.VideoDatasetPlayer)
+    player.dataset = SimpleNamespace(clips=[clip_a, clip_b])
+    player.play_mode = "cycle"
+    player.current_clip_index = 0
+    player.current_frame_offset = 0
+    player.capture = None
+    player.is_end = False
+
+    frame, frame_index = player.read_frame()
+
+    assert (frame, frame_index) == ("frame-b", 20)
+    assert player.current_clip_index == 0
+    assert player.current_frame_offset == 0

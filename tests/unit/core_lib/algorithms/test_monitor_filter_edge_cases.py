@@ -154,6 +154,44 @@ def test_available_bandwidth_monitor_retries_permission_and_handles_client_error
 
 
 @pytest.mark.unit
+def test_available_bandwidth_monitor_server_loop_logs_errors_and_retries(monkeypatch):
+    warnings = []
+    exceptions = []
+
+    class StopLoop(BaseException):
+        pass
+
+    class FakeServer:
+        def __init__(self):
+            self.bind_address = "0.0.0.0"
+            self.port = None
+            self._runs = iter(
+                [
+                    RuntimeError("temporary failure"),
+                    SimpleNamespace(error="bandwidth issue"),
+                    StopLoop("stop"),
+                ]
+            )
+
+        def run(self):
+            item = next(self._runs)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    monkeypatch.setitem(sys.modules, "iperf3", SimpleNamespace(Server=FakeServer))
+    monkeypatch.setattr(available_bandwidth_module.LOGGER, "warning", lambda message: warnings.append(message))
+    monkeypatch.setattr(available_bandwidth_module.LOGGER, "exception", lambda message: exceptions.append(str(message)))
+    monkeypatch.setattr(available_bandwidth_module.LOGGER, "debug", lambda message: None)
+
+    with pytest.raises(StopLoop, match="stop"):
+        available_bandwidth_module.AvailableBandwidthMonitor.iperf_server(5201)
+
+    assert warnings == ["bandwidth issue"]
+    assert exceptions == ["temporary failure"]
+
+
+@pytest.mark.unit
 def test_base_monitor_and_available_bandwidth_init_cover_runtime_contracts(monkeypatch):
     class DummyMonitor(base_monitor_module.BaseMonitor):
         def __init__(self, system):
