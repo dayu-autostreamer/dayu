@@ -71,7 +71,7 @@ class Hedger:
 
         self._deployment_update_steps = 0
         self._offloading_update_steps = 0
-        # Global training epoch counter (increments when PPO updates are performed per loop)
+        # Global training epoch counter, incremented after PPO updates.
         self._epoch = 0
 
         self.register_topology_encoder()
@@ -188,7 +188,7 @@ class Hedger:
         self.initial_deployment_plan = deployment_plan
         self.deployment_plan = deployment_plan
 
-        # update deploy mask
+        # Cache the current deployment mask.
         self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(deployment_plan)
 
     def get_offloading_plan(self):
@@ -255,7 +255,7 @@ class Hedger:
             try:
                 updates_in_tick = 0
 
-                # Offloading PPO update
+                # Run a PPO update for the offloading agent.
                 if self.train_offloading_flag and len(self.offloading_transitions) >= self.offloading_rollout_len:
                     with self._data_lock:
                         off_transitions = self.offloading_transitions[:self.offloading_rollout_len]
@@ -269,7 +269,7 @@ class Hedger:
                     LOGGER.info(f"[Offloading] PPO update #{self._offloading_update_steps}, "
                                 f"used {len(off_transitions)} transitions.")
 
-                # Deployment PPO update
+                # Run a PPO update for the deployment agent.
                 if self.train_deployment_flag and len(self.deployment_transitions) >= self.deployment_rollout_len:
                     with self._data_lock:
                         dep_transitions = self.deployment_transitions[:self.deployment_rollout_len]
@@ -283,11 +283,11 @@ class Hedger:
                     LOGGER.info(f"[Deployment] PPO update #{self._deployment_update_steps}, "
                                 f"used {len(dep_transitions)} transitions.")
 
-                # Save checkpoint
+                # Save a checkpoint.
                 if updates_in_tick > 0:
                     prev_epoch = self._epoch
                     self._epoch += updates_in_tick
-                    # Save once when _epoch crosses a multiple of save_interval
+                    # Save once whenever `_epoch` crosses a multiple of `save_interval`.
                     if (prev_epoch // self.save_interval) != (self._epoch // self.save_interval):
                         try:
                             self.save_checkpoint(epoch=self._epoch)
@@ -310,11 +310,11 @@ class Hedger:
 
     def train_deployment_agent(self):
         """
-        Sampling thread for deploying the agent:
-            - Collect current topology state periodically
-            - Call deployment_agent.policy to sample the new deployment mask
-            - Let the environment run for a period of time based on deployment, count metrics, and calculate reward
-            - Put transition into self.deployment_transitions and wait for the main thread PPO update
+        Sampling loop for the deployment agent:
+            - Collect the current topology and system state periodically
+            - Sample a new deployment mask via `deployment_agent.policy`
+            - Let the environment run for one deployment interval, then collect metrics and reward
+            - Push the transition into `self.deployment_transitions` for PPO updates
         """
         if not self.train_deployment_flag:
             LOGGER.info("train_deployment_flag=False, deployment training thread will not run.")
@@ -335,7 +335,7 @@ class Hedger:
             flush_every=1,
         )
 
-        # Static edge_index, can be reused indefinitely
+        # Static graph edge indices can be reused across iterations.
         logic_edge_index = torch.tensor(self.logical_topology.links, dtype=torch.long,
                                         device=self.device).t().contiguous()
         phys_edge_index = torch.tensor(self.physical_topology.links, dtype=torch.long,
@@ -348,19 +348,19 @@ class Hedger:
         logic_feats, phys_feats, _, _ = self._collect_deployment_state()
 
         while not self.deployment_thread_stop_event.is_set():
-            # map features to device
+            # Move features onto the active device.
             logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
             phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
             prev_deploy_mask_dev = prev_deploy_mask.to(self.device) if prev_deploy_mask is not None else None
 
             with torch.no_grad():
-                # Sample new deployment strategies
+                # Sample a new deployment strategy.
                 deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
                     logic_edge_index=logic_edge_index,
                     logic_feats=logic_feats_dev,
                     phys_edge_index=phys_edge_index,
                     phys_feats=phys_feats_dev,
-                    topo_order=None,  # 内部会根据 logical edge index 推一个拓扑顺序
+                    topo_order=None,  # Derived internally from the logical graph.
                     prev_deploy_mask=prev_deploy_mask_dev
                 )
             deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
@@ -376,17 +376,17 @@ class Hedger:
 
             new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state()
 
-            # Calculate reward based on indicator + RL auxiliary information
+            # Compute the reward from environment metrics and policy-side auxiliaries.
             reward = self._compute_deployment_reward(metrics, aux)
 
-            # Construct transitions and move all of them to the CPU to avoid cross-thread device issues.
+            # Keep transition payloads on CPU to avoid cross-thread device issues.
             tr = {
                 "logic_edge_index": logic_edge_index.cpu(),
                 "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
                 "phys_edge_index": phys_edge_index.cpu(),
                 "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
                 "deploy_mask": deploy_mask.cpu(),
-                "topo_order": None,  # evaluate 时也可以重新 topo 排序
+                "topo_order": None,  # Recomputed during evaluation if needed.
                 "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
                 "logp": logp.detach().cpu(),
                 "value": value.detach().cpu(),
@@ -421,11 +421,11 @@ class Hedger:
 
     def train_offloading_agent(self):
         """
-        Uninstall the agent's sampling thread:
-            - Collect current topology and system state at short intervals (each task arrival/small time window)
-            - Call offloading_agent.policy to determine the execution device for each service
-            - The environment implements this policy and returns metrics such as latency / SLO / cloud usage in this window
-            - Calculate reward and put transition into self.offloading_transitions
+        Sampling loop for the offloading agent:
+            - Collect topology and system state at a shorter cadence
+            - Select the execution device for each service via `offloading_agent.policy`
+            - Let the environment execute the policy and report latency/SLO/cloud metrics
+            - Push the transition into `self.offloading_transitions`
         """
         if not self.train_offloading_flag:
             LOGGER.info("train_offloading_flag=False, offloading training thread will not run.")
@@ -441,8 +441,8 @@ class Hedger:
             fmt="csv",
             fieldnames=["step", "epoch", "off_updates", "off_reward", "latency",
                         "slo_violation", "cloud_fraction", "aux_cost", "off_latency_weight",
-                        "off_slo_weight", "off_cloud_weight", "switch_cnt", "relax_cnt",
-                        "switch_weight", "relax_weight"],
+                        "off_slo_weight", "off_cloud_weight", "switch_cnt", "correction_cnt",
+                        "switch_weight", "correction_weight"],
             overwrite=True,
             flush_every=10,
         )
@@ -492,7 +492,6 @@ class Hedger:
                 "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
                 "actions": actions.cpu(),
                 "static_mask": static_mask_dev.cpu(),
-                "topo_order": None,
                 "logp": logp.detach().cpu(),
                 "value": value.detach().cpu(),
                 "reward": float(reward),
@@ -517,10 +516,10 @@ class Hedger:
                 off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
                 off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                 off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
-                switch_cnt=aux["switch_cnt"],
-                relax_cnt=aux["relax_cnt"],
+                switch_cnt=aux["switches"],
+                correction_cnt=aux["correction_cnt"],
                 switch_weight=self.offloading_agent_params["penalty_switch"],
-                relax_weight=self.offloading_agent_params["penalty_relax"],
+                correction_weight=self.offloading_agent_params["penalty_relax"],
             )
 
             step += 1
@@ -530,29 +529,31 @@ class Hedger:
 
     def _compute_offloading_reward(self, metrics, aux) -> float:
         """
-        Offloading agent reward:
-        Defined in the form of "negative delay + penalty".
-        Metrics should include some basic performance indicators, aux from within the offloading policy (penalty of switch/relax).
+        Compute the offloading-agent reward.
+
+        The reward is defined as negative performance cost plus policy-side
+        penalties. `metrics` contains environment indicators, while `aux`
+        contains switch/correction statistics gathered inside the policy.
         """
         metrics = metrics or {}
 
-        # Extract key metrics from metrics
+        # Extract the core metrics.
         latency = float(metrics["latency"])
         slo_v = float(metrics["slo_violation"])
         cloud_frac = float(metrics["cloud_fraction"])
 
-        # The weight is read from hyper_params. If not, use the default.
+        # Reward weights from hyper-parameters.
         w_lat = float(self.offloading_agent_params["reward_off_latency_weight"])
         w_slo = float(self.offloading_agent_params["reward_off_slo_weight"])
         w_cloud = float(self.offloading_agent_params["reward_off_cloud_weight"])
 
-        # Basic reward: Tending to reduce latency, reduce SLO breaches, reduce cloud adoption ratio
+        # Base reward: lower latency, fewer SLO violations, and lower cloud usage.
         reward = 0.0
         reward -= w_lat * latency
         reward -= w_slo * slo_v
         reward -= w_cloud * cloud_frac
 
-        # Additional Cost from Constraints (Number of Switches + Number of Relaxations)
+        # Additional constraint cost: device switches and post-sampling corrections.
         aux_cost = float(aux["aux_cost"])
         reward -= aux_cost
 
@@ -560,10 +561,12 @@ class Hedger:
 
     def _compute_deployment_reward(self, metrics, aux) -> float:
         """
-        Deployment agent reward:
-            - Utilizing macro performance indicators (average latency, SLO violation, cloud usage)
-            - Plus aggregated feedback from offloading (avg_offloading_reward)
-            - Plus deployment change cost + capacity relax penalty, achieving "top-down + bottom-up two-way feedback"
+        Compute the deployment-agent reward.
+
+        The reward combines:
+            - aggregated feedback from offloading (`avg_offloading_reward`)
+            - deployment change cost
+            - capacity-correction penalty
         """
         metrics = metrics or {}
 
@@ -576,10 +579,10 @@ class Hedger:
         reward = 0.0
         reward -= w_change * deploy_change_cost
 
-        # Using the average reward of the lower-level agent as the "bottom-up" feedback signal
+        # Treat the lower-level offloading reward as bottom-up feedback.
         reward += w_off * avg_off_r
 
-        # Penalty capacity relaxation
+        # Penalize post-sampling capacity corrections.
         cap_relax_cnt = float(aux["capacity_relax_cnt"])
         penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
         reward -= penalty_capacity_relax * cap_relax_cnt
@@ -595,11 +598,11 @@ class Hedger:
         if not files:
             return None
 
-        # parse epoch number
+        # Parse the epoch number from the checkpoint filename.
         def parse_epoch(p):
             try:
                 base = os.path.basename(p)
-                # hedger_ckpt_epoch_{n}.pt
+                # Expected pattern: `hedger_ckpt_epoch_{n}.pt`
                 num = base.replace('hedger_ckpt_epoch_', '').replace('.pt', '')
                 return int(num)
             except Exception:
@@ -609,7 +612,7 @@ class Hedger:
         return files[0] if files else None
 
     def save_checkpoint(self, epoch: Optional[int] = None):
-        """Save encoder + both agents and their optimizers into a single file, labeled by epoch."""
+        """Save the encoder, both agents, and their optimizers into one checkpoint file."""
         if epoch is None:
             epoch = self._epoch
         path = self._epoch_checkpoint_path(epoch)
@@ -635,12 +638,13 @@ class Hedger:
 
     def load_checkpoint(self, epoch: int = None):
         """
-        Load encoder + agents + optimizers.
-        Based on the switches in hyper_params, it allows:
-            - Load only the encoder
-            - Load only a specific agent
-            - Choose whether to load optimizer state
-            - Choose whether to reset epoch / update step counter
+        Load encoder, agent, and optimizer state from a checkpoint.
+
+        The behavior is controlled by hyper-parameter flags:
+            - whether to load the encoder
+            - whether to load each agent
+            - whether to restore optimizer state
+            - whether to reset epoch/update counters
         """
         if epoch is not None:
             ep_path = self._epoch_checkpoint_path(int(epoch))
@@ -659,7 +663,7 @@ class Hedger:
         ckpt = torch.load(target_path, map_location=self.device)
         LOGGER.info(f'[Hedger] Loading checkpoint from {target_path}')
 
-        # Load encoder parameters
+        # Load encoder weights.
         if self.load_encoder_flag:
             enc_state = ckpt.get('encoder', None)
             if enc_state:
@@ -670,8 +674,8 @@ class Hedger:
         else:
             LOGGER.info('[Hedger] Skipping encoder loading per config (load_encoder=False).')
 
-        # Load dual agent parameters
-        # Deployment agent
+        # Load the two agent modules.
+        # Deployment agent.
         if self.load_deployment_agent_flag:
             dep_state = ckpt.get('deployment_agent', None)
             if dep_state:
@@ -682,7 +686,7 @@ class Hedger:
         else:
             LOGGER.info('[Hedger] Skipping deployment agent loading per config (load_deployment_agent=False).')
 
-        # Offloading agent
+        # Offloading agent.
         if self.load_offloading_agent_flag:
             off_state = ckpt.get('offloading_agent', None)
             if off_state:
@@ -693,9 +697,9 @@ class Hedger:
         else:
             LOGGER.info('[Hedger] Skipping offloading agent loading per config (load_offloading_agent=False).')
 
-        # Load optimizer status
+        # Load optimizer state.
         if self.load_optimizer_flag:
-            # Load the corresponding optimizers for those agents that actually loaded
+            # Restore only the optimizers that correspond to loaded agents.
             if self.load_deployment_agent_flag and 'deployment_actor_opt' in ckpt:
                 self.deployment_agent.actor_opt.load_state_dict(ckpt['deployment_actor_opt'])
                 self._move_optimizer_state(self.deployment_agent.actor_opt, self.device)
@@ -718,11 +722,11 @@ class Hedger:
         else:
             LOGGER.info('[Hedger] Skipping optimizer states loading per config (load_optimizer=False).')
 
-        # Load / Reset counter
+        # Restore or reset training counters.
         meta = ckpt.get('meta', {})
 
         if self.reset_steps_on_load:
-            # Reset counters in Phase 2/3 training
+            # Restart counters from zero for subsequent training phases.
             self._deployment_update_steps = 0
             self._offloading_update_steps = 0
             self._epoch = 0
@@ -740,7 +744,7 @@ class Hedger:
 
     @staticmethod
     def _move_optimizer_state(optimizer: torch.optim.Optimizer, device: torch.device):
-        """Ensure optimizer state tensors are on the same device as the model."""
+        """Ensure all optimizer state tensors live on the same device as the model."""
         for state in optimizer.state.values():
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
@@ -748,11 +752,13 @@ class Hedger:
 
     def _map_deployment_plan_to_deployment_mask(self, deployment_plan: dict):
         """
-        Convert deployment plan dict to deployment mask tensor.
-        deployment_plan: dict mapping service_name to device_name
+        Convert a deployment-plan dictionary into a deployment-mask tensor.
+
+        `deployment_plan`: `service_name -> [device_name, ...]`
+
         Returns:
-            deploy_mask: Tensor of shape (num_services, num_devices), bool.
-            The cloud replica is always kept on for every service.
+            `deploy_mask`: boolean tensor of shape `(num_services, num_devices)`.
+            The cloud replica is always kept enabled for every service.
         """
         num_services = len(self.logical_topology)
         num_devices = len(self.physical_topology)
@@ -769,10 +775,12 @@ class Hedger:
 
     def _map_deployment_mask_to_deployment_plan(self, deploy_mask: torch.Tensor):
         """
-        Convert deployment mask tensor to deployment plan dict.
-        deploy_mask: Tensor of shape (num_services, num_devices), bool
+        Convert a deployment-mask tensor into a deployment-plan dictionary.
+
+        `deploy_mask`: boolean tensor of shape `(num_services, num_devices)`
+
         Returns:
-            deployment_plan: dict mapping service_name to device_name
+            `deployment_plan`: `service_name -> [device_name, ...]`
         """
         deployment_plan = {}
         num_services = deploy_mask.size(0)
@@ -792,10 +800,13 @@ class Hedger:
 
     def _map_offloading_mask_to_offloading_plan(self, offloading_mask: torch.Tensor):
         """
-        Convert offloading mask tensor to offloading plan dict.
-        offloading_mask: Tensor of shape (num_services,), int (device indices)
+        Convert an offloading-action tensor into an offloading-plan dictionary.
+
+        `offloading_mask`: integer tensor of shape `(num_services,)`, where
+        each value is a device index.
+
         Returns:
-            offloading_plan: dict mapping service_name to device_name
+            `offloading_plan`: `service_name -> device_name`
         """
         offloading_plan = {}
         num_services = offloading_mask.size(0)

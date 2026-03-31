@@ -20,7 +20,7 @@ class DeploymentActor(nn.Module):
         scores = scores / max(self.temperature, 1e-6)
         if mask is not None:
             scores = scores.masked_fill(~mask, float('-inf'))
-        return torch.sigmoid(scores)  # Multilabel Bernoulli probability
+        return torch.sigmoid(scores)  # Element-wise probability for multilabel Bernoulli sampling
 
 
 class OffloadActor(nn.Module):
@@ -37,7 +37,7 @@ class OffloadActor(nn.Module):
         scores = scores / max(self.temperature, 1e-6)
         if mask is not None:
             scores = scores.masked_fill(~mask, float('-inf'))
-        return F.softmax(scores, dim=-1)  # One Categorical per service
+        return F.softmax(scores, dim=-1)  # One categorical distribution per service
 
 
 class ValueHead(nn.Module):
@@ -50,15 +50,14 @@ class ValueHead(nn.Module):
         vp = h_p.mean(dim=0, keepdim=True)
         return self.mlp(torch.cat([vs, vp], dim=-1)).squeeze(-1)  # [1]
 
+
 class FeatureAdapter(nn.Module):
     """
-        A simple task-specific adapter:
+    Lightweight task-specific adapter:
 
-        - LayerNorm stabilizes the distribution
-
-        - A small MLP performs nonlinear transformations
-
-        - Residual connections maintain alignment with the backbone
+    - LayerNorm stabilizes feature distributions
+    - A small MLP adds task-specific nonlinearity
+    - The residual connection keeps features aligned with the shared backbone
     """
     def __init__(self, d_model: int, hidden_ratio: float = 0.5):
         super().__init__()
@@ -71,5 +70,5 @@ class FeatureAdapter(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [..., d_model]
+        # `x` has shape `[..., d_model]`.
         return x + self.net(x)

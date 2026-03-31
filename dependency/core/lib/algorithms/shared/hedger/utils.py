@@ -1,5 +1,4 @@
 from typing import Tuple, List
-from collections import deque
 
 import torch
 
@@ -44,24 +43,6 @@ def topo_levels_dag(edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
     if levels.max() > 0:
         levels = levels / (levels.max() + 1e-6)
     return levels
-
-
-def bfs_hop_from_source(phys_edge_index: torch.Tensor, N: int, source_idx: int) -> torch.Tensor:
-    row, col = phys_edge_index
-    adj = [[] for _ in range(N)]
-    for u, v in zip(row.tolist(), col.tolist()):
-        adj[u].append(v)
-    INF = 10 ** 9
-    dist = [INF] * N
-    q = deque([source_idx])
-    dist[source_idx] = 0
-    while q:
-        u = q.popleft()
-        for v in adj[u]:
-            if dist[v] == INF:
-                dist[v] = dist[u] + 1
-                q.append(v)
-    return torch.tensor(dist, device=phys_edge_index.device, dtype=torch.float)
 
 
 def compute_returns_advantages(rewards: List[float], values: List[float], dones: List[int], gamma=0.99, lamda=0.95):

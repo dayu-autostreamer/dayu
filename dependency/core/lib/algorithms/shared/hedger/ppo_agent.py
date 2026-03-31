@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from .topology_encoder import TopologyEncoders
 from .ppo_network import DeploymentActor, OffloadActor, ValueHead, FeatureAdapter
 from .hedger_config import DeploymentConstraintCfg, OffloadingConstraintCfg
-from .utils import bfs_hop_from_source, compute_returns_advantages
+from .utils import compute_returns_advantages
 
 
 class HedgerDeploymentPPO(nn.Module):
@@ -35,28 +35,30 @@ class HedgerDeploymentPPO(nn.Module):
         self.cfg = constraint_cfg
 
     def _static_allowed_mask(
-            self,
-            phys_feats: Dict[str, torch.Tensor],
-            logic_feats: Dict[str, torch.Tensor],
+        self,
+        phys_feats: Dict[str, torch.Tensor],
+        logic_feats: Dict[str, torch.Tensor],
     ) -> torch.Tensor:
         """
-        To construct a "static physical mask": Filter out physically impossible deployment combinations based solely on the model size and the total memory of the device.
+        Build the static deployment mask.
 
-        Return:
+        This mask filters out physically impossible service-device pairs using
+        only model memory footprint and total device memory.
 
-        `static_allowed`: `[Ms, Np]` boolean array
-
-        `static_allowed[i, n]` = `True` indicates that service `i` can be physically accommodated on device `n`.
+        Returns:
+            `static_allowed`: boolean tensor of shape `[Ms, Np]`, where
+            `static_allowed[i, n]` indicates whether service `i` is statically
+            deployable on device `n`.
         """
         cap = phys_feats["mem_capacity"].float()  # [Np]
         model_mem = logic_feats["model_mem"].float()  # [Ms]
         Ms = model_mem.size(0)
         Np = cap.size(0)
 
-        # [Ms, Np]
+        # Shape: [Ms, Np].
         static_allowed = model_mem.view(Ms, 1) <= cap.view(1, Np)
 
-        # Cloud nodes are always treated as "feasible alternatives."
+        # Always keep the cloud as a feasible fallback.
         cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
         static_allowed[:, cloud_idx] = True
 
@@ -84,55 +86,53 @@ class HedgerDeploymentPPO(nn.Module):
         return order
 
     def _initial_residual_mem(
-            self,
-            phys_feats: Dict[str, torch.Tensor],
-            logic_feats: Optional[Dict[str, torch.Tensor]] = None,
-            prev_deploy_mask: Optional[torch.Tensor] = None
+        self,
+        phys_feats: Dict[str, torch.Tensor],
+        logic_feats: Optional[Dict[str, torch.Tensor]] = None,
+        prev_deploy_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
-            Calculate the "memory budget available for deploying the new model in this round."
+            Compute the memory budget available to the current deployment step.
 
-            - If `logic_feats` or `prev_deploy_mask` are not provided, revert to the old logic:
+            - If `logic_feats` or `prev_deploy_mask` is missing, fall back to:
               `residual = mem_capacity * (1 - mem_util).`
 
-            - If `prev_deploy_mask` is provided, indicating that we will first unload the previous model before deploying the new one, calculate as follows:
+            - If `prev_deploy_mask` is provided, assume the previous deployment
+              is released before placing the new one:
 
               `total_used = cap * util`
               `prev_usage = sum_i prev_deploy_mask[i, n] * model_mem[i]`
 
-              `baseline = max(total_used - prev_usage, 0)`  # Memory used by non-RL models
-              `residual_0 = max(cap - baseline, 0)`  # Budget for the new model
+              `baseline = max(total_used - prev_usage, 0)`  # memory used by non-RL workloads
+              `residual_0 = max(cap - baseline, 0)`  # budget for the new deployment
         """
         cap = phys_feats["mem_capacity"].float()  # [Np] MB
 
         if logic_feats is None or prev_deploy_mask is None:
-            util = phys_feats["mem_util_seq"][:, -1].float()  # 当前总 mem_util
+            util = phys_feats["mem_util_seq"][:, -1].float()  # Current total memory utilization.
             return cap * (1.0 - util)
 
         util = phys_feats["mem_util_seq"][:, -1].float()  # [Np]
-        total_used = cap * util  # [Np]，当前总占用
+        total_used = cap * util  # [Np], current total memory usage.
 
         model_mem = logic_feats["model_mem"].float()  # [Ms]
-        # prev_deploy_mask: [Ms, Np] -> [Np] (Total GPU memory usage of the old model on each node)
+        # `prev_deploy_mask`: [Ms, Np] -> [Np], total memory used by the
+        # previous RL deployment on each node.
         prev_usage = torch.matmul(prev_deploy_mask.float().t(), model_mem)  # [Np]
         baseline = torch.clamp(total_used - prev_usage, min=0.0)  # [Np]
 
-        # Budget allocated for the "new round of model deployment"
+        # Budget available to the new deployment round.
         residual = torch.clamp(cap - baseline, min=0.0)  # [Np]
         return residual
 
     def _adapt_embeddings(self, h_s: torch.Tensor, h_p: torch.Tensor):
-        """
-        Perform a task-specific residual transformation on the (h_s, h_p) provided by the shared encoder
-        """
+        """Apply task-specific residual adapters to the shared encoder outputs."""
         h_s = self.service_adapter(h_s)
         h_p = self.device_adapter(h_p)
         return h_s, h_p
 
     def _enforce_cloud_replica(self, deploy_mask: torch.Tensor) -> torch.Tensor:
-        """
-        In this deployment setting, every service keeps a cloud replica by default.
-        """
+        """Force every service to keep a cloud replica in the deployment mask."""
         cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (deploy_mask.size(1) - 1)
         deploy_mask = deploy_mask.clone()
         deploy_mask[:, cloud_idx] = True
@@ -147,69 +147,64 @@ class HedgerDeploymentPPO(nn.Module):
         Ms, Np = h_s.size(0), h_p.size(0)
         if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
 
-        # Current deployment budget (consider baseline + uninstall old models)
+        # Current deployment budget after accounting for baseline usage and the
+        # memory that can be reclaimed from the previous deployment.
         residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)  # [Np]
         model_mem = logic_feats["model_mem"].float()  # [Ms]
         cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
 
-        # Static physical mask
+        # Static feasibility mask.
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
 
-        # Masking out physically impossible combinations using static masking
-        # The `static_allowed` parameter is passed to the actor, which then applies masked_fill to the attention scores.
-        probs_raw = self.actor(h_s, h_p, mask=static_allowed)  # [Ms, Np], probability after the sigmoid
+        # Mask out physically impossible placements before sampling.
+        probs_raw = self.actor(h_s, h_p, mask=static_allowed)  # [Ms, Np], post-sigmoid replica probabilities
 
-        # To ensure numerical stability, perform a slight trimming on the probabilities used for log_prob;
-        # For positions that are not allowed, replace 0 with a very small eps to avoid log(0)
+        # Clamp probabilities for numerical stability and avoid `log(0)` on masked-out positions.
         eps = 1e-6
         probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
         probs_log = torch.where(static_allowed, probs_log, torch.full_like(probs_log, eps))
 
-        # Strictly Prohibit Sampling at Positions Marked as static_disallowed
+        # Do not sample from statically invalid positions.
         probs_sample = torch.where(static_allowed, probs_raw, torch.zeros_like(probs_raw))
 
-        # Multilabel Bernoulli sampling
-        # Here, probs_log is used to construct the distribution, and probs_sample is used for actual sampling
-        # (positions that are not allowed will always sample 0)
+        # Sample a multilabel Bernoulli action. `probs_log` is used to build the distribution;
+        # `probs_sample` is used for actual sampling.
         dist = torch.distributions.Bernoulli(probs=probs_log)
         acts = torch.rand_like(probs_sample) < probs_sample  # bool [Ms, Np]
         deploy_mask = self._enforce_cloud_replica(acts)
 
-        # Post-sampling capacity projection (post-projection)
+        # Project the sampled deployment back into the residual capacity budget.
         capacity_relax_cnt = 0
-        if self.cfg.enforce_capacity:
-            # Check each edge device to see if it exceeds the budget, and if it does, delete some copies.
-            # The cloud replica is retained as the default fallback deployment.
-            for n in range(Np):
-                if n == cloud_idx:
-                    # The cloud replica is fixed on by design and is not capacity-pruned here.
-                    continue
+        for n in range(Np):
+            if n == cloud_idx:
+                # Cloud replicas are always retained and are not pruned here.
+                continue
 
-                while True:
-                    # The current load of device n
-                    used_n = (deploy_mask[:, n].float() * model_mem).sum()
+            while True:
+                # Current total memory assigned to node `n`.
+                used_n = (deploy_mask[:, n].float() * model_mem).sum()
 
-                    # The budget has been met, exit the loop.
-                    if used_n <= residual[n] + 1e-6:
-                        break
+                # Stop once the residual budget is satisfied.
+                if used_n <= residual[n] + 1e-6:
+                    break
 
-                    # Find all services currently deployed on device n.
-                    candidates = torch.nonzero(deploy_mask[:, n], as_tuple=False).view(-1)
-                    if candidates.numel() == 0:
-                        break
+                # All services currently placed on node `n`.
+                candidates = torch.nonzero(deploy_mask[:, n], as_tuple=False).view(-1)
+                if candidates.numel() == 0:
+                    break
 
-                    # Strategy: Delete the service with the "minimum probability" of strategy on this device
-                    cand_probs = probs_log[candidates, n]
-                    drop_local_idx = torch.argmin(cand_probs)
-                    drop_service_idx = candidates[drop_local_idx]
+                # Remove the lowest-confidence replica until the placement is feasible.
+                cand_probs = probs_log[candidates, n]
+                drop_local_idx = torch.argmin(cand_probs)
+                drop_service_idx = candidates[drop_local_idx]
 
-                    deploy_mask[drop_service_idx, n] = False
-                    capacity_relax_cnt += 1
+                deploy_mask[drop_service_idx, n] = False
+                capacity_relax_cnt += 1
 
-        # Calculate logp and entropy under the "static Bernoulli distribution"
+        # Compute log-probabilities and entropy under the static Bernoulli distribution.
         act_float = deploy_mask.float()
-        logp = dist.log_prob(act_float)       # [Ms, Np]
-        ent = dist.entropy()                  # [Ms, Np]
+        logp = dist.log_prob(act_float)  # [Ms, Np]
+        ent = dist.entropy()  # [Ms, Np]
 
         logp_sum = logp.sum()
         ent_sum = ent.mean()
@@ -220,19 +215,20 @@ class HedgerDeploymentPPO(nn.Module):
             "capacity_relax_cnt": capacity_relax_cnt
         }
 
-    def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
-                 deploy_mask: torch.Tensor, topo_order: Optional[list] = None,
-                 prev_deploy_mask: Optional[torch.Tensor] = None):
+    def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats, deploy_mask: torch.Tensor):
         """
-        Under the current parameters, calculate log_prob, entropy, and value for the given deploy_mask:
-        - Policy distribution: Static physical mask + independent Bernoulli (consistent with the policy stage)
-        - The capacity constraint process is no longer replicated; capacity constraints are considered as a "projection" of the environment on actions.
+        Evaluate `deploy_mask` under the current parameters.
+
+        The policy distribution remains "static feasibility mask + independent
+        Bernoulli", matching the sampling stage. Capacity correction is not
+        replayed here and is instead treated as a deterministic environment-side
+        projection.
         """
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
 
-        # Static physical mask
+        # Static feasibility mask.
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
 
         probs_raw = self.actor(h_s, h_p, mask=static_allowed)
@@ -244,8 +240,8 @@ class HedgerDeploymentPPO(nn.Module):
 
         deploy_mask = self._enforce_cloud_replica(deploy_mask)
         act_float = deploy_mask.float()
-        logp = dist.log_prob(act_float)     # [Ms, Np]
-        ent = dist.entropy()                # [Ms, Np]
+        logp = dist.log_prob(act_float)  # [Ms, Np]
+        ent = dist.entropy()  # [Ms, Np]
 
         logp_sum = logp.sum()
         ent_sum = ent.mean()
@@ -275,10 +271,8 @@ class HedgerDeploymentPPO(nn.Module):
                 ent_list = []
                 for j in idx:
                     tr = transitions[j]
-                    lp, ent, val = self.evaluate(tr['logic_edge_index'], tr['logic_feats'],
-                                                 tr['phys_edge_index'], tr['phys_feats'],
-                                                 tr['deploy_mask'], tr['topo_order'],
-                                                 tr['prev_deploy_mask'])
+                    lp, ent, val = self.evaluate(tr['logic_edge_index'], tr['logic_feats'], tr['phys_edge_index'],
+                                                 tr['phys_feats'], tr['deploy_mask'])
                     new_logp_list.append(lp)
                     new_val_list.append(val)
                     ent_list.append(ent)
@@ -347,17 +341,76 @@ class HedgerOffloadingPPO(nn.Module):
             order += [i for i in range(num_nodes) if i not in seen]
         return order
 
-    def _build_metric(self, phys_edge_index: torch.Tensor, N: int):
-        if not self.cfg.use_monotone_metric: return None
-        return bfs_hop_from_source(phys_edge_index, N, self.source)
-
     def _adapt_embeddings(self, h_s: torch.Tensor, h_p: torch.Tensor):
-        """
-        Perform a task-specific residual transformation on the (h_s, h_p) provided by the shared encoder
-        """
+        """Apply task-specific residual adapters to the shared encoder outputs."""
         h_s = self.service_adapter(h_s)
         h_p = self.device_adapter(h_p)
         return h_s, h_p
+
+    @staticmethod
+    def _build_parents(edge_index: torch.Tensor, num_nodes: int) -> List[List[int]]:
+        row, col = edge_index
+        parents = [[] for _ in range(num_nodes)]
+        for u, v in zip(row.tolist(), col.tolist()):
+            parents[v].append(u)
+        return parents
+
+    def _normalize_offloading_mask(self, base: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize a per-service offloading mask.
+
+        Assume that deployment always leaves at least one feasible replica for
+        every service and that the cloud is a fallback. This extra guard prevents
+        an all-False row from invalidating categorical sampling.
+        """
+        if base.any():
+            return base
+
+        allowed = torch.zeros_like(base)
+        allowed[self.cloud_idx] = True
+        return allowed
+
+    def _correct_offloading_actions(
+        self,
+        actions: torch.Tensor,
+        parents: List[List[int]],
+        topo_order: List[int],
+    ) -> Tuple[torch.Tensor, int]:
+        """
+        Apply the offloading correction operator.
+
+        The sampled path is scanned in topological order. Once a service is
+        placed on the cloud, downstream successors that still point to the edge
+        are promoted to the cloud to keep the route consistent.
+        """
+        corrected = actions.clone()
+        must_cloud = torch.zeros(actions.size(0), dtype=torch.bool, device=actions.device)
+        correction_cnt = 0
+
+        for node in topo_order:
+            parent_indices = parents[node]
+            parent_must_cloud = bool(must_cloud[parent_indices].any()) if parent_indices else False
+
+            if parent_must_cloud and corrected[node].item() != self.cloud_idx:
+                corrected[node] = self.cloud_idx
+                correction_cnt += 1
+
+            must_cloud[node] = parent_must_cloud or (corrected[node].item() == self.cloud_idx)
+
+        return corrected, correction_cnt
+
+    def _count_switches(self, actions: torch.Tensor, topo_order: List[int]) -> int:
+        """
+        Count device switches along the topological execution order.
+        """
+        last = self.source
+        switches = 0
+        for node in topo_order:
+            cur = actions[node].item()
+            if cur != last:
+                switches += 1
+                last = cur
+        return switches
 
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
@@ -366,80 +419,39 @@ class HedgerOffloadingPPO(nn.Module):
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
 
-        row, col = logic_edge_index  # row: u, col: v,  u→v
-        parents = [[] for _ in range(Ms)]
-        for u, v in zip(row.tolist(), col.tolist()):
-            parents[v].append(u)
-        must_cloud = torch.zeros(Ms, dtype=torch.bool, device=h_p.device) # 服务 i 以及它的所有后代都必须在云上执行
+        if topo_order is None:
+            topo_order = self.topo_order(logic_edge_index, Ms)
+        parents = self._build_parents(logic_edge_index, Ms)
 
-        actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
-        logp_sum = torch.tensor(0., device=h_p.device)
-        ent_sum = torch.tensor(0., device=h_p.device)
-
-        if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
-        metric = self._build_metric(phys_edge_index, Np)
-        visited = torch.zeros(Np, dtype=torch.bool, device=h_p.device)
-        last = self.source
-        switches = 0
-        relax_cnt = 0
+        tentative_actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
+        row_probs = torch.zeros(Ms, Np, device=h_p.device)
+        ent_sum = torch.tensor(0.0, device=h_p.device)
 
         for i in topo_order:
-            base = static_mask[i].clone()
-
-            # 先看它的父节点中是否有已经 "must_cloud" 的
-            parent_indices = parents[i]
-            parent_must_cloud = False
-            if self.cfg.cloud_sticky and parent_indices:
-                parent_must_cloud = bool(must_cloud[parent_indices].any())
-
-            # 如果父节点路径已经上云，则本节点只能在云上执行
-            if self.cfg.cloud_sticky and parent_must_cloud:
-                allowed = torch.zeros_like(base)
-                allowed[self.cloud_idx] = base[self.cloud_idx]
-            else:
-                allowed = base.clone()
-                if self.cfg.forbid_return:
-                    forbid = visited.clone()
-                    if self.cfg.allow_stay: forbid[last] = False
-                    allowed = allowed & (~forbid)
-                if metric is not None:
-                    if self.cfg.metric_non_decreasing:
-                        allowed = allowed & (metric >= metric[last])
-                    else:
-                        allowed = allowed & (metric <= metric[last])
-            if not allowed.any():
-                relax_cnt += 1
-                if self.cfg.allow_stay and base[last]:
-                    allowed = torch.zeros_like(base)
-                    allowed[last] = True
-                elif base[self.cloud_idx]:
-                    allowed = torch.zeros_like(base)
-                    allowed[self.cloud_idx] = True
-                else:
-                    allowed = base
-
-            # 用 allowed 采样当前 a_i
+            # The deployment-induced mask is the only pre-sampling feasibility constraint.
+            allowed = self._normalize_offloading_mask(static_mask[i].clone())
             probs_i = self.actor(h_s[i:i + 1], h_p, allowed.unsqueeze(0))[0]
-            dist = torch.distributions.Categorical(probs_i)
-            a = dist.sample()
-            actions[i] = a
-            logp_sum += dist.log_prob(a)
+            dist = torch.distributions.Categorical(probs=probs_i)
+            tentative_actions[i] = dist.sample()
+            row_probs[i] = probs_i
             ent_sum += dist.entropy()
 
-            # 更新 must_cloud[i]，用于后续子节点的判断
-            if self.cfg.cloud_sticky:
-                # 如果父路径已经上云，或者当前节点直接选了云，则它自己也标记为 must_cloud
-                must_cloud[i] = parent_must_cloud or (a.item() == self.cloud_idx)
+        # Apply the correction operator after sampling.
+        actions, correction_cnt = self._correct_offloading_actions(tentative_actions, parents, topo_order)
 
-            if a != last:
-                switches += 1
-                visited[last] = True
-                last = a
+        logp_sum = torch.tensor(0.0, device=h_p.device)
+        for i in topo_order:
+            dist = torch.distributions.Categorical(probs=row_probs[i])
+            logp_sum += dist.log_prob(actions[i])
 
+        switches = self._count_switches(actions, topo_order)
         value = self.critic(h_s, h_p)
-        aux_cost = self.cfg.penalty_switch * switches + self.cfg.penalty_relax * relax_cnt
-        return actions, logp_sum, ent_sum, value.squeeze(0), {"switches": switches, "relax_cnt": relax_cnt,
-                                                              "aux_cost": aux_cost}
+        aux_cost = self.cfg.penalty_switch * switches + self.cfg.penalty_relax * correction_cnt
+        return actions, logp_sum, ent_sum, value.squeeze(0), {
+            "switches": switches,
+            "correction_cnt": correction_cnt,
+            "aux_cost": aux_cost,
+        }
 
     def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
                  actions: torch.Tensor, static_mask: torch.Tensor, topo_order: Optional[list] = None):
@@ -447,76 +459,30 @@ class HedgerOffloadingPPO(nn.Module):
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
 
-        row, col = logic_edge_index  # row: u, col: v,  u→v
-        parents = [[] for _ in range(Ms)]
-        for u, v in zip(row.tolist(), col.tolist()):
-            parents[v].append(u)
-        must_cloud = torch.zeros(Ms, dtype=torch.bool, device=h_p.device) # 服务 i 以及它的所有后代都必须在云上执行
-
         logp_sum = torch.tensor(0., device=h_p.device)
         ent_sum = torch.tensor(0., device=h_p.device)
 
-        if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
-        metric = self._build_metric(phys_edge_index, Np)
-        visited = torch.zeros(Np, dtype=torch.bool, device=h_p.device)
-        last = self.source
-        switches = 0
-        relax_cnt = 0
+        if topo_order is None:
+            topo_order = self.topo_order(logic_edge_index, Ms)
+        parents = self._build_parents(logic_edge_index, Ms)
+        actions, correction_cnt = self._correct_offloading_actions(actions, parents, topo_order)
 
         for i in topo_order:
-            base = static_mask[i].clone()
-
-            # 先看它的父节点中是否有已经 "must_cloud" 的
-            parent_indices = parents[i]
-            parent_must_cloud = False
-            if self.cfg.cloud_sticky and parent_indices:
-                parent_must_cloud = bool(must_cloud[parent_indices].any())
-
-            if self.cfg.cloud_sticky and parent_must_cloud:
-                allowed = torch.zeros_like(base)
-                allowed[self.cloud_idx] = base[self.cloud_idx]
-            else:
-                allowed = base.clone()
-                if self.cfg.forbid_return:
-                    forbid = visited.clone()
-                    if self.cfg.allow_stay: forbid[last] = False
-                    allowed = allowed & (~forbid)
-                if metric is not None:
-                    if self.cfg.metric_non_decreasing:
-                        allowed = allowed & (metric >= metric[last])
-                    else:
-                        allowed = allowed & (metric <= metric[last])
-
-            if not allowed.any():
-                relax_cnt += 1
-                if self.cfg.allow_stay and base[last]:
-                    allowed = torch.zeros_like(base)
-                    allowed[last] = True
-                elif base[self.cloud_idx]:
-                    allowed = torch.zeros_like(base)
-                    allowed[self.cloud_idx] = True
-                else:
-                    allowed = base
-
+            allowed = self._normalize_offloading_mask(static_mask[i].clone())
             probs_i = self.actor(h_s[i:i + 1], h_p, allowed.unsqueeze(0))[0]
-            dist = torch.distributions.Categorical(probs_i)
+            dist = torch.distributions.Categorical(probs=probs_i)
             a = actions[i]
             logp_sum += dist.log_prob(a)
             ent_sum += dist.entropy()
 
-            # 更新 must_cloud[i]，用于后续子节点的判断
-            if self.cfg.cloud_sticky:
-                # 如果父路径已经上云，或者当前节点直接选了云，则它自己也标记为 must_cloud
-                must_cloud[i] = parent_must_cloud or (a.item() == self.cloud_idx)
-
-            if a != last:
-                switches += 1
-                visited[last] = True
-                last = a
-
+        switches = self._count_switches(actions, topo_order)
         value = self.critic(h_s, h_p)
-        aux_cost = self.cfg.penalty_switch * switches + self.cfg.penalty_relax * relax_cnt
-        return logp_sum, ent_sum, value.squeeze(0), {"switches": switches, "relax_cnt": relax_cnt, "aux_cost": aux_cost}
+        aux_cost = self.cfg.penalty_switch * switches + self.cfg.penalty_relax * correction_cnt
+        return logp_sum, ent_sum, value.squeeze(0), {
+            "switches": switches,
+            "correction_cnt": correction_cnt,
+            "aux_cost": aux_cost,
+        }
 
     def ppo_update(self, transitions: List[dict], epochs=4, batch_size=32, clip_eps=None, entropy_coef=0.01,
                    value_coef=0.5):

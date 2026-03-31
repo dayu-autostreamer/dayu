@@ -24,11 +24,11 @@ class TopologyEncoders(nn.Module):
 
 class LogicalEncoder(nn.Module):
     """
-    feats:
-      - model_flops: [Ms]
-      - model_mem:   [Ms]   (MB)
-      - task_complexity_seq: [Ms,T]
-      - hist_latency_seq:    [Ms,T]
+    Logical-topology input features:
+      - `model_flops`: `[Ms]`
+      - `model_mem`: `[Ms]` in MB
+      - `task_complexity_seq`: `[Ms, T]`
+      - `hist_latency_seq`: `[Ms, T]`
     """
 
     def __init__(self, d_model: int = 64, heads: int = 4, dropout: float = 0.0):
@@ -68,13 +68,13 @@ class LogicalEncoder(nn.Module):
 
 class PhysicalEncoder(nn.Module):
     """
-    feats:
-      - gpu_flops:     [Np]
-      - role_id:       [Np] (0=source edge / 1=other edge  / 2=cloud)
-      - mem_capacity:  [Np] (MB)
-      - bandwidth_seq: [Np,T]
-      - gpu_util_seq:  [Np,T]
-      - mem_util_seq:  [Np,T] (0~1)
+    Physical-topology input features:
+      - `gpu_flops`: `[Np]`
+      - `role_id`: `[Np]`, where `0=source edge / 1=other edge / 2=cloud`
+      - `mem_capacity`: `[Np]` in MB
+      - `bandwidth_seq`: `[Np, T]`
+      - `gpu_util_seq`: `[Np, T]`
+      - `mem_util_seq`: `[Np, T]` in `[0, 1]`
     """
 
     def __init__(self, d_model: int = 64, num_roles: int = 3, role_emb_dim: int = 8, dropout: float = 0.0):

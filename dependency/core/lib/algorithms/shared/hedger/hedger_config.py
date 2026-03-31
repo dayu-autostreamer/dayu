@@ -14,20 +14,13 @@ def from_partial_dict(cls, data: dict):
 
 @dataclass
 class OffloadingConstraintCfg:
-    allow_stay: bool = True  # Allow execution at the same location of the past one
-    forbid_return: bool = False  # Forbidden to return to any historical node
-    cloud_sticky: bool = True  # Stay on the cloud after offloading to the cloud
-    use_monotone_metric: bool = False  # Enable monotonicity constraint with physical node hops
-    metric_non_decreasing: bool = True  # True: metric[node_t] >= metric[last], work only with use_monotone_metric=True
-    penalty_switch: float = 0.0  # Node switching penalty coefficient
-    penalty_relax: float = 0.0  # Penalty coefficient forced to relax for no feasible action
+    penalty_switch: float = 0.0  # Penalty coefficient for device switches
+    penalty_relax: float = 0.0  # Penalty coefficient for offloading corrections
 
 
 @dataclass
 class DeploymentConstraintCfg:
-    enforce_capacity: bool = True  # Enforce memory capacity
-    min_edge_replicas: int = 0  # Enforce each service deployed on at least how many edge nodes
-    penalty_capacity_relax: float = 1.0  # Penalty for relax the memory capacity
+    penalty_capacity_relax: float = 1.0  # Penalty coefficient for deployment capacity corrections
 
 
 class PhysicalTopology:
@@ -36,7 +29,7 @@ class PhysicalTopology:
         if source_device in edge_nodes:
             edge_nodes.remove(source_device)
         else:
-            # choose another edge device in cluster as source device (will not affect decision)
+            # If the configured source device is missing, fall back to the first edge node.
             source_device = edge_nodes[0]
             edge_nodes.remove(edge_nodes[0])
 
@@ -101,4 +94,3 @@ class LogicalTopology:
                     service_links.append((self.index(service), self.index(succ)))
 
         return service_links
-
