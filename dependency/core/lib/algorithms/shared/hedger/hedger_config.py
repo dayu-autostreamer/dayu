@@ -32,10 +32,14 @@ class DeploymentConstraintCfg:
 
 class PhysicalTopology:
     def __init__(self, edge_nodes: list, source_device: str):
-        if source_device not in edge_nodes:
-            raise ValueError(f"Source device {source_device} is not in edge nodes list {edge_nodes}")
-        edge_nodes = edge_nodes.copy()
-        edge_nodes.remove(source_device)
+        edge_nodes = list(dict.fromkeys(edge_nodes or []))
+        if source_device in edge_nodes:
+            edge_nodes.remove(source_device)
+        else:
+            # choose another edge device in cluster as source device (will not affect decision)
+            source_device = edge_nodes[0]
+            edge_nodes.remove(edge_nodes[0])
+
         self.nodes = [source_device] + edge_nodes + [NodeInfo.get_cloud_node()]
         self.source_idx = 0
         self.cloud_idx = len(self.nodes) - 1
@@ -97,5 +101,4 @@ class LogicalTopology:
                     service_links.append((self.index(service), self.index(succ)))
 
         return service_links
-
 

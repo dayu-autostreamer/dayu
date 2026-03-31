@@ -129,6 +129,15 @@ class HedgerDeploymentPPO(nn.Module):
         h_p = self.device_adapter(h_p)
         return h_s, h_p
 
+    def _enforce_cloud_replica(self, deploy_mask: torch.Tensor) -> torch.Tensor:
+        """
+        In this deployment setting, every service keeps a cloud replica by default.
+        """
+        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (deploy_mask.size(1) - 1)
+        deploy_mask = deploy_mask.clone()
+        deploy_mask[:, cloud_idx] = True
+        return deploy_mask
+
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index,
                phys_feats, topo_order: Optional[list] = None,
@@ -164,22 +173,16 @@ class HedgerDeploymentPPO(nn.Module):
         # (positions that are not allowed will always sample 0)
         dist = torch.distributions.Bernoulli(probs=probs_log)
         acts = torch.rand_like(probs_sample) < probs_sample  # bool [Ms, Np]
-        deploy_mask = acts.clone()
-
-        # Each service must be deployed on at least one device (as a backup: deployed on the cloud).
-        row_sum = deploy_mask.sum(dim=1)  # [Ms]
-        need_cloud = (row_sum == 0)
-        if need_cloud.any():
-            deploy_mask[need_cloud, cloud_idx] = True
+        deploy_mask = self._enforce_cloud_replica(acts)
 
         # Post-sampling capacity projection (post-projection)
         capacity_relax_cnt = 0
         if self.cfg.enforce_capacity:
-            # Check each device to see if it exceeds the budget, and if it does, delete some copies.
+            # Check each edge device to see if it exceeds the budget, and if it does, delete some copies.
+            # The cloud replica is retained as the default fallback deployment.
             for n in range(Np):
                 if n == cloud_idx:
-                    # The cloud side can be considered as "infinity" or controlled individually;
-                    # here, no capacity trimming is performed.
+                    # The cloud replica is fixed on by design and is not capacity-pruned here.
                     continue
 
                 while True:
@@ -202,13 +205,6 @@ class HedgerDeploymentPPO(nn.Module):
 
                     deploy_mask[drop_service_idx, n] = False
                     capacity_relax_cnt += 1
-
-            # Capacity adjustment may cause some services to have no replicas at all,
-            # as a last resort: enforce cloud deployment.
-            row_sum = deploy_mask.sum(dim=1)
-            need_cloud = (row_sum == 0)
-            if need_cloud.any():
-                deploy_mask[need_cloud, cloud_idx] = True
 
         # Calculate logp and entropy under the "static Bernoulli distribution"
         act_float = deploy_mask.float()
@@ -246,6 +242,7 @@ class HedgerDeploymentPPO(nn.Module):
 
         dist = torch.distributions.Bernoulli(probs=probs_log)
 
+        deploy_mask = self._enforce_cloud_replica(deploy_mask)
         act_float = deploy_mask.float()
         logp = dist.log_prob(act_float)     # [Ms, Np]
         ent = dist.entropy()                # [Ms, Np]

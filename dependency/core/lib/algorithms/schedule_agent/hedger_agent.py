@@ -102,21 +102,13 @@ class HedgerAgent(BaseAgent, abc.ABC):
 
     def update_task(self, task):
         for service_name in task.get_dag().nodes:
-            if service_name in {TaskConstant.START.value, TaskConstant.END.value}:
-                continue
-
-            content = np.array(task.get_dag().get_node(service_name).service.get_content_data())
-            if content.ndim ==2:
-                complexity = mean([len(frame_content) for frame_content in content])
-            elif content.ndim ==3:
-                complexity = mean([len(frame_content[0]) for frame_content in content])
-            else:
-                raise TypeError(f'Dim of Input "content" must be 2 or 3, get dim {content.ndim}')
-            latency = task.get_dag().get_node(service_name).service.get_execute_time()
+            latency = task.get_service(service_name).get_execute_time()
+            complexity = np.mean(task.get_service(service_name).get_complexity().get_scenario_data())
             self.hedger.state_buffer.add_task_complexity(service_name, complexity)
             self.hedger.state_buffer.add_task_latency(service_name, latency)
 
     def get_schedule_overhead(self):
+        # TODO
         return 0
 
     def load_default_policy(self, configuration, offloading):

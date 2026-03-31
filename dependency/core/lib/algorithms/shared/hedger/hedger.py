@@ -335,7 +335,7 @@ class Hedger:
             flush_every=1,
         )
 
-        # 静态 edge_index，可以一直复用
+        # Static edge_index, can be reused indefinitely
         logic_edge_index = torch.tensor(self.logical_topology.links, dtype=torch.long,
                                         device=self.device).t().contiguous()
         phys_edge_index = torch.tensor(self.physical_topology.links, dtype=torch.long,
@@ -354,7 +354,7 @@ class Hedger:
             prev_deploy_mask_dev = prev_deploy_mask.to(self.device) if prev_deploy_mask is not None else None
 
             with torch.no_grad():
-                # 采样新的部署策略
+                # Sample new deployment strategies
                 deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
                     logic_edge_index=logic_edge_index,
                     logic_feats=logic_feats_dev,
@@ -376,10 +376,10 @@ class Hedger:
 
             new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state()
 
-            # 根据指标 + RL 辅助信息计算 reward
+            # Calculate reward based on indicator + RL auxiliary information
             reward = self._compute_deployment_reward(metrics, aux)
 
-            # 构造 transition，并全部搬到 CPU，以避免跨线程的 device 问题
+            # Construct transitions and move all of them to the CPU to avoid cross-thread device issues.
             tr = {
                 "logic_edge_index": logic_edge_index.cpu(),
                 "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
@@ -751,7 +751,8 @@ class Hedger:
         Convert deployment plan dict to deployment mask tensor.
         deployment_plan: dict mapping service_name to device_name
         Returns:
-            deploy_mask: Tensor of shape (num_services, num_devices), bool
+            deploy_mask: Tensor of shape (num_services, num_devices), bool.
+            The cloud replica is always kept on for every service.
         """
         num_services = len(self.logical_topology)
         num_devices = len(self.physical_topology)
@@ -761,6 +762,8 @@ class Hedger:
             s_idx = self.logical_topology.index(service_name)
             d_idx = self.physical_topology.index(device_name)
             deploy_mask[s_idx, d_idx] = True
+
+        deploy_mask[:, self.physical_topology.cloud_idx] = True
 
         return deploy_mask
 
