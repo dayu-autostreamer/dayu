@@ -1,62 +1,361 @@
+"""
+Thread-safe state buffer used by Hedger.
+
+Writers continuously append observations through `add_*` APIs.
+Readers fetch consistent fixed-horizon snapshots through `get_*` APIs.
+
+Key properties
+--------------
+1. Thread safety: all accesses are protected by an internal lock.
+2. Blocking snapshots: `get_state()` can wait until the buffer is ready.
+3. Multi-consumer friendly: readers do not consume data, so deployment and
+   offloading loops can read concurrently at different cadences.
+4. Fixed-horizon tensors: dynamic sequences are padded or truncated to
+   `seq_len`.
+"""
+
+import time
+import threading
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+
+@dataclass
+class BufferWaitCfg:
+    """
+    Waiting policy for producing a consistent snapshot.
+
+    min_dynamic_len:
+        Minimum required length for each dynamic sequence buffer, such as
+        bandwidth, utilization, and latency history.
+
+    require_full_seq:
+        If True, every dynamic buffer must satisfy `len(buf) >= seq_len`.
+        If False, only `len(buf) >= min_dynamic_len` is required and the
+        snapshot builder will pad to `seq_len`.
+
+    timeout_s:
+        Maximum number of seconds to wait. None means wait forever.
+    """
+    min_dynamic_len: int = 1
+    require_full_seq: bool = True
+    timeout_s: Optional[float] = 5.0
+
+
 class StateBuffer:
-
-    LAN_BANDWIDTH = 1000  # in Mbps
-
-    def __init__(self, max_capacity, logical_topology=None, physical_topology=None):
-        self.max_capacity = max_capacity
+    def __init__(self, max_capacity: int, logical_topology, physical_topology):
+        self.max_capacity = int(max_capacity)
         self.logical_topology = logical_topology
         self.physical_topology = physical_topology
 
-        self.model_flops_buffer = {}
-        self.model_memory_buffer = {}
-        self.task_complexity_buffer = {}
-        self.task_latency_buffer = {}
-        self.gpu_flops_buffer = {}
-        self.memory_capacity_buffer = {}
-        self.device_role_buffer = {}
-        self.bandwidth_buffer = {}
-        self.gpu_utilization_buffer = {}
-        self.memory_utilization_buffer = {}
+        # All buffers are guarded by this lock/condition pair.
+        self._lock = threading.RLock()
+        self._cond = threading.Condition(self._lock)
 
-        self.init_buffer()
+        # Monotonic version number incremented on every append/update.
+        self._version = 0
 
-    def init_buffer(self):
-        self.model_flops_buffer = [0.0 for _ in range(self.logical_topology.node_num)]
-        self.model_memory_buffer = [0.0 for _ in range(self.logical_topology.node_num)]
-        self.task_complexity_buffer = [[] for _ in range(self.logical_topology.node_num)]
-        self.task_latency_buffer = [[] for _ in range(self.logical_topology.node_num)]
-        self.gpu_flops_buffer = [0.0 for _ in range(self.physical_topology.node_num)]
-        self.memory_capacity_buffer = [0.0 for _ in range(self.physical_topology.node_num)]
-        self.device_role_buffer = [0]+[1]*(self.physical_topology.node_num-2)+[2]
-        self.bandwidth_buffer = [[] for _ in range(self.physical_topology.node_num)]
-        self.gpu_utilization_buffer = [[] for _ in range(self.physical_topology.node_num)]
-        self.memory_utilization_buffer = [[] for _ in range(self.physical_topology.node_num)]
+        # Readiness flags for static features.
+        self._static_logic_ready = False
+        self._static_phys_ready = False
 
-    def add_model_flops(self, service, flops):
-        self.model_flops_buffer[self.logical_topology.index(service)] = flops
+        self._init_buffer()
 
-    def add_model_memory(self, service, memory):
-        self.model_memory_buffer[self.logical_topology.index(service)] = memory
+    # -----------------------
+    # Initialization
+    # -----------------------
+    def _init_buffer(self):
+        """Initialize all buffers from the topology sizes."""
+        num_services = self.logical_topology.node_num
+        num_devices = self.physical_topology.node_num
 
-    def add_task_complexity(self, service, complexity):
-        self.task_complexity_buffer[self.logical_topology.index(service)].append(complexity)
+        # Static logical features.
+        self.model_flops_buffer: List[float] = [0.0 for _ in range(num_services)]
+        self.model_memory_buffer: List[float] = [0.0 for _ in range(num_services)]
 
-    def add_task_latency(self, service, latency):
-        self.task_latency_buffer[self.logical_topology.index(service)].append(latency)
+        # Dynamic logical features, one time series per service.
+        self.task_complexity_buffer: List[List[float]] = [[] for _ in range(num_services)]
+        self.task_latency_buffer: List[List[float]] = [[] for _ in range(num_services)]
 
-    def add_gpu_flops(self, device, flops):
-        self.gpu_flops_buffer[self.physical_topology.index(device)] = flops
+        # Static physical features.
+        self.gpu_flops_buffer: List[float] = [0.0 for _ in range(num_devices)]
+        self.memory_capacity_buffer: List[float] = [0.0 for _ in range(num_devices)]
+        self.device_role_buffer: List[int] = [0] + [1] * (self.physical_topology.node_num - 2) + [
+            2]  # 0: source edge, 1: other edge, 2: cloud
 
-    def add_memory_capacity(self, device, capacity):
-        self.memory_capacity_buffer[self.physical_topology.index(device)] = capacity
+        # Dynamic physical features, one time series per device.
+        self.bandwidth_buffer: List[List[float]] = [[] for _ in range(num_devices)]
+        self.gpu_utilization_buffer: List[List[float]] = [[] for _ in range(num_devices)]
+        self.memory_utilization_buffer: List[List[float]] = [[] for _ in range(num_devices)]
 
-    def add_bandwidths(self, bandwidth):
-        self.bandwidth_buffer[self.physical_topology.cloud_idx].append(bandwidth)
-        for i in range(self.physical_topology.node_num-1):
-            self.bandwidth_buffer[i].append(self.LAN_BANDWIDTH)
+        # Offloading reward history, used as aggregated feedback for deployment.
+        self.offloading_reward_buffer: List[float] = []
 
-    def add_gpu_utilization(self, device, utilization):
-        self.gpu_utilization_buffer[self.physical_topology.index(device)].append(utilization)
+    # -----------------------
+    # Internal helpers
+    # -----------------------
+    def _bump_version(self):
+        self._version += 1
+        self._cond.notify_all()
 
-    def add_memory_utilization(self, device, utilization):
-        self.memory_utilization_buffer[self.physical_topology.index(device)].append(utilization)
+    def _trim_inplace(self, seq: List[Any]):
+        """Trim a list in place so that it stays within `max_capacity`."""
+        if self.max_capacity <= 0:
+            return
+        if len(seq) > self.max_capacity:
+            del seq[: len(seq) - self.max_capacity]
+
+    def _pad_trunc_1d(self, x: List[float], seq_len: int, pad_mode: str = "edge") -> List[float]:
+        """
+        Pad or truncate a 1D sequence to `seq_len`.
+
+        pad_mode:
+          - "edge": pad with the last element, or 0 if the sequence is empty
+          - "zero": pad with 0
+        """
+        if seq_len <= 0:
+            return []
+        if len(x) >= seq_len:
+            return x[-seq_len:]
+        # Pad the missing time steps.
+        if pad_mode == "zero" or len(x) == 0:
+            pad_val = 0.0
+        else:
+            pad_val = float(x[-1])
+        pad = [pad_val] * (seq_len - len(x))
+        return pad + x
+
+    def _ready_for_snapshot(self, seq_len: int, wait_cfg: BufferWaitCfg) -> bool:
+        """Return whether the buffer is ready to produce a snapshot."""
+        if not (self._static_logic_ready and self._static_phys_ready):
+            return False
+
+        min_len = max(0, int(wait_cfg.min_dynamic_len))
+
+        # Check dynamic buffer lengths.
+        def min_dyn_len(bufs: List[List[float]]) -> int:
+            if not bufs:
+                return 0
+            return min((len(b) for b in bufs), default=0)
+
+        # First satisfy the minimum dynamic-length requirement.
+        if min_dyn_len(self.bandwidth_buffer) < min_len:
+            return False
+        if min_dyn_len(self.gpu_utilization_buffer) < min_len:
+            return False
+        if min_dyn_len(self.memory_utilization_buffer) < min_len:
+            return False
+        if min_dyn_len(self.task_complexity_buffer) < min_len:
+            return False
+        if min_dyn_len(self.task_latency_buffer) < min_len:
+            return False
+
+        if wait_cfg.require_full_seq:
+            if min_dyn_len(self.bandwidth_buffer) < seq_len:
+                return False
+            if min_dyn_len(self.gpu_utilization_buffer) < seq_len:
+                return False
+            if min_dyn_len(self.memory_utilization_buffer) < seq_len:
+                return False
+            if min_dyn_len(self.task_complexity_buffer) < seq_len:
+                return False
+            if min_dyn_len(self.task_latency_buffer) < seq_len:
+                return False
+
+        return True
+
+    def _mark_static_logic_ready(self):
+        # Simple heuristic: consider logic-side static features ready once
+        # non-zero values have been observed.
+        if any(v != 0.0 for v in self.model_flops_buffer) and any(v != 0.0 for v in self.model_memory_buffer):
+            self._static_logic_ready = True
+
+    def _mark_static_phys_ready(self):
+        if any(v != 0.0 for v in self.gpu_flops_buffer) and any(v != 0.0 for v in self.memory_capacity_buffer):
+            self._static_phys_ready = True
+
+    # -----------------------
+    # Write APIs
+    # -----------------------
+    def add_model_flops(self, flops_list: List[float]):
+        with self._cond:
+            assert len(flops_list) == len(self.model_flops_buffer), \
+                f"model flops length mismatch: {len(flops_list)} vs {len(self.model_flops_buffer)}"
+            self.model_flops_buffer = list(map(float, flops_list))
+            self._mark_static_logic_ready()
+            self._bump_version()
+
+    def add_model_memory(self, memory_list: List[float]):
+        with self._cond:
+            assert len(memory_list) == len(self.model_memory_buffer), \
+                f"model memory length mismatch: {len(memory_list)} vs {len(self.model_memory_buffer)}"
+            self.model_memory_buffer = list(map(float, memory_list))
+            self._mark_static_logic_ready()
+            self._bump_version()
+
+    def add_task_complexity(self, service_name: str, complexity: float):
+        """Append a task-complexity observation for a service."""
+        with self._cond:
+            s_idx = self.logical_topology.index(service_name)
+            self.task_complexity_buffer[s_idx].append(float(complexity))
+            self._trim_inplace(self.task_complexity_buffer[s_idx])
+            self._bump_version()
+
+    def add_task_latency(self, service_name: str, latency: float):
+        """Append a task-latency observation for a service."""
+        with self._cond:
+            s_idx = self.logical_topology.index(service_name)
+            self.task_latency_buffer[s_idx].append(float(latency))
+            self._trim_inplace(self.task_latency_buffer[s_idx])
+            self._bump_version()
+
+    def add_gpu_flops(self, flops_list: List[float]):
+        with self._cond:
+            assert len(flops_list) == len(self.gpu_flops_buffer), \
+                f"gpu flops length mismatch: {len(flops_list)} vs {len(self.gpu_flops_buffer)}"
+            self.gpu_flops_buffer = list(map(float, flops_list))
+            self._mark_static_phys_ready()
+            self._bump_version()
+
+    def add_memory_capacity(self, capacity_list: List[float]):
+        with self._cond:
+            assert len(capacity_list) == len(self.memory_capacity_buffer), \
+                f"memory capacity length mismatch: {len(capacity_list)} vs {len(self.memory_capacity_buffer)}"
+            self.memory_capacity_buffer = list(map(float, capacity_list))
+            self._mark_static_phys_ready()
+            self._bump_version()
+
+    def add_bandwidths(self, bandwidths: Dict[str, float]):
+        """
+        `bandwidths` maps:
+            - cloud node name -> WAN bandwidth
+            - edge node name -> LAN bandwidth
+        """
+        with self._cond:
+            for node_name, bw in bandwidths.items():
+                d_idx = self.physical_topology.index(node_name)
+                self.bandwidth_buffer[d_idx].append(float(bw))
+                self._trim_inplace(self.bandwidth_buffer[d_idx])
+            self._bump_version()
+
+    def add_gpu_utilization(self, device_name: str, util: float):
+        with self._cond:
+            d_idx = self.physical_topology.index(device_name)
+            self.gpu_utilization_buffer[d_idx].append(float(util))
+            self._trim_inplace(self.gpu_utilization_buffer[d_idx])
+            self._bump_version()
+
+    def add_memory_utilization(self, device_name: str, util: float):
+        with self._cond:
+            d_idx = self.physical_topology.index(device_name)
+            self.memory_utilization_buffer[d_idx].append(float(util))
+            self._trim_inplace(self.memory_utilization_buffer[d_idx])
+            self._bump_version()
+
+    def add_offloading_reward(self, reward: float):
+        """Append an offloading reward, usually from the offloading loop."""
+        with self._cond:
+            self.offloading_reward_buffer.append(float(reward))
+            self._trim_inplace(self.offloading_reward_buffer)
+            self._bump_version()
+
+    # -----------------------
+    # Read APIs
+    # -----------------------
+    def get_state(
+            self,
+            seq_len: int,
+            wait_cfg: Optional[BufferWaitCfg] = None,
+            pad_mode: str = "edge",
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Return a snapshot of logical and physical features as Python lists.
+
+        The returned dictionaries match the format that Hedger later converts
+        into torch tensors:
+
+        `logic_feats`:
+            `model_flops`: `(Ms,)`
+            `model_mem`: `(Ms,)`
+            `task_complexity_seq`: `(Ms, T)`
+            `hist_latency_seq`: `(Ms, T)`
+
+        `phys_feats`:
+            `gpu_flops`: `(Np,)`
+            `role_id`: `(Np,)`
+            `mem_capacity`: `(Np,)`
+            `bandwidth_seq`: `(Np, T)`
+            `gpu_util_seq`: `(Np, T)`
+            `mem_util_seq`: `(Np, T)`
+        """
+        if wait_cfg is None:
+            wait_cfg = BufferWaitCfg()
+
+        seq_len = int(seq_len)
+        assert seq_len > 0, f"seq_len must be > 0, got {seq_len}"
+
+        with self._cond:
+            start_t = time.time()
+            while not self._ready_for_snapshot(seq_len, wait_cfg):
+                if wait_cfg.timeout_s is None:
+                    self._cond.wait(timeout=0.5)
+                    continue
+                elapsed = time.time() - start_t
+                if elapsed >= float(wait_cfg.timeout_s):
+                    # Timeout reached: return a best-effort snapshot.
+                    break
+                # Wait for the next update.
+                self._cond.wait(timeout=min(0.5, float(wait_cfg.timeout_s) - elapsed))
+
+            # Build the logical snapshot.
+            Ms = len(self.model_flops_buffer)
+            logic_task_complexity = [
+                self._pad_trunc_1d(self.task_complexity_buffer[i], seq_len, pad_mode=pad_mode)
+                for i in range(Ms)
+            ]
+            logic_latency = [
+                self._pad_trunc_1d(self.task_latency_buffer[i], seq_len, pad_mode=pad_mode)
+                for i in range(Ms)
+            ]
+            logic_feats = {
+                "model_flops": list(self.model_flops_buffer),
+                "model_mem": list(self.model_memory_buffer),
+                "task_complexity_seq": logic_task_complexity,
+                "hist_latency_seq": logic_latency,
+            }
+
+            # Build the physical snapshot.
+            Np = len(self.gpu_flops_buffer)
+            phys_bandwidth = [
+                self._pad_trunc_1d(self.bandwidth_buffer[i], seq_len, pad_mode=pad_mode)
+                for i in range(Np)
+            ]
+            phys_gpu_util = [
+                self._pad_trunc_1d(self.gpu_utilization_buffer[i], seq_len, pad_mode=pad_mode)
+                for i in range(Np)
+            ]
+            phys_mem_util = [
+                self._pad_trunc_1d(self.memory_utilization_buffer[i], seq_len, pad_mode=pad_mode)
+                for i in range(Np)
+            ]
+            phys_feats = {
+                "gpu_flops": list(self.gpu_flops_buffer),
+                "role_id": list(self.device_role_buffer),
+                "mem_capacity": list(self.memory_capacity_buffer),
+                "bandwidth_seq": phys_bandwidth,
+                "gpu_util_seq": phys_gpu_util,
+                "mem_util_seq": phys_mem_util,
+            }
+
+            return logic_feats, phys_feats
+
+    def get_offloading_reward_stats(self, last_k: int = 1) -> Dict[str, float]:
+        """Return the mean and std of the last `last_k` offloading rewards."""
+        with self._lock:
+            last_k = max(1, int(last_k))
+            if len(self.offloading_reward_buffer) == 0:
+                return {"mean": 0.0, "std": 0.0}
+            arr = np.array(self.offloading_reward_buffer[-last_k:], dtype=np.float32)
+            return {"mean": float(arr.mean()), "std": float(arr.std())}
