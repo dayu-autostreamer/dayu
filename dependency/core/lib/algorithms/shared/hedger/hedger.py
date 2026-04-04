@@ -2,6 +2,7 @@ import copy
 from typing import List, Optional
 import threading
 import random
+import math
 import torch
 import time
 import os
@@ -13,7 +14,7 @@ from .topology_encoder import TopologyEncoders
 from .ppo_agent import HedgerOffloadingPPO, HedgerDeploymentPPO
 from .hedger_config import from_partial_dict, OffloadingConstraintCfg, DeploymentConstraintCfg, LogicalTopology, \
     PhysicalTopology
-from .state_buffer import StateBuffer
+from .state_buffer import StateBuffer, BufferWaitCfg
 
 __all__ = ('Hedger',)
 
@@ -51,8 +52,17 @@ class Hedger:
         self.deployment_rollout_len = hyper_params.get("deployment_rollout_len", 8)
         self.offloading_batch_size = hyper_params.get("offloading_batch_size", 16)
         self.deployment_batch_size = hyper_params.get("deployment_batch_size", 4)
+        self.state_seq_len = hyper_params.get("state_seq_len", 8)
+        self.offloading_state_seq_len = hyper_params.get("offloading_state_seq_len", self.state_seq_len)
+        self.deployment_state_seq_len = hyper_params.get("deployment_state_seq_len", self.state_seq_len)
+        self.state_min_dynamic_len = hyper_params.get("state_min_dynamic_len", 1)
+        self.state_wait_timeout_s = hyper_params.get("state_wait_timeout_s", 1.0)
+        self.state_require_full_seq = hyper_params.get("state_require_full_seq", False)
+        self.latency_slo = hyper_params.get("latency_slo", hyper_params.get("slo_threshold", None))
 
         self.max_state_buffer_size = hyper_params.get("max_state_buffer_size", 1000)
+        reward_window_default = max(1, int(math.ceil(self.deployment_interval / max(self.offloading_interval, 1e-6))))
+        self.deployment_reward_window = int(hyper_params.get("deployment_reward_window", reward_window_default))
 
         self.offloading_agent_params = agent_params['offloading_agent']
         self.deployment_agent_params = agent_params['deployment_agent']
@@ -183,13 +193,13 @@ class Hedger:
         assert self.logical_topology, "Logical topology must be registered before registering initial deployment."
         assert self.physical_topology, "Physical topology must be registered before registering initial deployment."
 
-        if self.initial_deployment_plan:
+        if self.initial_deployment_plan is not None:
             return
-        self.initial_deployment_plan = deployment_plan
-        self.deployment_plan = deployment_plan
+        self.initial_deployment_plan = copy.deepcopy(deployment_plan)
+        self.deployment_plan = copy.deepcopy(deployment_plan)
 
         # Cache the current deployment mask.
-        self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(deployment_plan)
+        self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(deployment_plan or {})
 
     def get_offloading_plan(self):
         return self.offloading_plan
@@ -201,11 +211,104 @@ class Hedger:
         self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(self.deployment_plan)
         return self.deployment_plan
 
-    def _collect_deployment_state(self, prev_deploy_mask: Optional[torch.Tensor]):
-        pass
+    def _build_state_wait_cfg(self) -> BufferWaitCfg:
+        return BufferWaitCfg(
+            min_dynamic_len=self.state_min_dynamic_len,
+            require_full_seq=self.state_require_full_seq,
+            timeout_s=self.state_wait_timeout_s,
+        )
+
+    def _current_deploy_mask(self) -> torch.Tensor:
+        if self.cur_deploy_mask is not None:
+            return self.cur_deploy_mask.detach().clone().cpu()
+
+        deploy_mask = torch.zeros(
+            (len(self.logical_topology), len(self.physical_topology)),
+            dtype=torch.bool,
+        )
+        deploy_mask[:, self.physical_topology.cloud_idx] = True
+        return deploy_mask
+
+    def _collect_graph_state(self, seq_len: int):
+        assert self.state_buffer is not None, "State buffer must be registered before collecting state."
+        logic_feats_raw, phys_feats_raw = self.state_buffer.get_state(
+            seq_len=seq_len,
+            wait_cfg=self._build_state_wait_cfg(),
+            pad_mode="edge",
+        )
+
+        logic_feats = {
+            "model_flops": torch.tensor(logic_feats_raw["model_flops"], dtype=torch.float32),
+            "model_mem": torch.tensor(logic_feats_raw["model_mem"], dtype=torch.float32),
+            "task_complexity_seq": torch.tensor(logic_feats_raw["task_complexity_seq"], dtype=torch.float32),
+            "hist_latency_seq": torch.tensor(logic_feats_raw["hist_latency_seq"], dtype=torch.float32),
+        }
+        phys_feats = {
+            "gpu_flops": torch.tensor(phys_feats_raw["gpu_flops"], dtype=torch.float32),
+            "role_id": torch.tensor(phys_feats_raw["role_id"], dtype=torch.long),
+            "mem_capacity": torch.tensor(phys_feats_raw["mem_capacity"], dtype=torch.float32),
+            "bandwidth_seq": torch.tensor(phys_feats_raw["bandwidth_seq"], dtype=torch.float32),
+            "gpu_util_seq": torch.tensor(phys_feats_raw["gpu_util_seq"], dtype=torch.float32),
+            "mem_util_seq": torch.tensor(phys_feats_raw["mem_util_seq"], dtype=torch.float32),
+        }
+        return logic_feats, phys_feats
+
+    def _compute_slo_violation(self, latest_latency: torch.Tensor) -> float:
+        if self.latency_slo is None:
+            return 0.0
+        if latest_latency.numel() == 0:
+            return 0.0
+        threshold = float(self.latency_slo)
+        return float((latest_latency > threshold).float().mean().item())
+
+    def _compute_cloud_fraction(self) -> float:
+        num_services = len(self.logical_topology)
+        if num_services == 0:
+            return 0.0
+
+        if not self.offloading_plan:
+            return 1.0
+
+        cloud_name = self.physical_topology[self.physical_topology.cloud_idx]
+        cloud_count = sum(1 for service_name in self.logical_topology.service_list
+                          if self.offloading_plan.get(service_name) == cloud_name)
+        return float(cloud_count / num_services)
+
+    def _compute_deploy_change_cost(self, prev_deploy_mask: Optional[torch.Tensor]) -> float:
+        if prev_deploy_mask is None:
+            return 0.0
+
+        current_mask = self._current_deploy_mask().bool()
+        prev_mask = prev_deploy_mask.detach().clone().cpu().bool()
+        if current_mask.shape != prev_mask.shape:
+            return 0.0
+
+        cloud_idx = self.physical_topology.cloud_idx
+        current_edge = current_mask[:, :cloud_idx]
+        prev_edge = prev_mask[:, :cloud_idx]
+        return float(torch.logical_xor(current_edge, prev_edge).sum().item())
+
+    def _collect_deployment_state(self, prev_deploy_mask: Optional[torch.Tensor] = None):
+        logic_feats, phys_feats = self._collect_graph_state(self.deployment_state_seq_len)
+        reward_stats = self.state_buffer.get_offloading_reward_stats(last_k=self.deployment_reward_window)
+        metrics = {
+            "avg_offloading_reward": float(reward_stats["mean"]),
+            "deploy_change_cost": self._compute_deploy_change_cost(prev_deploy_mask),
+        }
+        done = False
+        return logic_feats, phys_feats, metrics, done
 
     def _collect_offloading_state(self):
-        pass
+        logic_feats, phys_feats = self._collect_graph_state(self.offloading_state_seq_len)
+        latest_latency = logic_feats["hist_latency_seq"][:, -1] if logic_feats["hist_latency_seq"].numel() else \
+            torch.empty(0, dtype=torch.float32)
+        metrics = {
+            "latency": float(latest_latency.mean().item()) if latest_latency.numel() else 0.0,
+            "slo_violation": self._compute_slo_violation(latest_latency),
+            "cloud_fraction": self._compute_cloud_fraction(),
+        }
+        done = False
+        return logic_feats, phys_feats, metrics, done
 
     def inference_hedger(self):
         LOGGER.info('[Hedger] Hedger is running in inference mode..')
@@ -242,7 +345,7 @@ class Hedger:
 
         LOGGER.info(f"Logical graph edges: {logic_links.size(1)}, physical graph edges: {phys_links.size(1)}")
 
-        if not self.cur_deploy_mask:
+        if self.cur_deploy_mask is None:
             LOGGER.warning('No previous deployment mask found, initialize to pure cloud deployment.')
             self.cur_deploy_mask = torch.zeros((len(self.logical_topology), len(self.physical_topology)),
                                                dtype=torch.bool, device=self.device)
@@ -345,7 +448,7 @@ class Hedger:
         deployment_time_ticket = 0
 
         prev_deploy_mask = copy.deepcopy(self.cur_deploy_mask)
-        logic_feats, phys_feats, _, _ = self._collect_deployment_state()
+        logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
 
         while not self.deployment_thread_stop_event.is_set():
             # Move features onto the active device.
@@ -365,6 +468,7 @@ class Hedger:
                 )
             deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
             self.deployment_plan = deploy_plan
+            self.cur_deploy_mask = deploy_mask.detach().cpu()
 
             time_ticket = time.time()
             if deployment_time_ticket == 0:
@@ -374,7 +478,8 @@ class Hedger:
                 time.sleep(max(0, self.deployment_interval - elapsed))
             deployment_time_ticket = time_ticket
 
-            new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state()
+            new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state(
+                prev_deploy_mask=prev_deploy_mask,)
 
             # Compute the reward from environment metrics and policy-side auxiliaries.
             reward = self._compute_deployment_reward(metrics, aux)
@@ -454,11 +559,11 @@ class Hedger:
 
         step = 0
         offloading_time_ticket = 0
-        static_mask = copy.deepcopy(self.cur_deploy_mask)
         logic_feats, phys_feats, _, _ = self._collect_offloading_state()
         while not self.offloading_thread_stop_event.is_set():
             logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
             phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
+            static_mask = self._current_deploy_mask()
             static_mask_dev = static_mask.to(self.device)
 
             with torch.no_grad():
@@ -484,6 +589,8 @@ class Hedger:
             new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state()
 
             reward = self._compute_offloading_reward(metrics, aux)
+            if self.state_buffer is not None:
+                self.state_buffer.add_offloading_reward(reward)
 
             tr = {
                 "logic_edge_index": logic_edge_index.cpu(),
@@ -492,6 +599,7 @@ class Hedger:
                 "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
                 "actions": actions.cpu(),
                 "static_mask": static_mask_dev.cpu(),
+                "topo_order": None,
                 "logp": logp.detach().cpu(),
                 "value": value.detach().cpu(),
                 "reward": float(reward),
@@ -764,10 +872,15 @@ class Hedger:
         num_devices = len(self.physical_topology)
         deploy_mask = torch.zeros((num_services, num_devices), dtype=torch.bool, device=self.device)
 
-        for service_name, device_name in deployment_plan.items():
+        for service_name, device_names in (deployment_plan or {}).items():
             s_idx = self.logical_topology.index(service_name)
-            d_idx = self.physical_topology.index(device_name)
-            deploy_mask[s_idx, d_idx] = True
+            if isinstance(device_names, (list, tuple, set)):
+                iterable = device_names
+            else:
+                iterable = [device_names]
+            for device_name in iterable:
+                d_idx = self.physical_topology.index(device_name)
+                deploy_mask[s_idx, d_idx] = True
 
         deploy_mask[:, self.physical_topology.cloud_idx] = True
 

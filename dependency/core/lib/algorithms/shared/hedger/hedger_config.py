@@ -72,7 +72,7 @@ class LogicalTopology:
         self.service_list.remove(TaskConstant.END.value)
 
     def __len__(self):
-        return len(self.dag)
+        return len(self.service_list)
 
     def __getitem__(self, item):
         return self.service_list[item]
@@ -82,7 +82,7 @@ class LogicalTopology:
 
     @property
     def node_num(self) -> int:
-        return len(self.dag)
+        return len(self.service_list)
 
     @property
     def links(self):

@@ -49,6 +49,8 @@ class StateBuffer:
         self.max_capacity = int(max_capacity)
         self.logical_topology = logical_topology
         self.physical_topology = physical_topology
+        self._service_to_idx = {self.logical_topology[i]: i for i in range(len(self.logical_topology))}
+        self._device_to_idx = {self.physical_topology[i]: i for i in range(len(self.physical_topology))}
 
         # All buffers are guarded by this lock/condition pair.
         self._lock = threading.RLock()
@@ -93,6 +95,12 @@ class StateBuffer:
         # Offloading reward history, used as aggregated feedback for deployment.
         self.offloading_reward_buffer: List[float] = []
 
+        # Track whether each static entry has been observed at least once.
+        self._logic_flops_seen = [False for _ in range(num_services)]
+        self._logic_memory_seen = [False for _ in range(num_services)]
+        self._phys_flops_seen = [False for _ in range(num_devices)]
+        self._phys_memory_seen = [False for _ in range(num_devices)]
+
     # -----------------------
     # Internal helpers
     # -----------------------
@@ -106,6 +114,12 @@ class StateBuffer:
             return
         if len(seq) > self.max_capacity:
             del seq[: len(seq) - self.max_capacity]
+
+    def _resolve_service_index(self, service_name: str) -> Optional[int]:
+        return self._service_to_idx.get(service_name)
+
+    def _resolve_device_index(self, device_name: str) -> Optional[int]:
+        return self._device_to_idx.get(device_name)
 
     def _pad_trunc_1d(self, x: List[float], seq_len: int, pad_mode: str = "edge") -> List[float]:
         """
@@ -167,38 +181,70 @@ class StateBuffer:
         return True
 
     def _mark_static_logic_ready(self):
-        # Simple heuristic: consider logic-side static features ready once
-        # non-zero values have been observed.
-        if any(v != 0.0 for v in self.model_flops_buffer) and any(v != 0.0 for v in self.model_memory_buffer):
-            self._static_logic_ready = True
+        self._static_logic_ready = all(self._logic_flops_seen) and all(self._logic_memory_seen)
 
     def _mark_static_phys_ready(self):
-        if any(v != 0.0 for v in self.gpu_flops_buffer) and any(v != 0.0 for v in self.memory_capacity_buffer):
-            self._static_phys_ready = True
+        self._static_phys_ready = all(self._phys_flops_seen) and all(self._phys_memory_seen)
 
     # -----------------------
     # Write APIs
     # -----------------------
-    def add_model_flops(self, flops_list: List[float]):
+    def add_model_flops(self, service_or_values, flops: Optional[float] = None):
         with self._cond:
-            assert len(flops_list) == len(self.model_flops_buffer), \
-                f"model flops length mismatch: {len(flops_list)} vs {len(self.model_flops_buffer)}"
-            self.model_flops_buffer = list(map(float, flops_list))
+            if flops is None:
+                if isinstance(service_or_values, dict):
+                    for service_name, value in service_or_values.items():
+                        s_idx = self._resolve_service_index(service_name)
+                        if s_idx is None:
+                            continue
+                        self.model_flops_buffer[s_idx] = float(value)
+                        self._logic_flops_seen[s_idx] = True
+                else:
+                    flops_list = list(service_or_values)
+                    assert len(flops_list) == len(self.model_flops_buffer), \
+                        f"model flops length mismatch: {len(flops_list)} vs {len(self.model_flops_buffer)}"
+                    self.model_flops_buffer = list(map(float, flops_list))
+                    self._logic_flops_seen = [True for _ in self.model_flops_buffer]
+            else:
+                s_idx = self._resolve_service_index(service_or_values)
+                if s_idx is None:
+                    return
+                self.model_flops_buffer[s_idx] = float(flops)
+                self._logic_flops_seen[s_idx] = True
             self._mark_static_logic_ready()
             self._bump_version()
 
-    def add_model_memory(self, memory_list: List[float]):
+    def add_model_memory(self, service_or_values, memory: Optional[float] = None):
         with self._cond:
-            assert len(memory_list) == len(self.model_memory_buffer), \
-                f"model memory length mismatch: {len(memory_list)} vs {len(self.model_memory_buffer)}"
-            self.model_memory_buffer = list(map(float, memory_list))
+            if memory is None:
+                if isinstance(service_or_values, dict):
+                    for service_name, value in service_or_values.items():
+                        s_idx = self._resolve_service_index(service_name)
+                        if s_idx is None:
+                            continue
+                        self.model_memory_buffer[s_idx] = float(value)
+                        self._logic_memory_seen[s_idx] = True
+                else:
+                    memory_list = list(service_or_values)
+                    assert len(memory_list) == len(self.model_memory_buffer), \
+                        f"model memory length mismatch: {len(memory_list)} vs {len(self.model_memory_buffer)}"
+                    self.model_memory_buffer = list(map(float, memory_list))
+                    self._logic_memory_seen = [True for _ in self.model_memory_buffer]
+            else:
+                s_idx = self._resolve_service_index(service_or_values)
+                if s_idx is None:
+                    return
+                self.model_memory_buffer[s_idx] = float(memory)
+                self._logic_memory_seen[s_idx] = True
             self._mark_static_logic_ready()
             self._bump_version()
 
     def add_task_complexity(self, service_name: str, complexity: float):
         """Append a task-complexity observation for a service."""
         with self._cond:
-            s_idx = self.logical_topology.index(service_name)
+            s_idx = self._resolve_service_index(service_name)
+            if s_idx is None:
+                return
             self.task_complexity_buffer[s_idx].append(float(complexity))
             self._trim_inplace(self.task_complexity_buffer[s_idx])
             self._bump_version()
@@ -206,24 +252,60 @@ class StateBuffer:
     def add_task_latency(self, service_name: str, latency: float):
         """Append a task-latency observation for a service."""
         with self._cond:
-            s_idx = self.logical_topology.index(service_name)
+            s_idx = self._resolve_service_index(service_name)
+            if s_idx is None:
+                return
             self.task_latency_buffer[s_idx].append(float(latency))
             self._trim_inplace(self.task_latency_buffer[s_idx])
             self._bump_version()
 
-    def add_gpu_flops(self, flops_list: List[float]):
+    def add_gpu_flops(self, device_or_values, flops: Optional[float] = None):
         with self._cond:
-            assert len(flops_list) == len(self.gpu_flops_buffer), \
-                f"gpu flops length mismatch: {len(flops_list)} vs {len(self.gpu_flops_buffer)}"
-            self.gpu_flops_buffer = list(map(float, flops_list))
+            if flops is None:
+                if isinstance(device_or_values, dict):
+                    for device_name, value in device_or_values.items():
+                        d_idx = self._resolve_device_index(device_name)
+                        if d_idx is None:
+                            continue
+                        self.gpu_flops_buffer[d_idx] = float(value)
+                        self._phys_flops_seen[d_idx] = True
+                else:
+                    flops_list = list(device_or_values)
+                    assert len(flops_list) == len(self.gpu_flops_buffer), \
+                        f"gpu flops length mismatch: {len(flops_list)} vs {len(self.gpu_flops_buffer)}"
+                    self.gpu_flops_buffer = list(map(float, flops_list))
+                    self._phys_flops_seen = [True for _ in self.gpu_flops_buffer]
+            else:
+                d_idx = self._resolve_device_index(device_or_values)
+                if d_idx is None:
+                    return
+                self.gpu_flops_buffer[d_idx] = float(flops)
+                self._phys_flops_seen[d_idx] = True
             self._mark_static_phys_ready()
             self._bump_version()
 
-    def add_memory_capacity(self, capacity_list: List[float]):
+    def add_memory_capacity(self, device_or_values, capacity: Optional[float] = None):
         with self._cond:
-            assert len(capacity_list) == len(self.memory_capacity_buffer), \
-                f"memory capacity length mismatch: {len(capacity_list)} vs {len(self.memory_capacity_buffer)}"
-            self.memory_capacity_buffer = list(map(float, capacity_list))
+            if capacity is None:
+                if isinstance(device_or_values, dict):
+                    for device_name, value in device_or_values.items():
+                        d_idx = self._resolve_device_index(device_name)
+                        if d_idx is None:
+                            continue
+                        self.memory_capacity_buffer[d_idx] = float(value)
+                        self._phys_memory_seen[d_idx] = True
+                else:
+                    capacity_list = list(device_or_values)
+                    assert len(capacity_list) == len(self.memory_capacity_buffer), \
+                        f"memory capacity length mismatch: {len(capacity_list)} vs {len(self.memory_capacity_buffer)}"
+                    self.memory_capacity_buffer = list(map(float, capacity_list))
+                    self._phys_memory_seen = [True for _ in self.memory_capacity_buffer]
+            else:
+                d_idx = self._resolve_device_index(device_or_values)
+                if d_idx is None:
+                    return
+                self.memory_capacity_buffer[d_idx] = float(capacity)
+                self._phys_memory_seen[d_idx] = True
             self._mark_static_phys_ready()
             self._bump_version()
 
@@ -235,21 +317,27 @@ class StateBuffer:
         """
         with self._cond:
             for node_name, bw in bandwidths.items():
-                d_idx = self.physical_topology.index(node_name)
+                d_idx = self._resolve_device_index(node_name)
+                if d_idx is None:
+                    continue
                 self.bandwidth_buffer[d_idx].append(float(bw))
                 self._trim_inplace(self.bandwidth_buffer[d_idx])
             self._bump_version()
 
     def add_gpu_utilization(self, device_name: str, util: float):
         with self._cond:
-            d_idx = self.physical_topology.index(device_name)
+            d_idx = self._resolve_device_index(device_name)
+            if d_idx is None:
+                return
             self.gpu_utilization_buffer[d_idx].append(float(util))
             self._trim_inplace(self.gpu_utilization_buffer[d_idx])
             self._bump_version()
 
     def add_memory_utilization(self, device_name: str, util: float):
         with self._cond:
-            d_idx = self.physical_topology.index(device_name)
+            d_idx = self._resolve_device_index(device_name)
+            if d_idx is None:
+                return
             self.memory_utilization_buffer[d_idx].append(float(util))
             self._trim_inplace(self.memory_utilization_buffer[d_idx])
             self._bump_version()
