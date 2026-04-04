@@ -229,6 +229,12 @@ class Hedger:
         deploy_mask[:, self.physical_topology.cloud_idx] = True
         return deploy_mask
 
+    def _build_edge_index(self, links) -> torch.Tensor:
+        """Build a graph edge-index tensor and keep empty graphs well-formed."""
+        if not links:
+            return torch.empty((2, 0), dtype=torch.long, device=self.device)
+        return torch.tensor(links, dtype=torch.long, device=self.device).t().contiguous()
+
     def _collect_graph_state(self, seq_len: int):
         assert self.state_buffer is not None, "State buffer must be registered before collecting state."
         logic_feats_raw, phys_feats_raw = self.state_buffer.get_state(
@@ -311,25 +317,159 @@ class Hedger:
         return logic_feats, phys_feats, metrics, done
 
     def inference_hedger(self):
+        assert self.logical_topology is not None, "Logical topology must be registered before inference."
+        assert self.physical_topology is not None, "Physical topology must be registered before inference."
+
         LOGGER.info('[Hedger] Hedger is running in inference mode..')
+        self.set_seed()
 
-        logic_links = torch.tensor(self.logical_topology.links,
-                                   dtype=torch.long, device=self.device).t().contiguous()
-        phys_links = torch.tensor(self.physical_topology.links,
-                                  dtype=torch.long, device=self.device).t().contiguous()
+        self.shared_topology_encoder.eval()
+        self.deployment_agent.eval()
+        self.offloading_agent.eval()
 
-        self.cur_deploy_mask = torch.zeros((len(self.logical_topology), len(self.physical_topology)),
-                                           dtype=torch.bool, device=self.device)
-        self.cur_deploy_mask[:, self.physical_topology.cloud_idx] = True
+        logic_links = self._build_edge_index(self.logical_topology.links)
+        phys_links = self._build_edge_index(self.physical_topology.links)
+        LOGGER.info(f"Logical graph edges: {logic_links.size(1)}, physical graph edges: {phys_links.size(1)}")
 
-        threading.Thread(target=self.inference_deployment_agent).start()
-        threading.Thread(target=self.inference_offloading_agent).start()
+        self.deployment_thread_stop_event.clear()
+        self.offloading_thread_stop_event.clear()
+
+        if self.cur_deploy_mask is None:
+            if self.deployment_plan is not None:
+                self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(self.deployment_plan).detach().cpu()
+            elif self.initial_deployment_plan is not None:
+                self.deployment_plan = copy.deepcopy(self.initial_deployment_plan)
+                self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(
+                    self.initial_deployment_plan
+                ).detach().cpu()
+            else:
+                LOGGER.warning('No previous deployment mask found, initialize to pure cloud deployment.')
+                self.cur_deploy_mask = torch.zeros(
+                    (len(self.logical_topology), len(self.physical_topology)),
+                    dtype=torch.bool,
+                )
+                self.cur_deploy_mask[:, self.physical_topology.cloud_idx] = True
+                self.deployment_plan = self._map_deployment_mask_to_deployment_plan(self.cur_deploy_mask)
+        elif self.deployment_plan is None:
+            self.deployment_plan = self._map_deployment_mask_to_deployment_plan(self._current_deploy_mask())
+
+        deployment_thread = threading.Thread(target=self.inference_deployment_agent, daemon=True)
+        offloading_thread = threading.Thread(target=self.inference_offloading_agent, daemon=True)
+        deployment_thread.start()
+        offloading_thread.start()
+
+        while not (self.deployment_thread_stop_event.is_set() or self.offloading_thread_stop_event.is_set()):
+            if not deployment_thread.is_alive():
+                LOGGER.error('[Hedger] Deployment inference thread stopped unexpectedly.')
+                self.offloading_thread_stop_event.set()
+                break
+            if not offloading_thread.is_alive():
+                LOGGER.error('[Hedger] Offloading inference thread stopped unexpectedly.')
+                self.deployment_thread_stop_event.set()
+                break
+            time.sleep(0.5)
+
+        self.deployment_thread_stop_event.set()
+        self.offloading_thread_stop_event.set()
+        LOGGER.info('[Hedger] Inference of Hedger finished.')
 
     def inference_deployment_agent(self):
         LOGGER.info('[Hedger Deployment] Hedger Deployment Agent start inference.')
 
+        assert self.logical_topology is not None and self.physical_topology is not None, \
+            "Topologies must be registered before starting deployment inference."
+
+        logic_edge_index = self._build_edge_index(self.logical_topology.links)
+        phys_edge_index = self._build_edge_index(self.physical_topology.links)
+
+        deployment_time_ticket = 0
+        prev_deploy_mask = self._current_deploy_mask()
+        logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+
+        while not self.deployment_thread_stop_event.is_set():
+            try:
+                logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
+                phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
+                prev_deploy_mask_dev = prev_deploy_mask.to(self.device) if prev_deploy_mask is not None else None
+
+                with torch.inference_mode():
+                    deploy_mask, _, _, _, aux = self.deployment_agent.policy(
+                        logic_edge_index=logic_edge_index,
+                        logic_feats=logic_feats_dev,
+                        phys_edge_index=phys_edge_index,
+                        phys_feats=phys_feats_dev,
+                        topo_order=None,
+                        prev_deploy_mask=prev_deploy_mask_dev,
+                    )
+
+                self.cur_deploy_mask = deploy_mask.detach().cpu()
+                self.deployment_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
+                LOGGER.debug(
+                    f"[Hedger Deployment] Updated deployment plan in inference mode, "
+                    f"capacity_relax_cnt={aux['capacity_relax_cnt']}."
+                )
+
+                time_ticket = time.time()
+                if deployment_time_ticket == 0:
+                    time.sleep(self.deployment_interval)
+                else:
+                    elapsed = time_ticket - deployment_time_ticket
+                    time.sleep(max(0, self.deployment_interval - elapsed))
+                deployment_time_ticket = time_ticket
+
+                prev_deploy_mask = self._current_deploy_mask()
+                logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+            except Exception as e:
+                LOGGER.exception(f"[Hedger Deployment] Error in inference loop: {e}")
+                time.sleep(0.5)
+
     def inference_offloading_agent(self):
         LOGGER.info('[Hedger Offloading] Hedger Offloading Agent start inference.')
+
+        assert self.logical_topology is not None and self.physical_topology is not None, \
+            "Topologies must be registered before starting offloading inference."
+
+        logic_edge_index = self._build_edge_index(self.logical_topology.links)
+        phys_edge_index = self._build_edge_index(self.physical_topology.links)
+
+        offloading_time_ticket = 0
+        logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+
+        while not self.offloading_thread_stop_event.is_set():
+            try:
+                logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
+                phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
+                static_mask = self._current_deploy_mask()
+                static_mask_dev = static_mask.to(self.device)
+
+                with torch.inference_mode():
+                    actions, _, _, _, aux = self.offloading_agent.policy(
+                        logic_edge_index=logic_edge_index,
+                        logic_feats=logic_feats_dev,
+                        phys_edge_index=phys_edge_index,
+                        phys_feats=phys_feats_dev,
+                        static_mask=static_mask_dev,
+                        topo_order=None,
+                    )
+
+                self.offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
+                LOGGER.debug(
+                    f"[Hedger Offloading] Updated offloading plan in inference mode, "
+                    f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}."
+                )
+
+                time_ticket = time.time()
+                if offloading_time_ticket == 0:
+                    time.sleep(self.offloading_interval)
+                else:
+                    elapsed = time_ticket - offloading_time_ticket
+                    time.sleep(max(0, self.offloading_interval - elapsed))
+                offloading_time_ticket = time_ticket
+
+                logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+            except Exception as e:
+                LOGGER.exception(f"[Hedger Offloading] Error in inference loop: {e}")
+                time.sleep(0.5)
 
     def train_hedger(self):
         assert self.logical_topology is not None, "Logical topology must be registered before training."
@@ -338,10 +478,8 @@ class Hedger:
         LOGGER.info('[Hedger] Hedger is running in training mode..')
         self.set_seed()
 
-        logic_links = torch.tensor(self.logical_topology.links,
-                                   dtype=torch.long, device=self.device).t().contiguous()
-        phys_links = torch.tensor(self.physical_topology.links,
-                                  dtype=torch.long, device=self.device).t().contiguous()
+        logic_links = self._build_edge_index(self.logical_topology.links)
+        phys_links = self._build_edge_index(self.physical_topology.links)
 
         LOGGER.info(f"Logical graph edges: {logic_links.size(1)}, physical graph edges: {phys_links.size(1)}")
 
@@ -439,10 +577,8 @@ class Hedger:
         )
 
         # Static graph edge indices can be reused across iterations.
-        logic_edge_index = torch.tensor(self.logical_topology.links, dtype=torch.long,
-                                        device=self.device).t().contiguous()
-        phys_edge_index = torch.tensor(self.physical_topology.links, dtype=torch.long,
-                                       device=self.device).t().contiguous()
+        logic_edge_index = self._build_edge_index(self.logical_topology.links)
+        phys_edge_index = self._build_edge_index(self.physical_topology.links)
 
         step = 0
         deployment_time_ticket = 0
@@ -552,10 +688,8 @@ class Hedger:
             flush_every=10,
         )
 
-        logic_edge_index = torch.tensor(self.logical_topology.links, dtype=torch.long,
-                                        device=self.device).t().contiguous()
-        phys_edge_index = torch.tensor(self.physical_topology.links, dtype=torch.long,
-                                       device=self.device).t().contiguous()
+        logic_edge_index = self._build_edge_index(self.logical_topology.links)
+        phys_edge_index = self._build_edge_index(self.physical_topology.links)
 
         step = 0
         offloading_time_ticket = 0
