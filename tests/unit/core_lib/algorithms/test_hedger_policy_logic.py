@@ -192,7 +192,12 @@ def test_logical_topology_excludes_start_and_end_from_sizes():
 def test_state_buffer_supports_incremental_service_and_device_updates():
     logical_topology, physical_topology = build_test_topologies()
     cloud_name = physical_topology[physical_topology.cloud_idx]
-    buffer = StateBuffer(16, logical_topology=logical_topology, physical_topology=physical_topology)
+    buffer = StateBuffer(
+        16,
+        logical_topology=logical_topology,
+        physical_topology=physical_topology,
+        fixed_lan_bandwidth_mbps=100.0,
+    )
 
     buffer.add_model_flops("svc-a", 10.0)
     buffer.add_model_flops("svc-b", 20.0)
@@ -207,7 +212,7 @@ def test_state_buffer_supports_incremental_service_and_device_updates():
     buffer.add_memory_capacity(cloud_name, 64.0)
 
     for _ in range(2):
-        buffer.add_bandwidths({"edge-a": 50.0, "edge-b": 40.0, cloud_name: 10.0})
+        buffer.add_bandwidths(10.0)
         buffer.add_gpu_utilization("edge-a", 0.2)
         buffer.add_gpu_utilization("edge-b", 0.3)
         buffer.add_gpu_utilization(cloud_name, 0.1)
@@ -236,13 +241,21 @@ def test_state_buffer_supports_incremental_service_and_device_updates():
     assert len(phys_feats["gpu_flops"]) == 3
     assert len(phys_feats["bandwidth_seq"]) == 3
     assert len(phys_feats["bandwidth_seq"][0]) == 4
+    assert phys_feats["bandwidth_seq"][0] == pytest.approx([100.0, 100.0, 100.0, 100.0])
+    assert phys_feats["bandwidth_seq"][1] == pytest.approx([100.0, 100.0, 100.0, 100.0])
+    assert phys_feats["bandwidth_seq"][2] == pytest.approx([10.0, 10.0, 10.0, 10.0])
 
 
 @pytest.mark.unit
 def test_hedger_collect_state_builds_metrics_from_buffer():
     logical_topology, physical_topology = build_test_topologies()
     cloud_name = physical_topology[physical_topology.cloud_idx]
-    buffer = StateBuffer(16, logical_topology=logical_topology, physical_topology=physical_topology)
+    buffer = StateBuffer(
+        16,
+        logical_topology=logical_topology,
+        physical_topology=physical_topology,
+        fixed_lan_bandwidth_mbps=100.0,
+    )
 
     buffer.add_model_flops({"svc-a": 10.0, "svc-b": 20.0})
     buffer.add_model_memory({"svc-a": 1.0, "svc-b": 2.0})
@@ -250,7 +263,7 @@ def test_hedger_collect_state_builds_metrics_from_buffer():
     buffer.add_memory_capacity({"edge-a": 8.0, "edge-b": 6.0, cloud_name: 64.0})
 
     for _ in range(2):
-        buffer.add_bandwidths({"edge-a": 50.0, "edge-b": 40.0, cloud_name: 10.0})
+        buffer.add_bandwidths(10.0)
         buffer.add_gpu_utilization("edge-a", 0.2)
         buffer.add_gpu_utilization("edge-b", 0.3)
         buffer.add_gpu_utilization(cloud_name, 0.1)
@@ -292,6 +305,8 @@ def test_hedger_collect_state_builds_metrics_from_buffer():
     logic_feats, phys_feats, off_metrics, done = hedger._collect_offloading_state()
     assert logic_feats["task_complexity_seq"].shape == (2, 4)
     assert phys_feats["bandwidth_seq"].shape == (3, 4)
+    assert phys_feats["bandwidth_seq"][0].tolist() == pytest.approx([100.0, 100.0, 100.0, 100.0])
+    assert phys_feats["bandwidth_seq"][2].tolist() == pytest.approx([10.0, 10.0, 10.0, 10.0])
     assert off_metrics["latency"] == pytest.approx(2.0)
     assert off_metrics["slo_violation"] == pytest.approx(0.5)
     assert off_metrics["cloud_fraction"] == pytest.approx(0.5)
@@ -481,7 +496,7 @@ def test_hedger_agent_get_schedule_plan_tolerates_missing_default_mappings(monke
 def test_hedger_agent_update_resource_tolerates_partial_resource_updates():
     calls = []
     buffer = types.SimpleNamespace(
-        add_bandwidths=lambda data: calls.append(("bandwidth", data)),
+        add_bandwidths=lambda value: calls.append(("bandwidth", value)),
         add_gpu_flops=lambda device, value: calls.append(("gpu_flops", device, value)),
         add_memory_capacity=lambda device, value: calls.append(("memory_capacity", device, value)),
         add_gpu_utilization=lambda device, value: calls.append(("gpu_usage", device, value)),
@@ -495,15 +510,54 @@ def test_hedger_agent_update_resource_tolerates_partial_resource_updates():
     agent.update_resource(
         "edge-a",
         {
+            "available_bandwidth": 12.5,
             "gpu_usage": 0.3,
             "model_flops": {"svc-a": 10.0},
         },
     )
 
     assert calls == [
+        ("bandwidth", 12.5),
         ("gpu_usage", "edge-a", 0.3),
         ("model_flops", "svc-a", 10.0),
     ]
+
+
+@pytest.mark.unit
+def test_state_buffer_bandwidth_model_is_device_agnostic():
+    logical_topology, physical_topology = build_test_topologies()
+    buffer = StateBuffer(
+        16,
+        logical_topology=logical_topology,
+        physical_topology=physical_topology,
+        fixed_lan_bandwidth_mbps=100.0,
+    )
+
+    buffer.add_model_flops({"svc-a": 10.0, "svc-b": 20.0})
+    buffer.add_model_memory({"svc-a": 1.0, "svc-b": 2.0})
+    buffer.add_gpu_flops({"edge-a": 100.0, "edge-b": 80.0, physical_topology[physical_topology.cloud_idx]: 1000.0})
+    buffer.add_memory_capacity({"edge-a": 8.0, "edge-b": 6.0, physical_topology[physical_topology.cloud_idx]: 64.0})
+    buffer.add_gpu_utilization("edge-a", 0.2)
+    buffer.add_gpu_utilization("edge-b", 0.3)
+    buffer.add_gpu_utilization(physical_topology[physical_topology.cloud_idx], 0.1)
+    buffer.add_memory_utilization("edge-a", 0.4)
+    buffer.add_memory_utilization("edge-b", 0.5)
+    buffer.add_memory_utilization(physical_topology[physical_topology.cloud_idx], 0.2)
+    buffer.add_task_complexity("svc-a", 3.0)
+    buffer.add_task_complexity("svc-b", 5.0)
+    buffer.add_task_latency("svc-a", 1.0)
+    buffer.add_task_latency("svc-b", 2.0)
+
+    buffer.add_bandwidths(12.5)
+
+    _, phys_feats = buffer.get_state(
+        seq_len=1,
+        wait_cfg=BufferWaitCfg(min_dynamic_len=1, require_full_seq=False, timeout_s=0.0),
+    )
+
+    assert phys_feats["bandwidth_seq"][0] == pytest.approx([100.0])
+    assert phys_feats["bandwidth_seq"][1] == pytest.approx([100.0])
+    assert phys_feats["bandwidth_seq"][2] == pytest.approx([12.5])
 
 
 @pytest.mark.unit

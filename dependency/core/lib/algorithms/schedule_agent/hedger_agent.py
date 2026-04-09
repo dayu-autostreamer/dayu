@@ -116,8 +116,8 @@ class HedgerAgent(BaseAgent, abc.ABC):
         if not isinstance(resource, dict):
             return
 
-        bandwidth = resource.get('bandwidth')
-        if isinstance(bandwidth, dict):
+        bandwidth = resource.get('available_bandwidth')
+        if bandwidth is not None and bandwidth != -1:
             self.hedger.state_buffer.add_bandwidths(bandwidth)
 
         gpu_flops = resource.get('gpu_flops')

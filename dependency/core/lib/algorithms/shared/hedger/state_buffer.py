@@ -45,10 +45,14 @@ class BufferWaitCfg:
 
 
 class StateBuffer:
-    def __init__(self, max_capacity: int, logical_topology, physical_topology):
+    DEFAULT_LAN_BANDWIDTH_MBPS = 100.0
+
+    def __init__(self, max_capacity: int, logical_topology, physical_topology,
+                 fixed_lan_bandwidth_mbps: float = DEFAULT_LAN_BANDWIDTH_MBPS):
         self.max_capacity = int(max_capacity)
         self.logical_topology = logical_topology
         self.physical_topology = physical_topology
+        self.fixed_lan_bandwidth_mbps = max(0.0, float(fixed_lan_bandwidth_mbps))
         self._service_to_idx = {self.logical_topology[i]: i for i in range(len(self.logical_topology))}
         self._device_to_idx = {self.physical_topology[i]: i for i in range(len(self.physical_topology))}
 
@@ -315,17 +319,27 @@ class StateBuffer:
             self._mark_static_phys_ready()
             self._bump_version()
 
-    def add_bandwidths(self, bandwidths: Dict[str, float]):
+    def add_bandwidths(self, wan_bandwidth: float):
         """
-        `bandwidths` maps:
-            - cloud node name -> WAN bandwidth
-            - edge node name -> LAN bandwidth
+        Append one WAN observation and expand it into the per-node bandwidth view.
+
+        Hedger models edge-side LAN bandwidth as a fixed constant and only treats
+        the cloud link as dynamic. Therefore each appended sample is expanded as:
+
+            - every edge node -> fixed LAN bandwidth
+            - cloud node -> measured WAN bandwidth
+
+        The monitor reports a single `available_bandwidth` scalar, which is the
+        only dynamic input consumed here.
         """
         with self._cond:
-            for node_name, bw in bandwidths.items():
-                d_idx = self._resolve_device_index(node_name)
-                if d_idx is None:
-                    continue
+            wan_value = float(wan_bandwidth)
+
+            for d_idx in range(len(self.bandwidth_buffer)):
+                if d_idx == self.physical_topology.cloud_idx:
+                    bw = wan_value
+                else:
+                    bw = self.fixed_lan_bandwidth_mbps
                 self.bandwidth_buffer[d_idx].append(float(bw))
                 self._trim_inplace(self.bandwidth_buffer[d_idx])
             self._bump_version()

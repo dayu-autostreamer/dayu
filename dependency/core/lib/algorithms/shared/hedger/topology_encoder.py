@@ -72,7 +72,8 @@ class PhysicalEncoder(nn.Module):
       - `gpu_flops`: `[Np]`
       - `role_id`: `[Np]`, where `0=source edge / 1=other edge / 2=cloud`
       - `mem_capacity`: `[Np]` in MB
-      - `bandwidth_seq`: `[Np, T]`
+      - `bandwidth_seq`: `[Np, T]`, where edge nodes carry fixed LAN bandwidth
+        and the cloud node carries the latest monitored WAN bandwidth
       - `gpu_util_seq`: `[Np, T]`
       - `mem_util_seq`: `[Np, T]` in `[0, 1]`
     """
