@@ -7,6 +7,7 @@ from core.lib.common import TaskConstant
 
 
 def from_partial_dict(cls, data: dict):
+    data = data or {}
     allowed = {f.name for f in fields(cls)}
     filtered = {k: v for k, v in data.items() if k in allowed}
     return replace(cls(), **filtered)
@@ -25,7 +26,17 @@ class DeploymentConstraintCfg:
 
 class PhysicalTopology:
     def __init__(self, edge_nodes: list, source_device: str):
+        cloud_node = NodeInfo.get_cloud_node()
         edge_nodes = list(dict.fromkeys(edge_nodes or []))
+        if not edge_nodes:
+            if source_device == cloud_node:
+                self.nodes = [cloud_node]
+            else:
+                self.nodes = [source_device, cloud_node]
+            self.source_idx = 0
+            self.cloud_idx = len(self.nodes) - 1
+            return
+
         if source_device in edge_nodes:
             edge_nodes.remove(source_device)
         else:
@@ -33,7 +44,7 @@ class PhysicalTopology:
             source_device = edge_nodes[0]
             edge_nodes.remove(edge_nodes[0])
 
-        self.nodes = [source_device] + edge_nodes + [NodeInfo.get_cloud_node()]
+        self.nodes = [source_device] + edge_nodes + [cloud_node]
         self.source_idx = 0
         self.cloud_idx = len(self.nodes) - 1
 
@@ -68,8 +79,10 @@ class LogicalTopology:
         self.dag = dag
 
         self.service_list = list(self.dag.nodes.keys())
-        self.service_list.remove(TaskConstant.START.value)
-        self.service_list.remove(TaskConstant.END.value)
+        if TaskConstant.START.value in self.service_list:
+            self.service_list.remove(TaskConstant.START.value)
+        if TaskConstant.END.value in self.service_list:
+            self.service_list.remove(TaskConstant.END.value)
 
     def __len__(self):
         return len(self.service_list)

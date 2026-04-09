@@ -1,6 +1,5 @@
 import abc
 import copy
-from statistics import mean
 
 import numpy as np
 
@@ -43,6 +42,32 @@ class HedgerAgent(BaseAgent, abc.ABC):
             )
             self.hedger.register_offloading_agent()
 
+    @staticmethod
+    def _normalize_mapping(data):
+        return copy.deepcopy(data) if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _extract_task_complexity(service) -> float:
+        """Aggregate the processor-produced `obj_num` signal into one complexity value."""
+        scenario = service.get_scenario_data()
+        if not isinstance(scenario, dict) or 'obj_num' not in scenario:
+            return 0.0
+
+        obj_num = scenario['obj_num']
+        if obj_num is None:
+            return 0.0
+        if isinstance(obj_num, (int, float, np.number)):
+            return float(obj_num)
+
+        try:
+            obj_num_array = np.asarray(obj_num, dtype=float)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if obj_num_array.size == 0:
+            return 0.0
+        return float(np.mean(obj_num_array.reshape(-1)))
+
     def get_schedule_plan(self, info):
         source_id = info['source']['id']
         source_edge_device = info['source_device']
@@ -55,10 +80,10 @@ class HedgerAgent(BaseAgent, abc.ABC):
         self.hedger.register_physical_topology(all_edge_devices, source_edge_device)
         self.hedger.register_state_buffer()
 
-        configuration = copy.deepcopy(self.default_configuration)
-        offloading = self.hedger.get_offloading_plan()
+        configuration = self._normalize_mapping(self.default_configuration)
+        offloading = self._normalize_mapping(self.hedger.get_offloading_plan())
         if not offloading:
-            offloading = copy.deepcopy(self.default_offloading)
+            offloading = self._normalize_mapping(self.default_offloading)
             LOGGER.warning('No offloading plan from Hedger, use default offloading policy.')
 
         policy = {}
@@ -86,24 +111,48 @@ class HedgerAgent(BaseAgent, abc.ABC):
         pass
 
     def update_resource(self, device, resource):
-        if resource['bandwidth'] != -1:
-            self.hedger.state_buffer.add_bandwidths(resource['bandwidth'])
-        self.hedger.state_buffer.add_gpu_flops(device, resource['gpu_flops'])
-        self.hedger.state_buffer.add_memory_capacity(device, resource['memory_capacity'])
-        self.hedger.state_buffer.add_gpu_utilization(device, resource['gpu_usage'])
-        self.hedger.state_buffer.add_memory_utilization(device, resource['memory_usage'])
-        for service in resource['model_flops']:
-            self.hedger.state_buffer.add_model_flops(service, resource['model_flops'][service])
-        for service in resource['model_memory']:
-            self.hedger.state_buffer.add_model_memory(service, resource['model_memory'][service])
+        if self.hedger.state_buffer is None:
+            return
+        if not isinstance(resource, dict):
+            return
+
+        bandwidth = resource.get('bandwidth')
+        if isinstance(bandwidth, dict):
+            self.hedger.state_buffer.add_bandwidths(bandwidth)
+
+        gpu_flops = resource.get('gpu_flops')
+        if gpu_flops is not None:
+            self.hedger.state_buffer.add_gpu_flops(device, gpu_flops)
+
+        memory_capacity = resource.get('memory_capacity')
+        if memory_capacity is not None:
+            self.hedger.state_buffer.add_memory_capacity(device, memory_capacity)
+
+        gpu_usage = resource.get('gpu_usage')
+        if gpu_usage is not None:
+            self.hedger.state_buffer.add_gpu_utilization(device, gpu_usage)
+
+        memory_usage = resource.get('memory_usage')
+        if memory_usage is not None:
+            self.hedger.state_buffer.add_memory_utilization(device, memory_usage)
+
+        for service, flops in (resource.get('model_flops') or {}).items():
+            self.hedger.state_buffer.add_model_flops(service, flops)
+        for service, memory in (resource.get('model_memory') or {}).items():
+            self.hedger.state_buffer.add_model_memory(service, memory)
 
     def update_policy(self, policy):
         pass
 
     def update_task(self, task):
+        if self.hedger.state_buffer is None:
+            return
         for service_name in task.get_dag().nodes:
-            latency = task.get_service(service_name).get_execute_time()
-            complexity = np.mean(task.get_service(service_name).get_complexity().get_scenario_data())
+            if service_name in (TaskConstant.START.value, TaskConstant.END.value):
+                continue
+            service = task.get_service(service_name)
+            latency = service.get_execute_time()
+            complexity = self._extract_task_complexity(service)
             self.hedger.state_buffer.add_task_complexity(service_name, complexity)
             self.hedger.state_buffer.add_task_latency(service_name, latency)
 

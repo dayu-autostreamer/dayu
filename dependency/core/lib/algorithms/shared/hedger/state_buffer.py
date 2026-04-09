@@ -84,8 +84,14 @@ class StateBuffer:
         # Static physical features.
         self.gpu_flops_buffer: List[float] = [0.0 for _ in range(num_devices)]
         self.memory_capacity_buffer: List[float] = [0.0 for _ in range(num_devices)]
-        self.device_role_buffer: List[int] = [0] + [1] * (self.physical_topology.node_num - 2) + [
-            2]  # 0: source edge, 1: other edge, 2: cloud
+        self.device_role_buffer: List[int] = []
+        for device_idx in range(num_devices):
+            if device_idx == self.physical_topology.source_idx:
+                self.device_role_buffer.append(0)
+            elif device_idx == self.physical_topology.cloud_idx:
+                self.device_role_buffer.append(2)
+            else:
+                self.device_role_buffer.append(1)  # 0: source edge, 1: other edge, 2: cloud
 
         # Dynamic physical features, one time series per device.
         self.bandwidth_buffer: List[List[float]] = [[] for _ in range(num_devices)]

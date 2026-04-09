@@ -131,15 +131,27 @@ class Hedger:
         )
         latency_slo = hyper_params.get("latency_slo", hyper_params.get("slo_threshold"))
         latency_slo = None if latency_slo is None else float(latency_slo)
+        wait_timeout_s = hyper_params.get("state_wait_timeout_s", 1.0)
+        wait_timeout_s = None if wait_timeout_s is None else max(0.0, float(wait_timeout_s))
         return HedgerStateCfg(
             offloading_seq_len=max(1, int(hyper_params.get("offloading_state_seq_len", default_seq_len))),
             deployment_seq_len=max(1, int(hyper_params.get("deployment_state_seq_len", default_seq_len))),
             min_dynamic_len=max(0, int(hyper_params.get("state_min_dynamic_len", 1))),
-            wait_timeout_s=hyper_params.get("state_wait_timeout_s", 1.0),
+            wait_timeout_s=wait_timeout_s,
             require_full_seq=bool(hyper_params.get("state_require_full_seq", False)),
             latency_slo=latency_slo,
             deployment_reward_window=max(1, int(hyper_params.get("deployment_reward_window", reward_window_default))),
         )
+
+    def _sync_agent_topology_bindings(self):
+        """Synchronize agent-side source/cloud indices with the registered physical topology."""
+        if self.physical_topology is None:
+            return
+        if self.deployment_agent is not None:
+            self.deployment_agent.cloud_idx = self.physical_topology.cloud_idx
+        if self.offloading_agent is not None:
+            self.offloading_agent.source = self.physical_topology.source_idx
+            self.offloading_agent.cloud_idx = self.physical_topology.cloud_idx
 
     def register_topology_encoder(self):
         if self.shared_topology_encoder:
@@ -168,8 +180,10 @@ class Hedger:
             lamda=self.deployment_agent_params['lamda'],
             clip_eps=self.deployment_agent_params['clip_eps'],
             update_encoder=self.deployment_agent_params['update_encoder'],
+            cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
             constraint_cfg=from_partial_dict(DeploymentConstraintCfg, self.deployment_agent_params),
         ).to(self.device)
+        self._sync_agent_topology_bindings()
 
     def register_offloading_agent(self):
         if self.offloading_agent:
@@ -186,14 +200,18 @@ class Hedger:
             lamda=self.offloading_agent_params['lamda'],
             clip_eps=self.offloading_agent_params['clip_eps'],
             update_encoder=self.offloading_agent_params['update_encoder'],
+            source_node_idx=self.physical_topology.source_idx if self.physical_topology is not None else 0,
+            cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
             constraint_cfg=from_partial_dict(OffloadingConstraintCfg, self.offloading_agent_params),
         ).to(self.device)
+        self._sync_agent_topology_bindings()
 
     def register_physical_topology(self, edge_nodes, source_device):
         if self.physical_topology:
             return
 
         self.physical_topology = PhysicalTopology(edge_nodes, source_device)
+        self._sync_agent_topology_bindings()
 
         LOGGER.debug(f'[Hedger] Registered physical topology, nodes: {self.physical_topology.nodes}, '
                      f'links: {self.physical_topology.links}')
@@ -231,14 +249,14 @@ class Hedger:
         self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(deployment_plan or {})
 
     def get_offloading_plan(self):
-        return self.offloading_plan
+        return copy.deepcopy(self.offloading_plan)
 
     def get_initial_deployment_plan(self):
-        return self.initial_deployment_plan
+        return copy.deepcopy(self.initial_deployment_plan)
 
     def get_redeployment_plan(self):
         self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(self.deployment_plan)
-        return self.deployment_plan
+        return copy.deepcopy(self.deployment_plan)
 
     def _build_state_wait_cfg(self) -> BufferWaitCfg:
         return BufferWaitCfg(
@@ -263,6 +281,18 @@ class Hedger:
         if not links:
             return torch.empty((2, 0), dtype=torch.long, device=self.device)
         return torch.tensor(links, dtype=torch.long, device=self.device).t().contiguous()
+
+    def _sleep_until_next_tick(self, last_tick: float, interval_s: float) -> float:
+        """Sleep long enough to preserve the target loop cadence."""
+        interval_s = max(0.0, float(interval_s))
+        if interval_s <= 0.0:
+            return time.time()
+
+        now = time.time()
+        sleep_s = interval_s if last_tick <= 0 else max(0.0, interval_s - (now - last_tick))
+        if sleep_s > 0.0:
+            time.sleep(sleep_s)
+        return time.time()
 
     def _collect_graph_state(self, seq_len: int):
         assert self.state_buffer is not None, "State buffer must be registered before collecting state."
@@ -438,13 +468,10 @@ class Hedger:
                     f"capacity_relax_cnt={aux['capacity_relax_cnt']}."
                 )
 
-                time_ticket = time.time()
-                if deployment_time_ticket == 0:
-                    time.sleep(self.deployment_interval)
-                else:
-                    elapsed = time_ticket - deployment_time_ticket
-                    time.sleep(max(0, self.deployment_interval - elapsed))
-                deployment_time_ticket = time_ticket
+                deployment_time_ticket = self._sleep_until_next_tick(
+                    deployment_time_ticket,
+                    self.deployment_interval,
+                )
 
                 prev_deploy_mask = self._current_deploy_mask()
                 logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
@@ -487,13 +514,10 @@ class Hedger:
                     f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}."
                 )
 
-                time_ticket = time.time()
-                if offloading_time_ticket == 0:
-                    time.sleep(self.offloading_interval)
-                else:
-                    elapsed = time_ticket - offloading_time_ticket
-                    time.sleep(max(0, self.offloading_interval - elapsed))
-                offloading_time_ticket = time_ticket
+                offloading_time_ticket = self._sleep_until_next_tick(
+                    offloading_time_ticket,
+                    self.offloading_interval,
+                )
 
                 logic_feats, phys_feats, _, _ = self._collect_offloading_state()
             except Exception as e:
@@ -506,6 +530,11 @@ class Hedger:
 
         LOGGER.info('[Hedger] Hedger is running in training mode..')
         self.set_seed()
+        self.shared_topology_encoder.train()
+        self.deployment_agent.train()
+        self.offloading_agent.train()
+        self.deployment_thread_stop_event.clear()
+        self.offloading_thread_stop_event.clear()
 
         logic_links = self._build_edge_index(self.logical_topology.links)
         phys_links = self._build_edge_index(self.physical_topology.links)
@@ -518,11 +547,30 @@ class Hedger:
                                                dtype=torch.bool, device=self.device)
             self.cur_deploy_mask[:, self.physical_topology.cloud_idx] = True
 
-        threading.Thread(target=self.train_deployment_agent, daemon=True).start()
-        threading.Thread(target=self.train_offloading_agent, daemon=True).start()
+        if not self.train_deployment_flag and not self.train_offloading_flag:
+            LOGGER.warning('[Hedger] Both training loops are disabled, skip training run.')
+            return
+
+        deployment_thread = None
+        offloading_thread = None
+        if self.train_deployment_flag:
+            deployment_thread = threading.Thread(target=self.train_deployment_agent, daemon=True)
+            deployment_thread.start()
+        if self.train_offloading_flag:
+            offloading_thread = threading.Thread(target=self.train_offloading_agent, daemon=True)
+            offloading_thread.start()
 
         while True:
             try:
+                if deployment_thread is not None and not deployment_thread.is_alive():
+                    LOGGER.error('[Hedger] Deployment training thread stopped unexpectedly.')
+                    self.offloading_thread_stop_event.set()
+                    break
+                if offloading_thread is not None and not offloading_thread.is_alive():
+                    LOGGER.error('[Hedger] Offloading training thread stopped unexpectedly.')
+                    self.deployment_thread_stop_event.set()
+                    break
+
                 updates_in_tick = 0
 
                 # Run a PPO update for the offloading agent.
@@ -635,13 +683,10 @@ class Hedger:
             self.deployment_plan = deploy_plan
             self.cur_deploy_mask = deploy_mask.detach().cpu()
 
-            time_ticket = time.time()
-            if deployment_time_ticket == 0:
-                time.sleep(self.deployment_interval)
-            else:
-                elapsed = time_ticket - deployment_time_ticket
-                time.sleep(max(0, self.deployment_interval - elapsed))
-            deployment_time_ticket = time_ticket
+            deployment_time_ticket = self._sleep_until_next_tick(
+                deployment_time_ticket,
+                self.deployment_interval,
+            )
 
             new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state(
                 prev_deploy_mask=prev_deploy_mask,)
@@ -741,13 +786,10 @@ class Hedger:
                 offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
                 self.offloading_plan = offloading_plan
 
-            time_ticket = time.time()
-            if offloading_time_ticket == 0:
-                time.sleep(self.offloading_interval)
-            else:
-                elapsed = time_ticket - offloading_time_ticket
-                time.sleep(max(0, self.offloading_interval - elapsed))
-            offloading_time_ticket = time_ticket
+            offloading_time_ticket = self._sleep_until_next_tick(
+                offloading_time_ticket,
+                self.offloading_interval,
+            )
 
             new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state()
 
@@ -937,7 +979,7 @@ class Hedger:
         # Load encoder weights.
         if self.checkpoint_cfg.load_encoder:
             enc_state = ckpt.get('encoder', None)
-            if enc_state:
+            if enc_state is not None:
                 self.shared_topology_encoder.load_state_dict(enc_state)
                 LOGGER.info('[Hedger] Loaded encoder state from checkpoint.')
             else:
@@ -949,7 +991,7 @@ class Hedger:
         # Deployment agent.
         if self.checkpoint_cfg.load_deployment_agent:
             dep_state = ckpt.get('deployment_agent', None)
-            if dep_state:
+            if dep_state is not None:
                 self.deployment_agent.load_state_dict(dep_state, strict=False)
                 LOGGER.info('[Hedger] Loaded deployment agent state from checkpoint.')
             else:
@@ -960,7 +1002,7 @@ class Hedger:
         # Offloading agent.
         if self.checkpoint_cfg.load_offloading_agent:
             off_state = ckpt.get('offloading_agent', None)
-            if off_state:
+            if off_state is not None:
                 self.offloading_agent.load_state_dict(off_state, strict=False)
                 LOGGER.info('[Hedger] Loaded offloading agent state from checkpoint.')
             else:
@@ -1036,13 +1078,21 @@ class Hedger:
         deploy_mask = torch.zeros((num_services, num_devices), dtype=torch.bool, device=self.device)
 
         for service_name, device_names in (deployment_plan or {}).items():
-            s_idx = self.logical_topology.index(service_name)
+            try:
+                s_idx = self.logical_topology.index(service_name)
+            except ValueError:
+                LOGGER.debug(f'[Hedger] Ignore unknown service in deployment plan: {service_name}')
+                continue
             if isinstance(device_names, (list, tuple, set)):
                 iterable = device_names
             else:
                 iterable = [device_names]
             for device_name in iterable:
-                d_idx = self.physical_topology.index(device_name)
+                try:
+                    d_idx = self.physical_topology.index(device_name)
+                except ValueError:
+                    LOGGER.debug(f'[Hedger] Ignore unknown device in deployment plan: {device_name}')
+                    continue
                 deploy_mask[s_idx, d_idx] = True
 
         deploy_mask[:, self.physical_topology.cloud_idx] = True

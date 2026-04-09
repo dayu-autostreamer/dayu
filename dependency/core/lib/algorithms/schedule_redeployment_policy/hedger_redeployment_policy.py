@@ -55,13 +55,17 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
         deploy_plan = self.hedger.get_redeployment_plan()
         if deploy_plan is None:
             LOGGER.warning('None redeployment plan from Hedger, use default deployment policy.')
-            deploy_plan = copy.deepcopy(self.default_deployment)
+            deploy_plan = copy.deepcopy(self.default_deployment) or {}
 
         all_services = list(dag.keys())
         for service in all_services:
             if service in deploy_plan:
-                intersection_nodes = list(set(deploy_plan[service]) & set(node_set))
-                deploy_plan[service] = intersection_nodes
+                selected_nodes = deploy_plan[service]
+                if isinstance(selected_nodes, (list, tuple, set)):
+                    candidate_nodes = list(selected_nodes)
+                else:
+                    candidate_nodes = [selected_nodes]
+                deploy_plan[service] = list(dict.fromkeys(node for node in candidate_nodes if node in node_set))
             else:
                 deploy_plan[service] = list(node_set)
 
