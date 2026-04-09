@@ -3,6 +3,7 @@ from typing import List, Optional
 import threading
 import random
 import math
+from dataclasses import dataclass
 import torch
 import time
 import os
@@ -19,50 +20,51 @@ from .state_buffer import StateBuffer, BufferWaitCfg
 __all__ = ('Hedger',)
 
 
+@dataclass(frozen=True)
+class HedgerStateCfg:
+    offloading_seq_len: int
+    deployment_seq_len: int
+    min_dynamic_len: int
+    wait_timeout_s: Optional[float]
+    require_full_seq: bool
+    latency_slo: Optional[float]
+    deployment_reward_window: int
+
+
+@dataclass(frozen=True)
+class HedgerCheckpointCfg:
+    load_encoder: bool = True
+    load_deployment_agent: bool = True
+    load_offloading_agent: bool = True
+    load_optimizer: bool = True
+    reset_steps_on_load: bool = False
+
+
 class Hedger:
     def __init__(self, network_params: dict, hyper_params: dict, agent_params: dict):
         self.encoder_network_params = network_params['topology_encoder']
-        self.offloading_network_params = network_params['offloading_agent']
-        self.deployment_network_params = network_params['deployment_agent']
 
         self.mode = hyper_params['mode']
         self.device = torch.device(hyper_params['device'])
-        self.seed = hyper_params['seed']
-        self.deployment_interval = hyper_params['deployment_interval']
-        self.offloading_interval = hyper_params['offloading_interval']
-        self.update_epochs = hyper_params['update_epochs']
-        self.total_steps = hyper_params['total_steps']
+        self.seed = int(hyper_params.get('seed', 0))
+        self.deployment_interval = float(hyper_params['deployment_interval'])
+        self.offloading_interval = float(hyper_params['offloading_interval'])
+        self.update_epochs = max(1, int(hyper_params.get('update_epochs', 1)))
+        self.total_steps = max(0, int(hyper_params.get('total_steps', 0)))
         self.model_dir = Context.get_file_path(hyper_params['model_dir'])
-        self.load_model = hyper_params['load_model']
-        self.save_interval = hyper_params['save_interval']
-        self.load_epoch = hyper_params['load_epoch']
+        self.save_interval = max(1, int(hyper_params.get('save_interval', 1)))
 
-        self.load_encoder_flag = hyper_params.get("load_encoder", True)
-        self.load_deployment_agent_flag = hyper_params.get("load_deployment_agent", True)
-        self.load_offloading_agent_flag = hyper_params.get("load_offloading_agent", True)
+        self.checkpoint_cfg = self._build_checkpoint_cfg(hyper_params)
 
-        self.load_optimizer_flag = hyper_params.get("load_optimizer", True)
+        self.train_deployment_flag = bool(hyper_params.get("train_deployment", True))
+        self.train_offloading_flag = bool(hyper_params.get("train_offloading", True))
 
-        self.reset_steps_on_load = hyper_params.get("reset_steps_on_load", False)
-
-        self.train_deployment_flag = hyper_params.get("train_deployment", True)
-        self.train_offloading_flag = hyper_params.get("train_offloading", True)
-
-        self.offloading_rollout_len = hyper_params.get("offloading_rollout_len", 32)
-        self.deployment_rollout_len = hyper_params.get("deployment_rollout_len", 8)
-        self.offloading_batch_size = hyper_params.get("offloading_batch_size", 16)
-        self.deployment_batch_size = hyper_params.get("deployment_batch_size", 4)
-        self.state_seq_len = hyper_params.get("state_seq_len", 8)
-        self.offloading_state_seq_len = hyper_params.get("offloading_state_seq_len", self.state_seq_len)
-        self.deployment_state_seq_len = hyper_params.get("deployment_state_seq_len", self.state_seq_len)
-        self.state_min_dynamic_len = hyper_params.get("state_min_dynamic_len", 1)
-        self.state_wait_timeout_s = hyper_params.get("state_wait_timeout_s", 1.0)
-        self.state_require_full_seq = hyper_params.get("state_require_full_seq", False)
-        self.latency_slo = hyper_params.get("latency_slo", hyper_params.get("slo_threshold", None))
-
-        self.max_state_buffer_size = hyper_params.get("max_state_buffer_size", 1000)
-        reward_window_default = max(1, int(math.ceil(self.deployment_interval / max(self.offloading_interval, 1e-6))))
-        self.deployment_reward_window = int(hyper_params.get("deployment_reward_window", reward_window_default))
+        self.offloading_rollout_len = max(1, int(hyper_params.get("offloading_rollout_len", 32)))
+        self.deployment_rollout_len = max(1, int(hyper_params.get("deployment_rollout_len", 8)))
+        self.offloading_batch_size = max(1, int(hyper_params.get("offloading_batch_size", 16)))
+        self.deployment_batch_size = max(1, int(hyper_params.get("deployment_batch_size", 4)))
+        self.max_state_buffer_size = max(1, int(hyper_params.get("max_state_buffer_size", 1000)))
+        self.state_cfg = self._build_state_cfg(hyper_params)
 
         self.offloading_agent_params = agent_params['offloading_agent']
         self.deployment_agent_params = agent_params['deployment_agent']
@@ -91,8 +93,8 @@ class Hedger:
         self._data_lock = threading.Lock()
 
         FileOps.create_directory(self.model_dir)
-        if self.load_model:
-            self.load_checkpoint(epoch=self.load_epoch)
+        if bool(hyper_params.get('load_model', False)):
+            self.load_checkpoint(epoch=hyper_params.get('load_epoch'))
 
         self.initial_deployment_plan = None
         self.deployment_plan = None
@@ -111,6 +113,33 @@ class Hedger:
     def set_seed(self):
         random.seed(self.seed)
         torch.manual_seed(self.seed)
+
+    def _build_checkpoint_cfg(self, hyper_params: dict) -> HedgerCheckpointCfg:
+        return HedgerCheckpointCfg(
+            load_encoder=bool(hyper_params.get("load_encoder", True)),
+            load_deployment_agent=bool(hyper_params.get("load_deployment_agent", True)),
+            load_offloading_agent=bool(hyper_params.get("load_offloading_agent", True)),
+            load_optimizer=bool(hyper_params.get("load_optimizer", True)),
+            reset_steps_on_load=bool(hyper_params.get("reset_steps_on_load", False)),
+        )
+
+    def _build_state_cfg(self, hyper_params: dict) -> HedgerStateCfg:
+        default_seq_len = max(1, int(hyper_params.get("state_seq_len", 8)))
+        reward_window_default = max(
+            1,
+            int(math.ceil(self.deployment_interval / max(self.offloading_interval, 1e-6))),
+        )
+        latency_slo = hyper_params.get("latency_slo", hyper_params.get("slo_threshold"))
+        latency_slo = None if latency_slo is None else float(latency_slo)
+        return HedgerStateCfg(
+            offloading_seq_len=max(1, int(hyper_params.get("offloading_state_seq_len", default_seq_len))),
+            deployment_seq_len=max(1, int(hyper_params.get("deployment_state_seq_len", default_seq_len))),
+            min_dynamic_len=max(0, int(hyper_params.get("state_min_dynamic_len", 1))),
+            wait_timeout_s=hyper_params.get("state_wait_timeout_s", 1.0),
+            require_full_seq=bool(hyper_params.get("state_require_full_seq", False)),
+            latency_slo=latency_slo,
+            deployment_reward_window=max(1, int(hyper_params.get("deployment_reward_window", reward_window_default))),
+        )
 
     def register_topology_encoder(self):
         if self.shared_topology_encoder:
@@ -213,9 +242,9 @@ class Hedger:
 
     def _build_state_wait_cfg(self) -> BufferWaitCfg:
         return BufferWaitCfg(
-            min_dynamic_len=self.state_min_dynamic_len,
-            require_full_seq=self.state_require_full_seq,
-            timeout_s=self.state_wait_timeout_s,
+            min_dynamic_len=self.state_cfg.min_dynamic_len,
+            require_full_seq=self.state_cfg.require_full_seq,
+            timeout_s=self.state_cfg.wait_timeout_s,
         )
 
     def _current_deploy_mask(self) -> torch.Tensor:
@@ -260,11 +289,11 @@ class Hedger:
         return logic_feats, phys_feats
 
     def _compute_slo_violation(self, latest_latency: torch.Tensor) -> float:
-        if self.latency_slo is None:
+        if self.state_cfg.latency_slo is None:
             return 0.0
         if latest_latency.numel() == 0:
             return 0.0
-        threshold = float(self.latency_slo)
+        threshold = float(self.state_cfg.latency_slo)
         return float((latest_latency > threshold).float().mean().item())
 
     def _compute_cloud_fraction(self) -> float:
@@ -295,8 +324,8 @@ class Hedger:
         return float(torch.logical_xor(current_edge, prev_edge).sum().item())
 
     def _collect_deployment_state(self, prev_deploy_mask: Optional[torch.Tensor] = None):
-        logic_feats, phys_feats = self._collect_graph_state(self.deployment_state_seq_len)
-        reward_stats = self.state_buffer.get_offloading_reward_stats(last_k=self.deployment_reward_window)
+        logic_feats, phys_feats = self._collect_graph_state(self.state_cfg.deployment_seq_len)
+        reward_stats = self.state_buffer.get_offloading_reward_stats(last_k=self.state_cfg.deployment_reward_window)
         metrics = {
             "avg_offloading_reward": float(reward_stats["mean"]),
             "deploy_change_cost": self._compute_deploy_change_cost(prev_deploy_mask),
@@ -305,7 +334,7 @@ class Hedger:
         return logic_feats, phys_feats, metrics, done
 
     def _collect_offloading_state(self):
-        logic_feats, phys_feats = self._collect_graph_state(self.offloading_state_seq_len)
+        logic_feats, phys_feats = self._collect_graph_state(self.state_cfg.offloading_seq_len)
         latest_latency = logic_feats["hist_latency_seq"][:, -1] if logic_feats["hist_latency_seq"].numel() else \
             torch.empty(0, dtype=torch.float32)
         metrics = {
@@ -906,7 +935,7 @@ class Hedger:
         LOGGER.info(f'[Hedger] Loading checkpoint from {target_path}')
 
         # Load encoder weights.
-        if self.load_encoder_flag:
+        if self.checkpoint_cfg.load_encoder:
             enc_state = ckpt.get('encoder', None)
             if enc_state:
                 self.shared_topology_encoder.load_state_dict(enc_state)
@@ -918,7 +947,7 @@ class Hedger:
 
         # Load the two agent modules.
         # Deployment agent.
-        if self.load_deployment_agent_flag:
+        if self.checkpoint_cfg.load_deployment_agent:
             dep_state = ckpt.get('deployment_agent', None)
             if dep_state:
                 self.deployment_agent.load_state_dict(dep_state, strict=False)
@@ -929,7 +958,7 @@ class Hedger:
             LOGGER.info('[Hedger] Skipping deployment agent loading per config (load_deployment_agent=False).')
 
         # Offloading agent.
-        if self.load_offloading_agent_flag:
+        if self.checkpoint_cfg.load_offloading_agent:
             off_state = ckpt.get('offloading_agent', None)
             if off_state:
                 self.offloading_agent.load_state_dict(off_state, strict=False)
@@ -940,24 +969,24 @@ class Hedger:
             LOGGER.info('[Hedger] Skipping offloading agent loading per config (load_offloading_agent=False).')
 
         # Load optimizer state.
-        if self.load_optimizer_flag:
+        if self.checkpoint_cfg.load_optimizer:
             # Restore only the optimizers that correspond to loaded agents.
-            if self.load_deployment_agent_flag and 'deployment_actor_opt' in ckpt:
+            if self.checkpoint_cfg.load_deployment_agent and 'deployment_actor_opt' in ckpt:
                 self.deployment_agent.actor_opt.load_state_dict(ckpt['deployment_actor_opt'])
                 self._move_optimizer_state(self.deployment_agent.actor_opt, self.device)
                 LOGGER.info('[Hedger] Loaded deployment actor optimizer state.')
 
-            if self.load_deployment_agent_flag and 'deployment_critic_opt' in ckpt:
+            if self.checkpoint_cfg.load_deployment_agent and 'deployment_critic_opt' in ckpt:
                 self.deployment_agent.critic_opt.load_state_dict(ckpt['deployment_critic_opt'])
                 self._move_optimizer_state(self.deployment_agent.critic_opt, self.device)
                 LOGGER.info('[Hedger] Loaded deployment critic optimizer state.')
 
-            if self.load_offloading_agent_flag and 'offloading_actor_opt' in ckpt:
+            if self.checkpoint_cfg.load_offloading_agent and 'offloading_actor_opt' in ckpt:
                 self.offloading_agent.actor_opt.load_state_dict(ckpt['offloading_actor_opt'])
                 self._move_optimizer_state(self.offloading_agent.actor_opt, self.device)
                 LOGGER.info('[Hedger] Loaded offloading actor optimizer state.')
 
-            if self.load_offloading_agent_flag and 'offloading_critic_opt' in ckpt:
+            if self.checkpoint_cfg.load_offloading_agent and 'offloading_critic_opt' in ckpt:
                 self.offloading_agent.critic_opt.load_state_dict(ckpt['offloading_critic_opt'])
                 self._move_optimizer_state(self.offloading_agent.critic_opt, self.device)
                 LOGGER.info('[Hedger] Loaded offloading critic optimizer state.')
@@ -967,7 +996,7 @@ class Hedger:
         # Restore or reset training counters.
         meta = ckpt.get('meta', {})
 
-        if self.reset_steps_on_load:
+        if self.checkpoint_cfg.reset_steps_on_load:
             # Restart counters from zero for subsequent training phases.
             self._deployment_update_steps = 0
             self._offloading_update_steps = 0
