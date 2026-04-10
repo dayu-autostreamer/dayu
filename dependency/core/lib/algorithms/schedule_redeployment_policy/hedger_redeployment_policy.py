@@ -54,7 +54,10 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
 
         deploy_plan = self.hedger.get_redeployment_plan()
         if deploy_plan is None:
-            LOGGER.warning('None redeployment plan from Hedger, use default deployment policy.')
+            LOGGER.warning(
+                f"[HedgerPolicy][Redeployment] source={source_id}, no Hedger redeployment plan available; "
+                f"fall back to default deployment policy."
+            )
             deploy_plan = copy.deepcopy(self.default_deployment) or {}
 
         all_services = list(dag.keys())
@@ -69,6 +72,15 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
             else:
                 deploy_plan[service] = list(node_set)
 
-        LOGGER.info(f'[Redeployment] (source {source_id}) Deploy policy: {deploy_plan}')
+        total_replicas = sum(len(nodes) for nodes in deploy_plan.values())
+        sample = "; ".join(
+            f"{service}->{deploy_plan[service]}"
+            for service in list(deploy_plan.keys())[:3]
+        ) or "[]"
+        LOGGER.info(
+            f"[HedgerPolicy][Redeployment] source={source_id}, services={len(deploy_plan)}, "
+            f"nodes={len(node_set)}, replicas={total_replicas}, sample={sample}"
+        )
+        LOGGER.debug(f"[HedgerPolicy][Redeployment] source={source_id}, full_plan={deploy_plan}")
 
         return deploy_plan

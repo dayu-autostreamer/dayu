@@ -82,9 +82,14 @@ class HedgerAgent(BaseAgent, abc.ABC):
 
         configuration = self._normalize_mapping(self.default_configuration)
         offloading = self._normalize_mapping(self.hedger.get_offloading_plan())
+        used_default_offloading = False
         if not offloading:
             offloading = self._normalize_mapping(self.default_offloading)
-            LOGGER.warning('No offloading plan from Hedger, use default offloading policy.')
+            used_default_offloading = True
+            LOGGER.warning(
+                f"[HedgerAgent][Schedule] source={source_id}, no Hedger offloading plan available; "
+                f"fall back to default offloading policy."
+            )
 
         policy = {}
         policy.update(configuration)
@@ -101,7 +106,29 @@ class HedgerAgent(BaseAgent, abc.ABC):
 
         policy.update({'dag': dag})
 
-        LOGGER.info(f'[Offloading] (source {source_id}) Schedule policy: {policy}')
+        service_names = [name for name in dag if name not in (TaskConstant.START.value, TaskConstant.END.value)]
+        cloud_count = sum(
+            1 for service_name in service_names
+            if dag[service_name]['service'].get('execute_device') == cloud_device
+        )
+        assigned_devices = sorted({
+            dag[service_name]['service'].get('execute_device')
+            for service_name in service_names
+        })
+        sample_assignments = "; ".join(
+            f"{service_name}->{dag[service_name]['service'].get('execute_device')}"
+            for service_name in service_names[:3]
+        ) or "[]"
+        LOGGER.info(
+            f"[HedgerAgent][Schedule] source={source_id}, services={len(service_names)}, "
+            f"cloud={cloud_count}/{len(service_names) if service_names else 0}, "
+            f"unique_devices={len(assigned_devices)}, used_default_offloading={used_default_offloading}, "
+            f"sample={sample_assignments}"
+        )
+        LOGGER.debug(
+            f"[HedgerAgent][Schedule] source={source_id}, assigned_devices={assigned_devices}, "
+            f"full_policy={policy}"
+        )
         return policy
 
     def run(self):
@@ -136,10 +163,32 @@ class HedgerAgent(BaseAgent, abc.ABC):
         if memory_usage is not None:
             self.hedger.state_buffer.add_memory_utilization(device, memory_usage)
 
-        for service, flops in (resource.get('model_flops') or {}).items():
+        model_flops_updates = resource.get('model_flops') or {}
+        model_memory_updates = resource.get('model_memory') or {}
+        updated_fields = []
+        if bandwidth is not None and bandwidth != -1:
+            updated_fields.append(f"wan={float(bandwidth):.2f}")
+        if gpu_flops is not None:
+            updated_fields.append(f"gpu_flops={float(gpu_flops):.2f}")
+        if memory_capacity is not None:
+            updated_fields.append(f"mem_capacity={float(memory_capacity):.2f}")
+        if gpu_usage is not None:
+            updated_fields.append(f"gpu_usage={float(gpu_usage):.4f}")
+        if memory_usage is not None:
+            updated_fields.append(f"mem_usage={float(memory_usage):.4f}")
+        if model_flops_updates:
+            updated_fields.append(f"model_flops={len(model_flops_updates)}")
+        if model_memory_updates:
+            updated_fields.append(f"model_memory={len(model_memory_updates)}")
+
+        for service, flops in model_flops_updates.items():
             self.hedger.state_buffer.add_model_flops(service, flops)
-        for service, memory in (resource.get('model_memory') or {}).items():
+        for service, memory in model_memory_updates.items():
             self.hedger.state_buffer.add_model_memory(service, memory)
+
+        LOGGER.debug(
+            f"[HedgerAgent][Resource] device={device}, updates={', '.join(updated_fields) if updated_fields else 'none'}"
+        )
 
     def update_policy(self, policy):
         pass
@@ -147,6 +196,9 @@ class HedgerAgent(BaseAgent, abc.ABC):
     def update_task(self, task):
         if self.hedger.state_buffer is None:
             return
+        updated_services = 0
+        complexity_values = []
+        latency_values = []
         for service_name in task.get_dag().nodes:
             if service_name in (TaskConstant.START.value, TaskConstant.END.value):
                 continue
@@ -155,6 +207,17 @@ class HedgerAgent(BaseAgent, abc.ABC):
             complexity = self._extract_task_complexity(service)
             self.hedger.state_buffer.add_task_complexity(service_name, complexity)
             self.hedger.state_buffer.add_task_latency(service_name, latency)
+            updated_services += 1
+            complexity_values.append(float(complexity))
+            latency_values.append(float(latency))
+
+        if updated_services > 0:
+            avg_complexity = float(np.mean(complexity_values)) if complexity_values else 0.0
+            avg_latency = float(np.mean(latency_values)) if latency_values else 0.0
+            LOGGER.debug(
+                f"[HedgerAgent][Task] source={task.get_source_id()}, services={updated_services}, "
+                f"avg_complexity={avg_complexity:.4f}, avg_latency={avg_latency:.4f}"
+            )
 
     def get_schedule_overhead(self):
         # TODO

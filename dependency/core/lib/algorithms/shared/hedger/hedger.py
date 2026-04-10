@@ -1,5 +1,5 @@
 import copy
-from typing import List, Optional
+from typing import Dict, List, Optional
 import threading
 import random
 import math
@@ -153,6 +153,181 @@ class Hedger:
             self.offloading_agent.source = self.physical_topology.source_idx
             self.offloading_agent.cloud_idx = self.physical_topology.cloud_idx
 
+    @staticmethod
+    def _format_log_value(value, digits: int = 4) -> str:
+        if value is None:
+            return "none"
+        if isinstance(value, bool):
+            return str(value)
+        if isinstance(value, int):
+            return str(value)
+        try:
+            value_float = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if math.isfinite(value_float):
+            return f"{value_float:.{digits}f}"
+        return str(value_float)
+
+    def _summarize_runtime_config(self) -> str:
+        return (
+            f"mode={self.mode}, device={self.device}, seed={self.seed}, "
+            f"intervals(dep/off)={self._format_log_value(self.deployment_interval, 2)}/"
+            f"{self._format_log_value(self.offloading_interval, 2)}s, "
+            f"rollout(dep/off)={self.deployment_rollout_len}/{self.offloading_rollout_len}, "
+            f"batch(dep/off)={self.deployment_batch_size}/{self.offloading_batch_size}, "
+            f"state_seq(dep/off)={self.state_cfg.deployment_seq_len}/{self.state_cfg.offloading_seq_len}, "
+            f"total_steps={self.total_steps}, save_interval={self.save_interval}"
+        )
+
+    def _summarize_topology(self) -> str:
+        logical_services = len(self.logical_topology) if self.logical_topology is not None else 0
+        logical_edges = len(self.logical_topology.links) if self.logical_topology is not None else 0
+        physical_nodes = len(self.physical_topology) if self.physical_topology is not None else 0
+        physical_edges = len(self.physical_topology.links) if self.physical_topology is not None else 0
+        source_name = (
+            self.physical_topology[self.physical_topology.source_idx]
+            if self.physical_topology is not None and physical_nodes > 0
+            else "unregistered"
+        )
+        cloud_name = (
+            self.physical_topology[self.physical_topology.cloud_idx]
+            if self.physical_topology is not None and physical_nodes > 0
+            else "unregistered"
+        )
+        return (
+            f"logical_services={logical_services}, logical_edges={logical_edges}, "
+            f"physical_nodes={physical_nodes}, physical_edges={physical_edges}, "
+            f"source={source_name}, cloud={cloud_name}"
+        )
+
+    def _summarize_metrics(self, metrics: Optional[Dict[str, float]]) -> str:
+        if not metrics:
+            return "none"
+        return ", ".join(
+            f"{key}={self._format_log_value(value)}"
+            for key, value in sorted(metrics.items())
+        )
+
+    def _summarize_deploy_mask(self, deploy_mask: Optional[torch.Tensor]) -> str:
+        if deploy_mask is None:
+            return "services=0, edge_replicas=0, cloud_replicas=0, cloud_only=0"
+
+        mask = deploy_mask.detach().clone().cpu().bool()
+        if mask.numel() == 0 or self.physical_topology is None:
+            return "services=0, edge_replicas=0, cloud_replicas=0, cloud_only=0"
+
+        cloud_idx = self.physical_topology.cloud_idx
+        edge_mask = mask[:, :cloud_idx]
+        edge_replicas = int(edge_mask.sum().item()) if edge_mask.numel() else 0
+        cloud_replicas = int(mask[:, cloud_idx].sum().item())
+        cloud_only = int((~edge_mask.any(dim=1)).sum().item()) if edge_mask.numel() else int(mask.size(0))
+        return (
+            f"services={mask.size(0)}, edge_replicas={edge_replicas}, "
+            f"cloud_replicas={cloud_replicas}, cloud_only={cloud_only}"
+        )
+
+    def _summarize_deployment_plan(self, deployment_plan: Optional[dict], sample_size: int = 3) -> str:
+        if not deployment_plan:
+            return "services=0, replicas=0, edge_replicas=0, sample=[]"
+
+        cloud_name = None
+        if self.physical_topology is not None and len(self.physical_topology) > 0:
+            cloud_name = self.physical_topology[self.physical_topology.cloud_idx]
+
+        total_replicas = 0
+        edge_replicas = 0
+        sample_parts = []
+        for idx, (service_name, device_names) in enumerate(deployment_plan.items()):
+            if isinstance(device_names, (list, tuple, set)):
+                devices = list(device_names)
+            else:
+                devices = [device_names]
+            total_replicas += len(devices)
+            if cloud_name is not None:
+                edge_replicas += sum(1 for device_name in devices if device_name != cloud_name)
+            if idx < sample_size:
+                sample_parts.append(f"{service_name}->[{','.join(map(str, devices))}]")
+        sample_text = "; ".join(sample_parts) if sample_parts else "[]"
+        return (
+            f"services={len(deployment_plan)}, replicas={total_replicas}, "
+            f"edge_replicas={edge_replicas}, sample={sample_text}"
+        )
+
+    def _summarize_offloading_plan(self, offloading_plan: Optional[dict], sample_size: int = 3) -> str:
+        if not offloading_plan:
+            return "services=0, cloud=0, unique_targets=0, sample=[]"
+
+        cloud_name = None
+        if self.physical_topology is not None and len(self.physical_topology) > 0:
+            cloud_name = self.physical_topology[self.physical_topology.cloud_idx]
+
+        cloud_assignments = 0
+        unique_targets = set()
+        sample_parts = []
+        for idx, (service_name, device_name) in enumerate(offloading_plan.items()):
+            if device_name == cloud_name:
+                cloud_assignments += 1
+            unique_targets.add(device_name)
+            if idx < sample_size:
+                sample_parts.append(f"{service_name}->{device_name}")
+        sample_text = "; ".join(sample_parts) if sample_parts else "[]"
+        return (
+            f"services={len(offloading_plan)}, cloud={cloud_assignments}, "
+            f"unique_targets={len(unique_targets)}, sample={sample_text}"
+        )
+
+    def _summarize_state_snapshot(
+            self,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            metrics: Optional[Dict[str, float]] = None,
+    ) -> str:
+        service_count = int(logic_feats["model_flops"].numel()) if "model_flops" in logic_feats else 0
+        device_count = int(phys_feats["gpu_flops"].numel()) if "gpu_flops" in phys_feats else 0
+
+        latest_complexity = 0.0
+        if "task_complexity_seq" in logic_feats and logic_feats["task_complexity_seq"].numel():
+            latest_complexity = float(logic_feats["task_complexity_seq"][:, -1].mean().item())
+
+        latest_latency = 0.0
+        if "hist_latency_seq" in logic_feats and logic_feats["hist_latency_seq"].numel():
+            latest_latency = float(logic_feats["hist_latency_seq"][:, -1].mean().item())
+
+        latest_gpu_util = 0.0
+        if "gpu_util_seq" in phys_feats and phys_feats["gpu_util_seq"].numel():
+            latest_gpu_util = float(phys_feats["gpu_util_seq"][:, -1].mean().item())
+
+        latest_mem_util = 0.0
+        if "mem_util_seq" in phys_feats and phys_feats["mem_util_seq"].numel():
+            latest_mem_util = float(phys_feats["mem_util_seq"][:, -1].mean().item())
+
+        latest_cloud_bw = 0.0
+        latest_edge_bw = 0.0
+        if "bandwidth_seq" in phys_feats and phys_feats["bandwidth_seq"].numel():
+            bandwidth_seq = phys_feats["bandwidth_seq"]
+            cloud_idx = self.physical_topology.cloud_idx if self.physical_topology is not None else bandwidth_seq.size(0) - 1
+            latest_cloud_bw = float(bandwidth_seq[cloud_idx, -1].item())
+            edge_bandwidth = bandwidth_seq[:, -1]
+            if edge_bandwidth.numel() > 1:
+                edge_bandwidth = torch.cat([edge_bandwidth[:cloud_idx], edge_bandwidth[cloud_idx + 1:]])
+            else:
+                edge_bandwidth = torch.empty(0, dtype=edge_bandwidth.dtype)
+            latest_edge_bw = float(edge_bandwidth.mean().item()) if edge_bandwidth.numel() else 0.0
+
+        base = (
+            f"services={service_count}, devices={device_count}, "
+            f"latest_complexity={self._format_log_value(latest_complexity)}, "
+            f"latest_latency={self._format_log_value(latest_latency)}, "
+            f"latest_edge_bw={self._format_log_value(latest_edge_bw)}, "
+            f"latest_cloud_bw={self._format_log_value(latest_cloud_bw)}, "
+            f"latest_gpu_util={self._format_log_value(latest_gpu_util)}, "
+            f"latest_mem_util={self._format_log_value(latest_mem_util)}"
+        )
+        if metrics:
+            base += f", metrics=({self._summarize_metrics(metrics)})"
+        return base
+
     def register_topology_encoder(self):
         if self.shared_topology_encoder:
             return
@@ -213,8 +388,11 @@ class Hedger:
         self.physical_topology = PhysicalTopology(edge_nodes, source_device)
         self._sync_agent_topology_bindings()
 
-        LOGGER.debug(f'[Hedger] Registered physical topology, nodes: {self.physical_topology.nodes}, '
-                     f'links: {self.physical_topology.links}')
+        LOGGER.info(f"[Hedger][Topology] Registered physical topology: {self._summarize_topology()}")
+        LOGGER.debug(
+            f"[Hedger][Topology] Physical nodes={self.physical_topology.nodes}, "
+            f"links={self.physical_topology.links}"
+        )
 
     def register_logical_topology(self, dag):
         if self.logical_topology:
@@ -222,8 +400,11 @@ class Hedger:
 
         self.logical_topology = LogicalTopology(dag)
 
-        LOGGER.debug(f'[Hedger] Registered logical topology, nodes: {self.logical_topology.service_list}, '
-                     f'links: {self.logical_topology.links}')
+        LOGGER.info(f"[Hedger][Topology] Registered logical topology: {self._summarize_topology()}")
+        LOGGER.debug(
+            f"[Hedger][Topology] Logical services={self.logical_topology.service_list}, "
+            f"links={self.logical_topology.links}"
+        )
 
     def register_state_buffer(self):
         if self.state_buffer:
@@ -235,6 +416,10 @@ class Hedger:
         self.state_buffer = StateBuffer(self.max_state_buffer_size,
                                         logical_topology=self.logical_topology,
                                         physical_topology=self.physical_topology)
+        LOGGER.info(
+            f"[Hedger][StateBuffer] Registered state buffer: capacity={self.max_state_buffer_size}, "
+            f"fixed_lan_bandwidth={self.state_buffer.fixed_lan_bandwidth_mbps:.2f}Mbps"
+        )
 
     def register_initial_deployment(self, deployment_plan):
         assert self.logical_topology, "Logical topology must be registered before registering initial deployment."
@@ -247,6 +432,11 @@ class Hedger:
 
         # Cache the current deployment mask.
         self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(deployment_plan or {})
+        LOGGER.info(
+            f"[Hedger][Deployment] Registered initial deployment: "
+            f"{self._summarize_deployment_plan(self.initial_deployment_plan)}"
+        )
+        LOGGER.debug(f"[Hedger][Deployment] Initial deployment detail: {self.initial_deployment_plan}")
 
     def get_offloading_plan(self):
         return copy.deepcopy(self.offloading_plan)
@@ -379,7 +569,7 @@ class Hedger:
         assert self.logical_topology is not None, "Logical topology must be registered before inference."
         assert self.physical_topology is not None, "Physical topology must be registered before inference."
 
-        LOGGER.info('[Hedger] Hedger is running in inference mode..')
+        LOGGER.info(f"[Hedger][Inference] Start: {self._summarize_runtime_config()}, {self._summarize_topology()}")
         self.set_seed()
 
         self.shared_topology_encoder.eval()
@@ -388,7 +578,10 @@ class Hedger:
 
         logic_links = self._build_edge_index(self.logical_topology.links)
         phys_links = self._build_edge_index(self.physical_topology.links)
-        LOGGER.info(f"Logical graph edges: {logic_links.size(1)}, physical graph edges: {phys_links.size(1)}")
+        LOGGER.debug(
+            f"[Hedger][Inference] Graph summary: logical_edges={logic_links.size(1)}, "
+            f"physical_edges={phys_links.size(1)}"
+        )
 
         self.deployment_thread_stop_event.clear()
         self.offloading_thread_stop_event.clear()
@@ -402,7 +595,7 @@ class Hedger:
                     self.initial_deployment_plan
                 ).detach().cpu()
             else:
-                LOGGER.warning('No previous deployment mask found, initialize to pure cloud deployment.')
+                LOGGER.warning('[Hedger][Inference] No previous deployment state found, initialize to pure cloud deployment.')
                 self.cur_deploy_mask = torch.zeros(
                     (len(self.logical_topology), len(self.physical_topology)),
                     dtype=torch.bool,
@@ -412,6 +605,16 @@ class Hedger:
         elif self.deployment_plan is None:
             self.deployment_plan = self._map_deployment_mask_to_deployment_plan(self._current_deploy_mask())
 
+        LOGGER.info(
+            f"[Hedger][Inference] Initial deployment state: "
+            f"{self._summarize_deploy_mask(self.cur_deploy_mask)}, "
+            f"{self._summarize_deployment_plan(self.deployment_plan)}"
+        )
+        LOGGER.info(
+            f"[Hedger][Inference] Initial offloading state: "
+            f"{self._summarize_offloading_plan(self.offloading_plan)}"
+        )
+
         deployment_thread = threading.Thread(target=self.inference_deployment_agent, daemon=True)
         offloading_thread = threading.Thread(target=self.inference_offloading_agent, daemon=True)
         deployment_thread.start()
@@ -419,21 +622,28 @@ class Hedger:
 
         while not (self.deployment_thread_stop_event.is_set() or self.offloading_thread_stop_event.is_set()):
             if not deployment_thread.is_alive():
-                LOGGER.error('[Hedger] Deployment inference thread stopped unexpectedly.')
+                LOGGER.warning('[Hedger][Inference] Deployment worker stopped unexpectedly.')
                 self.offloading_thread_stop_event.set()
                 break
             if not offloading_thread.is_alive():
-                LOGGER.error('[Hedger] Offloading inference thread stopped unexpectedly.')
+                LOGGER.warning('[Hedger][Inference] Offloading worker stopped unexpectedly.')
                 self.deployment_thread_stop_event.set()
                 break
             time.sleep(0.5)
 
         self.deployment_thread_stop_event.set()
         self.offloading_thread_stop_event.set()
-        LOGGER.info('[Hedger] Inference of Hedger finished.')
+        LOGGER.info(
+            f"[Hedger][Inference] Finished: "
+            f"{self._summarize_deployment_plan(self.deployment_plan)}, "
+            f"{self._summarize_offloading_plan(self.offloading_plan)}"
+        )
 
     def inference_deployment_agent(self):
-        LOGGER.info('[Hedger Deployment] Hedger Deployment Agent start inference.')
+        LOGGER.info(
+            f"[Hedger][Inference][Deployment] Worker started: "
+            f"interval={self._format_log_value(self.deployment_interval, 2)}s"
+        )
 
         assert self.logical_topology is not None and self.physical_topology is not None, \
             "Topologies must be registered before starting deployment inference."
@@ -445,6 +655,7 @@ class Hedger:
         prev_deploy_mask = self._current_deploy_mask()
         logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
 
+        step = 0
         while not self.deployment_thread_stop_event.is_set():
             try:
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
@@ -463,24 +674,30 @@ class Hedger:
 
                 self.cur_deploy_mask = deploy_mask.detach().cpu()
                 self.deployment_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
-                LOGGER.debug(
-                    f"[Hedger Deployment] Updated deployment plan in inference mode, "
-                    f"capacity_relax_cnt={aux['capacity_relax_cnt']}."
-                )
-
                 deployment_time_ticket = self._sleep_until_next_tick(
                     deployment_time_ticket,
                     self.deployment_interval,
                 )
 
                 prev_deploy_mask = self._current_deploy_mask()
-                logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+                logic_feats, phys_feats, metrics, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+                LOGGER.debug(
+                    f"[Hedger][Inference][Deployment] step={step}, "
+                    f"{self._summarize_deploy_mask(self.cur_deploy_mask)}, "
+                    f"{self._summarize_deployment_plan(self.deployment_plan)}, "
+                    f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
+                    f"capacity_relax_cnt={aux['capacity_relax_cnt']}"
+                )
+                step += 1
             except Exception as e:
-                LOGGER.exception(f"[Hedger Deployment] Error in inference loop: {e}")
+                LOGGER.exception(f"[Hedger][Inference][Deployment] Worker loop error: {e}")
                 time.sleep(0.5)
 
     def inference_offloading_agent(self):
-        LOGGER.info('[Hedger Offloading] Hedger Offloading Agent start inference.')
+        LOGGER.info(
+            f"[Hedger][Inference][Offloading] Worker started: "
+            f"interval={self._format_log_value(self.offloading_interval, 2)}s"
+        )
 
         assert self.logical_topology is not None and self.physical_topology is not None, \
             "Topologies must be registered before starting offloading inference."
@@ -491,6 +708,7 @@ class Hedger:
         offloading_time_ticket = 0
         logic_feats, phys_feats, _, _ = self._collect_offloading_state()
 
+        step = 0
         while not self.offloading_thread_stop_event.is_set():
             try:
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
@@ -509,26 +727,29 @@ class Hedger:
                     )
 
                 self.offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
-                LOGGER.debug(
-                    f"[Hedger Offloading] Updated offloading plan in inference mode, "
-                    f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}."
-                )
-
                 offloading_time_ticket = self._sleep_until_next_tick(
                     offloading_time_ticket,
                     self.offloading_interval,
                 )
 
-                logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+                logic_feats, phys_feats, metrics, _ = self._collect_offloading_state()
+                LOGGER.debug(
+                    f"[Hedger][Inference][Offloading] step={step}, "
+                    f"{self._summarize_offloading_plan(self.offloading_plan)}, "
+                    f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
+                    f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}, "
+                    f"aux_cost={self._format_log_value(aux['aux_cost'])}"
+                )
+                step += 1
             except Exception as e:
-                LOGGER.exception(f"[Hedger Offloading] Error in inference loop: {e}")
+                LOGGER.exception(f"[Hedger][Inference][Offloading] Worker loop error: {e}")
                 time.sleep(0.5)
 
     def train_hedger(self):
         assert self.logical_topology is not None, "Logical topology must be registered before training."
         assert self.physical_topology is not None, "Physical topology must be registered before training."
 
-        LOGGER.info('[Hedger] Hedger is running in training mode..')
+        LOGGER.info(f"[Hedger][Train] Start: {self._summarize_runtime_config()}, {self._summarize_topology()}")
         self.set_seed()
         self.shared_topology_encoder.train()
         self.deployment_agent.train()
@@ -539,16 +760,23 @@ class Hedger:
         logic_links = self._build_edge_index(self.logical_topology.links)
         phys_links = self._build_edge_index(self.physical_topology.links)
 
-        LOGGER.info(f"Logical graph edges: {logic_links.size(1)}, physical graph edges: {phys_links.size(1)}")
+        LOGGER.debug(
+            f"[Hedger][Train] Graph summary: logical_edges={logic_links.size(1)}, "
+            f"physical_edges={phys_links.size(1)}"
+        )
 
         if self.cur_deploy_mask is None:
-            LOGGER.warning('No previous deployment mask found, initialize to pure cloud deployment.')
+            LOGGER.warning('[Hedger][Train] No previous deployment state found, initialize to pure cloud deployment.')
             self.cur_deploy_mask = torch.zeros((len(self.logical_topology), len(self.physical_topology)),
                                                dtype=torch.bool, device=self.device)
             self.cur_deploy_mask[:, self.physical_topology.cloud_idx] = True
 
+        LOGGER.info(
+            f"[Hedger][Train] Initial deployment state: {self._summarize_deploy_mask(self.cur_deploy_mask)}"
+        )
+
         if not self.train_deployment_flag and not self.train_offloading_flag:
-            LOGGER.warning('[Hedger] Both training loops are disabled, skip training run.')
+            LOGGER.warning('[Hedger][Train] Both training workers are disabled, skip training run.')
             return
 
         deployment_thread = None
@@ -563,11 +791,11 @@ class Hedger:
         while True:
             try:
                 if deployment_thread is not None and not deployment_thread.is_alive():
-                    LOGGER.error('[Hedger] Deployment training thread stopped unexpectedly.')
+                    LOGGER.warning('[Hedger][Train] Deployment worker stopped unexpectedly.')
                     self.offloading_thread_stop_event.set()
                     break
                 if offloading_thread is not None and not offloading_thread.is_alive():
-                    LOGGER.error('[Hedger] Offloading training thread stopped unexpectedly.')
+                    LOGGER.warning('[Hedger][Train] Offloading worker stopped unexpectedly.')
                     self.deployment_thread_stop_event.set()
                     break
 
@@ -578,28 +806,34 @@ class Hedger:
                     with self._data_lock:
                         off_transitions = self.offloading_transitions[:self.offloading_rollout_len]
                         del self.offloading_transitions[:self.offloading_rollout_len]
+                        off_remaining = len(self.offloading_transitions)
 
                     self.offloading_agent.ppo_update(off_transitions,
                                                      epochs=self.update_epochs,
                                                      batch_size=self.offloading_batch_size)
                     self._offloading_update_steps += 1
                     updates_in_tick += 1
-                    LOGGER.info(f"[Offloading] PPO update #{self._offloading_update_steps}, "
-                                f"used {len(off_transitions)} transitions.")
+                    LOGGER.info(
+                        f"[Hedger][Train][Offloading] PPO update={self._offloading_update_steps}, "
+                        f"used={len(off_transitions)}, remaining={off_remaining}"
+                    )
 
                 # Run a PPO update for the deployment agent.
                 if self.train_deployment_flag and len(self.deployment_transitions) >= self.deployment_rollout_len:
                     with self._data_lock:
                         dep_transitions = self.deployment_transitions[:self.deployment_rollout_len]
                         del self.deployment_transitions[:self.deployment_rollout_len]
+                        dep_remaining = len(self.deployment_transitions)
 
                     self.deployment_agent.ppo_update(dep_transitions,
                                                      epochs=self.update_epochs,
                                                      batch_size=self.deployment_batch_size)
                     self._deployment_update_steps += 1
                     updates_in_tick += 1
-                    LOGGER.info(f"[Deployment] PPO update #{self._deployment_update_steps}, "
-                                f"used {len(dep_transitions)} transitions.")
+                    LOGGER.info(
+                        f"[Hedger][Train][Deployment] PPO update={self._deployment_update_steps}, "
+                        f"used={len(dep_transitions)}, remaining={dep_remaining}"
+                    )
 
                 # Save a checkpoint.
                 if updates_in_tick > 0:
@@ -610,21 +844,27 @@ class Hedger:
                         try:
                             self.save_checkpoint(epoch=self._epoch)
                         except Exception as e:
-                            LOGGER.warning(f'[Hedger] Failed to save checkpoint (epoch {self._epoch}): {e}')
-                            LOGGER.exception(e)
+                            LOGGER.exception(
+                                f"[Hedger][Train] Failed to save checkpoint at epoch={self._epoch}: {e}"
+                            )
 
                 if self._epoch > self.total_steps:
-                    LOGGER.info("Reached max_epoch, stop training.")
+                    LOGGER.info(f"[Hedger][Train] Reached training step budget: epoch={self._epoch}, limit={self.total_steps}")
                     break
 
                 time.sleep(0.5)
             except Exception as e:
-                LOGGER.exception(f"Error in Hedger training loop: {e}")
+                LOGGER.exception(f"[Hedger][Train] Coordinator loop error: {e}")
                 continue
 
         self.deployment_thread_stop_event.set()
         self.offloading_thread_stop_event.set()
-        LOGGER.info('[Hedger] Training of Hedger finished.')
+        LOGGER.info(
+            f"[Hedger][Train] Finished: epoch={self._epoch}, "
+            f"dep_updates={self._deployment_update_steps}, off_updates={self._offloading_update_steps}, "
+            f"{self._summarize_deployment_plan(self.deployment_plan)}, "
+            f"{self._summarize_offloading_plan(self.offloading_plan)}"
+        )
 
     def train_deployment_agent(self):
         """
@@ -635,13 +875,17 @@ class Hedger:
             - Push the transition into `self.deployment_transitions` for PPO updates
         """
         if not self.train_deployment_flag:
-            LOGGER.info("train_deployment_flag=False, deployment training thread will not run.")
+            LOGGER.info("[Hedger][Train][Deployment] Worker disabled by config, skip startup.")
             return
 
         assert self.logical_topology is not None and self.physical_topology is not None, \
             "Topologies must be registered before starting deployment training."
 
-        LOGGER.info('[Hedger Deployment] Hedger Deployment Agent start training.')
+        LOGGER.info(
+            f"[Hedger][Train][Deployment] Worker started: "
+            f"interval={self._format_log_value(self.deployment_interval, 2)}s, "
+            f"rollout={self.deployment_rollout_len}, batch={self.deployment_batch_size}"
+        )
 
         self.dep_recorder = Recorder(
             "deployment_train.csv",
@@ -664,75 +908,87 @@ class Hedger:
         logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
 
         while not self.deployment_thread_stop_event.is_set():
-            # Move features onto the active device.
-            logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
-            phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
-            prev_deploy_mask_dev = prev_deploy_mask.to(self.device) if prev_deploy_mask is not None else None
+            try:
+                # Move features onto the active device.
+                logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
+                phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
+                prev_deploy_mask_dev = prev_deploy_mask.to(self.device) if prev_deploy_mask is not None else None
 
-            with torch.no_grad():
-                # Sample a new deployment strategy.
-                deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
-                    logic_edge_index=logic_edge_index,
-                    logic_feats=logic_feats_dev,
-                    phys_edge_index=phys_edge_index,
-                    phys_feats=phys_feats_dev,
-                    topo_order=None,  # Derived internally from the logical graph.
-                    prev_deploy_mask=prev_deploy_mask_dev
+                with torch.no_grad():
+                    # Sample a new deployment strategy.
+                    deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
+                        logic_edge_index=logic_edge_index,
+                        logic_feats=logic_feats_dev,
+                        phys_edge_index=phys_edge_index,
+                        phys_feats=phys_feats_dev,
+                        topo_order=None,  # Derived internally from the logical graph.
+                        prev_deploy_mask=prev_deploy_mask_dev
+                    )
+                deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
+                self.deployment_plan = deploy_plan
+                self.cur_deploy_mask = deploy_mask.detach().cpu()
+
+                deployment_time_ticket = self._sleep_until_next_tick(
+                    deployment_time_ticket,
+                    self.deployment_interval,
                 )
-            deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
-            self.deployment_plan = deploy_plan
-            self.cur_deploy_mask = deploy_mask.detach().cpu()
 
-            deployment_time_ticket = self._sleep_until_next_tick(
-                deployment_time_ticket,
-                self.deployment_interval,
-            )
+                new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state(
+                    prev_deploy_mask=prev_deploy_mask,)
 
-            new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state(
-                prev_deploy_mask=prev_deploy_mask,)
+                # Compute the reward from environment metrics and policy-side auxiliaries.
+                reward = self._compute_deployment_reward(metrics, aux)
 
-            # Compute the reward from environment metrics and policy-side auxiliaries.
-            reward = self._compute_deployment_reward(metrics, aux)
+                # Keep transition payloads on CPU to avoid cross-thread device issues.
+                tr = {
+                    "logic_edge_index": logic_edge_index.cpu(),
+                    "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
+                    "phys_edge_index": phys_edge_index.cpu(),
+                    "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
+                    "deploy_mask": deploy_mask.cpu(),
+                    "topo_order": None,  # Recomputed during evaluation if needed.
+                    "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
+                    "logp": logp.detach().cpu(),
+                    "value": value.detach().cpu(),
+                    "reward": float(reward),
+                    "done": bool(done),
+                }
 
-            # Keep transition payloads on CPU to avoid cross-thread device issues.
-            tr = {
-                "logic_edge_index": logic_edge_index.cpu(),
-                "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
-                "phys_edge_index": phys_edge_index.cpu(),
-                "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
-                "deploy_mask": deploy_mask.cpu(),
-                "topo_order": None,  # Recomputed during evaluation if needed.
-                "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
-                "logp": logp.detach().cpu(),
-                "value": value.detach().cpu(),
-                "reward": float(reward),
-                "done": bool(done),
-            }
+                with self._data_lock:
+                    self.deployment_transitions.append(tr)
+                    transition_count = len(self.deployment_transitions)
 
-            with self._data_lock:
-                self.deployment_transitions.append(tr)
+                logic_feats = new_logic_feats
+                phys_feats = new_phys_feats
+                prev_deploy_mask = deploy_mask.detach().cpu()
 
-            logic_feats = new_logic_feats
-            phys_feats = new_phys_feats
-            prev_deploy_mask = deploy_mask.detach().cpu()
+                self.dep_recorder.log(
+                    step=step,
+                    epoch=self._epoch,
+                    dep_updates=self._deployment_update_steps,
+                    dep_reward=reward,
+                    avg_off_reward=metrics["avg_offloading_reward"],
+                    dep_change_cost=metrics["deploy_change_cost"],
+                    cap_relax_cnt=aux["capacity_relax_cnt"],
+                    dep_offload_weight=self.deployment_agent_params["reward_dep_offload_weight"],
+                    dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
+                    cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
+                )
+                LOGGER.debug(
+                    f"[Hedger][Train][Deployment] step={step}, reward={self._format_log_value(reward)}, "
+                    f"{self._summarize_deploy_mask(self.cur_deploy_mask)}, "
+                    f"{self._summarize_deployment_plan(self.deployment_plan)}, "
+                    f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
+                    f"capacity_relax_cnt={aux['capacity_relax_cnt']}, transitions={transition_count}"
+                )
 
-            self.dep_recorder.log(
-                step=step,
-                epoch=self._epoch,
-                dep_updates=self._deployment_update_steps,
-                dep_reward=reward,
-                avg_off_reward=metrics["avg_offloading_reward"],
-                dep_change_cost=metrics["deploy_change_cost"],
-                cap_relax_cnt=aux["capacity_relax_cnt"],
-                dep_offload_weight=self.deployment_agent_params["reward_dep_offload_weight"],
-                dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
-                cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
-            )
-
-            step += 1
+                step += 1
+            except Exception as e:
+                LOGGER.exception(f"[Hedger][Train][Deployment] Worker loop error: {e}")
+                time.sleep(0.5)
 
         self.dep_recorder.close()
-        LOGGER.info("Deployment training thread stopped.")
+        LOGGER.info("[Hedger][Train][Deployment] Worker stopped.")
 
     def train_offloading_agent(self):
         """
@@ -743,13 +999,17 @@ class Hedger:
             - Push the transition into `self.offloading_transitions`
         """
         if not self.train_offloading_flag:
-            LOGGER.info("train_offloading_flag=False, offloading training thread will not run.")
+            LOGGER.info("[Hedger][Train][Offloading] Worker disabled by config, skip startup.")
             return
 
         assert self.logical_topology is not None and self.physical_topology is not None, \
             "Topologies must be registered before starting offloading training."
 
-        LOGGER.info('[Hedger Offloading] Hedger Offloading Agent start training.')
+        LOGGER.info(
+            f"[Hedger][Train][Offloading] Worker started: "
+            f"interval={self._format_log_value(self.offloading_interval, 2)}s, "
+            f"rollout={self.offloading_rollout_len}, batch={self.offloading_batch_size}"
+        )
 
         self.off_recorder = Recorder(
             "offloading_train.csv",
@@ -769,76 +1029,88 @@ class Hedger:
         offloading_time_ticket = 0
         logic_feats, phys_feats, _, _ = self._collect_offloading_state()
         while not self.offloading_thread_stop_event.is_set():
-            logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
-            phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
-            static_mask = self._current_deploy_mask()
-            static_mask_dev = static_mask.to(self.device)
+            try:
+                logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
+                phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
+                static_mask = self._current_deploy_mask()
+                static_mask_dev = static_mask.to(self.device)
 
-            with torch.no_grad():
-                actions, logp, ent, value, aux = self.offloading_agent.policy(
-                    logic_edge_index=logic_edge_index,
-                    logic_feats=logic_feats_dev,
-                    phys_edge_index=phys_edge_index,
-                    phys_feats=phys_feats_dev,
-                    static_mask=static_mask_dev,
-                    topo_order=None,
+                with torch.no_grad():
+                    actions, logp, ent, value, aux = self.offloading_agent.policy(
+                        logic_edge_index=logic_edge_index,
+                        logic_feats=logic_feats_dev,
+                        phys_edge_index=phys_edge_index,
+                        phys_feats=phys_feats_dev,
+                        static_mask=static_mask_dev,
+                        topo_order=None,
+                    )
+                    offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
+                    self.offloading_plan = offloading_plan
+
+                offloading_time_ticket = self._sleep_until_next_tick(
+                    offloading_time_ticket,
+                    self.offloading_interval,
                 )
-                offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
-                self.offloading_plan = offloading_plan
 
-            offloading_time_ticket = self._sleep_until_next_tick(
-                offloading_time_ticket,
-                self.offloading_interval,
-            )
+                new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state()
 
-            new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state()
+                reward = self._compute_offloading_reward(metrics, aux)
+                if self.state_buffer is not None:
+                    self.state_buffer.add_offloading_reward(reward)
 
-            reward = self._compute_offloading_reward(metrics, aux)
-            if self.state_buffer is not None:
-                self.state_buffer.add_offloading_reward(reward)
+                tr = {
+                    "logic_edge_index": logic_edge_index.cpu(),
+                    "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
+                    "phys_edge_index": phys_edge_index.cpu(),
+                    "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
+                    "actions": actions.cpu(),
+                    "static_mask": static_mask_dev.cpu(),
+                    "topo_order": None,
+                    "logp": logp.detach().cpu(),
+                    "value": value.detach().cpu(),
+                    "reward": float(reward),
+                    "done": bool(done),
+                }
 
-            tr = {
-                "logic_edge_index": logic_edge_index.cpu(),
-                "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
-                "phys_edge_index": phys_edge_index.cpu(),
-                "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
-                "actions": actions.cpu(),
-                "static_mask": static_mask_dev.cpu(),
-                "topo_order": None,
-                "logp": logp.detach().cpu(),
-                "value": value.detach().cpu(),
-                "reward": float(reward),
-                "done": bool(done),
-            }
+                with self._data_lock:
+                    self.offloading_transitions.append(tr)
+                    transition_count = len(self.offloading_transitions)
 
-            with self._data_lock:
-                self.offloading_transitions.append(tr)
+                logic_feats = new_logic_feats
+                phys_feats = new_phys_feats
 
-            logic_feats = new_logic_feats
-            phys_feats = new_phys_feats
+                self.off_recorder.log(
+                    step=step,
+                    epoch=self._epoch,
+                    off_updates=self._offloading_update_steps,
+                    off_reward=reward,
+                    latency=metrics["latency"],
+                    slo_violation=metrics["slo_violation"],
+                    cloud_fraction=metrics["cloud_fraction"],
+                    aux_cost=aux["aux_cost"],
+                    off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
+                    off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
+                    off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
+                    switch_cnt=aux["switches"],
+                    correction_cnt=aux["correction_cnt"],
+                    switch_weight=self.offloading_agent_params["penalty_switch"],
+                    correction_weight=self.offloading_agent_params["penalty_relax"],
+                )
+                LOGGER.debug(
+                    f"[Hedger][Train][Offloading] step={step}, reward={self._format_log_value(reward)}, "
+                    f"{self._summarize_offloading_plan(self.offloading_plan)}, "
+                    f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
+                    f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}, "
+                    f"aux_cost={self._format_log_value(aux['aux_cost'])}, transitions={transition_count}"
+                )
 
-            self.off_recorder.log(
-                step=step,
-                epoch=self._epoch,
-                off_updates=self._offloading_update_steps,
-                off_reward=reward,
-                latency=metrics["latency"],
-                slo_violation=metrics["slo_violation"],
-                cloud_fraction=metrics["cloud_fraction"],
-                aux_cost=aux["aux_cost"],
-                off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
-                off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
-                off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
-                switch_cnt=aux["switches"],
-                correction_cnt=aux["correction_cnt"],
-                switch_weight=self.offloading_agent_params["penalty_switch"],
-                correction_weight=self.offloading_agent_params["penalty_relax"],
-            )
-
-            step += 1
+                step += 1
+            except Exception as e:
+                LOGGER.exception(f"[Hedger][Train][Offloading] Worker loop error: {e}")
+                time.sleep(0.5)
 
         self.off_recorder.close()
-        LOGGER.info("Offloading training thread stopped.")
+        LOGGER.info("[Hedger][Train][Offloading] Worker stopped.")
 
     def _compute_offloading_reward(self, metrics, aux) -> float:
         """
@@ -947,7 +1219,7 @@ class Hedger:
             }
         }
         torch.save(ckpt, path)
-        LOGGER.info(f'[Hedger] Checkpoint (epoch={epoch}) saved to {path}')
+        LOGGER.info(f"[Hedger][Checkpoint] Saved epoch={epoch} to {path}")
 
     def load_checkpoint(self, epoch: int = None):
         """
@@ -964,28 +1236,31 @@ class Hedger:
             if os.path.exists(ep_path):
                 target_path = ep_path
             else:
-                LOGGER.warning(f'[Hedger] Epoch checkpoint not found at {ep_path}, falling back to latest epoch file.')
+                LOGGER.warning(
+                    f"[Hedger][Checkpoint] Requested epoch checkpoint not found at {ep_path}; "
+                    f"fall back to latest checkpoint."
+                )
                 target_path = self._latest_epoch_checkpoint_path()
         else:
             target_path = self._latest_epoch_checkpoint_path()
 
         if not target_path or not os.path.exists(target_path):
-            LOGGER.warning(f'[Hedger] No checkpoint found to load in {self.model_dir}.')
+            LOGGER.warning(f"[Hedger][Checkpoint] No checkpoint found in {self.model_dir}.")
             return
 
         ckpt = torch.load(target_path, map_location=self.device)
-        LOGGER.info(f'[Hedger] Loading checkpoint from {target_path}')
+        LOGGER.info(f"[Hedger][Checkpoint] Loading from {target_path}")
 
         # Load encoder weights.
         if self.checkpoint_cfg.load_encoder:
             enc_state = ckpt.get('encoder', None)
             if enc_state is not None:
                 self.shared_topology_encoder.load_state_dict(enc_state)
-                LOGGER.info('[Hedger] Loaded encoder state from checkpoint.')
+                LOGGER.info('[Hedger][Checkpoint] Loaded encoder state.')
             else:
-                LOGGER.warning('[Hedger] No encoder state found in checkpoint.')
+                LOGGER.warning('[Hedger][Checkpoint] Missing encoder state in checkpoint.')
         else:
-            LOGGER.info('[Hedger] Skipping encoder loading per config (load_encoder=False).')
+            LOGGER.info('[Hedger][Checkpoint] Skip encoder loading per config (load_encoder=False).')
 
         # Load the two agent modules.
         # Deployment agent.
@@ -993,22 +1268,28 @@ class Hedger:
             dep_state = ckpt.get('deployment_agent', None)
             if dep_state is not None:
                 self.deployment_agent.load_state_dict(dep_state, strict=False)
-                LOGGER.info('[Hedger] Loaded deployment agent state from checkpoint.')
+                LOGGER.info('[Hedger][Checkpoint] Loaded deployment agent state.')
             else:
-                LOGGER.warning('[Hedger] No deployment_agent state found in checkpoint.')
+                LOGGER.warning('[Hedger][Checkpoint] Missing deployment_agent state in checkpoint.')
         else:
-            LOGGER.info('[Hedger] Skipping deployment agent loading per config (load_deployment_agent=False).')
+            LOGGER.info(
+                '[Hedger][Checkpoint] Skip deployment agent loading per config '
+                '(load_deployment_agent=False).'
+            )
 
         # Offloading agent.
         if self.checkpoint_cfg.load_offloading_agent:
             off_state = ckpt.get('offloading_agent', None)
             if off_state is not None:
                 self.offloading_agent.load_state_dict(off_state, strict=False)
-                LOGGER.info('[Hedger] Loaded offloading agent state from checkpoint.')
+                LOGGER.info('[Hedger][Checkpoint] Loaded offloading agent state.')
             else:
-                LOGGER.warning('[Hedger] No offloading_agent state found in checkpoint.')
+                LOGGER.warning('[Hedger][Checkpoint] Missing offloading_agent state in checkpoint.')
         else:
-            LOGGER.info('[Hedger] Skipping offloading agent loading per config (load_offloading_agent=False).')
+            LOGGER.info(
+                '[Hedger][Checkpoint] Skip offloading agent loading per config '
+                '(load_offloading_agent=False).'
+            )
 
         # Load optimizer state.
         if self.checkpoint_cfg.load_optimizer:
@@ -1016,24 +1297,24 @@ class Hedger:
             if self.checkpoint_cfg.load_deployment_agent and 'deployment_actor_opt' in ckpt:
                 self.deployment_agent.actor_opt.load_state_dict(ckpt['deployment_actor_opt'])
                 self._move_optimizer_state(self.deployment_agent.actor_opt, self.device)
-                LOGGER.info('[Hedger] Loaded deployment actor optimizer state.')
+                LOGGER.info('[Hedger][Checkpoint] Loaded deployment actor optimizer state.')
 
             if self.checkpoint_cfg.load_deployment_agent and 'deployment_critic_opt' in ckpt:
                 self.deployment_agent.critic_opt.load_state_dict(ckpt['deployment_critic_opt'])
                 self._move_optimizer_state(self.deployment_agent.critic_opt, self.device)
-                LOGGER.info('[Hedger] Loaded deployment critic optimizer state.')
+                LOGGER.info('[Hedger][Checkpoint] Loaded deployment critic optimizer state.')
 
             if self.checkpoint_cfg.load_offloading_agent and 'offloading_actor_opt' in ckpt:
                 self.offloading_agent.actor_opt.load_state_dict(ckpt['offloading_actor_opt'])
                 self._move_optimizer_state(self.offloading_agent.actor_opt, self.device)
-                LOGGER.info('[Hedger] Loaded offloading actor optimizer state.')
+                LOGGER.info('[Hedger][Checkpoint] Loaded offloading actor optimizer state.')
 
             if self.checkpoint_cfg.load_offloading_agent and 'offloading_critic_opt' in ckpt:
                 self.offloading_agent.critic_opt.load_state_dict(ckpt['offloading_critic_opt'])
                 self._move_optimizer_state(self.offloading_agent.critic_opt, self.device)
-                LOGGER.info('[Hedger] Loaded offloading critic optimizer state.')
+                LOGGER.info('[Hedger][Checkpoint] Loaded offloading critic optimizer state.')
         else:
-            LOGGER.info('[Hedger] Skipping optimizer states loading per config (load_optimizer=False).')
+            LOGGER.info('[Hedger][Checkpoint] Skip optimizer state loading per config (load_optimizer=False).')
 
         # Restore or reset training counters.
         meta = ckpt.get('meta', {})
@@ -1043,17 +1324,19 @@ class Hedger:
             self._deployment_update_steps = 0
             self._offloading_update_steps = 0
             self._epoch = 0
-            LOGGER.info('[Hedger] Reset update counters and epoch to 0 per config (reset_steps_on_load=True).')
+            LOGGER.info('[Hedger][Checkpoint] Reset update counters and epoch to 0 per config (reset_steps_on_load=True).')
         else:
             self._deployment_update_steps = meta.get('deployment_updates', 0)
             self._offloading_update_steps = meta.get('offloading_updates', 0)
             self._epoch = int(meta.get('epoch', self._epoch))
-            LOGGER.info(f'[Hedger] Restored counters from checkpoint: '
-                        f'dep_updates={self._deployment_update_steps}, '
-                        f'off_updates={self._offloading_update_steps}, '
-                        f'epoch={self._epoch}')
+            LOGGER.info(
+                f"[Hedger][Checkpoint] Restored counters: "
+                f"dep_updates={self._deployment_update_steps}, "
+                f"off_updates={self._offloading_update_steps}, "
+                f"epoch={self._epoch}"
+            )
 
-        LOGGER.info(f'[Hedger] Checkpoint loaded from {target_path}')
+        LOGGER.info(f"[Hedger][Checkpoint] Loaded successfully from {target_path}")
 
     @staticmethod
     def _move_optimizer_state(optimizer: torch.optim.Optimizer, device: torch.device):
@@ -1081,7 +1364,7 @@ class Hedger:
             try:
                 s_idx = self.logical_topology.index(service_name)
             except ValueError:
-                LOGGER.debug(f'[Hedger] Ignore unknown service in deployment plan: {service_name}')
+                LOGGER.debug(f"[Hedger][Deployment] Ignore unknown service in plan: {service_name}")
                 continue
             if isinstance(device_names, (list, tuple, set)):
                 iterable = device_names
@@ -1091,7 +1374,7 @@ class Hedger:
                 try:
                     d_idx = self.physical_topology.index(device_name)
                 except ValueError:
-                    LOGGER.debug(f'[Hedger] Ignore unknown device in deployment plan: {device_name}')
+                    LOGGER.debug(f"[Hedger][Deployment] Ignore unknown device in plan: {device_name}")
                     continue
                 deploy_mask[s_idx, d_idx] = True
 
@@ -1150,8 +1433,15 @@ class Hedger:
         return self.physical_topology and self.logical_topology
 
     def run(self):
+        wait_logged = False
         while not self._ready_for_run:
-            LOGGER.debug('[Hedger] Waiting for physical/logical topology information to start run Hedger..')
+            if not wait_logged:
+                LOGGER.debug(
+                    f"[Hedger][Lifecycle] Waiting for topology registration: "
+                    f"logical_ready={self.logical_topology is not None}, "
+                    f"physical_ready={self.physical_topology is not None}"
+                )
+                wait_logged = True
             time.sleep(0.5)
 
         if self.mode == 'train':

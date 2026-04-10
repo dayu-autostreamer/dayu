@@ -57,7 +57,10 @@ class HedgerInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
 
         if not deploy_plan:
             deploy_plan = copy.deepcopy(self.default_deployment) or {}
-            LOGGER.warning('No initial deployment plan, use default deployment policy.')
+            LOGGER.warning(
+                f"[HedgerPolicy][InitialDeployment] source={source_id}, no Hedger deployment plan available; "
+                f"fall back to default deployment policy."
+            )
 
         all_services = list(dag.keys())
         for service in all_services:
@@ -71,5 +74,14 @@ class HedgerInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
             else:
                 deploy_plan[service] = list(node_set)
 
-        LOGGER.info(f'[Initial Deployment] (source {source_id}) Deploy policy: {deploy_plan}')
+        total_replicas = sum(len(nodes) for nodes in deploy_plan.values())
+        sample = "; ".join(
+            f"{service}->{deploy_plan[service]}"
+            for service in list(deploy_plan.keys())[:3]
+        ) or "[]"
+        LOGGER.info(
+            f"[HedgerPolicy][InitialDeployment] source={source_id}, services={len(deploy_plan)}, "
+            f"nodes={len(node_set)}, replicas={total_replicas}, sample={sample}"
+        )
+        LOGGER.debug(f"[HedgerPolicy][InitialDeployment] source={source_id}, full_plan={deploy_plan}")
         return deploy_plan
