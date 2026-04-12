@@ -308,6 +308,109 @@ def test_schedule_config_extractors_load_expected_knobs_and_config_files(monkeyp
         captured_paths.append(path)
         if path.endswith("scheduler_config.yaml"):
             return {"fps": [5, 10], "resolution": ["480p", "720p"], "buffer_size": [1, 2], "qp": [20, 28]}
+        if path.endswith("config.yaml") and not path.endswith("scheduler_config.yaml"):
+            return {
+                "default_profile": "offloading_warmup",
+                "mode": "train",
+                "device": "cpu",
+                "seed": 42,
+                "encoder": {
+                    "embedding_dim": 64,
+                    "logical_heads": 4,
+                    "physical_role_count": 3,
+                    "physical_role_embedding_dim": 8,
+                    "dropout": 0.0,
+                },
+                "timing": {"deployment_interval_s": 10.0, "offloading_interval_s": 1.0},
+                "training": {
+                    "stage": "offloading_warmup",
+                    "total_updates": 300,
+                    "ppo_epochs": 4,
+                    "rollout": {
+                        "deployment": 8,
+                        "offloading": 32,
+                    },
+                    "batch_size": {
+                        "deployment": 4,
+                        "offloading": 16,
+                    },
+                },
+                "state": {
+                    "max_buffer_size": 2048,
+                    "sequence_length": {
+                        "deployment": 16,
+                        "offloading": 8,
+                    },
+                    "min_dynamic_length": 2,
+                    "wait_timeout_s": 1.0,
+                    "require_full_sequence": False,
+                    "deployment_reward_window": 10,
+                    "latency_slo_s": 1.0,
+                },
+                "checkpoint": {
+                    "root_dir": "scheduler/hedger/model",
+                    "load": {
+                        "enabled": False,
+                        "which": "latest",
+                        "restore": {
+                            "encoder": True,
+                            "deployment_agent": True,
+                            "offloading_agent": True,
+                            "optimizer": True,
+                        },
+                    },
+                    "save": {
+                        "interval_updates": 20,
+                        "latest": True,
+                        "final": True,
+                        "history": True,
+                        "keep_last": 3,
+                    },
+                },
+                "agents": {
+                    "deployment": {
+                        "actor_lr": 3e-4,
+                        "critic_lr": 1e-3,
+                        "gamma": 0.99,
+                        "lamda": 0.95,
+                        "clip_eps": 0.2,
+                        "update_encoder": True,
+                        "reward": {"offloading_weight": 1.0, "change_cost_weight": 0.1},
+                        "penalty": {"capacity_relax": 1.0},
+                    },
+                    "offloading": {
+                        "actor_lr": 3e-4,
+                        "critic_lr": 1e-3,
+                        "gamma": 0.99,
+                        "lamda": 0.95,
+                        "clip_eps": 0.2,
+                        "update_encoder": True,
+                        "reward": {"latency_weight": 1.0, "slo_weight": 2.0, "cloud_weight": 0.2},
+                        "penalty": {"switch": 0.05, "correction": 0.1},
+                    },
+                },
+                "profiles": {
+                    "offloading_warmup": {
+                        "mode": "train",
+                        "training": {"stage": "offloading_warmup"},
+                        "checkpoint": {"load": {"enabled": False}},
+                    },
+                    "inference": {
+                        "mode": "inference",
+                        "training": None,
+                        "checkpoint": {
+                            "load": {
+                                "enabled": True,
+                                "from_stage": "joint_finetune",
+                                "which": "final",
+                                "restore": {
+                                    "optimizer": False,
+                                },
+                            },
+                        },
+                    },
+                },
+            }
         return {"loaded_from": path}
 
     for module in (
@@ -336,9 +439,27 @@ def test_schedule_config_extractors_load_expected_knobs_and_config_files(monkeyp
     assert scheduler.drl_params == {"loaded_from": "/runtime/scheduler/casva/drl.yaml"}
     assert scheduler.hyper_params == {"loaded_from": "/runtime/scheduler/casva/hyper.yaml"}
 
-    config_extraction_module.HedgerConfigExtraction("network.yaml", "hyper.yaml", "agent.yaml")(scheduler)
-    assert scheduler.network_params == {"loaded_from": "/runtime/scheduler/hedger/network.yaml"}
-    assert scheduler.agent_params == {"loaded_from": "/runtime/scheduler/hedger/agent.yaml"}
+    config_extraction_module.HedgerConfigExtraction(
+        config="config.yaml",
+        profile="inference",
+        overrides={
+            "seed": 7,
+            "agents": {"offloading": {"actor_lr": 1e-4}},
+        },
+    )(scheduler)
+    assert scheduler.hedger_config["mode"] == "inference"
+    assert scheduler.hedger_config["training"] is None
+    assert scheduler.hedger_config["checkpoint"]["load"]["enabled"] is True
+    assert scheduler.hedger_config["checkpoint"]["load"]["from_stage"] == "joint_finetune"
+    assert scheduler.hedger_config["checkpoint"]["load"]["which"] == "final"
+    assert scheduler.hedger_config["checkpoint"]["load"]["restore"]["optimizer"] is False
+    assert scheduler.hedger_config["checkpoint"]["save"]["latest"] is True
+    assert scheduler.hedger_config["checkpoint"]["save"]["final"] is True
+    assert scheduler.hedger_config["checkpoint"]["save"]["history"] is True
+    assert scheduler.hedger_config["checkpoint"]["save"]["keep_last"] == 3
+    assert scheduler.hedger_config["seed"] == 7
+    assert scheduler.hedger_config["agents"]["deployment"]["actor_lr"] == pytest.approx(3e-4)
+    assert scheduler.hedger_config["agents"]["offloading"]["actor_lr"] == pytest.approx(1e-4)
 
     config_extraction_module.HEIConfigExtraction("drl.yaml", "hyper.yaml")(scheduler)
     assert scheduler.monotonic_schedule_knobs == ["resolution", "fps", "buffer_size"]

@@ -32,15 +32,9 @@ class HedgerInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
 
     def register_hedger(self, hedger_id='hedger'):
         if self.hedger is None:
-            network_params = self.system.network_params.copy()
-            hyper_params = self.system.hyper_params.copy()
-            agent_params = self.system.agent_params.copy()
             self.hedger = GlobalInstanceManager.get_instance(
                 Hedger, hedger_id,
-                network_params=network_params,
-                hyper_params=hyper_params,
-                agent_params=agent_params)
-            self.hedger.register_deployment_agent()
+                config=copy.deepcopy(self.system.hedger_config))
 
     def __call__(self, info):
         source_id = info['source']['id']

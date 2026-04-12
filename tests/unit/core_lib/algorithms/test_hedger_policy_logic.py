@@ -5,6 +5,11 @@ import pytest
 import torch
 
 from core.lib.algorithms.shared.hedger.hedger import Hedger
+from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointLoadCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingStageCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointSaveCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingCfg
 from core.lib.algorithms.schedule_agent.hedger_agent import HedgerAgent
 from core.lib.algorithms.shared.hedger.hedger_config import (
     DeploymentConstraintCfg,
@@ -36,6 +41,14 @@ class DummyEncoder:
         return self.service_emb, self.device_emb
 
 
+class TinyCheckpointAgent(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer = torch.nn.Linear(1, 1)
+        self.actor_opt = torch.optim.Adam(self.layer.parameters(), lr=1e-3)
+        self.critic_opt = torch.optim.Adam(self.layer.parameters(), lr=1e-3)
+
+
 def build_test_topologies():
     dag = Task.extract_dag_from_dict(
         {
@@ -46,6 +59,26 @@ def build_test_topologies():
     logical_topology = LogicalTopology(dag)
     physical_topology = PhysicalTopology(["edge-a", "edge-b"], "edge-a")
     return logical_topology, physical_topology
+
+
+def build_training_cfg(stage: str, total_updates: int = 20) -> HedgerTrainingCfg:
+    return HedgerTrainingCfg(
+        stage=stage,
+        total_updates=total_updates,
+        ppo_epochs=4,
+        deployment_rollout_len=8,
+        offloading_rollout_len=32,
+        deployment_batch_size=4,
+        offloading_batch_size=16,
+    )
+
+
+def build_checkpoint_cfg(root_dir: str, *, load=None, save=None) -> HedgerCheckpointCfg:
+    return HedgerCheckpointCfg(
+        root_dir=root_dir,
+        load=load or HedgerCheckpointLoadCfg(),
+        save=save or HedgerCheckpointSaveCfg(interval_updates=20),
+    )
 
 
 @pytest.mark.unit
@@ -330,6 +363,42 @@ def test_hedger_build_edge_index_handles_empty_graph():
 
 
 @pytest.mark.unit
+def test_build_training_stage_cfg_accepts_only_explicit_stage_names():
+    hedger = Hedger.__new__(Hedger)
+
+    warmup = hedger._build_training_stage_cfg("offloading_warmup")
+    adaptation = hedger._build_training_stage_cfg("deployment_adaptation")
+    finetune = hedger._build_training_stage_cfg("joint_finetune")
+
+    assert warmup == HedgerTrainingStageCfg(
+        name="offloading_warmup",
+        run_deployment_worker=False,
+        update_deployment_policy=False,
+        run_offloading_worker=True,
+        update_offloading_policy=True,
+        use_frozen_offloading_rollout=False,
+    )
+    with pytest.raises(ValueError):
+        hedger._build_training_stage_cfg("stage1")
+    assert adaptation == HedgerTrainingStageCfg(
+        name="deployment_adaptation",
+        run_deployment_worker=True,
+        update_deployment_policy=True,
+        run_offloading_worker=True,
+        update_offloading_policy=False,
+        use_frozen_offloading_rollout=True,
+    )
+    assert finetune == HedgerTrainingStageCfg(
+        name="joint_finetune",
+        run_deployment_worker=True,
+        update_deployment_policy=True,
+        run_offloading_worker=True,
+        update_offloading_policy=True,
+        use_frozen_offloading_rollout=False,
+    )
+
+
+@pytest.mark.unit
 def test_inference_hedger_initializes_runtime_and_starts_worker_threads(monkeypatch):
     logical_topology, physical_topology = build_test_topologies()
     cloud_name = physical_topology[physical_topology.cloud_idx]
@@ -391,6 +460,247 @@ def test_inference_hedger_initializes_runtime_and_starts_worker_threads(monkeypa
     assert created_threads[1].target == hedger.inference_offloading_agent
     assert all(t.daemon is True for t in created_threads)
     assert all(t.started is True for t in created_threads)
+
+
+@pytest.mark.unit
+def test_train_hedger_deployment_adaptation_keeps_frozen_offloading_worker(monkeypatch):
+    logical_topology, physical_topology = build_test_topologies()
+    cloud_name = physical_topology[physical_topology.cloud_idx]
+
+    hedger = Hedger.__new__(Hedger)
+    hedger.logical_topology = logical_topology
+    hedger.physical_topology = physical_topology
+    hedger.device = torch.device("cpu")
+    hedger.mode = "train"
+    hedger.seed = 0
+    hedger.deployment_interval = 10.0
+    hedger.offloading_interval = 1.0
+    hedger.training_cfg = build_training_cfg("deployment_adaptation", total_updates=0)
+    hedger.checkpoint_cfg = build_checkpoint_cfg(
+        "/tmp/hedger-test",
+        save=HedgerCheckpointSaveCfg(interval_updates=10),
+    )
+    hedger.state_cfg = types.SimpleNamespace(deployment_seq_len=8, offloading_seq_len=8)
+    hedger.shared_topology_encoder = torch.nn.Identity()
+    hedger.deployment_agent = torch.nn.Identity()
+    hedger.offloading_agent = torch.nn.Identity()
+    hedger.stage_cfg = HedgerTrainingStageCfg(
+        name="deployment_adaptation",
+        run_deployment_worker=True,
+        update_deployment_policy=True,
+        run_offloading_worker=True,
+        update_offloading_policy=False,
+        use_frozen_offloading_rollout=True,
+    )
+    hedger.deployment_thread_stop_event = threading.Event()
+    hedger.offloading_thread_stop_event = threading.Event()
+    hedger.cur_deploy_mask = torch.tensor(
+        [[True, False, True], [False, False, True]],
+        dtype=torch.bool,
+    )
+    hedger.deployment_plan = {"svc-a": ["edge-a", cloud_name], "svc-b": [cloud_name]}
+    hedger.initial_deployment_plan = hedger.deployment_plan
+    hedger.offloading_plan = None
+    hedger.deployment_transitions = []
+    hedger.offloading_transitions = []
+    hedger._deployment_update_steps = 0
+    hedger._offloading_update_steps = 0
+    hedger._epoch = 0
+    hedger._global_update_step = 0
+    hedger.save_checkpoint = lambda *args, **kwargs: None
+
+    created_threads = []
+
+    class FakeThread:
+        def __init__(self, target=None, daemon=None, **kwargs):
+            self.target = target
+            self.daemon = daemon
+            self.started = False
+            created_threads.append(self)
+
+        def start(self):
+            self.started = True
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(
+        "core.lib.algorithms.shared.hedger.hedger.threading.Thread",
+        FakeThread,
+    )
+
+    hedger.train_hedger()
+
+    assert hedger._frozen_offloading_agent is not None
+    assert hedger._frozen_offloading_agent is not hedger.offloading_agent
+    assert len(created_threads) == 2
+    assert created_threads[0].target == hedger.train_deployment_agent
+    assert created_threads[1].target == hedger.train_offloading_agent
+    assert all(t.daemon is True for t in created_threads)
+    assert all(t.started is True for t in created_threads)
+
+
+@pytest.mark.unit
+def test_stage_aware_checkpoint_saves_latest_final_and_prunes_history(tmp_path):
+    hedger = Hedger.__new__(Hedger)
+    hedger.device = torch.device("cpu")
+    hedger.seed = 7
+    hedger.mode = "train"
+    hedger.training_cfg = build_training_cfg("deployment_adaptation")
+    hedger.checkpoint_cfg = build_checkpoint_cfg(
+        str(tmp_path),
+        save=HedgerCheckpointSaveCfg(
+            interval_updates=20,
+            save_latest=True,
+            save_final=True,
+            save_history=True,
+            keep_last_snapshots=2,
+        ),
+    )
+    hedger.shared_topology_encoder = torch.nn.Linear(1, 1)
+    hedger.deployment_agent = TinyCheckpointAgent()
+    hedger.offloading_agent = TinyCheckpointAgent()
+    hedger._deployment_update_steps = 2
+    hedger._offloading_update_steps = 5
+    hedger._epoch = 0
+    hedger._global_update_step = 0
+    hedger._loaded_checkpoint_path = "/tmp/parent/latest.pt"
+
+    hedger._epoch = 4
+    hedger._global_update_step = 10
+    hedger.save_checkpoint(stage_step=4, is_final=False)
+    hedger._epoch = 8
+    hedger._global_update_step = 14
+    hedger.save_checkpoint(stage_step=8, is_final=False)
+    hedger._epoch = 12
+    hedger._global_update_step = 18
+    hedger.save_checkpoint(stage_step=12, is_final=True)
+
+    stage_dir = tmp_path / "deployment_adaptation"
+    latest_path = stage_dir / "latest.pt"
+    final_path = stage_dir / "final.pt"
+    snapshot_dir = stage_dir / "snapshots"
+    snapshot_paths = sorted(snapshot_dir.glob("step_*.pt"))
+
+    assert latest_path.exists()
+    assert final_path.exists()
+    assert [path.name for path in snapshot_paths] == ["step_00000008.pt", "step_00000012.pt"]
+
+    latest_ckpt = torch.load(latest_path, map_location="cpu")
+    final_ckpt = torch.load(final_path, map_location="cpu")
+    assert latest_ckpt["meta"]["training_stage"] == "deployment_adaptation"
+    assert latest_ckpt["meta"]["stage_step"] == 12
+    assert latest_ckpt["meta"]["global_step"] == 18
+    assert latest_ckpt["meta"]["source_checkpoint"] == "/tmp/parent/latest.pt"
+    assert final_ckpt["meta"]["stage_step"] == 12
+
+
+@pytest.mark.unit
+def test_load_checkpoint_resumes_same_stage_counters(tmp_path):
+    writer = Hedger.__new__(Hedger)
+    writer.device = torch.device("cpu")
+    writer.seed = 3
+    writer.mode = "train"
+    writer.training_cfg = build_training_cfg("offloading_warmup")
+    writer.checkpoint_cfg = build_checkpoint_cfg(str(tmp_path))
+    writer.shared_topology_encoder = torch.nn.Linear(1, 1)
+    writer.deployment_agent = TinyCheckpointAgent()
+    writer.offloading_agent = TinyCheckpointAgent()
+    writer._deployment_update_steps = 1
+    writer._offloading_update_steps = 9
+    writer._epoch = 6
+    writer._global_update_step = 15
+    writer._loaded_checkpoint_path = None
+    writer.save_checkpoint(stage_step=6, is_final=False)
+
+    reader = Hedger.__new__(Hedger)
+    reader.device = torch.device("cpu")
+    reader.seed = 3
+    reader.mode = "train"
+    reader.training_cfg = build_training_cfg("offloading_warmup")
+    reader.checkpoint_cfg = build_checkpoint_cfg(
+        str(tmp_path),
+        load=HedgerCheckpointLoadCfg(
+            enabled=True,
+            from_stage="offloading_warmup",
+            which="latest",
+            restore_encoder=True,
+            restore_deployment_agent=True,
+            restore_offloading_agent=True,
+            restore_optimizer=True,
+            reset_stage_counters=False,
+        ),
+    )
+    reader.shared_topology_encoder = torch.nn.Linear(1, 1)
+    reader.deployment_agent = TinyCheckpointAgent()
+    reader.offloading_agent = TinyCheckpointAgent()
+    reader._deployment_update_steps = 0
+    reader._offloading_update_steps = 0
+    reader._epoch = 0
+    reader._global_update_step = 0
+    reader._loaded_checkpoint_path = None
+
+    reader.load_checkpoint()
+
+    assert reader._epoch == 6
+    assert reader._global_update_step == 15
+    assert reader._deployment_update_steps == 1
+    assert reader._offloading_update_steps == 9
+    assert reader._loaded_checkpoint_path.endswith("offloading_warmup/latest.pt")
+
+
+@pytest.mark.unit
+def test_load_checkpoint_from_previous_stage_resets_stage_local_counters(tmp_path):
+    writer = Hedger.__new__(Hedger)
+    writer.device = torch.device("cpu")
+    writer.seed = 11
+    writer.mode = "train"
+    writer.training_cfg = build_training_cfg("deployment_adaptation")
+    writer.checkpoint_cfg = build_checkpoint_cfg(str(tmp_path))
+    writer.shared_topology_encoder = torch.nn.Linear(1, 1)
+    writer.deployment_agent = TinyCheckpointAgent()
+    writer.offloading_agent = TinyCheckpointAgent()
+    writer._deployment_update_steps = 4
+    writer._offloading_update_steps = 7
+    writer._epoch = 5
+    writer._global_update_step = 23
+    writer._loaded_checkpoint_path = None
+    writer.save_checkpoint(stage_step=5, is_final=True)
+
+    reader = Hedger.__new__(Hedger)
+    reader.device = torch.device("cpu")
+    reader.seed = 11
+    reader.mode = "train"
+    reader.training_cfg = build_training_cfg("joint_finetune")
+    reader.checkpoint_cfg = build_checkpoint_cfg(
+        str(tmp_path),
+        load=HedgerCheckpointLoadCfg(
+            enabled=True,
+            from_stage="deployment_adaptation",
+            which="final",
+            restore_encoder=True,
+            restore_deployment_agent=True,
+            restore_offloading_agent=True,
+            restore_optimizer=True,
+            reset_stage_counters=False,
+        ),
+    )
+    reader.shared_topology_encoder = torch.nn.Linear(1, 1)
+    reader.deployment_agent = TinyCheckpointAgent()
+    reader.offloading_agent = TinyCheckpointAgent()
+    reader._deployment_update_steps = 0
+    reader._offloading_update_steps = 0
+    reader._epoch = 0
+    reader._global_update_step = 0
+    reader._loaded_checkpoint_path = None
+
+    reader.load_checkpoint()
+
+    assert reader._epoch == 0
+    assert reader._global_update_step == 23
+    assert reader._deployment_update_steps == 0
+    assert reader._offloading_update_steps == 0
+    assert reader._loaded_checkpoint_path.endswith("deployment_adaptation/final.pt")
 
 
 @pytest.mark.unit

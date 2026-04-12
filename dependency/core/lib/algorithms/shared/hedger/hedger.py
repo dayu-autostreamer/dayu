@@ -19,9 +19,12 @@ from .state_buffer import StateBuffer, BufferWaitCfg
 
 __all__ = ('Hedger',)
 
+TRAINING_STAGE_NAMES = {"offloading_warmup", "deployment_adaptation", "joint_finetune"}
+
 
 @dataclass(frozen=True)
 class HedgerStateCfg:
+    max_buffer_size: int
     offloading_seq_len: int
     deployment_seq_len: int
     min_dynamic_len: int
@@ -32,42 +35,86 @@ class HedgerStateCfg:
 
 
 @dataclass(frozen=True)
+class HedgerEncoderCfg:
+    embedding_dim: int
+    logical_heads: int
+    physical_role_count: int
+    physical_role_embedding_dim: int
+    dropout: float
+
+
+@dataclass(frozen=True)
+class HedgerTrainingCfg:
+    stage: str
+    total_updates: int
+    ppo_epochs: int
+    deployment_rollout_len: int
+    offloading_rollout_len: int
+    deployment_batch_size: int
+    offloading_batch_size: int
+
+
+@dataclass(frozen=True)
+class HedgerCheckpointLoadCfg:
+    enabled: bool = False
+    from_stage: Optional[str] = None
+    which: str = "latest"
+    step: Optional[int] = None
+    load_path: Optional[str] = None
+    restore_encoder: bool = True
+    restore_deployment_agent: bool = True
+    restore_offloading_agent: bool = True
+    restore_optimizer: bool = True
+    reset_stage_counters: bool = False
+
+
+@dataclass(frozen=True)
+class HedgerCheckpointSaveCfg:
+    interval_updates: int
+    save_latest: bool = True
+    save_final: bool = True
+    save_history: bool = True
+    keep_last_snapshots: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class HedgerCheckpointCfg:
-    load_encoder: bool = True
-    load_deployment_agent: bool = True
-    load_offloading_agent: bool = True
-    load_optimizer: bool = True
-    reset_steps_on_load: bool = False
+    root_dir: str
+    load: HedgerCheckpointLoadCfg
+    save: HedgerCheckpointSaveCfg
+
+
+@dataclass(frozen=True)
+class HedgerTrainingStageCfg:
+    name: str
+    run_deployment_worker: bool
+    update_deployment_policy: bool
+    run_offloading_worker: bool
+    update_offloading_policy: bool
+    use_frozen_offloading_rollout: bool = False
 
 
 class Hedger:
-    def __init__(self, network_params: dict, hyper_params: dict, agent_params: dict):
-        self.encoder_network_params = network_params['topology_encoder']
+    def __init__(self, config: dict):
+        config = copy.deepcopy(config or {})
 
-        self.mode = hyper_params['mode']
-        self.device = torch.device(hyper_params['device'])
-        self.seed = int(hyper_params.get('seed', 0))
-        self.deployment_interval = float(hyper_params['deployment_interval'])
-        self.offloading_interval = float(hyper_params['offloading_interval'])
-        self.update_epochs = max(1, int(hyper_params.get('update_epochs', 1)))
-        self.total_steps = max(0, int(hyper_params.get('total_steps', 0)))
-        self.model_dir = Context.get_file_path(hyper_params['model_dir'])
-        self.save_interval = max(1, int(hyper_params.get('save_interval', 1)))
+        self.mode = self._require_choice(config, "mode", {"train", "inference"})
+        self.device = torch.device(self._require_str(config, "device"))
+        self.seed = int(config.get("seed", 0))
 
-        self.checkpoint_cfg = self._build_checkpoint_cfg(hyper_params)
+        timing_cfg = self._require_mapping(config, "timing")
+        self.deployment_interval = float(timing_cfg["deployment_interval_s"])
+        self.offloading_interval = float(timing_cfg["offloading_interval_s"])
 
-        self.train_deployment_flag = bool(hyper_params.get("train_deployment", True))
-        self.train_offloading_flag = bool(hyper_params.get("train_offloading", True))
+        self.encoder_cfg = self._build_encoder_cfg(config)
+        self.state_cfg = self._build_state_cfg(config)
+        self.training_cfg = self._build_training_cfg(config) if self.mode == "train" else None
+        self.stage_cfg = self._build_training_stage_cfg(self.training_cfg.stage) if self.training_cfg is not None else None
+        self.checkpoint_cfg = self._build_checkpoint_cfg(config)
 
-        self.offloading_rollout_len = max(1, int(hyper_params.get("offloading_rollout_len", 32)))
-        self.deployment_rollout_len = max(1, int(hyper_params.get("deployment_rollout_len", 8)))
-        self.offloading_batch_size = max(1, int(hyper_params.get("offloading_batch_size", 16)))
-        self.deployment_batch_size = max(1, int(hyper_params.get("deployment_batch_size", 4)))
-        self.max_state_buffer_size = max(1, int(hyper_params.get("max_state_buffer_size", 1000)))
-        self.state_cfg = self._build_state_cfg(hyper_params)
-
-        self.offloading_agent_params = agent_params['offloading_agent']
-        self.deployment_agent_params = agent_params['deployment_agent']
+        agents_cfg = self._require_mapping(config, "agents")
+        self.deployment_agent_params = self._build_deployment_agent_params(agents_cfg)
+        self.offloading_agent_params = self._build_offloading_agent_params(agents_cfg)
 
         self.deployment_thread_stop_event = threading.Event()
         self.offloading_thread_stop_event = threading.Event()
@@ -83,8 +130,11 @@ class Hedger:
 
         self._deployment_update_steps = 0
         self._offloading_update_steps = 0
-        # Global training epoch counter, incremented after PPO updates.
+        # Stage-local PPO update counter.
         self._epoch = 0
+        # Cross-stage PPO update counter preserved across stage transitions.
+        self._global_update_step = 0
+        self._loaded_checkpoint_path = None
 
         self.register_topology_encoder()
         self.register_deployment_agent()
@@ -92,9 +142,9 @@ class Hedger:
 
         self._data_lock = threading.Lock()
 
-        FileOps.create_directory(self.model_dir)
-        if bool(hyper_params.get('load_model', False)):
-            self.load_checkpoint(epoch=hyper_params.get('load_epoch'))
+        FileOps.create_directory(self.checkpoint_cfg.root_dir)
+        if self.checkpoint_cfg.load.enabled:
+            self.load_checkpoint()
 
         self.initial_deployment_plan = None
         self.deployment_plan = None
@@ -107,6 +157,7 @@ class Hedger:
         self.off_recorder = None
 
         self.cur_deploy_mask = None
+        self._frozen_offloading_agent = None
 
         threading.Thread(target=self.run, daemon=True).start()
 
@@ -114,34 +165,211 @@ class Hedger:
         random.seed(self.seed)
         torch.manual_seed(self.seed)
 
-    def _build_checkpoint_cfg(self, hyper_params: dict) -> HedgerCheckpointCfg:
-        return HedgerCheckpointCfg(
-            load_encoder=bool(hyper_params.get("load_encoder", True)),
-            load_deployment_agent=bool(hyper_params.get("load_deployment_agent", True)),
-            load_offloading_agent=bool(hyper_params.get("load_offloading_agent", True)),
-            load_optimizer=bool(hyper_params.get("load_optimizer", True)),
-            reset_steps_on_load=bool(hyper_params.get("reset_steps_on_load", False)),
+    @staticmethod
+    def _require_mapping(config: dict, key: str) -> dict:
+        value = config.get(key)
+        if not isinstance(value, dict):
+            raise ValueError(f"Hedger config requires mapping section `{key}`.")
+        return value
+
+    @staticmethod
+    def _require_str(config: dict, key: str) -> str:
+        value = config.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Hedger config requires non-empty string `{key}`.")
+        return value.strip()
+
+    @staticmethod
+    def _require_choice(config: dict, key: str, choices: set) -> str:
+        value = Hedger._require_str(config, key)
+        if value not in choices:
+            raise ValueError(f"Hedger config `{key}` must be one of {sorted(choices)}, got {value!r}.")
+        return value
+
+    def _build_encoder_cfg(self, config: dict) -> HedgerEncoderCfg:
+        encoder = self._require_mapping(config, "encoder")
+        return HedgerEncoderCfg(
+            embedding_dim=max(1, int(encoder["embedding_dim"])),
+            logical_heads=max(1, int(encoder["logical_heads"])),
+            physical_role_count=max(1, int(encoder["physical_role_count"])),
+            physical_role_embedding_dim=max(1, int(encoder["physical_role_embedding_dim"])),
+            dropout=float(encoder.get("dropout", 0.0)),
         )
 
-    def _build_state_cfg(self, hyper_params: dict) -> HedgerStateCfg:
-        default_seq_len = max(1, int(hyper_params.get("state_seq_len", 8)))
-        reward_window_default = max(
-            1,
-            int(math.ceil(self.deployment_interval / max(self.offloading_interval, 1e-6))),
+    def _build_training_cfg(self, config: dict) -> HedgerTrainingCfg:
+        training = self._require_mapping(config, "training")
+        rollout = self._require_mapping(training, "rollout")
+        batch_size = self._require_mapping(training, "batch_size")
+        stage = self._require_str(training, "stage")
+        if stage not in TRAINING_STAGE_NAMES:
+            raise ValueError(
+                "Hedger training stage must be one of: "
+                "'offloading_warmup', 'deployment_adaptation', 'joint_finetune'."
+            )
+        return HedgerTrainingCfg(
+            stage=stage,
+            total_updates=max(0, int(training["total_updates"])),
+            ppo_epochs=max(1, int(training["ppo_epochs"])),
+            deployment_rollout_len=max(1, int(rollout["deployment"])),
+            offloading_rollout_len=max(1, int(rollout["offloading"])),
+            deployment_batch_size=max(1, int(batch_size["deployment"])),
+            offloading_batch_size=max(1, int(batch_size["offloading"])),
         )
-        latency_slo = hyper_params.get("latency_slo", hyper_params.get("slo_threshold"))
-        latency_slo = None if latency_slo is None else float(latency_slo)
-        wait_timeout_s = hyper_params.get("state_wait_timeout_s", 1.0)
+
+    def _build_state_cfg(self, config: dict) -> HedgerStateCfg:
+        state = self._require_mapping(config, "state")
+        sequence_length = self._require_mapping(state, "sequence_length")
+        reward_window_default = max(1, int(math.ceil(self.deployment_interval / max(self.offloading_interval, 1e-6))))
+        wait_timeout_s = state.get("wait_timeout_s", 1.0)
         wait_timeout_s = None if wait_timeout_s is None else max(0.0, float(wait_timeout_s))
         return HedgerStateCfg(
-            offloading_seq_len=max(1, int(hyper_params.get("offloading_state_seq_len", default_seq_len))),
-            deployment_seq_len=max(1, int(hyper_params.get("deployment_state_seq_len", default_seq_len))),
-            min_dynamic_len=max(0, int(hyper_params.get("state_min_dynamic_len", 1))),
+            max_buffer_size=max(1, int(state["max_buffer_size"])),
+            offloading_seq_len=max(1, int(sequence_length["offloading"])),
+            deployment_seq_len=max(1, int(sequence_length["deployment"])),
+            min_dynamic_len=max(0, int(state.get("min_dynamic_length", 1))),
             wait_timeout_s=wait_timeout_s,
-            require_full_seq=bool(hyper_params.get("state_require_full_seq", False)),
-            latency_slo=latency_slo,
-            deployment_reward_window=max(1, int(hyper_params.get("deployment_reward_window", reward_window_default))),
+            require_full_seq=bool(state.get("require_full_sequence", False)),
+            latency_slo=float(state["latency_slo_s"]),
+            deployment_reward_window=max(1, int(state.get("deployment_reward_window", reward_window_default))),
         )
+
+    def _build_checkpoint_cfg(self, config: dict) -> HedgerCheckpointCfg:
+        checkpoint = self._require_mapping(config, "checkpoint")
+        load_cfg = checkpoint.get("load") or {}
+        save_cfg = checkpoint.get("save") or {}
+        if not isinstance(load_cfg, dict):
+            raise ValueError("Hedger checkpoint.load must be a mapping when provided.")
+        if not isinstance(save_cfg, dict):
+            raise ValueError("Hedger checkpoint.save must be a mapping when provided.")
+
+        which = str(load_cfg.get("which", "latest")).strip().lower()
+        if which not in {"latest", "final", "step", "path"}:
+            raise ValueError("Hedger checkpoint.load.which must be one of: latest, final, step, path.")
+        if which == "step" and load_cfg.get("step") is None:
+            raise ValueError("Hedger checkpoint.load.which='step' requires checkpoint.load.step.")
+        if which == "path" and not load_cfg.get("path"):
+            raise ValueError("Hedger checkpoint.load.which='path' requires checkpoint.load.path.")
+
+        restore_cfg = load_cfg.get("restore") or {}
+        if not isinstance(restore_cfg, dict):
+            raise ValueError("Hedger checkpoint.load.restore must be a mapping when provided.")
+
+        from_stage = load_cfg.get("from_stage")
+        if from_stage is not None:
+            from_stage = str(from_stage).strip()
+            if from_stage not in TRAINING_STAGE_NAMES:
+                raise ValueError(
+                    "Hedger checkpoint.load.from_stage must be one of: "
+                    "'offloading_warmup', 'deployment_adaptation', 'joint_finetune'."
+                )
+        if self.mode == "inference" and bool(load_cfg.get("enabled", False)) and which != "path" and from_stage is None:
+            raise ValueError(
+                "Hedger inference mode requires checkpoint.load.from_stage unless checkpoint.load.which='path'."
+            )
+
+        keep_last_snapshots = save_cfg.get("keep_last")
+        if keep_last_snapshots is not None:
+            keep_last_snapshots = max(1, int(keep_last_snapshots))
+
+        return HedgerCheckpointCfg(
+            root_dir=self._resolve_path(checkpoint["root_dir"]),
+            load=HedgerCheckpointLoadCfg(
+                enabled=bool(load_cfg.get("enabled", False)),
+                from_stage=from_stage,
+                which=which,
+                step=None if load_cfg.get("step") is None else int(load_cfg["step"]),
+                load_path=load_cfg.get("path"),
+                restore_encoder=bool(restore_cfg.get("encoder", True)),
+                restore_deployment_agent=bool(restore_cfg.get("deployment_agent", True)),
+                restore_offloading_agent=bool(restore_cfg.get("offloading_agent", True)),
+                restore_optimizer=bool(restore_cfg.get("optimizer", True)),
+                reset_stage_counters=bool(load_cfg.get("reset_stage_counters", False)),
+            ),
+            save=HedgerCheckpointSaveCfg(
+                interval_updates=max(1, int(save_cfg.get("interval_updates", 20))),
+                save_latest=bool(save_cfg.get("latest", True)),
+                save_final=bool(save_cfg.get("final", True)),
+                save_history=bool(save_cfg.get("history", True)),
+                keep_last_snapshots=keep_last_snapshots,
+            ),
+        )
+
+    @staticmethod
+    def _resolve_path(path_ref: str) -> str:
+        if not isinstance(path_ref, str) or not path_ref.strip():
+            raise ValueError("Hedger path fields must be non-empty strings.")
+        return Context.get_file_path(path_ref)
+
+    def _stage_log_path(self, filename: str) -> str:
+        if self.training_cfg is None:
+            raise ValueError("Stage log path is only available in train mode.")
+        return os.path.join(self._checkpoint_stage_dir(self.training_cfg.stage), filename)
+
+    def _build_training_stage_cfg(self, stage_name: str) -> HedgerTrainingStageCfg:
+        if stage_name == "offloading_warmup":
+            return HedgerTrainingStageCfg(
+                name=stage_name,
+                run_deployment_worker=False,
+                update_deployment_policy=False,
+                run_offloading_worker=True,
+                update_offloading_policy=True,
+            )
+        if stage_name == "deployment_adaptation":
+            return HedgerTrainingStageCfg(
+                name=stage_name,
+                run_deployment_worker=True,
+                update_deployment_policy=True,
+                run_offloading_worker=True,
+                update_offloading_policy=False,
+                use_frozen_offloading_rollout=True,
+            )
+        if stage_name == "joint_finetune":
+            return HedgerTrainingStageCfg(
+                name=stage_name,
+                run_deployment_worker=True,
+                update_deployment_policy=True,
+                run_offloading_worker=True,
+                update_offloading_policy=True,
+            )
+
+        raise ValueError(
+            f"Unsupported training stage {stage_name!r}. "
+            f"Expected one of: offloading_warmup, deployment_adaptation, joint_finetune."
+        )
+
+    def _build_deployment_agent_params(self, agents_cfg: dict) -> dict:
+        deployment = self._require_mapping(agents_cfg, "deployment")
+        reward = self._require_mapping(deployment, "reward")
+        penalty = self._require_mapping(deployment, "penalty")
+        return {
+            "actor_lr": float(deployment["actor_lr"]),
+            "critic_lr": float(deployment["critic_lr"]),
+            "gamma": float(deployment["gamma"]),
+            "lamda": float(deployment["lamda"]),
+            "clip_eps": float(deployment["clip_eps"]),
+            "update_encoder": bool(deployment.get("update_encoder", True)),
+            "reward_dep_offload_weight": float(reward["offloading_weight"]),
+            "reward_dep_change_weight": float(reward["change_cost_weight"]),
+            "penalty_capacity_relax": float(penalty["capacity_relax"]),
+        }
+
+    def _build_offloading_agent_params(self, agents_cfg: dict) -> dict:
+        offloading = self._require_mapping(agents_cfg, "offloading")
+        reward = self._require_mapping(offloading, "reward")
+        penalty = self._require_mapping(offloading, "penalty")
+        return {
+            "actor_lr": float(offloading["actor_lr"]),
+            "critic_lr": float(offloading["critic_lr"]),
+            "gamma": float(offloading["gamma"]),
+            "lamda": float(offloading["lamda"]),
+            "clip_eps": float(offloading["clip_eps"]),
+            "update_encoder": bool(offloading.get("update_encoder", True)),
+            "reward_off_latency_weight": float(reward["latency_weight"]),
+            "reward_off_slo_weight": float(reward["slo_weight"]),
+            "reward_off_cloud_weight": float(reward["cloud_weight"]),
+            "penalty_switch": float(penalty["switch"]),
+            "penalty_relax": float(penalty["correction"]),
+        }
 
     def _sync_agent_topology_bindings(self):
         """Synchronize agent-side source/cloud indices with the registered physical topology."""
@@ -170,14 +398,27 @@ class Hedger:
         return str(value_float)
 
     def _summarize_runtime_config(self) -> str:
+        training_cfg = getattr(self, "training_cfg", None)
+        checkpoint_cfg = getattr(self, "checkpoint_cfg", None)
+        checkpoint_save_cfg = getattr(checkpoint_cfg, "save", None)
+        stage_name = training_cfg.stage if training_cfg is not None else "none"
+        state_cfg = getattr(self, "state_cfg", None)
+        dep_seq_len = getattr(state_cfg, "deployment_seq_len", "na")
+        off_seq_len = getattr(state_cfg, "offloading_seq_len", "na")
         return (
-            f"mode={self.mode}, device={self.device}, seed={self.seed}, "
-            f"intervals(dep/off)={self._format_log_value(self.deployment_interval, 2)}/"
-            f"{self._format_log_value(self.offloading_interval, 2)}s, "
-            f"rollout(dep/off)={self.deployment_rollout_len}/{self.offloading_rollout_len}, "
-            f"batch(dep/off)={self.deployment_batch_size}/{self.offloading_batch_size}, "
-            f"state_seq(dep/off)={self.state_cfg.deployment_seq_len}/{self.state_cfg.offloading_seq_len}, "
-            f"total_steps={self.total_steps}, save_interval={self.save_interval}"
+            f"mode={getattr(self, 'mode', 'unknown')}, train_stage={stage_name}, "
+            f"device={getattr(self, 'device', 'unknown')}, seed={getattr(self, 'seed', 'na')}, "
+            f"intervals(dep/off)={self._format_log_value(getattr(self, 'deployment_interval', None), 2)}/"
+            f"{self._format_log_value(getattr(self, 'offloading_interval', None), 2)}s, "
+            f"stage_step={getattr(self, '_epoch', 'na')}, "
+            f"global_step={getattr(self, '_global_update_step', 'na')}, "
+            f"rollout(dep/off)={getattr(training_cfg, 'deployment_rollout_len', 'na')}/"
+            f"{getattr(training_cfg, 'offloading_rollout_len', 'na')}, "
+            f"batch(dep/off)={getattr(training_cfg, 'deployment_batch_size', 'na')}/"
+            f"{getattr(training_cfg, 'offloading_batch_size', 'na')}, "
+            f"state_seq(dep/off)={dep_seq_len}/{off_seq_len}, "
+            f"total_steps={getattr(training_cfg, 'total_updates', 'na')}, "
+            f"save_interval={getattr(checkpoint_save_cfg, 'interval_updates', 'na')}"
         )
 
     def _summarize_topology(self) -> str:
@@ -333,11 +574,11 @@ class Hedger:
             return
 
         self.shared_topology_encoder = TopologyEncoders(
-            d_model=self.encoder_network_params['encoder_emb_dim'],
-            heads=self.encoder_network_params['logic_gat_heads'],
-            num_roles=self.encoder_network_params['phys_role_num'],
-            role_emb_dim=self.encoder_network_params['phys_role_emb_dim'],
-            dropout=self.encoder_network_params['encoder_dropout'],
+            d_model=self.encoder_cfg.embedding_dim,
+            heads=self.encoder_cfg.logical_heads,
+            num_roles=self.encoder_cfg.physical_role_count,
+            role_emb_dim=self.encoder_cfg.physical_role_embedding_dim,
+            dropout=self.encoder_cfg.dropout,
         ).to(self.device)
 
     def register_deployment_agent(self):
@@ -348,7 +589,7 @@ class Hedger:
 
         self.deployment_agent = HedgerDeploymentPPO(
             encoder=self.shared_topology_encoder,
-            d_model=self.encoder_network_params['encoder_emb_dim'],
+            d_model=self.encoder_cfg.embedding_dim,
             actor_lr=self.deployment_agent_params['actor_lr'],
             critic_lr=self.deployment_agent_params['critic_lr'],
             gamma=self.deployment_agent_params['gamma'],
@@ -368,7 +609,7 @@ class Hedger:
 
         self.offloading_agent = HedgerOffloadingPPO(
             encoder=self.shared_topology_encoder,
-            d_model=self.encoder_network_params['encoder_emb_dim'],
+            d_model=self.encoder_cfg.embedding_dim,
             actor_lr=self.offloading_agent_params['actor_lr'],
             critic_lr=self.offloading_agent_params['critic_lr'],
             gamma=self.offloading_agent_params['gamma'],
@@ -413,11 +654,11 @@ class Hedger:
         assert self.logical_topology, "Logical topology must be registered before registering state buffer."
         assert self.physical_topology, "Physical topology must be registered before registering state buffer."
 
-        self.state_buffer = StateBuffer(self.max_state_buffer_size,
+        self.state_buffer = StateBuffer(self.state_cfg.max_buffer_size,
                                         logical_topology=self.logical_topology,
                                         physical_topology=self.physical_topology)
         LOGGER.info(
-            f"[Hedger][StateBuffer] Registered state buffer: capacity={self.max_state_buffer_size}, "
+            f"[Hedger][StateBuffer] Registered state buffer: capacity={self.state_cfg.max_buffer_size}, "
             f"fixed_lan_bandwidth={self.state_buffer.fixed_lan_bandwidth_mbps:.2f}Mbps"
         )
 
@@ -471,6 +712,19 @@ class Hedger:
         if not links:
             return torch.empty((2, 0), dtype=torch.long, device=self.device)
         return torch.tensor(links, dtype=torch.long, device=self.device).t().contiguous()
+
+    def _prepare_training_stage_runtime(self):
+        self._frozen_offloading_agent = None
+        if not self.stage_cfg.use_frozen_offloading_rollout:
+            return
+
+        self._frozen_offloading_agent = copy.deepcopy(self.offloading_agent).to(self.device)
+        self._frozen_offloading_agent.eval()
+        for param in self._frozen_offloading_agent.parameters():
+            param.requires_grad_(False)
+
+    def _current_offloading_rollout_agent(self):
+        return self._frozen_offloading_agent if self._frozen_offloading_agent is not None else self.offloading_agent
 
     def _sleep_until_next_tick(self, last_tick: float, interval_s: float) -> float:
         """Sleep long enough to preserve the target loop cadence."""
@@ -754,6 +1008,7 @@ class Hedger:
         self.shared_topology_encoder.train()
         self.deployment_agent.train()
         self.offloading_agent.train()
+        self._prepare_training_stage_runtime()
         self.deployment_thread_stop_event.clear()
         self.offloading_thread_stop_event.clear()
 
@@ -775,16 +1030,16 @@ class Hedger:
             f"[Hedger][Train] Initial deployment state: {self._summarize_deploy_mask(self.cur_deploy_mask)}"
         )
 
-        if not self.train_deployment_flag and not self.train_offloading_flag:
-            LOGGER.warning('[Hedger][Train] Both training workers are disabled, skip training run.')
+        if not self.stage_cfg.run_deployment_worker and not self.stage_cfg.run_offloading_worker:
+            LOGGER.warning('[Hedger][Train] All training workers are disabled for the selected stage, skip training run.')
             return
 
         deployment_thread = None
         offloading_thread = None
-        if self.train_deployment_flag:
+        if self.stage_cfg.run_deployment_worker:
             deployment_thread = threading.Thread(target=self.train_deployment_agent, daemon=True)
             deployment_thread.start()
-        if self.train_offloading_flag:
+        if self.stage_cfg.run_offloading_worker:
             offloading_thread = threading.Thread(target=self.train_offloading_agent, daemon=True)
             offloading_thread.start()
 
@@ -802,15 +1057,16 @@ class Hedger:
                 updates_in_tick = 0
 
                 # Run a PPO update for the offloading agent.
-                if self.train_offloading_flag and len(self.offloading_transitions) >= self.offloading_rollout_len:
+                if self.stage_cfg.update_offloading_policy and \
+                        len(self.offloading_transitions) >= self.training_cfg.offloading_rollout_len:
                     with self._data_lock:
-                        off_transitions = self.offloading_transitions[:self.offloading_rollout_len]
-                        del self.offloading_transitions[:self.offloading_rollout_len]
+                        off_transitions = self.offloading_transitions[:self.training_cfg.offloading_rollout_len]
+                        del self.offloading_transitions[:self.training_cfg.offloading_rollout_len]
                         off_remaining = len(self.offloading_transitions)
 
                     self.offloading_agent.ppo_update(off_transitions,
-                                                     epochs=self.update_epochs,
-                                                     batch_size=self.offloading_batch_size)
+                                                     epochs=self.training_cfg.ppo_epochs,
+                                                     batch_size=self.training_cfg.offloading_batch_size)
                     self._offloading_update_steps += 1
                     updates_in_tick += 1
                     LOGGER.info(
@@ -819,15 +1075,16 @@ class Hedger:
                     )
 
                 # Run a PPO update for the deployment agent.
-                if self.train_deployment_flag and len(self.deployment_transitions) >= self.deployment_rollout_len:
+                if self.stage_cfg.update_deployment_policy and \
+                        len(self.deployment_transitions) >= self.training_cfg.deployment_rollout_len:
                     with self._data_lock:
-                        dep_transitions = self.deployment_transitions[:self.deployment_rollout_len]
-                        del self.deployment_transitions[:self.deployment_rollout_len]
+                        dep_transitions = self.deployment_transitions[:self.training_cfg.deployment_rollout_len]
+                        del self.deployment_transitions[:self.training_cfg.deployment_rollout_len]
                         dep_remaining = len(self.deployment_transitions)
 
                     self.deployment_agent.ppo_update(dep_transitions,
-                                                     epochs=self.update_epochs,
-                                                     batch_size=self.deployment_batch_size)
+                                                     epochs=self.training_cfg.ppo_epochs,
+                                                     batch_size=self.training_cfg.deployment_batch_size)
                     self._deployment_update_steps += 1
                     updates_in_tick += 1
                     LOGGER.info(
@@ -839,17 +1096,23 @@ class Hedger:
                 if updates_in_tick > 0:
                     prev_epoch = self._epoch
                     self._epoch += updates_in_tick
+                    self._global_update_step += updates_in_tick
                     # Save once whenever `_epoch` crosses a multiple of `save_interval`.
-                    if (prev_epoch // self.save_interval) != (self._epoch // self.save_interval):
+                    save_interval = self.checkpoint_cfg.save.interval_updates
+                    if (prev_epoch // save_interval) != (self._epoch // save_interval):
                         try:
-                            self.save_checkpoint(epoch=self._epoch)
+                            self.save_checkpoint(stage_step=self._epoch, is_final=False)
                         except Exception as e:
                             LOGGER.exception(
-                                f"[Hedger][Train] Failed to save checkpoint at epoch={self._epoch}: {e}"
+                                f"[Hedger][Train] Failed to save checkpoint at stage_step={self._epoch}: {e}"
                             )
 
-                if self._epoch > self.total_steps:
-                    LOGGER.info(f"[Hedger][Train] Reached training step budget: epoch={self._epoch}, limit={self.total_steps}")
+                if self._epoch >= self.training_cfg.total_updates:
+                    LOGGER.info(
+                        f"[Hedger][Train] Reached training step budget: "
+                        f"stage_step={self._epoch}, limit={self.training_cfg.total_updates}, "
+                        f"global_step={self._global_update_step}"
+                    )
                     break
 
                 time.sleep(0.5)
@@ -859,8 +1122,12 @@ class Hedger:
 
         self.deployment_thread_stop_event.set()
         self.offloading_thread_stop_event.set()
+        try:
+            self.save_checkpoint(stage_step=self._epoch, is_final=True)
+        except Exception as e:
+            LOGGER.exception(f"[Hedger][Train] Failed to save final checkpoint at stage_step={self._epoch}: {e}")
         LOGGER.info(
-            f"[Hedger][Train] Finished: epoch={self._epoch}, "
+            f"[Hedger][Train] Finished: stage_step={self._epoch}, global_step={self._global_update_step}, "
             f"dep_updates={self._deployment_update_steps}, off_updates={self._offloading_update_steps}, "
             f"{self._summarize_deployment_plan(self.deployment_plan)}, "
             f"{self._summarize_offloading_plan(self.offloading_plan)}"
@@ -874,8 +1141,8 @@ class Hedger:
             - Let the environment run for one deployment interval, then collect metrics and reward
             - Push the transition into `self.deployment_transitions` for PPO updates
         """
-        if not self.train_deployment_flag:
-            LOGGER.info("[Hedger][Train][Deployment] Worker disabled by config, skip startup.")
+        if not self.stage_cfg.run_deployment_worker:
+            LOGGER.info("[Hedger][Train][Deployment] Worker disabled by training stage, skip startup.")
             return
 
         assert self.logical_topology is not None and self.physical_topology is not None, \
@@ -884,11 +1151,13 @@ class Hedger:
         LOGGER.info(
             f"[Hedger][Train][Deployment] Worker started: "
             f"interval={self._format_log_value(self.deployment_interval, 2)}s, "
-            f"rollout={self.deployment_rollout_len}, batch={self.deployment_batch_size}"
+            f"rollout={self.training_cfg.deployment_rollout_len}, "
+            f"batch={self.training_cfg.deployment_batch_size}, "
+            f"update_policy={self.stage_cfg.update_deployment_policy}"
         )
 
         self.dep_recorder = Recorder(
-            "deployment_train.csv",
+            self._stage_log_path("deployment_train.csv"),
             fmt="csv",
             fieldnames=["step", "epoch", "dep_updates", "dep_reward", "avg_off_reward",
                         "dep_change_cost", "cap_relax_cnt", "dep_offload_weight",
@@ -940,23 +1209,27 @@ class Hedger:
                 reward = self._compute_deployment_reward(metrics, aux)
 
                 # Keep transition payloads on CPU to avoid cross-thread device issues.
-                tr = {
-                    "logic_edge_index": logic_edge_index.cpu(),
-                    "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
-                    "phys_edge_index": phys_edge_index.cpu(),
-                    "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
-                    "deploy_mask": deploy_mask.cpu(),
-                    "topo_order": None,  # Recomputed during evaluation if needed.
-                    "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
-                    "logp": logp.detach().cpu(),
-                    "value": value.detach().cpu(),
-                    "reward": float(reward),
-                    "done": bool(done),
-                }
+                if self.stage_cfg.update_deployment_policy:
+                    tr = {
+                        "logic_edge_index": logic_edge_index.cpu(),
+                        "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
+                        "phys_edge_index": phys_edge_index.cpu(),
+                        "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
+                        "deploy_mask": deploy_mask.cpu(),
+                        "topo_order": None,  # Recomputed during evaluation if needed.
+                        "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
+                        "logp": logp.detach().cpu(),
+                        "value": value.detach().cpu(),
+                        "reward": float(reward),
+                        "done": bool(done),
+                    }
 
-                with self._data_lock:
-                    self.deployment_transitions.append(tr)
-                    transition_count = len(self.deployment_transitions)
+                    with self._data_lock:
+                        self.deployment_transitions.append(tr)
+                        transition_count = len(self.deployment_transitions)
+                else:
+                    with self._data_lock:
+                        transition_count = len(self.deployment_transitions)
 
                 logic_feats = new_logic_feats
                 phys_feats = new_phys_feats
@@ -979,7 +1252,8 @@ class Hedger:
                     f"{self._summarize_deploy_mask(self.cur_deploy_mask)}, "
                     f"{self._summarize_deployment_plan(self.deployment_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
-                    f"capacity_relax_cnt={aux['capacity_relax_cnt']}, transitions={transition_count}"
+                    f"capacity_relax_cnt={aux['capacity_relax_cnt']}, "
+                    f"update_policy={self.stage_cfg.update_deployment_policy}, transitions={transition_count}"
                 )
 
                 step += 1
@@ -998,8 +1272,8 @@ class Hedger:
             - Let the environment execute the policy and report latency/SLO/cloud metrics
             - Push the transition into `self.offloading_transitions`
         """
-        if not self.train_offloading_flag:
-            LOGGER.info("[Hedger][Train][Offloading] Worker disabled by config, skip startup.")
+        if not self.stage_cfg.run_offloading_worker:
+            LOGGER.info("[Hedger][Train][Offloading] Worker disabled by training stage, skip startup.")
             return
 
         assert self.logical_topology is not None and self.physical_topology is not None, \
@@ -1008,11 +1282,14 @@ class Hedger:
         LOGGER.info(
             f"[Hedger][Train][Offloading] Worker started: "
             f"interval={self._format_log_value(self.offloading_interval, 2)}s, "
-            f"rollout={self.offloading_rollout_len}, batch={self.offloading_batch_size}"
+            f"rollout={self.training_cfg.offloading_rollout_len}, "
+            f"batch={self.training_cfg.offloading_batch_size}, "
+            f"update_policy={self.stage_cfg.update_offloading_policy}, "
+            f"rollout_agent={'frozen' if self._frozen_offloading_agent is not None else 'live'}"
         )
 
         self.off_recorder = Recorder(
-            "offloading_train.csv",
+            self._stage_log_path("offloading_train.csv"),
             fmt="csv",
             fieldnames=["step", "epoch", "off_updates", "off_reward", "latency",
                         "slo_violation", "cloud_fraction", "aux_cost", "off_latency_weight",
@@ -1024,6 +1301,7 @@ class Hedger:
 
         logic_edge_index = self._build_edge_index(self.logical_topology.links)
         phys_edge_index = self._build_edge_index(self.physical_topology.links)
+        rollout_agent = self._current_offloading_rollout_agent()
 
         step = 0
         offloading_time_ticket = 0
@@ -1036,7 +1314,7 @@ class Hedger:
                 static_mask_dev = static_mask.to(self.device)
 
                 with torch.no_grad():
-                    actions, logp, ent, value, aux = self.offloading_agent.policy(
+                    actions, logp, ent, value, aux = rollout_agent.policy(
                         logic_edge_index=logic_edge_index,
                         logic_feats=logic_feats_dev,
                         phys_edge_index=phys_edge_index,
@@ -1058,23 +1336,27 @@ class Hedger:
                 if self.state_buffer is not None:
                     self.state_buffer.add_offloading_reward(reward)
 
-                tr = {
-                    "logic_edge_index": logic_edge_index.cpu(),
-                    "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
-                    "phys_edge_index": phys_edge_index.cpu(),
-                    "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
-                    "actions": actions.cpu(),
-                    "static_mask": static_mask_dev.cpu(),
-                    "topo_order": None,
-                    "logp": logp.detach().cpu(),
-                    "value": value.detach().cpu(),
-                    "reward": float(reward),
-                    "done": bool(done),
-                }
+                if self.stage_cfg.update_offloading_policy:
+                    tr = {
+                        "logic_edge_index": logic_edge_index.cpu(),
+                        "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
+                        "phys_edge_index": phys_edge_index.cpu(),
+                        "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
+                        "actions": actions.cpu(),
+                        "static_mask": static_mask_dev.cpu(),
+                        "topo_order": None,
+                        "logp": logp.detach().cpu(),
+                        "value": value.detach().cpu(),
+                        "reward": float(reward),
+                        "done": bool(done),
+                    }
 
-                with self._data_lock:
-                    self.offloading_transitions.append(tr)
-                    transition_count = len(self.offloading_transitions)
+                    with self._data_lock:
+                        self.offloading_transitions.append(tr)
+                        transition_count = len(self.offloading_transitions)
+                else:
+                    with self._data_lock:
+                        transition_count = len(self.offloading_transitions)
 
                 logic_feats = new_logic_feats
                 phys_feats = new_phys_feats
@@ -1101,7 +1383,8 @@ class Hedger:
                     f"{self._summarize_offloading_plan(self.offloading_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
                     f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}, "
-                    f"aux_cost={self._format_log_value(aux['aux_cost'])}, transitions={transition_count}"
+                    f"aux_cost={self._format_log_value(aux['aux_cost'])}, "
+                    f"update_policy={self.stage_cfg.update_offloading_policy}, transitions={transition_count}"
                 )
 
                 step += 1
@@ -1174,34 +1457,103 @@ class Hedger:
 
         return reward
 
-    def _epoch_checkpoint_path(self, epoch: int) -> str:
-        return os.path.join(self.model_dir, f'hedger_ckpt_epoch_{epoch}.pt')
+    def _checkpoint_stage_dir(self, stage_name: Optional[str] = None) -> str:
+        resolved_stage = stage_name if stage_name is not None else (self.training_cfg.stage if self.training_cfg else None)
+        if not resolved_stage:
+            raise ValueError("Checkpoint stage directory requires an explicit training stage.")
+        return os.path.join(self.checkpoint_cfg.root_dir, resolved_stage)
 
-    def _latest_epoch_checkpoint_path(self) -> Optional[str]:
-        pattern = os.path.join(self.model_dir, 'hedger_ckpt_epoch_*.pt')
+    def _checkpoint_snapshot_dir(self, stage_name: Optional[str] = None) -> str:
+        return os.path.join(self._checkpoint_stage_dir(stage_name), "snapshots")
+
+    def _checkpoint_snapshot_path(self, stage_step: int, stage_name: Optional[str] = None) -> str:
+        return os.path.join(self._checkpoint_snapshot_dir(stage_name), f"step_{int(stage_step):08d}.pt")
+
+    def _checkpoint_alias_path(self, tag: str, stage_name: Optional[str] = None) -> str:
+        if tag not in {"latest", "final"}:
+            raise ValueError(f"Unsupported Hedger checkpoint tag {tag!r}.")
+        return os.path.join(self._checkpoint_stage_dir(stage_name), f"{tag}.pt")
+
+    def _find_latest_stage_snapshot_path(self, stage_name: Optional[str] = None) -> Optional[str]:
+        pattern = os.path.join(self._checkpoint_snapshot_dir(stage_name), "step_*.pt")
         files = glob.glob(pattern)
         if not files:
             return None
 
-        # Parse the epoch number from the checkpoint filename.
-        def parse_epoch(p):
+        def parse_stage_step(path):
             try:
-                base = os.path.basename(p)
-                # Expected pattern: `hedger_ckpt_epoch_{n}.pt`
-                num = base.replace('hedger_ckpt_epoch_', '').replace('.pt', '')
-                return int(num)
+                return int(os.path.basename(path).replace("step_", "").replace(".pt", ""))
             except Exception:
                 return -1
 
-        files = sorted(files, key=parse_epoch, reverse=True)
+        files = sorted(files, key=parse_stage_step, reverse=True)
         return files[0] if files else None
 
-    def save_checkpoint(self, epoch: Optional[int] = None):
-        """Save the encoder, both agents, and their optimizers into one checkpoint file."""
-        if epoch is None:
-            epoch = self._epoch
-        path = self._epoch_checkpoint_path(epoch)
-        ckpt = {
+    def _resolve_checkpoint_source_stage(self, stage_ref: Optional[str]) -> Optional[str]:
+        if stage_ref is not None:
+            stage_ref = str(stage_ref).strip()
+            return stage_ref or None
+        if self.training_cfg is not None:
+            return self.training_cfg.stage
+        return None
+
+    def _resolve_checkpoint_load_path(
+        self,
+        stage: Optional[str] = None,
+        which: Optional[str] = None,
+        step: Optional[int] = None,
+        path: Optional[str] = None,
+    ) -> Optional[str]:
+        if path:
+            resolved_path = self._resolve_path(path)
+            return resolved_path if os.path.exists(resolved_path) else None
+
+        source_stage = self._resolve_checkpoint_source_stage(stage)
+        if source_stage is None:
+            return None
+
+        if which == "step":
+            snapshot_path = self._checkpoint_snapshot_path(int(step), source_stage)
+            return snapshot_path if os.path.exists(snapshot_path) else None
+
+        target_tag = (which or "latest").strip().lower()
+        alias_path = self._checkpoint_alias_path(target_tag, source_stage)
+        if os.path.exists(alias_path):
+            return alias_path
+
+        if target_tag == "latest":
+            return self._find_latest_stage_snapshot_path(source_stage)
+        if target_tag == "final":
+            LOGGER.warning(
+                f"[Hedger][Checkpoint] Final checkpoint for stage={source_stage} is missing, "
+                f"fall back to latest snapshot."
+            )
+            return self._find_latest_stage_snapshot_path(source_stage)
+        return None
+
+    def _prune_old_stage_snapshots(self, stage_name: Optional[str] = None):
+        keep_last = self.checkpoint_cfg.save.keep_last_snapshots
+        if keep_last is None:
+            return
+
+        pattern = os.path.join(self._checkpoint_snapshot_dir(stage_name), "step_*.pt")
+        files = glob.glob(pattern)
+        if len(files) <= keep_last:
+            return
+
+        def parse_stage_step(path):
+            try:
+                return int(os.path.basename(path).replace("step_", "").replace(".pt", ""))
+            except Exception:
+                return -1
+
+        files = sorted(files, key=parse_stage_step, reverse=True)
+        for old_path in files[keep_last:]:
+            if os.path.exists(old_path):
+                os.remove(old_path)
+
+    def _build_checkpoint_payload(self, stage_step: int) -> dict:
+        return {
             'encoder': self.shared_topology_encoder.state_dict(),
             'deployment_agent': self.deployment_agent.state_dict(),
             'offloading_agent': self.offloading_agent.state_dict(),
@@ -1210,130 +1562,184 @@ class Hedger:
             'offloading_actor_opt': self.offloading_agent.actor_opt.state_dict(),
             'offloading_critic_opt': self.offloading_agent.critic_opt.state_dict(),
             'meta': {
+                'schema_version': 2,
                 'time': time.time(),
                 'seed': self.seed,
-                'deployment_updates': self._deployment_update_steps,
-                'offloading_updates': self._offloading_update_steps,
+                'mode': self.mode,
+                'training_stage': self.training_cfg.stage if self.training_cfg is not None else None,
+                'stage_step': int(stage_step),
+                'global_step': int(self._global_update_step),
+                'deployment_updates': int(self._deployment_update_steps),
+                'offloading_updates': int(self._offloading_update_steps),
                 'device': str(self.device),
-                'epoch': epoch,
+                'source_checkpoint': self._loaded_checkpoint_path,
             }
         }
-        torch.save(ckpt, path)
-        LOGGER.info(f"[Hedger][Checkpoint] Saved epoch={epoch} to {path}")
 
-    def load_checkpoint(self, epoch: int = None):
+    def save_checkpoint(self, stage_step: Optional[int] = None, is_final: bool = False):
         """
-        Load encoder, agent, and optimizer state from a checkpoint.
+        Save a stage-aware checkpoint.
 
-        The behavior is controlled by hyper-parameter flags:
-            - whether to load the encoder
-            - whether to load each agent
-            - whether to restore optimizer state
-            - whether to reset epoch/update counters
+        Layout:
+            {root_dir}/{stage}/latest.pt
+            {root_dir}/{stage}/final.pt
+            {root_dir}/{stage}/snapshots/step_{stage_step}.pt
         """
-        if epoch is not None:
-            ep_path = self._epoch_checkpoint_path(int(epoch))
-            if os.path.exists(ep_path):
-                target_path = ep_path
-            else:
-                LOGGER.warning(
-                    f"[Hedger][Checkpoint] Requested epoch checkpoint not found at {ep_path}; "
-                    f"fall back to latest checkpoint."
-                )
-                target_path = self._latest_epoch_checkpoint_path()
+        if stage_step is None:
+            stage_step = self._epoch
+
+        stage_dir = self._checkpoint_stage_dir()
+        snapshot_dir = self._checkpoint_snapshot_dir()
+        FileOps.create_directory(stage_dir)
+        FileOps.create_directory(snapshot_dir)
+
+        ckpt = self._build_checkpoint_payload(stage_step)
+        saved_paths = []
+
+        if self.checkpoint_cfg.save.save_history:
+            snapshot_path = self._checkpoint_snapshot_path(stage_step)
+            torch.save(ckpt, snapshot_path)
+            saved_paths.append(snapshot_path)
+            self._prune_old_stage_snapshots()
+
+        if self.checkpoint_cfg.save.save_latest:
+            latest_path = self._checkpoint_alias_path("latest")
+            torch.save(ckpt, latest_path)
+            saved_paths.append(latest_path)
+
+        if is_final and self.checkpoint_cfg.save.save_final:
+            final_path = self._checkpoint_alias_path("final")
+            torch.save(ckpt, final_path)
+            saved_paths.append(final_path)
+
+        if saved_paths:
+            LOGGER.info(
+                f"[Hedger][Checkpoint] Saved stage={self.training_cfg.stage if self.training_cfg is not None else 'none'}, "
+                f"stage_step={stage_step}, global_step={self._global_update_step}, "
+                f"paths={saved_paths}"
+            )
         else:
-            target_path = self._latest_epoch_checkpoint_path()
+            LOGGER.warning(
+                f"[Hedger][Checkpoint] Save skipped because all checkpoint outputs are disabled: "
+                f"stage={self.training_cfg.stage if self.training_cfg is not None else 'none'}, stage_step={stage_step}"
+            )
 
+    def load_checkpoint(self):
+        """
+        Load a stage-aware checkpoint.
+
+        Resolution order:
+            1. explicit `checkpoint.load.path`
+            2. `{checkpoint.load.from_stage}/snapshots/step_x.pt`
+            3. `{checkpoint.load.from_stage}/{which}.pt`
+            4. latest snapshot fallback within that stage
+
+        When loading from a different stage, stage-local counters are reset while
+        the global update step is preserved to keep lineage across staged training.
+        """
+        if not self.checkpoint_cfg.load.enabled:
+            return
+
+        target_path = self._resolve_checkpoint_load_path(
+            stage=self.checkpoint_cfg.load.from_stage,
+            which=self.checkpoint_cfg.load.which,
+            step=self.checkpoint_cfg.load.step,
+            path=self.checkpoint_cfg.load.load_path,
+        )
+
+        current_stage = self.training_cfg.stage if self.training_cfg is not None else None
         if not target_path or not os.path.exists(target_path):
-            LOGGER.warning(f"[Hedger][Checkpoint] No checkpoint found in {self.model_dir}.")
+            requested_stage = self.checkpoint_cfg.load.from_stage or current_stage
+            LOGGER.warning(
+                f"[Hedger][Checkpoint] No checkpoint found under root={self.checkpoint_cfg.root_dir}, "
+                f"requested_stage={requested_stage}, which={self.checkpoint_cfg.load.which}, "
+                f"step={self.checkpoint_cfg.load.step}."
+            )
             return
 
         ckpt = torch.load(target_path, map_location=self.device)
-        LOGGER.info(f"[Hedger][Checkpoint] Loading from {target_path}")
+        meta = ckpt.get('meta', {})
+        loaded_stage = meta.get('training_stage')
+        same_stage_resume = loaded_stage == current_stage
+        self._loaded_checkpoint_path = target_path
+        LOGGER.info(
+            f"[Hedger][Checkpoint] Loading from {target_path} "
+            f"(loaded_stage={loaded_stage}, current_stage={current_stage})"
+        )
 
-        # Load encoder weights.
-        if self.checkpoint_cfg.load_encoder:
-            enc_state = ckpt.get('encoder', None)
+        if self.checkpoint_cfg.load.restore_encoder:
+            enc_state = ckpt.get('encoder')
             if enc_state is not None:
                 self.shared_topology_encoder.load_state_dict(enc_state)
                 LOGGER.info('[Hedger][Checkpoint] Loaded encoder state.')
             else:
                 LOGGER.warning('[Hedger][Checkpoint] Missing encoder state in checkpoint.')
         else:
-            LOGGER.info('[Hedger][Checkpoint] Skip encoder loading per config (load_encoder=False).')
+            LOGGER.info('[Hedger][Checkpoint] Skip encoder loading per config.')
 
-        # Load the two agent modules.
-        # Deployment agent.
-        if self.checkpoint_cfg.load_deployment_agent:
-            dep_state = ckpt.get('deployment_agent', None)
+        if self.checkpoint_cfg.load.restore_deployment_agent:
+            dep_state = ckpt.get('deployment_agent')
             if dep_state is not None:
                 self.deployment_agent.load_state_dict(dep_state, strict=False)
                 LOGGER.info('[Hedger][Checkpoint] Loaded deployment agent state.')
             else:
                 LOGGER.warning('[Hedger][Checkpoint] Missing deployment_agent state in checkpoint.')
         else:
-            LOGGER.info(
-                '[Hedger][Checkpoint] Skip deployment agent loading per config '
-                '(load_deployment_agent=False).'
-            )
+            LOGGER.info('[Hedger][Checkpoint] Skip deployment agent loading per config.')
 
-        # Offloading agent.
-        if self.checkpoint_cfg.load_offloading_agent:
-            off_state = ckpt.get('offloading_agent', None)
+        if self.checkpoint_cfg.load.restore_offloading_agent:
+            off_state = ckpt.get('offloading_agent')
             if off_state is not None:
                 self.offloading_agent.load_state_dict(off_state, strict=False)
                 LOGGER.info('[Hedger][Checkpoint] Loaded offloading agent state.')
             else:
                 LOGGER.warning('[Hedger][Checkpoint] Missing offloading_agent state in checkpoint.')
         else:
-            LOGGER.info(
-                '[Hedger][Checkpoint] Skip offloading agent loading per config '
-                '(load_offloading_agent=False).'
-            )
+            LOGGER.info('[Hedger][Checkpoint] Skip offloading agent loading per config.')
 
-        # Load optimizer state.
-        if self.checkpoint_cfg.load_optimizer:
-            # Restore only the optimizers that correspond to loaded agents.
-            if self.checkpoint_cfg.load_deployment_agent and 'deployment_actor_opt' in ckpt:
+        if self.checkpoint_cfg.load.restore_optimizer:
+            if self.checkpoint_cfg.load.restore_deployment_agent and 'deployment_actor_opt' in ckpt:
                 self.deployment_agent.actor_opt.load_state_dict(ckpt['deployment_actor_opt'])
                 self._move_optimizer_state(self.deployment_agent.actor_opt, self.device)
                 LOGGER.info('[Hedger][Checkpoint] Loaded deployment actor optimizer state.')
-
-            if self.checkpoint_cfg.load_deployment_agent and 'deployment_critic_opt' in ckpt:
+            if self.checkpoint_cfg.load.restore_deployment_agent and 'deployment_critic_opt' in ckpt:
                 self.deployment_agent.critic_opt.load_state_dict(ckpt['deployment_critic_opt'])
                 self._move_optimizer_state(self.deployment_agent.critic_opt, self.device)
                 LOGGER.info('[Hedger][Checkpoint] Loaded deployment critic optimizer state.')
-
-            if self.checkpoint_cfg.load_offloading_agent and 'offloading_actor_opt' in ckpt:
+            if self.checkpoint_cfg.load.restore_offloading_agent and 'offloading_actor_opt' in ckpt:
                 self.offloading_agent.actor_opt.load_state_dict(ckpt['offloading_actor_opt'])
                 self._move_optimizer_state(self.offloading_agent.actor_opt, self.device)
                 LOGGER.info('[Hedger][Checkpoint] Loaded offloading actor optimizer state.')
-
-            if self.checkpoint_cfg.load_offloading_agent and 'offloading_critic_opt' in ckpt:
+            if self.checkpoint_cfg.load.restore_offloading_agent and 'offloading_critic_opt' in ckpt:
                 self.offloading_agent.critic_opt.load_state_dict(ckpt['offloading_critic_opt'])
                 self._move_optimizer_state(self.offloading_agent.critic_opt, self.device)
                 LOGGER.info('[Hedger][Checkpoint] Loaded offloading critic optimizer state.')
         else:
-            LOGGER.info('[Hedger][Checkpoint] Skip optimizer state loading per config (load_optimizer=False).')
+            LOGGER.info('[Hedger][Checkpoint] Skip optimizer state loading per config.')
 
-        # Restore or reset training counters.
-        meta = ckpt.get('meta', {})
+        restored_global_step = int(meta.get('global_step', meta.get('stage_step', meta.get('epoch', 0))))
+        self._global_update_step = restored_global_step
 
-        if self.checkpoint_cfg.reset_steps_on_load:
-            # Restart counters from zero for subsequent training phases.
+        reset_stage_counters = self.checkpoint_cfg.load.reset_stage_counters or not same_stage_resume
+        if reset_stage_counters:
             self._deployment_update_steps = 0
             self._offloading_update_steps = 0
             self._epoch = 0
-            LOGGER.info('[Hedger][Checkpoint] Reset update counters and epoch to 0 per config (reset_steps_on_load=True).')
-        else:
-            self._deployment_update_steps = meta.get('deployment_updates', 0)
-            self._offloading_update_steps = meta.get('offloading_updates', 0)
-            self._epoch = int(meta.get('epoch', self._epoch))
             LOGGER.info(
-                f"[Hedger][Checkpoint] Restored counters: "
+                f"[Hedger][Checkpoint] Stage-local counters reset: "
+                f"same_stage_resume={same_stage_resume}, "
+                f"reset_stage_counters={self.checkpoint_cfg.load.reset_stage_counters}, "
+                f"global_step={self._global_update_step}"
+            )
+        else:
+            self._deployment_update_steps = int(meta.get('deployment_updates', 0))
+            self._offloading_update_steps = int(meta.get('offloading_updates', 0))
+            self._epoch = int(meta.get('stage_step', meta.get('epoch', self._epoch)))
+            LOGGER.info(
+                f"[Hedger][Checkpoint] Restored stage-local counters: "
                 f"dep_updates={self._deployment_update_steps}, "
                 f"off_updates={self._offloading_update_steps}, "
-                f"epoch={self._epoch}"
+                f"stage_step={self._epoch}, global_step={self._global_update_step}"
             )
 
         LOGGER.info(f"[Hedger][Checkpoint] Loaded successfully from {target_path}")
