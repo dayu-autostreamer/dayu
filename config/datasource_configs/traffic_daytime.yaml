@@ -1,8 +1,8 @@
-source_name: "Traffic Cameras"
+source_name: "Traffic Cameras (Daytime)"
 source_type: "video"
-source_mode: "rtsp_video"
+source_mode: "http_video"
 source_list:
-  - name: "scenario1_camera"
+  - name: "traffic_daytime_camera"
     url: ""
     dir: "scenario1/"
     metadata:

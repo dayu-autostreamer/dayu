@@ -1,10 +1,10 @@
-source_name: "Traffic Cameras"
+source_name: "Traffic Cameras (Activity)"
 source_type: "video"
-source_mode: "rtsp_video"
+source_mode: "http_video"
 source_list:
-  - name: "traffic_camera"
+  - name: "traffic_activity_camera"
     url: ""
-    dir: "traffic/"
+    dir: "scenario3/"
     metadata:
       resolution: "1080p"
       fps: 30

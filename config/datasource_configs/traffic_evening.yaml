@@ -1,8 +1,8 @@
-source_name: "Traffic Cameras"
+source_name: "Traffic Cameras (Evening)"
 source_type: "video"
-source_mode: "rtsp_video"
+source_mode: "http_video"
 source_list:
-  - name: "scenario2_camera"
+  - name: "traffic_evening_camera"
     url: ""
     dir: "scenario2/"
     metadata:
