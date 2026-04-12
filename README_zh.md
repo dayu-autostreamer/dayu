@@ -135,6 +135,8 @@ make check
 ```bash
 python tools/log_analysis.py --log path/to/exported-log.json.gz
 python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format json
+python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format full-json --output-file path/to/full-report.json
+python tools/log_analysis.py --log path/to/exported-log.json.gz --slo-seconds 2.0
 ```
 
 ## 联系我们

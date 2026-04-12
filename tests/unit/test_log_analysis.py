@@ -1,5 +1,6 @@
 import gzip
 import json
+from pathlib import Path
 
 import pytest
 
@@ -123,26 +124,122 @@ def test_summarize_tasks_rolls_up_devices_and_service_timings():
         ),
     ]
 
-    summary = log_analysis.summarize_tasks(tasks)
+    summary = log_analysis.summarize_tasks(tasks, slo_target_seconds=2.5)
 
     assert summary["task_count"] == 2
     assert summary["root_task_count"] == 2
     assert summary["source_devices"] == {"camera-a": 1, "camera-b": 1}
     assert summary["edge_devices"] == {"edge-a": 2, "edge-b": 1}
     assert summary["average_task_latency"] == pytest.approx(2.7)
+    assert summary["task_latency_seconds"] == {
+        "count": 2,
+        "avg": 2.7,
+        "min": 2.4,
+        "max": 3.0,
+        "p50": 2.7,
+        "p90": 2.94,
+        "p95": 2.97,
+        "p99": 2.994,
+        "slo_target_seconds": 2.5,
+        "slo_hit_count": 1,
+        "slo_miss_count": 1,
+        "slo_compliance_rate": 0.5,
+    }
     assert summary["services"]["detector"] == {
         "occurrences": 2,
         "avg_execute_time": 1.6,
         "avg_real_execute_time": 1.05,
         "avg_transmit_time": 0.6,
+        "avg_stage_latency": 2.2,
         "execute_devices": {"edge-a": 2},
+        "execute_time_seconds": {
+            "count": 2,
+            "avg": 1.6,
+            "min": 1.5,
+            "max": 1.7,
+            "p50": 1.6,
+            "p90": 1.68,
+            "p95": 1.69,
+            "p99": 1.698,
+        },
+        "real_execute_time_seconds": {
+            "count": 2,
+            "avg": 1.05,
+            "min": 1.0,
+            "max": 1.1,
+            "p50": 1.05,
+            "p90": 1.09,
+            "p95": 1.095,
+            "p99": 1.099,
+        },
+        "transmit_time_seconds": {
+            "count": 2,
+            "avg": 0.6,
+            "min": 0.5,
+            "max": 0.7,
+            "p50": 0.6,
+            "p90": 0.68,
+            "p95": 0.69,
+            "p99": 0.698,
+        },
+        "stage_latency_seconds": {
+            "count": 2,
+            "avg": 2.2,
+            "min": 2.0,
+            "max": 2.4,
+            "p50": 2.2,
+            "p90": 2.36,
+            "p95": 2.38,
+            "p99": 2.396,
+        },
     }
     assert summary["services"]["tracker"] == {
         "occurrences": 1,
         "avg_execute_time": 0.8,
         "avg_real_execute_time": 0.7,
         "avg_transmit_time": 0.2,
+        "avg_stage_latency": 1.0,
         "execute_devices": {"edge-b": 1},
+        "execute_time_seconds": {
+            "count": 1,
+            "avg": 0.8,
+            "min": 0.8,
+            "max": 0.8,
+            "p50": 0.8,
+            "p90": 0.8,
+            "p95": 0.8,
+            "p99": 0.8,
+        },
+        "real_execute_time_seconds": {
+            "count": 1,
+            "avg": 0.7,
+            "min": 0.7,
+            "max": 0.7,
+            "p50": 0.7,
+            "p90": 0.7,
+            "p95": 0.7,
+            "p99": 0.7,
+        },
+        "transmit_time_seconds": {
+            "count": 1,
+            "avg": 0.2,
+            "min": 0.2,
+            "max": 0.2,
+            "p50": 0.2,
+            "p90": 0.2,
+            "p95": 0.2,
+            "p99": 0.2,
+        },
+        "stage_latency_seconds": {
+            "count": 1,
+            "avg": 1.0,
+            "min": 1.0,
+            "max": 1.0,
+            "p50": 1.0,
+            "p90": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+        },
     }
 
 
@@ -169,6 +266,69 @@ def test_main_supports_json_output(tmp_path, capsys):
     assert exit_code == 0
     assert payload["task_count"] == 1
     assert payload["services"]["detector"]["execute_devices"] == {"edge-c": 1}
+    assert payload["task_latency_seconds"]["p95"] == 1.5
+
+
+@pytest.mark.unit
+def test_generate_report_supports_full_json_with_detailed_tasks(tmp_path):
+    log_file = tmp_path / "sample-log.json"
+    log_file.write_text(
+        json.dumps(
+            [
+                _task_record(
+                    4,
+                    "camera-d",
+                    [("detector", "edge-d", 0.4, 1.1, 0.9)],
+                )
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(log_analysis.generate_report(log_file, output_format="full-json", slo_target_seconds=2.0))
+
+    assert payload["summary"]["task_count"] == 1
+    assert payload["tasks"][0]["task_id"] == 4
+    assert payload["tasks"][0]["analysis"]["task_latency_seconds"] == 1.5
+    assert payload["tasks"][0]["analysis"]["services"][0]["stage_latency"] == 1.5
+
+
+@pytest.mark.unit
+def test_main_supports_output_file_for_full_json(tmp_path, capsys):
+    log_file = tmp_path / "sample-log.json"
+    output_file = tmp_path / "reports" / "full-report.json"
+    log_file.write_text(
+        json.dumps(
+            [
+                _task_record(
+                    5,
+                    "camera-e",
+                    [("detector", "edge-e", 0.3, 0.9, 0.6)],
+                )
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = log_analysis.main(
+        [
+            "--log",
+            str(log_file),
+            "--output-format",
+            "full-json",
+            "--output-file",
+            str(output_file),
+            "--slo-seconds",
+            "2.0",
+        ]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(output_file.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert Path(output_file).exists()
+    assert "Report written to" in captured.out
+    assert payload["summary"]["task_latency_seconds"]["slo_compliance_rate"] == 1.0
 
 
 @pytest.mark.unit

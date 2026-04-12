@@ -1,6 +1,7 @@
 import json
 import runpy
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -65,6 +66,21 @@ def test_log_analysis_helpers_cover_whitespace_invalid_dag_and_empty_summaries(t
         "task_count": 0,
         "root_task_count": 0,
         "average_task_latency": 0.0,
+        "slo_target_seconds": 1.0,
+        "task_latency_seconds": {
+            "count": 0,
+            "avg": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "slo_target_seconds": 1.0,
+            "slo_hit_count": 0,
+            "slo_miss_count": 0,
+            "slo_compliance_rate": 0.0,
+        },
         "source_devices": {},
         "edge_devices": {},
         "services": {},
@@ -74,6 +90,8 @@ def test_log_analysis_helpers_cover_whitespace_invalid_dag_and_empty_summaries(t
     assert summary["source_devices"] == {"None": 1}
     assert summary["edge_devices"] == {"edge-z": 1}
     assert summary["services"]["detector"]["execute_devices"] == {"unknown": 1}
+    assert summary["task_latency_seconds"]["p95"] == 1.4
+    assert summary["task_latency_seconds"]["slo_compliance_rate"] == 0.0
 
 
 @pytest.mark.unit
@@ -85,6 +103,21 @@ def test_log_analysis_report_and_main_cover_text_output_and_error_paths(tmp_path
         "task_count": 0,
         "root_task_count": 0,
         "average_task_latency": 0.0,
+        "slo_target_seconds": 1.0,
+        "task_latency_seconds": {
+            "count": 0,
+            "avg": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "slo_target_seconds": 1.0,
+            "slo_hit_count": 0,
+            "slo_miss_count": 0,
+            "slo_compliance_rate": 0.0,
+        },
         "source_devices": {},
         "edge_devices": {},
         "services": {},
@@ -93,6 +126,8 @@ def test_log_analysis_report_and_main_cover_text_output_and_error_paths(tmp_path
     assert "Source devices:" in rendered
     assert "  - none" in rendered
     assert "Service summary:" in rendered
+    assert "Task latency percentiles:" in rendered
+    assert "SLO compliance:" in rendered
 
     report = log_analysis.generate_report(log_file, output_format="text")
     assert "Dayu Log Analysis Tool" in report
@@ -102,6 +137,7 @@ def test_log_analysis_report_and_main_cover_text_output_and_error_paths(tmp_path
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "Tasks analyzed: 1" in captured.out
+    assert "P95=" in captured.out
 
     bad_task_file = tmp_path / "bad-task.json"
     bad_task_file.write_text(json.dumps([{"dag": ["invalid"]}]), encoding="utf-8")
@@ -121,3 +157,31 @@ def test_log_analysis_module_entrypoint_exits_through_main(tmp_path, monkeypatch
         runpy.run_module("tools.log_analysis", run_name="__main__")
 
     assert exc_info.value.code == 0
+
+
+@pytest.mark.unit
+def test_log_analysis_main_writes_output_file(tmp_path, capsys):
+    log_file = tmp_path / "entrypoint.json"
+    output_file = tmp_path / "reports" / "detail.json"
+    log_file.write_text(json.dumps([make_task()]), encoding="utf-8")
+
+    exit_code = log_analysis.main(
+        [
+            "--log",
+            str(log_file),
+            "--output-format",
+            "full-json",
+            "--output-file",
+            str(output_file),
+            "--slo-seconds",
+            "2.0",
+        ]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(Path(output_file).read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert output_file.exists()
+    assert "Report written to" in captured.out
+    assert payload["summary"]["task_count"] == 1
+    assert payload["tasks"][0]["analysis"]["service_count"] == 1
