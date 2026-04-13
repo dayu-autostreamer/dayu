@@ -179,42 +179,19 @@ def test_rtsp_video_getter_call_retries_until_filtered_buffer_is_filled(monkeypa
 
 
 @pytest.mark.unit
-def test_v4l2_video_getter_prefers_v4l2_backend_and_falls_back_to_device_path(monkeypatch):
+def test_v4l2_video_getter_opens_device_with_v4l2_backend(monkeypatch):
     getter = v4l2_getter_module.V4L2VideoGetter()
     capture_calls = []
-
-    class ClosedCapture:
-        def isOpened(self):
-            return False
-
-        def release(self):
-            return None
-
-    class OpenCapture:
-        def isOpened(self):
-            return True
-
-        def release(self):
-            return None
 
     import cv2
 
     def fake_capture(source, backend=None):
         capture_calls.append((source, backend))
-        if source == "/dev/video0" and backend == cv2.CAP_V4L2:
-            return ClosedCapture()
-        if source == 0 and backend == cv2.CAP_V4L2:
-            return OpenCapture()
-        raise AssertionError(f"Unexpected capture attempt: {(source, backend)}")
+        return "capture"
 
     monkeypatch.setattr(cv2, "VideoCapture", fake_capture)
-    monkeypatch.setattr(v4l2_getter_module.os.path, "exists", lambda path: True)
-    monkeypatch.setattr(v4l2_getter_module.os, "access", lambda path, mode: True)
 
     capture = getter._open_capture("/dev/video0")
 
-    assert isinstance(capture, OpenCapture)
-    assert capture_calls == [
-        ("/dev/video0", cv2.CAP_V4L2),
-        (0, cv2.CAP_V4L2),
-    ]
+    assert capture == "capture"
+    assert capture_calls == [("/dev/video0", cv2.CAP_V4L2)]
