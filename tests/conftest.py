@@ -16,6 +16,7 @@ for path in (str(BACKEND_DIR), str(DEPENDENCY_DIR), str(DATASOURCE_DIR), str(REP
 
 os.environ.setdefault("DELETE_TEMP_FILES", "False")
 os.environ.setdefault("LOG_LEVEL", "INFO")
+os.environ.setdefault("NAMESPACE", "dayu")
 
 
 @pytest.fixture(autouse=True)

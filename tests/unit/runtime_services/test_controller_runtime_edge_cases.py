@@ -122,16 +122,18 @@ def test_send_task_to_other_device_uploads_task_file_and_records_transmit_timest
 ):
     controller_module, controller = controller_under_test
     task = FakeTask()
-    temp_file = tmp_path / task.get_file_path()
+    temp_file = tmp_path / "dayu" / task.get_file_path()
+    temp_file.parent.mkdir(parents=True, exist_ok=True)
     temp_file.write_bytes(b"payload")
 
     transmit_records = []
     request_calls = []
 
+    monkeypatch.setenv("NAMESPACE", "dayu")
     monkeypatch.setattr(
         controller_module.Context,
         "get_temporary_file_path",
-        staticmethod(lambda file_path: str(tmp_path / Path(file_path).name)),
+        staticmethod(lambda file_path: str(tmp_path / file_path)),
     )
     monkeypatch.setattr(
         controller_module.Controller,
@@ -159,16 +161,18 @@ def test_send_task_to_distributor_supports_hidden_and_display_upload_modes(
 ):
     controller_module, controller = controller_under_test
     task = FakeTask()
-    temp_file = tmp_path / task.get_file_path()
+    temp_file = tmp_path / "dayu" / task.get_file_path()
+    temp_file.parent.mkdir(parents=True, exist_ok=True)
     temp_file.write_bytes(b"renderable")
 
     transmit_records = []
     request_calls = []
 
+    monkeypatch.setenv("NAMESPACE", "dayu")
     monkeypatch.setattr(
         controller_module.Context,
         "get_temporary_file_path",
-        staticmethod(lambda file_path: str(tmp_path / Path(file_path).name)),
+        staticmethod(lambda file_path: str(tmp_path / file_path)),
     )
     monkeypatch.setattr(
         controller_module.Controller,
@@ -198,10 +202,11 @@ def test_send_task_to_distributor_returns_when_file_is_missing(controller_under_
     task = FakeTask(file_path="missing.bin")
     request_calls = []
 
+    monkeypatch.setenv("NAMESPACE", "dayu")
     monkeypatch.setattr(
         controller_module.Context,
         "get_temporary_file_path",
-        staticmethod(lambda file_path: str(tmp_path / Path(file_path).name)),
+        staticmethod(lambda file_path: str(tmp_path / file_path)),
     )
     monkeypatch.setattr(controller_module, "http_request", lambda **kwargs: request_calls.append(kwargs) or {"state": "ok"})
 

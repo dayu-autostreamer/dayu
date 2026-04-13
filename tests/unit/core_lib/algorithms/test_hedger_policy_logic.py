@@ -2,7 +2,8 @@ import threading
 import types
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from core.lib.algorithms.shared.hedger.hedger import Hedger
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointLoadCfg

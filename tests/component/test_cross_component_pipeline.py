@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI, Form, Response
 from fastapi.testclient import TestClient
 
-from core.lib.common import Context, Queue
+from core.lib.common import Context, Queue, FileOps
 from core.lib.content import Task
 
 
@@ -106,7 +106,7 @@ class FakeProcessor:
 
 class StreamAwareProcessor:
     def __call__(self, task):
-        payload = Path(Context.get_temporary_file_path(task.get_file_path())).read_bytes().decode("utf-8")
+        payload = Path(FileOps.get_task_file_in_temp(task)).read_bytes().decode("utf-8")
         task.set_current_content(
             {
                 "service": task.get_flow_index(),

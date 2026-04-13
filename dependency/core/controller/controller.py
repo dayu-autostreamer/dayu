@@ -2,7 +2,7 @@ import os
 
 from core.lib.estimation import TimeEstimator
 from core.lib.network import http_request, merge_address, NodeInfo, PortInfo, NetworkAPIPath, NetworkAPIMethod
-from core.lib.common import LOGGER, Context, SystemConstant, KubeConfig, TaskConstant
+from core.lib.common import LOGGER, Context, SystemConstant, KubeConfig, TaskConstant, FileOps
 from core.lib.content import Task
 
 from .task_coordinator import TaskCoordinator
@@ -49,7 +49,7 @@ class Controller:
                      method=NetworkAPIMethod.CONTROLLER_TASK,
                      data={'data': cur_task.serialize()},
                      files={'file': (cur_task.get_file_path(),
-                                     open(Context.get_temporary_file_path(cur_task.get_file_path()), 'rb'),
+                                     open(FileOps.get_task_file_in_temp(cur_task), 'rb'),
                                      'multipart/form-data')})
 
         LOGGER.info(f'[To Device {device}] source: {cur_task.get_source_id()}  '
@@ -88,10 +88,10 @@ class Controller:
                                         port=service_ports_dict[service],
                                         path=NetworkAPIPath.PROCESSOR_PROCESS_LOCAL)
 
-        if not os.path.exists(Context.get_temporary_file_path(cur_task.get_file_path())):
+        if not os.path.exists(FileOps.get_task_file_in_temp(cur_task)):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
                            f'task: {cur_task.get_task_id()} '
-                           f'file: {Context.get_temporary_file_path(cur_task.get_file_path())}')
+                           f'file: {FileOps.get_task_file_in_temp(cur_task)}')
             return 'error'
 
         # Local fast path: only send metadata
@@ -106,12 +106,12 @@ class Controller:
 
     def send_task_to_distributor(self, cur_task: Task):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
-        if not os.path.exists(Context.get_temporary_file_path(cur_task.get_file_path())):
+        if not os.path.exists(FileOps.get_task_file_in_temp(cur_task)):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
                            f'task: {cur_task.get_task_id()} '
-                           f'file: {Context.get_temporary_file_path(cur_task.get_file_path())}')
+                           f'file: {FileOps.get_task_file_in_temp(cur_task)}')
             return
-        file_content = open(Context.get_temporary_file_path(cur_task.get_file_path()), 'rb') if self.is_display else b''
+        file_content = open(FileOps.get_task_file_in_temp(cur_task), 'rb') if self.is_display else b''
 
         http_request(url=self.distribute_address,
                      method=NetworkAPIMethod.DISTRIBUTOR_DISTRIBUTE,

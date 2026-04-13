@@ -13,20 +13,39 @@ from .log import LOGGER
 
 class FileOps:
     @staticmethod
+    def _get_task_temp_namespace():
+        namespace = Context.get_parameter('NAMESPACE')
+        if not namespace:
+            raise ValueError('NAMESPACE is required as an env parameter to resolve task temporary files.')
+        return os.fspath(namespace)
+
+    @classmethod
+    def _get_task_temp_relative_path(cls, task):
+        return os.path.join(cls._get_task_temp_namespace(), task.get_file_path())
+
+    @staticmethod
     def save_task_file_in_temp(task, file_data):
-        file_path = Context.get_temporary_file_path(task.get_file_path())
+        file_path = Context.get_temporary_file_path(FileOps._get_task_temp_relative_path(task))
         with open(file_path, 'wb') as buffer:
             buffer.write(file_data)
 
     @staticmethod
     def remove_task_file_in_temp(task):
-        file_path = Context.get_temporary_file_path(task.get_file_path())
+        file_path = Context.get_temporary_file_path(FileOps._get_task_temp_relative_path(task))
         FileOps.remove_file(file_path)
 
     @staticmethod
-    def clear_temp_directory():
-        temp_dir = Context.get_temporary_file_path('')
+    def clear_task_temp_directory():
+        temp_dir = Context.get_temporary_file_path(FileOps._get_task_temp_namespace())
         FileOps.clear_directory(temp_dir)
+
+    @staticmethod
+    def get_task_file_in_temp(task):
+        return Context.get_temporary_file_path(FileOps._get_task_temp_relative_path(task))
+
+    @staticmethod
+    def get_task_temp_directory():
+        return Context.get_temporary_file_path(FileOps._get_task_temp_namespace())
 
     @staticmethod
     def save_task_file(task, file_data):
@@ -116,14 +135,14 @@ class FileCleaner:
     Expiry = Union[datetime, int, float]
 
     def __init__(
-            self,
-            folder: Union[str, Path],
-            poll_seconds: float = 30.0,
-            ttl_seconds: Optional[float] = 3600.0,
-            recursive: bool = False,
-            pattern: Optional[str] = None,  # e.g. "*.tmp"
-            expiry_resolver: Optional[Callable[[Path], Optional[Expiry]]] = None,
-            max_delete_per_round: int = 200,
+        self,
+        folder: Union[str, Path],
+        poll_seconds: float = 30.0,
+        ttl_seconds: Optional[float] = 3600.0,
+        recursive: bool = False,
+        pattern: Optional[str] = None,  # e.g. "*.tmp"
+        expiry_resolver: Optional[Callable[[Path], Optional[Expiry]]] = None,
+        max_delete_per_round: int = 200,
     ):
         """
         folder: Target folder

@@ -18,9 +18,10 @@ class DummyTask:
 def test_file_ops_manage_task_files_and_archives(monkeypatch, tmp_path):
     file_ops_module = importlib.import_module("core.lib.common.file_ops")
     task = DummyTask("payload.bin")
-    temp_file = tmp_path / "temp" / "payload.bin"
+    temp_file = tmp_path / "temp" / "dayu" / "payload.bin"
     final_file = tmp_path / "payload.bin"
 
+    monkeypatch.setenv("NAMESPACE", "dayu")
     monkeypatch.setattr(
         file_ops_module.Context,
         "get_temporary_file_path",
@@ -30,6 +31,7 @@ def test_file_ops_manage_task_files_and_archives(monkeypatch, tmp_path):
 
     file_ops_module.FileOps.save_task_file_in_temp(task, b"temp-data")
     assert temp_file.read_bytes() == b"temp-data"
+    assert file_ops_module.FileOps.get_task_file_in_temp(task) == str(temp_file)
     file_ops_module.FileOps.remove_task_file_in_temp(task)
     assert not temp_file.exists()
 

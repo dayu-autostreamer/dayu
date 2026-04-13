@@ -107,7 +107,7 @@ spec:
             type: hostPath
             hostPath:
               path: temp/
-              pathType: Directory
+              pathType: DirectoryOrCreate
               prefix: $DEFAULT_FILE_MOUNT_PREFIX
           target:
             path: /temp
@@ -173,7 +173,7 @@ spec:
           type: hostPath
           hostPath:
             path: temp/
-            pathType: Directory
+            pathType: DirectoryOrCreate
             prefix: $DEFAULT_FILE_MOUNT_PREFIX
         target:
           path: /temp

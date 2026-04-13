@@ -512,7 +512,7 @@ class TemplateHelper:
                 'type': 'hostPath',
                 'hostPath': {
                     'path': 'temp/',
-                    'pathType': 'Directory',
+                    'pathType': 'DirectoryOrCreate',
                     'prefix': file_prefix,
                 }
             },

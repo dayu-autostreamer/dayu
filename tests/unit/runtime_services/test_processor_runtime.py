@@ -72,6 +72,8 @@ def patch_processor_scenarios(monkeypatch):
     def fake_get_parameter(name, direct=False):
         if name == "SCENARIOS_EXTRACTORS":
             return ["objects"]
+        if name == "NAMESPACE":
+            return "dayu"
         raise AssertionError(f"Unexpected parameter request: {name}")
 
     def fake_get_algorithm(algorithm, al_name=None, **kwargs):
