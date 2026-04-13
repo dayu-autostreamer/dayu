@@ -5,6 +5,17 @@ metadata:
   namespace: dayu
 spec:
   cloudWorker:
+    mounts:
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
     logLevel:
       level: DEBUG
     template:
@@ -23,8 +34,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/controller:v1.2
           imagePullPolicy: Always
           name: controller
@@ -34,7 +43,18 @@ spec:
         nodeName: cloud.kubeedge
         serviceAccountName: worker-admin
   edgeWorker:
-  - logLevel:
+  - mounts:
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
+    logLevel:
       level: DEBUG
     template:
       spec:
@@ -52,8 +72,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/controller:v1.2
           imagePullPolicy: Always
           name: controller
@@ -62,7 +80,18 @@ spec:
         dnsPolicy: ClusterFirstWithHostNet
         nodeName: edge2
         serviceAccountName: worker-admin
-  - logLevel:
+  - mounts:
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
+    logLevel:
       level: DEBUG
     template:
       spec:
@@ -80,8 +109,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/controller:v1.2
           imagePullPolicy: Always
           name: controller
@@ -102,6 +129,17 @@ metadata:
   namespace: dayu
 spec:
   cloudWorker:
+    mounts:
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
     logLevel:
       level: DEBUG
     template:
@@ -116,8 +154,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/distributor:v1.2
           imagePullPolicy: Always
           name: distributor
@@ -138,9 +174,25 @@ metadata:
   namespace: dayu
 spec:
   cloudWorker:
-    file:
-      paths:
-      - /data/dayu-files/scheduler/fixed/
+    mounts:
+    - source:
+        type: hostPath
+        hostPath:
+          path: scheduler/fixed/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target: {}
+      envName: DEFAULT_MOUNT_PATH
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
     logLevel:
       level: DEBUG
     template:
@@ -178,8 +230,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/scheduler:v1.2
           imagePullPolicy: Always
           name: scheduler
@@ -200,6 +250,17 @@ metadata:
   namespace: dayu
 spec:
   cloudWorker:
+    mounts:
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
     logLevel:
       level: DEBUG
     template:
@@ -218,8 +279,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/monitor:v1.2
           imagePullPolicy: Always
           name: monitor
@@ -229,7 +288,18 @@ spec:
         nodeName: cloud.kubeedge
         serviceAccountName: worker-admin
   edgeWorker:
-  - logLevel:
+  - mounts:
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
+    logLevel:
       level: DEBUG
     template:
       spec:
@@ -247,8 +317,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/monitor:v1.2
           imagePullPolicy: Always
           name: monitor
@@ -257,7 +325,18 @@ spec:
         dnsPolicy: ClusterFirstWithHostNet
         nodeName: edge2
         serviceAccountName: worker-admin
-  - logLevel:
+  - mounts:
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
+    logLevel:
       level: DEBUG
     template:
       spec:
@@ -275,8 +354,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/monitor:v1.2
           imagePullPolicy: Always
           name: monitor
@@ -297,7 +374,18 @@ metadata:
   namespace: dayu
 spec:
   edgeWorker:
-  - logLevel:
+  - mounts:
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
+    logLevel:
       level: DEBUG
     template:
       spec:
@@ -356,9 +444,25 @@ metadata:
   namespace: dayu
 spec:
   cloudWorker:
-    file:
-      paths:
-      - /data/dayu-files/processor/face-detection/
+    mounts:
+    - source:
+        type: hostPath
+        hostPath:
+          path: processor/face-detection/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target: {}
+      envName: DEFAULT_MOUNT_PATH
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
     logLevel:
       level: DEBUG
     template:
@@ -381,8 +485,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/face-detection:v1.2
           imagePullPolicy: Always
           name: processor-face-detection
@@ -392,9 +494,25 @@ spec:
         nodeName: cloud.kubeedge
         serviceAccountName: worker-admin
   edgeWorker:
-  - file:
-      paths:
-      - /data/dayu-files/processor/face-detection/
+  - mounts:
+    - source:
+        type: hostPath
+        hostPath:
+          path: processor/face-detection/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target: {}
+      envName: DEFAULT_MOUNT_PATH
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
     logLevel:
       level: DEBUG
     template:
@@ -417,8 +535,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/face-detection:v1.2
           imagePullPolicy: Always
           name: processor-face-detection
@@ -439,9 +555,25 @@ metadata:
   namespace: dayu
 spec:
   cloudWorker:
-    file:
-      paths:
-      - /data/dayu-files/processor/gender-classification/
+    mounts:
+    - source:
+        type: hostPath
+        hostPath:
+          path: processor/gender-classification/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target: {}
+      envName: DEFAULT_MOUNT_PATH
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
     logLevel:
       level: DEBUG
     template:
@@ -464,8 +596,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/gender-classification:v1.2
           imagePullPolicy: Always
           name: processor-gender-classification
@@ -486,9 +616,25 @@ metadata:
   namespace: dayu
 spec:
   cloudWorker:
-    file:
-      paths:
-      - /data/dayu-files/processor/age-classification/
+    mounts:
+    - source:
+        type: hostPath
+        hostPath:
+          path: processor/age-classification/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target: {}
+      envName: DEFAULT_MOUNT_PATH
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
     logLevel:
       level: DEBUG
     template:
@@ -511,8 +657,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/age-classification:v1.2
           imagePullPolicy: Always
           name: processor-age-classification
@@ -522,9 +666,25 @@ spec:
         nodeName: cloud.kubeedge
         serviceAccountName: worker-admin
   edgeWorker:
-  - file:
-      paths:
-      - /data/dayu-files/processor/age-classification/
+  - mounts:
+    - source:
+        type: hostPath
+        hostPath:
+          path: processor/age-classification/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target: {}
+      envName: DEFAULT_MOUNT_PATH
+    - name: temporary-directory
+      source:
+        type: hostPath
+        hostPath:
+          path: temp/
+          pathType: Directory
+          prefix: /data/dayu-files
+      target:
+        path: /temp
+      envName: TEMP_PATH
     logLevel:
       level: DEBUG
     template:
@@ -547,8 +707,6 @@ spec:
             value: '6443'
           - name: GUNICORN_PORT
             value: '9000'
-          - name: FILE_PREFIX
-            value: /data/dayu-files
           image: repo:5000/dayuhub/age-classification:v1.2
           imagePullPolicy: Always
           name: processor-age-classification

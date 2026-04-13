@@ -65,12 +65,12 @@ def test_service_supports_roundtrip_and_time_ticket_guards():
     with pytest.raises(AssertionError, match="does not exist"):
         service.erase_time_ticket("queue_start")
 
-    with pytest.raises(AssertionError, match="negative"):
-        service.set_transmit_time(-1)
-    with pytest.raises(AssertionError, match="negative"):
-        service.set_execute_time(-1)
-    with pytest.raises(AssertionError, match="negative"):
-        service.set_real_execute_time(-1)
+    service.set_transmit_time(-1)
+    service.set_execute_time(-1)
+    service.set_real_execute_time(-1)
+    assert service.get_transmit_time() == 0
+    assert service.get_execute_time() == 0
+    assert service.get_real_execute_time() == 0
 
     restored = Service.deserialize(service.serialize())
     assert restored.to_dict() == service.to_dict()

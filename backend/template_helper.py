@@ -75,8 +75,7 @@ class TemplateHelper:
                                    'targetPort': node_port['port']}}
             )
             template['env'].extend([
-                {'name': 'GUNICORN_PORT', 'value': str(node_port['port'])},
-                {'name': 'FILE_PREFIX', 'value': str(file_prefix)}
+                {'name': 'GUNICORN_PORT', 'value': str(node_port['port'])}
             ])
             template['ports'] = [{'containerPort': node_port['port']}]
 
@@ -98,56 +97,38 @@ class TemplateHelper:
             'containers': [edge_template]
         }
 
+        cloud_mount_files, edge_mount_files = self.resolve_file_mount(file_mount, file_prefix)
         if pos == 'cloud':
-            files_cloud = [self.prepare_file_path(file['path'])
-                           for file in file_mount if file['pos'] in ('cloud', 'both')] \
-                if file_mount else []
-            files_cloud.append(self.prepare_file_path('temp/'))
-
             template_doc['spec'].update({
                 'cloudWorker': {
                     'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_cloud}}),
+                    'mounts': cloud_mount_files,
                 }
             })
         elif pos == 'edge':
-            files_edge = [self.prepare_file_path(file['path'])
-                          for file in file_mount if file['pos'] in ('edge', 'both')] \
-                if file_mount else []
-            files_edge.append(self.prepare_file_path('temp/'))
-
             template_doc['spec'].update({
                 'edgeWorker': [{
                     'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_edge}}),
+                    'mounts': edge_mount_files,
                 }]
             })
         elif pos == 'both':
-            files_cloud = [self.prepare_file_path(file['path'])
-                           for file in file_mount if file['pos'] in ('cloud', 'both')] \
-                if file_mount else []
-            files_cloud.append(self.prepare_file_path('temp/'))
-            files_edge = [self.prepare_file_path(file['path'])
-                          for file in file_mount if file['pos'] in ('edge', 'both')] \
-                if file_mount else []
-            files_edge.append(self.prepare_file_path('temp/'))
-
             template_doc['spec'].update({
                 'edgeWorker': [{
                     'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_edge}}),
+                    'mounts': edge_mount_files,
                 }],
                 'cloudWorker': {
                     'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_cloud}}),
+                    'mounts': cloud_mount_files,
                 }
             })
         else:
-            assert None, f'Unknown position of {pos} (position in [cloud, edge, both]).'
+            raise ValueError(f"position of {pos} is illegal, only support cloud/edge/both.")
 
         return template_doc
 
@@ -456,9 +437,90 @@ class TemplateHelper:
         full_image = f"{registry}/{repository}/{image_name}:{tag}"
         return full_image
 
-    def prepare_file_path(self, file_path: str) -> str:
-        file_prefix = self.load_base_info()['default-file-mount-prefix']
-        return os.path.join(file_prefix, file_path, "")
+    def resolve_file_mount(self, mount_files, file_prefix=''):
+        cloud_mount_files = []
+        edge_mount_files = []
+
+        for file_config in mount_files or []:
+            mount_config = {}
+
+            if 'pos' not in file_config:
+                raise ValueError(f"pos is required for file-mount config, but not found in {file_config}.")
+            if 'path' not in file_config:
+                raise ValueError(f"path is required for file-mount config, but not found in {file_config}.")
+
+            if 'name' in file_config:
+                mount_config['name'] = file_config['name']
+            source_path_type = file_config.get('type', 'Directory')
+            if source_path_type not in ['Directory', 'DirectoryOrCreate', 'File', 'FileOrCreate',
+                                        'Socket', 'CharDevice', 'BlockDevice']:
+                raise ValueError(f'Type "{source_path_type}" for file-mount config is illegal, only support Directory '
+                                 f'| DirectoryOrCreate | File | FileOrCreate | Socket | CharDevice | BlockDevice')
+            mount_config['source'] = {
+                'type': 'hostPath',
+                'hostPath': {
+                    'path': file_config['path'],
+                    'pathType': source_path_type,
+                    'prefix': file_prefix,
+                }
+            }
+
+            target = {}
+            if 'target_path' in file_config:
+                if not os.path.isabs(file_config['target_path']):
+                    raise ValueError(f"target_path '{file_config['target_path']}' in "
+                                     f"file-mount config should be absolute.")
+                target['path'] = file_config['target_path']
+            if 'read_only' in file_config:
+                target['readOnly'] = file_config['read_only']
+            if 'sub_path' in file_config:
+                target['subPath'] = file_config['sub_path']
+            if 'mount_propagation' in file_config:
+                target['mountPropagation'] = file_config['mount_propagation']
+            mount_config['target'] = target
+
+            if 'containers' in file_config:
+                mount_config['containers'] = file_config['containers']
+            if 'env_name' in file_config:
+                mount_config['envName'] = file_config['env_name']
+
+            if file_config['pos'] == 'cloud':
+                cloud_mount_files.append(copy.deepcopy(mount_config))
+            elif file_config['pos'] == 'edge':
+                edge_mount_files.append(copy.deepcopy(mount_config))
+            elif file_config['pos'] == 'both':
+                cloud_mount_files.append(copy.deepcopy(mount_config))
+                edge_mount_files.append(copy.deepcopy(mount_config))
+            else:
+                raise ValueError(f"pos of file-mount should be cloud/edge/both, not {file_config['pos']}.")
+
+        if cloud_mount_files and 'path' not in cloud_mount_files[0]['target'] and 'envName' not in cloud_mount_files[0]:
+            cloud_mount_files[0]['envName'] = 'DEFAULT_MOUNT_PATH'
+        if edge_mount_files and 'path' not in edge_mount_files[0]['target'] and 'envName' not in edge_mount_files[0]:
+            edge_mount_files[0]['envName'] = 'DEFAULT_MOUNT_PATH'
+
+        temp_config = self.resolve_temporary_file_mount(file_prefix)
+        cloud_mount_files.append(copy.deepcopy(temp_config))
+        edge_mount_files.append(copy.deepcopy(temp_config))
+
+        return cloud_mount_files, edge_mount_files
+
+    def resolve_temporary_file_mount(self, file_prefix=''):
+        return {
+            'name': 'temporary-directory',
+            'source': {
+                'type': 'hostPath',
+                'hostPath': {
+                    'path': 'temp/',
+                    'pathType': 'Directory',
+                    'prefix': file_prefix,
+                }
+            },
+            'target': {
+                'path': '/temp'
+            },
+            'envName': 'TEMP_PATH'
+        }
 
     def request_source_selection_decision(self, source_deploy):
         scheduler_hostname = NodeInfo.get_cloud_node()

@@ -149,54 +149,39 @@ def test_context_resolves_algorithms_with_env_parameters_and_literal_fallbacks(m
 
 
 @pytest.mark.unit
-def test_context_file_path_resolution_handles_mounted_volumes_and_temp_files(monkeypatch, tmp_path):
+def test_context_file_path_resolution_supports_default_and_explicit_mounts(monkeypatch, tmp_path):
     mount_prefix = tmp_path / "mnt"
-    raw_prefix = tmp_path / "raw"
-    volume0 = raw_prefix / "templates"
-    volume1 = raw_prefix / "datasets"
+    default_mount = mount_prefix / "processor" / "face-detection"
+    explicit_file = mount_prefix / "scheduler" / "hei" / "reward.txt"
+    temp_dir = tmp_path / "temp-runtime"
+
+    (default_mount / "configs").mkdir(parents=True, exist_ok=True)
+    explicit_file.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    (default_mount / "retina_mnet.engine").write_text("weights", encoding="utf-8")
+    explicit_file.write_text("reward", encoding="utf-8")
 
     monkeypatch.setenv("DATA_PATH_PREFIX", str(mount_prefix))
-    monkeypatch.setenv("FILE_PREFIX", str(raw_prefix))
-    monkeypatch.setenv("VOLUME_NUM", "3")
-    monkeypatch.setenv("VOLUME_0", str(volume0))
-    monkeypatch.setenv("VOLUME_1", str(volume1))
+    monkeypatch.setenv("DEFAULT_MOUNT_PATH", str(default_mount))
+    monkeypatch.setenv("TEMP_PATH", str(temp_dir))
 
-    assert Context.get_file_path(1) == str(mount_prefix / "volume1")
-    assert Context.get_file_path(str(volume1 / "clips" / "clip.mp4")) == str(
-        mount_prefix / "volume1" / "clips" / "clip.mp4"
-    )
-    assert Context.get_file_path("datasets/clips/clip.mp4") == str(
-        mount_prefix / "volume1" / "clips" / "clip.mp4"
-    )
-
-    with pytest.raises(IndexError, match="out of range"):
-        Context.get_file_path(5)
-
-    with pytest.raises(FileNotMountedError, match="not mounted"):
-        Context.get_file_path("/outside/runtime.mp4")
-
-    monkeypatch.setenv("VOLUME_NUM", "2")
-    monkeypatch.setenv("VOLUME_0", str(volume0))
-    assert Context.get_file_path(str(volume0 / "nested" / "file.txt")) == str(
-        mount_prefix / "volume0" / "nested" / "file.txt"
-    )
-    assert Context.get_file_path("templates/nested/file.txt") == str(
-        mount_prefix / "volume0" / "nested" / "file.txt"
-    )
-    assert Context.get_file_path("relative/file.txt") == str(
-        mount_prefix / "volume0" / "relative" / "file.txt"
+    assert Context.get_default_file_path() == str(default_mount)
+    assert Context.get_file_path("") == str(default_mount)
+    assert Context.get_file_path("retina_mnet.engine") == str(default_mount / "retina_mnet.engine")
+    assert Context.get_file_path("scheduler/hei/reward.txt") == str(explicit_file)
+    assert Context.get_file_path(str(explicit_file)) == str(explicit_file)
+    assert Context.get_file_path("configs/new.yaml") == str(default_mount / "configs" / "new.yaml")
+    assert Context.get_file_path("processor/face-detection/new.yaml") == str(
+        mount_prefix / "processor" / "face-detection" / "new.yaml"
     )
 
-    with pytest.raises(FileNotMountedError, match="not mounted"):
-        Context.get_file_path("/outside/single-volume.mp4")
-
-    temp_path = Path(Context.get_temporary_file_path("payload.bin"))
-    assert temp_path == mount_prefix / "volume1" / "temp_files" / "payload.bin"
+    temp_path = Path(Context.get_temporary_file_path("payloads/payload.bin"))
+    assert temp_path == temp_dir / "payloads" / "payload.bin"
     assert temp_path.parent.exists()
 
-    monkeypatch.setenv("VOLUME_NUM", "1")
-    with pytest.raises(FileNotMountedError, match="No file directory is mounted"):
-        Context.get_file_path("anything.txt")
+    monkeypatch.delenv("TEMP_PATH", raising=False)
+    with pytest.raises(FileNotMountedError, match="Temporary directory is not mounted"):
+        Context.get_temporary_file_path("payload.bin")
 
 
 @pytest.mark.unit

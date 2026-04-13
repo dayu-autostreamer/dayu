@@ -551,7 +551,15 @@ class BackendServer:
         {'msg': 'Invalid service name'}
         """
 
-        data = json.loads(str(data, encoding='utf-8'))
+        if isinstance(data, dict):
+            parsed_data = data
+        elif isinstance(data, bytes):
+            parsed_data = json.loads(data.decode("utf-8"))
+        elif isinstance(data, str):
+            parsed_data = json.loads(data)
+        else:
+            raise TypeError(f"Unsupported data type: {type(data)}")
+        data = parsed_data
 
         source_label = data['source_label']
         if not self.server.find_datasource_configuration_by_label(source_label):

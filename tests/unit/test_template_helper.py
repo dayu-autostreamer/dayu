@@ -44,16 +44,21 @@ def test_fill_template_builds_both_side_controller_manifest(mounted_runtime, mon
     assert cloud_env["KUBERNETES_SERVICE_HOST"] == "10.0.0.1"
     assert cloud_env["KUBERNETES_SERVICE_PORT"] == "6443"
     assert cloud_env["GUNICORN_PORT"] == "9000"
-    assert cloud_env["FILE_PREFIX"] == "/data/dayu-files"
-    assert manifest["spec"]["cloudWorker"]["file"]["paths"] == ["/data/dayu-files/temp/"]
+    cloud_mounts = manifest["spec"]["cloudWorker"]["mounts"]
+    assert cloud_mounts[-1]["envName"] == "TEMP_PATH"
+    assert cloud_mounts[-1]["target"]["path"] == "/temp"
 
 
 @pytest.mark.unit
-def test_prepare_file_path_and_jetpack_suffix_are_stable(mounted_runtime):
+def test_temporary_mount_and_jetpack_suffix_are_stable(mounted_runtime):
     template_helper_module = importlib.import_module("template_helper")
     helper = template_helper_module.TemplateHelper(str(mounted_runtime))
 
-    assert helper.prepare_file_path("processor/face-detection") == "/data/dayu-files/processor/face-detection/"
+    temp_mount = helper.resolve_temporary_file_mount("/data/dayu-files")
+    assert temp_mount["source"]["hostPath"]["path"] == "temp/"
+    assert temp_mount["source"]["hostPath"]["prefix"] == "/data/dayu-files"
+    assert temp_mount["target"]["path"] == "/temp"
+    assert temp_mount["envName"] == "TEMP_PATH"
     assert helper.specify_jetpack_image("repo/dayu/processor:v1", 5) == "repo/dayu/processor:v1-jp5"
     assert helper.specify_jetpack_image("repo/dayu/processor:v1", -1) == "repo/dayu/processor:v1"
 

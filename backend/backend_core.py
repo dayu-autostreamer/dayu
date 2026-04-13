@@ -28,7 +28,7 @@ def _indent_json_block(text, prefix='    '):
 class BackendCore:
     def __init__(self):
 
-        self.template_helper = TemplateHelper(Context.get_file_path(0))
+        self.template_helper = TemplateHelper(Context.get_default_file_path())
 
         self.namespace = ''
         self.image_meta = None
@@ -54,6 +54,8 @@ class BackendCore:
                 variables=vf['variables']
             )
         )
+
+        self.parse_base_info()
 
         self.source_configs = []
 
@@ -102,8 +104,6 @@ class BackendCore:
 
         self.system_support_components = ['backend', 'frontend', 'datasource', 'redis']
         self.function_components = ['generator', 'scheduler', 'controller', 'distributor', 'monitor']
-
-        self.parse_base_info()
 
     def parse_base_info(self):
         try:
@@ -411,7 +411,7 @@ class BackendCore:
                             continue
 
                         worker_item.pop('logLevel', None)
-                        worker_item.pop('file', None)
+                        worker_item.pop('mounts', None)
 
                         if 'template' in worker_item and 'spec' in worker_item['template']:
                             template_spec = worker_item['template']['spec']
