@@ -375,6 +375,13 @@ metadata:
 spec:
   edgeWorker:
   - mounts:
+    - source:
+        type: hostPath
+        hostPath:
+          path: /dev/video0
+          pathType: CharDevice
+      target:
+        path: /dev/video0
     - name: temporary-directory
       source:
         type: hostPath
@@ -412,9 +419,9 @@ spec:
           - name: KUBERNETES_SERVICE_PORT
             value: '6443'
           - name: GEN_GETTER_NAME
-            value: rtsp_video
+            value: v4l2_video
           - name: SOURCE_URL
-            value: rtsp://192.168.1.91:30345/video0
+            value: /dev/video0
           - name: SOURCE_TYPE
             value: video
           - name: SOURCE_ID

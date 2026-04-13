@@ -24,4 +24,4 @@ file-mount:
   - pos: edge
     path: '/dev/video0'
     type: CharDevice
-
+    target_path: '/dev/video0'
