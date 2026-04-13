@@ -2,6 +2,10 @@ position: edge
 pod-template:
   image: generator
   imagePullPolicy: Always
+  securityContext:
+    privileged: true
+    allowPrivilegeEscalation: true
+    runAsUser: 0
   env:
     - name: GEN_FILTER_NAME
       value: simple

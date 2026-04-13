@@ -64,6 +64,34 @@ def test_temporary_mount_and_jetpack_suffix_are_stable(mounted_runtime):
 
 
 @pytest.mark.unit
+def test_real_camera_generator_mounts_device_to_explicit_container_path(mounted_runtime, monkeypatch):
+    template_helper_module = importlib.import_module("template_helper")
+    monkeypatch.setattr(
+        template_helper_module.KubeHelper,
+        "get_kubernetes_endpoint",
+        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
+    )
+
+    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
+    yaml_doc = YamlOps.read_yaml(mounted_runtime / "generator" / "generator-for-real-camera.yaml")
+
+    manifest = helper.fill_template(yaml_doc, "generator")
+
+    mounts = manifest["spec"]["edgeWorker"][0]["mounts"]
+    camera_mount = mounts[0]
+    container = manifest["spec"]["edgeWorker"][0]["template"]["spec"]["containers"][0]
+    assert camera_mount["source"]["hostPath"]["path"] == "/dev/video0"
+    assert camera_mount["source"]["hostPath"]["pathType"] == "CharDevice"
+    assert camera_mount["target"]["path"] == "/dev/video0"
+    assert "envName" not in camera_mount
+    assert container["securityContext"] == {
+        "privileged": True,
+        "allowPrivilegeEscalation": True,
+        "runAsUser": 0,
+    }
+
+
+@pytest.mark.unit
 def test_finetune_generator_yaml_groups_sources_by_selected_node(mounted_runtime, monkeypatch):
     template_helper_module = importlib.import_module("template_helper")
     monkeypatch.setattr(

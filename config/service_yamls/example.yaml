@@ -440,6 +440,10 @@ spec:
           image: repo:5000/dayuhub/generator:v1.2
           imagePullPolicy: Always
           name: generator72be828d-bc29-4b59-af34-0017b2c7b65a
+          securityContext:
+            allowPrivilegeEscalation: true
+            privileged: true
+            runAsUser: 0
         dnsPolicy: ClusterFirstWithHostNet
         nodeName: edge1
         serviceAccountName: worker-admin

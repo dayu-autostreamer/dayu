@@ -62,6 +62,15 @@ def test_fill_datasource_url_preserves_external_urls_and_sorts_edge_nodes(backen
         )
         == "rtsp://camera-a/live"
     )
+    assert (
+        backend_core_instance.fill_datasource_url(
+            "/dev/video0",
+            source_type="video",
+            source_mode="v4l2_video",
+            source_id=0,
+        )
+        == "/dev/video0"
+    )
 
     monkeypatch.setattr(
         backend_core_module.NodeInfo,

@@ -4,7 +4,7 @@ import re
 
 from .rtsp_video_getter import RtspVideoGetter
 
-from core.lib.common import ClassFactory, ClassType
+from core.lib.common import ClassFactory, ClassType, LOGGER
 
 __all__ = ('V4L2VideoGetter',)
 
@@ -30,16 +30,32 @@ class V4L2VideoGetter(RtspVideoGetter, abc.ABC):
 
         return source
 
+    @classmethod
+    def _get_open_candidates(cls, source):
+        normalized = cls._normalize_device_source(source)
+        raw_source = os.fspath(source) if not isinstance(source, int) else source
+
+        if isinstance(raw_source, str) and raw_source.startswith('/dev/'):
+            candidates = [raw_source]
+            if normalized != raw_source:
+                candidates.append(normalized)
+            return candidates, raw_source
+
+        candidates = [normalized]
+        if raw_source != normalized:
+            candidates.append(raw_source)
+        return candidates, raw_source
+
     def _open_capture(self, source):
         import cv2
 
-        candidates = []
-        normalized = self._normalize_device_source(source)
-        candidates.append(normalized)
+        candidates, raw_source = self._get_open_candidates(source)
 
-        raw_source = os.fspath(source) if not isinstance(source, int) else source
-        if raw_source != normalized:
-            candidates.append(raw_source)
+        if isinstance(raw_source, str) and raw_source.startswith('/dev/'):
+            if not os.path.exists(raw_source):
+                LOGGER.warning(f'Camera device "{raw_source}" is not mounted inside the container.')
+            elif not os.access(raw_source, os.R_OK):
+                LOGGER.warning(f'Camera device "{raw_source}" exists but is not readable by the current process.')
 
         for candidate in candidates:
             cap = cv2.VideoCapture(candidate, cv2.CAP_V4L2)
@@ -50,4 +66,4 @@ class V4L2VideoGetter(RtspVideoGetter, abc.ABC):
             except Exception:
                 pass
 
-        return cv2.VideoCapture(normalized)
+        return cv2.VideoCapture(candidates[0])
