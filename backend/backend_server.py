@@ -9,7 +9,6 @@ from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse, FileResponse, StreamingResponse
 
 from fastapi.middleware.cors import CORSMiddleware
-
 from core.lib.common import LOGGER, Counter, Queue, FileOps
 from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
 
@@ -505,6 +504,9 @@ class BackendServer:
             msg = 'unexpected system error, please refer to logs in backend'
 
         if result:
+            if not self.server.inner_datasource:
+                await self.submit_query({'source_label': source_label})
+
             return {'state': 'success', 'msg': 'Install services successfully'}
         else:
             return {'state': 'fail', 'msg': f'Install services failed: {msg}'}
@@ -515,6 +517,9 @@ class BackendServer:
 
         :return:
         """
+
+        if not self.server.inner_datasource:
+            await self.stop_query()
 
         try:
             result, msg = self.server.parse_and_delete_templates()

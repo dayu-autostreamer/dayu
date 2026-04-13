@@ -1,10 +1,10 @@
-source_name: "Traffic Cameras"
+source_name: "Traffic Cameras (All Scenarios)"
 source_type: "video"
 source_mode: "http_video"
 source_list:
   - name: "traffic_camera"
     url: ""
-    dir: "traffic/"
+    dir: "scenario_all/"
     metadata:
       resolution: "1080p"
       fps: 30

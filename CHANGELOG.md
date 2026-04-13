@@ -9,6 +9,7 @@
 ### Bug Fix
 - Fix iptables rule accumulation for edgemesh in incorrect dayu shutdowns with `dayu.sh` script correction.
 - Separate task temporary directory for different users (`controller`/`processor`).
+- Fix incompatibility of real cameras in rtsp video datasource (`generator`/`backend`).
 
 ### Minor Update
 - Update log export mode to support large logs in multi-stream scenarios (`backend`/`distributor`).
