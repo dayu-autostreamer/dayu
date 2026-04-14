@@ -37,6 +37,7 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
                 config=copy.deepcopy(self.system.hedger_config))
 
     def __call__(self, info):
+        LOGGER.debug(f'***info in redeployment: {info}')
         source_id = info['source']['id']
         dag = info['dag']
         node_set = info['node_set']

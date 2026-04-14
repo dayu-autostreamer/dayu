@@ -578,6 +578,7 @@ class TemplateHelper:
 
         params = []
         for source_info in source_deploy:
+            LOGGER.debug(f'****source info in backend:{source_info}')
             SOURCE_ENV = source_info['source']
             NODE_SET_ENV = source_info['node_set']
             DAG_ENV = {}
