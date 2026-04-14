@@ -793,9 +793,12 @@ class BackendCore:
                     time.sleep(5)
                     continue
 
-                redeploy_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(self.yaml_dict),
-                                                                                   copy.deepcopy(self.source_deploy),
-                                                                                   scopes=['processor'])
+                redeploy_docs_list = self.template_helper.finetune_yaml_parameters(
+                    copy.deepcopy(self.yaml_dict),
+                    copy.deepcopy(self.source_deploy),
+                    scopes=['processor'],
+                    current_docs=self.read_component_yaml(),
+                )
 
                 self.uninstall_lock = True
                 try:

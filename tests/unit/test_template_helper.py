@@ -191,7 +191,7 @@ def test_finetune_distributor_and_scheduler_request_helpers_use_scheduler_contra
 
     assert selection_plan == {9: "edgex1"}
     assert deployment_plan == {"face-detection": ["edgex1"]}
-    assert redeployment_plan == {}
+    assert redeployment_plan is None
 
     selection_payload = json.loads(requests[0][2]["data"]["data"])
     deployment_payload = json.loads(requests[1][2]["data"]["data"])

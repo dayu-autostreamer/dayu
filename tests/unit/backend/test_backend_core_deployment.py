@@ -480,6 +480,7 @@ def test_run_cycle_deploy_skips_missing_config_then_updates_after_success(backen
     finetune_calls = []
     updated_docs = []
     redeploy_docs = [_processor_doc("processor-face")]
+    current_docs = [_processor_doc("processor-current")]
 
     def fake_sleep(seconds):
         sleep_calls.append(seconds)
@@ -493,10 +494,13 @@ def test_run_cycle_deploy_skips_missing_config_then_updates_after_success(backen
     backend_core_instance.yaml_dict = None
     backend_core_instance.source_deploy = None
     backend_core_instance.template_helper = SimpleNamespace(
-        finetune_yaml_parameters=lambda yaml_dict, source_deploy, scopes: finetune_calls.append(tuple(scopes)) or copy.deepcopy(redeploy_docs)
+        finetune_yaml_parameters=lambda yaml_dict, source_deploy, scopes, current_docs=None: finetune_calls.append(
+            {"scopes": tuple(scopes), "current_docs": copy.deepcopy(current_docs)}
+        ) or copy.deepcopy(redeploy_docs)
     )
 
     monkeypatch.setattr(backend_core_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(backend_core_instance, "read_component_yaml", lambda: copy.deepcopy(current_docs))
     monkeypatch.setattr(backend_core_instance, "check_pods_running_state", lambda: True)
     monkeypatch.setattr(
         backend_core_instance,
@@ -512,6 +516,6 @@ def test_run_cycle_deploy_skips_missing_config_then_updates_after_success(backen
     backend_core_instance.run_cycle_deploy()
 
     assert sleep_calls[:3] == [5, 1, 5]
-    assert finetune_calls == [("processor",)]
+    assert finetune_calls == [{"scopes": ("processor",), "current_docs": current_docs}]
     assert updated_docs == [redeploy_docs]
     assert backend_core_instance.uninstall_lock is False

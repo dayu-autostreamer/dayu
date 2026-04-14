@@ -132,7 +132,7 @@ class TemplateHelper:
 
         return template_doc
 
-    def finetune_yaml_parameters(self, yaml_dict, source_deploy, scopes=None):
+    def finetune_yaml_parameters(self, yaml_dict, source_deploy, scopes=None, current_docs=None):
         edge_nodes = self.get_all_selected_edge_nodes(yaml_dict)
         cloud_node = NodeInfo.get_cloud_node()
 
@@ -148,7 +148,11 @@ class TemplateHelper:
         if not scopes or 'monitor' in scopes:
             docs_list.append(self.finetune_monitor_yaml(yaml_dict['monitor'], edge_nodes, cloud_node))
         if not scopes or 'processor' in scopes:
-            docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node, source_deploy))
+            if current_docs is None:
+                docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node, source_deploy))
+            else:
+                docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node, source_deploy,
+                                                              current_docs=current_docs, ))
 
         return docs_list
 
@@ -297,7 +301,72 @@ class TemplateHelper:
 
         return yaml_doc
 
-    def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy):
+    @staticmethod
+    def get_processor_service_name(doc):
+        if not isinstance(doc, dict):
+            return None
+
+        spec = doc.get('spec', {})
+        edge_workers = spec.get('edgeWorker') or []
+        worker_templates = list(edge_workers)
+        if spec.get('cloudWorker'):
+            worker_templates.append(spec['cloudWorker'])
+
+        for worker in worker_templates:
+            containers = worker.get('template', {}).get('spec', {}).get('containers', [])
+            for container in containers:
+                for env_item in container.get('env', []):
+                    if env_item.get('name') != 'PROCESSOR_SERVICE_NAME':
+                        continue
+                    service_name = env_item.get('value')
+                    if not service_name:
+                        continue
+                    return service_name[len('processor-'):] if service_name.startswith('processor-') else service_name
+
+        metadata_name = doc.get('metadata', {}).get('name', '')
+        if not metadata_name.startswith('processor-'):
+            return None
+
+        service_name = metadata_name[len('processor-'):]
+        edge_nodes = []
+        for worker in edge_workers:
+            node_name = worker.get('template', {}).get('spec', {}).get('nodeName')
+            if node_name:
+                edge_nodes.append(node_name)
+
+        if len(edge_nodes) == 1:
+            node_suffix = f"-{NameMaintainer.standardize_device_name(edge_nodes[0])}"
+            if service_name.endswith(node_suffix):
+                service_name = service_name[:-len(node_suffix)]
+
+        return service_name
+
+    def extract_current_processor_deployment(self, docs_list):
+        deployment_plan = {}
+        if not docs_list:
+            return deployment_plan
+
+        for doc in docs_list:
+            if not isinstance(doc, dict):
+                continue
+
+            edge_workers = doc.get('spec', {}).get('edgeWorker') or []
+            if not edge_workers:
+                continue
+
+            service_name = self.get_processor_service_name(doc)
+            if not service_name:
+                continue
+
+            selected_nodes = deployment_plan.setdefault(service_name, [])
+            for worker in edge_workers:
+                node_name = worker.get('template', {}).get('spec', {}).get('nodeName')
+                if node_name and node_name not in selected_nodes:
+                    selected_nodes.append(node_name)
+
+        return deployment_plan
+
+    def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy, current_docs=None):
         """Generate processor CRs with fine-grained units.
 
         For each logical processor service we generate:
@@ -311,6 +380,8 @@ class TemplateHelper:
         service-level queries by prefix still work.
         """
         deployment_plan = self.request_deployment_decision(source_deploy)
+        current_deployment_plan = self.extract_current_processor_deployment(
+            current_docs) if current_docs is not None else None
         yaml_docs = []
 
         for service_id, service_info in service_dict.items():
@@ -321,9 +392,16 @@ class TemplateHelper:
             edge_nodes = service_info['node']
 
             # Apply scheduler's deployment decision if available
-            if service_name in deployment_plan:
-                # Intersect with original edge_nodes to avoid unexpected nodes
-                edge_nodes = list(set(deployment_plan[service_name]) & set(edge_nodes))
+            if deployment_plan is not None and service_name in deployment_plan:
+                # Intersect with original edge_nodes to avoid unexpected nodes.
+                selected_nodes = set(deployment_plan[service_name])
+                edge_nodes = [node for node in edge_nodes if node in selected_nodes]
+            elif deployment_plan is None and current_deployment_plan is not None:
+                edge_nodes = current_deployment_plan.get(service_name, [])
+                LOGGER.warning(
+                    f"Scheduler redeployment plan unavailable, keep current deployment for "
+                    f"service '{service_name}': {edge_nodes}."
+                )
             else:
                 LOGGER.warning(f"Using default service plan for service '{service_id}'.")
 
@@ -608,7 +686,10 @@ class TemplateHelper:
 
         if response is None:
             LOGGER.warning('[Service Deployment] No response from scheduler.')
-            deployment_plan = {}
+            deployment_plan = None
+        elif 'plan' not in response or response['plan'] is None:
+            LOGGER.warning('[Service Deployment] Scheduler response missed deployment plan.')
+            deployment_plan = None
         else:
             deployment_plan = response['plan']
 
