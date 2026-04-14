@@ -26,7 +26,7 @@ class LogicalEncoder(nn.Module):
     """
     Logical-topology input features:
       - `model_flops`: `[Ms]`
-      - `model_mem`: `[Ms]` in MB
+      - `model_mem`: `[Ms]` in GB
       - `task_complexity_seq`: `[Ms, T]`
       - `hist_latency_seq`: `[Ms, T]`
     """
@@ -71,10 +71,10 @@ class PhysicalEncoder(nn.Module):
     Physical-topology input features:
       - `gpu_flops`: `[Np]`
       - `role_id`: `[Np]`, where `0=source edge / 1=other edge / 2=cloud`
-      - `mem_capacity`: `[Np]` in MB
+      - `mem_capacity`: `[Np]` in GB
       - `bandwidth_seq`: `[Np, T]`, where edge nodes carry fixed LAN bandwidth
         and the cloud node carries the latest monitored WAN bandwidth
-      - `gpu_util_seq`: `[Np, T]`
+      - `gpu_util_seq`: `[Np, T]` in `[0, 1]`
       - `mem_util_seq`: `[Np, T]` in `[0, 1]`
     """
 

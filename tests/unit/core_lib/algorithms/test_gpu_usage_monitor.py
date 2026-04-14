@@ -23,8 +23,8 @@ def test_gpu_usage_monitor_returns_zero_and_warns_when_all_backends_fail(monkeyp
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_jetson_sysfs", staticmethod(lambda: None))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_tegrastats", staticmethod(lambda: None))
 
-    assert monitor.get_parameter_value() == 0
-    assert warnings == ["[GPUUsage] Unable to determine GPU usage, returning 0."]
+    assert monitor.get_parameter_value() == 0.0
+    assert warnings == ["[GPUUsage] Unable to determine GPU usage, returning 0.0."]
 
 
 @pytest.mark.unit
@@ -193,17 +193,17 @@ def test_gpu_usage_monitor_returns_first_non_none_backend_value(monkeypatch):
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_nvidia_smi", staticmethod(lambda timeout_sec=1.0: 66))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_jetson_sysfs", staticmethod(lambda: 77))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_tegrastats", staticmethod(lambda: 88))
-    assert monitor.get_parameter_value() == 0
+    assert monitor.get_parameter_value() == 0.0
 
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_nvml", staticmethod(lambda: None))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_nvidia_smi", staticmethod(lambda timeout_sec=1.0: None))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_jetson_sysfs", staticmethod(lambda: 27))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_tegrastats", staticmethod(lambda: 88))
-    assert monitor.get_parameter_value() == 27
+    assert monitor.get_parameter_value() == 0.27
 
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_jetson_sysfs", staticmethod(lambda: None))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_tegrastats", staticmethod(lambda: 18))
-    assert monitor.get_parameter_value() == 18
+    assert monitor.get_parameter_value() == 0.18
 
 
 @pytest.mark.unit
@@ -233,5 +233,5 @@ def test_gpu_usage_monitor_ignores_backend_exceptions_and_keeps_fallback_order(m
         staticmethod(lambda: 33),
     )
 
-    assert monitor.get_parameter_value() == 33
+    assert monitor.get_parameter_value() == 0.33
     assert warnings == []

@@ -15,5 +15,6 @@ class MemoryUsageMonitor(BaseMonitor, abc.ABC):
         self.name = 'memory_usage'
 
     def get_parameter_value(self):
+        """Return memory utilization ratio in [0, 1]."""
         import psutil
-        return psutil.virtual_memory().percent
+        return psutil.virtual_memory().percent / 100.0

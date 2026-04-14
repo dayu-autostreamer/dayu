@@ -413,6 +413,17 @@ class Hedger:
             return f"{value_float:.{digits}f}"
         return str(value_float)
 
+    @classmethod
+    def _format_utilization_for_log(cls, value, digits: int = 4) -> str:
+        ratio_text = cls._format_log_value(value, digits)
+        try:
+            ratio_float = float(value)
+        except (TypeError, ValueError):
+            return ratio_text
+        if not math.isfinite(ratio_float):
+            return ratio_text
+        return f"{ratio_text} ({ratio_float * 100.0:.2f}%)"
+
     def _summarize_runtime_config(self) -> str:
         training_cfg = getattr(self, "training_cfg", None)
         checkpoint_cfg = getattr(self, "checkpoint_cfg", None)
@@ -578,8 +589,8 @@ class Hedger:
             f"latest_latency={self._format_log_value(latest_latency)}, "
             f"latest_edge_bw={self._format_log_value(latest_edge_bw)}, "
             f"latest_cloud_bw={self._format_log_value(latest_cloud_bw)}, "
-            f"latest_gpu_util={self._format_log_value(latest_gpu_util)}, "
-            f"latest_mem_util={self._format_log_value(latest_mem_util)}"
+            f"latest_gpu_util={self._format_utilization_for_log(latest_gpu_util)}, "
+            f"latest_mem_util={self._format_utilization_for_log(latest_mem_util)}"
         )
         if metrics:
             base += f", metrics=({self._summarize_metrics(metrics)})"

@@ -119,7 +119,7 @@ class HedgerDeploymentPPO(nn.Module):
               `baseline = max(total_used - prev_usage, 0)`  # memory used by non-RL workloads
               `residual_0 = max(cap - baseline, 0)`  # budget for the new deployment
         """
-        cap = phys_feats["mem_capacity"].float()  # [Np] MB
+        cap = phys_feats["mem_capacity"].float()  # [Np] GB
 
         if logic_feats is None or prev_deploy_mask is None:
             util = phys_feats["mem_util_seq"][:, -1].float()  # Current total memory utilization.

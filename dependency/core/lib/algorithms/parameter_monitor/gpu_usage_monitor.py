@@ -14,19 +14,24 @@ class GPUUsageMonitor(BaseMonitor, abc.ABC):
         self.name = 'gpu_usage'
 
     def get_parameter_value(self):
-        """Return GPU usage percent (0-100). If multiple GPUs, return the max utilization.
+        """Return GPU utilization ratio in [0, 1].
+
+        Backend helpers still report utilization in percent (0-100). This method
+        normalizes the first successful backend result into a ratio so the
+        scheduler and Hedger can consume a consistent unit.
+
         Fallback order:
         1) NVML via pynvml
         2) nvidia-smi CLI
         3) Jetson sysfs devfreq load files
         4) tegrastats one-line sample
-        If none available or no GPU present, return 0.
+        If none available or no GPU present, return 0.0.
         """
         # 1) Try NVML (most reliable across NVIDIA servers/desktops)
         try:
             percent = self._get_usage_via_nvml()
             if percent is not None:
-                return percent
+                return max(0.0, min(100.0, float(percent))) / 100.0
         except Exception as e:
             pass
 
@@ -34,7 +39,7 @@ class GPUUsageMonitor(BaseMonitor, abc.ABC):
         try:
             percent = self._get_usage_via_nvidia_smi()
             if percent is not None:
-                return percent
+                return max(0.0, min(100.0, float(percent))) / 100.0
         except Exception as e:
             pass
 
@@ -42,7 +47,7 @@ class GPUUsageMonitor(BaseMonitor, abc.ABC):
         try:
             percent = self._get_usage_via_jetson_sysfs()
             if percent is not None:
-                return percent
+                return max(0.0, min(100.0, float(percent))) / 100.0
         except Exception as e:
             pass
 
@@ -50,13 +55,13 @@ class GPUUsageMonitor(BaseMonitor, abc.ABC):
         try:
             percent = self._get_usage_via_tegrastats()
             if percent is not None:
-                return percent
+                return max(0.0, min(100.0, float(percent))) / 100.0
         except Exception as e:
             pass
 
         # No GPU or unable to determine
-        LOGGER.warning('[GPUUsage] Unable to determine GPU usage, returning 0.')
-        return 0
+        LOGGER.warning('[GPUUsage] Unable to determine GPU usage, returning 0.0.')
+        return 0.0
 
     @staticmethod
     def _get_usage_via_nvml():

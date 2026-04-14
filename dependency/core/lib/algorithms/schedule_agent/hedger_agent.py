@@ -62,6 +62,11 @@ class HedgerAgent(BaseAgent, abc.ABC):
             return 0.0
         return float(np.mean(obj_num_array.reshape(-1)))
 
+    @staticmethod
+    def _format_utilization_for_log(value) -> str:
+        ratio = float(value)
+        return f"{ratio:.4f} ({ratio * 100.0:.2f}%)"
+
     def get_schedule_plan(self, info):
         source_id = info['source_id']
         source_edge_device = info['source_device']
@@ -167,9 +172,9 @@ class HedgerAgent(BaseAgent, abc.ABC):
         if memory_capacity is not None:
             updated_fields.append(f"mem_capacity={float(memory_capacity):.2f}")
         if gpu_usage is not None:
-            updated_fields.append(f"gpu_usage={float(gpu_usage):.4f}")
+            updated_fields.append(f"gpu_usage={self._format_utilization_for_log(gpu_usage)}")
         if memory_usage is not None:
-            updated_fields.append(f"mem_usage={float(memory_usage):.4f}")
+            updated_fields.append(f"mem_usage={self._format_utilization_for_log(memory_usage)}")
         if model_flops_updates:
             updated_fields.append(f"model_flops={len(model_flops_updates)}")
         if model_memory_updates:

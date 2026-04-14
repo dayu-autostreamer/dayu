@@ -115,7 +115,7 @@ def test_local_and_remote_parameter_monitors_collect_expected_values(monkeypatch
 
     system = SimpleNamespace(resource_info={})
     assert cpu_usage_module.CPUUsageMonitor(system).get_parameter_value() == 12.5
-    assert memory_usage_module.MemoryUsageMonitor(system).get_parameter_value() == 61.5
+    assert memory_usage_module.MemoryUsageMonitor(system).get_parameter_value() == 0.615
     assert memory_capacity_module.MemoryCapacityMonitor(system).get_parameter_value() == 8.0
 
     monkeypatch.setattr(model_flops_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-a"))
