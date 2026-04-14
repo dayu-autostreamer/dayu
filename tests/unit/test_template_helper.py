@@ -135,6 +135,8 @@ def test_finetune_generator_yaml_groups_sources_by_selected_node(mounted_runtime
     assert second_env["SOURCE_ID"] == "1"
     assert first_env["ALL_EDGE_DEVICES"] == "['edgex1', 'edgex2']"
     assert "face-detection" in first_env["DAG"]
+    assert source_deploy[0]["source"]["source_device"] == "edgex1"
+    assert source_deploy[1]["source"]["source_device"] == "edgex1"
 
 
 @pytest.mark.unit

@@ -133,7 +133,6 @@ class BackendCore:
         yaml_dict.update({'processor': self.template_helper.load_application_apply_yaml(service_dict)})
 
         self.yaml_dict = yaml_dict
-        self.source_deploy = source_deploy
 
         first_stage_components = ['scheduler', 'distributor', 'monitor', 'controller']
         second_stage_components = ['generator', 'processor']
@@ -161,9 +160,13 @@ class BackendCore:
         time.sleep(1)
 
         LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
+        second_stage_source_deploy = copy.deepcopy(source_deploy)
         second_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
-                                                                         copy.deepcopy(source_deploy),
+                                                                         second_stage_source_deploy,
                                                                          scopes=second_stage_components)
+        # Persist source_device selected during generator planning so later
+        # processor-only redeployment requests keep the scheduler context.
+        self.source_deploy = second_stage_source_deploy
         try:
             result, msg = self.install_yaml_templates(second_docs_list)
         except timeout_exceptions.FunctionTimedOut:

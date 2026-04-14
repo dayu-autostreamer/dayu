@@ -44,12 +44,16 @@ def test_parse_and_apply_templates_runs_two_stage_install_and_starts_cycle_threa
     install_calls = []
     created_threads = []
 
+    def finetune_yaml_parameters(yaml_dict, deploy, scopes):
+        if scopes == ["generator", "processor"]:
+            deploy[0]["source"]["source_device"] = "edge1"
+            return copy.deepcopy(second_docs)
+        return copy.deepcopy(first_docs)
+
     backend_core_instance.template_helper = SimpleNamespace(
         load_policy_apply_yaml=lambda policy: {"scheduler": {"policy": policy["id"]}},
         load_application_apply_yaml=lambda service_dict: service_dict,
-        finetune_yaml_parameters=lambda yaml_dict, deploy, scopes: copy.deepcopy(
-            first_docs if scopes == ["scheduler", "distributor", "monitor", "controller"] else second_docs
-        ),
+        finetune_yaml_parameters=finetune_yaml_parameters,
     )
     monkeypatch.setattr(
         backend_core_instance,
@@ -84,6 +88,9 @@ def test_parse_and_apply_templates_runs_two_stage_install_and_starts_cycle_threa
         "scheduler": {"policy": "fixed"},
         "processor": {"face-detection": {"yaml": "face.yaml", "node": ["edge1"]}},
     }
+    assert backend_core_instance.source_deploy == [
+        {"source": {"id": 0, "name": "camera-0", "source_device": "edge1"}, "dag": {}, "node_set": ["edge1"]}
+    ]
     assert created_threads and created_threads[0].target == backend_core_instance.run_cycle_deploy
     assert created_threads[0].started is True
 
