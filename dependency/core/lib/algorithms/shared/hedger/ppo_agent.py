@@ -10,6 +10,19 @@ from .hedger_config import DeploymentConstraintCfg, OffloadingConstraintCfg
 from .utils import compute_returns_advantages
 
 
+def _move_tensor_dict_to_device(feats: Dict[str, torch.Tensor], device: torch.device) -> Dict[str, torch.Tensor]:
+    return {
+        key: value.to(device) if isinstance(value, torch.Tensor) else value
+        for key, value in feats.items()
+    }
+
+
+def _scalar_to_float(value) -> float:
+    if isinstance(value, torch.Tensor):
+        return float(value.detach().cpu().item())
+    return float(value)
+
+
 class HedgerDeploymentPPO(nn.Module):
     def __init__(self, encoder: TopologyEncoders, d_model=64, actor_lr=3e-4, critic_lr=1e-3,
                  gamma=0.99, lamda=0.95, clip_eps=0.2, update_encoder: bool = True, cloud_node_idx: int = -1,
@@ -254,13 +267,23 @@ class HedgerDeploymentPPO(nn.Module):
         clip_eps = self.clip_eps if clip_eps is None else clip_eps
         device = next(self.parameters()).device
         old_logp = torch.stack([t['logp'].detach().to(device) for t in transitions])
-        old_val = [t['value'] for t in transitions]
-        rewards = [t['reward'] for t in transitions]
+        old_val = [_scalar_to_float(t['value']) for t in transitions]
+        rewards = [float(t['reward']) for t in transitions]
         dones = [t['done'] for t in transitions]
         adv, rets = compute_returns_advantages(rewards, old_val, dones, self.gamma, self.lamda)
         adv = torch.tensor(adv, device=device)
         rets = torch.tensor(rets, device=device)
         adv = (adv - adv.mean()) / (adv.std() + 1e-6)
+        device_transitions = [
+            {
+                "logic_edge_index": tr["logic_edge_index"].to(device),
+                "logic_feats": _move_tensor_dict_to_device(tr["logic_feats"], device),
+                "phys_edge_index": tr["phys_edge_index"].to(device),
+                "phys_feats": _move_tensor_dict_to_device(tr["phys_feats"], device),
+                "deploy_mask": tr["deploy_mask"].to(device),
+            }
+            for tr in transitions
+        ]
         T = len(transitions)
         for _ in range(epochs):
             perm = torch.randperm(T, device=device)
@@ -270,7 +293,7 @@ class HedgerDeploymentPPO(nn.Module):
                 new_val_list = []
                 ent_list = []
                 for j in idx:
-                    tr = transitions[j]
+                    tr = device_transitions[int(j)]
                     lp, ent, val = self.evaluate(tr['logic_edge_index'], tr['logic_feats'], tr['phys_edge_index'],
                                                  tr['phys_feats'], tr['deploy_mask'])
                     new_logp_list.append(lp)
@@ -489,13 +512,25 @@ class HedgerOffloadingPPO(nn.Module):
         clip_eps = self.clip_eps if clip_eps is None else clip_eps
         device = next(self.parameters()).device
         old_logp = torch.stack([t['logp'].detach().to(device) for t in transitions])  # [T]
-        old_val = [t['value'] for t in transitions]
-        rewards = [t['reward'] for t in transitions]
+        old_val = [_scalar_to_float(t['value']) for t in transitions]
+        rewards = [float(t['reward']) for t in transitions]
         dones = [t['done'] for t in transitions]
         adv, rets = compute_returns_advantages(rewards, old_val, dones, self.gamma, self.lamda)
         adv = torch.tensor(adv, device=device)
         rets = torch.tensor(rets, device=device)
         adv = (adv - adv.mean()) / (adv.std() + 1e-6)
+        device_transitions = [
+            {
+                "logic_edge_index": tr["logic_edge_index"].to(device),
+                "logic_feats": _move_tensor_dict_to_device(tr["logic_feats"], device),
+                "phys_edge_index": tr["phys_edge_index"].to(device),
+                "phys_feats": _move_tensor_dict_to_device(tr["phys_feats"], device),
+                "actions": tr["actions"].to(device),
+                "static_mask": tr["static_mask"].to(device),
+                "topo_order": tr["topo_order"],
+            }
+            for tr in transitions
+        ]
         T = len(transitions)
         for _ in range(epochs):
             perm = torch.randperm(T, device=device)
@@ -505,7 +540,7 @@ class HedgerOffloadingPPO(nn.Module):
                 new_val_list = []
                 ent_list = []
                 for j in idx:
-                    tr = transitions[j]
+                    tr = device_transitions[int(j)]
                     lp, ent, val, _ = self.evaluate(tr['logic_edge_index'], tr['logic_feats'],
                                                     tr['phys_edge_index'], tr['phys_feats'],
                                                     tr['actions'], tr['static_mask'], tr['topo_order'])
