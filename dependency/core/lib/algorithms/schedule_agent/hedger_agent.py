@@ -206,6 +206,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
             latency_values.append(float(latency))
 
         if updated_services > 0:
+            self.hedger.ensure_started(reason=f"first task update from source {task.get_source_id()}")
             avg_complexity = float(np.mean(complexity_values)) if complexity_values else 0.0
             avg_latency = float(np.mean(latency_values)) if latency_values else 0.0
             LOGGER.debug(

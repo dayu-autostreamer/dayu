@@ -141,6 +141,9 @@ class Hedger:
         self.register_offloading_agent()
 
         self._data_lock = threading.Lock()
+        self._run_lock = threading.Lock()
+        self._run_thread = None
+        self._run_started = False
 
         FileOps.create_directory(self.checkpoint_cfg.root_dir)
         if self.checkpoint_cfg.load.enabled:
@@ -159,11 +162,24 @@ class Hedger:
         self.cur_deploy_mask = None
         self._frozen_offloading_agent = None
 
-        threading.Thread(target=self.run, daemon=True).start()
+        if self.mode == "inference":
+            self.ensure_started("inference initialization")
+        else:
+            LOGGER.info("[Hedger][Lifecycle] Training start is deferred until the first task update arrives.")
 
     def set_seed(self):
         random.seed(self.seed)
         torch.manual_seed(self.seed)
+
+    def ensure_started(self, reason: str = "manual") -> bool:
+        with self._run_lock:
+            if self._run_started:
+                return False
+            self._run_started = True
+            self._run_thread = threading.Thread(target=self.run, daemon=True)
+            self._run_thread.start()
+        LOGGER.info(f"[Hedger][Lifecycle] Background worker started: mode={self.mode}, reason={reason}")
+        return True
 
     @staticmethod
     def _require_mapping(config: dict, key: str) -> dict:
