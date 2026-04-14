@@ -835,6 +835,74 @@ def test_hedger_agent_update_resource_tolerates_partial_resource_updates():
 
 
 @pytest.mark.unit
+def test_hedger_ensure_started_is_one_shot(monkeypatch):
+    hedger = Hedger.__new__(Hedger)
+    hedger.mode = "train"
+    hedger._run_lock = threading.Lock()
+    hedger._run_thread = None
+    hedger._run_started = False
+    hedger.run = lambda: None
+
+    created_threads = []
+
+    class FakeThread:
+        def __init__(self, target=None, daemon=None, **kwargs):
+            self.target = target
+            self.daemon = daemon
+            self.started = False
+            created_threads.append(self)
+
+        def start(self):
+            self.started = True
+
+    monkeypatch.setattr(
+        "core.lib.algorithms.shared.hedger.hedger.threading.Thread",
+        FakeThread,
+    )
+
+    assert hedger.ensure_started("first task update") is True
+    assert hedger.ensure_started("duplicate task update") is False
+    assert len(created_threads) == 1
+    assert created_threads[0].target == hedger.run
+    assert created_threads[0].daemon is True
+    assert created_threads[0].started is True
+
+
+@pytest.mark.unit
+def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
+    calls = []
+    buffer = types.SimpleNamespace(
+        add_task_complexity=lambda service, value: calls.append(("complexity", service, value)),
+        add_task_latency=lambda service, value: calls.append(("latency", service, value)),
+    )
+    hedger = types.SimpleNamespace(
+        state_buffer=buffer,
+        ensure_started=lambda reason: calls.append(("start", reason)),
+    )
+    agent = HedgerAgent.__new__(HedgerAgent)
+    agent.hedger = hedger
+
+    task = types.SimpleNamespace(
+        get_source_id=lambda: 7,
+        get_dag=lambda: types.SimpleNamespace(nodes=["svc-a", TaskConstant.START.value, "svc-b", TaskConstant.END.value]),
+        get_service=lambda name: types.SimpleNamespace(
+            get_execute_time=lambda: 0.2 if name == "svc-a" else 0.4,
+            get_scenario_data=lambda: {"obj_num": [1, 3]} if name == "svc-a" else {"obj_num": 5},
+        ),
+    )
+
+    agent.update_task(task)
+
+    assert calls == [
+        ("complexity", "svc-a", 2.0),
+        ("latency", "svc-a", 0.2),
+        ("complexity", "svc-b", 5.0),
+        ("latency", "svc-b", 0.4),
+        ("start", "first task update from source 7"),
+    ]
+
+
+@pytest.mark.unit
 def test_state_buffer_bandwidth_model_is_device_agnostic():
     logical_topology, physical_topology = build_test_topologies()
     buffer = StateBuffer(
