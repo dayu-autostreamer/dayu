@@ -63,7 +63,6 @@ class HedgerAgent(BaseAgent, abc.ABC):
         return float(np.mean(obj_num_array.reshape(-1)))
 
     def get_schedule_plan(self, info):
-        LOGGER.debug(f"****info in hedger agent: {info}")
         source_id = info['source_id']
         source_edge_device = info['source_device']
         all_edge_devices = info['all_edge_devices']
