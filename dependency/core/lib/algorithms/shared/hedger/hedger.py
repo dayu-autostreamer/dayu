@@ -1231,6 +1231,18 @@ class Hedger:
 
                 new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state(
                     prev_deploy_mask=prev_deploy_mask,)
+                new_logic_feats_dev = {k: v.to(self.device) for k, v in new_logic_feats.items()}
+                new_phys_feats_dev = {k: v.to(self.device) for k, v in new_phys_feats.items()}
+                next_value = (
+                    0.0 if done else float(
+                        self.deployment_agent.estimate_value(
+                            logic_edge_index=logic_edge_index,
+                            logic_feats=new_logic_feats_dev,
+                            phys_edge_index=phys_edge_index,
+                            phys_feats=new_phys_feats_dev,
+                        ).detach().cpu().item()
+                    )
+                )
 
                 # Compute the reward from environment metrics and policy-side auxiliaries.
                 reward = self._compute_deployment_reward(metrics, aux)
@@ -1247,6 +1259,7 @@ class Hedger:
                         "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
                         "logp": logp.detach().cpu(),
                         "value": value.detach().cpu(),
+                        "next_value": float(next_value),
                         "reward": float(reward),
                         "done": bool(done),
                     }
@@ -1358,6 +1371,18 @@ class Hedger:
                 )
 
                 new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state()
+                new_logic_feats_dev = {k: v.to(self.device) for k, v in new_logic_feats.items()}
+                new_phys_feats_dev = {k: v.to(self.device) for k, v in new_phys_feats.items()}
+                next_value = (
+                    0.0 if done else float(
+                        self.offloading_agent.estimate_value(
+                            logic_edge_index=logic_edge_index,
+                            logic_feats=new_logic_feats_dev,
+                            phys_edge_index=phys_edge_index,
+                            phys_feats=new_phys_feats_dev,
+                        ).detach().cpu().item()
+                    )
+                )
 
                 reward = self._compute_offloading_reward(metrics, aux)
                 if self.state_buffer is not None:
@@ -1374,6 +1399,7 @@ class Hedger:
                         "topo_order": None,
                         "logp": logp.detach().cpu(),
                         "value": value.detach().cpu(),
+                        "next_value": float(next_value),
                         "reward": float(reward),
                         "done": bool(done),
                     }

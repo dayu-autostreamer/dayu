@@ -45,11 +45,18 @@ def topo_levels_dag(edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
     return levels
 
 
-def compute_returns_advantages(rewards: List[float], values: List[float], dones: List[int], gamma=0.99, lamda=0.95):
+def compute_returns_advantages(
+        rewards: List[float],
+        values: List[float],
+        dones: List[int],
+        gamma=0.99,
+        lamda=0.95,
+        last_value: float = 0.0,
+):
     T = len(rewards)
     adv = [0.0] * T
     gae = 0.0
-    values_ext = values + [0.0]
+    values_ext = values + [float(last_value)]
     for t in reversed(range(T)):
         delta = rewards[t] + gamma * values_ext[t + 1] * (1 - dones[t]) - values_ext[t]
         gae = delta + gamma * lamda * (1 - dones[t]) * gae

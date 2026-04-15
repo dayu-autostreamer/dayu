@@ -24,6 +24,7 @@ from core.lib.algorithms.shared.hedger.ppo_agent import (
     HedgerOffloadingPPO,
 )
 from core.lib.algorithms.shared.hedger.state_buffer import BufferWaitCfg, StateBuffer
+from core.lib.algorithms.shared.hedger.utils import compute_returns_advantages
 from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy import (
     HedgerInitialDeploymentPolicy,
 )
@@ -964,3 +965,33 @@ def test_initial_deployment_policy_accepts_single_node_strings():
 
     assert deploy_plan["svc-a"] == ["edge-a"]
     assert deploy_plan["svc-b"] == ["edge-a", "edge-b"]
+
+
+@pytest.mark.unit
+def test_compute_returns_advantages_bootstraps_truncated_rollout_tail():
+    adv, rets = compute_returns_advantages(
+        rewards=[1.0],
+        values=[0.5],
+        dones=[False],
+        gamma=0.9,
+        lamda=0.95,
+        last_value=2.0,
+    )
+
+    assert adv == pytest.approx([2.3])
+    assert rets == pytest.approx([2.8])
+
+
+@pytest.mark.unit
+def test_compute_returns_advantages_ignores_bootstrap_on_true_terminal():
+    adv, rets = compute_returns_advantages(
+        rewards=[1.0],
+        values=[0.5],
+        dones=[True],
+        gamma=0.9,
+        lamda=0.95,
+        last_value=2.0,
+    )
+
+    assert adv == pytest.approx([0.5])
+    assert rets == pytest.approx([1.0])

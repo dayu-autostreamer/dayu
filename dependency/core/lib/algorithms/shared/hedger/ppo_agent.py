@@ -144,6 +144,20 @@ class HedgerDeploymentPPO(nn.Module):
         h_p = self.device_adapter(h_p)
         return h_s, h_p
 
+    @torch.no_grad()
+    def estimate_value(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats) -> torch.Tensor:
+        """
+        Estimate the state value for rollout bootstrap.
+
+        Hedger uses fixed-length truncated rollouts in a continuous online
+        control loop, so PPO should bootstrap the final transition with the
+        critic value of the successor state instead of forcing it to zero.
+        """
+        h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
+        h_s, h_p = self._adapt_embeddings(h_s, h_p)
+        value = self.critic(h_s, h_p)
+        return value.squeeze(0)
+
     def _enforce_cloud_replica(self, deploy_mask: torch.Tensor) -> torch.Tensor:
         """Force every service to keep a cloud replica in the deployment mask."""
         cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (deploy_mask.size(1) - 1)
@@ -270,7 +284,8 @@ class HedgerDeploymentPPO(nn.Module):
         old_val = [_scalar_to_float(t['value']) for t in transitions]
         rewards = [float(t['reward']) for t in transitions]
         dones = [t['done'] for t in transitions]
-        adv, rets = compute_returns_advantages(rewards, old_val, dones, self.gamma, self.lamda)
+        last_value = 0.0 if dones[-1] else _scalar_to_float(transitions[-1].get("next_value", 0.0))
+        adv, rets = compute_returns_advantages(rewards, old_val, dones, self.gamma, self.lamda, last_value=last_value)
         adv = torch.tensor(adv, device=device)
         rets = torch.tensor(rets, device=device)
         adv = (adv - adv.mean()) / (adv.std() + 1e-6)
@@ -369,6 +384,20 @@ class HedgerOffloadingPPO(nn.Module):
         h_s = self.service_adapter(h_s)
         h_p = self.device_adapter(h_p)
         return h_s, h_p
+
+    @torch.no_grad()
+    def estimate_value(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats) -> torch.Tensor:
+        """
+        Estimate the state value for rollout bootstrap.
+
+        The offloading loop is a continuing task. Rollout boundaries are
+        truncation boundaries, not terminal states, so the final step should be
+        bootstrapped with the successor-state value.
+        """
+        h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
+        h_s, h_p = self._adapt_embeddings(h_s, h_p)
+        value = self.critic(h_s, h_p)
+        return value.squeeze(0)
 
     @staticmethod
     def _build_parents(edge_index: torch.Tensor, num_nodes: int) -> List[List[int]]:
@@ -515,7 +544,8 @@ class HedgerOffloadingPPO(nn.Module):
         old_val = [_scalar_to_float(t['value']) for t in transitions]
         rewards = [float(t['reward']) for t in transitions]
         dones = [t['done'] for t in transitions]
-        adv, rets = compute_returns_advantages(rewards, old_val, dones, self.gamma, self.lamda)
+        last_value = 0.0 if dones[-1] else _scalar_to_float(transitions[-1].get("next_value", 0.0))
+        adv, rets = compute_returns_advantages(rewards, old_val, dones, self.gamma, self.lamda, last_value=last_value)
         adv = torch.tensor(adv, device=device)
         rets = torch.tensor(rets, device=device)
         adv = (adv - adv.mean()) / (adv.std() + 1e-6)
