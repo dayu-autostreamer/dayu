@@ -977,7 +977,8 @@ class Hedger:
                     f"{self._summarize_deploy_mask(self.cur_deploy_mask)}, "
                     f"{self._summarize_deployment_plan(self.deployment_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
-                    f"capacity_relax_cnt={aux['capacity_relax_cnt']}"
+                    f"capacity_relax_cnt={aux['capacity_relax_cnt']}, "
+                    f"capacity_relax_cost={self._format_log_value(aux['capacity_relax_cost'])}"
                 )
                 step += 1
             except Exception as e:
@@ -1029,6 +1030,7 @@ class Hedger:
                     f"{self._summarize_offloading_plan(self.offloading_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
                     f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}, "
+                    f"correction_cost={self._format_log_value(aux['correction_cost'])}, "
                     f"aux_cost={self._format_log_value(aux['aux_cost'])}"
                 )
                 step += 1
@@ -1203,7 +1205,7 @@ class Hedger:
             self._stage_log_path("deployment_train.csv"),
             fmt="csv",
             fieldnames=["step", "epoch", "dep_updates", "dep_reward", "avg_off_reward",
-                        "dep_change_cost", "cap_relax_cnt", "dep_offload_weight",
+                        "dep_change_cost", "cap_relax_cnt", "cap_relax_cost", "dep_offload_weight",
                         "dep_change_weight", "cap_relax_weight"],
             overwrite=True,
             flush_every=1,
@@ -1227,7 +1229,8 @@ class Hedger:
                 prev_deploy_mask_dev = prev_deploy_mask.to(self.device) if prev_deploy_mask is not None else None
 
                 with self._model_lock, torch.no_grad():
-                    # Sample a new deployment strategy.
+                    # Sample a raw deployment action, then execute the corrected
+                    # deployment mask returned by the policy.
                     deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
                         logic_edge_index=logic_edge_index,
                         logic_feats=logic_feats_dev,
@@ -1266,6 +1269,8 @@ class Hedger:
                 reward = self._compute_deployment_reward(metrics, aux)
 
                 # Keep transition payloads on CPU to avoid cross-thread device issues.
+                # PPO is trained against the raw sampled action, while the
+                # environment executes the corrected deployment mask.
                 if self.stage_cfg.update_deployment_policy:
                     tr = {
                         "logic_edge_index": logic_edge_index.cpu(),
@@ -1273,6 +1278,7 @@ class Hedger:
                         "phys_edge_index": phys_edge_index.cpu(),
                         "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
                         "deploy_mask": deploy_mask.cpu(),
+                        "raw_deploy_mask": aux["raw_deploy_mask"].detach().cpu(),
                         "topo_order": None,  # Recomputed during evaluation if needed.
                         "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
                         "logp": logp.detach().cpu(),
@@ -1301,6 +1307,7 @@ class Hedger:
                     avg_off_reward=metrics["avg_offloading_reward"],
                     dep_change_cost=metrics["deploy_change_cost"],
                     cap_relax_cnt=aux["capacity_relax_cnt"],
+                    cap_relax_cost=aux["capacity_relax_cost"],
                     dep_offload_weight=self.deployment_agent_params["reward_dep_offload_weight"],
                     dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
@@ -1311,6 +1318,7 @@ class Hedger:
                     f"{self._summarize_deployment_plan(self.deployment_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
                     f"capacity_relax_cnt={aux['capacity_relax_cnt']}, "
+                    f"capacity_relax_cost={self._format_log_value(aux['capacity_relax_cost'])}, "
                     f"update_policy={self.stage_cfg.update_deployment_policy}, transitions={transition_count}"
                 )
 
@@ -1352,6 +1360,7 @@ class Hedger:
             fieldnames=["step", "epoch", "off_updates", "off_reward", "latency",
                         "slo_violation", "cloud_fraction", "aux_cost", "off_latency_weight",
                         "off_slo_weight", "off_cloud_weight", "switch_cnt", "correction_cnt",
+                        "correction_cost",
                         "switch_weight", "correction_weight"],
             overwrite=True,
             flush_every=10,
@@ -1409,13 +1418,15 @@ class Hedger:
                 if self.state_buffer is not None:
                     self.state_buffer.add_offloading_reward(reward)
 
+                # PPO is trained against the raw sampled action, while the
+                # environment executes the corrected offloading plan.
                 if self.stage_cfg.update_offloading_policy:
                     tr = {
                         "logic_edge_index": logic_edge_index.cpu(),
                         "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
                         "phys_edge_index": phys_edge_index.cpu(),
                         "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
-                        "actions": actions.cpu(),
+                        "actions": aux["raw_actions"].detach().cpu(),
                         "static_mask": static_mask_dev.cpu(),
                         "topo_order": None,
                         "logp": logp.detach().cpu(),
@@ -1449,6 +1460,7 @@ class Hedger:
                     off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
                     switch_cnt=aux["switches"],
                     correction_cnt=aux["correction_cnt"],
+                    correction_cost=aux["correction_cost"],
                     switch_weight=self.offloading_agent_params["penalty_switch"],
                     correction_weight=self.offloading_agent_params["penalty_relax"],
                 )
@@ -1457,6 +1469,7 @@ class Hedger:
                     f"{self._summarize_offloading_plan(self.offloading_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
                     f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}, "
+                    f"correction_cost={self._format_log_value(aux['correction_cost'])}, "
                     f"aux_cost={self._format_log_value(aux['aux_cost'])}, "
                     f"update_policy={self.stage_cfg.update_offloading_policy}, transitions={transition_count}"
                 )
@@ -1475,7 +1488,7 @@ class Hedger:
 
         The reward is defined as negative performance cost plus policy-side
         penalties. `metrics` contains environment indicators, while `aux`
-        contains switch/correction statistics gathered inside the policy.
+        contains switch/correction diagnostics gathered inside the policy.
         """
         metrics = metrics or {}
 
@@ -1495,7 +1508,9 @@ class Hedger:
         reward -= w_slo * slo_v
         reward -= w_cloud * cloud_frac
 
-        # Additional constraint cost: device switches and post-sampling corrections.
+        # Additional constraint cost: device switches and post-sampling
+        # correction severity. `correction_cnt` is still logged for debugging,
+        # but the reward uses a continuous correction cost.
         aux_cost = float(aux["aux_cost"])
         reward -= aux_cost
 
@@ -1508,7 +1523,7 @@ class Hedger:
         The reward combines:
             - aggregated feedback from offloading (`avg_offloading_reward`)
             - deployment change cost
-            - capacity-correction penalty
+            - capacity-projection penalty
         """
         metrics = metrics or {}
 
@@ -1524,10 +1539,13 @@ class Hedger:
         # Treat the lower-level offloading reward as bottom-up feedback.
         reward += w_off * avg_off_r
 
-        # Penalize post-sampling capacity corrections.
-        cap_relax_cnt = float(aux["capacity_relax_cnt"])
+        # Penalize projection severity rather than just projection count.
+        # `capacity_relax_cnt` is still logged for diagnostics, but the reward
+        # uses a continuous correction cost that reflects how strongly the raw
+        # policy preferred the removed replicas.
+        cap_relax_cost = float(aux.get("capacity_relax_cost", 0.0))
         penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
-        reward -= penalty_capacity_relax * cap_relax_cnt
+        reward -= penalty_capacity_relax * cap_relax_cost
 
         return reward
 

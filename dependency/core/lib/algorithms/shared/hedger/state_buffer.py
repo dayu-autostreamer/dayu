@@ -131,6 +131,20 @@ class StateBuffer:
     def _resolve_device_index(self, device_name: str) -> Optional[int]:
         return self._device_to_idx.get(device_name)
 
+    @staticmethod
+    def _merge_static_service_scalar(current: float, new_value: float) -> float:
+        """
+        Merge service-level static scalars observed from different devices.
+
+        Hedger currently models `model_flops` and `model_mem` as one scalar per
+        logical service, but monitors report them from concrete deployed pods on
+        concrete devices. When multiple devices host the same service, blindly
+        overwriting the buffer would make the logical static feature depend on
+        update arrival order. We therefore keep the maximum observed value as a
+        conservative, order-independent aggregate.
+        """
+        return max(float(current), float(new_value))
+
     def _pad_trunc_1d(self, x: List[float], seq_len: int, pad_mode: str = "edge") -> List[float]:
         """
         Pad or truncate a 1D sequence to `seq_len`.
@@ -207,7 +221,10 @@ class StateBuffer:
                         s_idx = self._resolve_service_index(service_name)
                         if s_idx is None:
                             continue
-                        self.model_flops_buffer[s_idx] = float(value)
+                        self.model_flops_buffer[s_idx] = self._merge_static_service_scalar(
+                            self.model_flops_buffer[s_idx],
+                            value,
+                        )
                         self._logic_flops_seen[s_idx] = True
                 else:
                     flops_list = list(service_or_values)
@@ -219,7 +236,10 @@ class StateBuffer:
                 s_idx = self._resolve_service_index(service_or_values)
                 if s_idx is None:
                     return
-                self.model_flops_buffer[s_idx] = float(flops)
+                self.model_flops_buffer[s_idx] = self._merge_static_service_scalar(
+                    self.model_flops_buffer[s_idx],
+                    flops,
+                )
                 self._logic_flops_seen[s_idx] = True
             self._mark_static_logic_ready()
             self._bump_version()
@@ -232,7 +252,10 @@ class StateBuffer:
                         s_idx = self._resolve_service_index(service_name)
                         if s_idx is None:
                             continue
-                        self.model_memory_buffer[s_idx] = float(value)
+                        self.model_memory_buffer[s_idx] = self._merge_static_service_scalar(
+                            self.model_memory_buffer[s_idx],
+                            value,
+                        )
                         self._logic_memory_seen[s_idx] = True
                 else:
                     memory_list = list(service_or_values)
@@ -244,7 +267,10 @@ class StateBuffer:
                 s_idx = self._resolve_service_index(service_or_values)
                 if s_idx is None:
                     return
-                self.model_memory_buffer[s_idx] = float(memory)
+                self.model_memory_buffer[s_idx] = self._merge_static_service_scalar(
+                    self.model_memory_buffer[s_idx],
+                    memory,
+                )
                 self._logic_memory_seen[s_idx] = True
             self._mark_static_logic_ready()
             self._bump_version()

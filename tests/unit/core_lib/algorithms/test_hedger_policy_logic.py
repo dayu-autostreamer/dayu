@@ -1,3 +1,4 @@
+import math
 import threading
 import types
 
@@ -165,11 +166,85 @@ def test_deployment_policy_always_projects_to_capacity(monkeypatch):
 
     assert deploy_mask[:, 1].tolist() == [True, True]
     assert deploy_mask[:, 0].tolist() == [True, False]
-    assert aux["capacity_relax_cnt"] == 0
+    assert aux["capacity_relax_cnt"] == 1
+    assert aux["capacity_relax_cost"] == pytest.approx(-math.log(0.2) / 2.0)
+    assert aux["raw_deploy_mask"][:, 0].tolist() == [True, True]
 
 
 @pytest.mark.unit
-def test_offloading_policy_enforces_cloud_descendants_during_sampling():
+def test_deployment_projection_prioritizes_higher_probability_over_previous_deployment(monkeypatch):
+    encoder = DummyEncoder(
+        service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+        device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+    )
+    agent = HedgerDeploymentPPO(
+        encoder=encoder,
+        d_model=2,
+        update_encoder=False,
+        cloud_node_idx=1,
+    )
+
+    def fake_forward(self, h_s, h_p, mask=None):
+        probs = torch.tensor([[0.9, 0.05], [0.2, 0.05]], dtype=torch.float32, device=h_s.device)
+        if mask is not None:
+            probs = torch.where(mask, probs, torch.zeros_like(probs))
+        return probs
+
+    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
+    monkeypatch.setattr(
+        torch,
+        "rand_like",
+        lambda x: torch.full_like(x, 0.1),
+    )
+
+    logic_edge_index = torch.empty((2, 0), dtype=torch.long)
+    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
+    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
+    phys_feats = {
+        "mem_capacity": torch.tensor([1.0, 100.0], dtype=torch.float32),
+        "mem_util_seq": torch.zeros((2, 1), dtype=torch.float32),
+    }
+    prev_deploy_mask = torch.tensor([[False, True], [True, True]], dtype=torch.bool)
+
+    deploy_mask, _, _, _, aux = agent.policy(
+        logic_edge_index=logic_edge_index,
+        logic_feats=logic_feats,
+        phys_edge_index=phys_edge_index,
+        phys_feats=phys_feats,
+        prev_deploy_mask=prev_deploy_mask,
+    )
+
+    assert aux["raw_deploy_mask"][:, 0].tolist() == [True, True]
+    assert deploy_mask[:, 0].tolist() == [True, False]
+    assert aux["capacity_relax_cnt"] == 1
+    assert aux["capacity_relax_cost"] == pytest.approx(-math.log(0.8) / 2.0)
+
+
+@pytest.mark.unit
+def test_deployment_reward_uses_relax_cost_not_relax_count():
+    hedger = object.__new__(Hedger)
+    hedger.deployment_agent_params = {
+        "reward_dep_change_weight": 0.1,
+        "reward_dep_offload_weight": 1.0,
+        "penalty_capacity_relax": 2.0,
+    }
+
+    reward = hedger._compute_deployment_reward(
+        metrics={
+            "avg_offloading_reward": 1.5,
+            "deploy_change_cost": 2.0,
+        },
+        aux={
+            "capacity_relax_cnt": 5,
+            "capacity_relax_cost": 0.25,
+        },
+    )
+
+    assert reward == pytest.approx(1.5 - 0.1 * 2.0 - 2.0 * 0.25)
+
+
+@pytest.mark.unit
+def test_offloading_policy_corrects_cloud_descendants_after_sampling():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -180,7 +255,7 @@ def test_offloading_policy_enforces_cloud_descendants_during_sampling():
         update_encoder=False,
         source_node_idx=0,
         cloud_node_idx=1,
-        constraint_cfg=OffloadingConstraintCfg(penalty_relax=2.0),
+        constraint_cfg=OffloadingConstraintCfg(penalty_switch=0.0, penalty_relax=2.0),
     )
     agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
 
@@ -210,8 +285,38 @@ def test_offloading_policy_enforces_cloud_descendants_during_sampling():
     )
 
     assert actions.tolist() == [1, 1]
-    assert aux["correction_cnt"] == 0
-    assert aux["aux_cost"] == pytest.approx(0.0)
+    assert aux["raw_actions"].tolist() == [1, 0]
+    assert aux["correction_cnt"] == 1
+    assert aux["correction_cost"] == pytest.approx(-math.log(1e-6) / 2.0)
+    assert aux["aux_cost"] == pytest.approx(2.0 * (-math.log(1e-6) / 2.0))
+
+
+@pytest.mark.unit
+def test_offloading_reward_uses_correction_cost_not_count():
+    hedger = object.__new__(Hedger)
+    hedger.offloading_agent_params = {
+        "reward_off_latency_weight": 1.0,
+        "reward_off_slo_weight": 2.0,
+        "reward_off_cloud_weight": 0.5,
+        "penalty_switch": 0.1,
+        "penalty_relax": 3.0,
+    }
+
+    reward = hedger._compute_offloading_reward(
+        metrics={
+            "latency": 0.4,
+            "slo_violation": 0.25,
+            "cloud_fraction": 0.5,
+        },
+        aux={
+            "switches": 7,
+            "correction_cnt": 9,
+            "correction_cost": 0.75,
+            "aux_cost": 0.1 * 7 + 3.0 * 0.75,
+        },
+    )
+
+    assert reward == pytest.approx(-(0.4 + 2.0 * 0.25 + 0.5 * 0.5) - (0.1 * 7 + 3.0 * 0.75))
 
 
 @pytest.mark.unit
@@ -279,6 +384,27 @@ def test_state_buffer_supports_incremental_service_and_device_updates():
     assert phys_feats["bandwidth_seq"][0] == pytest.approx([100.0, 100.0, 100.0, 100.0])
     assert phys_feats["bandwidth_seq"][1] == pytest.approx([100.0, 100.0, 100.0, 100.0])
     assert phys_feats["bandwidth_seq"][2] == pytest.approx([10.0, 10.0, 10.0, 10.0])
+
+
+@pytest.mark.unit
+def test_state_buffer_aggregates_service_static_requirements_by_max():
+    logical_topology, physical_topology = build_test_topologies()
+    buffer = StateBuffer(
+        16,
+        logical_topology=logical_topology,
+        physical_topology=physical_topology,
+    )
+
+    buffer.add_model_flops("svc-a", 10.0)
+    buffer.add_model_flops("svc-a", 8.0)
+    buffer.add_model_flops("svc-a", 12.0)
+
+    buffer.add_model_memory("svc-b", 1.2)
+    buffer.add_model_memory("svc-b", 2.5)
+    buffer.add_model_memory("svc-b", 1.8)
+
+    assert buffer.model_flops_buffer[logical_topology.index("svc-a")] == pytest.approx(12.0)
+    assert buffer.model_memory_buffer[logical_topology.index("svc-b")] == pytest.approx(2.5)
 
 
 @pytest.mark.unit
