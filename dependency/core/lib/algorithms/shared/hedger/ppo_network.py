@@ -41,14 +41,28 @@ class OffloadActor(nn.Module):
 
 
 class ValueHead(nn.Module):
-    def __init__(self, d_model: int):
+    def __init__(self, d_model: int, context_dim: Optional[int] = None):
         super().__init__()
-        self.mlp = nn.Sequential(nn.Linear(2 * d_model, d_model), nn.ReLU(), nn.Linear(d_model, 1))
+        self.context_dim = d_model if context_dim is None else int(context_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * d_model + self.context_dim, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, 1),
+        )
 
-    def forward(self, h_s: torch.Tensor, h_p: torch.Tensor) -> torch.Tensor:
+    def forward(
+            self,
+            h_s: torch.Tensor,
+            h_p: torch.Tensor,
+            context: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         vs = h_s.mean(dim=0, keepdim=True)
         vp = h_p.mean(dim=0, keepdim=True)
-        return self.mlp(torch.cat([vs, vp], dim=-1)).squeeze(-1)  # [1]
+        if context is None:
+            context = torch.zeros((1, self.context_dim), device=vs.device, dtype=vs.dtype)
+        elif context.dim() == 1:
+            context = context.unsqueeze(0)
+        return self.mlp(torch.cat([vs, vp, context], dim=-1)).squeeze(-1)  # [1]
 
 
 class FeatureAdapter(nn.Module):

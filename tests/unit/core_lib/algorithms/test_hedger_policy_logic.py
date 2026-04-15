@@ -165,11 +165,11 @@ def test_deployment_policy_always_projects_to_capacity(monkeypatch):
 
     assert deploy_mask[:, 1].tolist() == [True, True]
     assert deploy_mask[:, 0].tolist() == [True, False]
-    assert aux["capacity_relax_cnt"] == 1
+    assert aux["capacity_relax_cnt"] == 0
 
 
 @pytest.mark.unit
-def test_offloading_policy_samples_then_promotes_descendants_to_cloud():
+def test_offloading_policy_enforces_cloud_descendants_during_sampling():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -210,8 +210,8 @@ def test_offloading_policy_samples_then_promotes_descendants_to_cloud():
     )
 
     assert actions.tolist() == [1, 1]
-    assert aux["correction_cnt"] == 1
-    assert aux["aux_cost"] == pytest.approx(2.0)
+    assert aux["correction_cnt"] == 0
+    assert aux["aux_cost"] == pytest.approx(0.0)
 
 
 @pytest.mark.unit

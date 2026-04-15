@@ -23,6 +23,26 @@ def _scalar_to_float(value) -> float:
     return float(value)
 
 
+def _build_mask_context(mask: Optional[torch.Tensor], h_p: torch.Tensor) -> torch.Tensor:
+    """
+    Summarize a service-device mask into one context vector.
+
+    The mask is projected through physical node embeddings so the critic can
+    observe deployment availability / current placement without depending on a
+    fixed graph size.
+    """
+    if mask is None:
+        return torch.zeros((1, h_p.size(-1)), device=h_p.device, dtype=h_p.dtype)
+
+    mask_f = mask.float()
+    if mask_f.numel() == 0:
+        return torch.zeros((1, h_p.size(-1)), device=h_p.device, dtype=h_p.dtype)
+
+    counts = mask_f.sum(dim=1, keepdim=True).clamp_min(1.0)
+    per_service_context = torch.matmul(mask_f, h_p) / counts
+    return per_service_context.mean(dim=0, keepdim=True)
+
+
 class HedgerDeploymentPPO(nn.Module):
     def __init__(self, encoder: TopologyEncoders, d_model=64, actor_lr=3e-4, critic_lr=1e-3,
                  gamma=0.99, lamda=0.95, clip_eps=0.2, update_encoder: bool = True, cloud_node_idx: int = -1,
@@ -144,8 +164,20 @@ class HedgerDeploymentPPO(nn.Module):
         h_p = self.device_adapter(h_p)
         return h_s, h_p
 
+    def _deployment_context(self, h_p: torch.Tensor, prev_deploy_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        if prev_deploy_mask is None:
+            return torch.zeros((1, h_p.size(-1)), device=h_p.device, dtype=h_p.dtype)
+        return _build_mask_context(self._enforce_cloud_replica(prev_deploy_mask.bool()), h_p)
+
     @torch.no_grad()
-    def estimate_value(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats) -> torch.Tensor:
+    def estimate_value(
+            self,
+            logic_edge_index,
+            logic_feats,
+            phys_edge_index,
+            phys_feats,
+            prev_deploy_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Estimate the state value for rollout bootstrap.
 
@@ -155,7 +187,7 @@ class HedgerDeploymentPPO(nn.Module):
         """
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
-        value = self.critic(h_s, h_p)
+        value = self.critic(h_s, h_p, self._deployment_context(h_p, prev_deploy_mask))
         return value.squeeze(0)
 
     def _enforce_cloud_replica(self, deploy_mask: torch.Tensor) -> torch.Tensor:
@@ -164,6 +196,18 @@ class HedgerDeploymentPPO(nn.Module):
         deploy_mask = deploy_mask.clone()
         deploy_mask[:, cloud_idx] = True
         return deploy_mask
+
+    def _dynamic_allowed_mask(
+            self,
+            static_allowed_row: torch.Tensor,
+            residual: torch.Tensor,
+            model_mem: torch.Tensor,
+            cloud_idx: int,
+    ) -> torch.Tensor:
+        allowed = torch.logical_and(static_allowed_row, residual >= (model_mem - 1e-6))
+        allowed = allowed.clone()
+        allowed[cloud_idx] = True
+        return allowed
 
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index,
@@ -183,97 +227,126 @@ class HedgerDeploymentPPO(nn.Module):
         # Static feasibility mask.
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
 
-        # Mask out physically impossible placements before sampling.
-        probs_raw = self.actor(h_s, h_p, mask=static_allowed)  # [Ms, Np], post-sigmoid replica probabilities
-
-        # Clamp probabilities for numerical stability and avoid `log(0)` on masked-out positions.
-        eps = 1e-6
-        probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
-        probs_log = torch.where(static_allowed, probs_log, torch.full_like(probs_log, eps))
-
-        # Do not sample from statically invalid positions.
-        probs_sample = torch.where(static_allowed, probs_raw, torch.zeros_like(probs_raw))
-
-        # Sample a multilabel Bernoulli action. `probs_log` is used to build the distribution;
-        # `probs_sample` is used for actual sampling.
-        dist = torch.distributions.Bernoulli(probs=probs_log)
-        acts = torch.rand_like(probs_sample) < probs_sample  # bool [Ms, Np]
-        deploy_mask = self._enforce_cloud_replica(acts)
-
-        # Project the sampled deployment back into the residual capacity budget.
+        # Sequentially mask out devices whose remaining memory budget can no
+        # longer host the current service, so PPO trains on the actual feasible
+        # action distribution instead of a post-hoc projection.
+        deploy_mask = torch.zeros((Ms, Np), dtype=torch.bool, device=h_s.device)
+        logp_sum = torch.tensor(0.0, device=h_s.device)
+        ent_terms = []
         capacity_relax_cnt = 0
-        for n in range(Np):
-            if n == cloud_idx:
-                # Cloud replicas are always retained and are not pruned here.
-                continue
+        eps = 1e-6
+        residual = residual.clone()
+        for service_idx in topo_order:
+            allowed_row = self._dynamic_allowed_mask(
+                static_allowed[service_idx],
+                residual,
+                model_mem[service_idx],
+                cloud_idx,
+            )
+            stochastic_allowed = allowed_row.clone()
+            stochastic_allowed[cloud_idx] = False
+            acts_row = torch.zeros(Np, dtype=torch.bool, device=h_s.device)
+            if stochastic_allowed.any():
+                probs_raw = self.actor(
+                    h_s[service_idx:service_idx + 1],
+                    h_p,
+                    mask=stochastic_allowed.unsqueeze(0),
+                )[0]
+                probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
+                probs_log = torch.where(stochastic_allowed, probs_log, torch.full_like(probs_log, eps))
+                probs_sample = torch.where(stochastic_allowed, probs_raw, torch.zeros_like(probs_raw))
+                dist = torch.distributions.Bernoulli(probs=probs_log)
+                sampled_row = torch.rand_like(probs_sample) < probs_sample
+                acts_row = torch.where(
+                    stochastic_allowed,
+                    sampled_row,
+                    torch.zeros_like(sampled_row, dtype=torch.bool),
+                )
+                logp_sum += dist.log_prob(acts_row.float()).sum()
+                ent_terms.append(dist.entropy()[stochastic_allowed].mean())
+            acts_row[cloud_idx] = True
+            deploy_mask[service_idx] = acts_row
 
-            while True:
-                # Current total memory assigned to node `n`.
-                used_n = (deploy_mask[:, n].float() * model_mem).sum()
+            edge_replicas = acts_row.clone()
+            edge_replicas[cloud_idx] = False
+            if edge_replicas.any():
+                residual[edge_replicas] = torch.clamp(
+                    residual[edge_replicas] - model_mem[service_idx],
+                    min=0.0,
+                )
 
-                # Stop once the residual budget is satisfied.
-                if used_n <= residual[n] + 1e-6:
-                    break
-
-                # All services currently placed on node `n`.
-                candidates = torch.nonzero(deploy_mask[:, n], as_tuple=False).view(-1)
-                if candidates.numel() == 0:
-                    break
-
-                # Remove the lowest-confidence replica until the placement is feasible.
-                cand_probs = probs_log[candidates, n]
-                drop_local_idx = torch.argmin(cand_probs)
-                drop_service_idx = candidates[drop_local_idx]
-
-                deploy_mask[drop_service_idx, n] = False
-                capacity_relax_cnt += 1
-
-        # Compute log-probabilities and entropy under the static Bernoulli distribution.
-        act_float = deploy_mask.float()
-        logp = dist.log_prob(act_float)  # [Ms, Np]
-        ent = dist.entropy()  # [Ms, Np]
-
-        logp_sum = logp.sum()
-        ent_sum = ent.mean()
-
-        value = self.critic(h_s, h_p)
+        ent_sum = torch.stack(ent_terms).mean() if ent_terms else torch.tensor(0.0, device=h_s.device)
+        value = self.critic(h_s, h_p, self._deployment_context(h_p, prev_deploy_mask))
 
         return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {
             "capacity_relax_cnt": capacity_relax_cnt
         }
 
-    def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats, deploy_mask: torch.Tensor):
+    def evaluate(
+            self,
+            logic_edge_index,
+            logic_feats,
+            phys_edge_index,
+            phys_feats,
+            deploy_mask: torch.Tensor,
+            prev_deploy_mask: Optional[torch.Tensor] = None,
+            topo_order: Optional[list] = None,
+    ):
         """
         Evaluate `deploy_mask` under the current parameters.
 
-        The policy distribution remains "static feasibility mask + independent
-        Bernoulli", matching the sampling stage. Capacity correction is not
-        replayed here and is instead treated as a deterministic environment-side
-        projection.
+        The policy distribution matches the sequential feasible sampler used in
+        `policy()`: service replicas are sampled row by row under the current
+        residual memory budget.
         """
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
+        if topo_order is None:
+            topo_order = self.topo_order(logic_edge_index, Ms)
 
         # Static feasibility mask.
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
-
-        probs_raw = self.actor(h_s, h_p, mask=static_allowed)
+        residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask).clone()
+        model_mem = logic_feats["model_mem"].float()
+        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
+        deploy_mask = self._enforce_cloud_replica(deploy_mask.bool())
         eps = 1e-6
-        probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
-        probs_log = torch.where(static_allowed, probs_log, torch.full_like(probs_log, eps))
 
-        dist = torch.distributions.Bernoulli(probs=probs_log)
+        logp_sum = torch.tensor(0.0, device=h_s.device)
+        ent_terms = []
+        for service_idx in topo_order:
+            allowed_row = self._dynamic_allowed_mask(
+                static_allowed[service_idx],
+                residual,
+                model_mem[service_idx],
+                cloud_idx,
+            )
+            stochastic_allowed = allowed_row.clone()
+            stochastic_allowed[cloud_idx] = False
+            if stochastic_allowed.any():
+                probs_raw = self.actor(
+                    h_s[service_idx:service_idx + 1],
+                    h_p,
+                    mask=stochastic_allowed.unsqueeze(0),
+                )[0]
+                probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
+                probs_log = torch.where(stochastic_allowed, probs_log, torch.full_like(probs_log, eps))
+                dist = torch.distributions.Bernoulli(probs=probs_log)
+                acts_row = deploy_mask[service_idx].float()
+                logp_sum += dist.log_prob(acts_row).masked_select(stochastic_allowed).sum()
+                ent_terms.append(dist.entropy().masked_select(stochastic_allowed).mean())
 
-        deploy_mask = self._enforce_cloud_replica(deploy_mask)
-        act_float = deploy_mask.float()
-        logp = dist.log_prob(act_float)  # [Ms, Np]
-        ent = dist.entropy()  # [Ms, Np]
+            edge_replicas = deploy_mask[service_idx].clone()
+            edge_replicas[cloud_idx] = False
+            if edge_replicas.any():
+                residual[edge_replicas] = torch.clamp(
+                    residual[edge_replicas] - model_mem[service_idx],
+                    min=0.0,
+                )
 
-        logp_sum = logp.sum()
-        ent_sum = ent.mean()
-
-        value = self.critic(h_s, h_p)
+        ent_sum = torch.stack(ent_terms).mean() if ent_terms else torch.tensor(0.0, device=h_s.device)
+        value = self.critic(h_s, h_p, self._deployment_context(h_p, prev_deploy_mask))
         return logp_sum, ent_sum, value.squeeze(0)
 
     def ppo_update(self, transitions: List[dict], epochs=4, batch_size=16, clip_eps=None, entropy_coef=0.01,
@@ -296,6 +369,10 @@ class HedgerDeploymentPPO(nn.Module):
                 "phys_edge_index": tr["phys_edge_index"].to(device),
                 "phys_feats": _move_tensor_dict_to_device(tr["phys_feats"], device),
                 "deploy_mask": tr["deploy_mask"].to(device),
+                "prev_deploy_mask": (
+                    tr["prev_deploy_mask"].to(device) if tr.get("prev_deploy_mask") is not None else None
+                ),
+                "topo_order": tr.get("topo_order"),
             }
             for tr in transitions
         ]
@@ -309,8 +386,15 @@ class HedgerDeploymentPPO(nn.Module):
                 ent_list = []
                 for j in idx:
                     tr = device_transitions[int(j)]
-                    lp, ent, val = self.evaluate(tr['logic_edge_index'], tr['logic_feats'], tr['phys_edge_index'],
-                                                 tr['phys_feats'], tr['deploy_mask'])
+                    lp, ent, val = self.evaluate(
+                        tr['logic_edge_index'],
+                        tr['logic_feats'],
+                        tr['phys_edge_index'],
+                        tr['phys_feats'],
+                        tr['deploy_mask'],
+                        prev_deploy_mask=tr['prev_deploy_mask'],
+                        topo_order=tr['topo_order'],
+                    )
                     new_logp_list.append(lp)
                     new_val_list.append(val)
                     ent_list.append(ent)
@@ -385,8 +469,18 @@ class HedgerOffloadingPPO(nn.Module):
         h_p = self.device_adapter(h_p)
         return h_s, h_p
 
+    def _offloading_context(self, h_p: torch.Tensor, static_mask: torch.Tensor) -> torch.Tensor:
+        return _build_mask_context(static_mask.bool(), h_p)
+
     @torch.no_grad()
-    def estimate_value(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats) -> torch.Tensor:
+    def estimate_value(
+            self,
+            logic_edge_index,
+            logic_feats,
+            phys_edge_index,
+            phys_feats,
+            static_mask: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Estimate the state value for rollout bootstrap.
 
@@ -396,7 +490,7 @@ class HedgerOffloadingPPO(nn.Module):
         """
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
-        value = self.critic(h_s, h_p)
+        value = self.critic(h_s, h_p, self._offloading_context(h_p, static_mask))
         return value.squeeze(0)
 
     @staticmethod
@@ -422,46 +516,42 @@ class HedgerOffloadingPPO(nn.Module):
         allowed[self.cloud_idx] = True
         return allowed
 
-    def _correct_offloading_actions(
-        self,
-        actions: torch.Tensor,
-        parents: List[List[int]],
-        topo_order: List[int],
-    ) -> Tuple[torch.Tensor, int]:
+    def _dynamic_offloading_mask(
+            self,
+            base_mask: torch.Tensor,
+            parent_indices: List[int],
+            actions: torch.Tensor,
+    ) -> torch.Tensor:
         """
-        Apply the offloading correction operator.
+        Build the row-wise feasible mask for one service.
 
-        The sampled path is scanned in topological order. Once a service is
-        placed on the cloud, downstream successors that still point to the edge
-        are promoted to the cloud to keep the route consistent.
+        Once any parent is assigned to the cloud, the current service is
+        restricted to the cloud before sampling, so PPO trains on the real
+        constrained distribution instead of repairing invalid actions afterward.
         """
-        corrected = actions.clone()
-        must_cloud = torch.zeros(actions.size(0), dtype=torch.bool, device=actions.device)
-        correction_cnt = 0
+        if parent_indices and any(int(actions[parent].item()) == self.cloud_idx for parent in parent_indices):
+            allowed = torch.zeros_like(base_mask, dtype=torch.bool)
+            allowed[self.cloud_idx] = True
+            return allowed
+        return self._normalize_offloading_mask(base_mask.clone())
 
-        for node in topo_order:
-            parent_indices = parents[node]
-            parent_must_cloud = bool(must_cloud[parent_indices].any()) if parent_indices else False
-
-            if parent_must_cloud and corrected[node].item() != self.cloud_idx:
-                corrected[node] = self.cloud_idx
-                correction_cnt += 1
-
-            must_cloud[node] = parent_must_cloud or (corrected[node].item() == self.cloud_idx)
-
-        return corrected, correction_cnt
-
-    def _count_switches(self, actions: torch.Tensor, topo_order: List[int]) -> int:
+    def _count_switches(self, actions: torch.Tensor, parents: List[List[int]]) -> int:
         """
-        Count device switches along the topological execution order.
+        Count execution-target changes along actual DAG edges.
+
+        Root services are compared against the source node. Non-root services are
+        compared against each parent on incoming logical edges.
         """
-        last = self.source
         switches = 0
-        for node in topo_order:
+        for node, parent_indices in enumerate(parents):
             cur = actions[node].item()
-            if cur != last:
-                switches += 1
-                last = cur
+            if not parent_indices:
+                if cur != self.source:
+                    switches += 1
+                continue
+            for parent in parent_indices:
+                if cur != actions[parent].item():
+                    switches += 1
         return switches
 
     @torch.no_grad()
@@ -475,29 +565,21 @@ class HedgerOffloadingPPO(nn.Module):
             topo_order = self.topo_order(logic_edge_index, Ms)
         parents = self._build_parents(logic_edge_index, Ms)
 
-        tentative_actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
-        row_probs = torch.zeros(Ms, Np, device=h_p.device)
+        actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
+        logp_sum = torch.tensor(0.0, device=h_p.device)
         ent_sum = torch.tensor(0.0, device=h_p.device)
 
         for i in topo_order:
-            # The deployment-induced mask is the only pre-sampling feasibility constraint.
-            allowed = self._normalize_offloading_mask(static_mask[i].clone())
+            allowed = self._dynamic_offloading_mask(static_mask[i], parents[i], actions)
             probs_i = self.actor(h_s[i:i + 1], h_p, allowed.unsqueeze(0))[0]
             dist = torch.distributions.Categorical(probs=probs_i)
-            tentative_actions[i] = dist.sample()
-            row_probs[i] = probs_i
+            actions[i] = dist.sample()
+            logp_sum += dist.log_prob(actions[i])
             ent_sum += dist.entropy()
 
-        # Apply the correction operator after sampling.
-        actions, correction_cnt = self._correct_offloading_actions(tentative_actions, parents, topo_order)
-
-        logp_sum = torch.tensor(0.0, device=h_p.device)
-        for i in topo_order:
-            dist = torch.distributions.Categorical(probs=row_probs[i])
-            logp_sum += dist.log_prob(actions[i])
-
-        switches = self._count_switches(actions, topo_order)
-        value = self.critic(h_s, h_p)
+        correction_cnt = 0
+        switches = self._count_switches(actions, parents)
+        value = self.critic(h_s, h_p, self._offloading_context(h_p, static_mask))
         aux_cost = self.cfg.penalty_switch * switches + self.cfg.penalty_relax * correction_cnt
         return actions, logp_sum, ent_sum, value.squeeze(0), {
             "switches": switches,
@@ -517,18 +599,18 @@ class HedgerOffloadingPPO(nn.Module):
         if topo_order is None:
             topo_order = self.topo_order(logic_edge_index, Ms)
         parents = self._build_parents(logic_edge_index, Ms)
-        actions, correction_cnt = self._correct_offloading_actions(actions, parents, topo_order)
+        correction_cnt = 0
 
         for i in topo_order:
-            allowed = self._normalize_offloading_mask(static_mask[i].clone())
+            allowed = self._dynamic_offloading_mask(static_mask[i], parents[i], actions)
             probs_i = self.actor(h_s[i:i + 1], h_p, allowed.unsqueeze(0))[0]
             dist = torch.distributions.Categorical(probs=probs_i)
             a = actions[i]
             logp_sum += dist.log_prob(a)
             ent_sum += dist.entropy()
 
-        switches = self._count_switches(actions, topo_order)
-        value = self.critic(h_s, h_p)
+        switches = self._count_switches(actions, parents)
+        value = self.critic(h_s, h_p, self._offloading_context(h_p, static_mask))
         aux_cost = self.cfg.penalty_switch * switches + self.cfg.penalty_relax * correction_cnt
         return logp_sum, ent_sum, value.squeeze(0), {
             "switches": switches,
