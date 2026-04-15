@@ -389,6 +389,51 @@ class KubeConfig:
 
         return mem_by_pod
 
+    @classmethod
+    def get_pod_memory_from_spec(cls, target_pod_names):
+        """
+        Get per-pod memory settings from pod specs.
+
+        Preference order per container:
+            1. resource requests.memory
+            2. resource limits.memory
+
+        The result is summed across all containers in the pod and returned in bytes.
+        Pods without any memory setting are omitted.
+        """
+        api = cls._get_core_api()
+        pods = api.list_namespaced_pod(
+            cls.NAMESPACE,
+            label_selector=cls._label_selector,
+            field_selector=cls._field_selector,
+        ).items
+
+        target_set = set(target_pod_names)
+        mem_by_pod = {}
+
+        for pod in pods:
+            pod_name = getattr(pod.metadata, 'name', None)
+            if pod_name not in target_set:
+                continue
+
+            total_bytes = 0
+            found = False
+            containers = getattr(pod.spec, 'containers', None) or []
+            for container in containers:
+                resources = getattr(container, 'resources', None)
+                requests = getattr(resources, 'requests', None) or {}
+                limits = getattr(resources, 'limits', None) or {}
+                mem_str = requests.get('memory') or limits.get('memory')
+                if not mem_str:
+                    continue
+                total_bytes += cls.parse_k8s_mem_to_bytes(str(mem_str))
+                found = True
+
+            if found:
+                mem_by_pod[pod_name] = total_bytes
+
+        return mem_by_pod
+
     @staticmethod
     def parse_k8s_mem_to_bytes(s: str) -> int:
         """

@@ -67,6 +67,33 @@ class HedgerAgent(BaseAgent, abc.ABC):
         ratio = float(value)
         return f"{ratio:.4f} ({ratio * 100.0:.2f}%)"
 
+    @staticmethod
+    def _summarize_numeric_mapping_for_log(name: str, mapping, digits: int = 2, sample_size: int = 2) -> str:
+        if not isinstance(mapping, dict) or not mapping:
+            return f"{name}=0"
+
+        numeric_items = []
+        for key, value in mapping.items():
+            try:
+                numeric_items.append((key, float(value)))
+            except (TypeError, ValueError):
+                continue
+
+        if not numeric_items:
+            return f"{name}=0"
+
+        values = [value for _, value in numeric_items]
+        sample_text = "; ".join(
+            f"{key}={value:.{digits}f}"
+            for key, value in numeric_items[:sample_size]
+        )
+        return (
+            f"{name}=count={len(numeric_items)}, "
+            f"mean={float(np.mean(values)):.{digits}f}, "
+            f"max={float(np.max(values)):.{digits}f}, "
+            f"sample=[{sample_text}]"
+        )
+
     def get_schedule_plan(self, info):
         source_id = info['source_id']
         source_edge_device = info['source_device']
@@ -176,9 +203,9 @@ class HedgerAgent(BaseAgent, abc.ABC):
         if memory_usage is not None:
             updated_fields.append(f"mem_usage={self._format_utilization_for_log(memory_usage)}")
         if model_flops_updates:
-            updated_fields.append(f"model_flops={len(model_flops_updates)}")
+            updated_fields.append(self._summarize_numeric_mapping_for_log("model_flops", model_flops_updates))
         if model_memory_updates:
-            updated_fields.append(f"model_memory={len(model_memory_updates)}")
+            updated_fields.append(self._summarize_numeric_mapping_for_log("model_memory", model_memory_updates))
 
         for service, flops in model_flops_updates.items():
             self.hedger.state_buffer.add_model_flops(service, flops)
