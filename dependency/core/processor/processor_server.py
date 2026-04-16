@@ -47,6 +47,11 @@ class ProcessorServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.PROCESSOR_MODEL_FLOPS]
                      ),
+            APIRoute(NetworkAPIPath.PROCESSOR_MODEL_MEMORY,
+                     self.query_model_memory,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.PROCESSOR_MODEL_MEMORY]
+                     ),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -110,6 +115,12 @@ class ProcessorServer:
 
     async def query_model_flops(self):
         return self.processor.flops
+
+    async def query_model_memory(self):
+        import os
+        import psutil
+
+        return psutil.Process(os.getpid()).memory_info().rss
 
     def loop_process(self):
         LOGGER.info('Start processing loop..')

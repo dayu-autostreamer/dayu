@@ -9,6 +9,7 @@ class NetworkAPIPath:
     PROCESSOR_PROCESS_RETURN = '/predict_and_return'
     PROCESSOR_QUEUE_LENGTH = '/queue_length'
     PROCESSOR_MODEL_FLOPS = '/model_flops'
+    PROCESSOR_MODEL_MEMORY = '/model_memory'
 
     DISTRIBUTOR_DISTRIBUTE = '/distribute'
     DISTRIBUTOR_RESULT = '/result'
@@ -69,6 +70,7 @@ class NetworkAPIMethod:
     PROCESSOR_PROCESS_RETURN = 'POST'
     PROCESSOR_QUEUE_LENGTH = 'GET'
     PROCESSOR_MODEL_FLOPS = 'GET'
+    PROCESSOR_MODEL_MEMORY = 'GET'
 
     DISTRIBUTOR_DISTRIBUTE = 'POST'
     DISTRIBUTOR_RESULT = 'GET'

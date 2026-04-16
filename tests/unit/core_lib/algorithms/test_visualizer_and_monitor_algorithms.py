@@ -146,15 +146,26 @@ def test_local_and_remote_parameter_monitors_collect_expected_values(monkeypatch
         staticmethod(lambda pods: dict(metrics_memory)),
     )
     monkeypatch.setattr(model_memory_module.ServiceConfig, "map_pod_name_to_service", staticmethod(lambda pod: "face"))
+    monkeypatch.setattr(model_memory_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.2"))
+    monkeypatch.setattr(
+        model_memory_module.PortInfo,
+        "get_service_ports_dict",
+        staticmethod(lambda device: {"face": 31000, "detector": 31001}),
+    )
+    monkeypatch.setattr(
+        model_memory_module,
+        "http_request",
+        lambda address, method=None, timeout=None: 1_000_000_000 if address.endswith(":31000/model_memory") else 5_000_000_000,
+    )
     model_memory_monitor = model_memory_module.ModelMemoryMonitor(system)
-    assert model_memory_monitor.get_parameter_value() == {"face": 3.0}
+    assert model_memory_monitor.get_parameter_value() == {"face": 3.0, "detector": 5.0}
 
     spec_memory["processor-face-edge-a-0"] = 1_000_000_000
     metrics_memory["processor-face-edge-a-0"] = 4_000_000_000
-    assert model_memory_monitor.get_parameter_value() == {"face": 4.0}
+    assert model_memory_monitor.get_parameter_value() == {"face": 4.0, "detector": 5.0}
 
     metrics_memory["processor-face-edge-a-0"] = 2_000_000_000
-    assert model_memory_monitor.get_parameter_value() == {"face": 4.0}
+    assert model_memory_monitor.get_parameter_value() == {"face": 4.0, "detector": 5.0}
 
 
 @pytest.mark.unit
