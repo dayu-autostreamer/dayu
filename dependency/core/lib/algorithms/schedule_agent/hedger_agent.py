@@ -210,7 +210,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
         for service, flops in model_flops_updates.items():
             self.hedger.state_buffer.add_model_flops(service, flops)
         for service, memory in model_memory_updates.items():
-            self.hedger.state_buffer.add_model_memory(service, memory)
+            self.hedger.state_buffer.add_model_memory_from_device(device, service, memory)
 
         LOGGER.debug(
             f"[HedgerAgent][Resource] device={device}, updates={', '.join(updated_fields) if updated_fields else 'none'}"

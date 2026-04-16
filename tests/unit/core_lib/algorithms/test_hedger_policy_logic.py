@@ -408,6 +408,30 @@ def test_state_buffer_aggregates_service_static_requirements_by_max():
 
 
 @pytest.mark.unit
+def test_state_buffer_prefers_edge_model_memory_over_cloud_fallback():
+    logical_topology, physical_topology = build_test_topologies()
+    cloud_name = physical_topology[physical_topology.cloud_idx]
+    buffer = StateBuffer(
+        16,
+        logical_topology=logical_topology,
+        physical_topology=physical_topology,
+    )
+    s_idx = logical_topology.index("svc-a")
+
+    buffer.add_model_memory_from_device(cloud_name, "svc-a", 3.0)
+    assert buffer.model_memory_buffer[s_idx] == pytest.approx(3.0)
+
+    buffer.add_model_memory_from_device("edge-a", "svc-a", 0.8)
+    assert buffer.model_memory_buffer[s_idx] == pytest.approx(0.8)
+
+    buffer.add_model_memory_from_device("edge-b", "svc-a", 0.6)
+    assert buffer.model_memory_buffer[s_idx] == pytest.approx(0.8)
+
+    buffer.add_model_memory_from_device(cloud_name, "svc-a", 4.0)
+    assert buffer.model_memory_buffer[s_idx] == pytest.approx(0.8)
+
+
+@pytest.mark.unit
 def test_hedger_collect_state_builds_metrics_from_buffer():
     logical_topology, physical_topology = build_test_topologies()
     cloud_name = physical_topology[physical_topology.cloud_idx]
@@ -941,6 +965,9 @@ def test_hedger_agent_update_resource_tolerates_partial_resource_updates():
         add_memory_utilization=lambda device, value: calls.append(("memory_usage", device, value)),
         add_model_flops=lambda service, value: calls.append(("model_flops", service, value)),
         add_model_memory=lambda service, value: calls.append(("model_memory", service, value)),
+        add_model_memory_from_device=lambda device, service, value: calls.append(
+            ("model_memory", device, service, value)
+        ),
     )
     agent = HedgerAgent.__new__(HedgerAgent)
     agent.hedger = types.SimpleNamespace(state_buffer=buffer)

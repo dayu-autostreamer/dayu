@@ -108,6 +108,10 @@ class StateBuffer:
         # Track whether each static entry has been observed at least once.
         self._logic_flops_seen = [False for _ in range(num_services)]
         self._logic_memory_seen = [False for _ in range(num_services)]
+        self._logic_memory_edge_seen = [False for _ in range(num_services)]
+        self._logic_memory_edge_max = [0.0 for _ in range(num_services)]
+        self._logic_memory_cloud_seen = [False for _ in range(num_services)]
+        self._logic_memory_cloud_max = [0.0 for _ in range(num_services)]
         self._phys_flops_seen = [False for _ in range(num_devices)]
         self._phys_memory_seen = [False for _ in range(num_devices)]
 
@@ -134,16 +138,31 @@ class StateBuffer:
     @staticmethod
     def _merge_static_service_scalar(current: float, new_value: float) -> float:
         """
-        Merge service-level static scalars observed from different devices.
+        Merge device-agnostic service-level static scalars.
 
-        Hedger currently models `model_flops` and `model_mem` as one scalar per
-        logical service, but monitors report them from concrete deployed pods on
-        concrete devices. When multiple devices host the same service, blindly
-        overwriting the buffer would make the logical static feature depend on
-        update arrival order. We therefore keep the maximum observed value as a
-        conservative, order-independent aggregate.
+        When a caller does not provide device provenance, keeping the maximum
+        avoids arrival-order dependent overwrites and remains conservative.
         """
         return max(float(current), float(new_value))
+
+    def _refresh_effective_model_memory(self, s_idx: int):
+        """
+        Refresh the logical memory requirement after a device-aware update.
+
+        Deployment capacity checks mainly decide whether an edge node can host a
+        service. Cloud-side pod requests can be much larger than edge-side pod
+        requests, so cloud observations are used only as a startup fallback until
+        at least one edge observation for the service is available.
+        """
+        if self._logic_memory_edge_seen[s_idx]:
+            self.model_memory_buffer[s_idx] = float(self._logic_memory_edge_max[s_idx])
+        elif self._logic_memory_cloud_seen[s_idx]:
+            self.model_memory_buffer[s_idx] = float(self._logic_memory_cloud_max[s_idx])
+        self._logic_memory_seen[s_idx] = (
+            self._logic_memory_seen[s_idx]
+            or self._logic_memory_edge_seen[s_idx]
+            or self._logic_memory_cloud_seen[s_idx]
+        )
 
     def _pad_trunc_1d(self, x: List[float], seq_len: int, pad_mode: str = "edge") -> List[float]:
         """
@@ -272,6 +291,34 @@ class StateBuffer:
                     memory,
                 )
                 self._logic_memory_seen[s_idx] = True
+            self._mark_static_logic_ready()
+            self._bump_version()
+
+    def add_model_memory_from_device(self, device_name: str, service_name: str, memory: float):
+        """
+        Update a service memory requirement while preserving device provenance.
+
+        The state model exposes one `model_mem` scalar per logical service, while
+        the monitor reports memory from pods deployed on concrete devices. Edge
+        observations are the best signal for edge placement feasibility; cloud
+        observations are retained only as fallback for services that have not yet
+        been observed on any edge node.
+        """
+        with self._cond:
+            s_idx = self._resolve_service_index(service_name)
+            d_idx = self._resolve_device_index(device_name)
+            if s_idx is None or d_idx is None:
+                return
+
+            value = max(0.0, float(memory))
+            if d_idx == self.physical_topology.cloud_idx:
+                self._logic_memory_cloud_max[s_idx] = max(self._logic_memory_cloud_max[s_idx], value)
+                self._logic_memory_cloud_seen[s_idx] = True
+            else:
+                self._logic_memory_edge_max[s_idx] = max(self._logic_memory_edge_max[s_idx], value)
+                self._logic_memory_edge_seen[s_idx] = True
+
+            self._refresh_effective_model_memory(s_idx)
             self._mark_static_logic_ready()
             self._bump_version()
 

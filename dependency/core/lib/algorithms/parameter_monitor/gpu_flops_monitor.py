@@ -79,7 +79,10 @@ class GPUFlopsMonitor(BaseMonitor, abc.ABC):
         return cuda
 
     @staticmethod
-    def calculate_flops(sm_count: int, fp32_cores_per_sm: int, clock_freq_hz: float, dual_factor) -> float:
+    def calculate_flops(sm_count: int, fp32_cores_per_sm: int, clock_freq_khz: float, dual_factor) -> float:
+        # PyCUDA reports CLOCK_RATE in kHz. Convert to Hz so the public monitor
+        # value below is GFLOP/s, which matches the giga-scale model FLOPs.
+        clock_freq_hz = float(clock_freq_khz) * 1000.0
         return sm_count * fp32_cores_per_sm * clock_freq_hz * 2 * dual_factor
 
     @staticmethod
@@ -102,14 +105,14 @@ class GPUFlopsMonitor(BaseMonitor, abc.ABC):
         for idx in range(cuda.Device.count()):
             device = cuda.Device(idx)
             device_name = device.name().lower()
-            max_freq_hz = device.get_attribute(cuda.device_attribute.CLOCK_RATE)
+            max_freq_khz = device.get_attribute(cuda.device_attribute.CLOCK_RATE)
             capability = device.compute_capability()
             mp_count = device.get_attribute(cuda.device_attribute.MULTIPROCESSOR_COUNT)
             fp32_cores_per_sm = CORES_PER_SM.get(capability)
             dual_factor = DEVICE_DUAL_ISSUE.get(capability)
             if fp32_cores_per_sm is None or dual_factor is None:
                 raise Exception(f"Unsupported device or computing capability: {capability} for {device_name}")
-            total_flops += self.calculate_flops(mp_count, fp32_cores_per_sm, max_freq_hz, dual_factor)
+            total_flops += self.calculate_flops(mp_count, fp32_cores_per_sm, max_freq_khz, dual_factor)
 
         return total_flops / cuda.Device.count() / 1e9
 
