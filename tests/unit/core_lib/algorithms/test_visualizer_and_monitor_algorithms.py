@@ -133,18 +133,28 @@ def test_local_and_remote_parameter_monitors_collect_expected_values(monkeypatch
     monkeypatch.setattr(model_memory_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-a"))
     monkeypatch.setattr(model_memory_module.KubeConfig, "force_refresh", staticmethod(lambda: None))
     monkeypatch.setattr(model_memory_module.KubeConfig, "get_pods_on_node", staticmethod(lambda device: ["processor-face-edge-a-0"]))
+    spec_memory = {"processor-face-edge-a-0": 3_000_000_000}
+    metrics_memory = {"processor-face-edge-a-0": 2_000_000_000}
     monkeypatch.setattr(
         model_memory_module.KubeConfig,
         "get_pod_memory_from_spec",
-        staticmethod(lambda pods: {"processor-face-edge-a-0": 3_000_000_000}),
+        staticmethod(lambda pods: dict(spec_memory)),
     )
     monkeypatch.setattr(
         model_memory_module.KubeConfig,
         "get_pod_memory_from_metrics",
-        staticmethod(lambda pods: {"processor-face-edge-a-0": 2_000_000_000}),
+        staticmethod(lambda pods: dict(metrics_memory)),
     )
     monkeypatch.setattr(model_memory_module.ServiceConfig, "map_pod_name_to_service", staticmethod(lambda pod: "face"))
-    assert model_memory_module.ModelMemoryMonitor(system).get_parameter_value() == {"face": 3.0}
+    model_memory_monitor = model_memory_module.ModelMemoryMonitor(system)
+    assert model_memory_monitor.get_parameter_value() == {"face": 3.0}
+
+    spec_memory["processor-face-edge-a-0"] = 1_000_000_000
+    metrics_memory["processor-face-edge-a-0"] = 4_000_000_000
+    assert model_memory_monitor.get_parameter_value() == {"face": 4.0}
+
+    metrics_memory["processor-face-edge-a-0"] = 2_000_000_000
+    assert model_memory_monitor.get_parameter_value() == {"face": 4.0}
 
 
 @pytest.mark.unit

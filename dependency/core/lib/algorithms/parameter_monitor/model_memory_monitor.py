@@ -14,6 +14,7 @@ class ModelMemoryMonitor(BaseMonitor, abc.ABC):
         self.name = 'model_memory'
 
         self.local_device = NodeInfo.get_local_device()
+        self._service_memory_gb_max = {}
 
     def get_model_memory(self):
         KubeConfig.force_refresh()
@@ -34,15 +35,30 @@ class ModelMemoryMonitor(BaseMonitor, abc.ABC):
             if service_name is None:
                 continue
 
-            # Prefer the stable pod-spec request/limit value and only fall back
-            # to live metrics when the spec does not expose a memory setting.
-            memory_bytes = pod_memory_from_spec.get(pod)
-            if memory_bytes is None:
-                memory_bytes = pod_memory_from_metrics.get(pod, 0)
+            # `model_memory` is consumed as a conservative placement footprint.
+            # Pod specs can understate actual RSS when requests are small, while
+            # live metrics may be unavailable during startup. Use the larger
+            # available value and keep a running maximum per service to avoid
+            # treating transient low-RSS samples as a smaller static model size.
+            memory_candidates = [
+                value for value in (
+                    pod_memory_from_spec.get(pod),
+                    pod_memory_from_metrics.get(pod),
+                )
+                if value is not None
+            ]
+            if not memory_candidates:
+                continue
 
-            memory_gb = float(memory_bytes) / 1e9
+            memory_gb = float(max(memory_candidates)) / 1e9
             service_memory_dict[service_name] = max(service_memory_dict.get(service_name, 0.0), memory_gb)
-        return service_memory_dict
+
+        for service_name, memory_gb in service_memory_dict.items():
+            self._service_memory_gb_max[service_name] = max(
+                self._service_memory_gb_max.get(service_name, 0.0),
+                float(memory_gb),
+            )
+        return dict(self._service_memory_gb_max)
 
     def get_parameter_value(self):
         return self.get_model_memory()
