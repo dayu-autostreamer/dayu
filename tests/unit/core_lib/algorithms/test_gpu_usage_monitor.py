@@ -203,7 +203,19 @@ def test_gpu_usage_monitor_returns_first_non_none_backend_value(monkeypatch):
 
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_jetson_sysfs", staticmethod(lambda: None))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_tegrastats", staticmethod(lambda: 18))
-    assert monitor.get_parameter_value() == 0.18
+    assert monitor._read_instantaneous_percent() == 18
+    assert 0.26 <= monitor.get_parameter_value() <= 0.27
+
+
+@pytest.mark.unit
+def test_gpu_usage_monitor_holds_recent_peak_with_decay(monkeypatch):
+    monitor = gpu_usage_module.GPUUsageMonitor(SimpleNamespace(resource_info={}))
+    times = iter([0.0, 5.0, 10.0])
+    monkeypatch.setattr(gpu_usage_module.time, "monotonic", lambda: next(times))
+
+    assert monitor._smooth_recent_peak(0.8) == pytest.approx(0.8)
+    assert monitor._smooth_recent_peak(0.0) == pytest.approx(0.4)
+    assert monitor._smooth_recent_peak(0.0) == pytest.approx(0.2)
 
 
 @pytest.mark.unit

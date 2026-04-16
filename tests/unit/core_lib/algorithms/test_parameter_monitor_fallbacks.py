@@ -92,7 +92,8 @@ def test_gpu_usage_monitor_returns_first_available_result_after_exceptions(monke
     )
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_jetson_sysfs", staticmethod(lambda: None))
     monkeypatch.setattr(gpu_usage_module.GPUUsageMonitor, "_get_usage_via_tegrastats", staticmethod(lambda: 18))
-    assert monitor.get_parameter_value() == 0.18
+    assert monitor._read_instantaneous_percent() == 18
+    assert 0.60 <= monitor.get_parameter_value() <= 0.61
 
 
 @pytest.mark.unit

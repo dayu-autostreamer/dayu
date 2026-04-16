@@ -1,4 +1,5 @@
 import abc
+import time
 
 from .base_monitor import BaseMonitor
 
@@ -9,16 +10,25 @@ __all__ = ('GPUUsageMonitor',)
 
 @ClassFactory.register(ClassType.MON_PRAM, alias='gpu_usage')
 class GPUUsageMonitor(BaseMonitor, abc.ABC):
+    PEAK_HOLD_HALF_LIFE_S = 5.0
+    MIN_REPORTED_RATIO = 0.01
+
     def __init__(self, system):
         super().__init__(system)
         self.name = 'gpu_usage'
+        self._smoothed_ratio = 0.0
+        self._last_sample_ts = None
 
     def get_parameter_value(self):
-        """Return GPU utilization ratio in [0, 1].
+        """Return recent GPU pressure as a ratio in [0, 1].
 
         Backend helpers still report utilization in percent (0-100). This method
         normalizes the first successful backend result into a ratio so the
-        scheduler and Hedger can consume a consistent unit.
+        scheduler and Hedger can consume a consistent unit. GPU inference is
+        often bursty, so a single instantaneous sample can miss active work and
+        report many zeros. The returned value therefore keeps a decayed recent
+        peak, making the signal closer to "recent GPU pressure" than a raw point
+        sample.
 
         Fallback order:
         1) NVML via pynvml
@@ -27,41 +37,60 @@ class GPUUsageMonitor(BaseMonitor, abc.ABC):
         4) tegrastats one-line sample
         If none available or no GPU present, return 0.0.
         """
-        # 1) Try NVML (most reliable across NVIDIA servers/desktops)
+        percent = self._read_instantaneous_percent()
+        if percent is None:
+            LOGGER.warning('[GPUUsage] Unable to determine GPU usage, returning 0.0.')
+            ratio = 0.0
+        else:
+            ratio = max(0.0, min(100.0, float(percent))) / 100.0
+        return self._smooth_recent_peak(ratio)
+
+    def _read_instantaneous_percent(self):
+        """Read one instantaneous backend sample in percent, or None."""
         try:
             percent = self._get_usage_via_nvml()
             if percent is not None:
-                return max(0.0, min(100.0, float(percent))) / 100.0
-        except Exception as e:
+                return percent
+        except Exception:
             pass
 
-        # 2) Fallback to nvidia-smi
         try:
             percent = self._get_usage_via_nvidia_smi()
             if percent is not None:
-                return max(0.0, min(100.0, float(percent))) / 100.0
-        except Exception as e:
+                return percent
+        except Exception:
             pass
 
-        # 3) Jetson sysfs (devfreq load)
         try:
             percent = self._get_usage_via_jetson_sysfs()
             if percent is not None:
-                return max(0.0, min(100.0, float(percent))) / 100.0
-        except Exception as e:
+                return percent
+        except Exception:
             pass
 
-        # 4) tegrastats (Jetson)
         try:
             percent = self._get_usage_via_tegrastats()
             if percent is not None:
-                return max(0.0, min(100.0, float(percent))) / 100.0
-        except Exception as e:
+                return percent
+        except Exception:
             pass
+        return None
 
-        # No GPU or unable to determine
-        LOGGER.warning('[GPUUsage] Unable to determine GPU usage, returning 0.0.')
-        return 0.0
+    def _smooth_recent_peak(self, ratio: float) -> float:
+        """Keep a decayed recent peak so short GPU bursts remain visible."""
+        now = time.monotonic()
+        ratio = max(0.0, min(1.0, float(ratio)))
+        if self._last_sample_ts is None:
+            smoothed = ratio
+        else:
+            dt = max(0.0, now - self._last_sample_ts)
+            decay = 0.5 ** (dt / self.PEAK_HOLD_HALF_LIFE_S)
+            smoothed = max(ratio, self._smoothed_ratio * decay)
+        if smoothed < self.MIN_REPORTED_RATIO:
+            smoothed = 0.0
+        self._smoothed_ratio = smoothed
+        self._last_sample_ts = now
+        return smoothed
 
     @staticmethod
     def _get_usage_via_nvml():
