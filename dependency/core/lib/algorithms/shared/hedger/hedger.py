@@ -159,6 +159,8 @@ class Hedger:
 
         self.dep_recorder = None
         self.off_recorder = None
+        self.dep_update_recorder = None
+        self.off_update_recorder = None
 
         self.cur_deploy_mask = None
         self._frozen_offloading_agent = None
@@ -321,6 +323,41 @@ class Hedger:
         if self.training_cfg is None:
             raise ValueError("Stage log path is only available in train mode.")
         return os.path.join(self._checkpoint_stage_dir(self.training_cfg.stage), filename)
+
+    @staticmethod
+    def _ppo_update_fieldnames() -> List[str]:
+        return [
+            "agent", "update", "epoch", "used", "remaining",
+            "samples", "epochs", "batch_size", "minibatches",
+            "reward_mean", "reward_std", "reward_min", "reward_max",
+            "value_old_mean", "value_old_std", "value_new_mean",
+            "return_mean", "return_std", "adv_mean", "adv_std",
+            "last_value", "done_fraction",
+            "policy_loss", "value_loss", "entropy", "approx_kl",
+            "clip_fraction", "ratio_mean", "ratio_std",
+            "actor_grad_norm", "critic_grad_norm",
+        ]
+
+    def _record_ppo_update(
+            self,
+            recorder: Optional[Recorder],
+            agent_name: str,
+            update_step: int,
+            used: int,
+            remaining: int,
+            stats: Optional[Dict[str, float]],
+    ):
+        if recorder is None or stats is None:
+            return
+        row = {
+            "agent": agent_name,
+            "update": update_step,
+            "epoch": self._epoch,
+            "used": used,
+            "remaining": remaining,
+        }
+        row.update(stats)
+        recorder.log_dict(row)
 
     def _build_training_stage_cfg(self, stage_name: str) -> HedgerTrainingStageCfg:
         if stage_name == "offloading_warmup":
@@ -1082,6 +1119,24 @@ class Hedger:
             offloading_thread = threading.Thread(target=self.train_offloading_agent, daemon=True)
             offloading_thread.start()
 
+        update_fieldnames = self._ppo_update_fieldnames()
+        if self.stage_cfg.update_deployment_policy:
+            self.dep_update_recorder = Recorder(
+                self._stage_log_path("deployment_ppo_updates.csv"),
+                fmt="csv",
+                fieldnames=update_fieldnames,
+                overwrite=True,
+                flush_every=1,
+            )
+        if self.stage_cfg.update_offloading_policy:
+            self.off_update_recorder = Recorder(
+                self._stage_log_path("offloading_ppo_updates.csv"),
+                fmt="csv",
+                fieldnames=update_fieldnames,
+                overwrite=True,
+                flush_every=1,
+            )
+
         while True:
             try:
                 if deployment_thread is not None and not deployment_thread.is_alive():
@@ -1104,16 +1159,30 @@ class Hedger:
                         off_remaining = len(self.offloading_transitions)
 
                     with self._model_lock:
-                        self.offloading_agent.ppo_update(
+                        off_ppo_stats = self.offloading_agent.ppo_update(
                             off_transitions,
                             epochs=self.training_cfg.ppo_epochs,
                             batch_size=self.training_cfg.offloading_batch_size,
                         )
                     self._offloading_update_steps += 1
                     updates_in_tick += 1
+                    self._record_ppo_update(
+                        self.off_update_recorder,
+                        "offloading",
+                        self._offloading_update_steps,
+                        used=len(off_transitions),
+                        remaining=off_remaining,
+                        stats=off_ppo_stats,
+                    )
                     LOGGER.info(
                         f"[Hedger][Train][Offloading] PPO update={self._offloading_update_steps}, "
-                        f"used={len(off_transitions)}, remaining={off_remaining}"
+                        f"used={len(off_transitions)}, remaining={off_remaining}, "
+                        f"reward_mean={self._format_log_value(off_ppo_stats.get('reward_mean', 0.0))}, "
+                        f"policy_loss={self._format_log_value(off_ppo_stats.get('policy_loss', 0.0))}, "
+                        f"value_loss={self._format_log_value(off_ppo_stats.get('value_loss', 0.0))}, "
+                        f"entropy={self._format_log_value(off_ppo_stats.get('entropy', 0.0))}, "
+                        f"approx_kl={self._format_log_value(off_ppo_stats.get('approx_kl', 0.0))}, "
+                        f"clip_fraction={self._format_log_value(off_ppo_stats.get('clip_fraction', 0.0))}"
                     )
 
                 # Run a PPO update for the deployment agent.
@@ -1125,16 +1194,30 @@ class Hedger:
                         dep_remaining = len(self.deployment_transitions)
 
                     with self._model_lock:
-                        self.deployment_agent.ppo_update(
+                        dep_ppo_stats = self.deployment_agent.ppo_update(
                             dep_transitions,
                             epochs=self.training_cfg.ppo_epochs,
                             batch_size=self.training_cfg.deployment_batch_size,
                         )
                     self._deployment_update_steps += 1
                     updates_in_tick += 1
+                    self._record_ppo_update(
+                        self.dep_update_recorder,
+                        "deployment",
+                        self._deployment_update_steps,
+                        used=len(dep_transitions),
+                        remaining=dep_remaining,
+                        stats=dep_ppo_stats,
+                    )
                     LOGGER.info(
                         f"[Hedger][Train][Deployment] PPO update={self._deployment_update_steps}, "
-                        f"used={len(dep_transitions)}, remaining={dep_remaining}"
+                        f"used={len(dep_transitions)}, remaining={dep_remaining}, "
+                        f"reward_mean={self._format_log_value(dep_ppo_stats.get('reward_mean', 0.0))}, "
+                        f"policy_loss={self._format_log_value(dep_ppo_stats.get('policy_loss', 0.0))}, "
+                        f"value_loss={self._format_log_value(dep_ppo_stats.get('value_loss', 0.0))}, "
+                        f"entropy={self._format_log_value(dep_ppo_stats.get('entropy', 0.0))}, "
+                        f"approx_kl={self._format_log_value(dep_ppo_stats.get('approx_kl', 0.0))}, "
+                        f"clip_fraction={self._format_log_value(dep_ppo_stats.get('clip_fraction', 0.0))}"
                     )
 
                 # Save a checkpoint.
@@ -1171,6 +1254,12 @@ class Hedger:
             self.save_checkpoint(stage_step=self._epoch, is_final=True)
         except Exception as e:
             LOGGER.exception(f"[Hedger][Train] Failed to save final checkpoint at stage_step={self._epoch}: {e}")
+        if self.dep_update_recorder is not None:
+            self.dep_update_recorder.close()
+            self.dep_update_recorder = None
+        if self.off_update_recorder is not None:
+            self.off_update_recorder.close()
+            self.off_update_recorder = None
         LOGGER.info(
             f"[Hedger][Train] Finished: stage_step={self._epoch}, global_step={self._global_update_step}, "
             f"dep_updates={self._deployment_update_steps}, off_updates={self._offloading_update_steps}, "
@@ -1205,8 +1294,11 @@ class Hedger:
             self._stage_log_path("deployment_train.csv"),
             fmt="csv",
             fieldnames=["step", "epoch", "dep_updates", "dep_reward", "avg_off_reward",
-                        "dep_change_cost", "cap_relax_cnt", "cap_relax_cost", "dep_offload_weight",
-                        "dep_change_weight", "cap_relax_weight"],
+                        "dep_change_cost", "cap_relax_cnt", "cap_relax_cost",
+                        "policy_logp", "policy_entropy", "value_estimate", "next_value",
+                        "raw_edge_replicas", "edge_replicas", "cloud_replicas", "cloud_only",
+                        "transition_buffer",
+                        "dep_offload_weight", "dep_change_weight", "cap_relax_weight"],
             overwrite=True,
             flush_every=1,
         )
@@ -1299,6 +1391,15 @@ class Hedger:
                 phys_feats = new_phys_feats
                 prev_deploy_mask = deploy_mask.detach().cpu()
 
+                cloud_idx = self.physical_topology.cloud_idx
+                raw_deploy_mask = aux["raw_deploy_mask"].detach().cpu().bool()
+                exec_deploy_mask = deploy_mask.detach().cpu().bool()
+                raw_edge_replicas = int(raw_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+                edge_replicas = int(exec_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+                cloud_replicas = int(exec_deploy_mask[:, cloud_idx].sum().item())
+                cloud_only = int((~exec_deploy_mask[:, :cloud_idx].any(dim=1)).sum().item()) if cloud_idx > 0 else \
+                    int(exec_deploy_mask.size(0))
+
                 self.dep_recorder.log(
                     step=step,
                     epoch=self._epoch,
@@ -1308,6 +1409,15 @@ class Hedger:
                     dep_change_cost=metrics["deploy_change_cost"],
                     cap_relax_cnt=aux["capacity_relax_cnt"],
                     cap_relax_cost=aux["capacity_relax_cost"],
+                    policy_logp=float(logp.detach().cpu().item()),
+                    policy_entropy=float(ent.detach().cpu().item()),
+                    value_estimate=float(value.detach().cpu().item()),
+                    next_value=float(next_value),
+                    raw_edge_replicas=raw_edge_replicas,
+                    edge_replicas=edge_replicas,
+                    cloud_replicas=cloud_replicas,
+                    cloud_only=cloud_only,
+                    transition_buffer=transition_count,
                     dep_offload_weight=self.deployment_agent_params["reward_dep_offload_weight"],
                     dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
@@ -1360,7 +1470,10 @@ class Hedger:
             fieldnames=["step", "epoch", "off_updates", "off_reward", "latency",
                         "slo_violation", "cloud_fraction", "aux_cost", "off_latency_weight",
                         "off_slo_weight", "off_cloud_weight", "switch_cnt", "correction_cnt",
-                        "correction_cost",
+                        "correction_cost", "policy_logp", "policy_entropy", "value_estimate",
+                        "next_value", "raw_cloud_fraction", "executed_cloud_fraction",
+                        "unique_targets", "feasible_targets_mean", "feasible_targets_min",
+                        "feasible_targets_max", "transition_buffer",
                         "switch_weight", "correction_weight"],
             overwrite=True,
             flush_every=10,
@@ -1446,6 +1559,17 @@ class Hedger:
                 logic_feats = new_logic_feats
                 phys_feats = new_phys_feats
 
+                cloud_idx = self.physical_topology.cloud_idx
+                actions_cpu = actions.detach().cpu()
+                raw_actions_cpu = aux["raw_actions"].detach().cpu()
+                raw_cloud_fraction = float((raw_actions_cpu == cloud_idx).float().mean().item())
+                executed_cloud_fraction = float((actions_cpu == cloud_idx).float().mean().item())
+                unique_targets = int(actions_cpu.unique().numel())
+                feasible_counts = static_mask.detach().cpu().float().sum(dim=1)
+                feasible_targets_mean = float(feasible_counts.mean().item()) if feasible_counts.numel() else 0.0
+                feasible_targets_min = float(feasible_counts.min().item()) if feasible_counts.numel() else 0.0
+                feasible_targets_max = float(feasible_counts.max().item()) if feasible_counts.numel() else 0.0
+
                 self.off_recorder.log(
                     step=step,
                     epoch=self._epoch,
@@ -1461,6 +1585,17 @@ class Hedger:
                     switch_cnt=aux["switches"],
                     correction_cnt=aux["correction_cnt"],
                     correction_cost=aux["correction_cost"],
+                    policy_logp=float(logp.detach().cpu().item()),
+                    policy_entropy=float(ent.detach().cpu().item()),
+                    value_estimate=float(value.detach().cpu().item()),
+                    next_value=float(next_value),
+                    raw_cloud_fraction=raw_cloud_fraction,
+                    executed_cloud_fraction=executed_cloud_fraction,
+                    unique_targets=unique_targets,
+                    feasible_targets_mean=feasible_targets_mean,
+                    feasible_targets_min=feasible_targets_min,
+                    feasible_targets_max=feasible_targets_max,
+                    transition_buffer=transition_count,
                     switch_weight=self.offloading_agent_params["penalty_switch"],
                     correction_weight=self.offloading_agent_params["penalty_relax"],
                 )

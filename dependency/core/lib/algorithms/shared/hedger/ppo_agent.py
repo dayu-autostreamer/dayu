@@ -24,6 +24,37 @@ def _scalar_to_float(value) -> float:
     return float(value)
 
 
+def _mean_or_zero(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
+def _std_or_zero(values: List[float]) -> float:
+    if len(values) <= 1:
+        return 0.0
+    mean = _mean_or_zero(values)
+    var = sum((value - mean) ** 2 for value in values) / len(values)
+    return float(math.sqrt(max(var, 0.0)))
+
+
+def _tensor_std_float(values: torch.Tensor) -> float:
+    values = values.detach().float()
+    if values.numel() <= 1:
+        return 0.0
+    return float(values.std(unbiased=False).cpu().item())
+
+
+def _parameters_grad_norm(parameters) -> float:
+    total_sq_norm = 0.0
+    for param in parameters:
+        if param.grad is None:
+            continue
+        param_norm = float(param.grad.detach().data.norm(2).cpu().item())
+        total_sq_norm += param_norm * param_norm
+    return float(math.sqrt(total_sq_norm))
+
+
 def _build_mask_context(mask: Optional[torch.Tensor], h_p: torch.Tensor) -> torch.Tensor:
     """
     Summarize a service-device mask into one context vector.
@@ -505,9 +536,11 @@ class HedgerDeploymentPPO(nn.Module):
         dones = [t['done'] for t in transitions]
         last_value = 0.0 if dones[-1] else _scalar_to_float(transitions[-1].get("next_value", 0.0))
         adv, rets = compute_returns_advantages(rewards, old_val, dones, self.gamma, self.lamda, last_value=last_value)
-        adv = torch.tensor(adv, device=device)
+        adv_raw = torch.tensor(adv, device=device)
         rets = torch.tensor(rets, device=device)
-        adv = (adv - adv.mean()) / (adv.std() + 1e-6)
+        adv_raw_mean = adv_raw.mean()
+        adv_raw_std = adv_raw.std(unbiased=False)
+        adv = (adv_raw - adv_raw_mean) / (adv_raw_std + 1e-6)
         device_transitions = [
             {
                 "logic_edge_index": tr["logic_edge_index"].to(device),
@@ -523,6 +556,16 @@ class HedgerDeploymentPPO(nn.Module):
             for tr in transitions
         ]
         T = len(transitions)
+        policy_losses: List[float] = []
+        value_losses: List[float] = []
+        entropies: List[float] = []
+        approx_kls: List[float] = []
+        clip_fractions: List[float] = []
+        ratio_means: List[float] = []
+        ratio_stds: List[float] = []
+        actor_grad_norms: List[float] = []
+        critic_grad_norms: List[float] = []
+        new_value_means: List[float] = []
         for _ in range(epochs):
             perm = torch.randperm(T, device=device)
             for start in range(0, T, batch_size):
@@ -553,12 +596,56 @@ class HedgerDeploymentPPO(nn.Module):
                 policy_loss = -torch.min(s1, s2).mean()
                 value_loss = F.mse_loss(new_val, rets[idx])
                 loss = policy_loss + value_coef * value_loss - entropy_coef * ent
+
+                with torch.no_grad():
+                    approx_kl = (old_logp[idx] - new_logp).mean()
+                    clip_fraction = ((ratio - 1.0).abs() > clip_eps).float().mean()
+                    policy_losses.append(_scalar_to_float(policy_loss))
+                    value_losses.append(_scalar_to_float(value_loss))
+                    entropies.append(_scalar_to_float(ent))
+                    approx_kls.append(_scalar_to_float(approx_kl))
+                    clip_fractions.append(_scalar_to_float(clip_fraction))
+                    ratio_means.append(_scalar_to_float(ratio.mean()))
+                    ratio_stds.append(_tensor_std_float(ratio))
+                    new_value_means.append(_scalar_to_float(new_val.mean()))
+
                 self.actor_opt.zero_grad()
                 self.critic_opt.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self._actor_train_params, 1.0)
+                actor_grad_norm = nn.utils.clip_grad_norm_(self._actor_train_params, 1.0)
+                actor_grad_norms.append(_scalar_to_float(actor_grad_norm))
+                critic_grad_norms.append(_parameters_grad_norm(self.critic.parameters()))
                 self.actor_opt.step()
                 self.critic_opt.step()
+
+        return {
+            "samples": T,
+            "epochs": int(epochs),
+            "batch_size": int(batch_size),
+            "minibatches": len(policy_losses),
+            "reward_mean": _mean_or_zero(rewards),
+            "reward_std": _std_or_zero(rewards),
+            "reward_min": float(min(rewards)) if rewards else 0.0,
+            "reward_max": float(max(rewards)) if rewards else 0.0,
+            "value_old_mean": _mean_or_zero(old_val),
+            "value_old_std": _std_or_zero(old_val),
+            "value_new_mean": _mean_or_zero(new_value_means),
+            "return_mean": _scalar_to_float(rets.mean()),
+            "return_std": _tensor_std_float(rets),
+            "adv_mean": _scalar_to_float(adv_raw_mean),
+            "adv_std": _scalar_to_float(adv_raw_std),
+            "last_value": float(last_value),
+            "done_fraction": _mean_or_zero([1.0 if done else 0.0 for done in dones]),
+            "policy_loss": _mean_or_zero(policy_losses),
+            "value_loss": _mean_or_zero(value_losses),
+            "entropy": _mean_or_zero(entropies),
+            "approx_kl": _mean_or_zero(approx_kls),
+            "clip_fraction": _mean_or_zero(clip_fractions),
+            "ratio_mean": _mean_or_zero(ratio_means),
+            "ratio_std": _mean_or_zero(ratio_stds),
+            "actor_grad_norm": _mean_or_zero(actor_grad_norms),
+            "critic_grad_norm": _mean_or_zero(critic_grad_norms),
+        }
 
 
 class HedgerOffloadingPPO(nn.Module):
@@ -816,9 +903,11 @@ class HedgerOffloadingPPO(nn.Module):
         dones = [t['done'] for t in transitions]
         last_value = 0.0 if dones[-1] else _scalar_to_float(transitions[-1].get("next_value", 0.0))
         adv, rets = compute_returns_advantages(rewards, old_val, dones, self.gamma, self.lamda, last_value=last_value)
-        adv = torch.tensor(adv, device=device)
+        adv_raw = torch.tensor(adv, device=device)
         rets = torch.tensor(rets, device=device)
-        adv = (adv - adv.mean()) / (adv.std() + 1e-6)
+        adv_raw_mean = adv_raw.mean()
+        adv_raw_std = adv_raw.std(unbiased=False)
+        adv = (adv_raw - adv_raw_mean) / (adv_raw_std + 1e-6)
         device_transitions = [
             {
                 "logic_edge_index": tr["logic_edge_index"].to(device),
@@ -832,6 +921,16 @@ class HedgerOffloadingPPO(nn.Module):
             for tr in transitions
         ]
         T = len(transitions)
+        policy_losses: List[float] = []
+        value_losses: List[float] = []
+        entropies: List[float] = []
+        approx_kls: List[float] = []
+        clip_fractions: List[float] = []
+        ratio_means: List[float] = []
+        ratio_stds: List[float] = []
+        actor_grad_norms: List[float] = []
+        critic_grad_norms: List[float] = []
+        new_value_means: List[float] = []
         for _ in range(epochs):
             perm = torch.randperm(T, device=device)
             for start in range(0, T, batch_size):
@@ -857,9 +956,52 @@ class HedgerOffloadingPPO(nn.Module):
                 value_loss = F.mse_loss(new_val, rets[idx])
                 loss = policy_loss + value_coef * value_loss - entropy_coef * ent
 
+                with torch.no_grad():
+                    approx_kl = (old_logp[idx] - new_logp).mean()
+                    clip_fraction = ((ratio - 1.0).abs() > clip_eps).float().mean()
+                    policy_losses.append(_scalar_to_float(policy_loss))
+                    value_losses.append(_scalar_to_float(value_loss))
+                    entropies.append(_scalar_to_float(ent))
+                    approx_kls.append(_scalar_to_float(approx_kl))
+                    clip_fractions.append(_scalar_to_float(clip_fraction))
+                    ratio_means.append(_scalar_to_float(ratio.mean()))
+                    ratio_stds.append(_tensor_std_float(ratio))
+                    new_value_means.append(_scalar_to_float(new_val.mean()))
+
                 self.actor_opt.zero_grad()
                 self.critic_opt.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self._actor_train_params, 1.0)
+                actor_grad_norm = nn.utils.clip_grad_norm_(self._actor_train_params, 1.0)
+                actor_grad_norms.append(_scalar_to_float(actor_grad_norm))
+                critic_grad_norms.append(_parameters_grad_norm(self.critic.parameters()))
                 self.actor_opt.step()
                 self.critic_opt.step()
+
+        return {
+            "samples": T,
+            "epochs": int(epochs),
+            "batch_size": int(batch_size),
+            "minibatches": len(policy_losses),
+            "reward_mean": _mean_or_zero(rewards),
+            "reward_std": _std_or_zero(rewards),
+            "reward_min": float(min(rewards)) if rewards else 0.0,
+            "reward_max": float(max(rewards)) if rewards else 0.0,
+            "value_old_mean": _mean_or_zero(old_val),
+            "value_old_std": _std_or_zero(old_val),
+            "value_new_mean": _mean_or_zero(new_value_means),
+            "return_mean": _scalar_to_float(rets.mean()),
+            "return_std": _tensor_std_float(rets),
+            "adv_mean": _scalar_to_float(adv_raw_mean),
+            "adv_std": _scalar_to_float(adv_raw_std),
+            "last_value": float(last_value),
+            "done_fraction": _mean_or_zero([1.0 if done else 0.0 for done in dones]),
+            "policy_loss": _mean_or_zero(policy_losses),
+            "value_loss": _mean_or_zero(value_losses),
+            "entropy": _mean_or_zero(entropies),
+            "approx_kl": _mean_or_zero(approx_kls),
+            "clip_fraction": _mean_or_zero(clip_fractions),
+            "ratio_mean": _mean_or_zero(ratio_means),
+            "ratio_std": _mean_or_zero(ratio_stds),
+            "actor_grad_norm": _mean_or_zero(actor_grad_norms),
+            "critic_grad_norm": _mean_or_zero(critic_grad_norms),
+        }
