@@ -10,7 +10,7 @@ import os
 import glob
 import json
 
-from core.lib.common import LOGGER, FileOps, Context, Recorder
+from core.lib.common import LOGGER, FileOps, Context, Recorder, KubeConfig
 
 from .topology_encoder import TopologyEncoders
 from .ppo_agent import HedgerOffloadingPPO, HedgerDeploymentPPO
@@ -157,6 +157,8 @@ class Hedger:
         self._deployment_version_cond = threading.Condition(threading.Lock())
         self._deployment_decision_version = 0
         self._deployment_served_version = 0
+        self._last_processor_pod_cleanup_t = 0.0
+        self._processor_pod_cleanup_cooldown_s = 30.0
         self._run_thread = None
         self._run_started = False
 
@@ -1253,6 +1255,28 @@ class Hedger:
 
         return False
 
+    def _delete_error_processor_pods_if_needed(self, reason: str) -> int:
+        now = time.monotonic()
+        if now - self._last_processor_pod_cleanup_t < self._processor_pod_cleanup_cooldown_s:
+            return 0
+
+        self._last_processor_pod_cleanup_t = now
+        try:
+            deleted = KubeConfig.delete_error_processor_pods(max_deletions=10)
+        except Exception as exc:
+            LOGGER.warning(
+                f"[Hedger][Recovery] Failed to delete error processor pods while {reason}: {exc}"
+            )
+            return 0
+
+        deleted_count = sum(1 for item in deleted if item.get("deleted"))
+        if deleted_count > 0:
+            LOGGER.warning(
+                f"[Hedger][Recovery] Deleted error processor pods while {reason}: "
+                f"count={deleted_count}"
+            )
+        return deleted_count
+
     def _deployment_feedback_min_samples(self) -> int:
         return max(
             1,
@@ -1265,9 +1289,15 @@ class Hedger:
 
         min_samples = max(1, min(int(min_samples), self.state_cfg.deployment_reward_window))
         while not self.deployment_thread_stop_event.is_set():
+            self._delete_error_processor_pods_if_needed(
+                reason=f"waiting for deployment feedback samples={min_samples}"
+            )
+            wait_timeout_s = 5.0
+            if self.state_cfg.deployment_feedback_timeout_s is not None:
+                wait_timeout_s = min(5.0, max(0.5, self.state_cfg.deployment_feedback_timeout_s))
             count = self.state_buffer.wait_for_offloading_rewards(
                 min_samples,
-                timeout_s=self.state_cfg.deployment_feedback_timeout_s,
+                timeout_s=wait_timeout_s,
             )
             if count >= min_samples:
                 return True

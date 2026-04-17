@@ -1,9 +1,11 @@
 from kubernetes import client, config
+from kubernetes.client.rest import ApiException
 from collections import defaultdict
 import time
 import threading
 
 from .context import Context
+from .log import LOGGER
 from .service import ServiceConfig
 
 
@@ -27,6 +29,17 @@ class KubeConfig:
 
     # Non-blocking refresh state
     _refresh_in_progress = False
+
+    # Processor pods in these states are safe to delete. The owning
+    # Deployment/ReplicaSet is expected to recreate them.
+    _recoverable_processor_pod_phases = {"Failed", "Unknown"}
+    _recoverable_processor_container_reasons = {
+        "CrashLoopBackOff",
+        "CreateContainerConfigError",
+        "CreateContainerError",
+        "Error",
+        "RunContainerError",
+    }
 
     # Optional selectors to reduce API payload
     _label_selector = Context.get_parameter('KUBE_POD_LABEL_SELECTOR') or None
@@ -357,6 +370,119 @@ class KubeConfig:
                 return False
 
         return True
+
+    @classmethod
+    def _get_processor_pod_error_reason(cls, pod, error_reasons=None):
+        pod_name = getattr(pod.metadata, 'name', None)
+        if not pod_name or not ServiceConfig.map_pod_name_to_service(pod_name):
+            return None
+
+        phase = getattr(pod.status, 'phase', None)
+        if phase in cls._recoverable_processor_pod_phases:
+            return f"phase={phase}"
+
+        reasons = set(error_reasons or cls._recoverable_processor_container_reasons)
+        statuses = []
+        statuses.extend(getattr(pod.status, 'init_container_statuses', None) or [])
+        statuses.extend(getattr(pod.status, 'container_statuses', None) or [])
+        for status in statuses:
+            container_name = getattr(status, 'name', 'unknown')
+            state = getattr(status, 'state', None)
+            waiting = getattr(state, 'waiting', None)
+            if waiting is not None:
+                reason = getattr(waiting, 'reason', None)
+                if reason in reasons:
+                    return f"container={container_name}, waiting={reason}"
+
+            terminated = getattr(state, 'terminated', None)
+            if terminated is not None:
+                reason = getattr(terminated, 'reason', None)
+                exit_code = getattr(terminated, 'exit_code', None)
+                if reason in reasons or (exit_code is not None and int(exit_code) != 0):
+                    return f"container={container_name}, terminated={reason or 'non-zero-exit'}, exit_code={exit_code}"
+
+        return None
+
+    @classmethod
+    def delete_error_processor_pods(cls, max_deletions: int = 10, dry_run: bool = False, error_reasons=None):
+        """
+        Delete processor pods that are already in clearly recoverable error states.
+
+        This is intentionally conservative: Pending or merely not-ready pods are
+        left alone because they may still be starting. The scheduler/Hedger side
+        can call this helper while waiting for redeployment feedback, and the
+        owning Kubernetes controller will recreate deleted pods.
+        """
+        max_deletions = max(0, int(max_deletions))
+        if max_deletions <= 0:
+            return []
+
+        api = cls._get_core_api()
+        pods = api.list_namespaced_pod(
+            cls.NAMESPACE,
+            label_selector=cls._label_selector,
+            field_selector=cls._field_selector,
+        ).items
+
+        deleted = []
+        for pod in pods:
+            pod_name = getattr(pod.metadata, 'name', None)
+            node_name = getattr(pod.spec, 'node_name', None)
+            reason = cls._get_processor_pod_error_reason(pod, error_reasons=error_reasons)
+            if not pod_name or reason is None:
+                continue
+            if len(deleted) >= max_deletions:
+                break
+
+            item = {
+                "pod": pod_name,
+                "node": node_name,
+                "reason": reason,
+                "deleted": False,
+            }
+            if not dry_run:
+                try:
+                    api.delete_namespaced_pod(
+                        name=pod_name,
+                        namespace=cls.NAMESPACE,
+                        body=client.V1DeleteOptions(grace_period_seconds=0),
+                    )
+                    item["deleted"] = True
+                except ApiException as exc:
+                    if getattr(exc, 'status', None) == 404:
+                        item["deleted"] = True
+                    else:
+                        item["error"] = str(exc)
+                        LOGGER.warning(
+                            f"[KubeConfig] Failed to delete error processor pod "
+                            f"pod={pod_name}, node={node_name}, reason={reason}, error={exc}"
+                        )
+                except Exception as exc:
+                    item["error"] = str(exc)
+                    LOGGER.warning(
+                        f"[KubeConfig] Failed to delete error processor pod "
+                        f"pod={pod_name}, node={node_name}, reason={reason}, error={exc}"
+                    )
+
+            deleted.append(item)
+
+        successful = [item for item in deleted if item.get("deleted") or dry_run]
+        if successful and not dry_run:
+            cls.invalidate_cache()
+
+        if deleted:
+            sample = "; ".join(
+                f"{item['pod']}@{item.get('node')}({item['reason']})"
+                for item in deleted[:5]
+            )
+            action = "Detected" if dry_run else "Deleted"
+            action_count = len(successful) if not dry_run else len(deleted)
+            LOGGER.warning(
+                f"[KubeConfig] {action} recoverable error processor pods: "
+                f"count={action_count}, detected={len(deleted)}, sample={sample}"
+            )
+
+        return deleted
 
     @classmethod
     def get_pod_memory_from_metrics(cls, target_pod_names):
