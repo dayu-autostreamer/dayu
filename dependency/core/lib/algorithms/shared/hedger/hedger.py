@@ -162,6 +162,8 @@ class Hedger:
         self.off_recorder = None
         self.dep_update_recorder = None
         self.off_update_recorder = None
+        self.dep_decision_recorder = None
+        self.off_decision_recorder = None
 
         self.cur_deploy_mask = None
         self._frozen_offloading_agent = None
@@ -637,7 +639,7 @@ class Hedger:
 
     @staticmethod
     def _json_for_record(value) -> str:
-        return json.dumps(value or {}, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return json.dumps({} if value is None else value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
     def _tensor_mean(value: Optional[torch.Tensor]) -> float:
@@ -728,6 +730,174 @@ class Hedger:
             "state_model_flops_mean", "state_model_mem_mean",
             "state_gpu_flops_mean", "state_mem_capacity_mean",
         ]
+
+    @staticmethod
+    def _latest_feature_value(feats: Dict[str, torch.Tensor], key: str, idx: int) -> float:
+        value = feats.get(key)
+        if not isinstance(value, torch.Tensor) or value.numel() == 0:
+            return 0.0
+        value = value.detach().float().cpu()
+        if value.dim() == 0:
+            return float(value.item())
+        if idx < 0 or idx >= value.size(0):
+            return 0.0
+        if value.dim() == 1:
+            return float(value[idx].item())
+        return float(value[idx, -1].item())
+
+    @staticmethod
+    def _decision_common_fieldnames() -> List[str]:
+        return [
+            "step", "epoch", "update_steps", "service_idx", "service",
+            "service_model_flops", "service_model_mem", "state_complexity", "state_latency",
+        ]
+
+    @staticmethod
+    def _deployment_decision_fieldnames() -> List[str]:
+        return [
+            *Hedger._decision_common_fieldnames(),
+            "raw_nodes", "executed_nodes", "removed_nodes", "added_nodes",
+            "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
+            "capacity_corrected",
+        ]
+
+    @staticmethod
+    def _offloading_decision_fieldnames() -> List[str]:
+        return [
+            *Hedger._decision_common_fieldnames(),
+            "raw_target", "executed_target", "corrected", "raw_is_cloud", "executed_is_cloud",
+            "feasible_targets", "feasible_target_count", "parent_targets", "parent_switches",
+            "target_gpu_util", "target_mem_util", "target_bandwidth",
+        ]
+
+    def _service_name(self, service_idx: int) -> str:
+        if self.logical_topology is None:
+            return str(service_idx)
+        return self.logical_topology[service_idx]
+
+    def _device_name(self, device_idx: int) -> str:
+        if self.physical_topology is None:
+            return str(device_idx)
+        return self.physical_topology[device_idx]
+
+    def _device_names_from_indices(self, indices: List[int]) -> List[str]:
+        return [self._device_name(int(idx)) for idx in indices]
+
+    def _device_names_from_mask(self, mask_row: torch.Tensor) -> List[str]:
+        indices = torch.nonzero(mask_row.detach().cpu().bool(), as_tuple=False).flatten().tolist()
+        return self._device_names_from_indices(indices)
+
+    def _log_deployment_decisions(
+            self,
+            *,
+            step: int,
+            raw_deploy_mask: torch.Tensor,
+            exec_deploy_mask: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+    ) -> None:
+        if self.dep_decision_recorder is None or self.physical_topology is None:
+            return
+
+        cloud_idx = self.physical_topology.cloud_idx
+        raw_mask = raw_deploy_mask.detach().cpu().bool()
+        exec_mask = exec_deploy_mask.detach().cpu().bool()
+        for service_idx in range(raw_mask.size(0)):
+            raw_nodes = self._device_names_from_mask(raw_mask[service_idx])
+            executed_nodes = self._device_names_from_mask(exec_mask[service_idx])
+            removed_indices = torch.nonzero(raw_mask[service_idx] & ~exec_mask[service_idx], as_tuple=False)
+            added_indices = torch.nonzero(~raw_mask[service_idx] & exec_mask[service_idx], as_tuple=False)
+            raw_edge_count = int(raw_mask[service_idx, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+            exec_edge_count = int(exec_mask[service_idx, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+            self.dep_decision_recorder.log(
+                step=step,
+                epoch=self._epoch,
+                update_steps=self._deployment_update_steps,
+                service_idx=service_idx,
+                service=self._service_name(service_idx),
+                service_model_flops=self._latest_feature_value(logic_feats, "model_flops", service_idx),
+                service_model_mem=self._latest_feature_value(logic_feats, "model_mem", service_idx),
+                state_complexity=self._latest_feature_value(logic_feats, "task_complexity_seq", service_idx),
+                state_latency=self._latest_feature_value(logic_feats, "hist_latency_seq", service_idx),
+                raw_nodes=self._json_for_record(raw_nodes),
+                executed_nodes=self._json_for_record(executed_nodes),
+                removed_nodes=self._json_for_record(
+                    self._device_names_from_indices(removed_indices.flatten().tolist())
+                ),
+                added_nodes=self._json_for_record(
+                    self._device_names_from_indices(added_indices.flatten().tolist())
+                ),
+                raw_edge_replicas=raw_edge_count,
+                executed_edge_replicas=exec_edge_count,
+                cloud_replica=bool(exec_mask[service_idx, cloud_idx].item()),
+                capacity_corrected=bool(not torch.equal(raw_mask[service_idx], exec_mask[service_idx])),
+            )
+
+    def _log_offloading_decisions(
+            self,
+            *,
+            step: int,
+            raw_actions: torch.Tensor,
+            executed_actions: torch.Tensor,
+            static_mask: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+    ) -> None:
+        if self.off_decision_recorder is None or self.physical_topology is None:
+            return
+
+        raw_actions = raw_actions.detach().cpu().long()
+        executed_actions = executed_actions.detach().cpu().long()
+        static_mask = static_mask.detach().cpu().bool()
+        parents = [[] for _ in range(raw_actions.numel())]
+        if self.logical_topology is not None:
+            for parent, child in self.logical_topology.links:
+                parents[child].append(parent)
+
+        cloud_idx = self.physical_topology.cloud_idx
+        source_idx = self.physical_topology.source_idx
+        for service_idx in range(raw_actions.numel()):
+            raw_target_idx = int(raw_actions[service_idx].item())
+            executed_target_idx = int(executed_actions[service_idx].item())
+            feasible_row = static_mask[service_idx].clone()
+            if not feasible_row.any():
+                feasible_row[cloud_idx] = True
+            feasible_indices = torch.nonzero(feasible_row, as_tuple=False).flatten().tolist()
+            parent_target_names = [
+                self._device_name(int(executed_actions[parent].item()))
+                for parent in parents[service_idx]
+            ]
+            if parents[service_idx]:
+                parent_switches = sum(
+                    1
+                    for parent in parents[service_idx]
+                    if int(executed_actions[parent].item()) != executed_target_idx
+                )
+            else:
+                parent_switches = 0 if executed_target_idx == source_idx else 1
+
+            self.off_decision_recorder.log(
+                step=step,
+                epoch=self._epoch,
+                update_steps=self._offloading_update_steps,
+                service_idx=service_idx,
+                service=self._service_name(service_idx),
+                service_model_flops=self._latest_feature_value(logic_feats, "model_flops", service_idx),
+                service_model_mem=self._latest_feature_value(logic_feats, "model_mem", service_idx),
+                state_complexity=self._latest_feature_value(logic_feats, "task_complexity_seq", service_idx),
+                state_latency=self._latest_feature_value(logic_feats, "hist_latency_seq", service_idx),
+                raw_target=self._device_name(raw_target_idx),
+                executed_target=self._device_name(executed_target_idx),
+                corrected=bool(raw_target_idx != executed_target_idx),
+                raw_is_cloud=bool(raw_target_idx == cloud_idx),
+                executed_is_cloud=bool(executed_target_idx == cloud_idx),
+                feasible_targets=self._json_for_record(self._device_names_from_indices(feasible_indices)),
+                feasible_target_count=len(feasible_indices),
+                parent_targets=self._json_for_record(parent_target_names),
+                parent_switches=parent_switches,
+                target_gpu_util=self._latest_feature_value(phys_feats, "gpu_util_seq", executed_target_idx),
+                target_mem_util=self._latest_feature_value(phys_feats, "mem_util_seq", executed_target_idx),
+                target_bandwidth=self._latest_feature_value(phys_feats, "bandwidth_seq", executed_target_idx),
+            )
 
     def register_topology_encoder(self):
         if self.shared_topology_encoder:
@@ -1398,6 +1568,13 @@ class Hedger:
             overwrite=True,
             flush_every=1,
         )
+        self.dep_decision_recorder = Recorder(
+            self._stage_log_path("deployment_decisions.csv"),
+            fmt="csv",
+            fieldnames=self._deployment_decision_fieldnames(),
+            overwrite=True,
+            flush_every=10,
+        )
 
         # Static graph edge indices can be reused across iterations.
         logic_edge_index = self._build_edge_index(self.logical_topology.links)
@@ -1483,7 +1660,9 @@ class Hedger:
                     with self._data_lock:
                         transition_count = len(self.deployment_transitions)
 
-                state_record = self._state_record_metrics(logic_feats, phys_feats)
+                state_logic_feats = logic_feats
+                state_phys_feats = phys_feats
+                state_record = self._state_record_metrics(state_logic_feats, state_phys_feats)
                 logic_feats = new_logic_feats
                 phys_feats = new_phys_feats
                 prev_deploy_mask = deploy_mask.detach().cpu()
@@ -1523,6 +1702,12 @@ class Hedger:
                     dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                 )
+                self._log_deployment_decisions(
+                    step=step,
+                    raw_deploy_mask=raw_deploy_mask,
+                    exec_deploy_mask=exec_deploy_mask,
+                    logic_feats=state_logic_feats,
+                )
                 LOGGER.debug(
                     f"[Hedger][Train][Deployment] step={step}, reward={self._format_log_value(reward)}, "
                     f"{self._summarize_deploy_mask(self.cur_deploy_mask)}, "
@@ -1539,6 +1724,7 @@ class Hedger:
                 time.sleep(0.5)
 
         self.dep_recorder.close()
+        self.dep_decision_recorder.close()
         LOGGER.info("[Hedger][Train][Deployment] Worker stopped.")
 
     def train_offloading_agent(self):
@@ -1579,6 +1765,13 @@ class Hedger:
                         "switch_weight", "correction_weight"],
             overwrite=True,
             flush_every=10,
+        )
+        self.off_decision_recorder = Recorder(
+            self._stage_log_path("offloading_decisions.csv"),
+            fmt="csv",
+            fieldnames=self._offloading_decision_fieldnames(),
+            overwrite=True,
+            flush_every=50,
         )
 
         logic_edge_index = self._build_edge_index(self.logical_topology.links)
@@ -1658,7 +1851,9 @@ class Hedger:
                     with self._data_lock:
                         transition_count = len(self.offloading_transitions)
 
-                state_record = self._state_record_metrics(logic_feats, phys_feats)
+                state_logic_feats = logic_feats
+                state_phys_feats = phys_feats
+                state_record = self._state_record_metrics(state_logic_feats, state_phys_feats)
                 logic_feats = new_logic_feats
                 phys_feats = new_phys_feats
 
@@ -1706,6 +1901,14 @@ class Hedger:
                     switch_weight=self.offloading_agent_params["penalty_switch"],
                     correction_weight=self.offloading_agent_params["penalty_relax"],
                 )
+                self._log_offloading_decisions(
+                    step=step,
+                    raw_actions=raw_actions_cpu,
+                    executed_actions=actions_cpu,
+                    static_mask=static_mask,
+                    logic_feats=state_logic_feats,
+                    phys_feats=state_phys_feats,
+                )
                 LOGGER.debug(
                     f"[Hedger][Train][Offloading] step={step}, reward={self._format_log_value(reward)}, "
                     f"{self._summarize_offloading_plan(self.offloading_plan)}, "
@@ -1722,6 +1925,7 @@ class Hedger:
                 time.sleep(0.5)
 
         self.off_recorder.close()
+        self.off_decision_recorder.close()
         LOGGER.info("[Hedger][Train][Offloading] Worker stopped.")
 
     def _compute_offloading_reward(self, metrics, aux) -> float:
