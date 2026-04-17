@@ -99,6 +99,10 @@ class BackendCore:
 
         # Lock for uninstall operations to prevent inconsistent states
         self.uninstall_lock = False
+        redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=60, direct=False)
+        self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
+        self._last_processor_redeployment_t = 0.0
+        self._last_processor_redeploy_applied = False
 
         self.default_visualization_image = 'default_visualization.png'
 
@@ -217,6 +221,7 @@ class BackendCore:
         return result, msg
 
     def parse_and_redeploy_services(self, update_docs):
+        self._last_processor_redeploy_applied = False
         original_docs = self.read_component_yaml()
         if not original_docs:
             msg = 'no valid components yaml docs found.'
@@ -224,6 +229,32 @@ class BackendCore:
             return False, ''
 
         _, docs_to_add, docs_to_update, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
+        add_names = [doc['metadata']['name'] for doc in docs_to_add]
+        update_names = [doc['metadata']['name'] for doc in docs_to_update]
+        delete_names = [doc['metadata']['name'] for doc in docs_to_delete]
+        change_count = len(add_names) + len(update_names) + len(delete_names)
+        LOGGER.debug(
+            f"[Redeployment] processor change set: add={add_names}, "
+            f"update={update_names}, delete={delete_names}"
+        )
+
+        if change_count == 0:
+            LOGGER.debug('[Redeployment] No processor changes detected, skip redeployment.')
+            return True, ''
+
+        now = time.monotonic()
+        elapsed = (
+            float("inf")
+            if self._last_processor_redeployment_t <= 0.0
+            else now - self._last_processor_redeployment_t
+        )
+        if elapsed < self.processor_redeployment_interval_s:
+            LOGGER.info(
+                f"[Redeployment] Skip processor redeployment due to interval guard: "
+                f"elapsed={elapsed:.2f}s, min_interval={self.processor_redeployment_interval_s:.2f}s, "
+                f"changes={change_count}"
+            )
+            return True, ''
 
         try:
             res, msg = self.operate_processors(docs_to_update, docs_to_add, docs_to_delete)
@@ -235,6 +266,8 @@ class BackendCore:
         if not res:
             return False, msg
 
+        self._last_processor_redeployment_t = time.monotonic()
+        self._last_processor_redeploy_applied = True
         return True, ''
 
     @timeout(300)
@@ -805,11 +838,15 @@ class BackendCore:
 
                 self.uninstall_lock = True
                 try:
+                    self._last_processor_redeploy_applied = None
                     res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
 
                     if res:
-                        self.update_component_yaml(redeploy_docs_list)
-                        LOGGER.info('[Redeployment] Redeployment succeeded.')
+                        if self._last_processor_redeploy_applied is not False:
+                            self.update_component_yaml(redeploy_docs_list)
+                            LOGGER.info('[Redeployment] Redeployment succeeded.')
+                        else:
+                            LOGGER.debug('[Redeployment] Redeployment skipped; no processor changes were applied.')
                     else:
                         LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
                 finally:
