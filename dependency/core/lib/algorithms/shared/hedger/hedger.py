@@ -181,6 +181,10 @@ class Hedger:
         self.off_decision_recorder = None
 
         self.cur_deploy_mask = None
+        self.pending_deployment_plan = None
+        self.pending_deploy_mask = None
+        self._last_deployment_served_monotonic = 0.0
+        self._last_redeployment_throttle_log_t = 0.0
         self._frozen_offloading_agent = None
 
         if self.mode == "inference":
@@ -1067,6 +1071,8 @@ class Hedger:
             return
         self.initial_deployment_plan = copy.deepcopy(deployment_plan)
         self.deployment_plan = copy.deepcopy(deployment_plan)
+        self.pending_deployment_plan = None
+        self.pending_deploy_mask = None
 
         # Cache the current deployment mask.
         self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(deployment_plan or {})
@@ -1083,10 +1089,48 @@ class Hedger:
         return copy.deepcopy(self.initial_deployment_plan)
 
     def get_redeployment_plan(self):
+        now = time.monotonic()
+        served_version = None
+        throttled = False
         with self._data_lock:
-            self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(self.deployment_plan)
+            has_pending = (
+                self._deployment_decision_version > self._deployment_served_version
+                and self.pending_deployment_plan is not None
+                and self.pending_deploy_mask is not None
+            )
+            if has_pending:
+                elapsed = (
+                    float("inf")
+                    if self._last_deployment_served_monotonic <= 0.0
+                    else now - self._last_deployment_served_monotonic
+                )
+                if elapsed < self.deployment_interval:
+                    throttled = True
+                else:
+                    self.deployment_plan = copy.deepcopy(self.pending_deployment_plan)
+                    self.cur_deploy_mask = self.pending_deploy_mask.detach().clone().cpu()
+                    self.pending_deployment_plan = None
+                    self.pending_deploy_mask = None
+                    self._last_deployment_served_monotonic = now
+                    served_version = self._mark_deployment_decision_served()
+
+            if self.deployment_plan is None and self.cur_deploy_mask is not None:
+                self.deployment_plan = self._map_deployment_mask_to_deployment_plan(self.cur_deploy_mask)
+            elif self.cur_deploy_mask is None and self.deployment_plan is not None:
+                self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(self.deployment_plan)
+
             plan = copy.deepcopy(self.deployment_plan)
-        served_version = self._mark_deployment_decision_served()
+
+        if throttled:
+            if now - self._last_redeployment_throttle_log_t >= 10.0:
+                self._last_redeployment_throttle_log_t = now
+                LOGGER.debug(
+                    f"[Hedger][Deployment] Redeployment request throttled: "
+                    f"served_version={self._deployment_served_version}, "
+                    f"pending_version={self._deployment_decision_version}, "
+                    f"min_interval={self._format_log_value(self.deployment_interval, 2)}s"
+                )
+
         if served_version is not None:
             LOGGER.info(
                 f"[Hedger][Deployment] Served deployment decision version={served_version}; "
@@ -1530,6 +1574,9 @@ class Hedger:
             self.cur_deploy_mask = torch.zeros((len(self.logical_topology), len(self.physical_topology)),
                                                dtype=torch.bool, device=self.device)
             self.cur_deploy_mask[:, self.physical_topology.cloud_idx] = True
+            self.deployment_plan = self._map_deployment_mask_to_deployment_plan(self.cur_deploy_mask)
+        elif self.deployment_plan is None:
+            self.deployment_plan = self._map_deployment_mask_to_deployment_plan(self._current_deploy_mask())
 
         LOGGER.info(
             f"[Hedger][Train] Initial deployment state: {self._summarize_deploy_mask(self.cur_deploy_mask)}"
@@ -1786,8 +1833,8 @@ class Hedger:
                     )
                 deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
                 with self._data_lock:
-                    self.deployment_plan = deploy_plan
-                    self.cur_deploy_mask = deploy_mask.detach().cpu()
+                    self.pending_deployment_plan = deploy_plan
+                    self.pending_deploy_mask = deploy_mask.detach().cpu()
                     decision_version = self._mark_deployment_decision_pending()
 
                 if not self._wait_for_deployment_decision_served(decision_version):
