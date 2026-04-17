@@ -106,12 +106,13 @@ class Controller:
 
     def send_task_to_distributor(self, cur_task: Task):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
-        if not os.path.exists(FileOps.get_task_file_in_temp(cur_task)):
+        task_file_path = FileOps.get_task_file_in_temp(cur_task)
+        if self.is_display and not os.path.exists(task_file_path):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
                            f'task: {cur_task.get_task_id()} '
-                           f'file: {FileOps.get_task_file_in_temp(cur_task)}')
+                           f'file: {task_file_path}')
             return
-        file_content = open(FileOps.get_task_file_in_temp(cur_task), 'rb') if self.is_display else b''
+        file_content = open(task_file_path, 'rb') if self.is_display else b''
 
         http_request(url=self.distribute_address,
                      method=NetworkAPIMethod.DISTRIBUTOR_DISTRIBUTE,

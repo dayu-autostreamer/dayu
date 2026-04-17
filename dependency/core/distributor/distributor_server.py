@@ -3,7 +3,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.routing import APIRoute
-from starlette.responses import JSONResponse, FileResponse
+from starlette.responses import JSONResponse, FileResponse, StreamingResponse
 from starlette.requests import Request
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -74,7 +74,8 @@ class DistributorServer:
 
     def distribute_data_background(self, data, file_data):
         cur_task = Task.deserialize(data)
-        FileOps.save_task_file(cur_task, file_data)
+        if file_data:
+            FileOps.save_task_file(cur_task, file_data)
         self.distributor.record_transmit_ts(cur_task)
         self.distributor.distribute_data(cur_task)
 
@@ -108,12 +109,31 @@ class DistributorServer:
     async def export_result_log(self, backtask: BackgroundTasks):
         export_path = self.distributor.create_result_log_export_file()
         formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-        backtask.add_task(FileOps.remove_file, export_path)
-        return FileResponse(
-            path=export_path,
-            filename=f'DAYU_RESULT_LOG_{formatted_time}.json.gz',
+        try:
+            export_file = open(export_path, 'rb')
+        except Exception:
+            FileOps.remove_file(export_path)
+            raise
+
+        def iter_file():
+            try:
+                while True:
+                    chunk = export_file.read(8192)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                export_file.close()
+                FileOps.remove_file(export_path)
+
+        headers = {
+            'Content-Disposition': f'attachment; filename="DAYU_RESULT_LOG_{formatted_time}.json.gz"',
+            'Cache-Control': 'no-store',
+        }
+        return StreamingResponse(
+            iter_file(),
             media_type='application/gzip',
-            background=backtask
+            headers=headers
         )
 
     async def clear_database(self):
