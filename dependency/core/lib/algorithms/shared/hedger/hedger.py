@@ -86,6 +86,14 @@ class HedgerCheckpointCfg:
 
 
 @dataclass(frozen=True)
+class HedgerPPOUpdateCfg:
+    entropy_coef: float
+    entropy_coef_final: float
+    entropy_decay_updates: int
+    value_coef: float
+
+
+@dataclass(frozen=True)
 class HedgerTrainingStageCfg:
     name: str
     run_deployment_worker: bool
@@ -336,7 +344,7 @@ class Hedger:
             "value_old_mean", "value_old_std", "value_new_mean",
             "return_mean", "return_std", "adv_mean", "adv_std",
             "last_value", "done_fraction",
-            "policy_loss", "value_loss", "entropy", "approx_kl",
+            "policy_loss", "value_loss", "entropy", "entropy_coef", "value_coef", "approx_kl",
             "clip_fraction", "ratio_mean", "ratio_std",
             "actor_grad_norm", "critic_grad_norm",
         ]
@@ -398,6 +406,7 @@ class Hedger:
         deployment = self._require_mapping(agents_cfg, "deployment")
         reward = self._require_mapping(deployment, "reward")
         penalty = self._require_mapping(deployment, "penalty")
+        ppo = self._build_ppo_update_cfg(deployment)
         return {
             "actor_lr": float(deployment["actor_lr"]),
             "critic_lr": float(deployment["critic_lr"]),
@@ -408,12 +417,21 @@ class Hedger:
             "reward_dep_offload_weight": float(reward["offloading_weight"]),
             "reward_dep_change_weight": float(reward["change_cost_weight"]),
             "penalty_capacity_relax": float(penalty["capacity_relax"]),
+            "ppo": ppo,
         }
 
     def _build_offloading_agent_params(self, agents_cfg: dict) -> dict:
         offloading = self._require_mapping(agents_cfg, "offloading")
         reward = self._require_mapping(offloading, "reward")
         penalty = self._require_mapping(offloading, "penalty")
+        ppo = self._build_ppo_update_cfg(offloading)
+        latency_transform = str(reward.get("latency_transform", "clipped_ratio")).strip().lower()
+        if latency_transform not in {"raw", "clipped_ratio", "log_ratio"}:
+            raise ValueError("Hedger offloading.reward.latency_transform must be one of: raw, clipped_ratio, log_ratio.")
+        latency_normalizer = reward.get("latency_normalizer")
+        if latency_normalizer is None:
+            latency_normalizer = self.state_cfg.latency_slo if self.state_cfg.latency_slo is not None else 1.0
+        latency_clip = reward.get("latency_clip", 3.0)
         return {
             "actor_lr": float(offloading["actor_lr"]),
             "critic_lr": float(offloading["critic_lr"]),
@@ -424,9 +442,39 @@ class Hedger:
             "reward_off_latency_weight": float(reward["latency_weight"]),
             "reward_off_slo_weight": float(reward["slo_weight"]),
             "reward_off_cloud_weight": float(reward["cloud_weight"]),
+            "reward_off_latency_transform": latency_transform,
+            "reward_off_latency_normalizer": max(1e-6, float(latency_normalizer)),
+            "reward_off_latency_clip": None if latency_clip is None else max(0.0, float(latency_clip)),
             "penalty_switch": float(penalty["switch"]),
             "penalty_relax": float(penalty["correction"]),
+            "ppo": ppo,
         }
+
+    def _build_ppo_update_cfg(self, agent_cfg: dict) -> HedgerPPOUpdateCfg:
+        ppo = agent_cfg.get("ppo") or {}
+        if not isinstance(ppo, dict):
+            raise ValueError("Hedger agent ppo section must be a mapping when provided.")
+        entropy_coef = max(0.0, float(ppo.get("entropy_coef", 0.003)))
+        entropy_coef_final = max(0.0, float(ppo.get("entropy_coef_final", entropy_coef)))
+        default_decay = self.training_cfg.total_updates if self.training_cfg is not None else 0
+        entropy_decay_updates = max(0, int(ppo.get("entropy_decay_updates", default_decay)))
+        value_coef = max(0.0, float(ppo.get("value_coef", 0.5)))
+        return HedgerPPOUpdateCfg(
+            entropy_coef=entropy_coef,
+            entropy_coef_final=entropy_coef_final,
+            entropy_decay_updates=entropy_decay_updates,
+            value_coef=value_coef,
+        )
+
+    @staticmethod
+    def _scheduled_entropy_coef(ppo_cfg: HedgerPPOUpdateCfg, update_step: int) -> float:
+        if ppo_cfg.entropy_decay_updates <= 0:
+            return float(ppo_cfg.entropy_coef)
+        progress = min(1.0, max(0.0, float(update_step) / float(ppo_cfg.entropy_decay_updates)))
+        return float(
+            ppo_cfg.entropy_coef
+            + (ppo_cfg.entropy_coef_final - ppo_cfg.entropy_coef) * progress
+        )
 
     def _sync_agent_topology_bindings(self):
         """Synchronize agent-side source/cloud indices with the registered physical topology."""
@@ -1424,10 +1472,17 @@ class Hedger:
                         off_remaining = len(self.offloading_transitions)
 
                     with self._model_lock:
+                        off_ppo_cfg = self.offloading_agent_params["ppo"]
+                        off_entropy_coef = self._scheduled_entropy_coef(
+                            off_ppo_cfg,
+                            self._offloading_update_steps + 1,
+                        )
                         off_ppo_stats = self.offloading_agent.ppo_update(
                             off_transitions,
                             epochs=self.training_cfg.ppo_epochs,
                             batch_size=self.training_cfg.offloading_batch_size,
+                            entropy_coef=off_entropy_coef,
+                            value_coef=off_ppo_cfg.value_coef,
                         )
                     self._offloading_update_steps += 1
                     updates_in_tick += 1
@@ -1446,6 +1501,7 @@ class Hedger:
                         f"policy_loss={self._format_log_value(off_ppo_stats.get('policy_loss', 0.0))}, "
                         f"value_loss={self._format_log_value(off_ppo_stats.get('value_loss', 0.0))}, "
                         f"entropy={self._format_log_value(off_ppo_stats.get('entropy', 0.0))}, "
+                        f"entropy_coef={self._format_log_value(off_ppo_stats.get('entropy_coef', 0.0))}, "
                         f"approx_kl={self._format_log_value(off_ppo_stats.get('approx_kl', 0.0))}, "
                         f"clip_fraction={self._format_log_value(off_ppo_stats.get('clip_fraction', 0.0))}"
                     )
@@ -1459,10 +1515,17 @@ class Hedger:
                         dep_remaining = len(self.deployment_transitions)
 
                     with self._model_lock:
+                        dep_ppo_cfg = self.deployment_agent_params["ppo"]
+                        dep_entropy_coef = self._scheduled_entropy_coef(
+                            dep_ppo_cfg,
+                            self._deployment_update_steps + 1,
+                        )
                         dep_ppo_stats = self.deployment_agent.ppo_update(
                             dep_transitions,
                             epochs=self.training_cfg.ppo_epochs,
                             batch_size=self.training_cfg.deployment_batch_size,
+                            entropy_coef=dep_entropy_coef,
+                            value_coef=dep_ppo_cfg.value_coef,
                         )
                     self._deployment_update_steps += 1
                     updates_in_tick += 1
@@ -1481,6 +1544,7 @@ class Hedger:
                         f"policy_loss={self._format_log_value(dep_ppo_stats.get('policy_loss', 0.0))}, "
                         f"value_loss={self._format_log_value(dep_ppo_stats.get('value_loss', 0.0))}, "
                         f"entropy={self._format_log_value(dep_ppo_stats.get('entropy', 0.0))}, "
+                        f"entropy_coef={self._format_log_value(dep_ppo_stats.get('entropy_coef', 0.0))}, "
                         f"approx_kl={self._format_log_value(dep_ppo_stats.get('approx_kl', 0.0))}, "
                         f"clip_fraction={self._format_log_value(dep_ppo_stats.get('clip_fraction', 0.0))}"
                     )
@@ -1754,9 +1818,10 @@ class Hedger:
         self.off_recorder = Recorder(
             self._stage_log_path("offloading_train.csv"),
             fmt="csv",
-            fieldnames=["step", "epoch", "off_updates", "off_reward", "latency",
-                        "slo_violation", "cloud_fraction", "aux_cost", "off_latency_weight",
-                        "off_slo_weight", "off_cloud_weight", "switch_cnt", "correction_cnt",
+            fieldnames=["step", "epoch", "off_updates", "off_reward", "latency", "latency_cost",
+                        "latency_normalizer", "latency_clip", "slo_violation", "cloud_fraction",
+                        "aux_cost", "off_latency_weight", "off_slo_weight", "off_cloud_weight",
+                        "switch_cnt", "correction_cnt",
                         "correction_cost", "policy_logp", "policy_entropy", "value_estimate",
                         "next_value", "raw_cloud_fraction", "executed_cloud_fraction",
                         "unique_targets", "feasible_targets_mean", "feasible_targets_min",
@@ -1822,6 +1887,7 @@ class Hedger:
                         )
                     )
 
+                latency_cost = self._compute_offloading_latency_cost(metrics["latency"])
                 reward = self._compute_offloading_reward(metrics, aux)
                 if self.state_buffer is not None:
                     self.state_buffer.add_offloading_reward(reward)
@@ -1875,6 +1941,9 @@ class Hedger:
                     off_updates=self._offloading_update_steps,
                     off_reward=reward,
                     latency=metrics["latency"],
+                    latency_cost=latency_cost,
+                    latency_normalizer=self.offloading_agent_params["reward_off_latency_normalizer"],
+                    latency_clip=self.offloading_agent_params["reward_off_latency_clip"],
                     slo_violation=metrics["slo_violation"],
                     cloud_fraction=metrics["cloud_fraction"],
                     aux_cost=aux["aux_cost"],
@@ -1928,6 +1997,34 @@ class Hedger:
         self.off_decision_recorder.close()
         LOGGER.info("[Hedger][Train][Offloading] Worker stopped.")
 
+    def _compute_offloading_latency_cost(self, latency: float) -> float:
+        """
+        Convert measured latency into a PPO-friendly cost.
+
+        Raw wall-clock latency has heavy tails in real deployments. Feeding the
+        raw value directly into PPO makes a few slow requests dominate the
+        critic target and policy gradient. The default uses an SLO-normalized
+        ratio with clipping, preserving the ordering of normal samples while
+        bounding outliers.
+        """
+        latency = max(0.0, float(latency))
+        transform = self.offloading_agent_params["reward_off_latency_transform"]
+        normalizer = float(self.offloading_agent_params["reward_off_latency_normalizer"])
+        ratio = latency / max(normalizer, 1e-6)
+
+        clip_value = self.offloading_agent_params["reward_off_latency_clip"]
+        if clip_value is not None:
+            ratio = min(ratio, float(clip_value))
+
+        if transform == "raw":
+            cost = latency
+            if clip_value is not None:
+                cost = min(cost, float(clip_value))
+            return float(cost)
+        if transform == "log_ratio":
+            return float(math.log1p(ratio))
+        return float(ratio)
+
     def _compute_offloading_reward(self, metrics, aux) -> float:
         """
         Compute the offloading-agent reward.
@@ -1940,6 +2037,7 @@ class Hedger:
 
         # Extract the core metrics.
         latency = float(metrics["latency"])
+        latency_cost = self._compute_offloading_latency_cost(latency)
         slo_v = float(metrics["slo_violation"])
         cloud_frac = float(metrics["cloud_fraction"])
 
@@ -1950,7 +2048,7 @@ class Hedger:
 
         # Base reward: lower latency, fewer SLO violations, and lower cloud usage.
         reward = 0.0
-        reward -= w_lat * latency
+        reward -= w_lat * latency_cost
         reward -= w_slo * slo_v
         reward -= w_cloud * cloud_frac
 
