@@ -8,6 +8,7 @@ import torch
 import time
 import os
 import glob
+import json
 
 from core.lib.common import LOGGER, FileOps, Context, Recorder
 
@@ -633,6 +634,100 @@ class Hedger:
         if metrics:
             base += f", metrics=({self._summarize_metrics(metrics)})"
         return base
+
+    @staticmethod
+    def _json_for_record(value) -> str:
+        return json.dumps(value or {}, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _tensor_mean(value: Optional[torch.Tensor]) -> float:
+        if value is None or not isinstance(value, torch.Tensor) or value.numel() == 0:
+            return 0.0
+        return float(value.float().mean().item())
+
+    def _state_record_metrics(
+            self,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+    ) -> Dict[str, float]:
+        """
+        Build compact scalar diagnostics for the state used to sample an action.
+
+        Full tensors are intentionally not recorded at every step because they
+        make training logs large and noisy. These summaries are enough to check
+        feature scale, environment drift, and whether a decision is reasonable
+        for the observed state.
+        """
+        service_count = int(logic_feats["model_flops"].numel()) if "model_flops" in logic_feats else 0
+        device_count = int(phys_feats["gpu_flops"].numel()) if "gpu_flops" in phys_feats else 0
+
+        latest_complexity = 0.0
+        complexity_seq = logic_feats.get("task_complexity_seq")
+        if isinstance(complexity_seq, torch.Tensor) and complexity_seq.numel():
+            latest_complexity = float(complexity_seq[:, -1].float().mean().item())
+
+        latest_latency = 0.0
+        latency_seq = logic_feats.get("hist_latency_seq")
+        if isinstance(latency_seq, torch.Tensor) and latency_seq.numel():
+            latest_latency = float(latency_seq[:, -1].float().mean().item())
+
+        latest_gpu_util = 0.0
+        latest_gpu_util_max = 0.0
+        gpu_util_seq = phys_feats.get("gpu_util_seq")
+        if isinstance(gpu_util_seq, torch.Tensor) and gpu_util_seq.numel():
+            latest_gpu_util = float(gpu_util_seq[:, -1].float().mean().item())
+            latest_gpu_util_max = float(gpu_util_seq[:, -1].float().max().item())
+
+        latest_mem_util = 0.0
+        latest_mem_util_max = 0.0
+        mem_util_seq = phys_feats.get("mem_util_seq")
+        if isinstance(mem_util_seq, torch.Tensor) and mem_util_seq.numel():
+            latest_mem_util = float(mem_util_seq[:, -1].float().mean().item())
+            latest_mem_util_max = float(mem_util_seq[:, -1].float().max().item())
+
+        latest_cloud_bw = 0.0
+        latest_edge_bw = 0.0
+        bandwidth_seq = phys_feats.get("bandwidth_seq")
+        if isinstance(bandwidth_seq, torch.Tensor) and bandwidth_seq.numel():
+            cloud_idx = (
+                self.physical_topology.cloud_idx
+                if self.physical_topology is not None
+                else bandwidth_seq.size(0) - 1
+            )
+            latest_cloud_bw = float(bandwidth_seq[cloud_idx, -1].float().item())
+            edge_bandwidth = bandwidth_seq[:, -1]
+            if edge_bandwidth.numel() > 1:
+                edge_bandwidth = torch.cat([edge_bandwidth[:cloud_idx], edge_bandwidth[cloud_idx + 1:]])
+            else:
+                edge_bandwidth = torch.empty(0, dtype=edge_bandwidth.dtype)
+            latest_edge_bw = float(edge_bandwidth.float().mean().item()) if edge_bandwidth.numel() else 0.0
+
+        return {
+            "state_services": service_count,
+            "state_devices": device_count,
+            "state_complexity": latest_complexity,
+            "state_latency": latest_latency,
+            "state_edge_bw": latest_edge_bw,
+            "state_cloud_bw": latest_cloud_bw,
+            "state_gpu_util_mean": latest_gpu_util,
+            "state_gpu_util_max": latest_gpu_util_max,
+            "state_mem_util_mean": latest_mem_util,
+            "state_mem_util_max": latest_mem_util_max,
+            "state_model_flops_mean": self._tensor_mean(logic_feats.get("model_flops")),
+            "state_model_mem_mean": self._tensor_mean(logic_feats.get("model_mem")),
+            "state_gpu_flops_mean": self._tensor_mean(phys_feats.get("gpu_flops")),
+            "state_mem_capacity_mean": self._tensor_mean(phys_feats.get("mem_capacity")),
+        }
+
+    @staticmethod
+    def _state_record_fieldnames() -> List[str]:
+        return [
+            "state_services", "state_devices", "state_complexity", "state_latency",
+            "state_edge_bw", "state_cloud_bw", "state_gpu_util_mean",
+            "state_gpu_util_max", "state_mem_util_mean", "state_mem_util_max",
+            "state_model_flops_mean", "state_model_mem_mean",
+            "state_gpu_flops_mean", "state_mem_capacity_mean",
+        ]
 
     def register_topology_encoder(self):
         if self.shared_topology_encoder:
@@ -1297,7 +1392,8 @@ class Hedger:
                         "dep_change_cost", "cap_relax_cnt", "cap_relax_cost",
                         "policy_logp", "policy_entropy", "value_estimate", "next_value",
                         "raw_edge_replicas", "edge_replicas", "cloud_replicas", "cloud_only",
-                        "transition_buffer",
+                        "transition_buffer", "raw_deployment_plan", "deployment_plan",
+                        *self._state_record_fieldnames(),
                         "dep_offload_weight", "dep_change_weight", "cap_relax_weight"],
             overwrite=True,
             flush_every=1,
@@ -1387,6 +1483,7 @@ class Hedger:
                     with self._data_lock:
                         transition_count = len(self.deployment_transitions)
 
+                state_record = self._state_record_metrics(logic_feats, phys_feats)
                 logic_feats = new_logic_feats
                 phys_feats = new_phys_feats
                 prev_deploy_mask = deploy_mask.detach().cpu()
@@ -1394,6 +1491,7 @@ class Hedger:
                 cloud_idx = self.physical_topology.cloud_idx
                 raw_deploy_mask = aux["raw_deploy_mask"].detach().cpu().bool()
                 exec_deploy_mask = deploy_mask.detach().cpu().bool()
+                raw_deploy_plan = self._map_deployment_mask_to_deployment_plan(raw_deploy_mask)
                 raw_edge_replicas = int(raw_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
                 edge_replicas = int(exec_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
                 cloud_replicas = int(exec_deploy_mask[:, cloud_idx].sum().item())
@@ -1418,6 +1516,9 @@ class Hedger:
                     cloud_replicas=cloud_replicas,
                     cloud_only=cloud_only,
                     transition_buffer=transition_count,
+                    raw_deployment_plan=self._json_for_record(raw_deploy_plan),
+                    deployment_plan=self._json_for_record(self.deployment_plan),
+                    **state_record,
                     dep_offload_weight=self.deployment_agent_params["reward_dep_offload_weight"],
                     dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
@@ -1473,7 +1574,8 @@ class Hedger:
                         "correction_cost", "policy_logp", "policy_entropy", "value_estimate",
                         "next_value", "raw_cloud_fraction", "executed_cloud_fraction",
                         "unique_targets", "feasible_targets_mean", "feasible_targets_min",
-                        "feasible_targets_max", "transition_buffer",
+                        "feasible_targets_max", "transition_buffer", "raw_offloading_plan",
+                        "offloading_plan", *self._state_record_fieldnames(),
                         "switch_weight", "correction_weight"],
             overwrite=True,
             flush_every=10,
@@ -1556,12 +1658,14 @@ class Hedger:
                     with self._data_lock:
                         transition_count = len(self.offloading_transitions)
 
+                state_record = self._state_record_metrics(logic_feats, phys_feats)
                 logic_feats = new_logic_feats
                 phys_feats = new_phys_feats
 
                 cloud_idx = self.physical_topology.cloud_idx
                 actions_cpu = actions.detach().cpu()
                 raw_actions_cpu = aux["raw_actions"].detach().cpu()
+                raw_offloading_plan = self._map_offloading_mask_to_offloading_plan(raw_actions_cpu)
                 raw_cloud_fraction = float((raw_actions_cpu == cloud_idx).float().mean().item())
                 executed_cloud_fraction = float((actions_cpu == cloud_idx).float().mean().item())
                 unique_targets = int(actions_cpu.unique().numel())
@@ -1596,6 +1700,9 @@ class Hedger:
                     feasible_targets_min=feasible_targets_min,
                     feasible_targets_max=feasible_targets_max,
                     transition_buffer=transition_count,
+                    raw_offloading_plan=self._json_for_record(raw_offloading_plan),
+                    offloading_plan=self._json_for_record(self.offloading_plan),
+                    **state_record,
                     switch_weight=self.offloading_agent_params["penalty_switch"],
                     correction_weight=self.offloading_agent_params["penalty_relax"],
                 )
