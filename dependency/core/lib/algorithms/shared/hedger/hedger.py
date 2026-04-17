@@ -33,6 +33,8 @@ class HedgerStateCfg:
     require_full_seq: bool
     latency_slo: Optional[float]
     deployment_reward_window: int
+    deployment_reward_min_samples: int
+    deployment_feedback_timeout_s: Optional[float]
 
 
 @dataclass(frozen=True)
@@ -152,6 +154,9 @@ class Hedger:
         self._data_lock = threading.Lock()
         self._run_lock = threading.Lock()
         self._model_lock = threading.RLock()
+        self._deployment_version_cond = threading.Condition(threading.Lock())
+        self._deployment_decision_version = 0
+        self._deployment_served_version = 0
         self._run_thread = None
         self._run_started = False
 
@@ -252,6 +257,8 @@ class Hedger:
         reward_window_default = max(1, int(math.ceil(self.deployment_interval / max(self.offloading_interval, 1e-6))))
         wait_timeout_s = state.get("wait_timeout_s", 1.0)
         wait_timeout_s = None if wait_timeout_s is None else max(0.0, float(wait_timeout_s))
+        feedback_timeout_s = state.get("deployment_feedback_timeout_s", self.deployment_interval)
+        feedback_timeout_s = None if feedback_timeout_s is None else max(0.0, float(feedback_timeout_s))
         return HedgerStateCfg(
             max_buffer_size=max(1, int(state["max_buffer_size"])),
             offloading_seq_len=max(1, int(sequence_length["offloading"])),
@@ -261,6 +268,8 @@ class Hedger:
             require_full_seq=bool(state.get("require_full_sequence", False)),
             latency_slo=float(state["latency_slo_s"]),
             deployment_reward_window=max(1, int(state.get("deployment_reward_window", reward_window_default))),
+            deployment_reward_min_samples=max(1, int(state.get("deployment_reward_min_samples", 1))),
+            deployment_feedback_timeout_s=feedback_timeout_s,
         )
 
     def _build_checkpoint_cfg(self, config: dict) -> HedgerCheckpointCfg:
@@ -1072,8 +1081,16 @@ class Hedger:
         return copy.deepcopy(self.initial_deployment_plan)
 
     def get_redeployment_plan(self):
-        self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(self.deployment_plan)
-        return copy.deepcopy(self.deployment_plan)
+        with self._data_lock:
+            self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(self.deployment_plan)
+            plan = copy.deepcopy(self.deployment_plan)
+        served_version = self._mark_deployment_decision_served()
+        if served_version is not None:
+            LOGGER.info(
+                f"[Hedger][Deployment] Served deployment decision version={served_version}; "
+                f"feedback window reset."
+            )
+        return plan
 
     def _build_state_wait_cfg(self) -> BufferWaitCfg:
         return BufferWaitCfg(
@@ -1189,10 +1206,79 @@ class Hedger:
         reward_stats = self.state_buffer.get_offloading_reward_stats(last_k=self.state_cfg.deployment_reward_window)
         metrics = {
             "avg_offloading_reward": float(reward_stats["mean"]),
+            "offloading_reward_std": float(reward_stats["std"]),
+            "offloading_reward_count": int(reward_stats.get("count", 0)),
             "deploy_change_cost": self._compute_deploy_change_cost(prev_deploy_mask),
         }
         done = False
         return logic_feats, phys_feats, metrics, done
+
+    def _reset_deployment_feedback_window(self):
+        if self.state_buffer is not None:
+            self.state_buffer.clear_offloading_rewards()
+
+    def _mark_deployment_decision_pending(self) -> int:
+        with self._deployment_version_cond:
+            self._deployment_decision_version += 1
+            version = self._deployment_decision_version
+            self._deployment_version_cond.notify_all()
+            return version
+
+    def _mark_deployment_decision_served(self) -> Optional[int]:
+        served_version = None
+        with self._deployment_version_cond:
+            if self._deployment_decision_version > self._deployment_served_version:
+                self._reset_deployment_feedback_window()
+                self._deployment_served_version = self._deployment_decision_version
+                served_version = self._deployment_served_version
+                self._deployment_version_cond.notify_all()
+        return served_version
+
+    def _wait_for_deployment_decision_served(self, decision_version: int) -> bool:
+        while not self.deployment_thread_stop_event.is_set():
+            with self._deployment_version_cond:
+                if self._deployment_served_version >= decision_version:
+                    return True
+
+                wait_timeout = self.state_cfg.deployment_feedback_timeout_s
+                wait_s = 5.0 if wait_timeout is None else min(5.0, max(0.1, float(wait_timeout)))
+                self._deployment_version_cond.wait(timeout=wait_s)
+                served_version = self._deployment_served_version
+
+            if served_version < decision_version:
+                LOGGER.warning(
+                    f"[Hedger][Train][Deployment] Waiting for scheduler to serve deployment decision: "
+                    f"served={served_version}, target={decision_version}"
+                )
+
+        return False
+
+    def _deployment_feedback_min_samples(self) -> int:
+        return max(
+            1,
+            min(self.state_cfg.deployment_reward_min_samples, self.state_cfg.deployment_reward_window),
+        )
+
+    def _wait_for_deployment_feedback_samples(self, min_samples: int) -> bool:
+        if self.state_buffer is None:
+            return False
+
+        min_samples = max(1, min(int(min_samples), self.state_cfg.deployment_reward_window))
+        while not self.deployment_thread_stop_event.is_set():
+            count = self.state_buffer.wait_for_offloading_rewards(
+                min_samples,
+                timeout_s=self.state_cfg.deployment_feedback_timeout_s,
+            )
+            if count >= min_samples:
+                return True
+
+            LOGGER.warning(
+                f"[Hedger][Train][Deployment] Waiting for fresh offloading feedback: "
+                f"samples={count}/{min_samples}, "
+                f"timeout={self._format_log_value(self.state_cfg.deployment_feedback_timeout_s, 2)}s"
+            )
+
+        return False
 
     def _collect_offloading_state(self):
         logic_feats, phys_feats = self._collect_graph_state(self.state_cfg.offloading_seq_len)
@@ -1622,8 +1708,9 @@ class Hedger:
         self.dep_recorder = Recorder(
             self._stage_log_path("deployment_train.csv"),
             fmt="csv",
-            fieldnames=["step", "epoch", "dep_updates", "dep_reward", "avg_off_reward",
-                        "dep_change_cost", "cap_relax_cnt", "cap_relax_cost",
+            fieldnames=["step", "epoch", "decision_version", "dep_updates", "dep_reward",
+                        "avg_off_reward", "off_reward_std", "off_reward_count", "dep_change_cost",
+                        "cap_relax_cnt", "cap_relax_cost",
                         "policy_logp", "policy_entropy", "value_estimate", "next_value",
                         "raw_edge_replicas", "edge_replicas", "cloud_replicas", "cloud_only",
                         "transition_buffer", "raw_deployment_plan", "deployment_plan",
@@ -1645,7 +1732,6 @@ class Hedger:
         phys_edge_index = self._build_edge_index(self.physical_topology.links)
 
         step = 0
-        deployment_time_ticket = 0
 
         prev_deploy_mask = copy.deepcopy(self.cur_deploy_mask)
         logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
@@ -1669,13 +1755,26 @@ class Hedger:
                         prev_deploy_mask=prev_deploy_mask_dev
                     )
                 deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
-                self.deployment_plan = deploy_plan
-                self.cur_deploy_mask = deploy_mask.detach().cpu()
+                with self._data_lock:
+                    self.deployment_plan = deploy_plan
+                    self.cur_deploy_mask = deploy_mask.detach().cpu()
+                    decision_version = self._mark_deployment_decision_pending()
 
-                deployment_time_ticket = self._sleep_until_next_tick(
-                    deployment_time_ticket,
+                if not self._wait_for_deployment_decision_served(decision_version):
+                    break
+                if not self._wait_for_deployment_feedback_samples(1):
+                    break
+                LOGGER.debug(
+                    f"[Hedger][Train][Deployment] decision_version={decision_version} "
+                    f"has fresh feedback; start active deployment interval."
+                )
+
+                self._sleep_until_next_tick(
+                    0,
                     self.deployment_interval,
                 )
+                if not self._wait_for_deployment_feedback_samples(self._deployment_feedback_min_samples()):
+                    break
 
                 new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state(
                     prev_deploy_mask=prev_deploy_mask,)
@@ -1744,9 +1843,12 @@ class Hedger:
                 self.dep_recorder.log(
                     step=step,
                     epoch=self._epoch,
+                    decision_version=decision_version,
                     dep_updates=self._deployment_update_steps,
                     dep_reward=reward,
                     avg_off_reward=metrics["avg_offloading_reward"],
+                    off_reward_std=metrics["offloading_reward_std"],
+                    off_reward_count=metrics["offloading_reward_count"],
                     dep_change_cost=metrics["deploy_change_cost"],
                     cap_relax_cnt=aux["capacity_relax_cnt"],
                     cap_relax_cost=aux["capacity_relax_cost"],
@@ -1774,9 +1876,12 @@ class Hedger:
                 )
                 LOGGER.debug(
                     f"[Hedger][Train][Deployment] step={step}, reward={self._format_log_value(reward)}, "
+                    f"decision_version={decision_version}, "
                     f"{self._summarize_deploy_mask(self.cur_deploy_mask)}, "
                     f"{self._summarize_deployment_plan(self.deployment_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
+                    f"off_reward_count={metrics['offloading_reward_count']}, "
+                    f"off_reward_std={self._format_log_value(metrics['offloading_reward_std'])}, "
                     f"capacity_relax_cnt={aux['capacity_relax_cnt']}, "
                     f"capacity_relax_cost={self._format_log_value(aux['capacity_relax_cost'])}, "
                     f"update_policy={self.stage_cfg.update_deployment_policy}, transitions={transition_count}"
@@ -1806,8 +1911,9 @@ class Hedger:
         assert self.logical_topology is not None and self.physical_topology is not None, \
             "Topologies must be registered before starting offloading training."
 
+        log_scope = "OffloadingPPO" if self.stage_cfg.update_offloading_policy else "OffloadingRollout"
         LOGGER.info(
-            f"[Hedger][Train][Offloading] Worker started: "
+            f"[Hedger][Train][{log_scope}] Worker started: "
             f"interval={self._format_log_value(self.offloading_interval, 2)}s, "
             f"rollout={self.training_cfg.offloading_rollout_len}, "
             f"batch={self.training_cfg.offloading_batch_size}, "
@@ -1827,7 +1933,7 @@ class Hedger:
                         "unique_targets", "feasible_targets_mean", "feasible_targets_min",
                         "feasible_targets_max", "transition_buffer", "raw_offloading_plan",
                         "offloading_plan", *self._state_record_fieldnames(),
-                        "switch_weight", "correction_weight"],
+                        "feedback_recorded", "switch_weight", "correction_weight"],
             overwrite=True,
             flush_every=10,
         )
@@ -1846,6 +1952,10 @@ class Hedger:
         step = 0
         offloading_time_ticket = 0
         logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+        last_reward_task_version = (
+            self.state_buffer.get_task_observation_version()
+            if self.state_buffer is not None else 0
+        )
         while not self.offloading_thread_stop_event.is_set():
             try:
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
@@ -1871,6 +1981,20 @@ class Hedger:
                 )
 
                 new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state()
+                current_task_version = (
+                    self.state_buffer.get_task_observation_version()
+                    if self.state_buffer is not None else last_reward_task_version
+                )
+                if current_task_version <= last_reward_task_version:
+                    logic_feats = new_logic_feats
+                    phys_feats = new_phys_feats
+                    LOGGER.debug(
+                        f"[Hedger][Train][{log_scope}] No fresh task observation; "
+                        f"skip reward and transition."
+                    )
+                    continue
+                last_reward_task_version = current_task_version
+
                 new_logic_feats_dev = {k: v.to(self.device) for k, v in new_logic_feats.items()}
                 new_phys_feats_dev = {k: v.to(self.device) for k, v in new_phys_feats.items()}
                 next_static_mask_dev = self._current_deploy_mask().to(self.device)
@@ -1889,8 +2013,12 @@ class Hedger:
 
                 latency_cost = self._compute_offloading_latency_cost(metrics["latency"])
                 reward = self._compute_offloading_reward(metrics, aux)
+                feedback_recorded = False
                 if self.state_buffer is not None:
-                    self.state_buffer.add_offloading_reward(reward)
+                    feedback_recorded = self.state_buffer.add_offloading_reward(
+                        reward,
+                        task_version=current_task_version,
+                    )
 
                 # PPO is trained against the raw sampled action, while the
                 # environment executes the corrected offloading plan.
@@ -1967,6 +2095,7 @@ class Hedger:
                     raw_offloading_plan=self._json_for_record(raw_offloading_plan),
                     offloading_plan=self._json_for_record(self.offloading_plan),
                     **state_record,
+                    feedback_recorded=feedback_recorded,
                     switch_weight=self.offloading_agent_params["penalty_switch"],
                     correction_weight=self.offloading_agent_params["penalty_relax"],
                 )
@@ -1979,23 +2108,24 @@ class Hedger:
                     phys_feats=state_phys_feats,
                 )
                 LOGGER.debug(
-                    f"[Hedger][Train][Offloading] step={step}, reward={self._format_log_value(reward)}, "
+                    f"[Hedger][Train][{log_scope}] step={step}, reward={self._format_log_value(reward)}, "
                     f"{self._summarize_offloading_plan(self.offloading_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
                     f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}, "
                     f"correction_cost={self._format_log_value(aux['correction_cost'])}, "
                     f"aux_cost={self._format_log_value(aux['aux_cost'])}, "
+                    f"feedback_recorded={feedback_recorded}, "
                     f"update_policy={self.stage_cfg.update_offloading_policy}, transitions={transition_count}"
                 )
 
                 step += 1
             except Exception as e:
-                LOGGER.exception(f"[Hedger][Train][Offloading] Worker loop error: {e}")
+                LOGGER.exception(f"[Hedger][Train][{log_scope}] Worker loop error: {e}")
                 time.sleep(0.5)
 
         self.off_recorder.close()
         self.off_decision_recorder.close()
-        LOGGER.info("[Hedger][Train][Offloading] Worker stopped.")
+        LOGGER.info(f"[Hedger][Train][{log_scope}] Worker stopped.")
 
     def _compute_offloading_latency_cost(self, latency: float) -> float:
         """

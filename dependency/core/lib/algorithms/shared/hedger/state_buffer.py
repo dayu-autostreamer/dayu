@@ -62,6 +62,8 @@ class StateBuffer:
 
         # Monotonic version number incremented on every append/update.
         self._version = 0
+        self._task_observation_version = 0
+        self._offloading_reward_min_task_version = 0
 
         # Readiness flags for static features.
         self._static_logic_ready = False
@@ -340,6 +342,7 @@ class StateBuffer:
                 return
             self.task_latency_buffer[s_idx].append(float(latency))
             self._trim_inplace(self.task_latency_buffer[s_idx])
+            self._task_observation_version += 1
             self._bump_version()
 
     def add_gpu_flops(self, device_or_values, flops: Optional[float] = None):
@@ -435,12 +438,53 @@ class StateBuffer:
             self._trim_inplace(self.memory_utilization_buffer[d_idx])
             self._bump_version()
 
-    def add_offloading_reward(self, reward: float):
+    def add_offloading_reward(self, reward: float, task_version: Optional[int] = None) -> bool:
         """Append an offloading reward, usually from the offloading loop."""
         with self._cond:
+            if task_version is not None and int(task_version) <= self._offloading_reward_min_task_version:
+                return False
             self.offloading_reward_buffer.append(float(reward))
             self._trim_inplace(self.offloading_reward_buffer)
             self._bump_version()
+            return True
+
+    def clear_offloading_rewards(self):
+        """Start a fresh deployment-feedback reward window."""
+        with self._cond:
+            self.offloading_reward_buffer.clear()
+            self._offloading_reward_min_task_version = self._task_observation_version
+            self._bump_version()
+
+    def get_task_observation_version(self) -> int:
+        """Return the number of task-latency observations received so far."""
+        with self._lock:
+            return int(self._task_observation_version)
+
+    def wait_for_offloading_rewards(self, min_count: int, timeout_s: Optional[float] = None) -> int:
+        """
+        Wait until at least `min_count` offloading rewards are available.
+
+        The returned value is the current reward count. Callers can decide
+        whether the available feedback is enough for a training transition.
+        """
+        min_count = max(0, int(min_count))
+        with self._cond:
+            if len(self.offloading_reward_buffer) >= min_count:
+                return len(self.offloading_reward_buffer)
+
+            start_t = time.time()
+            while len(self.offloading_reward_buffer) < min_count:
+                if timeout_s is None:
+                    self._cond.wait(timeout=0.5)
+                    continue
+
+                elapsed = time.time() - start_t
+                remaining = float(timeout_s) - elapsed
+                if remaining <= 0:
+                    break
+                self._cond.wait(timeout=min(0.5, remaining))
+
+            return len(self.offloading_reward_buffer)
 
     # -----------------------
     # Read APIs
@@ -537,6 +581,10 @@ class StateBuffer:
         with self._lock:
             last_k = max(1, int(last_k))
             if len(self.offloading_reward_buffer) == 0:
-                return {"mean": 0.0, "std": 0.0}
+                return {"mean": 0.0, "std": 0.0, "count": 0}
             arr = np.array(self.offloading_reward_buffer[-last_k:], dtype=np.float32)
-            return {"mean": float(arr.mean()), "std": float(arr.std())}
+            return {
+                "mean": float(arr.mean()),
+                "std": float(arr.std()),
+                "count": int(arr.size),
+            }
