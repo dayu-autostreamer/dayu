@@ -64,6 +64,7 @@ class StateBuffer:
         self._version = 0
         self._task_observation_version = 0
         self._offloading_reward_min_task_version = 0
+        self._offloading_reward_active_deployment_version = None
 
         # Readiness flags for static features.
         self._static_logic_ready = False
@@ -104,8 +105,10 @@ class StateBuffer:
         self.gpu_utilization_buffer: List[List[float]] = [[] for _ in range(num_devices)]
         self.memory_utilization_buffer: List[List[float]] = [[] for _ in range(num_devices)]
 
-        # Offloading reward history, used as aggregated feedback for deployment.
-        self.offloading_reward_buffer: List[float] = []
+        # Task observation versions and offloading rewards carry deployment
+        # versions so delayed tasks are not credited to a newer deployment.
+        self.task_observation_version_buffer: List[Tuple[int, Optional[int]]] = []
+        self.offloading_reward_buffer: List[Dict[str, Any]] = []
 
         # Track whether each static entry has been observed at least once.
         self._logic_flops_seen = [False for _ in range(num_services)]
@@ -130,6 +133,25 @@ class StateBuffer:
             return
         if len(seq) > self.max_capacity:
             del seq[: len(seq) - self.max_capacity]
+
+    @staticmethod
+    def _normalize_deployment_version(deployment_version) -> Optional[int]:
+        if deployment_version is None:
+            return None
+        try:
+            return int(deployment_version)
+        except (TypeError, ValueError):
+            return None
+
+    def _matching_offloading_rewards_locked(self, deployment_version=None) -> List[float]:
+        target_version = self._normalize_deployment_version(deployment_version)
+        rewards = []
+        for item in self.offloading_reward_buffer:
+            item_version = item.get("deployment_version")
+            if target_version is not None and item_version != target_version:
+                continue
+            rewards.append(float(item["reward"]))
+        return rewards
 
     def _resolve_service_index(self, service_name: str) -> Optional[int]:
         return self._service_to_idx.get(service_name)
@@ -334,7 +356,7 @@ class StateBuffer:
             self._trim_inplace(self.task_complexity_buffer[s_idx])
             self._bump_version()
 
-    def add_task_latency(self, service_name: str, latency: float):
+    def add_task_latency(self, service_name: str, latency: float, deployment_version=None):
         """Append a task-latency observation for a service."""
         with self._cond:
             s_idx = self._resolve_service_index(service_name)
@@ -343,6 +365,10 @@ class StateBuffer:
             self.task_latency_buffer[s_idx].append(float(latency))
             self._trim_inplace(self.task_latency_buffer[s_idx])
             self._task_observation_version += 1
+            self.task_observation_version_buffer.append(
+                (self._task_observation_version, self._normalize_deployment_version(deployment_version))
+            )
+            self._trim_inplace(self.task_observation_version_buffer)
             self._bump_version()
 
     def add_gpu_flops(self, device_or_values, flops: Optional[float] = None):
@@ -438,21 +464,35 @@ class StateBuffer:
             self._trim_inplace(self.memory_utilization_buffer[d_idx])
             self._bump_version()
 
-    def add_offloading_reward(self, reward: float, task_version: Optional[int] = None) -> bool:
+    def add_offloading_reward(self, reward: float, task_version: Optional[int] = None,
+                              deployment_version=None) -> bool:
         """Append an offloading reward, usually from the offloading loop."""
         with self._cond:
             if task_version is not None and int(task_version) <= self._offloading_reward_min_task_version:
                 return False
-            self.offloading_reward_buffer.append(float(reward))
+            target_version = self._normalize_deployment_version(deployment_version)
+            if (
+                    self._offloading_reward_active_deployment_version is not None
+                    and target_version != self._offloading_reward_active_deployment_version
+            ):
+                return False
+            self.offloading_reward_buffer.append({
+                "reward": float(reward),
+                "task_version": int(task_version) if task_version is not None else None,
+                "deployment_version": target_version,
+            })
             self._trim_inplace(self.offloading_reward_buffer)
             self._bump_version()
             return True
 
-    def clear_offloading_rewards(self):
+    def clear_offloading_rewards(self, deployment_version=None):
         """Start a fresh deployment-feedback reward window."""
         with self._cond:
             self.offloading_reward_buffer.clear()
             self._offloading_reward_min_task_version = self._task_observation_version
+            self._offloading_reward_active_deployment_version = self._normalize_deployment_version(
+                deployment_version
+            )
             self._bump_version()
 
     def get_task_observation_version(self) -> int:
@@ -460,7 +500,34 @@ class StateBuffer:
         with self._lock:
             return int(self._task_observation_version)
 
-    def wait_for_offloading_rewards(self, min_count: int, timeout_s: Optional[float] = None) -> int:
+    def get_task_observation_deployment_summary(self, since_version: int) -> Dict[str, Any]:
+        """Summarize deployment versions among task observations after `since_version`."""
+        since_version = int(since_version)
+        with self._lock:
+            records = [
+                deployment_version
+                for version, deployment_version in self.task_observation_version_buffer
+                if version > since_version
+            ]
+            counts: Dict[Optional[int], int] = {}
+            for deployment_version in records:
+                counts[deployment_version] = counts.get(deployment_version, 0) + 1
+            dominant_version = None
+            dominant_count = 0
+            if counts:
+                dominant_version, dominant_count = max(counts.items(), key=lambda item: item[1])
+            return {
+                "current_version": int(self._task_observation_version),
+                "count": len(records),
+                "deployment_version_counts": dict(counts),
+                "dominant_deployment_version": dominant_version,
+                "dominant_count": dominant_count,
+                "unique_deployment_versions": len(counts),
+                "all_same_deployment_version": len(counts) == 1,
+            }
+
+    def wait_for_offloading_rewards(self, min_count: int, timeout_s: Optional[float] = None,
+                                    deployment_version=None) -> int:
         """
         Wait until at least `min_count` offloading rewards are available.
 
@@ -469,13 +536,15 @@ class StateBuffer:
         """
         min_count = max(0, int(min_count))
         with self._cond:
-            if len(self.offloading_reward_buffer) >= min_count:
-                return len(self.offloading_reward_buffer)
+            current_count = len(self._matching_offloading_rewards_locked(deployment_version))
+            if current_count >= min_count:
+                return current_count
 
             start_t = time.time()
-            while len(self.offloading_reward_buffer) < min_count:
+            while current_count < min_count:
                 if timeout_s is None:
                     self._cond.wait(timeout=0.5)
+                    current_count = len(self._matching_offloading_rewards_locked(deployment_version))
                     continue
 
                 elapsed = time.time() - start_t
@@ -483,8 +552,9 @@ class StateBuffer:
                 if remaining <= 0:
                     break
                 self._cond.wait(timeout=min(0.5, remaining))
+                current_count = len(self._matching_offloading_rewards_locked(deployment_version))
 
-            return len(self.offloading_reward_buffer)
+            return current_count
 
     # -----------------------
     # Read APIs
@@ -576,13 +646,14 @@ class StateBuffer:
 
             return logic_feats, phys_feats
 
-    def get_offloading_reward_stats(self, last_k: int = 1) -> Dict[str, float]:
+    def get_offloading_reward_stats(self, last_k: int = 1, deployment_version=None) -> Dict[str, float]:
         """Return the mean and std of the last `last_k` offloading rewards."""
         with self._lock:
             last_k = max(1, int(last_k))
-            if len(self.offloading_reward_buffer) == 0:
+            rewards = self._matching_offloading_rewards_locked(deployment_version)
+            if len(rewards) == 0:
                 return {"mean": 0.0, "std": 0.0, "count": 0}
-            arr = np.array(self.offloading_reward_buffer[-last_k:], dtype=np.float32)
+            arr = np.array(rewards[-last_k:], dtype=np.float32)
             return {
                 "mean": float(arr.mean()),
                 "std": float(arr.std()),

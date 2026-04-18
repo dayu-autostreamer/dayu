@@ -99,7 +99,7 @@ class BackendCore:
 
         # Lock for uninstall operations to prevent inconsistent states
         self.uninstall_lock = False
-        redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=60, direct=False)
+        redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=20, direct=False)
         self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
         self._last_processor_redeployment_t = 0.0
         self._last_processor_redeploy_applied = False

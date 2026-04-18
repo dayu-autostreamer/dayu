@@ -20,6 +20,9 @@ class Generator:
         self.task_dag = Task.extract_dag_from_dict(task_dag)
         # service_deployment contains service deployment situations in system
         self.service_deployment = None
+        # Optional scheduler-supplied deployment version for attributing task feedback.
+        # Version 0 means the scheduler does not distinguish deployment versions.
+        self.deployment_version = 0
         # raw_meta_data contains meta configuration of source
         self.raw_meta_data = metadata.copy()
         # meta_data contains data configuration decisions
@@ -71,6 +74,7 @@ class Generator:
                     all_edge_devices=self.all_edge_devices,
                     dag=task_dag,
                     deployment=service_deployment,
+                    deployment_version=self.deployment_version,
                     metadata=meta_data,
                     raw_metadata=self.raw_meta_data,
                     hash_data=hash_codes,

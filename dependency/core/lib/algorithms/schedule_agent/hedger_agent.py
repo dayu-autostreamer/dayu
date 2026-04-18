@@ -108,6 +108,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
 
         configuration = self._normalize_mapping(self.default_configuration)
         offloading = self._normalize_mapping(self.hedger.get_offloading_plan())
+        deployment_version = self.hedger.get_active_deployment_version()
         used_default_offloading = False
         if not offloading:
             offloading = self._normalize_mapping(self.default_offloading)
@@ -130,7 +131,10 @@ class HedgerAgent(BaseAgent, abc.ABC):
             else:
                 dag[service_name]['service']['execute_device'] = cloud_device
 
-        policy.update({'dag': dag})
+        policy.update({
+            'dag': dag,
+            'deployment_version': deployment_version,
+        })
 
         service_names = [name for name in dag if name not in (TaskConstant.START.value, TaskConstant.END.value)]
         cloud_count = sum(
@@ -147,6 +151,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
         ) or "[]"
         LOGGER.info(
             f"[HedgerAgent][Schedule] source={source_id}, services={len(service_names)}, "
+            f"deployment_version={deployment_version}, "
             f"cloud={cloud_count}/{len(service_names) if service_names else 0}, "
             f"unique_devices={len(assigned_devices)}, used_default_offloading={used_default_offloading}, "
             f"sample={sample_assignments}"
@@ -222,6 +227,14 @@ class HedgerAgent(BaseAgent, abc.ABC):
     def update_task(self, task):
         if self.hedger.state_buffer is None:
             return
+        get_deployment_version = getattr(task, "get_deployment_version", None)
+        deployment_version = get_deployment_version() if callable(get_deployment_version) else None
+        if deployment_version is None:
+            metadata = task.get_metadata() if hasattr(task, "get_metadata") else None
+            if isinstance(metadata, dict):
+                deployment_version = metadata.get("deployment_version")
+        if deployment_version is None:
+            deployment_version = 0
         updated_services = 0
         complexity_values = []
         latency_values = []
@@ -232,7 +245,11 @@ class HedgerAgent(BaseAgent, abc.ABC):
             latency = service.get_execute_time()
             complexity = self._extract_task_complexity(service)
             self.hedger.state_buffer.add_task_complexity(service_name, complexity)
-            self.hedger.state_buffer.add_task_latency(service_name, latency)
+            self.hedger.state_buffer.add_task_latency(
+                service_name,
+                latency,
+                deployment_version=deployment_version,
+            )
             updated_services += 1
             complexity_values.append(float(complexity))
             latency_values.append(float(latency))
@@ -243,6 +260,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
             avg_latency = float(np.mean(latency_values)) if latency_values else 0.0
             LOGGER.debug(
                 f"[HedgerAgent][Task] source={task.get_source_id()}, services={updated_services}, "
+                f"deployment_version={deployment_version}, "
                 f"avg_complexity={avg_complexity:.4f}, avg_latency={avg_latency:.4f}"
             )
 

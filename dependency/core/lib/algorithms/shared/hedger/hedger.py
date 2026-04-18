@@ -1088,6 +1088,10 @@ class Hedger:
     def get_initial_deployment_plan(self):
         return copy.deepcopy(self.initial_deployment_plan)
 
+    def get_active_deployment_version(self) -> int:
+        with self._deployment_version_cond:
+            return int(self._deployment_served_version)
+
     def get_redeployment_plan(self):
         now = time.monotonic()
         served_version = None
@@ -1247,9 +1251,13 @@ class Hedger:
         prev_edge = prev_mask[:, :cloud_idx]
         return float(torch.logical_xor(current_edge, prev_edge).sum().item())
 
-    def _collect_deployment_state(self, prev_deploy_mask: Optional[torch.Tensor] = None):
+    def _collect_deployment_state(self, prev_deploy_mask: Optional[torch.Tensor] = None,
+                                  deployment_version: Optional[int] = None):
         logic_feats, phys_feats = self._collect_graph_state(self.state_cfg.deployment_seq_len)
-        reward_stats = self.state_buffer.get_offloading_reward_stats(last_k=self.state_cfg.deployment_reward_window)
+        reward_stats = self.state_buffer.get_offloading_reward_stats(
+            last_k=self.state_cfg.deployment_reward_window,
+            deployment_version=deployment_version,
+        )
         metrics = {
             "avg_offloading_reward": float(reward_stats["mean"]),
             "offloading_reward_std": float(reward_stats["std"]),
@@ -1259,9 +1267,9 @@ class Hedger:
         done = False
         return logic_feats, phys_feats, metrics, done
 
-    def _reset_deployment_feedback_window(self):
+    def _reset_deployment_feedback_window(self, deployment_version: Optional[int] = None):
         if self.state_buffer is not None:
-            self.state_buffer.clear_offloading_rewards()
+            self.state_buffer.clear_offloading_rewards(deployment_version=deployment_version)
 
     def _mark_deployment_decision_pending(self) -> int:
         with self._deployment_version_cond:
@@ -1274,9 +1282,9 @@ class Hedger:
         served_version = None
         with self._deployment_version_cond:
             if self._deployment_decision_version > self._deployment_served_version:
-                self._reset_deployment_feedback_window()
                 self._deployment_served_version = self._deployment_decision_version
                 served_version = self._deployment_served_version
+                self._reset_deployment_feedback_window(deployment_version=served_version)
                 self._deployment_version_cond.notify_all()
         return served_version
 
@@ -1327,7 +1335,8 @@ class Hedger:
             min(self.state_cfg.deployment_reward_min_samples, self.state_cfg.deployment_reward_window),
         )
 
-    def _wait_for_deployment_feedback_samples(self, min_samples: int) -> bool:
+    def _wait_for_deployment_feedback_samples(self, min_samples: int,
+                                              deployment_version: Optional[int] = None) -> bool:
         if self.state_buffer is None:
             return False
 
@@ -1342,13 +1351,14 @@ class Hedger:
             count = self.state_buffer.wait_for_offloading_rewards(
                 min_samples,
                 timeout_s=wait_timeout_s,
+                deployment_version=deployment_version,
             )
             if count >= min_samples:
                 return True
 
             LOGGER.warning(
                 f"[Hedger][Train][Deployment] Waiting for fresh offloading feedback: "
-                f"samples={count}/{min_samples}, "
+                f"version={deployment_version}, samples={count}/{min_samples}, "
                 f"timeout={self._format_log_value(self.state_cfg.deployment_feedback_timeout_s, 2)}s"
             )
 
@@ -1839,22 +1849,27 @@ class Hedger:
 
                 if not self._wait_for_deployment_decision_served(decision_version):
                     break
-                if not self._wait_for_deployment_feedback_samples(1):
+                if not self._wait_for_deployment_feedback_samples(1, deployment_version=decision_version):
                     break
                 LOGGER.debug(
                     f"[Hedger][Train][Deployment] decision_version={decision_version} "
-                    f"has fresh feedback; start active deployment interval."
+                    f"has version-matched fresh feedback; start active deployment interval."
                 )
 
                 self._sleep_until_next_tick(
                     0,
                     self.deployment_interval,
                 )
-                if not self._wait_for_deployment_feedback_samples(self._deployment_feedback_min_samples()):
+                if not self._wait_for_deployment_feedback_samples(
+                        self._deployment_feedback_min_samples(),
+                        deployment_version=decision_version,
+                ):
                     break
 
                 new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state(
-                    prev_deploy_mask=prev_deploy_mask,)
+                    prev_deploy_mask=prev_deploy_mask,
+                    deployment_version=decision_version,
+                )
                 new_logic_feats_dev = {k: v.to(self.device) for k, v in new_logic_feats.items()}
                 new_phys_feats_dev = {k: v.to(self.device) for k, v in new_phys_feats.items()}
                 with self._model_lock, torch.no_grad():
@@ -2010,7 +2025,9 @@ class Hedger:
                         "unique_targets", "feasible_targets_mean", "feasible_targets_min",
                         "feasible_targets_max", "transition_buffer", "raw_offloading_plan",
                         "offloading_plan", *self._state_record_fieldnames(),
-                        "feedback_recorded", "switch_weight", "correction_weight"],
+                        "feedback_recorded", "feedback_deployment_version",
+                        "feedback_task_observations", "feedback_deployment_versions",
+                        "switch_weight", "correction_weight"],
             overwrite=True,
             flush_every=10,
         )
@@ -2058,10 +2075,19 @@ class Hedger:
                 )
 
                 new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state()
-                current_task_version = (
-                    self.state_buffer.get_task_observation_version()
-                    if self.state_buffer is not None else last_reward_task_version
+                task_feedback_summary = (
+                    self.state_buffer.get_task_observation_deployment_summary(last_reward_task_version)
+                    if self.state_buffer is not None
+                    else {
+                        "current_version": last_reward_task_version,
+                        "count": 0,
+                        "deployment_version_counts": {},
+                        "dominant_deployment_version": None,
+                        "unique_deployment_versions": 0,
+                        "all_same_deployment_version": False,
+                    }
                 )
+                current_task_version = int(task_feedback_summary["current_version"])
                 if current_task_version <= last_reward_task_version:
                     logic_feats = new_logic_feats
                     phys_feats = new_phys_feats
@@ -2071,6 +2097,18 @@ class Hedger:
                     )
                     continue
                 last_reward_task_version = current_task_version
+                feedback_deployment_version = None
+                if (
+                        task_feedback_summary.get("all_same_deployment_version")
+                        and task_feedback_summary.get("count", 0) > 0
+                ):
+                    feedback_deployment_version = task_feedback_summary.get("dominant_deployment_version")
+                else:
+                    LOGGER.debug(
+                        f"[Hedger][Train][{log_scope}] Fresh task observations span multiple deployment versions; "
+                        f"skip deployment feedback recording: versions="
+                        f"{task_feedback_summary.get('deployment_version_counts', {})}"
+                    )
 
                 new_logic_feats_dev = {k: v.to(self.device) for k, v in new_logic_feats.items()}
                 new_phys_feats_dev = {k: v.to(self.device) for k, v in new_phys_feats.items()}
@@ -2091,10 +2129,11 @@ class Hedger:
                 latency_cost = self._compute_offloading_latency_cost(metrics["latency"])
                 reward = self._compute_offloading_reward(metrics, aux)
                 feedback_recorded = False
-                if self.state_buffer is not None:
+                if self.state_buffer is not None and feedback_deployment_version is not None:
                     feedback_recorded = self.state_buffer.add_offloading_reward(
                         reward,
                         task_version=current_task_version,
+                        deployment_version=feedback_deployment_version,
                     )
 
                 # PPO is trained against the raw sampled action, while the
@@ -2173,6 +2212,14 @@ class Hedger:
                     offloading_plan=self._json_for_record(self.offloading_plan),
                     **state_record,
                     feedback_recorded=feedback_recorded,
+                    feedback_deployment_version=feedback_deployment_version,
+                    feedback_task_observations=task_feedback_summary.get("count", 0),
+                    feedback_deployment_versions=self._json_for_record(
+                        {
+                            str(key): value
+                            for key, value in task_feedback_summary.get("deployment_version_counts", {}).items()
+                        }
+                    ),
                     switch_weight=self.offloading_agent_params["penalty_switch"],
                     correction_weight=self.offloading_agent_params["penalty_relax"],
                 )

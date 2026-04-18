@@ -21,9 +21,12 @@ class CASVAASOperation(BaseASOperation, abc.ABC):
             # Remain the meta_data as before scheduling or raw_meta_data
             # Set execute device of all services as local device
             system.task_dag = Task.set_execute_device(system.task_dag, system.local_device)
+            system.deployment_version = 0
         else:
             scheduler_policy = scheduler_response['plan']
             system.service_deployment = scheduler_response.get('deployment', {})
+            deployment_version = scheduler_response.get('deployment_version', 0)
+            system.deployment_version = 0 if deployment_version is None else deployment_version
 
             dag_deployment = scheduler_policy['dag']
             dag = Task.extract_dag_from_dag_deployment(dag_deployment)

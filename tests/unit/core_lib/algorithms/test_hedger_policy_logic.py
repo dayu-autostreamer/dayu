@@ -929,6 +929,7 @@ def test_hedger_agent_get_schedule_plan_tolerates_missing_default_mappings(monke
         register_physical_topology=lambda edge_nodes, source_device: None,
         register_state_buffer=lambda: None,
         get_offloading_plan=lambda: None,
+        get_active_deployment_version=lambda: 0,
     )
     agent = HedgerAgent.__new__(HedgerAgent)
     agent.cloud_device = "cloud-x"
@@ -1027,7 +1028,9 @@ def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
     calls = []
     buffer = types.SimpleNamespace(
         add_task_complexity=lambda service, value: calls.append(("complexity", service, value)),
-        add_task_latency=lambda service, value: calls.append(("latency", service, value)),
+        add_task_latency=lambda service, value, deployment_version=None: calls.append(
+            ("latency", service, value, deployment_version)
+        ),
     )
     hedger = types.SimpleNamespace(
         state_buffer=buffer,
@@ -1038,6 +1041,7 @@ def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
 
     task = types.SimpleNamespace(
         get_source_id=lambda: 7,
+        get_deployment_version=lambda: 3,
         get_dag=lambda: types.SimpleNamespace(nodes=["svc-a", TaskConstant.START.value, "svc-b", TaskConstant.END.value]),
         get_service=lambda name: types.SimpleNamespace(
             get_execute_time=lambda: 0.2 if name == "svc-a" else 0.4,
@@ -1049,9 +1053,9 @@ def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
 
     assert calls == [
         ("complexity", "svc-a", 2.0),
-        ("latency", "svc-a", 0.2),
+        ("latency", "svc-a", 0.2, 3),
         ("complexity", "svc-b", 5.0),
-        ("latency", "svc-b", 0.4),
+        ("latency", "svc-b", 0.4, 3),
         ("start", "first task update from source 7"),
     ]
 
