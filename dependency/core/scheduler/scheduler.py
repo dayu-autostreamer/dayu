@@ -120,6 +120,35 @@ class Scheduler:
         plan = agent.get_redeployment_plan(data)
         return plan
 
+    @staticmethod
+    def _normalize_generation_decision(decision):
+        if isinstance(decision, bool):
+            return {
+                "generate": bool(decision),
+                "reason": "agent_bool",
+            }
+        if not isinstance(decision, dict):
+            return {
+                "generate": True,
+                "reason": "default_allow_invalid_decision",
+            }
+
+        generate = decision.get("generate", decision.get("allow", True))
+        normalized = dict(decision)
+        normalized["generate"] = bool(generate)
+        normalized.setdefault("reason", "agent_decision")
+        return normalized
+
+    def should_generate(self, source_id, data):
+        agent = self.schedule_table[source_id]
+        hook = getattr(agent, "should_generate", None)
+        if not callable(hook):
+            return {
+                "generate": True,
+                "reason": "default_allow_no_hook",
+            }
+        return self._normalize_generation_decision(hook(data))
+
     def get_schedule_overhead(self):
         overheads = []
         for source_id in self.schedule_table:

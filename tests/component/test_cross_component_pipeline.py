@@ -92,6 +92,9 @@ class FakeScheduler:
     def get_redeployment_plan(self, source_id, data):
         return {"edge-node": ["face-detection"]}
 
+    def should_generate(self, source_id, data):
+        return {"generate": True, "reason": "fake_scheduler"}
+
 
 class FakeProcessor:
     def __call__(self, task):

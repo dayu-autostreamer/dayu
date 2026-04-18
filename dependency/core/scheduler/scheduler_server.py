@@ -58,6 +58,10 @@ class SchedulerServer:
                      self.generate_redeployment_plan,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_REDEPLOYMENT]),
+            APIRoute(NetworkAPIPath.SCHEDULER_GENERATION_ADMISSION,
+                     self.check_generation_admission,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_GENERATION_ADMISSION]),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -90,6 +94,13 @@ class SchedulerServer:
 
     async def get_schedule_overhead(self):
         return self.scheduler.get_schedule_overhead()
+
+    async def check_generation_admission(self, data: str = Form(...)):
+        data = json.loads(data)
+        source_id = int(data['source_id'])
+
+        self.scheduler.register_schedule_table(source_id)
+        return self.scheduler.should_generate(source_id, data)
 
     async def update_object_scenario(self, data: str = Form(...)):
         task = Task.deserialize(data)

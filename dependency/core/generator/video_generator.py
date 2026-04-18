@@ -44,6 +44,7 @@ class VideoGenerator(Generator):
             # skip getter according to some specific requirements
             if not self.getter_filter(self):
                 LOGGER.info('[Filter Getter] step to next round of getter.')
+                time.sleep(0.5)
                 continue
 
             # get data from source

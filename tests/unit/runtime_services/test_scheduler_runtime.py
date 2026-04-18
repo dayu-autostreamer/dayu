@@ -66,6 +66,9 @@ class FakeAgent:
     def get_redeployment_plan(self, data):
         return {"redeploy": data["node_set"]}
 
+    def should_generate(self, data):
+        return {"generate": data.get("allow", True), "reason": "fake_agent"}
+
     def get_schedule_overhead(self):
         return 0.2
 
@@ -160,6 +163,7 @@ def test_scheduler_updates_scenarios_resources_and_supports_plans_and_overhead(m
     assert scheduler.get_source_node_selection_plan(1, {"node_set": ["edgex1"]}) == {"selected": "edgex1"}
     assert scheduler.get_initial_deployment_plan(1, {"node_set": ["edgex1"]}) == {"initial": ["edgex1"]}
     assert scheduler.get_redeployment_plan(1, {"node_set": ["edgex1"]}) == {"redeploy": ["edgex1"]}
+    assert scheduler.should_generate(1, {"allow": False}) == {"generate": False, "reason": "fake_agent"}
     assert scheduler.get_schedule_overhead() == 0.2
 
 

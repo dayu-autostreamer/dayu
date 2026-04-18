@@ -82,6 +82,9 @@ class FakeScheduler:
     def get_redeployment_plan(self, source_id, data):
         return {"edge-node": ["face-detection"]}
 
+    def should_generate(self, source_id, data):
+        return {"generate": data.get("allow", True), "reason": "fake_scheduler"}
+
 
 class FakeProcessor:
     def __call__(self, task):
@@ -129,6 +132,14 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert schedule_response.json()["deployment"] == {"face-detection": ["edge-node"]}
 
         assert client.get("/overhead").json() == 0.0123
+
+        admission_response = client.request(
+            "GET",
+            "/generation_admission",
+            data={"data": json.dumps({"source_id": 7, "allow": False})},
+        )
+        assert admission_response.status_code == 200
+        assert admission_response.json() == {"generate": False, "reason": "fake_scheduler"}
 
         resource_payload = {"device": "edge-node", "resource": {"cpu_usage": 0.42}}
         post_resource = client.post("/resource", data={"data": json.dumps(resource_payload)})

@@ -60,6 +60,10 @@ def test_base_agent_initializes_policy_hooks_and_delegates_plans(monkeypatch):
         "policy": "SCH_REDEPLOYMENT_POLICY",
         "info": {"resource": "b"},
     }
+    assert agent.should_generate({"source_id": 7}) == {
+        "generate": True,
+        "reason": "default_allow",
+    }
     assert agent.get_schedule_overhead() == 0
 
 

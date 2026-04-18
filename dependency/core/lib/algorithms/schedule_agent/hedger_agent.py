@@ -107,16 +107,28 @@ class HedgerAgent(BaseAgent, abc.ABC):
         self.hedger.register_state_buffer()
 
         configuration = self._normalize_mapping(self.default_configuration)
-        offloading = self._normalize_mapping(self.hedger.get_offloading_plan())
+        should_force_default = bool(
+            getattr(self.hedger, "should_force_default_decisions", lambda: False)()
+        )
+        if should_force_default:
+            offloading = self._normalize_mapping(self.default_offloading)
+        else:
+            offloading = self._normalize_mapping(self.hedger.get_offloading_plan())
         deployment_version = self.hedger.get_active_deployment_version()
-        used_default_offloading = False
+        used_default_offloading = should_force_default
         if not offloading:
             offloading = self._normalize_mapping(self.default_offloading)
             used_default_offloading = True
-            LOGGER.warning(
-                f"[HedgerAgent][Schedule] source={source_id}, no Hedger offloading plan available; "
-                f"fall back to default offloading policy."
-            )
+            if should_force_default:
+                LOGGER.debug(
+                    f"[HedgerAgent][Schedule] source={source_id}, latency guard is active; "
+                    f"use default offloading policy."
+                )
+            else:
+                LOGGER.warning(
+                    f"[HedgerAgent][Schedule] source={source_id}, no Hedger offloading plan available; "
+                    f"fall back to default offloading policy."
+                )
 
         policy = {}
         policy.update(configuration)
@@ -194,6 +206,11 @@ class HedgerAgent(BaseAgent, abc.ABC):
         if memory_usage is not None:
             self.hedger.state_buffer.add_memory_utilization(device, memory_usage)
 
+        queue_length = resource.get('queue_length')
+        observe_queue = getattr(self.hedger, "update_latency_guard_queue_lengths", None)
+        if queue_length is not None and callable(observe_queue):
+            observe_queue(device, queue_length)
+
         model_flops_updates = resource.get('model_flops') or {}
         model_memory_updates = resource.get('model_memory') or {}
         updated_fields = []
@@ -207,6 +224,8 @@ class HedgerAgent(BaseAgent, abc.ABC):
             updated_fields.append(f"gpu_usage={self._format_utilization_for_log(gpu_usage)}")
         if memory_usage is not None:
             updated_fields.append(f"mem_usage={self._format_utilization_for_log(memory_usage)}")
+        if isinstance(queue_length, dict) and queue_length:
+            updated_fields.append(self._summarize_numeric_mapping_for_log("queue_length", queue_length))
         if model_flops_updates:
             updated_fields.append(self._summarize_numeric_mapping_for_log("model_flops", model_flops_updates))
         if model_memory_updates:
@@ -223,6 +242,19 @@ class HedgerAgent(BaseAgent, abc.ABC):
 
     def update_policy(self, policy):
         pass
+
+    def should_generate(self, info):
+        if getattr(self.hedger, "should_pause_generation", lambda: False)():
+            status = getattr(self.hedger, "latency_guard_status", lambda: {})()
+            return {
+                "generate": False,
+                "reason": "latency_guard_active",
+                "details": status,
+            }
+        return {
+            "generate": True,
+            "reason": "hedger_allow",
+        }
 
     def update_task(self, task):
         if self.hedger.state_buffer is None:
@@ -260,6 +292,14 @@ class HedgerAgent(BaseAgent, abc.ABC):
                 end_to_end_latency,
                 deployment_version=deployment_version,
             )
+            observe_latency = getattr(self.hedger, "observe_task_end_to_end_latency", None)
+            if callable(observe_latency):
+                task_version = self.hedger.state_buffer.get_task_observation_version()
+                observe_latency(
+                    end_to_end_latency,
+                    task_version=task_version,
+                    deployment_version=deployment_version,
+                )
             self.hedger.ensure_started(reason=f"first task update from source {task.get_source_id()}")
             avg_complexity = float(np.mean(complexity_values)) if complexity_values else 0.0
             avg_stage_latency = float(np.mean(latency_values)) if latency_values else 0.0

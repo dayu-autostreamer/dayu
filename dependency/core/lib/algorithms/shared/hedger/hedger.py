@@ -1,4 +1,5 @@
 import copy
+from collections import deque
 from typing import Dict, List, Optional
 import threading
 import random
@@ -55,6 +56,29 @@ class HedgerTrainingCfg:
     offloading_rollout_len: int
     deployment_batch_size: int
     offloading_batch_size: int
+
+
+@dataclass(frozen=True)
+class HedgerLatencyGuardCfg:
+    enabled: bool = False
+    latency_threshold_s: float = 3.0
+    window_size: int = 32
+    min_samples: int = 16
+    trigger_violation_ratio: float = 0.5
+    trigger_consecutive_windows: int = 2
+    recover_violation_ratio: float = 0.2
+    recover_consecutive_windows: int = 3
+    poll_interval_s: float = 1.0
+    clear_transition_buffers: bool = True
+    force_default_decisions: bool = True
+    pause_generation: bool = False
+    queue_recovery_enabled: bool = True
+    queue_recovery_threshold: float = 0.0
+    queue_recovery_consecutive_updates: int = 3
+    queue_recovery_stable_s: float = 10.0
+    queue_recovery_stale_timeout_s: float = 20.0
+    min_pause_s: float = 10.0
+    log_interval_s: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -121,6 +145,7 @@ class Hedger:
         self.state_cfg = self._build_state_cfg(config)
         self.training_cfg = self._build_training_cfg(config) if self.mode == "train" else None
         self.stage_cfg = self._build_training_stage_cfg(self.training_cfg.stage) if self.training_cfg is not None else None
+        self.latency_guard_cfg = self._build_latency_guard_cfg(config)
         self.checkpoint_cfg = self._build_checkpoint_cfg(config)
 
         agents_cfg = self._require_mapping(config, "agents")
@@ -154,6 +179,7 @@ class Hedger:
         self._data_lock = threading.Lock()
         self._run_lock = threading.Lock()
         self._model_lock = threading.RLock()
+        self._latency_guard_lock = threading.Lock()
         self._deployment_version_cond = threading.Condition(threading.Lock())
         self._deployment_decision_version = 0
         self._deployment_served_version = 0
@@ -186,6 +212,16 @@ class Hedger:
         self._last_deployment_served_monotonic = 0.0
         self._last_redeployment_throttle_log_t = 0.0
         self._frozen_offloading_agent = None
+        self._latency_guard_samples = deque(maxlen=self.latency_guard_cfg.window_size)
+        self._latency_guard_active = False
+        self._latency_guard_trigger_streak = 0
+        self._latency_guard_recover_streak = 0
+        self._latency_guard_queue_recover_streak = 0
+        self._latency_guard_queue_drained_since_t = 0.0
+        self._latency_guard_activated_t = 0.0
+        self._latency_guard_queue_observations = {}
+        self._latency_guard_last_log_t = 0.0
+        self._latency_guard_last_stats = self._empty_latency_guard_stats()
 
         if self.mode == "inference":
             self.ensure_started("inference initialization")
@@ -276,6 +312,55 @@ class Hedger:
             deployment_reward_window=max(1, int(state.get("deployment_reward_window", reward_window_default))),
             deployment_reward_min_samples=max(1, int(state.get("deployment_reward_min_samples", 1))),
             deployment_feedback_timeout_s=feedback_timeout_s,
+        )
+
+    def _build_latency_guard_cfg(self, config: dict) -> HedgerLatencyGuardCfg:
+        guard = config.get("latency_guard") or {}
+        if not isinstance(guard, dict):
+            raise ValueError("Hedger latency_guard must be a mapping when provided.")
+
+        slo = self.state_cfg.latency_slo
+        default_threshold = 3.0
+        if slo is not None and math.isfinite(float(slo)) and float(slo) > 0.0:
+            default_threshold = max(float(slo) * 1.5, float(slo) + 0.5)
+
+        window_size = max(1, int(guard.get("window_size", 32)))
+        min_samples = max(1, int(guard.get("min_samples", min(16, window_size))))
+        min_samples = min(min_samples, window_size)
+
+        trigger_ratio = min(1.0, max(0.0, float(guard.get("trigger_violation_ratio", 0.5))))
+        recover_ratio = min(1.0, max(0.0, float(guard.get("recover_violation_ratio", 0.2))))
+        if recover_ratio > trigger_ratio:
+            raise ValueError(
+                "Hedger latency_guard.recover_violation_ratio must be <= trigger_violation_ratio."
+            )
+
+        return HedgerLatencyGuardCfg(
+            enabled=bool(guard.get("enabled", False)),
+            latency_threshold_s=max(0.0, float(guard.get("latency_threshold_s", default_threshold))),
+            window_size=window_size,
+            min_samples=min_samples,
+            trigger_violation_ratio=trigger_ratio,
+            trigger_consecutive_windows=max(1, int(guard.get("trigger_consecutive_windows", 2))),
+            recover_violation_ratio=recover_ratio,
+            recover_consecutive_windows=max(1, int(guard.get("recover_consecutive_windows", 3))),
+            poll_interval_s=max(0.1, float(guard.get("poll_interval_s", 1.0))),
+            clear_transition_buffers=bool(guard.get("clear_transition_buffers", True)),
+            force_default_decisions=bool(guard.get("force_default_decisions", True)),
+            pause_generation=bool(guard.get("pause_generation", False)),
+            queue_recovery_enabled=bool(guard.get("queue_recovery_enabled", True)),
+            queue_recovery_threshold=max(0.0, float(guard.get("queue_recovery_threshold", 0.0))),
+            queue_recovery_consecutive_updates=max(
+                1,
+                int(guard.get("queue_recovery_consecutive_updates", 3)),
+            ),
+            queue_recovery_stable_s=max(0.0, float(guard.get("queue_recovery_stable_s", 10.0))),
+            queue_recovery_stale_timeout_s=max(
+                0.1,
+                float(guard.get("queue_recovery_stale_timeout_s", 20.0)),
+            ),
+            min_pause_s=max(0.0, float(guard.get("min_pause_s", 10.0))),
+            log_interval_s=max(1.0, float(guard.get("log_interval_s", 10.0))),
         )
 
     def _build_checkpoint_cfg(self, config: dict) -> HedgerCheckpointCfg:
@@ -517,6 +602,343 @@ class Hedger:
             return f"{value_float:.{digits}f}"
         return str(value_float)
 
+    def _empty_latency_guard_stats(self) -> Dict[str, float]:
+        return {
+            "active": False,
+            "count": 0,
+            "bad_count": 0,
+            "bad_ratio": 0.0,
+            "threshold_s": float(getattr(self, "latency_guard_cfg", HedgerLatencyGuardCfg()).latency_threshold_s),
+            "trigger_streak": 0,
+            "recover_streak": 0,
+            "queue_recover_streak": 0,
+            "max_queue_length": 0.0,
+            "queue_observed": False,
+            "queue_drained_s": 0.0,
+        }
+
+    def _latency_guard_enabled(self) -> bool:
+        cfg = getattr(self, "latency_guard_cfg", HedgerLatencyGuardCfg())
+        return (
+            getattr(self, "mode", None) == "train"
+            and cfg.enabled
+            and cfg.window_size > 0
+        )
+
+    def _compute_latency_guard_stats_locked(self) -> Dict[str, float]:
+        cfg = self.latency_guard_cfg
+        samples = [float(value) for value in self._latency_guard_samples]
+        count = len(samples)
+        if count <= 0:
+            return self._empty_latency_guard_stats()
+        bad_count = sum(1 for value in samples if value > cfg.latency_threshold_s)
+        bad_ratio = float(bad_count / max(1, count))
+        queue_stats = self._latency_guard_queue_stats_locked(time.monotonic())
+        return {
+            "active": bool(self._latency_guard_active),
+            "count": int(count),
+            "bad_count": int(bad_count),
+            "bad_ratio": bad_ratio,
+            "threshold_s": float(cfg.latency_threshold_s),
+            "trigger_streak": int(self._latency_guard_trigger_streak),
+            "recover_streak": int(self._latency_guard_recover_streak),
+            "queue_recover_streak": int(getattr(self, "_latency_guard_queue_recover_streak", 0)),
+            "max_queue_length": float(queue_stats["max_queue_length"]),
+            "queue_observed": bool(queue_stats["queue_observed"]),
+            "queue_drained_s": float(queue_stats["queue_drained_s"]),
+        }
+
+    def latency_guard_status(self) -> Dict[str, float]:
+        if not self._latency_guard_enabled():
+            return self._empty_latency_guard_stats()
+        with self._latency_guard_lock:
+            return copy.deepcopy(self._latency_guard_last_stats)
+
+    def is_latency_guard_active(self) -> bool:
+        if not self._latency_guard_enabled():
+            return False
+        with self._latency_guard_lock:
+            return bool(self._latency_guard_active)
+
+    def should_force_default_decisions(self) -> bool:
+        cfg = getattr(self, "latency_guard_cfg", HedgerLatencyGuardCfg())
+        return bool(cfg.force_default_decisions and self.is_latency_guard_active())
+
+    def should_pause_generation(self) -> bool:
+        cfg = getattr(self, "latency_guard_cfg", HedgerLatencyGuardCfg())
+        return bool(cfg.pause_generation and self.is_latency_guard_active())
+
+    def _latency_guard_queue_stats_locked(self, now: Optional[float] = None) -> Dict[str, float]:
+        cfg = self.latency_guard_cfg
+        now = time.monotonic() if now is None else float(now)
+        max_queue_length = 0.0
+        observed = False
+        observations = getattr(self, "_latency_guard_queue_observations", {})
+        for record in observations.values():
+            ts = float(record.get("ts", 0.0))
+            if now - ts > cfg.queue_recovery_stale_timeout_s:
+                continue
+            values = record.get("values") or {}
+            if not isinstance(values, dict):
+                continue
+            for value in values.values():
+                try:
+                    queue_length = float(value)
+                except (TypeError, ValueError):
+                    continue
+                max_queue_length = max(max_queue_length, queue_length)
+                observed = True
+        drained_since_t = getattr(self, "_latency_guard_queue_drained_since_t", 0.0)
+        queue_drained_s = max(0.0, now - drained_since_t) if drained_since_t > 0.0 else 0.0
+        return {
+            "max_queue_length": float(max_queue_length),
+            "queue_observed": bool(observed),
+            "queue_drained_s": float(queue_drained_s),
+        }
+
+    def observe_task_end_to_end_latency(
+            self,
+            latency: float,
+            task_version: Optional[int] = None,
+            deployment_version: Optional[int] = None,
+    ) -> Dict[str, float]:
+        """
+        Feed completed-task end-to-end latency into a circuit-breaker style guard.
+
+        The guard watches a sliding window of recent completed tasks. If too
+        many samples breach the configured latency threshold for several
+        consecutive evaluations, PPO sampling/updating is paused and scheduler
+        policies are forced back to the template defaults until the window has
+        recovered for several consecutive evaluations.
+        """
+        if not self._latency_guard_enabled():
+            return self._empty_latency_guard_stats()
+
+        try:
+            latency_value = float(latency)
+        except (TypeError, ValueError):
+            return self.latency_guard_status()
+        if not math.isfinite(latency_value) or latency_value < 0.0:
+            return self.latency_guard_status()
+
+        state_change = None
+        with self._latency_guard_lock:
+            self._latency_guard_samples.append(latency_value)
+            cfg = self.latency_guard_cfg
+            stats = self._compute_latency_guard_stats_locked()
+
+            if stats["count"] >= cfg.min_samples:
+                if self._latency_guard_active:
+                    if stats["bad_ratio"] <= cfg.recover_violation_ratio:
+                        self._latency_guard_recover_streak += 1
+                    else:
+                        self._latency_guard_recover_streak = 0
+                    self._latency_guard_trigger_streak = 0
+
+                    if self._latency_guard_recover_streak >= cfg.recover_consecutive_windows:
+                        self._latency_guard_active = False
+                        self._latency_guard_recover_streak = 0
+                        self._latency_guard_trigger_streak = 0
+                        state_change = "recovered"
+                else:
+                    if stats["bad_ratio"] >= cfg.trigger_violation_ratio:
+                        self._latency_guard_trigger_streak += 1
+                    else:
+                        self._latency_guard_trigger_streak = 0
+                    self._latency_guard_recover_streak = 0
+
+                    if self._latency_guard_trigger_streak >= cfg.trigger_consecutive_windows:
+                        self._latency_guard_active = True
+                        self._latency_guard_activated_t = time.monotonic()
+                        self._latency_guard_trigger_streak = 0
+                        self._latency_guard_recover_streak = 0
+                        self._latency_guard_queue_recover_streak = 0
+                        self._latency_guard_queue_drained_since_t = 0.0
+                        state_change = "triggered"
+
+            self._latency_guard_last_stats = self._compute_latency_guard_stats_locked()
+            stats = copy.deepcopy(self._latency_guard_last_stats)
+
+        if state_change == "triggered":
+            self._handle_latency_guard_triggered(stats, task_version, deployment_version)
+        elif state_change == "recovered":
+            self._handle_latency_guard_recovered(stats, task_version, deployment_version, reason="latency_window")
+        else:
+            self._log_latency_guard_if_active(stats)
+        return stats
+
+    def update_latency_guard_queue_lengths(self, device: str, queue_lengths) -> Dict[str, float]:
+        """
+        Feed processor queue lengths into the latency guard.
+
+        This is used as the preferred recovery signal when generation has been
+        paused. Once monitored queues stay below the low watermark for a few
+        consecutive monitor updates, the guard can recover even if no new task
+        completions arrive.
+        """
+        if not self._latency_guard_enabled() or not self.latency_guard_cfg.queue_recovery_enabled:
+            return self._empty_latency_guard_stats()
+        if not isinstance(queue_lengths, dict):
+            return self.latency_guard_status()
+
+        normalized = {}
+        for service_name, value in queue_lengths.items():
+            try:
+                normalized[str(service_name)] = max(0.0, float(value))
+            except (TypeError, ValueError):
+                continue
+        if not normalized:
+            return self.latency_guard_status()
+
+        recovered = False
+        now = time.monotonic()
+        with self._latency_guard_lock:
+            self._latency_guard_queue_observations[str(device)] = {
+                "values": normalized,
+                "ts": now,
+            }
+            if self._latency_guard_active:
+                queue_stats = self._latency_guard_queue_stats_locked(now)
+                activated_t = getattr(self, "_latency_guard_activated_t", 0.0)
+                pause_elapsed = (
+                    activated_t <= 0.0
+                    or now - activated_t >= self.latency_guard_cfg.min_pause_s
+                )
+                if (
+                        pause_elapsed
+                        and queue_stats["queue_observed"]
+                        and queue_stats["max_queue_length"] <= self.latency_guard_cfg.queue_recovery_threshold
+                ):
+                    if getattr(self, "_latency_guard_queue_drained_since_t", 0.0) <= 0.0:
+                        self._latency_guard_queue_drained_since_t = now
+                    self._latency_guard_queue_recover_streak = (
+                        getattr(self, "_latency_guard_queue_recover_streak", 0) + 1
+                    )
+                else:
+                    self._latency_guard_queue_drained_since_t = 0.0
+                    self._latency_guard_queue_recover_streak = 0
+
+                queue_stats = self._latency_guard_queue_stats_locked(now)
+                if (
+                        self._latency_guard_queue_recover_streak >=
+                        self.latency_guard_cfg.queue_recovery_consecutive_updates
+                        and queue_stats["queue_drained_s"] >= self.latency_guard_cfg.queue_recovery_stable_s
+                ):
+                    self._latency_guard_active = False
+                    self._latency_guard_trigger_streak = 0
+                    self._latency_guard_recover_streak = 0
+                    self._latency_guard_queue_recover_streak = 0
+                    self._latency_guard_queue_drained_since_t = 0.0
+                    recovered = True
+            self._latency_guard_last_stats = self._compute_latency_guard_stats_locked()
+            stats = copy.deepcopy(self._latency_guard_last_stats)
+
+        if recovered:
+            self._handle_latency_guard_recovered(
+                stats,
+                task_version=None,
+                deployment_version=None,
+                reason="queue_drain",
+            )
+        else:
+            self._log_latency_guard_if_active(stats)
+        return stats
+
+    def _handle_latency_guard_triggered(
+            self,
+            stats: Dict[str, float],
+            task_version: Optional[int],
+            deployment_version: Optional[int],
+    ) -> None:
+        if self.latency_guard_cfg.clear_transition_buffers:
+            self._clear_training_transition_buffers("latency guard triggered")
+        if self.latency_guard_cfg.force_default_decisions:
+            self._apply_default_decisions_for_latency_guard("latency guard triggered")
+        LOGGER.warning(
+            f"[Hedger][LatencyGuard] Triggered: task_version={task_version}, "
+            f"deployment_version={deployment_version}, "
+            f"bad={stats['bad_count']}/{stats['count']} "
+            f"({self._format_log_value(stats['bad_ratio'])}), "
+            f"threshold={self._format_log_value(stats['threshold_s'], 2)}s. "
+            f"Pause PPO training and force default decisions."
+        )
+
+    def _handle_latency_guard_recovered(
+            self,
+            stats: Dict[str, float],
+            task_version: Optional[int],
+            deployment_version: Optional[int],
+            reason: str = "latency_window",
+    ) -> None:
+        if self.latency_guard_cfg.clear_transition_buffers:
+            self._clear_training_transition_buffers("latency guard recovered")
+        LOGGER.warning(
+            f"[Hedger][LatencyGuard] Recovered: task_version={task_version}, "
+            f"deployment_version={deployment_version}, "
+            f"reason={reason}, "
+            f"bad={stats['bad_count']}/{stats['count']} "
+            f"({self._format_log_value(stats['bad_ratio'])}), "
+            f"max_queue={self._format_log_value(stats.get('max_queue_length', 0.0))}, "
+            f"threshold={self._format_log_value(stats['threshold_s'], 2)}s. "
+            f"Resume PPO sampling."
+        )
+
+    def _log_latency_guard_if_active(self, stats: Dict[str, float]) -> None:
+        if not stats.get("active"):
+            return
+        now = time.monotonic()
+        if now - self._latency_guard_last_log_t < self.latency_guard_cfg.log_interval_s:
+            return
+        self._latency_guard_last_log_t = now
+        LOGGER.warning(
+            f"[Hedger][LatencyGuard] Active: bad={stats['bad_count']}/{stats['count']} "
+            f"({self._format_log_value(stats['bad_ratio'])}), "
+            f"threshold={self._format_log_value(stats['threshold_s'], 2)}s, "
+            f"max_queue={self._format_log_value(stats.get('max_queue_length', 0.0))}, "
+            f"queue_drained_s={self._format_log_value(stats.get('queue_drained_s', 0.0), 2)}, "
+            f"recover_ratio={self._format_log_value(self.latency_guard_cfg.recover_violation_ratio)}, "
+            f"recover_streak={stats['recover_streak']}/"
+            f"{self.latency_guard_cfg.recover_consecutive_windows}, "
+            f"queue_recover_streak={stats.get('queue_recover_streak', 0)}/"
+            f"{self.latency_guard_cfg.queue_recovery_consecutive_updates}."
+        )
+
+    def _clear_training_transition_buffers(self, reason: str) -> None:
+        with self._data_lock:
+            dep_count = len(self.deployment_transitions)
+            off_count = len(self.offloading_transitions)
+            self.deployment_transitions.clear()
+            self.offloading_transitions.clear()
+        if dep_count > 0 or off_count > 0:
+            LOGGER.warning(
+                f"[Hedger][LatencyGuard] Cleared transition buffers while {reason}: "
+                f"deployment={dep_count}, offloading={off_count}."
+            )
+
+    def _apply_default_decisions_for_latency_guard(self, reason: str) -> None:
+        with self._data_lock:
+            self.offloading_plan = None
+            self.pending_deployment_plan = None
+            self.pending_deploy_mask = None
+
+            if self.initial_deployment_plan is not None and self.logical_topology is not None \
+                    and self.physical_topology is not None:
+                self.deployment_plan = copy.deepcopy(self.initial_deployment_plan)
+                self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(
+                    self.initial_deployment_plan
+                ).detach().cpu()
+
+        LOGGER.debug(f"[Hedger][LatencyGuard] Applied default decisions: reason={reason}.")
+
+    def _sleep_while_latency_guard_active(self, worker_name: str) -> bool:
+        if not self.is_latency_guard_active():
+            return False
+        if self.latency_guard_cfg.force_default_decisions:
+            self._apply_default_decisions_for_latency_guard(f"{worker_name} paused")
+        self._log_latency_guard_if_active(self.latency_guard_status())
+        time.sleep(self.latency_guard_cfg.poll_interval_s)
+        return True
+
     @classmethod
     def _format_utilization_for_log(cls, value, digits: int = 4) -> str:
         ratio_text = cls._format_log_value(value, digits)
@@ -534,6 +956,7 @@ class Hedger:
         checkpoint_save_cfg = getattr(checkpoint_cfg, "save", None)
         stage_name = training_cfg.stage if training_cfg is not None else "none"
         state_cfg = getattr(self, "state_cfg", None)
+        latency_guard_cfg = getattr(self, "latency_guard_cfg", None)
         dep_seq_len = getattr(state_cfg, "deployment_seq_len", "na")
         off_seq_len = getattr(state_cfg, "offloading_seq_len", "na")
         return (
@@ -549,7 +972,8 @@ class Hedger:
             f"{getattr(training_cfg, 'offloading_batch_size', 'na')}, "
             f"state_seq(dep/off)={dep_seq_len}/{off_seq_len}, "
             f"total_steps={getattr(training_cfg, 'total_updates', 'na')}, "
-            f"save_interval={getattr(checkpoint_save_cfg, 'interval_updates', 'na')}"
+            f"save_interval={getattr(checkpoint_save_cfg, 'interval_updates', 'na')}, "
+            f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
     def _summarize_topology(self) -> str:
@@ -1083,6 +1507,8 @@ class Hedger:
         LOGGER.debug(f"[Hedger][Deployment] Initial deployment detail: {self.initial_deployment_plan}")
 
     def get_offloading_plan(self):
+        if self.should_force_default_decisions():
+            return None
         return copy.deepcopy(self.offloading_plan)
 
     def get_initial_deployment_plan(self):
@@ -1093,6 +1519,18 @@ class Hedger:
             return int(self._deployment_served_version)
 
     def get_redeployment_plan(self):
+        if self.should_force_default_decisions():
+            if self.latency_guard_cfg.force_default_decisions:
+                self._apply_default_decisions_for_latency_guard("redeployment request")
+            with self._data_lock:
+                plan = copy.deepcopy(self.deployment_plan or self.initial_deployment_plan)
+            if plan is not None:
+                LOGGER.warning(
+                    "[Hedger][Deployment] Latency guard is active; "
+                    "serve default deployment plan instead of learned redeployment."
+                )
+                return plan
+
         now = time.monotonic()
         served_version = None
         throttled = False
@@ -1294,6 +1732,12 @@ class Hedger:
 
     def _wait_for_deployment_decision_served(self, decision_version: int) -> bool:
         while not self.deployment_thread_stop_event.is_set():
+            if self.is_latency_guard_active():
+                LOGGER.warning(
+                    f"[Hedger][Train][Deployment] Abort waiting for deployment decision "
+                    f"version={decision_version} because latency guard is active."
+                )
+                return False
             with self._deployment_version_cond:
                 if self._deployment_served_version >= decision_version:
                     return True
@@ -1346,6 +1790,12 @@ class Hedger:
 
         min_samples = max(1, min(int(min_samples), self.state_cfg.deployment_reward_window))
         while not self.deployment_thread_stop_event.is_set():
+            if self.is_latency_guard_active():
+                LOGGER.warning(
+                    f"[Hedger][Train][Deployment] Abort waiting for deployment feedback "
+                    f"version={deployment_version} because latency guard is active."
+                )
+                return False
             self._delete_error_processor_pods_if_needed(
                 reason=f"waiting for deployment feedback samples={min_samples}"
             )
@@ -1648,6 +2098,12 @@ class Hedger:
                     self.deployment_thread_stop_event.set()
                     break
 
+                if self.is_latency_guard_active():
+                    if self.latency_guard_cfg.clear_transition_buffers:
+                        self._clear_training_transition_buffers("latency guard active")
+                    self._sleep_while_latency_guard_active("coordinator")
+                    continue
+
                 updates_in_tick = 0
 
                 # Run a PPO update for the offloading agent.
@@ -1839,6 +2295,13 @@ class Hedger:
 
         while not self.deployment_thread_stop_event.is_set():
             try:
+                if self._sleep_while_latency_guard_active("deployment worker"):
+                    prev_deploy_mask = self._current_deploy_mask()
+                    logic_feats, phys_feats, _, _ = self._collect_deployment_state(
+                        prev_deploy_mask=prev_deploy_mask
+                    )
+                    continue
+
                 # Move features onto the active device.
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
                 phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
@@ -1862,8 +2325,12 @@ class Hedger:
                     decision_version = self._mark_deployment_decision_pending()
 
                 if not self._wait_for_deployment_decision_served(decision_version):
+                    if self.is_latency_guard_active():
+                        continue
                     break
                 if not self._wait_for_deployment_feedback_samples(1, deployment_version=decision_version):
+                    if self.is_latency_guard_active():
+                        continue
                     break
                 LOGGER.debug(
                     f"[Hedger][Train][Deployment] decision_version={decision_version} "
@@ -1878,6 +2345,8 @@ class Hedger:
                         self._deployment_feedback_min_samples(),
                         deployment_version=decision_version,
                 ):
+                    if self.is_latency_guard_active():
+                        continue
                     break
 
                 new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state(
@@ -2066,6 +2535,14 @@ class Hedger:
         )
         while not self.offloading_thread_stop_event.is_set():
             try:
+                if self._sleep_while_latency_guard_active(f"{log_scope} worker"):
+                    logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+                    last_reward_task_version = (
+                        self.state_buffer.get_task_observation_version()
+                        if self.state_buffer is not None else last_reward_task_version
+                    )
+                    continue
+
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
                 phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
                 static_mask = self._current_deploy_mask()
@@ -2087,6 +2564,13 @@ class Hedger:
                     offloading_time_ticket,
                     self.offloading_interval,
                 )
+                if self.is_latency_guard_active():
+                    logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+                    last_reward_task_version = (
+                        self.state_buffer.get_task_observation_version()
+                        if self.state_buffer is not None else last_reward_task_version
+                    )
+                    continue
 
                 task_feedback_summary = (
                     self.state_buffer.get_task_observation_deployment_summary(last_reward_task_version)
