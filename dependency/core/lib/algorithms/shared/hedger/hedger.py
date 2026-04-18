@@ -1216,13 +1216,17 @@ class Hedger:
         }
         return logic_feats, phys_feats
 
-    def _compute_slo_violation(self, latest_latency: torch.Tensor) -> float:
+    def _compute_slo_violation(self, latency_values) -> float:
         if self.state_cfg.latency_slo is None:
             return 0.0
-        if latest_latency.numel() == 0:
+        if isinstance(latency_values, torch.Tensor):
+            values = latency_values.detach().float().flatten()
+        else:
+            values = torch.tensor(list(latency_values or []), dtype=torch.float32)
+        if values.numel() == 0:
             return 0.0
         threshold = float(self.state_cfg.latency_slo)
-        return float((latest_latency > threshold).float().mean().item())
+        return float((values > threshold).float().mean().item())
 
     def _compute_cloud_fraction(self) -> float:
         num_services = len(self.logical_topology)
@@ -1364,14 +1368,24 @@ class Hedger:
 
         return False
 
-    def _collect_offloading_state(self):
+    def _collect_offloading_state(
+            self,
+            since_task_version: Optional[int] = None,
+            deployment_version: Optional[int] = None,
+    ):
         logic_feats, phys_feats = self._collect_graph_state(self.state_cfg.offloading_seq_len)
-        latest_latency = logic_feats["hist_latency_seq"][:, -1] if logic_feats["hist_latency_seq"].numel() else \
-            torch.empty(0, dtype=torch.float32)
+        latency_stats = self.state_buffer.get_task_end_to_end_latency_stats(
+            since_version=since_task_version,
+            deployment_version=deployment_version,
+            last_k=None if since_task_version is not None else 1,
+        )
+        latency_values = latency_stats.get("latencies", [])
         metrics = {
-            "latency": float(latest_latency.mean().item()) if latest_latency.numel() else 0.0,
-            "slo_violation": self._compute_slo_violation(latest_latency),
+            "latency": float(latency_stats["mean"]),
+            "slo_violation": self._compute_slo_violation(latency_values),
             "cloud_fraction": self._compute_cloud_fraction(),
+            "task_latency_count": int(latency_stats.get("count", 0)),
+            "latest_task_latency": float(latency_stats.get("latest", 0.0)),
         }
         done = False
         return logic_feats, phys_feats, metrics, done
@@ -2074,7 +2088,6 @@ class Hedger:
                     self.offloading_interval,
                 )
 
-                new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state()
                 task_feedback_summary = (
                     self.state_buffer.get_task_observation_deployment_summary(last_reward_task_version)
                     if self.state_buffer is not None
@@ -2088,6 +2101,22 @@ class Hedger:
                     }
                 )
                 current_task_version = int(task_feedback_summary["current_version"])
+                feedback_deployment_version = None
+                if (
+                        task_feedback_summary.get("all_same_deployment_version")
+                        and task_feedback_summary.get("count", 0) > 0
+                ):
+                    feedback_deployment_version = task_feedback_summary.get("dominant_deployment_version")
+                elif task_feedback_summary.get("count", 0) > 0:
+                    LOGGER.debug(
+                        f"[Hedger][Train][{log_scope}] Fresh task observations span multiple deployment versions; "
+                        f"skip deployment feedback recording: versions="
+                        f"{task_feedback_summary.get('deployment_version_counts', {})}"
+                    )
+                new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state(
+                    since_task_version=last_reward_task_version,
+                    deployment_version=feedback_deployment_version,
+                )
                 if current_task_version <= last_reward_task_version:
                     logic_feats = new_logic_feats
                     phys_feats = new_phys_feats
@@ -2097,18 +2126,6 @@ class Hedger:
                     )
                     continue
                 last_reward_task_version = current_task_version
-                feedback_deployment_version = None
-                if (
-                        task_feedback_summary.get("all_same_deployment_version")
-                        and task_feedback_summary.get("count", 0) > 0
-                ):
-                    feedback_deployment_version = task_feedback_summary.get("dominant_deployment_version")
-                else:
-                    LOGGER.debug(
-                        f"[Hedger][Train][{log_scope}] Fresh task observations span multiple deployment versions; "
-                        f"skip deployment feedback recording: versions="
-                        f"{task_feedback_summary.get('deployment_version_counts', {})}"
-                    )
 
                 new_logic_feats_dev = {k: v.to(self.device) for k, v in new_logic_feats.items()}
                 new_phys_feats_dev = {k: v.to(self.device) for k, v in new_phys_feats.items()}

@@ -387,6 +387,34 @@ def test_state_buffer_supports_incremental_service_and_device_updates():
 
 
 @pytest.mark.unit
+def test_state_buffer_tracks_task_observations_as_end_to_end_latencies():
+    logical_topology, physical_topology = build_test_topologies()
+    buffer = StateBuffer(
+        16,
+        logical_topology=logical_topology,
+        physical_topology=physical_topology,
+    )
+
+    buffer.add_task_latency("svc-a", 1.0, deployment_version=2)
+    buffer.add_task_latency("svc-b", 3.0, deployment_version=2)
+    assert buffer.get_task_observation_version() == 0
+
+    buffer.add_task_end_to_end_latency(4.0, deployment_version=2)
+    buffer.add_task_end_to_end_latency(1.0, deployment_version=3)
+
+    assert buffer.get_task_observation_version() == 2
+    assert buffer.get_task_observation_deployment_summary(0)["deployment_version_counts"] == {2: 1, 3: 1}
+
+    all_stats = buffer.get_task_end_to_end_latency_stats(since_version=0)
+    assert all_stats["count"] == 2
+    assert all_stats["mean"] == pytest.approx(2.5)
+
+    version_two_stats = buffer.get_task_end_to_end_latency_stats(since_version=0, deployment_version=2)
+    assert version_two_stats["count"] == 1
+    assert version_two_stats["mean"] == pytest.approx(4.0)
+
+
+@pytest.mark.unit
 def test_state_buffer_aggregates_service_static_requirements_by_max():
     logical_topology, physical_topology = build_test_topologies()
     buffer = StateBuffer(
@@ -460,6 +488,7 @@ def test_hedger_collect_state_builds_metrics_from_buffer():
     buffer.add_task_complexity("svc-b", 5.0)
     buffer.add_task_latency("svc-a", 1.0)
     buffer.add_task_latency("svc-b", 3.0)
+    buffer.add_task_end_to_end_latency(4.0)
     buffer.add_offloading_reward(1.0)
     buffer.add_offloading_reward(3.0)
 
@@ -492,9 +521,10 @@ def test_hedger_collect_state_builds_metrics_from_buffer():
     assert phys_feats["bandwidth_seq"].shape == (3, 4)
     assert phys_feats["bandwidth_seq"][0].tolist() == pytest.approx([100.0, 100.0, 100.0, 100.0])
     assert phys_feats["bandwidth_seq"][2].tolist() == pytest.approx([10.0, 10.0, 10.0, 10.0])
-    assert off_metrics["latency"] == pytest.approx(2.0)
-    assert off_metrics["slo_violation"] == pytest.approx(0.5)
+    assert off_metrics["latency"] == pytest.approx(4.0)
+    assert off_metrics["slo_violation"] == pytest.approx(1.0)
     assert off_metrics["cloud_fraction"] == pytest.approx(0.5)
+    assert off_metrics["task_latency_count"] == 1
     assert done is False
 
     _, _, dep_metrics, done = hedger._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
@@ -1031,6 +1061,9 @@ def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
         add_task_latency=lambda service, value, deployment_version=None: calls.append(
             ("latency", service, value, deployment_version)
         ),
+        add_task_end_to_end_latency=lambda value, deployment_version=None: calls.append(
+            ("end_to_end_latency", value, deployment_version)
+        ),
     )
     hedger = types.SimpleNamespace(
         state_buffer=buffer,
@@ -1042,6 +1075,7 @@ def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
     task = types.SimpleNamespace(
         get_source_id=lambda: 7,
         get_deployment_version=lambda: 3,
+        calculate_total_time=lambda: 0.9,
         get_dag=lambda: types.SimpleNamespace(nodes=["svc-a", TaskConstant.START.value, "svc-b", TaskConstant.END.value]),
         get_service=lambda name: types.SimpleNamespace(
             get_execute_time=lambda: 0.2 if name == "svc-a" else 0.4,
@@ -1056,6 +1090,7 @@ def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
         ("latency", "svc-a", 0.2, 3),
         ("complexity", "svc-b", 5.0),
         ("latency", "svc-b", 0.4, 3),
+        ("end_to_end_latency", 0.9, 3),
         ("start", "first task update from source 7"),
     ]
 

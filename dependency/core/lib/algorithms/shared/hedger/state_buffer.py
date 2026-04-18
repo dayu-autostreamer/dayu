@@ -87,6 +87,7 @@ class StateBuffer:
         # Dynamic logical features, one time series per service.
         self.task_complexity_buffer: List[List[float]] = [[] for _ in range(num_services)]
         self.task_latency_buffer: List[List[float]] = [[] for _ in range(num_services)]
+        self.task_end_to_end_latency_buffer: List[Tuple[int, float, Optional[int]]] = []
 
         # Static physical features.
         self.gpu_flops_buffer: List[float] = [0.0 for _ in range(num_devices)]
@@ -105,7 +106,7 @@ class StateBuffer:
         self.gpu_utilization_buffer: List[List[float]] = [[] for _ in range(num_devices)]
         self.memory_utilization_buffer: List[List[float]] = [[] for _ in range(num_devices)]
 
-        # Task observation versions and offloading rewards carry deployment
+        # Task-level observations and offloading rewards carry deployment
         # versions so delayed tasks are not credited to a newer deployment.
         self.task_observation_version_buffer: List[Tuple[int, Optional[int]]] = []
         self.offloading_reward_buffer: List[Dict[str, Any]] = []
@@ -364,9 +365,19 @@ class StateBuffer:
                 return
             self.task_latency_buffer[s_idx].append(float(latency))
             self._trim_inplace(self.task_latency_buffer[s_idx])
+            self._bump_version()
+
+    def add_task_end_to_end_latency(self, latency: float, deployment_version=None):
+        """Append one end-to-end latency observation for a completed task."""
+        with self._cond:
             self._task_observation_version += 1
+            normalized_deployment_version = self._normalize_deployment_version(deployment_version)
+            self.task_end_to_end_latency_buffer.append(
+                (self._task_observation_version, float(latency), normalized_deployment_version)
+            )
+            self._trim_inplace(self.task_end_to_end_latency_buffer)
             self.task_observation_version_buffer.append(
-                (self._task_observation_version, self._normalize_deployment_version(deployment_version))
+                (self._task_observation_version, normalized_deployment_version)
             )
             self._trim_inplace(self.task_observation_version_buffer)
             self._bump_version()
@@ -496,9 +507,52 @@ class StateBuffer:
             self._bump_version()
 
     def get_task_observation_version(self) -> int:
-        """Return the number of task-latency observations received so far."""
+        """Return the number of completed-task latency observations received so far."""
         with self._lock:
             return int(self._task_observation_version)
+
+    def get_task_end_to_end_latency_stats(
+            self,
+            since_version: Optional[int] = None,
+            deployment_version=None,
+            last_k: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return latency stats over completed-task end-to-end observations.
+
+        `since_version` is exclusive. It is used by the offloading loop to
+        compute reward from tasks completed after the sampled action.
+        """
+        target_version = self._normalize_deployment_version(deployment_version)
+        with self._lock:
+            records = []
+            for version, latency, record_deployment_version in self.task_end_to_end_latency_buffer:
+                if since_version is not None and int(version) <= int(since_version):
+                    continue
+                if target_version is not None and record_deployment_version != target_version:
+                    continue
+                records.append((int(version), float(latency), record_deployment_version))
+
+            if last_k is not None:
+                records = records[-max(1, int(last_k)):]
+
+            if not records:
+                return {
+                    "mean": 0.0,
+                    "latest": 0.0,
+                    "count": 0,
+                    "latencies": [],
+                    "latest_version": int(self._task_observation_version),
+                }
+
+            latencies = [record[1] for record in records]
+            return {
+                "mean": float(np.mean(latencies)),
+                "latest": float(latencies[-1]),
+                "count": len(latencies),
+                "latencies": latencies,
+                "latest_version": int(records[-1][0]),
+            }
 
     def get_task_observation_deployment_summary(self, since_version: int) -> Dict[str, Any]:
         """Summarize deployment versions among task observations after `since_version`."""

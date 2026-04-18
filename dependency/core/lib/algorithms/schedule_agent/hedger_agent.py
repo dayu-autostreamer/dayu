@@ -255,13 +255,20 @@ class HedgerAgent(BaseAgent, abc.ABC):
             latency_values.append(float(latency))
 
         if updated_services > 0:
+            end_to_end_latency = task.get_real_end_to_end_time()
+            self.hedger.state_buffer.add_task_end_to_end_latency(
+                end_to_end_latency,
+                deployment_version=deployment_version,
+            )
             self.hedger.ensure_started(reason=f"first task update from source {task.get_source_id()}")
             avg_complexity = float(np.mean(complexity_values)) if complexity_values else 0.0
-            avg_latency = float(np.mean(latency_values)) if latency_values else 0.0
+            avg_stage_latency = float(np.mean(latency_values)) if latency_values else 0.0
             LOGGER.debug(
                 f"[HedgerAgent][Task] source={task.get_source_id()}, services={updated_services}, "
                 f"deployment_version={deployment_version}, "
-                f"avg_complexity={avg_complexity:.4f}, avg_latency={avg_latency:.4f}"
+                f"avg_complexity={avg_complexity:.4f}, "
+                f"avg_stage_latency={avg_stage_latency:.4f}, "
+                f"end_to_end_latency={end_to_end_latency:.4f}"
             )
 
     def get_schedule_overhead(self):
