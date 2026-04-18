@@ -28,6 +28,7 @@ e2e_delay_module = importlib.import_module("core.lib.algorithms.result_visualize
 frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.frame_visualizer")
 image_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.image_visualizer")
 multiple_roi_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.multiple_roi_frame_visualizer")
+multiple_object_number_module = importlib.import_module("core.lib.algorithms.result_visualizer.multiple_object_number_visualizer")
 object_number_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.object_number_visualizer")
 roi_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.roi_frame_visualizer")
 roi_label_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.roi_label_frame_visualizer")
@@ -435,6 +436,10 @@ def test_result_visualizers_render_task_data_and_fallback_images(monkeypatch):
 
     assert e2e_delay_module.EndToEndDelayVisualizer(variables=["delay"])(task)["delay"] == pytest.approx(1.3)
     assert object_number_visualizer_module.ObjectNumberVisualizer(variables=["obj_num"])(task) == {"obj_num": 3.0}
+    task.get_service("classifier").set_scenario_data({"obj_num": 5})
+    assert multiple_object_number_module.MultipleObjectNumberVisualizer(
+        variables=["detector", "classifier", "missing"]
+    )(task) == {"detector": 3.0, "classifier": 5.0, "missing": 0.0}
     assert service_delay_visualizer_module.ServiceProcessingDelayVisualizer(
         variables=["detector", "classifier"]
     )(task) == {"detector": 0.4, "classifier": 0.6}
