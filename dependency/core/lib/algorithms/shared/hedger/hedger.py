@@ -1893,6 +1893,36 @@ class Hedger:
         }
         return logic_feats, phys_feats
 
+    @staticmethod
+    def _percentile(values, percentile: float) -> float:
+        if values is None:
+            iterable = []
+        elif isinstance(values, torch.Tensor):
+            iterable = values.detach().float().flatten().cpu().tolist()
+        else:
+            iterable = values
+
+        clean_values = []
+        for value in iterable:
+            try:
+                float_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(float_value):
+                clean_values.append(float_value)
+
+        if not clean_values:
+            return 0.0
+        if len(clean_values) == 1:
+            return float(clean_values[0])
+
+        clean_values.sort()
+        rank = (len(clean_values) - 1) * (float(percentile) / 100.0)
+        lower = int(math.floor(rank))
+        upper = min(lower + 1, len(clean_values) - 1)
+        weight = rank - lower
+        return float(clean_values[lower] + (clean_values[upper] - clean_values[lower]) * weight)
+
     def _compute_slo_violation(self, latency_values) -> float:
         if self.state_cfg.latency_slo is None:
             return 0.0
@@ -1939,10 +1969,23 @@ class Hedger:
             last_k=self.state_cfg.deployment_reward_window,
             deployment_version=deployment_version,
         )
+        latency_stats = self.state_buffer.get_task_end_to_end_latency_stats(
+            deployment_version=deployment_version,
+            last_k=self.state_cfg.deployment_reward_window,
+        )
+        latency_values = latency_stats.get("latencies", [])
         metrics = {
             "avg_offloading_reward": float(reward_stats["mean"]),
             "offloading_reward_std": float(reward_stats["std"]),
             "offloading_reward_count": int(reward_stats.get("count", 0)),
+            "e2e_latency_count": int(latency_stats.get("count", 0)),
+            "e2e_latency_mean": float(latency_stats.get("mean", 0.0)),
+            "e2e_latency_latest": float(latency_stats.get("latest", 0.0)),
+            "e2e_latency_p50": self._percentile(latency_values, 50),
+            "e2e_latency_p90": self._percentile(latency_values, 90),
+            "e2e_latency_p95": self._percentile(latency_values, 95),
+            "e2e_latency_p99": self._percentile(latency_values, 99),
+            "e2e_slo_violation": self._compute_slo_violation(latency_values),
             "deploy_change_cost": self._compute_deploy_change_cost(prev_deploy_mask),
         }
         done = False
@@ -2506,6 +2549,9 @@ class Hedger:
             fmt="csv",
             fieldnames=["step", "epoch", "decision_version", "dep_updates", "dep_reward",
                         "avg_off_reward", "off_reward_std", "off_reward_count", "dep_change_cost",
+                        "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
+                        "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95",
+                        "e2e_latency_p99", "e2e_slo_violation",
                         "cap_relax_cnt", "cap_relax_cost",
                         "policy_logp", "policy_entropy", "value_estimate", "next_value",
                         "raw_edge_replicas", "edge_replicas", "cloud_replicas", "cloud_only",
@@ -2669,6 +2715,14 @@ class Hedger:
                     off_reward_std=metrics["offloading_reward_std"],
                     off_reward_count=metrics["offloading_reward_count"],
                     dep_change_cost=metrics["deploy_change_cost"],
+                    e2e_latency_count=metrics["e2e_latency_count"],
+                    e2e_latency_mean=metrics["e2e_latency_mean"],
+                    e2e_latency_latest=metrics["e2e_latency_latest"],
+                    e2e_latency_p50=metrics["e2e_latency_p50"],
+                    e2e_latency_p90=metrics["e2e_latency_p90"],
+                    e2e_latency_p95=metrics["e2e_latency_p95"],
+                    e2e_latency_p99=metrics["e2e_latency_p99"],
+                    e2e_slo_violation=metrics["e2e_slo_violation"],
                     cap_relax_cnt=aux["capacity_relax_cnt"],
                     cap_relax_cost=aux["capacity_relax_cost"],
                     policy_logp=float(logp.detach().cpu().item()),
