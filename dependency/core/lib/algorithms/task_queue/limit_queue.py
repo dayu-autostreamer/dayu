@@ -34,3 +34,20 @@ class LimitQueue(BaseQueue, abc.ABC):
 
     def empty(self) -> bool:
         return self._queue.empty()
+
+    def drain(self, max_count=None):
+        tasks = []
+        with self.lock:
+            while not self._queue.empty():
+                if max_count is not None and len(tasks) >= max_count:
+                    break
+                tasks.append(self._queue.get())
+        return tasks
+
+    def get_all_without_drop(self):
+        with self.lock:
+            with self._queue.mutex:
+                return list(self._queue.queue)
+
+    def clear(self):
+        self.drain()

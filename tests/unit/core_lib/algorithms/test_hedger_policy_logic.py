@@ -1,4 +1,5 @@
 import math
+from collections import deque
 import threading
 import types
 
@@ -12,6 +13,7 @@ from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingStageCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointSaveCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerLatencyGuardCfg
 from core.lib.algorithms.schedule_agent.hedger_agent import HedgerAgent
 from core.lib.algorithms.shared.hedger.hedger_config import (
     DeploymentConstraintCfg,
@@ -986,6 +988,60 @@ def test_hedger_agent_get_schedule_plan_tolerates_missing_default_mappings(monke
 
 
 @pytest.mark.unit
+def test_hedger_agent_get_schedule_plan_forces_default_offloading_during_latency_guard(monkeypatch):
+    dag = {
+        "svc-a": {"service": {"service_name": "svc-a"}, "next_nodes": ["svc-b"]},
+        "svc-b": {"service": {"service_name": "svc-b"}, "next_nodes": []},
+    }
+
+    hedger = types.SimpleNamespace(
+        register_logical_topology=lambda dag: None,
+        register_physical_topology=lambda edge_nodes, source_device: None,
+        register_state_buffer=lambda: None,
+        should_force_default_decisions=lambda: True,
+        get_offloading_plan=lambda: {"svc-a": "edge-b", "svc-b": "edge-b"},
+        get_active_deployment_version=lambda: 0,
+    )
+    agent = HedgerAgent.__new__(HedgerAgent)
+    agent.cloud_device = "cloud-x"
+    agent.default_configuration = None
+    agent.default_offloading = {"svc-a": "edge-a", "svc-b": "edge-a"}
+    agent.hedger = hedger
+
+    monkeypatch.setattr(
+        "core.lib.algorithms.schedule_agent.hedger_agent.KubeConfig.get_service_nodes_dict",
+        lambda: {"svc-a": {}, "svc-b": {}},
+    )
+
+    policy = agent.get_schedule_plan(
+        {
+            "source": {"id": 1},
+            "source_device": "edge-a",
+            "all_edge_devices": ["edge-a", "edge-b"],
+            "dag": dag,
+        }
+    )
+
+    assert policy["dag"]["svc-a"]["service"]["execute_device"] == "edge-a"
+    assert policy["dag"]["svc-b"]["service"]["execute_device"] == "edge-a"
+
+
+@pytest.mark.unit
+def test_hedger_agent_should_generate_delegates_to_latency_guard():
+    agent = HedgerAgent.__new__(HedgerAgent)
+    agent.hedger = types.SimpleNamespace(
+        should_pause_generation=lambda: True,
+        latency_guard_status=lambda: {"active": True, "max_queue_length": 3.0},
+    )
+
+    decision = agent.should_generate({"source_id": 1})
+
+    assert decision["generate"] is False
+    assert decision["reason"] == "latency_guard_active"
+    assert decision["details"]["max_queue_length"] == pytest.approx(3.0)
+
+
+@pytest.mark.unit
 def test_hedger_agent_update_resource_tolerates_partial_resource_updates():
     calls = []
     buffer = types.SimpleNamespace(
@@ -1017,6 +1073,121 @@ def test_hedger_agent_update_resource_tolerates_partial_resource_updates():
         ("gpu_usage", "edge-a", 0.3),
         ("model_flops", "svc-a", 10.0),
     ]
+
+
+@pytest.mark.unit
+def test_hedger_latency_guard_triggers_defaults_and_recovers():
+    logical_topology, physical_topology = build_test_topologies()
+    cloud_name = physical_topology[physical_topology.cloud_idx]
+
+    hedger = Hedger.__new__(Hedger)
+    hedger.mode = "train"
+    hedger.latency_guard_cfg = HedgerLatencyGuardCfg(
+        enabled=True,
+        latency_threshold_s=2.0,
+        window_size=4,
+        min_samples=2,
+        trigger_violation_ratio=0.5,
+        trigger_consecutive_windows=1,
+        recover_violation_ratio=0.25,
+        recover_consecutive_windows=1,
+        clear_transition_buffers=True,
+        force_default_decisions=True,
+        pause_generation=True,
+        min_pause_s=0.0,
+        queue_recovery_stable_s=0.0,
+    )
+    hedger._latency_guard_lock = threading.Lock()
+    hedger._latency_guard_samples = deque(maxlen=hedger.latency_guard_cfg.window_size)
+    hedger._latency_guard_active = False
+    hedger._latency_guard_trigger_streak = 0
+    hedger._latency_guard_recover_streak = 0
+    hedger._latency_guard_queue_recover_streak = 0
+    hedger._latency_guard_queue_drained_since_t = 0.0
+    hedger._latency_guard_activated_t = 0.0
+    hedger._latency_guard_queue_observations = {}
+    hedger._latency_guard_last_log_t = 0.0
+    hedger._latency_guard_last_stats = hedger._empty_latency_guard_stats()
+    hedger._data_lock = threading.Lock()
+    hedger.logical_topology = logical_topology
+    hedger.physical_topology = physical_topology
+    hedger.initial_deployment_plan = {"svc-a": ["edge-a"], "svc-b": [cloud_name]}
+    hedger.deployment_plan = {"svc-a": ["edge-b"], "svc-b": [cloud_name]}
+    hedger.pending_deployment_plan = {"svc-a": ["edge-b"]}
+    hedger.pending_deploy_mask = torch.ones((2, 3), dtype=torch.bool)
+    hedger.cur_deploy_mask = hedger._map_deployment_plan_to_deployment_mask(hedger.deployment_plan)
+    hedger.offloading_plan = {"svc-a": "edge-b", "svc-b": cloud_name}
+    hedger.deployment_transitions = [{"reward": 1.0}]
+    hedger.offloading_transitions = [{"reward": 1.0}]
+
+    hedger.observe_task_end_to_end_latency(3.0, task_version=1, deployment_version=0)
+    stats = hedger.observe_task_end_to_end_latency(3.5, task_version=2, deployment_version=0)
+
+    assert stats["active"] is True
+    assert hedger.is_latency_guard_active() is True
+    assert hedger.should_pause_generation() is True
+    assert hedger.offloading_plan is None
+    assert hedger.pending_deployment_plan is None
+    assert hedger.deployment_transitions == []
+    assert hedger.offloading_transitions == []
+    assert hedger.deployment_plan == hedger.initial_deployment_plan
+
+    hedger.observe_task_end_to_end_latency(0.5, task_version=3, deployment_version=0)
+    hedger.observe_task_end_to_end_latency(0.6, task_version=4, deployment_version=0)
+    stats = hedger.observe_task_end_to_end_latency(0.7, task_version=5, deployment_version=0)
+
+    assert stats["active"] is False
+    assert hedger.is_latency_guard_active() is False
+    assert hedger.should_pause_generation() is False
+
+
+@pytest.mark.unit
+def test_hedger_latency_guard_recovers_from_queue_drain():
+    hedger = Hedger.__new__(Hedger)
+    hedger.mode = "train"
+    hedger.latency_guard_cfg = HedgerLatencyGuardCfg(
+        enabled=True,
+        latency_threshold_s=2.0,
+        window_size=4,
+        min_samples=2,
+        trigger_violation_ratio=0.5,
+        trigger_consecutive_windows=1,
+        recover_violation_ratio=0.25,
+        recover_consecutive_windows=10,
+        queue_recovery_enabled=True,
+        queue_recovery_threshold=0.0,
+        queue_recovery_consecutive_updates=2,
+        queue_recovery_stable_s=0.0,
+        queue_recovery_stale_timeout_s=30.0,
+        min_pause_s=0.0,
+    )
+    hedger._latency_guard_lock = threading.Lock()
+    hedger._latency_guard_samples = deque(maxlen=hedger.latency_guard_cfg.window_size)
+    hedger._latency_guard_active = True
+    hedger._latency_guard_trigger_streak = 0
+    hedger._latency_guard_recover_streak = 0
+    hedger._latency_guard_queue_recover_streak = 0
+    hedger._latency_guard_queue_drained_since_t = 0.0
+    hedger._latency_guard_activated_t = 0.0
+    hedger._latency_guard_queue_observations = {}
+    hedger._latency_guard_last_log_t = 0.0
+    hedger._latency_guard_last_stats = hedger._empty_latency_guard_stats()
+    hedger._data_lock = threading.Lock()
+    hedger.deployment_transitions = []
+    hedger.offloading_transitions = []
+    hedger.initial_deployment_plan = None
+    hedger.logical_topology = None
+    hedger.physical_topology = None
+
+    hedger.update_latency_guard_queue_lengths("edge-a", {"svc-a": 1})
+    assert hedger.is_latency_guard_active() is True
+
+    hedger.update_latency_guard_queue_lengths("edge-a", {"svc-a": 0})
+    assert hedger.is_latency_guard_active() is True
+    stats = hedger.update_latency_guard_queue_lengths("edge-b", {"svc-b": 0})
+
+    assert stats["active"] is False
+    assert stats["max_queue_length"] == pytest.approx(0.0)
 
 
 @pytest.mark.unit

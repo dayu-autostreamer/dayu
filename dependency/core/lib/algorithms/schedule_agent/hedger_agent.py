@@ -244,17 +244,25 @@ class HedgerAgent(BaseAgent, abc.ABC):
         pass
 
     def should_generate(self, info):
+        actions = []
+        get_actions = getattr(self.hedger, "get_generation_admission_actions", None)
+        if callable(get_actions):
+            actions = get_actions(info)
         if getattr(self.hedger, "should_pause_generation", lambda: False)():
             status = getattr(self.hedger, "latency_guard_status", lambda: {})()
             return {
                 "generate": False,
                 "reason": "latency_guard_active",
                 "details": status,
+                "actions": actions,
             }
-        return {
+        decision = {
             "generate": True,
             "reason": "hedger_allow",
         }
+        if actions:
+            decision["actions"] = actions
+        return decision
 
     def update_task(self, task):
         if self.hedger.state_buffer is None:
@@ -267,6 +275,14 @@ class HedgerAgent(BaseAgent, abc.ABC):
                 deployment_version = metadata.get("deployment_version")
         if deployment_version is None:
             deployment_version = 0
+        should_quarantine = getattr(self.hedger, "should_quarantine_task_feedback", None)
+        if callable(should_quarantine) and should_quarantine(task):
+            LOGGER.warning(
+                f"[HedgerAgent][Task] Quarantine task feedback while latency guard is protecting training: "
+                f"source={task.get_source_id()}, task={task.get_task_id()}, "
+                f"deployment_version={deployment_version}"
+            )
+            return
         updated_services = 0
         complexity_values = []
         latency_values = []

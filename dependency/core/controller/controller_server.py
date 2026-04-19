@@ -1,3 +1,5 @@
+import json
+
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.routing import APIRoute
 from contextlib import asynccontextmanager
@@ -56,6 +58,11 @@ class ControllerServer:
                      self.process_return,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.CONTROLLER_RETURN]
+                     ),
+            APIRoute(NetworkAPIPath.CONTROLLER_CLEAR_PROCESSOR_QUEUES,
+                     self.clear_processor_queues,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.CONTROLLER_CLEAR_PROCESSOR_QUEUES]
                      ), ],
             log_level='trace',
             timeout=6000,
@@ -84,6 +91,16 @@ class ControllerServer:
 
     async def process_return(self, backtask: BackgroundTasks, data: str = Form(...)):
         backtask.add_task(self.process_return_background, data)
+
+    async def clear_processor_queues(self, data: str = Form("{}")):
+        try:
+            request = json.loads(data) if data else {}
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"invalid processor queue clear request: {exc}",
+            }
+        return self.controller.clear_processor_queues(request)
 
     def submit_task_background(self, data, file_data):
         """deal with tasks submitted by the generator or other controllers"""

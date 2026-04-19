@@ -1,3 +1,4 @@
+import json
 import os
 
 from core.lib.estimation import TimeEstimator
@@ -38,6 +39,86 @@ class Controller:
                 return False
             LOGGER.debug(f'[HEALTH CHECK] service {service} processor health check succeed.')
         return True
+
+    @staticmethod
+    def _normalize_service_filter(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return {value}
+        if isinstance(value, (list, tuple, set)):
+            return {str(item) for item in value}
+        return None
+
+    def clear_processor_queues(self, request=None):
+        """Clear queued, not-yet-running tasks from processor servers on this node."""
+        request = request or {}
+        if not isinstance(request, dict):
+            request = {}
+
+        service_filter = self._normalize_service_filter(request.get("services"))
+        timeout_s = request.get("timeout_s", 5.0)
+        try:
+            timeout_s = max(0.1, float(timeout_s))
+        except (TypeError, ValueError):
+            timeout_s = 5.0
+
+        processor_payload = {
+            "reason": request.get("reason") or "controller_processor_queue_clear",
+            "max_count": request.get("max_count"),
+            "dry_run": bool(request.get("dry_run", False)),
+        }
+
+        PortInfo.force_refresh()
+        service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
+        if service_filter is not None:
+            service_ports_dict = {
+                service: port for service, port in service_ports_dict.items()
+                if service in service_filter
+            }
+
+        results = {}
+        total_cleared = 0
+        total_matched = 0
+        total_remaining = 0
+        local_ip = NodeInfo.hostname2ip(self.local_device)
+        for service, service_port in service_ports_dict.items():
+            processor_address = merge_address(
+                local_ip,
+                port=service_port,
+                path=NetworkAPIPath.PROCESSOR_CLEAR_QUEUE,
+            )
+            response = http_request(
+                url=processor_address,
+                method=NetworkAPIMethod.PROCESSOR_CLEAR_QUEUE,
+                timeout=timeout_s,
+                data={"data": json.dumps(processor_payload)},
+            )
+            if not isinstance(response, dict):
+                results[service] = {
+                    "ok": False,
+                    "error": "processor queue clear request failed",
+                }
+                continue
+
+            results[service] = response
+            total_cleared += int(response.get("cleared_count") or 0)
+            total_matched += int(response.get("matched_count") or 0)
+            total_remaining += int(response.get("remaining_count") or 0)
+
+        LOGGER.warning(
+            f"[Processor Queue Clear] device={self.local_device}, services={list(service_ports_dict.keys())}, "
+            f"matched={total_matched}, cleared={total_cleared}, remaining={total_remaining}"
+        )
+        return {
+            "ok": True,
+            "device": self.local_device,
+            "service_count": len(service_ports_dict),
+            "matched_count": total_matched,
+            "cleared_count": total_cleared,
+            "remaining_count": total_remaining,
+            "services": results,
+        }
 
     def send_task_to_other_device(self, cur_task: Task, device: str = ''):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
