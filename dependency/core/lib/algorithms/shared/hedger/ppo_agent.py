@@ -99,6 +99,40 @@ class HedgerDeploymentPPO(nn.Module):
         self.cloud_idx = cloud_node_idx
         self.cfg = constraint_cfg
 
+    def _cloud_index(self, width: int) -> int:
+        if width <= 0:
+            return -1
+        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (width - 1)
+        if cloud_idx < 0 or cloud_idx >= width:
+            return width - 1
+        return cloud_idx
+
+    def _edge_memory_budget_ratio(self) -> float:
+        ratio = float(getattr(self.cfg, "edge_memory_budget_ratio", 1.0))
+        if not math.isfinite(ratio):
+            ratio = 1.0
+        return min(max(ratio, 0.0), 1.0)
+
+    def _max_edge_replicas_per_device(self) -> Optional[int]:
+        value = getattr(self.cfg, "max_edge_replicas_per_device", None)
+        if value is None:
+            return None
+        value = int(value)
+        return value if value > 0 else None
+
+    def _scale_edge_memory_budget(self, budget: torch.Tensor) -> torch.Tensor:
+        ratio = self._edge_memory_budget_ratio()
+        if ratio >= 1.0 or budget.numel() == 0:
+            return budget
+
+        scaled = budget.clone()
+        cloud_idx = self._cloud_index(scaled.size(0))
+        edge_mask = torch.ones_like(scaled, dtype=torch.bool)
+        if cloud_idx >= 0:
+            edge_mask[cloud_idx] = False
+        scaled[edge_mask] = scaled[edge_mask] * ratio
+        return scaled
+
     def _static_allowed_mask(
         self,
         phys_feats: Dict[str, torch.Tensor],
@@ -108,7 +142,9 @@ class HedgerDeploymentPPO(nn.Module):
         Build the static deployment mask.
 
         This mask filters out physically impossible service-device pairs using
-        only model memory footprint and total device memory.
+        model memory footprint and the configured effective device memory
+        budget. Cloud remains a feasible fallback regardless of the edge
+        memory budget ratio.
 
         Returns:
             `static_allowed`: boolean tensor of shape `[Ms, Np]`, where
@@ -116,6 +152,7 @@ class HedgerDeploymentPPO(nn.Module):
             deployable on device `n`.
         """
         cap = phys_feats["mem_capacity"].float()  # [Np]
+        cap = self._scale_edge_memory_budget(cap)
         model_mem = logic_feats["model_mem"].float()  # [Ms]
         Ms = model_mem.size(0)
         Np = cap.size(0)
@@ -124,8 +161,9 @@ class HedgerDeploymentPPO(nn.Module):
         static_allowed = model_mem.view(Ms, 1) <= cap.view(1, Np)
 
         # Always keep the cloud as a feasible fallback.
-        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
-        static_allowed[:, cloud_idx] = True
+        cloud_idx = self._cloud_index(Np)
+        if cloud_idx >= 0:
+            static_allowed[:, cloud_idx] = True
 
         return static_allowed
 
@@ -170,12 +208,16 @@ class HedgerDeploymentPPO(nn.Module):
 
               `baseline = max(total_used - prev_usage, 0)`  # memory used by non-RL workloads
               `residual_0 = max(cap - baseline, 0)`  # budget for the new deployment
+
+            The configured edge memory budget ratio is applied after residual
+            memory is computed, so projection only spends a guarded fraction of
+            currently available edge memory.
         """
         cap = phys_feats["mem_capacity"].float()  # [Np] GB
 
         if logic_feats is None or prev_deploy_mask is None:
             util = phys_feats["mem_util_seq"][:, -1].float()  # Current total memory utilization.
-            return cap * (1.0 - util)
+            return self._scale_edge_memory_budget(cap * (1.0 - util))
 
         util = phys_feats["mem_util_seq"][:, -1].float()  # [Np]
         total_used = cap * util  # [Np], current total memory usage.
@@ -188,7 +230,7 @@ class HedgerDeploymentPPO(nn.Module):
 
         # Budget available to the new deployment round.
         residual = torch.clamp(cap - baseline, min=0.0)  # [Np]
-        return residual
+        return self._scale_edge_memory_budget(residual)
 
     def _adapt_embeddings(self, h_s: torch.Tensor, h_p: torch.Tensor):
         """Apply task-specific residual adapters to the shared encoder outputs."""
@@ -264,7 +306,8 @@ class HedgerDeploymentPPO(nn.Module):
         corrected = self._enforce_cloud_replica(raw_deploy_mask.bool())
         residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)
         model_mem = logic_feats["model_mem"].float()
-        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (corrected.size(1) - 1)
+        cloud_idx = self._cloud_index(corrected.size(1))
+        max_edge_replicas = self._max_edge_replicas_per_device()
         capacity_relax_cnt = 0
         capacity_relax_cost = 0.0
         num_services = max(1, int(model_mem.numel()))
@@ -283,7 +326,9 @@ class HedgerDeploymentPPO(nn.Module):
                 continue
 
             total_selected_mem = sum(float(model_mem[service_idx].item()) for service_idx in selected)
-            if total_selected_mem <= float(residual[device_idx].item()) + 1e-6:
+            within_memory = total_selected_mem <= float(residual[device_idx].item()) + 1e-6
+            within_count = max_edge_replicas is None or len(selected) <= max_edge_replicas
+            if within_memory and within_count:
                 continue
 
             keep = self._select_device_subset(
@@ -292,6 +337,7 @@ class HedgerDeploymentPPO(nn.Module):
                 model_mem=model_mem,
                 raw_probs=raw_probs[:, device_idx],
                 prev_selected=prev_edge_mask[:, device_idx],
+                max_count=max_edge_replicas,
             )
 
             for service_idx in selected:
@@ -326,15 +372,19 @@ class HedgerDeploymentPPO(nn.Module):
             model_mem: torch.Tensor,
             raw_probs: torch.Tensor,
             prev_selected: torch.Tensor,
+            max_count: Optional[int] = None,
     ) -> set:
         """
         Select which sampled replicas to keep on one edge device.
 
         The objective is to preserve as much actor preference as possible under
-        the memory budget. For current Hedger workloads, service counts are
-        small, so exact search is practical and removes most projection bias.
+        the memory and replica-count budgets. For current Hedger workloads,
+        service counts are small, so exact search is practical and removes most
+        projection bias.
         """
         if capacity <= 1e-6 or not selected:
+            return set()
+        if max_count is not None and max_count <= 0:
             return set()
 
         candidates = []
@@ -384,6 +434,9 @@ class HedgerDeploymentPPO(nn.Module):
                     if not (mask_bits & (1 << bit_idx)):
                         continue
                     used_mem += mem
+                    if max_count is not None and len(keep_ids) + 1 > max_count:
+                        feasible = False
+                        break
                     if used_mem > capacity + 1e-6:
                         feasible = False
                         break
@@ -407,6 +460,8 @@ class HedgerDeploymentPPO(nn.Module):
             reverse=True,
         )
         for service_idx, score, mem, was_selected in ranked:
+            if max_count is not None and len(keep) >= max_count:
+                break
             if mem <= remaining + 1e-6:
                 keep.add(service_idx)
                 remaining -= mem
@@ -421,7 +476,7 @@ class HedgerDeploymentPPO(nn.Module):
         Ms, Np = h_s.size(0), h_p.size(0)
         if topo_order is None: topo_order = self.topo_order(logic_edge_index, Ms)
 
-        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
+        cloud_idx = self._cloud_index(Np)
 
         # Static feasibility mask.
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
@@ -500,7 +555,7 @@ class HedgerDeploymentPPO(nn.Module):
             topo_order = self.topo_order(logic_edge_index, Ms)
 
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
-        cloud_idx = self.cloud_idx if self.cloud_idx >= 0 else (Np - 1)
+        cloud_idx = self._cloud_index(Np)
         deploy_mask = self._enforce_cloud_replica(deploy_mask.bool())
         eps = 1e-6
 

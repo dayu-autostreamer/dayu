@@ -545,6 +545,17 @@ class Hedger:
         deployment = self._require_mapping(agents_cfg, "deployment")
         reward = self._require_mapping(deployment, "reward")
         penalty = self._require_mapping(deployment, "penalty")
+        constraints = deployment.get("constraints") or {}
+        if not isinstance(constraints, dict):
+            raise ValueError("Hedger config `agents.deployment.constraints` must be a mapping when provided.")
+        max_edge_replicas = constraints.get("max_edge_replicas_per_device")
+        if max_edge_replicas is not None:
+            max_edge_replicas = int(max_edge_replicas)
+            if max_edge_replicas <= 0:
+                max_edge_replicas = None
+        edge_memory_budget_ratio = float(constraints.get("edge_memory_budget_ratio", 1.0))
+        if not math.isfinite(edge_memory_budget_ratio) or not (0.0 < edge_memory_budget_ratio <= 1.0):
+            raise ValueError("Hedger config `agents.deployment.constraints.edge_memory_budget_ratio` must be in (0, 1].")
         ppo = self._build_ppo_update_cfg(deployment)
         return {
             "actor_lr": float(deployment["actor_lr"]),
@@ -556,6 +567,8 @@ class Hedger:
             "reward_dep_offload_weight": float(reward["offloading_weight"]),
             "reward_dep_change_weight": float(reward["change_cost_weight"]),
             "penalty_capacity_relax": float(penalty["capacity_relax"]),
+            "max_edge_replicas_per_device": max_edge_replicas,
+            "edge_memory_budget_ratio": edge_memory_budget_ratio,
             "ppo": ppo,
         }
 
@@ -1198,6 +1211,7 @@ class Hedger:
         latency_guard_cfg = getattr(self, "latency_guard_cfg", None)
         dep_seq_len = getattr(state_cfg, "deployment_seq_len", "na")
         off_seq_len = getattr(state_cfg, "offloading_seq_len", "na")
+        dep_params = getattr(self, "deployment_agent_params", {}) or {}
         return (
             f"mode={getattr(self, 'mode', 'unknown')}, train_stage={stage_name}, "
             f"device={getattr(self, 'device', 'unknown')}, seed={getattr(self, 'seed', 'na')}, "
@@ -1212,6 +1226,8 @@ class Hedger:
             f"state_seq(dep/off)={dep_seq_len}/{off_seq_len}, "
             f"total_steps={getattr(training_cfg, 'total_updates', 'na')}, "
             f"save_interval={getattr(checkpoint_save_cfg, 'interval_updates', 'na')}, "
+            f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
+            f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -2557,7 +2573,8 @@ class Hedger:
                         "raw_edge_replicas", "edge_replicas", "cloud_replicas", "cloud_only",
                         "transition_buffer", "raw_deployment_plan", "deployment_plan",
                         *self._state_record_fieldnames(),
-                        "dep_offload_weight", "dep_change_weight", "cap_relax_weight"],
+                        "dep_offload_weight", "dep_change_weight", "cap_relax_weight",
+                        "max_edge_replicas_per_device", "edge_memory_budget_ratio"],
             overwrite=True,
             flush_every=1,
         )
@@ -2740,6 +2757,8 @@ class Hedger:
                     dep_offload_weight=self.deployment_agent_params["reward_dep_offload_weight"],
                     dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
+                    max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
+                    edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                 )
                 self._log_deployment_decisions(
                     step=step,
