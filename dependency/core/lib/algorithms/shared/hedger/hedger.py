@@ -601,6 +601,8 @@ class Hedger:
             "update_encoder": bool(deployment.get("update_encoder", True)),
             "reward_dep_offload_weight": float(reward["offloading_weight"]),
             "reward_dep_change_weight": float(reward["change_cost_weight"]),
+            "reward_dep_cloud_only_weight": float(reward.get("cloud_only_weight", 0.0)),
+            "reward_dep_empty_device_weight": float(reward.get("empty_device_weight", 0.0)),
             "penalty_capacity_relax": float(penalty["capacity_relax"]),
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
@@ -1265,6 +1267,8 @@ class Hedger:
             f"deployment_default_warmup={getattr(default_warmup_cfg, 'enabled', False)}, "
             f"deployment_default_warmup_intervals={getattr(default_warmup_cfg, 'min_intervals', 'na')}, "
             f"deployment_default_warmup_feedback={getattr(default_warmup_cfg, 'min_feedback_samples', 'na')}, "
+            f"dep_cloud_only_weight={dep_params.get('reward_dep_cloud_only_weight', 'na')}, "
+            f"dep_empty_device_weight={dep_params.get('reward_dep_empty_device_weight', 'na')}, "
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
@@ -2756,10 +2760,13 @@ class Hedger:
                         "e2e_latency_p99", "e2e_slo_violation",
                         "cap_relax_cnt", "cap_relax_cost",
                         "policy_logp", "policy_entropy", "value_estimate", "next_value",
-                        "raw_edge_replicas", "edge_replicas", "cloud_replicas", "cloud_only",
+                        "raw_edge_replicas", "edge_replicas", "cloud_replicas",
+                        "cloud_only", "cloud_only_ratio",
+                        "empty_edge_devices", "empty_edge_device_ratio",
                         "transition_buffer", "raw_deployment_plan", "deployment_plan",
                         *self._state_record_fieldnames(),
-                        "dep_offload_weight", "dep_change_weight", "cap_relax_weight",
+                        "dep_offload_weight", "dep_change_weight", "dep_cloud_only_weight",
+                        "dep_empty_device_weight", "cap_relax_weight",
                         "max_edge_replicas_per_device", "edge_memory_budget_ratio",
                         "deployment_default_warmup_enabled",
                         "deployment_default_warmup_min_intervals",
@@ -2866,6 +2873,29 @@ class Hedger:
                         )
                     )
 
+                cloud_idx = self.physical_topology.cloud_idx
+                raw_deploy_mask = aux["raw_deploy_mask"].detach().cpu().bool()
+                exec_deploy_mask = deploy_mask.detach().cpu().bool()
+                raw_deploy_plan = self._map_deployment_mask_to_deployment_plan(raw_deploy_mask)
+                raw_edge_replicas = int(raw_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+                edge_replicas = int(exec_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+                cloud_replicas = int(exec_deploy_mask[:, cloud_idx].sum().item())
+                cloud_only = int((~exec_deploy_mask[:, :cloud_idx].any(dim=1)).sum().item()) if cloud_idx > 0 else \
+                    int(exec_deploy_mask.size(0))
+                cloud_only_ratio = float(cloud_only) / float(max(1, int(exec_deploy_mask.size(0))))
+                edge_device_count = max(0, int(cloud_idx))
+                if edge_device_count > 0:
+                    used_edge_devices = exec_deploy_mask[:, :cloud_idx].any(dim=0)
+                    empty_edge_devices = int((~used_edge_devices).sum().item())
+                    empty_edge_device_ratio = float(empty_edge_devices) / float(edge_device_count)
+                else:
+                    empty_edge_devices = 0
+                    empty_edge_device_ratio = 0.0
+                aux["cloud_only_count"] = cloud_only
+                aux["cloud_only_ratio"] = cloud_only_ratio
+                aux["empty_edge_device_count"] = empty_edge_devices
+                aux["empty_edge_device_ratio"] = empty_edge_device_ratio
+
                 # Compute the reward from environment metrics and policy-side auxiliaries.
                 reward = self._compute_deployment_reward(metrics, aux)
                 if self.is_latency_guard_active():
@@ -2908,16 +2938,6 @@ class Hedger:
                 phys_feats = new_phys_feats
                 prev_deploy_mask = deploy_mask.detach().cpu()
 
-                cloud_idx = self.physical_topology.cloud_idx
-                raw_deploy_mask = aux["raw_deploy_mask"].detach().cpu().bool()
-                exec_deploy_mask = deploy_mask.detach().cpu().bool()
-                raw_deploy_plan = self._map_deployment_mask_to_deployment_plan(raw_deploy_mask)
-                raw_edge_replicas = int(raw_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
-                edge_replicas = int(exec_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
-                cloud_replicas = int(exec_deploy_mask[:, cloud_idx].sum().item())
-                cloud_only = int((~exec_deploy_mask[:, :cloud_idx].any(dim=1)).sum().item()) if cloud_idx > 0 else \
-                    int(exec_deploy_mask.size(0))
-
                 self.dep_recorder.log(
                     step=step,
                     epoch=self._epoch,
@@ -2946,12 +2966,17 @@ class Hedger:
                     edge_replicas=edge_replicas,
                     cloud_replicas=cloud_replicas,
                     cloud_only=cloud_only,
+                    cloud_only_ratio=cloud_only_ratio,
+                    empty_edge_devices=empty_edge_devices,
+                    empty_edge_device_ratio=empty_edge_device_ratio,
                     transition_buffer=transition_count,
                     raw_deployment_plan=self._json_for_record(raw_deploy_plan),
                     deployment_plan=self._json_for_record(self.deployment_plan),
                     **state_record,
                     dep_offload_weight=self.deployment_agent_params["reward_dep_offload_weight"],
                     dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
+                    dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
+                    dep_empty_device_weight=self.deployment_agent_params["reward_dep_empty_device_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
@@ -3344,6 +3369,8 @@ class Hedger:
         The reward combines:
             - aggregated feedback from offloading (`avg_offloading_reward`)
             - deployment change cost
+            - cloud-only service ratio
+            - empty edge-device ratio
             - capacity-projection penalty
         """
         metrics = metrics or {}
@@ -3353,12 +3380,26 @@ class Hedger:
 
         w_change = float(self.deployment_agent_params["reward_dep_change_weight"])
         w_off = float(self.deployment_agent_params["reward_dep_offload_weight"])
+        w_cloud_only = float(self.deployment_agent_params.get("reward_dep_cloud_only_weight", 0.0))
+        w_empty_device = float(self.deployment_agent_params.get("reward_dep_empty_device_weight", 0.0))
 
         reward = 0.0
         reward -= w_change * deploy_change_cost
 
         # Treat the lower-level offloading reward as bottom-up feedback.
         reward += w_off * avg_off_r
+
+        # Discourage deployments that leave services with only the cloud fallback.
+        # Use a ratio rather than a raw count so the reward scale remains stable
+        # across DAGs with different service counts.
+        cloud_only_ratio = float(aux.get("cloud_only_ratio", 0.0))
+        reward -= w_cloud_only * cloud_only_ratio
+
+        # Keep the deployment spread from leaving edge nodes completely unused.
+        # This remains a soft shaping term; feasibility and latency feedback are
+        # still governed by projection penalties and downstream offloading reward.
+        empty_device_ratio = float(aux.get("empty_edge_device_ratio", 0.0))
+        reward -= w_empty_device * empty_device_ratio
 
         # Penalize projection severity rather than just projection count.
         # `capacity_relax_cnt` is still logged for diagnostics, but the reward

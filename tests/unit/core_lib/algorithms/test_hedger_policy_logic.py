@@ -331,6 +331,8 @@ def test_deployment_reward_uses_relax_cost_not_relax_count():
     hedger.deployment_agent_params = {
         "reward_dep_change_weight": 0.1,
         "reward_dep_offload_weight": 1.0,
+        "reward_dep_cloud_only_weight": 0.75,
+        "reward_dep_empty_device_weight": 0.3,
         "penalty_capacity_relax": 2.0,
     }
 
@@ -342,10 +344,12 @@ def test_deployment_reward_uses_relax_cost_not_relax_count():
         aux={
             "capacity_relax_cnt": 5,
             "capacity_relax_cost": 0.25,
+            "cloud_only_ratio": 0.4,
+            "empty_edge_device_ratio": 0.25,
         },
     )
 
-    assert reward == pytest.approx(1.5 - 0.1 * 2.0 - 2.0 * 0.25)
+    assert reward == pytest.approx(1.5 - 0.1 * 2.0 - 0.75 * 0.4 - 0.3 * 0.25 - 2.0 * 0.25)
 
 
 @pytest.mark.unit
