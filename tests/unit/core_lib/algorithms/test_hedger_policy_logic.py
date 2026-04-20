@@ -13,6 +13,7 @@ from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingStageCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointSaveCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerDeploymentDefaultWarmupCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerLatencyGuardCfg
 from core.lib.algorithms.schedule_agent.hedger_agent import HedgerAgent
 from core.lib.algorithms.shared.hedger.hedger_config import (
@@ -75,6 +76,7 @@ def build_training_cfg(stage: str, total_updates: int = 20) -> HedgerTrainingCfg
         offloading_rollout_len=32,
         deployment_batch_size=4,
         offloading_batch_size=16,
+        deployment_default_warmup=HedgerDeploymentDefaultWarmupCfg(),
     )
 
 
@@ -645,6 +647,37 @@ def test_hedger_build_edge_index_handles_empty_graph():
 
     assert edge_index.shape == (2, 0)
     assert edge_index.dtype == torch.long
+
+
+@pytest.mark.unit
+def test_build_training_cfg_parses_deployment_default_warmup():
+    hedger = Hedger.__new__(Hedger)
+    hedger.state_cfg = types.SimpleNamespace(deployment_reward_min_samples=9)
+
+    cfg = hedger._build_training_cfg({
+        "training": {
+            "stage": "deployment_adaptation",
+            "total_updates": 12,
+            "ppo_epochs": 2,
+            "rollout": {"deployment": 6, "offloading": 64},
+            "batch_size": {"deployment": 3, "offloading": 32},
+            "deployment_default_warmup": {
+                "enabled": True,
+                "min_intervals": 2,
+                "min_feedback_samples": 80,
+                "timeout_s": 240.0,
+                "clear_feedback_window": True,
+            },
+        },
+    })
+
+    assert cfg.deployment_default_warmup == HedgerDeploymentDefaultWarmupCfg(
+        enabled=True,
+        min_intervals=2,
+        min_feedback_samples=80,
+        timeout_s=240.0,
+        clear_feedback_window=True,
+    )
 
 
 @pytest.mark.unit

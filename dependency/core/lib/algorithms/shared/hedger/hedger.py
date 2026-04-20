@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 import threading
 import random
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import torch
 import time
 import os
@@ -48,6 +48,15 @@ class HedgerEncoderCfg:
 
 
 @dataclass(frozen=True)
+class HedgerDeploymentDefaultWarmupCfg:
+    enabled: bool = False
+    min_intervals: int = 0
+    min_feedback_samples: int = 0
+    timeout_s: Optional[float] = None
+    clear_feedback_window: bool = True
+
+
+@dataclass(frozen=True)
 class HedgerTrainingCfg:
     stage: str
     total_updates: int
@@ -56,6 +65,9 @@ class HedgerTrainingCfg:
     offloading_rollout_len: int
     deployment_batch_size: int
     offloading_batch_size: int
+    deployment_default_warmup: HedgerDeploymentDefaultWarmupCfg = field(
+        default_factory=HedgerDeploymentDefaultWarmupCfg
+    )
 
 
 @dataclass(frozen=True)
@@ -300,6 +312,28 @@ class Hedger:
                 "Hedger training stage must be one of: "
                 "'offloading_warmup', 'deployment_adaptation', 'joint_finetune'."
             )
+        default_warmup = training.get("deployment_default_warmup") or {}
+        if not isinstance(default_warmup, dict):
+            raise ValueError("Hedger config `training.deployment_default_warmup` must be a mapping when provided.")
+        default_warmup_enabled = bool(default_warmup.get("enabled", False))
+        if default_warmup_enabled:
+            default_min_intervals = 2
+            default_min_feedback = self.state_cfg.deployment_reward_min_samples
+        else:
+            default_min_intervals = 0
+            default_min_feedback = 0
+        default_warmup_timeout = default_warmup.get("timeout_s")
+        default_warmup_timeout = (
+            None if default_warmup_timeout is None else max(0.0, float(default_warmup_timeout))
+        )
+        deployment_default_warmup = HedgerDeploymentDefaultWarmupCfg(
+            enabled=default_warmup_enabled,
+            min_intervals=max(0, int(default_warmup.get("min_intervals", default_min_intervals))),
+            min_feedback_samples=max(0, int(default_warmup.get("min_feedback_samples", default_min_feedback))),
+            timeout_s=default_warmup_timeout,
+            clear_feedback_window=bool(default_warmup.get("clear_feedback_window", True)),
+        )
+
         return HedgerTrainingCfg(
             stage=stage,
             total_updates=max(0, int(training["total_updates"])),
@@ -308,6 +342,7 @@ class Hedger:
             offloading_rollout_len=max(1, int(rollout["offloading"])),
             deployment_batch_size=max(1, int(batch_size["deployment"])),
             offloading_batch_size=max(1, int(batch_size["offloading"])),
+            deployment_default_warmup=deployment_default_warmup,
         )
 
     def _build_state_cfg(self, config: dict) -> HedgerStateCfg:
@@ -1212,6 +1247,7 @@ class Hedger:
         dep_seq_len = getattr(state_cfg, "deployment_seq_len", "na")
         off_seq_len = getattr(state_cfg, "offloading_seq_len", "na")
         dep_params = getattr(self, "deployment_agent_params", {}) or {}
+        default_warmup_cfg = getattr(training_cfg, "deployment_default_warmup", None)
         return (
             f"mode={getattr(self, 'mode', 'unknown')}, train_stage={stage_name}, "
             f"device={getattr(self, 'device', 'unknown')}, seed={getattr(self, 'seed', 'na')}, "
@@ -1226,6 +1262,9 @@ class Hedger:
             f"state_seq(dep/off)={dep_seq_len}/{off_seq_len}, "
             f"total_steps={getattr(training_cfg, 'total_updates', 'na')}, "
             f"save_interval={getattr(checkpoint_save_cfg, 'interval_updates', 'na')}, "
+            f"deployment_default_warmup={getattr(default_warmup_cfg, 'enabled', False)}, "
+            f"deployment_default_warmup_intervals={getattr(default_warmup_cfg, 'min_intervals', 'na')}, "
+            f"deployment_default_warmup_feedback={getattr(default_warmup_cfg, 'min_feedback_samples', 'na')}, "
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
@@ -2116,6 +2155,153 @@ class Hedger:
 
         return False
 
+    def _run_deployment_default_warmup(self) -> None:
+        """
+        Keep serving the template deployment for a short burn-in window.
+
+        This phase fills the state buffer and establishes baseline offloading
+        feedback before the deployment actor is allowed to publish learned
+        redeployment actions. No deployment PPO transition is recorded here,
+        because the environment is executing the default template rather than
+        an action sampled from the deployment policy.
+        """
+        if self.training_cfg is None:
+            return
+        cfg = self.training_cfg.deployment_default_warmup
+        if not cfg.enabled:
+            return
+        if cfg.min_intervals <= 0 and cfg.min_feedback_samples <= 0:
+            LOGGER.info(
+                "[Hedger][Train][DeploymentWarmup] Default-deployment warmup is enabled "
+                "but both min_intervals and min_feedback_samples are zero; skip."
+            )
+            return
+        if self.state_buffer is None:
+            LOGGER.warning(
+                "[Hedger][Train][DeploymentWarmup] State buffer is not registered; "
+                "skip default-deployment warmup."
+            )
+            return
+
+        with self._data_lock:
+            self.pending_deployment_plan = None
+            self.pending_deploy_mask = None
+            if self.initial_deployment_plan is not None:
+                self.deployment_plan = copy.deepcopy(self.initial_deployment_plan)
+                self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(
+                    self.initial_deployment_plan
+                ).detach().cpu()
+            elif self.deployment_plan is not None:
+                self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(
+                    self.deployment_plan
+                ).detach().cpu()
+
+        active_version = self.get_active_deployment_version()
+        if cfg.clear_feedback_window:
+            self.state_buffer.clear_offloading_rewards(deployment_version=active_version)
+
+        LOGGER.info(
+            f"[Hedger][Train][DeploymentWarmup] Start default-deployment warmup: "
+            f"deployment_version={active_version}, "
+            f"min_intervals={cfg.min_intervals}, "
+            f"min_feedback_samples={cfg.min_feedback_samples}, "
+            f"timeout_s={self._format_log_value(cfg.timeout_s, 2)}, "
+            f"{self._summarize_deployment_plan(self.deployment_plan)}"
+        )
+
+        start_t = time.monotonic()
+        last_log_t = 0.0
+        reward_count = 0
+        completed_intervals = 0
+
+        while not self.deployment_thread_stop_event.is_set():
+            if self._sleep_while_latency_guard_active("deployment default warmup"):
+                active_version = self.get_active_deployment_version()
+                if cfg.clear_feedback_window:
+                    self.state_buffer.clear_offloading_rewards(deployment_version=active_version)
+                start_t = time.monotonic()
+                last_log_t = 0.0
+                reward_count = 0
+                completed_intervals = 0
+                LOGGER.info(
+                    "[Hedger][Train][DeploymentWarmup] Restart default-deployment warmup "
+                    "after latency guard recovery."
+                )
+                continue
+
+            now = time.monotonic()
+            elapsed = max(0.0, now - start_t)
+            completed_intervals = int(elapsed // max(self.deployment_interval, 1e-6))
+
+            interval_ready = completed_intervals >= cfg.min_intervals
+            feedback_ready = reward_count >= cfg.min_feedback_samples
+            if interval_ready and feedback_ready:
+                break
+
+            if cfg.timeout_s is not None and elapsed >= cfg.timeout_s:
+                LOGGER.warning(
+                    f"[Hedger][Train][DeploymentWarmup] Timeout before all warmup targets were met: "
+                    f"elapsed={self._format_log_value(elapsed, 2)}s, "
+                    f"intervals={completed_intervals}/{cfg.min_intervals}, "
+                    f"feedback={reward_count}/{cfg.min_feedback_samples}. "
+                    f"Proceed with learned deployment decisions."
+                )
+                break
+
+            wait_timeout = 1.0
+            if cfg.timeout_s is not None:
+                wait_timeout = min(wait_timeout, max(0.0, cfg.timeout_s - elapsed))
+
+            if not feedback_ready and cfg.min_feedback_samples > 0:
+                reward_count = self.state_buffer.wait_for_offloading_rewards(
+                    cfg.min_feedback_samples,
+                    timeout_s=wait_timeout,
+                    deployment_version=active_version,
+                )
+            else:
+                reward_count = self.state_buffer.wait_for_offloading_rewards(
+                    0,
+                    timeout_s=0.0,
+                    deployment_version=active_version,
+                )
+                sleep_s = wait_timeout
+                if cfg.min_intervals > 0:
+                    target_elapsed = float(cfg.min_intervals) * float(self.deployment_interval)
+                    sleep_s = min(sleep_s, max(0.0, target_elapsed - elapsed))
+                if sleep_s > 0.0:
+                    time.sleep(min(1.0, sleep_s))
+
+            now = time.monotonic()
+            if now - last_log_t >= 10.0:
+                last_log_t = now
+                elapsed = max(0.0, now - start_t)
+                completed_intervals = int(elapsed // max(self.deployment_interval, 1e-6))
+                LOGGER.info(
+                    f"[Hedger][Train][DeploymentWarmup] Waiting on default deployment: "
+                    f"elapsed={self._format_log_value(elapsed, 2)}s, "
+                    f"intervals={completed_intervals}/{cfg.min_intervals}, "
+                    f"feedback={reward_count}/{cfg.min_feedback_samples}, "
+                    f"deployment_version={active_version}"
+                )
+
+        if self.deployment_thread_stop_event.is_set():
+            return
+
+        elapsed = max(0.0, time.monotonic() - start_t)
+        completed_intervals = int(elapsed // max(self.deployment_interval, 1e-6))
+        reward_count = self.state_buffer.wait_for_offloading_rewards(
+            0,
+            timeout_s=0.0,
+            deployment_version=active_version,
+        )
+        LOGGER.info(
+            f"[Hedger][Train][DeploymentWarmup] Complete default-deployment warmup: "
+            f"elapsed={self._format_log_value(elapsed, 2)}s, "
+            f"intervals={completed_intervals}/{cfg.min_intervals}, "
+            f"feedback={reward_count}/{cfg.min_feedback_samples}. "
+            f"Learned deployment decisions are now enabled."
+        )
+
     def _collect_offloading_state(
             self,
             since_task_version: Optional[int] = None,
@@ -2574,7 +2760,10 @@ class Hedger:
                         "transition_buffer", "raw_deployment_plan", "deployment_plan",
                         *self._state_record_fieldnames(),
                         "dep_offload_weight", "dep_change_weight", "cap_relax_weight",
-                        "max_edge_replicas_per_device", "edge_memory_budget_ratio"],
+                        "max_edge_replicas_per_device", "edge_memory_budget_ratio",
+                        "deployment_default_warmup_enabled",
+                        "deployment_default_warmup_min_intervals",
+                        "deployment_default_warmup_min_feedback_samples"],
             overwrite=True,
             flush_every=1,
         )
@@ -2589,6 +2778,13 @@ class Hedger:
         # Static graph edge indices can be reused across iterations.
         logic_edge_index = self._build_edge_index(self.logical_topology.links)
         phys_edge_index = self._build_edge_index(self.physical_topology.links)
+
+        self._run_deployment_default_warmup()
+        if self.deployment_thread_stop_event.is_set():
+            self.dep_recorder.close()
+            self.dep_decision_recorder.close()
+            LOGGER.info("[Hedger][Train][Deployment] Worker stopped during default-deployment warmup.")
+            return
 
         step = 0
 
@@ -2759,6 +2955,11 @@ class Hedger:
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
+                    deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
+                    deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
+                    deployment_default_warmup_min_feedback_samples=(
+                        self.training_cfg.deployment_default_warmup.min_feedback_samples
+                    ),
                 )
                 self._log_deployment_decisions(
                     step=step,
