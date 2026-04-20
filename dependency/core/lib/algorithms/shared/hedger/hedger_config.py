@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from dataclasses import dataclass, fields, replace
 
 from core.lib.network import NodeInfo
@@ -22,6 +22,12 @@ class OffloadingConstraintCfg:
 @dataclass
 class DeploymentConstraintCfg:
     penalty_capacity_relax: float = 1.0  # Penalty coefficient for deployment capacity corrections
+    # Uniform cap for the number of edge replicas placed on one edge node.
+    # None disables the cap. This is intentionally not per-service or per-node.
+    max_edge_replicas_per_device: Optional[int] = None
+    # Fraction of computed available edge memory used as deployment budget.
+    # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
+    edge_memory_budget_ratio: float = 1.0
 
 
 class PhysicalTopology:
