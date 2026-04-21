@@ -101,7 +101,6 @@ class BackendCore:
         self.uninstall_lock = False
         redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=20, direct=False)
         self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
-        self._last_processor_redeployment_t = 0.0
         self._last_processor_redeploy_applied = False
 
         self.default_visualization_image = 'default_visualization.png'
@@ -242,22 +241,16 @@ class BackendCore:
             LOGGER.debug('[Redeployment] No processor changes detected, skip redeployment.')
             return True, ''
 
-        now = time.monotonic()
-        elapsed = (
-            float("inf")
-            if self._last_processor_redeployment_t <= 0.0
-            else now - self._last_processor_redeployment_t
-        )
-        if elapsed < self.processor_redeployment_interval_s:
-            LOGGER.info(
-                f"[Redeployment] Skip processor redeployment due to interval guard: "
-                f"elapsed={elapsed:.2f}s, min_interval={self.processor_redeployment_interval_s:.2f}s, "
-                f"changes={change_count}"
-            )
-            return True, ''
-
         try:
             res, msg = self.operate_processors(docs_to_update, docs_to_add, docs_to_delete)
+        except timeout_exceptions.FunctionTimedOut as e:
+            msg = (
+                "processor redeployment timeout; "
+                f"add={add_names}, update={update_names}, delete={delete_names}"
+            )
+            LOGGER.warning(f"Redeploy processors failed: {msg}")
+            LOGGER.exception(e)
+            return False, msg
         except Exception as e:
             LOGGER.warning(f'Redeploy processors failed: {str(e)}')
             LOGGER.exception(e)
@@ -266,7 +259,6 @@ class BackendCore:
         if not res:
             return False, msg
 
-        self._last_processor_redeployment_t = time.monotonic()
         self._last_processor_redeploy_applied = True
         return True, ''
 
@@ -815,46 +807,71 @@ class BackendCore:
                 LOGGER.warning(f'Unexpected error occurred in getting task result: {str(e)}')
                 LOGGER.exception(e)
 
+    def _sleep_until_next_redeployment_cycle(self, cycle_started_t):
+        interval_s = max(0.0, float(self.processor_redeployment_interval_s))
+        if interval_s <= 0.0:
+            return
+
+        elapsed_s = max(0.0, time.monotonic() - cycle_started_t)
+        sleep_s = max(0.0, interval_s - elapsed_s)
+        if sleep_s > 0.0:
+            time.sleep(sleep_s)
+
     def run_cycle_deploy(self):
         time.sleep(5)
         while self.is_cycle_deploy:
+            cycle_started_t = time.monotonic()
             try:
-                time.sleep(1)
                 if not self.yaml_dict or not self.source_deploy:
                     LOGGER.debug('[Redeployment] Configuration is lacked, cancel redeployment request..')
-                    time.sleep(5)
-                    continue
-                if not self.check_pods_running_state():
+                elif not self.check_pods_running_state():
                     LOGGER.debug('[Redeployment] Pods is in error state, cancel redeployment request..')
-                    time.sleep(5)
-                    continue
+                else:
+                    redeploy_docs_list = self.template_helper.finetune_yaml_parameters(
+                        copy.deepcopy(self.yaml_dict),
+                        copy.deepcopy(self.source_deploy),
+                        scopes=['processor'],
+                        current_docs=self.read_component_yaml(),
+                    )
 
-                redeploy_docs_list = self.template_helper.finetune_yaml_parameters(
-                    copy.deepcopy(self.yaml_dict),
-                    copy.deepcopy(self.source_deploy),
-                    scopes=['processor'],
-                    current_docs=self.read_component_yaml(),
-                )
+                    self.uninstall_lock = True
+                    try:
+                        self._last_processor_redeploy_applied = None
+                        res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
 
-                self.uninstall_lock = True
-                try:
-                    self._last_processor_redeploy_applied = None
-                    res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
-
-                    if res:
-                        if self._last_processor_redeploy_applied is not False:
-                            self.update_component_yaml(redeploy_docs_list)
-                            LOGGER.info('[Redeployment] Redeployment succeeded.')
+                        if res:
+                            if self._last_processor_redeploy_applied is not False:
+                                self.update_component_yaml(redeploy_docs_list)
+                                LOGGER.info('[Redeployment] Redeployment succeeded.')
+                            else:
+                                LOGGER.debug('[Redeployment] Redeployment skipped; no processor changes were applied.')
                         else:
-                            LOGGER.debug('[Redeployment] Redeployment skipped; no processor changes were applied.')
-                    else:
-                        LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
-                finally:
-                    self.uninstall_lock = False
+                            LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
+                    finally:
+                        self.uninstall_lock = False
 
+            except timeout_exceptions.FunctionTimedOut as e:
+                self.uninstall_lock = False
+                LOGGER.warning(
+                    '[Redeployment] Timeout escaped redeployment cycle; keep redeployment thread alive.'
+                )
+                LOGGER.exception(e)
             except Exception as e:
+                self.uninstall_lock = False
                 LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {str(e)}')
                 LOGGER.exception(e)
+            except BaseException as e:
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
+                self.uninstall_lock = False
+                LOGGER.warning(
+                    f'[Redeployment] Non-standard error occurred in redeployment: {str(e)}; '
+                    'keep redeployment thread alive.'
+                )
+                LOGGER.exception(e)
+
+            if self.is_cycle_deploy:
+                self._sleep_until_next_redeployment_cycle(cycle_started_t)
 
     @staticmethod
     def _count_jsonl_records(file_path):
