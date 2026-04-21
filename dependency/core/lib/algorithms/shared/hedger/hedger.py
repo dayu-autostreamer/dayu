@@ -1,6 +1,6 @@
 import copy
 from collections import deque
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import threading
 import random
 import math
@@ -102,6 +102,15 @@ class HedgerLatencyGuardCfg:
     task_feedback_quarantine_enabled: bool = True
     task_feedback_quarantine_s: float = 5.0
     clear_latency_window_on_recovery: bool = True
+
+
+@dataclass(frozen=True)
+class HedgerDeploymentFeedbackWaitResult:
+    ok: bool
+    count: int = 0
+    guard_interrupted: bool = False
+    guard_event_seq: int = 0
+    guard_stats: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -251,6 +260,10 @@ class Hedger:
         self._latency_guard_queue_flush_command = None
         self._latency_guard_last_log_t = 0.0
         self._latency_guard_last_stats = self._empty_latency_guard_stats()
+        self._latency_guard_trigger_seq = 0
+        self._latency_guard_trigger_deployment_version = None
+        self._latency_guard_trigger_task_version = None
+        self._latency_guard_trigger_stats = {}
 
         if self.mode == "inference":
             self.ensure_started("inference initialization")
@@ -610,6 +623,7 @@ class Hedger:
             "reward_dep_empty_device_weight": float(reward.get("empty_device_weight", 0.0)),
             "penalty_capacity_relax": float(penalty["capacity_relax"]),
             "penalty_edge_cover_repair": float(penalty.get("edge_cover_repair", 0.0)),
+            "penalty_latency_guard_trigger": float(penalty.get("latency_guard_trigger", 0.0)),
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
             "min_edge_replicas_per_service": min_edge_replicas,
@@ -749,6 +763,43 @@ class Hedger:
             return self._empty_latency_guard_stats()
         with self._latency_guard_lock:
             return copy.deepcopy(self._latency_guard_last_stats)
+
+    def _record_latency_guard_trigger_event_locked(self, task_version: Optional[int],
+                                                   deployment_version: Optional[int],
+                                                   stats: Dict[str, Any]) -> None:
+        self._latency_guard_trigger_seq = int(getattr(self, "_latency_guard_trigger_seq", 0)) + 1
+        self._latency_guard_trigger_task_version = (
+            int(task_version) if task_version is not None else None
+        )
+        self._latency_guard_trigger_deployment_version = (
+            int(deployment_version) if deployment_version is not None else None
+        )
+        event_stats = copy.deepcopy(stats)
+        event_stats["trigger_seq"] = int(self._latency_guard_trigger_seq)
+        event_stats["trigger_task_version"] = self._latency_guard_trigger_task_version
+        event_stats["trigger_deployment_version"] = self._latency_guard_trigger_deployment_version
+        self._latency_guard_trigger_stats = event_stats
+
+    def _latency_guard_trigger_event_for_deployment(self, deployment_version: Optional[int]) -> Optional[dict]:
+        if not self._latency_guard_enabled() or deployment_version is None:
+            return None
+        try:
+            target_version = int(deployment_version)
+        except (TypeError, ValueError):
+            return None
+        with self._latency_guard_lock:
+            trigger_version = getattr(self, "_latency_guard_trigger_deployment_version", None)
+            if trigger_version is None or int(trigger_version) != target_version:
+                return None
+            seq = int(getattr(self, "_latency_guard_trigger_seq", 0))
+            if seq <= 0:
+                return None
+            return {
+                "seq": seq,
+                "deployment_version": int(trigger_version),
+                "task_version": getattr(self, "_latency_guard_trigger_task_version", None),
+                "stats": copy.deepcopy(getattr(self, "_latency_guard_trigger_stats", {}) or {}),
+            }
 
     def is_latency_guard_active(self) -> bool:
         if not self._latency_guard_enabled():
@@ -1046,6 +1097,8 @@ class Hedger:
 
             self._latency_guard_last_stats = self._compute_latency_guard_stats_locked()
             stats = copy.deepcopy(self._latency_guard_last_stats)
+            if state_change == "triggered":
+                self._record_latency_guard_trigger_event_locked(task_version, deployment_version, stats)
 
         if state_change == "triggered":
             self._handle_latency_guard_triggered(stats, task_version, deployment_version)
@@ -1153,7 +1206,8 @@ class Hedger:
             f"bad={stats['bad_count']}/{stats['count']} "
             f"({self._format_log_value(stats['bad_ratio'])}), "
             f"threshold={self._format_log_value(stats['threshold_s'], 2)}s. "
-            f"Pause PPO training and force default decisions."
+            f"Pause generation/training and "
+            f"{'force default decisions' if self.latency_guard_cfg.force_default_decisions else 'preserve deployment feedback'}."
         )
 
     def _handle_latency_guard_recovered(
@@ -1201,14 +1255,19 @@ class Hedger:
 
     def _clear_training_transition_buffers(self, reason: str) -> None:
         with self._data_lock:
-            dep_count = len(self.deployment_transitions)
+            preserved_dep = [
+                tr for tr in self.deployment_transitions
+                if bool(tr.get("feedback_guard_interrupted", False))
+            ]
+            dep_count = len(self.deployment_transitions) - len(preserved_dep)
             off_count = len(self.offloading_transitions)
-            self.deployment_transitions.clear()
+            self.deployment_transitions[:] = preserved_dep
             self.offloading_transitions.clear()
         if dep_count > 0 or off_count > 0:
             LOGGER.warning(
                 f"[Hedger][LatencyGuard] Cleared transition buffers while {reason}: "
-                f"deployment={dep_count}, offloading={off_count}."
+                f"deployment={dep_count}, offloading={off_count}, "
+                f"preserved_guard_deployment={len(preserved_dep)}."
             )
 
     def _apply_default_decisions_for_latency_guard(self, reason: str) -> None:
@@ -1277,6 +1336,7 @@ class Hedger:
             f"dep_cloud_only_weight={dep_params.get('reward_dep_cloud_only_weight', 'na')}, "
             f"dep_empty_device_weight={dep_params.get('reward_dep_empty_device_weight', 'na')}, "
             f"edge_cover_repair_weight={dep_params.get('penalty_edge_cover_repair', 'na')}, "
+            f"latency_guard_penalty_weight={dep_params.get('penalty_latency_guard_trigger', 'na')}, "
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"min_edge_replicas_per_service={dep_params.get('min_edge_replicas_per_service', 'na')}, "
@@ -2059,6 +2119,40 @@ class Hedger:
         done = False
         return logic_feats, phys_feats, metrics, done
 
+    def _attach_deployment_feedback_status(
+            self,
+            metrics: Dict[str, Any],
+            feedback_result: HedgerDeploymentFeedbackWaitResult,
+            required_samples: int,
+    ) -> Dict[str, Any]:
+        required_samples = max(1, int(required_samples))
+        actual_count = int(metrics.get("offloading_reward_count", feedback_result.count))
+        guard_stats = feedback_result.guard_stats or {}
+        guard_sample_count = int(guard_stats.get("count", 0) or 0)
+        guard_bad_count = int(guard_stats.get("bad_count", 0) or 0)
+        guard_bad_ratio = float(guard_stats.get("bad_ratio", 0.0) or 0.0)
+        guard_max_queue = float(guard_stats.get("max_queue_length", 0.0) or 0.0)
+
+        guard_penalty_cost = 0.0
+        if feedback_result.guard_interrupted:
+            guard_penalty_cost = max(
+                guard_bad_ratio,
+                float(getattr(self.latency_guard_cfg, "trigger_violation_ratio", 0.0)),
+            )
+
+        metrics.update({
+            "feedback_required_samples": required_samples,
+            "feedback_sample_shortfall": max(0, required_samples - actual_count),
+            "feedback_guard_interrupted": int(bool(feedback_result.guard_interrupted)),
+            "latency_guard_trigger_seq": int(feedback_result.guard_event_seq),
+            "latency_guard_bad_ratio": guard_bad_ratio,
+            "latency_guard_bad_count": guard_bad_count,
+            "latency_guard_sample_count": guard_sample_count,
+            "latency_guard_max_queue": guard_max_queue,
+            "latency_guard_penalty_cost": float(guard_penalty_cost),
+        })
+        return metrics
+
     def _reset_deployment_feedback_window(self, deployment_version: Optional[int] = None):
         if self.state_buffer is not None:
             self.state_buffer.clear_offloading_rewards(deployment_version=deployment_version)
@@ -2080,14 +2174,18 @@ class Hedger:
                 self._deployment_version_cond.notify_all()
         return served_version
 
-    def _wait_for_deployment_decision_served(self, decision_version: int) -> bool:
+    def _wait_for_deployment_decision_served(self, decision_version: int,
+                                             abort_on_guard: bool = True) -> bool:
         while not self.deployment_thread_stop_event.is_set():
             if self.is_latency_guard_active():
-                LOGGER.warning(
-                    f"[Hedger][Train][Deployment] Abort waiting for deployment decision "
-                    f"version={decision_version} because latency guard is active."
-                )
-                return False
+                if abort_on_guard or self.latency_guard_cfg.force_default_decisions:
+                    LOGGER.warning(
+                        f"[Hedger][Train][Deployment] Abort waiting for deployment decision "
+                        f"version={decision_version} because latency guard is active."
+                    )
+                    return False
+                self._sleep_while_latency_guard_active("deployment decision wait")
+                continue
             with self._deployment_version_cond:
                 if self._deployment_served_version >= decision_version:
                     return True
@@ -2133,19 +2231,63 @@ class Hedger:
             min(self.state_cfg.deployment_reward_min_samples, self.state_cfg.deployment_reward_window),
         )
 
-    def _wait_for_deployment_feedback_samples(self, min_samples: int,
-                                              deployment_version: Optional[int] = None) -> bool:
+    def _deployment_feedback_count(self, deployment_version: Optional[int] = None) -> int:
         if self.state_buffer is None:
-            return False
+            return 0
+        return int(self.state_buffer.wait_for_offloading_rewards(
+            0,
+            timeout_s=0.0,
+            deployment_version=deployment_version,
+        ))
+
+    def _wait_for_deployment_feedback_samples_result(
+            self,
+            min_samples: int,
+            deployment_version: Optional[int] = None,
+            allow_guard_truncated: bool = False,
+    ) -> HedgerDeploymentFeedbackWaitResult:
+        if self.state_buffer is None:
+            return HedgerDeploymentFeedbackWaitResult(ok=False)
 
         min_samples = max(1, min(int(min_samples), self.state_cfg.deployment_reward_window))
         while not self.deployment_thread_stop_event.is_set():
+            if allow_guard_truncated:
+                guard_event = self._latency_guard_trigger_event_for_deployment(deployment_version)
+                if guard_event is not None:
+                    count = self._deployment_feedback_count(deployment_version)
+                    LOGGER.warning(
+                        f"[Hedger][Train][Deployment] Use guard-truncated deployment feedback: "
+                        f"version={deployment_version}, samples={count}/{min_samples}, "
+                        f"guard_event_seq={guard_event['seq']}."
+                    )
+                    return HedgerDeploymentFeedbackWaitResult(
+                        ok=True,
+                        count=count,
+                        guard_interrupted=True,
+                        guard_event_seq=int(guard_event["seq"]),
+                        guard_stats=copy.deepcopy(guard_event.get("stats", {}) or {}),
+                    )
             if self.is_latency_guard_active():
+                if allow_guard_truncated:
+                    if self.latency_guard_cfg.force_default_decisions:
+                        LOGGER.warning(
+                            f"[Hedger][Train][Deployment] Abort waiting for deployment feedback "
+                            f"version={deployment_version} because latency guard is forcing default decisions."
+                        )
+                        return HedgerDeploymentFeedbackWaitResult(
+                            ok=False,
+                            count=self._deployment_feedback_count(deployment_version),
+                        )
+                    self._sleep_while_latency_guard_active("deployment feedback wait")
+                    continue
                 LOGGER.warning(
                     f"[Hedger][Train][Deployment] Abort waiting for deployment feedback "
                     f"version={deployment_version} because latency guard is active."
                 )
-                return False
+                return HedgerDeploymentFeedbackWaitResult(
+                    ok=False,
+                    count=self._deployment_feedback_count(deployment_version),
+                )
             self._delete_error_processor_pods_if_needed(
                 reason=f"waiting for deployment feedback samples={min_samples}"
             )
@@ -2158,7 +2300,7 @@ class Hedger:
                 deployment_version=deployment_version,
             )
             if count >= min_samples:
-                return True
+                return HedgerDeploymentFeedbackWaitResult(ok=True, count=count)
 
             LOGGER.warning(
                 f"[Hedger][Train][Deployment] Waiting for fresh offloading feedback: "
@@ -2166,7 +2308,18 @@ class Hedger:
                 f"timeout={self._format_log_value(self.state_cfg.deployment_feedback_timeout_s, 2)}s"
             )
 
-        return False
+        return HedgerDeploymentFeedbackWaitResult(
+            ok=False,
+            count=self._deployment_feedback_count(deployment_version),
+        )
+
+    def _wait_for_deployment_feedback_samples(self, min_samples: int,
+                                              deployment_version: Optional[int] = None) -> bool:
+        return self._wait_for_deployment_feedback_samples_result(
+            min_samples,
+            deployment_version=deployment_version,
+            allow_guard_truncated=False,
+        ).ok
 
     def _run_deployment_default_warmup(self) -> None:
         """
@@ -2769,6 +2922,11 @@ class Hedger:
                         "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
                         "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95",
                         "e2e_latency_p99", "e2e_slo_violation",
+                        "feedback_required_samples", "feedback_sample_shortfall",
+                        "feedback_guard_interrupted",
+                        "latency_guard_trigger_seq", "latency_guard_bad_ratio",
+                        "latency_guard_bad_count", "latency_guard_sample_count",
+                        "latency_guard_max_queue", "latency_guard_penalty_cost",
                         "cap_relax_cnt", "cap_relax_cost",
                         "edge_cover_repair_cnt", "edge_cover_repair_cost", "edge_cover_unmet",
                         "policy_logp", "policy_entropy", "value_estimate", "next_value",
@@ -2779,6 +2937,7 @@ class Hedger:
                         *self._state_record_fieldnames(),
                         "dep_offload_weight", "dep_change_weight", "dep_cloud_only_weight",
                         "dep_empty_device_weight", "cap_relax_weight", "edge_cover_repair_weight",
+                        "latency_guard_penalty_weight",
                         "max_edge_replicas_per_device", "edge_memory_budget_ratio",
                         "min_edge_replicas_per_service",
                         "deployment_default_warmup_enabled",
@@ -2842,34 +3001,50 @@ class Hedger:
                     self.pending_deploy_mask = deploy_mask.detach().cpu()
                     decision_version = self._mark_deployment_decision_pending()
 
-                if not self._wait_for_deployment_decision_served(decision_version):
-                    if self.is_latency_guard_active():
-                        continue
+                if not self._wait_for_deployment_decision_served(decision_version, abort_on_guard=False):
                     break
-                if not self._wait_for_deployment_feedback_samples(1, deployment_version=decision_version):
-                    if self.is_latency_guard_active():
-                        continue
-                    break
-                LOGGER.debug(
-                    f"[Hedger][Train][Deployment] decision_version={decision_version} "
-                    f"has version-matched fresh feedback; start active deployment interval."
-                )
 
-                self._sleep_until_next_tick(
-                    0,
-                    self.deployment_interval,
+                min_feedback_required = self._deployment_feedback_min_samples()
+                feedback_result = self._wait_for_deployment_feedback_samples_result(
+                    1,
+                    deployment_version=decision_version,
+                    allow_guard_truncated=True,
                 )
-                if not self._wait_for_deployment_feedback_samples(
-                        self._deployment_feedback_min_samples(),
-                        deployment_version=decision_version,
-                ):
-                    if self.is_latency_guard_active():
-                        continue
+                if not feedback_result.ok:
                     break
+
+                if feedback_result.guard_interrupted:
+                    LOGGER.warning(
+                        f"[Hedger][Train][Deployment] decision_version={decision_version} "
+                        f"triggered latency guard before a full active deployment interval; "
+                        "record it as a guard-truncated negative sample."
+                    )
+                else:
+                    LOGGER.debug(
+                        f"[Hedger][Train][Deployment] decision_version={decision_version} "
+                        f"has version-matched fresh feedback; start active deployment interval."
+                    )
+
+                    self._sleep_until_next_tick(
+                        0,
+                        self.deployment_interval,
+                    )
+                    feedback_result = self._wait_for_deployment_feedback_samples_result(
+                        min_feedback_required,
+                        deployment_version=decision_version,
+                        allow_guard_truncated=True,
+                    )
+                    if not feedback_result.ok:
+                        break
 
                 new_logic_feats, new_phys_feats, metrics, done = self._collect_deployment_state(
                     prev_deploy_mask=prev_deploy_mask,
                     deployment_version=decision_version,
+                )
+                metrics = self._attach_deployment_feedback_status(
+                    metrics,
+                    feedback_result,
+                    min_feedback_required,
                 )
                 new_logic_feats_dev = {k: v.to(self.device) for k, v in new_logic_feats.items()}
                 new_phys_feats_dev = {k: v.to(self.device) for k, v in new_phys_feats.items()}
@@ -2911,7 +3086,7 @@ class Hedger:
 
                 # Compute the reward from environment metrics and policy-side auxiliaries.
                 reward = self._compute_deployment_reward(metrics, aux)
-                if self.is_latency_guard_active():
+                if self.is_latency_guard_active() and not feedback_result.guard_interrupted:
                     logic_feats = new_logic_feats
                     phys_feats = new_phys_feats
                     prev_deploy_mask = self._current_deploy_mask()
@@ -2935,6 +3110,8 @@ class Hedger:
                         "next_value": float(next_value),
                         "reward": float(reward),
                         "done": bool(done),
+                        "feedback_guard_interrupted": bool(feedback_result.guard_interrupted),
+                        "latency_guard_penalty_cost": float(metrics["latency_guard_penalty_cost"]),
                     }
 
                     with self._data_lock:
@@ -2969,6 +3146,15 @@ class Hedger:
                     e2e_latency_p95=metrics["e2e_latency_p95"],
                     e2e_latency_p99=metrics["e2e_latency_p99"],
                     e2e_slo_violation=metrics["e2e_slo_violation"],
+                    feedback_required_samples=metrics["feedback_required_samples"],
+                    feedback_sample_shortfall=metrics["feedback_sample_shortfall"],
+                    feedback_guard_interrupted=metrics["feedback_guard_interrupted"],
+                    latency_guard_trigger_seq=metrics["latency_guard_trigger_seq"],
+                    latency_guard_bad_ratio=metrics["latency_guard_bad_ratio"],
+                    latency_guard_bad_count=metrics["latency_guard_bad_count"],
+                    latency_guard_sample_count=metrics["latency_guard_sample_count"],
+                    latency_guard_max_queue=metrics["latency_guard_max_queue"],
+                    latency_guard_penalty_cost=metrics["latency_guard_penalty_cost"],
                     cap_relax_cnt=aux["capacity_relax_cnt"],
                     cap_relax_cost=aux["capacity_relax_cost"],
                     edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
@@ -2995,6 +3181,7 @@ class Hedger:
                     dep_empty_device_weight=self.deployment_agent_params["reward_dep_empty_device_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                     edge_cover_repair_weight=self.deployment_agent_params["penalty_edge_cover_repair"],
+                    latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                     min_edge_replicas_per_service=self.deployment_agent_params["min_edge_replicas_per_service"],
@@ -3018,6 +3205,9 @@ class Hedger:
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
                     f"off_reward_count={metrics['offloading_reward_count']}, "
                     f"off_reward_std={self._format_log_value(metrics['offloading_reward_std'])}, "
+                    f"feedback_guard_interrupted={metrics['feedback_guard_interrupted']}, "
+                    f"latency_guard_penalty_cost="
+                    f"{self._format_log_value(metrics['latency_guard_penalty_cost'])}, "
                     f"capacity_relax_cnt={aux['capacity_relax_cnt']}, "
                     f"capacity_relax_cost={self._format_log_value(aux['capacity_relax_cost'])}, "
                     f"edge_cover_repair_cnt={aux.get('edge_cover_repair_cnt', 0)}, "
@@ -3436,6 +3626,12 @@ class Hedger:
         edge_cover_repair_cost = float(aux.get("edge_cover_repair_cost", 0.0))
         penalty_edge_cover_repair = float(self.deployment_agent_params.get("penalty_edge_cover_repair", 0.0))
         reward -= penalty_edge_cover_repair * edge_cover_repair_cost
+
+        # A latency-guard trigger is a high-value negative deployment signal:
+        # it means this placement caused enough end-to-end latency violations
+        # to pause generation or training before a full feedback window arrived.
+        penalty_latency_guard = float(self.deployment_agent_params.get("penalty_latency_guard_trigger", 0.0))
+        reward -= penalty_latency_guard * float(metrics.get("latency_guard_penalty_cost", 0.0))
 
         return reward
 

@@ -464,6 +464,36 @@ def test_deployment_reward_uses_relax_cost_not_relax_count():
 
 
 @pytest.mark.unit
+def test_deployment_reward_penalizes_latency_guard_trigger():
+    hedger = object.__new__(Hedger)
+    hedger.deployment_agent_params = {
+        "reward_dep_change_weight": 0.1,
+        "reward_dep_offload_weight": 1.0,
+        "reward_dep_cloud_only_weight": 0.0,
+        "reward_dep_empty_device_weight": 0.0,
+        "penalty_capacity_relax": 0.0,
+        "penalty_edge_cover_repair": 0.0,
+        "penalty_latency_guard_trigger": 1.25,
+    }
+
+    reward = hedger._compute_deployment_reward(
+        metrics={
+            "avg_offloading_reward": -0.2,
+            "deploy_change_cost": 1.0,
+            "latency_guard_penalty_cost": 0.8,
+        },
+        aux={
+            "capacity_relax_cost": 0.0,
+            "edge_cover_repair_cost": 0.0,
+            "cloud_only_ratio": 0.0,
+            "empty_edge_device_ratio": 0.0,
+        },
+    )
+
+    assert reward == pytest.approx(-0.2 - 0.1 * 1.0 - 1.25 * 0.8)
+
+
+@pytest.mark.unit
 def test_offloading_policy_corrects_cloud_descendants_after_sampling():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -1380,6 +1410,12 @@ def test_hedger_latency_guard_triggers_defaults_and_recovers():
     assert hedger.deployment_transitions == []
     assert hedger.offloading_transitions == []
     assert hedger.deployment_plan == hedger.initial_deployment_plan
+    event = hedger._latency_guard_trigger_event_for_deployment(0)
+    assert event is not None
+    assert event["seq"] == 1
+    assert event["deployment_version"] == 0
+    assert event["stats"]["bad_ratio"] == pytest.approx(1.0)
+    assert hedger._latency_guard_trigger_event_for_deployment(1) is None
 
     hedger.observe_task_end_to_end_latency(0.5, task_version=3, deployment_version=0)
     hedger.observe_task_end_to_end_latency(0.6, task_version=4, deployment_version=0)
