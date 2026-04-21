@@ -591,6 +591,11 @@ class Hedger:
         edge_memory_budget_ratio = float(constraints.get("edge_memory_budget_ratio", 1.0))
         if not math.isfinite(edge_memory_budget_ratio) or not (0.0 < edge_memory_budget_ratio <= 1.0):
             raise ValueError("Hedger config `agents.deployment.constraints.edge_memory_budget_ratio` must be in (0, 1].")
+        min_edge_replicas = int(constraints.get("min_edge_replicas_per_service", 0) or 0)
+        if min_edge_replicas < 0:
+            raise ValueError(
+                "Hedger config `agents.deployment.constraints.min_edge_replicas_per_service` must be >= 0."
+            )
         ppo = self._build_ppo_update_cfg(deployment)
         return {
             "actor_lr": float(deployment["actor_lr"]),
@@ -604,8 +609,10 @@ class Hedger:
             "reward_dep_cloud_only_weight": float(reward.get("cloud_only_weight", 0.0)),
             "reward_dep_empty_device_weight": float(reward.get("empty_device_weight", 0.0)),
             "penalty_capacity_relax": float(penalty["capacity_relax"]),
+            "penalty_edge_cover_repair": float(penalty.get("edge_cover_repair", 0.0)),
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
+            "min_edge_replicas_per_service": min_edge_replicas,
             "ppo": ppo,
         }
 
@@ -1269,8 +1276,10 @@ class Hedger:
             f"deployment_default_warmup_feedback={getattr(default_warmup_cfg, 'min_feedback_samples', 'na')}, "
             f"dep_cloud_only_weight={dep_params.get('reward_dep_cloud_only_weight', 'na')}, "
             f"dep_empty_device_weight={dep_params.get('reward_dep_empty_device_weight', 'na')}, "
+            f"edge_cover_repair_weight={dep_params.get('penalty_edge_cover_repair', 'na')}, "
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
+            f"min_edge_replicas_per_service={dep_params.get('min_edge_replicas_per_service', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -2450,7 +2459,9 @@ class Hedger:
                     f"{self._summarize_deployment_plan(self.deployment_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
                     f"capacity_relax_cnt={aux['capacity_relax_cnt']}, "
-                    f"capacity_relax_cost={self._format_log_value(aux['capacity_relax_cost'])}"
+                    f"capacity_relax_cost={self._format_log_value(aux['capacity_relax_cost'])}, "
+                    f"edge_cover_repair_cnt={aux.get('edge_cover_repair_cnt', 0)}, "
+                    f"edge_cover_unmet={aux.get('edge_cover_unmet', 0)}"
                 )
                 step += 1
             except Exception as e:
@@ -2759,6 +2770,7 @@ class Hedger:
                         "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95",
                         "e2e_latency_p99", "e2e_slo_violation",
                         "cap_relax_cnt", "cap_relax_cost",
+                        "edge_cover_repair_cnt", "edge_cover_repair_cost", "edge_cover_unmet",
                         "policy_logp", "policy_entropy", "value_estimate", "next_value",
                         "raw_edge_replicas", "edge_replicas", "cloud_replicas",
                         "cloud_only", "cloud_only_ratio",
@@ -2766,8 +2778,9 @@ class Hedger:
                         "transition_buffer", "raw_deployment_plan", "deployment_plan",
                         *self._state_record_fieldnames(),
                         "dep_offload_weight", "dep_change_weight", "dep_cloud_only_weight",
-                        "dep_empty_device_weight", "cap_relax_weight",
+                        "dep_empty_device_weight", "cap_relax_weight", "edge_cover_repair_weight",
                         "max_edge_replicas_per_device", "edge_memory_budget_ratio",
+                        "min_edge_replicas_per_service",
                         "deployment_default_warmup_enabled",
                         "deployment_default_warmup_min_intervals",
                         "deployment_default_warmup_min_feedback_samples"],
@@ -2958,6 +2971,9 @@ class Hedger:
                     e2e_slo_violation=metrics["e2e_slo_violation"],
                     cap_relax_cnt=aux["capacity_relax_cnt"],
                     cap_relax_cost=aux["capacity_relax_cost"],
+                    edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
+                    edge_cover_repair_cost=aux.get("edge_cover_repair_cost", 0.0),
+                    edge_cover_unmet=aux.get("edge_cover_unmet", 0),
                     policy_logp=float(logp.detach().cpu().item()),
                     policy_entropy=float(ent.detach().cpu().item()),
                     value_estimate=float(value.detach().cpu().item()),
@@ -2978,8 +2994,10 @@ class Hedger:
                     dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
                     dep_empty_device_weight=self.deployment_agent_params["reward_dep_empty_device_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
+                    edge_cover_repair_weight=self.deployment_agent_params["penalty_edge_cover_repair"],
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
+                    min_edge_replicas_per_service=self.deployment_agent_params["min_edge_replicas_per_service"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
                     deployment_default_warmup_min_feedback_samples=(
@@ -3002,6 +3020,8 @@ class Hedger:
                     f"off_reward_std={self._format_log_value(metrics['offloading_reward_std'])}, "
                     f"capacity_relax_cnt={aux['capacity_relax_cnt']}, "
                     f"capacity_relax_cost={self._format_log_value(aux['capacity_relax_cost'])}, "
+                    f"edge_cover_repair_cnt={aux.get('edge_cover_repair_cnt', 0)}, "
+                    f"edge_cover_unmet={aux.get('edge_cover_unmet', 0)}, "
                     f"update_policy={self.stage_cfg.update_deployment_policy}, transitions={transition_count}"
                 )
 
@@ -3372,6 +3392,7 @@ class Hedger:
             - cloud-only service ratio
             - empty edge-device ratio
             - capacity-projection penalty
+            - edge-coverage repair penalty
         """
         metrics = metrics or {}
 
@@ -3408,6 +3429,13 @@ class Hedger:
         cap_relax_cost = float(aux.get("capacity_relax_cost", 0.0))
         penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
         reward -= penalty_capacity_relax * cap_relax_cost
+
+        # Penalize repairs that add an edge replica the raw policy did not
+        # sample, so the min-edge guard stays a safety net instead of becoming
+        # the policy's main way to satisfy coverage.
+        edge_cover_repair_cost = float(aux.get("edge_cover_repair_cost", 0.0))
+        penalty_edge_cover_repair = float(self.deployment_agent_params.get("penalty_edge_cover_repair", 0.0))
+        reward -= penalty_edge_cover_repair * edge_cover_repair_cost
 
         return reward
 

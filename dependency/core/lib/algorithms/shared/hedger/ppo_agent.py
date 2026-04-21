@@ -120,6 +120,13 @@ class HedgerDeploymentPPO(nn.Module):
         value = int(value)
         return value if value > 0 else None
 
+    def _min_edge_replicas_per_service(self) -> int:
+        value = getattr(self.cfg, "min_edge_replicas_per_service", 0)
+        if value is None:
+            return 0
+        value = int(value)
+        return max(0, value)
+
     def _scale_edge_memory_budget(self, budget: torch.Tensor) -> torch.Tensor:
         ratio = self._edge_memory_budget_ratio()
         if ratio >= 1.0 or budget.numel() == 0:
@@ -278,7 +285,8 @@ class HedgerDeploymentPPO(nn.Module):
             logic_feats: Dict[str, torch.Tensor],
             phys_feats: Dict[str, torch.Tensor],
             prev_deploy_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, int, float]:
+            static_allowed: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, int, float, int, float, int]:
         """
         Project a sampled deployment mask back into memory-feasible space.
 
@@ -302,6 +310,10 @@ class HedgerDeploymentPPO(nn.Module):
         zero action under the raw Bernoulli policy. The final cost is normalized
         by the number of logical services so it can be used directly in reward
         shaping across DAGs of different sizes.
+
+        If configured, a second repair step then tries to give each service a
+        minimum number of edge replicas while respecting the same memory and
+        per-device replica limits.
         """
         corrected = self._enforce_cloud_replica(raw_deploy_mask.bool())
         residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)
@@ -349,7 +361,136 @@ class HedgerDeploymentPPO(nn.Module):
                     capacity_relax_cost += -math.log(max(1.0 - prob, 1e-6))
 
         capacity_relax_cost /= float(num_services)
-        return corrected, capacity_relax_cnt, capacity_relax_cost
+        edge_cover_repair_cnt, edge_cover_repair_cost, edge_cover_unmet = \
+            self._repair_min_edge_replicas_per_service(
+                corrected=corrected,
+                raw_deploy_mask=raw_deploy_mask.bool(),
+                raw_probs=raw_probs,
+                logic_feats=logic_feats,
+                phys_feats=phys_feats,
+                prev_deploy_mask=prev_deploy_mask,
+                static_allowed=static_allowed,
+            )
+        return (
+            corrected,
+            capacity_relax_cnt,
+            capacity_relax_cost,
+            edge_cover_repair_cnt,
+            edge_cover_repair_cost,
+            edge_cover_unmet,
+        )
+
+    def _repair_min_edge_replicas_per_service(
+            self,
+            corrected: torch.Tensor,
+            raw_deploy_mask: torch.Tensor,
+            raw_probs: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            prev_deploy_mask: Optional[torch.Tensor] = None,
+            static_allowed: Optional[torch.Tensor] = None,
+    ) -> Tuple[int, float, int]:
+        min_edge_replicas = self._min_edge_replicas_per_service()
+        if min_edge_replicas <= 0:
+            return 0, 0.0, 0
+
+        num_services = max(1, int(corrected.size(0)))
+        cloud_idx = self._cloud_index(corrected.size(1))
+        if cloud_idx <= 0:
+            return 0, 0.0, num_services
+
+        if static_allowed is None:
+            static_allowed = self._static_allowed_mask(phys_feats, logic_feats)
+        static_allowed = static_allowed.bool()
+        residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)
+        model_mem = logic_feats["model_mem"].float()
+        max_edge_replicas = self._max_edge_replicas_per_device()
+
+        used_count = corrected[:, :cloud_idx].sum(dim=0).to(torch.long)
+        used_mem = torch.matmul(corrected[:, :cloud_idx].float().t(), model_mem)
+        if prev_deploy_mask is None:
+            prev_edge_mask = torch.zeros_like(corrected)
+        else:
+            prev_edge_mask = prev_deploy_mask.bool()
+
+        repair_cnt = 0
+        repair_cost = 0.0
+        unmet_services = 0
+
+        service_order = []
+        for service_idx in range(corrected.size(0)):
+            current_edges = int(corrected[service_idx, :cloud_idx].sum().item())
+            if current_edges >= min_edge_replicas:
+                continue
+            service_mem = float(model_mem[service_idx].item())
+            feasible_count = 0
+            best_prob = 0.0
+            for device_idx in range(cloud_idx):
+                if bool(corrected[service_idx, device_idx].item()):
+                    continue
+                if not bool(static_allowed[service_idx, device_idx].item()):
+                    continue
+                if max_edge_replicas is not None and int(used_count[device_idx].item()) >= max_edge_replicas:
+                    continue
+                remaining_after = float(residual[device_idx].item()) - float(used_mem[device_idx].item()) - service_mem
+                if remaining_after < -1e-6:
+                    continue
+                feasible_count += 1
+                best_prob = max(best_prob, float(raw_probs[service_idx, device_idx].item()))
+            service_order.append((
+                feasible_count if feasible_count > 0 else cloud_idx + 1,
+                -service_mem,
+                -best_prob,
+                int(service_idx),
+            ))
+
+        for _, _, _, service_idx in sorted(service_order):
+            current_edges = int(corrected[service_idx, :cloud_idx].sum().item())
+            service_mem = float(model_mem[service_idx].item())
+            while current_edges < min_edge_replicas:
+                candidates = []
+                for device_idx in range(cloud_idx):
+                    if bool(corrected[service_idx, device_idx].item()):
+                        continue
+                    if not bool(static_allowed[service_idx, device_idx].item()):
+                        continue
+                    if max_edge_replicas is not None and int(used_count[device_idx].item()) >= max_edge_replicas:
+                        continue
+                    remaining_after = float(residual[device_idx].item()) - float(used_mem[device_idx].item()) - service_mem
+                    if remaining_after < -1e-6:
+                        continue
+
+                    raw_prob = float(raw_probs[service_idx, device_idx].item())
+                    raw_prob = min(max(raw_prob, 1e-6), 1.0 - 1e-6)
+                    was_selected = bool(prev_edge_mask[service_idx, device_idx].item())
+                    device_is_empty = int(used_count[device_idx].item()) == 0
+                    candidates.append((
+                        raw_prob,
+                        1 if was_selected else 0,
+                        1 if device_is_empty else 0,
+                        remaining_after,
+                        -int(device_idx),
+                        int(device_idx),
+                    ))
+
+                if not candidates:
+                    unmet_services += 1
+                    break
+
+                _, _, _, _, _, best_device = max(candidates)
+                corrected[service_idx, best_device] = True
+                used_count[best_device] += 1
+                used_mem[best_device] += service_mem
+                current_edges += 1
+                repair_cnt += 1
+
+                if not bool(raw_deploy_mask[service_idx, best_device].item()):
+                    prob = float(raw_probs[service_idx, best_device].item())
+                    prob = min(max(prob, 1e-6), 1.0 - 1e-6)
+                    repair_cost += -math.log(prob)
+
+        repair_cost /= float(num_services)
+        return repair_cnt, repair_cost, unmet_services
 
     @staticmethod
     def _projection_priority_key(
@@ -517,18 +658,29 @@ class HedgerDeploymentPPO(nn.Module):
             raw_probs[service_idx, cloud_idx] = 1.0
 
         ent_sum = torch.stack(ent_terms).mean() if ent_terms else torch.tensor(0.0, device=h_s.device)
-        deploy_mask, capacity_relax_cnt, capacity_relax_cost = self._project_deployment_mask(
+        (
+            deploy_mask,
+            capacity_relax_cnt,
+            capacity_relax_cost,
+            edge_cover_repair_cnt,
+            edge_cover_repair_cost,
+            edge_cover_unmet,
+        ) = self._project_deployment_mask(
             raw_deploy_mask,
             raw_probs=raw_probs,
             logic_feats=logic_feats,
             phys_feats=phys_feats,
             prev_deploy_mask=prev_deploy_mask,
+            static_allowed=static_allowed,
         )
         value = self.critic(h_s, h_p, self._deployment_context(h_p, prev_deploy_mask))
 
         return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {
             "capacity_relax_cnt": capacity_relax_cnt,
             "capacity_relax_cost": capacity_relax_cost,
+            "edge_cover_repair_cnt": edge_cover_repair_cnt,
+            "edge_cover_repair_cost": edge_cover_repair_cost,
+            "edge_cover_unmet": edge_cover_unmet,
             "raw_deploy_mask": raw_deploy_mask,
         }
 

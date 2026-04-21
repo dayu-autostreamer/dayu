@@ -110,6 +110,7 @@ def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
             "penalty_capacity_relax": 4.0,
             "max_edge_replicas_per_device": 2,
             "edge_memory_budget_ratio": 0.75,
+            "min_edge_replicas_per_service": 1,
         },
     )
 
@@ -126,6 +127,7 @@ def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
     assert dep_cfg.penalty_capacity_relax == pytest.approx(4.0)
     assert dep_cfg.max_edge_replicas_per_device == 2
     assert dep_cfg.edge_memory_budget_ratio == pytest.approx(0.75)
+    assert dep_cfg.min_edge_replicas_per_service == 1
     assert not hasattr(dep_cfg, "enforce_capacity")
     assert not hasattr(dep_cfg, "min_edge_replicas")
 
@@ -143,6 +145,7 @@ def test_deployment_policy_always_projects_to_capacity(monkeypatch):
         cloud_node_idx=1,
         constraint_cfg=from_partial_dict(DeploymentConstraintCfg, {"enforce_capacity": False}),
     )
+    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
 
     def fake_forward(self, h_s, h_p, mask=None):
         service_id = int(round(float(h_s[0, 0].item())))
@@ -193,6 +196,7 @@ def test_deployment_projection_prioritizes_higher_probability_over_previous_depl
         update_encoder=False,
         cloud_node_idx=1,
     )
+    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
 
     def fake_forward(self, h_s, h_p, mask=None):
         service_id = int(round(float(h_s[0, 0].item())))
@@ -245,6 +249,7 @@ def test_deployment_projection_enforces_uniform_edge_replica_cap(monkeypatch):
         cloud_node_idx=1,
         constraint_cfg=DeploymentConstraintCfg(max_edge_replicas_per_device=2),
     )
+    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
 
     def fake_forward(self, h_s, h_p, mask=None):
         service_id = int(round(float(h_s[0, 0].item())))
@@ -292,6 +297,7 @@ def test_deployment_projection_uses_edge_memory_budget_ratio(monkeypatch):
         cloud_node_idx=1,
         constraint_cfg=DeploymentConstraintCfg(edge_memory_budget_ratio=0.75),
     )
+    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
 
     def fake_forward(self, h_s, h_p, mask=None):
         service_id = int(round(float(h_s[0, 0].item())))
@@ -326,6 +332,107 @@ def test_deployment_projection_uses_edge_memory_budget_ratio(monkeypatch):
 
 
 @pytest.mark.unit
+def test_deployment_projection_repairs_min_edge_replica_when_capacity_available(monkeypatch):
+    encoder = DummyEncoder(
+        service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+        device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], dtype=torch.float32),
+    )
+    agent = HedgerDeploymentPPO(
+        encoder=encoder,
+        d_model=2,
+        update_encoder=False,
+        cloud_node_idx=2,
+        constraint_cfg=DeploymentConstraintCfg(min_edge_replicas_per_service=1),
+    )
+    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
+
+    def fake_forward(self, h_s, h_p, mask=None):
+        service_id = int(round(float(h_s[0, 0].item())))
+        edge_probs = [[0.4, 0.9, 0.05], [0.8, 0.1, 0.05]]
+        probs = torch.tensor([edge_probs[service_id]], dtype=torch.float32, device=h_s.device)
+        if mask is not None:
+            probs = torch.where(mask, probs, torch.zeros_like(probs))
+        return probs
+
+    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
+    monkeypatch.setattr(torch, "rand_like", lambda x: torch.full_like(x, 0.95))
+
+    logic_edge_index = torch.empty((2, 0), dtype=torch.long)
+    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
+    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
+    phys_feats = {
+        "mem_capacity": torch.tensor([10.0, 10.0, 100.0], dtype=torch.float32),
+        "mem_util_seq": torch.zeros((3, 1), dtype=torch.float32),
+    }
+
+    deploy_mask, _, _, _, aux = agent.policy(
+        logic_edge_index=logic_edge_index,
+        logic_feats=logic_feats,
+        phys_edge_index=phys_edge_index,
+        phys_feats=phys_feats,
+    )
+
+    assert aux["raw_deploy_mask"][:, :2].sum().item() == 0
+    assert deploy_mask[:, 2].tolist() == [True, True]
+    assert deploy_mask[:, :2].tolist() == [[False, True], [True, False]]
+    assert aux["edge_cover_repair_cnt"] == 2
+    assert aux["edge_cover_repair_cost"] == pytest.approx((-math.log(0.9) - math.log(0.8)) / 2.0)
+    assert aux["edge_cover_unmet"] == 0
+
+
+@pytest.mark.unit
+def test_deployment_projection_respects_min_edge_repair_capacity(monkeypatch):
+    encoder = DummyEncoder(
+        service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+        device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+    )
+    agent = HedgerDeploymentPPO(
+        encoder=encoder,
+        d_model=2,
+        update_encoder=False,
+        cloud_node_idx=1,
+        constraint_cfg=DeploymentConstraintCfg(
+            max_edge_replicas_per_device=1,
+            min_edge_replicas_per_service=1,
+        ),
+    )
+    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
+
+    def fake_forward(self, h_s, h_p, mask=None):
+        service_id = int(round(float(h_s[0, 0].item())))
+        edge_probs = [0.9, 0.8]
+        probs = torch.tensor([[edge_probs[service_id], 0.05]], dtype=torch.float32, device=h_s.device)
+        if mask is not None:
+            probs = torch.where(mask, probs, torch.zeros_like(probs))
+        return probs
+
+    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
+    monkeypatch.setattr(torch, "rand_like", lambda x: torch.full_like(x, 0.95))
+
+    logic_edge_index = torch.empty((2, 0), dtype=torch.long)
+    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
+    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
+    phys_feats = {
+        "mem_capacity": torch.tensor([10.0, 100.0], dtype=torch.float32),
+        "mem_util_seq": torch.zeros((2, 1), dtype=torch.float32),
+    }
+
+    deploy_mask, _, _, _, aux = agent.policy(
+        logic_edge_index=logic_edge_index,
+        logic_feats=logic_feats,
+        phys_edge_index=phys_edge_index,
+        phys_feats=phys_feats,
+    )
+
+    assert aux["raw_deploy_mask"][:, 0].tolist() == [False, False]
+    assert deploy_mask[:, 0].tolist() == [True, False]
+    assert deploy_mask[:, 1].tolist() == [True, True]
+    assert aux["edge_cover_repair_cnt"] == 1
+    assert aux["edge_cover_repair_cost"] == pytest.approx(-math.log(0.9) / 2.0)
+    assert aux["edge_cover_unmet"] == 1
+
+
+@pytest.mark.unit
 def test_deployment_reward_uses_relax_cost_not_relax_count():
     hedger = object.__new__(Hedger)
     hedger.deployment_agent_params = {
@@ -334,6 +441,7 @@ def test_deployment_reward_uses_relax_cost_not_relax_count():
         "reward_dep_cloud_only_weight": 0.75,
         "reward_dep_empty_device_weight": 0.3,
         "penalty_capacity_relax": 2.0,
+        "penalty_edge_cover_repair": 0.5,
     }
 
     reward = hedger._compute_deployment_reward(
@@ -344,12 +452,15 @@ def test_deployment_reward_uses_relax_cost_not_relax_count():
         aux={
             "capacity_relax_cnt": 5,
             "capacity_relax_cost": 0.25,
+            "edge_cover_repair_cost": 0.2,
             "cloud_only_ratio": 0.4,
             "empty_edge_device_ratio": 0.25,
         },
     )
 
-    assert reward == pytest.approx(1.5 - 0.1 * 2.0 - 0.75 * 0.4 - 0.3 * 0.25 - 2.0 * 0.25)
+    assert reward == pytest.approx(
+        1.5 - 0.1 * 2.0 - 0.75 * 0.4 - 0.3 * 0.25 - 2.0 * 0.25 - 0.5 * 0.2
+    )
 
 
 @pytest.mark.unit
