@@ -295,13 +295,11 @@ class HedgerDeploymentPPO(nn.Module):
 
         - For each edge device, consider only the services whose raw Bernoulli
           sample selected that device.
-        - Choose a subset that fits within the device residual-memory budget.
-        - The primary objective is to maximize the retained policy preference,
-          measured as the sum of Bernoulli log-odds `log(p / (1 - p))` of the
-          kept sampled replicas.
+        - Remove the lowest-preference sampled replicas until the remaining
+          subset fits within the device residual-memory and replica-count budget.
 
-        For small candidate sets, the best subset is found exactly. For larger
-        candidate sets, a probability-priority greedy fallback is used. Previous
+        This keeps the executed placement close to the raw sample while still
+        reflecting the actor's per-service preference ordering. Previous
         deployment state and memory footprint are only used as tie-breakers.
 
         Besides the removed replica count, the projector also reports a
@@ -492,20 +490,6 @@ class HedgerDeploymentPPO(nn.Module):
         repair_cost /= float(num_services)
         return repair_cnt, repair_cost, unmet_services
 
-    @staticmethod
-    def _projection_priority_key(
-            service_idx: int,
-            score: float,
-            prev_selected: bool,
-            mem: float,
-    ) -> tuple:
-        return (
-            score,
-            1 if prev_selected else 0,
-            -mem,
-            -int(service_idx),
-        )
-
     def _select_device_subset(
             self,
             selected: List[int],
@@ -518,10 +502,11 @@ class HedgerDeploymentPPO(nn.Module):
         """
         Select which sampled replicas to keep on one edge device.
 
-        The objective is to preserve as much actor preference as possible under
-        the memory and replica-count budgets. For current Hedger workloads,
-        service counts are small, so exact search is practical and removes most
-        projection bias.
+        Start from the raw sampled set and prune the least-preferred replicas
+        until the placement satisfies both memory and replica-count budgets.
+        This is intentionally a minimum-intervention repair: the projector
+        changes only what is needed for feasibility instead of searching for a
+        different feasible subset with higher joint Bernoulli probability.
         """
         if capacity <= 1e-6 or not selected:
             return set()
@@ -529,83 +514,40 @@ class HedgerDeploymentPPO(nn.Module):
             return set()
 
         candidates = []
+        total_mem = 0.0
         for service_idx in selected:
             prob = float(raw_probs[service_idx].item())
             prob = min(max(prob, 1e-6), 1.0 - 1e-6)
-            score = float(torch.logit(torch.tensor(prob, dtype=torch.float32)).item())
             mem = float(model_mem[service_idx].item())
             was_selected = bool(prev_selected[service_idx].item())
-            candidates.append((int(service_idx), score, mem, was_selected))
+            candidates.append((int(service_idx), prob, mem, was_selected))
+            total_mem += mem
 
-        def better(candidate_tuple, best_tuple):
-            if best_tuple is None:
-                return True
-            cand_score, cand_count, cand_prev, cand_mem, cand_ids = candidate_tuple
-            best_score, best_count, best_prev, best_mem, best_ids = best_tuple
-            if cand_score > best_score + 1e-9:
-                return True
-            if cand_score < best_score - 1e-9:
-                return False
-            if cand_count > best_count:
-                return True
-            if cand_count < best_count:
-                return False
-            if cand_prev > best_prev:
-                return True
-            if cand_prev < best_prev:
-                return False
-            if cand_mem < best_mem - 1e-9:
-                return True
-            if cand_mem > best_mem + 1e-9:
-                return False
-            return cand_ids < best_ids
-
-        # Exact subset search is affordable for the current small service DAGs.
-        if len(candidates) <= 18:
-            best_tuple = None
-            best_keep = set()
-            total_masks = 1 << len(candidates)
-            for mask_bits in range(total_masks):
-                used_mem = 0.0
-                score_sum = 0.0
-                prev_count = 0
-                keep_ids = []
-                feasible = True
-                for bit_idx, (service_idx, score, mem, was_selected) in enumerate(candidates):
-                    if not (mask_bits & (1 << bit_idx)):
-                        continue
-                    used_mem += mem
-                    if max_count is not None and len(keep_ids) + 1 > max_count:
-                        feasible = False
-                        break
-                    if used_mem > capacity + 1e-6:
-                        feasible = False
-                        break
-                    score_sum += score
-                    prev_count += 1 if was_selected else 0
-                    keep_ids.append(service_idx)
-                if not feasible:
-                    continue
-                keep_tuple = (score_sum, len(keep_ids), prev_count, used_mem, tuple(keep_ids))
-                if better(keep_tuple, best_tuple):
-                    best_tuple = keep_tuple
-                    best_keep = set(keep_ids)
-            return best_keep
-
-        # Greedy fallback for unusually large service sets.
-        remaining = capacity
-        keep = set()
-        ranked = sorted(
+        keep = {int(service_idx) for service_idx in selected}
+        ranked_for_removal = sorted(
             candidates,
-            key=lambda item: self._projection_priority_key(item[0], item[1], item[3], item[2]),
-            reverse=True,
+            key=lambda item: (
+                item[1],  # Lower actor preference is removed first.
+                1 if item[3] else 0,  # Prefer removing non-previous replicas on ties.
+                -item[2],  # If preference is tied, remove the larger footprint first.
+                -item[0],  # Keep lower service ids for deterministic ties.
+            ),
         )
-        for service_idx, score, mem, was_selected in ranked:
-            if max_count is not None and len(keep) >= max_count:
+
+        for service_idx, _, mem, _ in ranked_for_removal:
+            over_memory = total_mem > capacity + 1e-6
+            over_count = max_count is not None and len(keep) > max_count
+            if not over_memory and not over_count:
                 break
-            if mem <= remaining + 1e-6:
-                keep.add(service_idx)
-                remaining -= mem
+            if service_idx not in keep:
+                continue
+            keep.remove(service_idx)
+            total_mem -= mem
+
+        if total_mem > capacity + 1e-6:
+            return set()
+        if max_count is not None and len(keep) > max_count:
+            return set()
         return keep
 
     @torch.no_grad()

@@ -185,6 +185,52 @@ def test_deployment_policy_always_projects_to_capacity(monkeypatch):
 
 
 @pytest.mark.unit
+def test_deployment_projection_prunes_lowest_preference_without_overcorrecting(monkeypatch):
+    encoder = DummyEncoder(
+        service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+        device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+    )
+    agent = HedgerDeploymentPPO(
+        encoder=encoder,
+        d_model=2,
+        update_encoder=False,
+        cloud_node_idx=1,
+    )
+    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
+
+    def fake_forward(self, h_s, h_p, mask=None):
+        service_id = int(round(float(h_s[0, 0].item())))
+        edge_probs = [0.4, 0.3]
+        probs = torch.tensor([[edge_probs[service_id], 0.05]], dtype=torch.float32, device=h_s.device)
+        if mask is not None:
+            probs = torch.where(mask, probs, torch.zeros_like(probs))
+        return probs
+
+    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
+    monkeypatch.setattr(torch, "rand_like", lambda x: torch.full_like(x, 0.1))
+
+    logic_edge_index = torch.empty((2, 0), dtype=torch.long)
+    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
+    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
+    phys_feats = {
+        "mem_capacity": torch.tensor([1.0, 100.0], dtype=torch.float32),
+        "mem_util_seq": torch.zeros((2, 1), dtype=torch.float32),
+    }
+
+    deploy_mask, _, _, _, aux = agent.policy(
+        logic_edge_index=logic_edge_index,
+        logic_feats=logic_feats,
+        phys_edge_index=phys_edge_index,
+        phys_feats=phys_feats,
+    )
+
+    assert aux["raw_deploy_mask"][:, 0].tolist() == [True, True]
+    assert deploy_mask[:, 0].tolist() == [True, False]
+    assert aux["capacity_relax_cnt"] == 1
+    assert aux["capacity_relax_cost"] == pytest.approx(-math.log(0.7) / 2.0)
+
+
+@pytest.mark.unit
 def test_deployment_projection_prioritizes_higher_probability_over_previous_deployment(monkeypatch):
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
