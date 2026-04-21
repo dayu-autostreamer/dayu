@@ -223,6 +223,11 @@ class Hedger:
         FileOps.create_directory(self.checkpoint_cfg.root_dir)
         if self.checkpoint_cfg.load.enabled:
             self.load_checkpoint()
+        if self.mode == "inference" and self._loaded_checkpoint_path is None:
+            raise RuntimeError(
+                "[Hedger][Inference] No checkpoint was loaded. "
+                "Set checkpoint.load.enabled=true and provide a valid from_stage/which or path."
+            )
 
         self.initial_deployment_plan = None
         self.deployment_plan = None
@@ -479,7 +484,13 @@ class Hedger:
                     "Hedger checkpoint.load.from_stage must be one of: "
                     "'offloading_warmup', 'deployment_adaptation', 'joint_finetune'."
                 )
-        if self.mode == "inference" and bool(load_cfg.get("enabled", False)) and which != "path" and from_stage is None:
+        load_enabled = bool(load_cfg.get("enabled", False))
+        if self.mode == "inference" and not load_enabled:
+            raise ValueError(
+                "Hedger inference mode requires checkpoint.load.enabled=true "
+                "to avoid serving randomly initialized policies."
+            )
+        if self.mode == "inference" and load_enabled and which != "path" and from_stage is None:
             raise ValueError(
                 "Hedger inference mode requires checkpoint.load.from_stage unless checkpoint.load.which='path'."
             )
@@ -491,7 +502,7 @@ class Hedger:
         return HedgerCheckpointCfg(
             root_dir=self._resolve_path(checkpoint["root_dir"]),
             load=HedgerCheckpointLoadCfg(
-                enabled=bool(load_cfg.get("enabled", False)),
+                enabled=load_enabled,
                 from_stage=from_stage,
                 which=which,
                 step=None if load_cfg.get("step") is None else int(load_cfg["step"]),
@@ -1876,7 +1887,8 @@ class Hedger:
     def get_offloading_plan(self):
         if self.should_force_default_decisions():
             return None
-        return copy.deepcopy(self.offloading_plan)
+        with self._data_lock:
+            return copy.deepcopy(self.offloading_plan)
 
     def get_initial_deployment_plan(self):
         return copy.deepcopy(self.initial_deployment_plan)
@@ -2493,6 +2505,17 @@ class Hedger:
     def inference_hedger(self):
         assert self.logical_topology is not None, "Logical topology must be registered before inference."
         assert self.physical_topology is not None, "Physical topology must be registered before inference."
+        assert self.state_buffer is not None, "State buffer must be registered before inference."
+        if self.checkpoint_cfg.load.enabled and self._loaded_checkpoint_path is None:
+            raise RuntimeError(
+                "[Hedger][Inference] Checkpoint loading was enabled but no checkpoint was loaded. "
+                "Please check checkpoint.load.from_stage/which/path before running inference."
+            )
+        if not self.checkpoint_cfg.load.enabled:
+            raise RuntimeError(
+                "[Hedger][Inference] checkpoint.load.enabled must be true for inference mode, "
+                "otherwise Hedger would serve randomly initialized policies."
+            )
 
         LOGGER.info(f"[Hedger][Inference] Start: {self._summarize_runtime_config()}, {self._summarize_topology()}")
         self.set_seed()
@@ -2595,10 +2618,14 @@ class Hedger:
                         phys_feats=phys_feats_dev,
                         topo_order=None,
                         prev_deploy_mask=prev_deploy_mask_dev,
+                        deterministic=True,
                     )
 
-                self.cur_deploy_mask = deploy_mask.detach().cpu()
-                self.deployment_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
+                deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
+                with self._data_lock:
+                    self.pending_deployment_plan = deploy_plan
+                    self.pending_deploy_mask = deploy_mask.detach().cpu()
+                    decision_version = self._mark_deployment_decision_pending()
                 deployment_time_ticket = self._sleep_until_next_tick(
                     deployment_time_ticket,
                     self.deployment_interval,
@@ -2608,8 +2635,9 @@ class Hedger:
                 logic_feats, phys_feats, metrics, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
                 LOGGER.debug(
                     f"[Hedger][Inference][Deployment] step={step}, "
-                    f"{self._summarize_deploy_mask(self.cur_deploy_mask)}, "
-                    f"{self._summarize_deployment_plan(self.deployment_plan)}, "
+                    f"pending_version={decision_version}, "
+                    f"{self._summarize_deploy_mask(deploy_mask.detach().cpu())}, "
+                    f"{self._summarize_deployment_plan(deploy_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
                     f"capacity_relax_cnt={aux['capacity_relax_cnt']}, "
                     f"capacity_relax_cost={self._format_log_value(aux['capacity_relax_cost'])}, "
@@ -2652,9 +2680,12 @@ class Hedger:
                         phys_feats=phys_feats_dev,
                         static_mask=static_mask_dev,
                         topo_order=None,
+                        deterministic=True,
                     )
 
-                self.offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
+                offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
+                with self._data_lock:
+                    self.offloading_plan = offloading_plan
                 offloading_time_ticket = self._sleep_until_next_tick(
                     offloading_time_ticket,
                     self.offloading_interval,
@@ -4068,7 +4099,7 @@ class Hedger:
 
     @property
     def _ready_for_run(self):
-        return self.physical_topology and self.logical_topology
+        return self.physical_topology and self.logical_topology and self.state_buffer
 
     def run(self):
         wait_logged = False
@@ -4077,7 +4108,8 @@ class Hedger:
                 LOGGER.debug(
                     f"[Hedger][Lifecycle] Waiting for topology registration: "
                     f"logical_ready={self.logical_topology is not None}, "
-                    f"physical_ready={self.physical_topology is not None}"
+                    f"physical_ready={self.physical_topology is not None}, "
+                    f"state_buffer_ready={self.state_buffer is not None}"
                 )
                 wait_logged = True
             time.sleep(0.5)

@@ -922,6 +922,17 @@ def test_inference_hedger_initializes_runtime_and_starts_worker_threads(monkeypa
     hedger.offloading_agent = torch.nn.Identity()
     hedger.deployment_thread_stop_event = threading.Event()
     hedger.offloading_thread_stop_event = threading.Event()
+    hedger.state_buffer = types.SimpleNamespace()
+    hedger.checkpoint_cfg = build_checkpoint_cfg(
+        "/tmp/hedger-test",
+        load=HedgerCheckpointLoadCfg(
+            enabled=True,
+            from_stage="deployment_adaptation",
+            which="latest",
+            restore_optimizer=False,
+        ),
+    )
+    hedger._loaded_checkpoint_path = "/tmp/hedger-test/deployment_adaptation/latest.pt"
     hedger.deployment_plan = None
     hedger.initial_deployment_plan = {"svc-a": ["edge-a"], "svc-b": [cloud_name]}
     hedger.cur_deploy_mask = None

@@ -553,7 +553,8 @@ class HedgerDeploymentPPO(nn.Module):
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index,
                phys_feats, topo_order: Optional[list] = None,
-               prev_deploy_mask: Optional[torch.Tensor] = None):
+               prev_deploy_mask: Optional[torch.Tensor] = None,
+               deterministic: bool = False):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
@@ -586,7 +587,10 @@ class HedgerDeploymentPPO(nn.Module):
                 probs_log = torch.where(stochastic_allowed, probs_log, torch.full_like(probs_log, eps))
                 probs_sample = torch.where(stochastic_allowed, probs_raw, torch.zeros_like(probs_raw))
                 dist = torch.distributions.Bernoulli(probs=probs_log)
-                sampled_bits = torch.rand_like(probs_sample) < probs_sample
+                if deterministic:
+                    sampled_bits = probs_sample >= 0.5
+                else:
+                    sampled_bits = torch.rand_like(probs_sample) < probs_sample
                 sampled_row = torch.where(
                     stochastic_allowed,
                     sampled_bits,
@@ -973,7 +977,8 @@ class HedgerOffloadingPPO(nn.Module):
 
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
-               static_mask: torch.Tensor, topo_order: Optional[list] = None):
+               static_mask: torch.Tensor, topo_order: Optional[list] = None,
+               deterministic: bool = False):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
@@ -992,7 +997,7 @@ class HedgerOffloadingPPO(nn.Module):
             probs_i = self.actor(h_s[i:i + 1], h_p, allowed.unsqueeze(0))[0]
             raw_probs[i] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)
-            raw_actions[i] = dist.sample()
+            raw_actions[i] = torch.argmax(probs_i) if deterministic else dist.sample()
             logp_sum += dist.log_prob(raw_actions[i])
             ent_sum += dist.entropy()
 
