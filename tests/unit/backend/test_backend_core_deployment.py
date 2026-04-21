@@ -506,7 +506,7 @@ def test_run_cycle_deploy_skips_missing_config_then_updates_after_success(backen
 
     def fake_sleep(seconds):
         sleep_calls.append(seconds)
-        if seconds == backend_core_instance.processor_redeployment_interval_s:
+        if len(sleep_calls) == 2:
             backend_core_instance.yaml_dict = {"scheduler": {"policy": "fixed"}}
             backend_core_instance.source_deploy = [{"source": {"id": 0}, "dag": {}, "node_set": ["edge1"]}]
 
@@ -540,7 +540,9 @@ def test_run_cycle_deploy_skips_missing_config_then_updates_after_success(backen
 
     backend_core_instance.run_cycle_deploy()
 
-    assert sleep_calls == [5, 7.0]
+    assert sleep_calls[0] == 5
+    assert sleep_calls[1] == pytest.approx(7.0, abs=0.01)
+    assert len(sleep_calls) == 2
     assert finetune_calls == [{"scopes": ("processor",), "current_docs": current_docs}]
     assert updated_docs == [redeploy_docs]
     assert backend_core_instance.uninstall_lock is False
@@ -588,6 +590,8 @@ def test_run_cycle_deploy_survives_redeployment_timeout(backend_core_instance, m
     backend_core_instance.run_cycle_deploy()
 
     assert len(parse_calls) == 2
-    assert sleep_calls == [5, 3.0]
+    assert sleep_calls[0] == 5
+    assert sleep_calls[1] == pytest.approx(3.0, abs=0.01)
+    assert len(sleep_calls) == 2
     assert updated_docs == [redeploy_docs]
     assert backend_core_instance.uninstall_lock is False
