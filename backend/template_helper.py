@@ -670,9 +670,7 @@ class TemplateHelper:
         try:
             response = http_request(url=scheduler_address,
                                     method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODES,
-                                    timeout=10,
-                                    data={'data': json.dumps(params)},
-                                    )
+                                    data={'data': json.dumps(params)},)
         except Exception as e:
             LOGGER.warning(f'[Source Node Selection] Error occurred while requesting scheduler: {str(e)}')
             response = None
@@ -732,7 +730,6 @@ class TemplateHelper:
         try:
             response = http_request(url=scheduler_address,
                                     method=request_method,
-                                    timeout=10,
                                     data={'data': json.dumps(params)})
         except Exception as e:
             LOGGER.warning(f'[Service Deployment] Error occurred while requesting scheduler: {str(e)}')
