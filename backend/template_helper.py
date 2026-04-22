@@ -6,7 +6,7 @@ import uuid
 
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant, NameMaintainer
+from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant, NameMaintainer, Context
 from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
@@ -366,6 +366,38 @@ class TemplateHelper:
 
         return deployment_plan
 
+    @staticmethod
+    def normalize_deployment_plan(deployment_plan, source_deploy):
+        """Normalize scheduler plans to {service_name: [edge_node, ...]}."""
+        if not isinstance(deployment_plan, dict):
+            return None
+
+        service_names = set()
+        edge_nodes = set()
+        for source_info in source_deploy or []:
+            edge_nodes.update(source_info.get('node_set') or [])
+            for service_name in (source_info.get('dag') or {}).keys():
+                if service_name != TaskConstant.START.value:
+                    service_names.add(service_name)
+
+        normalized_plan = {}
+        for key, value in deployment_plan.items():
+            values = list(value) if isinstance(value, (list, tuple, set)) else [value]
+            if key in service_names:
+                selected_nodes = normalized_plan.setdefault(key, [])
+                for node_name in values:
+                    if node_name in edge_nodes and node_name not in selected_nodes:
+                        selected_nodes.append(node_name)
+            elif key in edge_nodes:
+                for service_name in values:
+                    if service_name not in service_names:
+                        continue
+                    selected_nodes = normalized_plan.setdefault(service_name, [])
+                    if key not in selected_nodes:
+                        selected_nodes.append(key)
+
+        return normalized_plan
+
     def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy, current_docs=None):
         """Generate processor CRs with fine-grained units.
 
@@ -391,19 +423,24 @@ class TemplateHelper:
             # Original candidate edge nodes from DAG / services config
             edge_nodes = service_info['node']
 
-            # Apply scheduler's deployment decision if available
+            # Apply scheduler's deployment decision if available.
             if deployment_plan is not None and service_name in deployment_plan:
                 # Intersect with original edge_nodes to avoid unexpected nodes.
                 selected_nodes = set(deployment_plan[service_name])
                 edge_nodes = [node for node in edge_nodes if node in selected_nodes]
-            elif deployment_plan is None and current_deployment_plan is not None:
-                edge_nodes = current_deployment_plan.get(service_name, [])
-                LOGGER.warning(
-                    f"Scheduler redeployment plan unavailable, keep current deployment for "
-                    f"service '{service_name}': {edge_nodes}."
-                )
             else:
-                LOGGER.warning(f"Using default service plan for service '{service_id}'.")
+                if current_deployment_plan is not None:
+                    edge_nodes = current_deployment_plan.get(service_name, [])
+                    LOGGER.warning(
+                        f"Scheduler redeployment plan unavailable or missed service '{service_name}', "
+                        f"keep current deployment: {edge_nodes}."
+                    )
+                else:
+                    edge_nodes = []
+                    LOGGER.warning(
+                        f"Scheduler initial deployment plan unavailable or missed service '{service_name}', "
+                        "deploy processor on cloud only."
+                    )
 
             # Cloud-only CR
             # Create cloudWorker CR (processor must be deployed on cloud node)
@@ -630,13 +667,24 @@ class TemplateHelper:
                 "dag": DAG_ENV
             })
 
-        response = http_request(url=scheduler_address,
-                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODES,
-                                data={'data': json.dumps(params)},
-                                )
+        try:
+            response = http_request(url=scheduler_address,
+                                    method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODES,
+                                    timeout=10,
+                                    data={'data': json.dumps(params)},
+                                    )
+        except Exception as e:
+            LOGGER.warning(f'[Source Node Selection] Error occurred while requesting scheduler: {str(e)}')
+            response = None
 
         if response is None:
             LOGGER.warning('[Source Node Selection] No response from scheduler.')
+            selection_plan = None
+        elif not isinstance(response, dict) or 'plan' not in response or response['plan'] is None:
+            LOGGER.warning('[Source Node Selection] Scheduler response missed selection plan.')
+            selection_plan = None
+        elif not isinstance(response['plan'], dict):
+            LOGGER.warning('[Source Node Selection] Scheduler response contained invalid selection plan.')
             selection_plan = None
         else:
             selection_plan = response['plan']
@@ -674,23 +722,33 @@ class TemplateHelper:
 
         if not self.check_is_redeployment():
             # initial deployment
-            response = http_request(url=initial_deployment_address,
-                                    method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
-                                    data={'data': json.dumps(params)})
+            scheduler_address = initial_deployment_address
+            request_method = NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT
         else:
             # redeployment
-            response = http_request(url=redeployment_address,
-                                    method=NetworkAPIMethod.SCHEDULER_REDEPLOYMENT,
+            scheduler_address = redeployment_address
+            request_method = NetworkAPIMethod.SCHEDULER_REDEPLOYMENT
+
+        try:
+            response = http_request(url=scheduler_address,
+                                    method=request_method,
+                                    timeout=10,
                                     data={'data': json.dumps(params)})
+        except Exception as e:
+            LOGGER.warning(f'[Service Deployment] Error occurred while requesting scheduler: {str(e)}')
+            response = None
 
         if response is None:
             LOGGER.warning('[Service Deployment] No response from scheduler.')
             deployment_plan = None
-        elif 'plan' not in response or response['plan'] is None:
+        elif not isinstance(response, dict) or 'plan' not in response or response['plan'] is None:
             LOGGER.warning('[Service Deployment] Scheduler response missed deployment plan.')
             deployment_plan = None
+        elif not isinstance(response['plan'], dict):
+            LOGGER.warning('[Service Deployment] Scheduler response contained invalid deployment plan.')
+            deployment_plan = None
         else:
-            deployment_plan = response['plan']
+            deployment_plan = self.normalize_deployment_plan(response['plan'], source_deploy)
 
         return deployment_plan
 

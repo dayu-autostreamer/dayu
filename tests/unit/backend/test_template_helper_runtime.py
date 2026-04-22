@@ -166,6 +166,36 @@ def test_template_helper_finetunes_processor_manifests_per_cloud_and_selected_ed
 
 
 @pytest.mark.unit
+def test_template_helper_uses_cloud_only_initial_processor_deployment_when_plan_is_unavailable(
+    mounted_runtime,
+    monkeypatch,
+):
+    template_helper_module = importlib.import_module("template_helper")
+    monkeypatch.setattr(
+        template_helper_module.KubeHelper,
+        "get_kubernetes_endpoint",
+        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
+    )
+
+    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
+    monkeypatch.setattr(helper, "request_deployment_decision", lambda source_deploy: None)
+
+    service_dict = {
+        "face-detection": {
+            "service_name": "face-detection",
+            "node": ["edgex1", "edgex2"],
+            "service": YamlOps.read_yaml(mounted_runtime / "processor" / "face-detection.yaml"),
+        }
+    }
+
+    manifests = helper.finetune_processor_yaml(service_dict, "cloudx1", build_source_deploy())
+
+    assert [doc["metadata"]["name"] for doc in manifests] == ["processor-face-detection-cloudx1"]
+    assert "cloudWorker" in manifests[0]["spec"]
+    assert "edgeWorker" not in manifests[0]["spec"]
+
+
+@pytest.mark.unit
 def test_template_helper_preserves_current_processor_deployment_when_redeployment_plan_is_unavailable(
     mounted_runtime,
     monkeypatch,

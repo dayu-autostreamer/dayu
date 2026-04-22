@@ -199,3 +199,53 @@ def test_finetune_distributor_and_scheduler_request_helpers_use_scheduler_contra
     deployment_payload = json.loads(requests[1][2]["data"]["data"])
     assert selection_payload[0]["all_edge_nodes"] == ["edgex1", "edgex2"]
     assert deployment_payload[0]["dag"]["face-detection"]["service"]["service_name"] == "face-detection"
+
+
+@pytest.mark.unit
+def test_request_deployment_decision_returns_none_when_scheduler_errors(mounted_runtime, monkeypatch):
+    template_helper_module = importlib.import_module("template_helper")
+    monkeypatch.setattr(template_helper_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
+    monkeypatch.setattr(template_helper_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.8"))
+    monkeypatch.setattr(template_helper_module.PortInfo, "get_component_port", staticmethod(lambda component: 9001))
+
+    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
+    monkeypatch.setattr(helper, "check_is_redeployment", lambda: False)
+
+    dag = {
+        TaskConstant.START.value: {"succ": ["face-detection"], "prev": []},
+        "face-detection": {"succ": [], "prev": [TaskConstant.START.value]},
+    }
+    source_deploy = [{"source": {"id": 9}, "node_set": ["edgex1"], "dag": dag}]
+
+    def raising_http_request(url, method=None, **kwargs):
+        raise RuntimeError("scheduler failed")
+
+    monkeypatch.setattr(template_helper_module, "http_request", raising_http_request)
+    assert helper.request_deployment_decision(source_deploy) is None
+
+    monkeypatch.setattr(template_helper_module, "http_request", lambda url, method=None, **kwargs: {"plan": ["bad"]})
+    assert helper.request_deployment_decision(source_deploy) is None
+
+
+@pytest.mark.unit
+def test_request_deployment_decision_normalizes_node_to_services_plan(mounted_runtime, monkeypatch):
+    template_helper_module = importlib.import_module("template_helper")
+    monkeypatch.setattr(template_helper_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
+    monkeypatch.setattr(template_helper_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.8"))
+    monkeypatch.setattr(template_helper_module.PortInfo, "get_component_port", staticmethod(lambda component: 9001))
+
+    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
+    monkeypatch.setattr(helper, "check_is_redeployment", lambda: False)
+    monkeypatch.setattr(
+        template_helper_module,
+        "http_request",
+        lambda url, method=None, **kwargs: {"plan": {"edgex1": ["face-detection", "unknown"]}},
+    )
+
+    dag = {
+        TaskConstant.START.value: {"succ": ["face-detection"], "prev": []},
+        "face-detection": {"succ": [], "prev": [TaskConstant.START.value]},
+    }
+    source_deploy = [{"source": {"id": 9}, "node_set": ["edgex1"], "dag": dag}]
+
+    assert helper.request_deployment_decision(source_deploy) == {"face-detection": ["edgex1"]}
