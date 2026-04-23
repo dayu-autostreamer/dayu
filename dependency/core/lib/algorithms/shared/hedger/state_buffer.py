@@ -95,7 +95,7 @@ class StateBuffer:
         self.device_role_buffer: List[int] = []
         for device_idx in range(num_devices):
             if device_idx == self.physical_topology.source_idx:
-                self.device_role_buffer.append(0)
+                self.device_role_buffer.append(1) # TODO
             elif device_idx == self.physical_topology.cloud_idx:
                 self.device_role_buffer.append(2)
             else:

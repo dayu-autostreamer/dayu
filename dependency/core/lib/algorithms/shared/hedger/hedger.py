@@ -533,6 +533,9 @@ class Hedger:
             raise ValueError("Stage log path is only available in train mode.")
         return os.path.join(self._checkpoint_stage_dir(self.training_cfg.stage), filename)
 
+    def _inference_log_path(self, filename: str) -> str:
+        return os.path.join(self._checkpoint_stage_dir("inference"), filename)
+
     @staticmethod
     def _ppo_update_fieldnames() -> List[str]:
         return [
@@ -1512,6 +1515,19 @@ class Hedger:
             return 0.0
         return float(value.float().mean().item())
 
+    @staticmethod
+    def _scalar_value(value, default: float = 0.0) -> float:
+        if value is None:
+            return float(default)
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 0:
+                return float(default)
+            return float(value.detach().float().mean().cpu().item())
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
     def _state_record_metrics(
             self,
             logic_feats: Dict[str, torch.Tensor],
@@ -1594,6 +1610,61 @@ class Hedger:
             "state_gpu_util_max", "state_mem_util_mean", "state_mem_util_max",
             "state_model_flops_mean", "state_model_mem_mean",
             "state_gpu_flops_mean", "state_mem_capacity_mean",
+        ]
+
+    @staticmethod
+    def _latency_guard_record_fieldnames() -> List[str]:
+        return [
+            "latency_guard_active", "latency_guard_bad_ratio",
+            "latency_guard_bad_count", "latency_guard_sample_count",
+            "latency_guard_max_queue",
+        ]
+
+    def _latency_guard_record_metrics(self) -> Dict[str, Any]:
+        stats = self.latency_guard_status()
+        return {
+            "latency_guard_active": int(bool(stats.get("active", False))),
+            "latency_guard_bad_ratio": float(stats.get("bad_ratio", 0.0) or 0.0),
+            "latency_guard_bad_count": int(stats.get("bad_count", 0) or 0),
+            "latency_guard_sample_count": int(stats.get("count", 0) or 0),
+            "latency_guard_max_queue": float(stats.get("max_queue_length", 0.0) or 0.0),
+        }
+
+    @staticmethod
+    def _inference_deployment_fieldnames() -> List[str]:
+        return [
+            "step", "epoch", "decision_version", "served_deployment_version", "interval_s",
+            "dep_reward_estimate", "avg_off_reward", "off_reward_std", "off_reward_count",
+            "dep_change_cost", "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
+            "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95", "e2e_latency_p99",
+            "e2e_slo_violation", "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
+            "edge_cover_repair_cost", "edge_cover_unmet", "policy_logp", "policy_entropy",
+            "value_estimate", "raw_edge_replicas", "edge_replicas", "cloud_replicas",
+            "cloud_only", "cloud_only_ratio", "empty_edge_devices", "empty_edge_device_ratio",
+            "raw_deployment_plan", "deployment_plan", "active_deployment_plan",
+            *Hedger._state_record_fieldnames(),
+            *Hedger._latency_guard_record_fieldnames(),
+            "dep_offload_weight", "dep_change_weight", "dep_cloud_only_weight",
+            "dep_empty_device_weight", "cap_relax_weight", "edge_cover_repair_weight",
+            "latency_guard_penalty_weight", "max_edge_replicas_per_device",
+            "edge_memory_budget_ratio", "min_edge_replicas_per_service", "loaded_checkpoint",
+        ]
+
+    @staticmethod
+    def _inference_offloading_fieldnames() -> List[str]:
+        return [
+            "step", "epoch", "served_deployment_version", "interval_s",
+            "off_reward_estimate", "latency", "latency_cost", "slo_violation",
+            "cloud_fraction", "task_latency_count", "latest_task_latency", "aux_cost",
+            "switch_cnt", "correction_cnt", "correction_cost", "policy_logp",
+            "policy_entropy", "value_estimate", "raw_cloud_fraction",
+            "executed_cloud_fraction", "unique_targets", "feasible_targets_mean",
+            "feasible_targets_min", "feasible_targets_max", "raw_offloading_plan",
+            "offloading_plan", "active_deployment_plan", *Hedger._state_record_fieldnames(),
+            *Hedger._latency_guard_record_fieldnames(),
+            "feedback_task_observations", "feedback_deployment_version",
+            "feedback_deployment_versions", "off_latency_weight", "off_slo_weight",
+            "off_cloud_weight", "switch_weight", "correction_weight", "loaded_checkpoint",
         ]
 
     @staticmethod
@@ -2563,6 +2634,35 @@ class Hedger:
             f"{self._summarize_offloading_plan(self.offloading_plan)}"
         )
 
+        self.dep_recorder = Recorder(
+            self._inference_log_path("deployment_inference.csv"),
+            fmt="csv",
+            fieldnames=self._inference_deployment_fieldnames(),
+            overwrite=True,
+            flush_every=1,
+        )
+        self.off_recorder = Recorder(
+            self._inference_log_path("offloading_inference.csv"),
+            fmt="csv",
+            fieldnames=self._inference_offloading_fieldnames(),
+            overwrite=True,
+            flush_every=1,
+        )
+        self.dep_decision_recorder = Recorder(
+            self._inference_log_path("deployment_decisions.csv"),
+            fmt="csv",
+            fieldnames=self._deployment_decision_fieldnames(),
+            overwrite=True,
+            flush_every=1,
+        )
+        self.off_decision_recorder = Recorder(
+            self._inference_log_path("offloading_decisions.csv"),
+            fmt="csv",
+            fieldnames=self._offloading_decision_fieldnames(),
+            overwrite=True,
+            flush_every=1,
+        )
+
         deployment_thread = threading.Thread(target=self.inference_deployment_agent, daemon=True)
         offloading_thread = threading.Thread(target=self.inference_offloading_agent, daemon=True)
         deployment_thread.start()
@@ -2581,6 +2681,8 @@ class Hedger:
 
         self.deployment_thread_stop_event.set()
         self.offloading_thread_stop_event.set()
+        deployment_thread.join(timeout=5.0)
+        offloading_thread.join(timeout=5.0)
         LOGGER.info(
             f"[Hedger][Inference] Finished: "
             f"{self._summarize_deployment_plan(self.deployment_plan)}, "
@@ -2606,12 +2708,14 @@ class Hedger:
         step = 0
         while not self.deployment_thread_stop_event.is_set():
             try:
+                state_logic_feats = logic_feats
+                state_phys_feats = phys_feats
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
                 phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
                 prev_deploy_mask_dev = prev_deploy_mask.to(self.device) if prev_deploy_mask is not None else None
 
                 with self._model_lock, torch.inference_mode():
-                    deploy_mask, _, _, _, aux = self.deployment_agent.policy(
+                    deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
                         logic_edge_index=logic_edge_index,
                         logic_feats=logic_feats_dev,
                         phys_edge_index=phys_edge_index,
@@ -2622,6 +2726,9 @@ class Hedger:
                     )
 
                 deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
+                raw_deploy_mask = aux["raw_deploy_mask"].detach().cpu().bool()
+                exec_deploy_mask = deploy_mask.detach().cpu().bool()
+                raw_deploy_plan = self._map_deployment_mask_to_deployment_plan(raw_deploy_mask)
                 with self._data_lock:
                     self.pending_deployment_plan = deploy_plan
                     self.pending_deploy_mask = deploy_mask.detach().cpu()
@@ -2631,23 +2738,121 @@ class Hedger:
                     self.deployment_interval,
                 )
 
-                prev_deploy_mask = self._current_deploy_mask()
-                logic_feats, phys_feats, metrics, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+                served_version = self.get_active_deployment_version()
+                new_logic_feats, new_phys_feats, metrics, _ = self._collect_deployment_state(
+                    prev_deploy_mask=prev_deploy_mask,
+                    deployment_version=served_version,
+                )
+                cloud_idx = self.physical_topology.cloud_idx
+                raw_edge_replicas = int(raw_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+                edge_replicas = int(exec_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+                cloud_replicas = int(exec_deploy_mask[:, cloud_idx].sum().item())
+                cloud_only = int((~exec_deploy_mask[:, :cloud_idx].any(dim=1)).sum().item()) if cloud_idx > 0 else \
+                    int(exec_deploy_mask.size(0))
+                cloud_only_ratio = float(cloud_only) / float(max(1, int(exec_deploy_mask.size(0))))
+                edge_device_count = max(0, int(cloud_idx))
+                if edge_device_count > 0:
+                    used_edge_devices = exec_deploy_mask[:, :cloud_idx].any(dim=0)
+                    empty_edge_devices = int((~used_edge_devices).sum().item())
+                    empty_edge_device_ratio = float(empty_edge_devices) / float(edge_device_count)
+                else:
+                    empty_edge_devices = 0
+                    empty_edge_device_ratio = 0.0
+                aux["cloud_only_count"] = cloud_only
+                aux["cloud_only_ratio"] = cloud_only_ratio
+                aux["empty_edge_device_count"] = empty_edge_devices
+                aux["empty_edge_device_ratio"] = empty_edge_device_ratio
+                metrics["latency_guard_penalty_cost"] = 0.0
+                dep_reward_estimate = self._compute_deployment_reward(metrics, aux)
+                state_record = self._state_record_metrics(state_logic_feats, state_phys_feats)
+                guard_record = self._latency_guard_record_metrics()
+                with self._data_lock:
+                    active_deployment_plan = copy.deepcopy(self.deployment_plan)
+                if self.dep_recorder is not None:
+                    self.dep_recorder.log(
+                        step=step,
+                        epoch=self._epoch,
+                        decision_version=decision_version,
+                        served_deployment_version=served_version,
+                        interval_s=self.deployment_interval,
+                        dep_reward_estimate=dep_reward_estimate,
+                        avg_off_reward=metrics["avg_offloading_reward"],
+                        off_reward_std=metrics["offloading_reward_std"],
+                        off_reward_count=metrics["offloading_reward_count"],
+                        dep_change_cost=metrics["deploy_change_cost"],
+                        e2e_latency_count=metrics["e2e_latency_count"],
+                        e2e_latency_mean=metrics["e2e_latency_mean"],
+                        e2e_latency_latest=metrics["e2e_latency_latest"],
+                        e2e_latency_p50=metrics["e2e_latency_p50"],
+                        e2e_latency_p90=metrics["e2e_latency_p90"],
+                        e2e_latency_p95=metrics["e2e_latency_p95"],
+                        e2e_latency_p99=metrics["e2e_latency_p99"],
+                        e2e_slo_violation=metrics["e2e_slo_violation"],
+                        cap_relax_cnt=aux["capacity_relax_cnt"],
+                        cap_relax_cost=aux["capacity_relax_cost"],
+                        edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
+                        edge_cover_repair_cost=aux.get("edge_cover_repair_cost", 0.0),
+                        edge_cover_unmet=aux.get("edge_cover_unmet", 0),
+                        policy_logp=self._scalar_value(logp),
+                        policy_entropy=self._scalar_value(ent),
+                        value_estimate=self._scalar_value(value),
+                        raw_edge_replicas=raw_edge_replicas,
+                        edge_replicas=edge_replicas,
+                        cloud_replicas=cloud_replicas,
+                        cloud_only=cloud_only,
+                        cloud_only_ratio=cloud_only_ratio,
+                        empty_edge_devices=empty_edge_devices,
+                        empty_edge_device_ratio=empty_edge_device_ratio,
+                        raw_deployment_plan=self._json_for_record(raw_deploy_plan),
+                        deployment_plan=self._json_for_record(deploy_plan),
+                        active_deployment_plan=self._json_for_record(active_deployment_plan),
+                        **state_record,
+                        **guard_record,
+                        dep_offload_weight=self.deployment_agent_params["reward_dep_offload_weight"],
+                        dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
+                        dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
+                        dep_empty_device_weight=self.deployment_agent_params["reward_dep_empty_device_weight"],
+                        cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
+                        edge_cover_repair_weight=self.deployment_agent_params["penalty_edge_cover_repair"],
+                        latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
+                        max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
+                        edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
+                        min_edge_replicas_per_service=self.deployment_agent_params["min_edge_replicas_per_service"],
+                        loaded_checkpoint=self._loaded_checkpoint_path,
+                    )
+                self._log_deployment_decisions(
+                    step=step,
+                    raw_deploy_mask=raw_deploy_mask,
+                    exec_deploy_mask=exec_deploy_mask,
+                    logic_feats=state_logic_feats,
+                )
                 LOGGER.debug(
                     f"[Hedger][Inference][Deployment] step={step}, "
                     f"pending_version={decision_version}, "
+                    f"served_version={served_version}, "
                     f"{self._summarize_deploy_mask(deploy_mask.detach().cpu())}, "
                     f"{self._summarize_deployment_plan(deploy_plan)}, "
-                    f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
+                    f"{self._summarize_state_snapshot(new_logic_feats, new_phys_feats, metrics)}, "
                     f"capacity_relax_cnt={aux['capacity_relax_cnt']}, "
                     f"capacity_relax_cost={self._format_log_value(aux['capacity_relax_cost'])}, "
                     f"edge_cover_repair_cnt={aux.get('edge_cover_repair_cnt', 0)}, "
                     f"edge_cover_unmet={aux.get('edge_cover_unmet', 0)}"
                 )
+                prev_deploy_mask = self._current_deploy_mask()
+                logic_feats = new_logic_feats
+                phys_feats = new_phys_feats
                 step += 1
             except Exception as e:
                 LOGGER.exception(f"[Hedger][Inference][Deployment] Worker loop error: {e}")
                 time.sleep(0.5)
+
+        if self.dep_recorder is not None:
+            self.dep_recorder.close()
+            self.dep_recorder = None
+        if self.dep_decision_recorder is not None:
+            self.dep_decision_recorder.close()
+            self.dep_decision_recorder = None
+        LOGGER.info("[Hedger][Inference][Deployment] Worker stopped.")
 
     def inference_offloading_agent(self):
         LOGGER.info(
@@ -2663,17 +2868,23 @@ class Hedger:
 
         offloading_time_ticket = 0
         logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+        last_task_version = (
+            self.state_buffer.get_task_observation_version()
+            if self.state_buffer is not None else 0
+        )
 
         step = 0
         while not self.offloading_thread_stop_event.is_set():
             try:
+                state_logic_feats = logic_feats
+                state_phys_feats = phys_feats
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
                 phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
                 static_mask = self._current_deploy_mask()
                 static_mask_dev = static_mask.to(self.device)
 
                 with self._model_lock, torch.inference_mode():
-                    actions, _, _, _, aux = self.offloading_agent.policy(
+                    actions, logp, ent, value, aux = self.offloading_agent.policy(
                         logic_edge_index=logic_edge_index,
                         logic_feats=logic_feats_dev,
                         phys_edge_index=phys_edge_index,
@@ -2691,19 +2902,127 @@ class Hedger:
                     self.offloading_interval,
                 )
 
-                logic_feats, phys_feats, metrics, _ = self._collect_offloading_state()
+                task_feedback_summary = (
+                    self.state_buffer.get_task_observation_deployment_summary(last_task_version)
+                    if self.state_buffer is not None
+                    else {
+                        "current_version": last_task_version,
+                        "count": 0,
+                        "deployment_version_counts": {},
+                        "dominant_deployment_version": None,
+                        "unique_deployment_versions": 0,
+                        "all_same_deployment_version": False,
+                    }
+                )
+                current_task_version = int(task_feedback_summary["current_version"])
+                feedback_deployment_version = None
+                if (
+                        task_feedback_summary.get("all_same_deployment_version")
+                        and task_feedback_summary.get("count", 0) > 0
+                ):
+                    feedback_deployment_version = task_feedback_summary.get("dominant_deployment_version")
+
+                new_logic_feats, new_phys_feats, metrics, _ = self._collect_offloading_state(
+                    since_task_version=last_task_version,
+                    deployment_version=feedback_deployment_version,
+                )
+                if current_task_version > last_task_version:
+                    last_task_version = current_task_version
+
+                latency_cost = self._compute_offloading_latency_cost(metrics["latency"])
+                off_reward_estimate = self._compute_offloading_reward(metrics, aux)
+                cloud_idx = self.physical_topology.cloud_idx
+                raw_actions_cpu = aux["raw_actions"].detach().cpu()
+                actions_cpu = actions.detach().cpu()
+                raw_offloading_plan = self._map_offloading_mask_to_offloading_plan(raw_actions_cpu)
+                raw_cloud_fraction = float((raw_actions_cpu == cloud_idx).float().mean().item())
+                executed_cloud_fraction = float((actions_cpu == cloud_idx).float().mean().item())
+                unique_targets = int(actions_cpu.unique().numel())
+                feasible_counts = static_mask.detach().cpu().float().sum(dim=1)
+                feasible_targets_mean = float(feasible_counts.mean().item()) if feasible_counts.numel() else 0.0
+                feasible_targets_min = float(feasible_counts.min().item()) if feasible_counts.numel() else 0.0
+                feasible_targets_max = float(feasible_counts.max().item()) if feasible_counts.numel() else 0.0
+                state_record = self._state_record_metrics(state_logic_feats, state_phys_feats)
+                guard_record = self._latency_guard_record_metrics()
+                served_deployment_version = self.get_active_deployment_version()
+                with self._data_lock:
+                    active_deployment_plan = copy.deepcopy(self.deployment_plan)
+                if self.off_recorder is not None:
+                    self.off_recorder.log(
+                        step=step,
+                        epoch=self._epoch,
+                        served_deployment_version=served_deployment_version,
+                        interval_s=self.offloading_interval,
+                        off_reward_estimate=off_reward_estimate,
+                        latency=metrics["latency"],
+                        latency_cost=latency_cost,
+                        slo_violation=metrics["slo_violation"],
+                        cloud_fraction=metrics["cloud_fraction"],
+                        task_latency_count=metrics["task_latency_count"],
+                        latest_task_latency=metrics["latest_task_latency"],
+                        aux_cost=aux["aux_cost"],
+                        switch_cnt=aux["switches"],
+                        correction_cnt=aux["correction_cnt"],
+                        correction_cost=aux["correction_cost"],
+                        policy_logp=self._scalar_value(logp),
+                        policy_entropy=self._scalar_value(ent),
+                        value_estimate=self._scalar_value(value),
+                        raw_cloud_fraction=raw_cloud_fraction,
+                        executed_cloud_fraction=executed_cloud_fraction,
+                        unique_targets=unique_targets,
+                        feasible_targets_mean=feasible_targets_mean,
+                        feasible_targets_min=feasible_targets_min,
+                        feasible_targets_max=feasible_targets_max,
+                        raw_offloading_plan=self._json_for_record(raw_offloading_plan),
+                        offloading_plan=self._json_for_record(self.offloading_plan),
+                        active_deployment_plan=self._json_for_record(active_deployment_plan),
+                        **state_record,
+                        **guard_record,
+                        feedback_task_observations=task_feedback_summary.get("count", 0),
+                        feedback_deployment_version=feedback_deployment_version,
+                        feedback_deployment_versions=self._json_for_record(
+                            {
+                                str(key): value
+                                for key, value in task_feedback_summary.get("deployment_version_counts", {}).items()
+                            }
+                        ),
+                        off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
+                        off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
+                        off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
+                        switch_weight=self.offloading_agent_params["penalty_switch"],
+                        correction_weight=self.offloading_agent_params["penalty_relax"],
+                        loaded_checkpoint=self._loaded_checkpoint_path,
+                    )
+                self._log_offloading_decisions(
+                    step=step,
+                    raw_actions=raw_actions_cpu,
+                    executed_actions=actions_cpu,
+                    static_mask=static_mask,
+                    logic_feats=state_logic_feats,
+                    phys_feats=state_phys_feats,
+                )
                 LOGGER.debug(
                     f"[Hedger][Inference][Offloading] step={step}, "
                     f"{self._summarize_offloading_plan(self.offloading_plan)}, "
-                    f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
+                    f"{self._summarize_state_snapshot(new_logic_feats, new_phys_feats, metrics)}, "
                     f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}, "
                     f"correction_cost={self._format_log_value(aux['correction_cost'])}, "
                     f"aux_cost={self._format_log_value(aux['aux_cost'])}"
                 )
+                logic_feats = new_logic_feats
+                phys_feats = new_phys_feats
                 step += 1
             except Exception as e:
                 LOGGER.exception(f"[Hedger][Inference][Offloading] Worker loop error: {e}")
                 time.sleep(0.5)
+
+        if self.off_recorder is not None:
+            self.off_recorder.close()
+            self.off_recorder = None
+        if self.off_decision_recorder is not None:
+            self.off_decision_recorder.close()
+            self.off_decision_recorder = None
+        LOGGER.info("[Hedger][Inference][Offloading] Worker stopped.")
 
     def train_hedger(self):
         assert self.logical_topology is not None, "Logical topology must be registered before training."
