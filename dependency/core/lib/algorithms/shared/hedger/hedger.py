@@ -72,6 +72,18 @@ class HedgerTrainingCfg:
 
 
 @dataclass(frozen=True)
+class HedgerInferenceCfg:
+    wait_for_initial_task_feedback: bool = True
+    initial_task_feedback_min_samples: int = 2
+    initial_task_feedback_timeout_s: Optional[float] = 60.0
+    deployment_wait_until_served: bool = True
+    deployment_require_version_matched_feedback: bool = True
+    deployment_min_version_matched_samples: int = 0
+    deployment_feedback_timeout_s: Optional[float] = None
+    record_offloading_feedback: bool = True
+
+
+@dataclass(frozen=True)
 class HedgerLatencyGuardCfg:
     enabled: bool = False
     latency_threshold_s: float = 3.0
@@ -179,6 +191,7 @@ class Hedger:
         self.state_cfg = self._build_state_cfg(config)
         self.training_cfg = self._build_training_cfg(config) if self.mode == "train" else None
         self.stage_cfg = self._build_training_stage_cfg(self.training_cfg.stage) if self.training_cfg is not None else None
+        self.inference_cfg = self._build_inference_cfg(config)
         self.latency_guard_cfg = self._build_latency_guard_cfg(config)
         self.checkpoint_cfg = self._build_checkpoint_cfg(config)
 
@@ -379,6 +392,45 @@ class Hedger:
             deployment_batch_size=max(1, int(batch_size["deployment"])),
             offloading_batch_size=max(1, int(batch_size["offloading"])),
             deployment_default_warmup=deployment_default_warmup,
+        )
+
+    def _build_inference_cfg(self, config: dict) -> HedgerInferenceCfg:
+        inference = config.get("inference") or {}
+        if not isinstance(inference, dict):
+            raise ValueError("Hedger config `inference` must be a mapping when provided.")
+
+        initial_timeout = inference.get("initial_task_feedback_timeout_s", 60.0)
+        initial_timeout = None if initial_timeout is None else max(0.0, float(initial_timeout))
+
+        feedback_timeout = inference.get(
+            "deployment_feedback_timeout_s",
+            self.state_cfg.deployment_feedback_timeout_s,
+        )
+        feedback_timeout = None if feedback_timeout is None else max(0.0, float(feedback_timeout))
+
+        default_min_samples = self.state_cfg.deployment_reward_min_samples
+        configured_min_samples = int(inference.get(
+            "deployment_min_version_matched_samples",
+            default_min_samples,
+        ))
+
+        return HedgerInferenceCfg(
+            wait_for_initial_task_feedback=bool(inference.get("wait_for_initial_task_feedback", True)),
+            initial_task_feedback_min_samples=max(
+                1,
+                int(inference.get(
+                    "initial_task_feedback_min_samples",
+                    max(1, self.state_cfg.min_dynamic_len),
+                )),
+            ),
+            initial_task_feedback_timeout_s=initial_timeout,
+            deployment_wait_until_served=bool(inference.get("deployment_wait_until_served", True)),
+            deployment_require_version_matched_feedback=bool(
+                inference.get("deployment_require_version_matched_feedback", True)
+            ),
+            deployment_min_version_matched_samples=max(1, configured_min_samples),
+            deployment_feedback_timeout_s=feedback_timeout,
+            record_offloading_feedback=bool(inference.get("record_offloading_feedback", True)),
         )
 
     def _build_state_cfg(self, config: dict) -> HedgerStateCfg:
@@ -1702,7 +1754,9 @@ class Hedger:
             "avg_off_reward", "off_reward_std", "off_reward_count",
             "dep_change_cost", "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
             "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95", "e2e_latency_p99",
-            "e2e_slo_violation", "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
+            "e2e_slo_violation", "feedback_gate_enabled", "feedback_gate_required_samples",
+            "feedback_gate_collected_samples", "feedback_gate_timed_out", "feedback_gate_guard_truncated",
+            "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
             "edge_cover_repair_cost", "edge_cover_unmet", "policy_logp", "policy_entropy",
             "value_estimate", "raw_edge_replicas", "edge_replicas", "cloud_replicas",
             "cloud_only", "cloud_only_ratio", "empty_edge_devices", "empty_edge_device_ratio",
@@ -1729,8 +1783,8 @@ class Hedger:
             "offloading_plan", "active_deployment_plan", *Hedger._state_record_fieldnames(),
             *Hedger._latency_guard_record_fieldnames(),
             "feedback_task_observations", "feedback_deployment_version",
-            "feedback_deployment_versions", "off_latency_weight", "off_slo_weight",
-            "off_cloud_weight", "switch_weight", "correction_weight", "loaded_checkpoint",
+            "feedback_deployment_versions", "feedback_recorded", "off_latency_weight",
+            "off_slo_weight", "off_cloud_weight", "switch_weight", "correction_weight", "loaded_checkpoint",
         ]
 
     @staticmethod
@@ -2196,6 +2250,157 @@ class Hedger:
                 self._latency_guard_trigger_event.clear()
 
         return time.time(), "stop", last_guard_trigger_seq
+
+    def _wait_for_initial_inference_task_feedback(self, worker_name: str, stop_event: threading.Event) -> int:
+        cfg = self.inference_cfg
+        if not cfg.wait_for_initial_task_feedback or self.state_buffer is None:
+            return self.state_buffer.get_task_observation_version() if self.state_buffer is not None else 0
+
+        min_samples = max(1, int(cfg.initial_task_feedback_min_samples))
+        timeout_s = cfg.initial_task_feedback_timeout_s
+        start_t = time.monotonic()
+        last_log_t = 0.0
+        while not stop_event.is_set():
+            current_count = self.state_buffer.get_task_observation_version()
+            if current_count >= min_samples:
+                LOGGER.info(
+                    f"[Hedger][Inference][{worker_name}] Initial task feedback gate passed: "
+                    f"samples={current_count}/{min_samples}."
+                )
+                return current_count
+
+            now = time.monotonic()
+            if timeout_s is not None and now - start_t >= float(timeout_s):
+                LOGGER.warning(
+                    f"[Hedger][Inference][{worker_name}] Initial task feedback gate timed out: "
+                    f"samples={current_count}/{min_samples}, "
+                    f"timeout={self._format_log_value(timeout_s, 2)}s. "
+                    "Proceed with the best-effort state snapshot."
+                )
+                return current_count
+
+            if now - last_log_t >= 10.0:
+                last_log_t = now
+                LOGGER.info(
+                    f"[Hedger][Inference][{worker_name}] Waiting for initial completed-task feedback: "
+                    f"samples={current_count}/{min_samples}."
+                )
+            time.sleep(0.5)
+
+        return self.state_buffer.get_task_observation_version()
+
+    def _wait_for_inference_deployment_served(self, decision_version: int) -> bool:
+        if not self.inference_cfg.deployment_wait_until_served:
+            return True
+
+        timeout_s = self.inference_cfg.deployment_feedback_timeout_s
+        start_t = time.monotonic()
+        last_log_t = 0.0
+        while not self.deployment_thread_stop_event.is_set():
+            with self._deployment_version_cond:
+                served_version = int(self._deployment_served_version)
+                if served_version >= int(decision_version):
+                    return True
+                self._deployment_version_cond.wait(timeout=0.5)
+
+            now = time.monotonic()
+            if now - last_log_t >= 10.0:
+                last_log_t = now
+                elapsed = now - start_t
+                LOGGER.info(
+                    f"[Hedger][Inference][Deployment] Waiting for scheduler to serve deployment decision: "
+                    f"served={served_version}, target={decision_version}, "
+                    f"elapsed={self._format_log_value(elapsed, 2)}s."
+                )
+            if timeout_s is not None and now - start_t >= float(timeout_s):
+                LOGGER.warning(
+                    f"[Hedger][Inference][Deployment] Deployment serve wait exceeded "
+                    f"{self._format_log_value(timeout_s, 2)}s for version={decision_version}; "
+                    "continue waiting to avoid overwriting an unserved inference decision."
+                )
+                start_t = now
+
+        return False
+
+    def _wait_for_inference_deployment_feedback_samples(self, deployment_version: Optional[int]) -> Dict[str, Any]:
+        cfg = self.inference_cfg
+        required = max(1, int(cfg.deployment_min_version_matched_samples))
+        if (
+                not cfg.deployment_require_version_matched_feedback
+                or self.state_buffer is None
+                or deployment_version is None
+        ):
+            return {
+                "enabled": bool(cfg.deployment_require_version_matched_feedback),
+                "required": required,
+                "count": self._deployment_feedback_count(deployment_version),
+                "timed_out": False,
+                "skipped": True,
+            }
+
+        timeout_s = cfg.deployment_feedback_timeout_s
+        start_t = time.monotonic()
+        last_log_t = 0.0
+        while not self.deployment_thread_stop_event.is_set():
+            count = self._deployment_feedback_count(deployment_version)
+            if count >= required:
+                return {
+                    "enabled": True,
+                    "required": required,
+                    "count": count,
+                    "timed_out": False,
+                    "skipped": False,
+                }
+
+            if self._latency_guard_trigger_event_for_deployment(deployment_version) is not None:
+                LOGGER.warning(
+                    f"[Hedger][Inference][Deployment] Use guard-truncated deployment feedback: "
+                    f"version={deployment_version}, samples={count}/{required}."
+                )
+                return {
+                    "enabled": True,
+                    "required": required,
+                    "count": count,
+                    "timed_out": False,
+                    "skipped": False,
+                    "guard_truncated": True,
+                }
+
+            now = time.monotonic()
+            if timeout_s is not None and now - start_t >= float(timeout_s):
+                LOGGER.warning(
+                    f"[Hedger][Inference][Deployment] Version-matched feedback gate timed out: "
+                    f"version={deployment_version}, samples={count}/{required}, "
+                    f"timeout={self._format_log_value(timeout_s, 2)}s. "
+                    "Proceed with available inference feedback."
+                )
+                return {
+                    "enabled": True,
+                    "required": required,
+                    "count": count,
+                    "timed_out": True,
+                    "skipped": False,
+                }
+
+            if now - last_log_t >= 10.0:
+                last_log_t = now
+                LOGGER.info(
+                    f"[Hedger][Inference][Deployment] Waiting for version-matched feedback: "
+                    f"version={deployment_version}, samples={count}/{required}."
+                )
+            self.state_buffer.wait_for_offloading_rewards(
+                required,
+                timeout_s=0.5,
+                deployment_version=deployment_version,
+            )
+
+        return {
+            "enabled": True,
+            "required": required,
+            "count": self._deployment_feedback_count(deployment_version),
+            "timed_out": False,
+            "skipped": False,
+        }
 
     def _collect_graph_state(self, seq_len: int):
         assert self.state_buffer is not None, "State buffer must be registered before collecting state."
@@ -2815,6 +3020,14 @@ class Hedger:
         assert self.logical_topology is not None and self.physical_topology is not None, \
             "Topologies must be registered before starting deployment inference."
 
+        self._wait_for_initial_inference_task_feedback(
+            "Deployment",
+            self.deployment_thread_stop_event,
+        )
+        if self.deployment_thread_stop_event.is_set():
+            LOGGER.info("[Hedger][Inference][Deployment] Worker stopped during initial feedback wait.")
+            return
+
         logic_edge_index = self._build_edge_index(self.logical_topology.links)
         phys_edge_index = self._build_edge_index(self.physical_topology.links)
 
@@ -2858,6 +3071,8 @@ class Hedger:
                     self._pending_deployment_force_serve = current_decision_reason == "latency_guard_trigger"
                     self._pending_deployment_reason = current_decision_reason
                     decision_version = self._mark_deployment_decision_pending()
+                if not self._wait_for_inference_deployment_served(decision_version):
+                    break
                 (
                     deployment_time_ticket,
                     next_decision_reason,
@@ -2869,6 +3084,17 @@ class Hedger:
                 )
 
                 served_version = self.get_active_deployment_version()
+                if next_decision_reason != "latency_guard_trigger":
+                    feedback_gate = self._wait_for_inference_deployment_feedback_samples(served_version)
+                else:
+                    feedback_gate = {
+                        "enabled": bool(self.inference_cfg.deployment_require_version_matched_feedback),
+                        "required": max(1, int(self.inference_cfg.deployment_min_version_matched_samples)),
+                        "count": self._deployment_feedback_count(served_version),
+                        "timed_out": False,
+                        "skipped": False,
+                        "guard_truncated": True,
+                    }
                 new_logic_feats, new_phys_feats, metrics, _ = self._collect_deployment_state(
                     prev_deploy_mask=prev_deploy_mask,
                     deployment_version=served_version,
@@ -2920,6 +3146,11 @@ class Hedger:
                         e2e_latency_p95=metrics["e2e_latency_p95"],
                         e2e_latency_p99=metrics["e2e_latency_p99"],
                         e2e_slo_violation=metrics["e2e_slo_violation"],
+                        feedback_gate_enabled=int(bool(feedback_gate.get("enabled", False))),
+                        feedback_gate_required_samples=int(feedback_gate.get("required", 0) or 0),
+                        feedback_gate_collected_samples=int(feedback_gate.get("count", 0) or 0),
+                        feedback_gate_timed_out=int(bool(feedback_gate.get("timed_out", False))),
+                        feedback_gate_guard_truncated=int(bool(feedback_gate.get("guard_truncated", False))),
                         cap_relax_cnt=aux["capacity_relax_cnt"],
                         cap_relax_cost=aux["capacity_relax_cost"],
                         edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
@@ -2997,6 +3228,14 @@ class Hedger:
         assert self.logical_topology is not None and self.physical_topology is not None, \
             "Topologies must be registered before starting offloading inference."
 
+        self._wait_for_initial_inference_task_feedback(
+            "Offloading",
+            self.offloading_thread_stop_event,
+        )
+        if self.offloading_thread_stop_event.is_set():
+            LOGGER.info("[Hedger][Inference][Offloading] Worker stopped during initial feedback wait.")
+            return
+
         logic_edge_index = self._build_edge_index(self.logical_topology.links)
         phys_edge_index = self._build_edge_index(self.physical_topology.links)
 
@@ -3052,6 +3291,7 @@ class Hedger:
                     }
                 )
                 current_task_version = int(task_feedback_summary["current_version"])
+                has_new_feedback = current_task_version > last_task_version
                 feedback_deployment_version = None
                 if (
                         task_feedback_summary.get("all_same_deployment_version")
@@ -3068,6 +3308,18 @@ class Hedger:
 
                 latency_cost = self._compute_offloading_latency_cost(metrics["latency"])
                 off_reward_estimate = self._compute_offloading_reward(metrics, aux)
+                feedback_recorded = False
+                if (
+                        self.inference_cfg.record_offloading_feedback
+                        and self.state_buffer is not None
+                        and feedback_deployment_version is not None
+                        and has_new_feedback
+                ):
+                    feedback_recorded = self.state_buffer.add_offloading_reward(
+                        off_reward_estimate,
+                        task_version=current_task_version,
+                        deployment_version=feedback_deployment_version,
+                    )
                 cloud_idx = self.physical_topology.cloud_idx
                 raw_actions_cpu = aux["raw_actions"].detach().cpu()
                 actions_cpu = actions.detach().cpu()
@@ -3124,6 +3376,7 @@ class Hedger:
                                 for key, value in task_feedback_summary.get("deployment_version_counts", {}).items()
                             }
                         ),
+                        feedback_recorded=feedback_recorded,
                         off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
                         off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                         off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
