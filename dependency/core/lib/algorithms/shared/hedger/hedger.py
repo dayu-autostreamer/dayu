@@ -12,6 +12,7 @@ import glob
 import json
 
 from core.lib.common import LOGGER, FileOps, Context, Recorder, KubeConfig
+from core.lib.estimation import OverheadEstimator
 
 from .topology_encoder import TopologyEncoders
 from .ppo_agent import HedgerOffloadingPPO, HedgerDeploymentPPO
@@ -166,6 +167,7 @@ class Hedger:
         config = copy.deepcopy(config or {})
 
         self.mode = self._require_choice(config, "mode", {"train", "inference"})
+        self.agent_id = int(config.get("agent_id", 0))
         self.device = torch.device(self._require_str(config, "device"))
         self.seed = int(config.get("seed", 0))
 
@@ -242,6 +244,19 @@ class Hedger:
         self.off_update_recorder = None
         self.dep_decision_recorder = None
         self.off_decision_recorder = None
+        self.deployment_overhead_estimator = None
+        self.offloading_overhead_estimator = None
+        if self.mode == "inference":
+            self.deployment_overhead_estimator = OverheadEstimator(
+                "Hedger-Deployment",
+                "scheduler/hedger",
+                agent_id=self.agent_id,
+            )
+            self.offloading_overhead_estimator = OverheadEstimator(
+                "Hedger-Offloading",
+                "scheduler/hedger",
+                agent_id=self.agent_id,
+            )
 
         self.cur_deploy_mask = None
         self.pending_deployment_plan = None
@@ -1528,6 +1543,31 @@ class Hedger:
         except (TypeError, ValueError):
             return float(default)
 
+    def _sync_decision_device(self) -> None:
+        if self.device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.synchronize(self.device)
+
+    @staticmethod
+    def _latest_overhead(estimator) -> float:
+        if estimator is None:
+            return 0.0
+        return float(estimator.get_latest_overhead())
+
+    def get_deployment_decision_overhead(self) -> float:
+        return self._latest_overhead(self.deployment_overhead_estimator)
+
+    def get_offloading_decision_overhead(self) -> float:
+        return self._latest_overhead(self.offloading_overhead_estimator)
+
+    def get_schedule_overhead(self) -> float:
+        deployment_overhead = self.get_deployment_decision_overhead()
+        offloading_overhead = self.get_offloading_decision_overhead()
+        if self.deployment_interval > 0.0:
+            deployment_weight = self.offloading_interval / self.deployment_interval
+        else:
+            deployment_weight = 1.0
+        return offloading_overhead + deployment_weight * deployment_overhead
+
     def _state_record_metrics(
             self,
             logic_feats: Dict[str, torch.Tensor],
@@ -1634,7 +1674,8 @@ class Hedger:
     def _inference_deployment_fieldnames() -> List[str]:
         return [
             "step", "epoch", "decision_version", "served_deployment_version", "interval_s",
-            "dep_reward_estimate", "avg_off_reward", "off_reward_std", "off_reward_count",
+            "deployment_decision_overhead_s", "dep_reward_estimate",
+            "avg_off_reward", "off_reward_std", "off_reward_count",
             "dep_change_cost", "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
             "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95", "e2e_latency_p99",
             "e2e_slo_violation", "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
@@ -1654,7 +1695,8 @@ class Hedger:
     def _inference_offloading_fieldnames() -> List[str]:
         return [
             "step", "epoch", "served_deployment_version", "interval_s",
-            "off_reward_estimate", "latency", "latency_cost", "slo_violation",
+            "offloading_decision_overhead_s", "off_reward_estimate",
+            "latency", "latency_cost", "slo_violation",
             "cloud_fraction", "task_latency_count", "latest_task_latency", "aux_cost",
             "switch_cnt", "correction_cnt", "correction_cost", "policy_logp",
             "policy_entropy", "value_estimate", "raw_cloud_fraction",
@@ -2714,21 +2756,24 @@ class Hedger:
                 phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
                 prev_deploy_mask_dev = prev_deploy_mask.to(self.device) if prev_deploy_mask is not None else None
 
-                with self._model_lock, torch.inference_mode():
-                    deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
-                        logic_edge_index=logic_edge_index,
-                        logic_feats=logic_feats_dev,
-                        phys_edge_index=phys_edge_index,
-                        phys_feats=phys_feats_dev,
-                        topo_order=None,
-                        prev_deploy_mask=prev_deploy_mask_dev,
-                        deterministic=True,
-                    )
-
-                deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
-                raw_deploy_mask = aux["raw_deploy_mask"].detach().cpu().bool()
-                exec_deploy_mask = deploy_mask.detach().cpu().bool()
-                raw_deploy_plan = self._map_deployment_mask_to_deployment_plan(raw_deploy_mask)
+                with self._model_lock:
+                    self._sync_decision_device()
+                    with self.deployment_overhead_estimator, torch.inference_mode():
+                        deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
+                            logic_edge_index=logic_edge_index,
+                            logic_feats=logic_feats_dev,
+                            phys_edge_index=phys_edge_index,
+                            phys_feats=phys_feats_dev,
+                            topo_order=None,
+                            prev_deploy_mask=prev_deploy_mask_dev,
+                            deterministic=True,
+                        )
+                        deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
+                        raw_deploy_mask = aux["raw_deploy_mask"].detach().cpu().bool()
+                        exec_deploy_mask = deploy_mask.detach().cpu().bool()
+                        raw_deploy_plan = self._map_deployment_mask_to_deployment_plan(raw_deploy_mask)
+                        self._sync_decision_device()
+                deployment_decision_overhead_s = self.get_deployment_decision_overhead()
                 with self._data_lock:
                     self.pending_deployment_plan = deploy_plan
                     self.pending_deploy_mask = deploy_mask.detach().cpu()
@@ -2775,6 +2820,7 @@ class Hedger:
                         decision_version=decision_version,
                         served_deployment_version=served_version,
                         interval_s=self.deployment_interval,
+                        deployment_decision_overhead_s=deployment_decision_overhead_s,
                         dep_reward_estimate=dep_reward_estimate,
                         avg_off_reward=metrics["avg_offloading_reward"],
                         off_reward_std=metrics["offloading_reward_std"],
@@ -2830,6 +2876,7 @@ class Hedger:
                     f"[Hedger][Inference][Deployment] step={step}, "
                     f"pending_version={decision_version}, "
                     f"served_version={served_version}, "
+                    f"decision_overhead={self._format_log_value(deployment_decision_overhead_s, 6)}s, "
                     f"{self._summarize_deploy_mask(deploy_mask.detach().cpu())}, "
                     f"{self._summarize_deployment_plan(deploy_plan)}, "
                     f"{self._summarize_state_snapshot(new_logic_feats, new_phys_feats, metrics)}, "
@@ -2883,18 +2930,21 @@ class Hedger:
                 static_mask = self._current_deploy_mask()
                 static_mask_dev = static_mask.to(self.device)
 
-                with self._model_lock, torch.inference_mode():
-                    actions, logp, ent, value, aux = self.offloading_agent.policy(
-                        logic_edge_index=logic_edge_index,
-                        logic_feats=logic_feats_dev,
-                        phys_edge_index=phys_edge_index,
-                        phys_feats=phys_feats_dev,
-                        static_mask=static_mask_dev,
-                        topo_order=None,
-                        deterministic=True,
-                    )
-
-                offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
+                with self._model_lock:
+                    self._sync_decision_device()
+                    with self.offloading_overhead_estimator, torch.inference_mode():
+                        actions, logp, ent, value, aux = self.offloading_agent.policy(
+                            logic_edge_index=logic_edge_index,
+                            logic_feats=logic_feats_dev,
+                            phys_edge_index=phys_edge_index,
+                            phys_feats=phys_feats_dev,
+                            static_mask=static_mask_dev,
+                            topo_order=None,
+                            deterministic=True,
+                        )
+                        offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
+                        self._sync_decision_device()
+                offloading_decision_overhead_s = self.get_offloading_decision_overhead()
                 with self._data_lock:
                     self.offloading_plan = offloading_plan
                 offloading_time_ticket = self._sleep_until_next_tick(
@@ -2953,6 +3003,7 @@ class Hedger:
                         epoch=self._epoch,
                         served_deployment_version=served_deployment_version,
                         interval_s=self.offloading_interval,
+                        offloading_decision_overhead_s=offloading_decision_overhead_s,
                         off_reward_estimate=off_reward_estimate,
                         latency=metrics["latency"],
                         latency_cost=latency_cost,
@@ -3003,6 +3054,7 @@ class Hedger:
                 )
                 LOGGER.debug(
                     f"[Hedger][Inference][Offloading] step={step}, "
+                    f"decision_overhead={self._format_log_value(offloading_decision_overhead_s, 6)}s, "
                     f"{self._summarize_offloading_plan(self.offloading_plan)}, "
                     f"{self._summarize_state_snapshot(new_logic_feats, new_phys_feats, metrics)}, "
                     f"switches={aux['switches']}, correction_cnt={aux['correction_cnt']}, "

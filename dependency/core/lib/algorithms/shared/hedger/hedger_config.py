@@ -47,7 +47,10 @@ class PhysicalTopology:
             return
 
         if source_device in edge_nodes:
-            edge_nodes.remove(source_device)
+            # edge_nodes.remove(source_device)
+            # TODO
+            source_device = edge_nodes[0]
+            edge_nodes.remove(edge_nodes[0])
         else:
             # If the configured source device is missing, fall back to the first edge node.
             source_device = edge_nodes[0]
