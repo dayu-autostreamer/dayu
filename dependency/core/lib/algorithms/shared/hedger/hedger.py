@@ -188,6 +188,7 @@ class Hedger:
 
         self.deployment_thread_stop_event = threading.Event()
         self.offloading_thread_stop_event = threading.Event()
+        self._latency_guard_trigger_event = threading.Event()
 
         self.physical_topology = None
         self.logical_topology = None
@@ -261,6 +262,8 @@ class Hedger:
         self.cur_deploy_mask = None
         self.pending_deployment_plan = None
         self.pending_deploy_mask = None
+        self._pending_deployment_force_serve = False
+        self._pending_deployment_reason = None
         self._last_deployment_served_monotonic = 0.0
         self._last_redeployment_throttle_log_t = 0.0
         self._frozen_offloading_agent = None
@@ -744,6 +747,7 @@ class Hedger:
     def _empty_latency_guard_stats(self) -> Dict[str, float]:
         return {
             "active": False,
+            "trigger_seq": 0,
             "count": 0,
             "bad_count": 0,
             "bad_ratio": 0.0,
@@ -759,7 +763,7 @@ class Hedger:
     def _latency_guard_enabled(self) -> bool:
         cfg = getattr(self, "latency_guard_cfg", HedgerLatencyGuardCfg())
         return (
-            getattr(self, "mode", None) == "train"
+            getattr(self, "mode", None) in {"train", "inference"}
             and cfg.enabled
             and cfg.window_size > 0
         )
@@ -775,6 +779,7 @@ class Hedger:
         queue_stats = self._latency_guard_queue_stats_locked(time.monotonic())
         return {
             "active": bool(self._latency_guard_active),
+            "trigger_seq": int(getattr(self, "_latency_guard_trigger_seq", 0)),
             "count": int(count),
             "bad_count": int(bad_count),
             "bad_ratio": bad_ratio,
@@ -844,6 +849,19 @@ class Hedger:
         cfg = getattr(self, "latency_guard_cfg", HedgerLatencyGuardCfg())
         return bool(cfg.pause_generation and self.is_latency_guard_active())
 
+    def _latency_guard_trigger_seq_value(self) -> int:
+        if not self._latency_guard_enabled():
+            return 0
+        with self._latency_guard_lock:
+            return int(getattr(self, "_latency_guard_trigger_seq", 0))
+
+    def _notify_inference_latency_guard_trigger(self) -> None:
+        if getattr(self, "mode", None) != "inference":
+            return
+        self._latency_guard_trigger_event.set()
+        with self._deployment_version_cond:
+            self._deployment_version_cond.notify_all()
+
     @staticmethod
     def _task_total_start_wall_time(task) -> Optional[float]:
         try:
@@ -864,6 +882,8 @@ class Hedger:
 
     def should_quarantine_task_feedback(self, task) -> bool:
         cfg = getattr(self, "latency_guard_cfg", HedgerLatencyGuardCfg())
+        if getattr(self, "mode", None) != "train":
+            return False
         if not self._latency_guard_enabled() or not cfg.task_feedback_quarantine_enabled:
             return False
 
@@ -1229,6 +1249,7 @@ class Hedger:
         if self.latency_guard_cfg.force_default_decisions:
             self._apply_default_decisions_for_latency_guard("latency guard triggered")
         self._flush_processor_queues_for_latency_guard("latency_guard_triggered")
+        self._notify_inference_latency_guard_trigger()
         LOGGER.warning(
             f"[Hedger][LatencyGuard] Triggered: task_version={task_version}, "
             f"deployment_version={deployment_version}, "
@@ -1304,6 +1325,8 @@ class Hedger:
             self.offloading_plan = None
             self.pending_deployment_plan = None
             self.pending_deploy_mask = None
+            self._pending_deployment_force_serve = False
+            self._pending_deployment_reason = None
 
             if self.initial_deployment_plan is not None and self.logical_topology is not None \
                     and self.physical_topology is not None:
@@ -1655,7 +1678,7 @@ class Hedger:
     @staticmethod
     def _latency_guard_record_fieldnames() -> List[str]:
         return [
-            "latency_guard_active", "latency_guard_bad_ratio",
+            "latency_guard_active", "latency_guard_trigger_seq", "latency_guard_bad_ratio",
             "latency_guard_bad_count", "latency_guard_sample_count",
             "latency_guard_max_queue",
         ]
@@ -1664,6 +1687,7 @@ class Hedger:
         stats = self.latency_guard_status()
         return {
             "latency_guard_active": int(bool(stats.get("active", False))),
+            "latency_guard_trigger_seq": int(stats.get("trigger_seq", 0) or 0),
             "latency_guard_bad_ratio": float(stats.get("bad_ratio", 0.0) or 0.0),
             "latency_guard_bad_count": int(stats.get("bad_count", 0) or 0),
             "latency_guard_sample_count": int(stats.get("count", 0) or 0),
@@ -1673,7 +1697,7 @@ class Hedger:
     @staticmethod
     def _inference_deployment_fieldnames() -> List[str]:
         return [
-            "step", "epoch", "decision_version", "served_deployment_version", "interval_s",
+            "step", "epoch", "decision_version", "served_deployment_version", "decision_reason", "interval_s",
             "deployment_decision_overhead_s", "dep_reward_estimate",
             "avg_off_reward", "off_reward_std", "off_reward_count",
             "dep_change_cost", "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
@@ -1988,6 +2012,8 @@ class Hedger:
         self.deployment_plan = copy.deepcopy(deployment_plan)
         self.pending_deployment_plan = None
         self.pending_deploy_mask = None
+        self._pending_deployment_force_serve = False
+        self._pending_deployment_reason = None
 
         # Cache the current deployment mask.
         self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(deployment_plan or {})
@@ -2038,15 +2064,26 @@ class Hedger:
                     if self._last_deployment_served_monotonic <= 0.0
                     else now - self._last_deployment_served_monotonic
                 )
-                if elapsed < self.deployment_interval:
+                force_serve = bool(getattr(self, "_pending_deployment_force_serve", False))
+                pending_reason = getattr(self, "_pending_deployment_reason", None)
+                if elapsed < self.deployment_interval and not force_serve:
                     throttled = True
                 else:
                     self.deployment_plan = copy.deepcopy(self.pending_deployment_plan)
                     self.cur_deploy_mask = self.pending_deploy_mask.detach().clone().cpu()
                     self.pending_deployment_plan = None
                     self.pending_deploy_mask = None
+                    self._pending_deployment_force_serve = False
+                    self._pending_deployment_reason = None
                     self._last_deployment_served_monotonic = now
                     served_version = self._mark_deployment_decision_served()
+                    if force_serve:
+                        LOGGER.warning(
+                            f"[Hedger][Deployment] Force serving deployment decision: "
+                            f"version={served_version}, reason={pending_reason}, "
+                            f"elapsed={self._format_log_value(elapsed, 2)}s, "
+                            f"configured_interval={self._format_log_value(self.deployment_interval, 2)}s."
+                        )
 
             if self.deployment_plan is None and self.cur_deploy_mask is not None:
                 self.deployment_plan = self._map_deployment_mask_to_deployment_plan(self.cur_deploy_mask)
@@ -2121,6 +2158,44 @@ class Hedger:
         if sleep_s > 0.0:
             time.sleep(sleep_s)
         return time.time()
+
+    def _sleep_until_next_inference_deployment_decision(
+            self,
+            last_tick: float,
+            interval_s: float,
+            last_guard_trigger_seq: int,
+    ):
+        """Sleep for the deployment cadence, but wake on a new latency-guard trigger."""
+        interval_s = max(0.0, float(interval_s))
+        if interval_s <= 0.0:
+            return time.time(), "interval", int(last_guard_trigger_seq)
+
+        now = time.time()
+        target_t = now + interval_s if last_tick <= 0 else last_tick + interval_s
+        poll_s = max(0.1, min(1.0, float(getattr(self.latency_guard_cfg, "poll_interval_s", 1.0))))
+        last_guard_trigger_seq = int(last_guard_trigger_seq)
+
+        while not self.deployment_thread_stop_event.is_set():
+            current_seq = self._latency_guard_trigger_seq_value()
+            if current_seq > last_guard_trigger_seq:
+                self._latency_guard_trigger_event.clear()
+                LOGGER.warning(
+                    f"[Hedger][Inference][Deployment] Wake deployment decision immediately "
+                    f"for latency guard trigger: seq={current_seq}, "
+                    f"configured_interval={self._format_log_value(interval_s, 2)}s."
+                )
+                return time.time(), "latency_guard_trigger", int(current_seq)
+
+            remaining_s = target_t - time.time()
+            if remaining_s <= 0.0:
+                return time.time(), "interval", last_guard_trigger_seq
+
+            self._latency_guard_trigger_event.wait(timeout=min(remaining_s, poll_s))
+            if self._latency_guard_trigger_event.is_set() and \
+                    self._latency_guard_trigger_seq_value() <= last_guard_trigger_seq:
+                self._latency_guard_trigger_event.clear()
+
+        return time.time(), "stop", last_guard_trigger_seq
 
     def _collect_graph_state(self, seq_len: int):
         assert self.state_buffer is not None, "State buffer must be registered before collecting state."
@@ -2746,10 +2821,13 @@ class Hedger:
         deployment_time_ticket = 0
         prev_deploy_mask = self._current_deploy_mask()
         logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+        last_guard_trigger_seq = self._latency_guard_trigger_seq_value()
+        next_decision_reason = "startup"
 
         step = 0
         while not self.deployment_thread_stop_event.is_set():
             try:
+                current_decision_reason = next_decision_reason
                 state_logic_feats = logic_feats
                 state_phys_feats = phys_feats
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
@@ -2777,10 +2855,17 @@ class Hedger:
                 with self._data_lock:
                     self.pending_deployment_plan = deploy_plan
                     self.pending_deploy_mask = deploy_mask.detach().cpu()
+                    self._pending_deployment_force_serve = current_decision_reason == "latency_guard_trigger"
+                    self._pending_deployment_reason = current_decision_reason
                     decision_version = self._mark_deployment_decision_pending()
-                deployment_time_ticket = self._sleep_until_next_tick(
+                (
+                    deployment_time_ticket,
+                    next_decision_reason,
+                    last_guard_trigger_seq,
+                ) = self._sleep_until_next_inference_deployment_decision(
                     deployment_time_ticket,
                     self.deployment_interval,
+                    last_guard_trigger_seq,
                 )
 
                 served_version = self.get_active_deployment_version()
@@ -2819,6 +2904,7 @@ class Hedger:
                         epoch=self._epoch,
                         decision_version=decision_version,
                         served_deployment_version=served_version,
+                        decision_reason=current_decision_reason,
                         interval_s=self.deployment_interval,
                         deployment_decision_overhead_s=deployment_decision_overhead_s,
                         dep_reward_estimate=dep_reward_estimate,
@@ -2876,6 +2962,7 @@ class Hedger:
                     f"[Hedger][Inference][Deployment] step={step}, "
                     f"pending_version={decision_version}, "
                     f"served_version={served_version}, "
+                    f"decision_reason={current_decision_reason}, "
                     f"decision_overhead={self._format_log_value(deployment_decision_overhead_s, 6)}s, "
                     f"{self._summarize_deploy_mask(deploy_mask.detach().cpu())}, "
                     f"{self._summarize_deployment_plan(deploy_plan)}, "
