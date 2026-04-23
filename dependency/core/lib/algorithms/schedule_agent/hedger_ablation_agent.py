@@ -6,6 +6,7 @@ from core.lib.content import Task
 from core.lib.algorithms.shared.hedger import (
     HedgerDeploymentAblation,
     HedgerFlatAblation,
+    HedgerNoGraphEncoder,
     HedgerOffloadingAblation,
 )
 
@@ -13,6 +14,7 @@ from .hedger_agent import HedgerAgent
 
 __all__ = (
     "HedgerFlatAgent",
+    "HedgerNoGraphEncoderAgent",
     "HedgerDeploymentAblationAgent",
     "HedgerOffloadingAblationAgent",
 )
@@ -37,6 +39,14 @@ class HedgerFlatAgent(_HedgerAblationAgentBase):
 
     controller_cls = HedgerFlatAblation
     controller_alias = "hedger_flat"
+
+
+@ClassFactory.register(ClassType.SCH_AGENT, alias='hedger-no-graph-encoder')
+class HedgerNoGraphEncoderAgent(_HedgerAblationAgentBase):
+    """Topology encoder ablation: Hedger with graph message passing removed."""
+
+    controller_cls = HedgerNoGraphEncoder
+    controller_alias = "hedger_no_graph_encoder"
 
 
 @ClassFactory.register(ClassType.SCH_AGENT, alias='hedger-deployment')

@@ -4252,7 +4252,7 @@ class Hedger:
             if self.checkpoint_cfg.load.restore_encoder:
                 enc_state = ckpt.get('encoder')
                 if enc_state is not None:
-                    self.shared_topology_encoder.load_state_dict(enc_state)
+                    self._load_encoder_state(enc_state)
                     LOGGER.info('[Hedger][Checkpoint] Loaded encoder state.')
                 else:
                     LOGGER.warning('[Hedger][Checkpoint] Missing encoder state in checkpoint.')
@@ -4345,6 +4345,9 @@ class Hedger:
             )
 
         LOGGER.info(f"[Hedger][Checkpoint] Loaded successfully from {target_path}")
+
+    def _load_encoder_state(self, state_dict: dict) -> None:
+        self.shared_topology_encoder.load_state_dict(state_dict)
 
     @staticmethod
     def _move_optimizer_state(optimizer: torch.optim.Optimizer, device: torch.device):

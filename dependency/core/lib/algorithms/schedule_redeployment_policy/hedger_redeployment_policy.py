@@ -32,9 +32,11 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
 
     def register_hedger(self, hedger_id='hedger'):
         if self.hedger is None:
+            hedger_config = copy.deepcopy(self.system.hedger_config)
+            hedger_config.setdefault("agent_id", self.agent_id)
             self.hedger = GlobalInstanceManager.get_instance(
                 Hedger, hedger_id,
-                config=copy.deepcopy(self.system.hedger_config))
+                config=hedger_config)
 
     def __call__(self, info):
         source_id = info['source']['id']

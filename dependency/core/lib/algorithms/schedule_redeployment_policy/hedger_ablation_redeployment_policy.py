@@ -6,6 +6,7 @@ from core.lib.content import Task
 from core.lib.algorithms.shared.hedger import (
     HedgerDeploymentAblation,
     HedgerFlatAblation,
+    HedgerNoGraphEncoder,
     HedgerOffloadingAblation,
 )
 
@@ -13,6 +14,7 @@ from .base_redeployment_policy import BaseRedeploymentPolicy
 
 __all__ = (
     "HedgerFlatRedeploymentPolicy",
+    "HedgerNoGraphEncoderRedeploymentPolicy",
     "HedgerDeploymentAblationRedeploymentPolicy",
     "HedgerOffloadingAblationRedeploymentPolicy",
 )
@@ -97,6 +99,12 @@ class _HedgerAblationRedeploymentPolicyBase(BaseRedeploymentPolicy, abc.ABC):
 class HedgerFlatRedeploymentPolicy(_HedgerAblationRedeploymentPolicyBase):
     controller_cls = HedgerFlatAblation
     controller_alias = "hedger_flat"
+
+
+@ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='hedger-no-graph-encoder')
+class HedgerNoGraphEncoderRedeploymentPolicy(_HedgerAblationRedeploymentPolicyBase):
+    controller_cls = HedgerNoGraphEncoder
+    controller_alias = "hedger_no_graph_encoder"
 
 
 @ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='hedger-deployment')

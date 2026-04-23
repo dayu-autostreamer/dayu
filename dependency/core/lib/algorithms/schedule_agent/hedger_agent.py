@@ -31,9 +31,11 @@ class HedgerAgent(BaseAgent, abc.ABC):
 
     def register_hedger(self, hedger_id='hedger'):
         if self.hedger is None:
+            hedger_config = copy.deepcopy(self.system.hedger_config)
+            hedger_config.setdefault("agent_id", self.agent_id)
             self.hedger = GlobalInstanceManager.get_instance(
                 Hedger, hedger_id,
-                config=copy.deepcopy(self.system.hedger_config),
+                config=hedger_config,
             )
 
     @staticmethod
@@ -328,8 +330,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
             )
 
     def get_schedule_overhead(self):
-        # TODO
-        return 0
+        return self.hedger.get_schedule_overhead() if self.hedger is not None else 0
 
     def load_default_policy(self, configuration, offloading):
         if configuration is None or isinstance(configuration, dict):

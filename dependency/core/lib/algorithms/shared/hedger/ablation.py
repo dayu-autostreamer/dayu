@@ -12,6 +12,7 @@ from core.lib.common import LOGGER, Recorder
 from .hedger import Hedger
 from .hedger_config import from_partial_dict, DeploymentConstraintCfg, OffloadingConstraintCfg
 from .ppo_agent import HedgerFlatPPO
+from .topology_encoder import NoGraphTopologyEncoders
 
 
 class HedgerHeuristicMixin:
@@ -540,6 +541,28 @@ class HedgerOffloadingAblation(HedgerHeuristicMixin, Hedger):
         self.offloading_thread_stop_event.set()
 
 
+class HedgerNoGraphEncoder(Hedger):
+    """Topology-encoder ablation that removes graph message passing."""
+
+    def register_topology_encoder(self):
+        if self.shared_topology_encoder:
+            return
+
+        self.shared_topology_encoder = NoGraphTopologyEncoders(
+            d_model=self.encoder_cfg.embedding_dim,
+            num_roles=self.encoder_cfg.physical_role_count,
+            role_emb_dim=self.encoder_cfg.physical_role_embedding_dim,
+            dropout=self.encoder_cfg.dropout,
+        ).to(self.device)
+
+    def _load_encoder_state(self, state_dict: dict) -> None:
+        self._load_state_dict_compatible(
+            self.shared_topology_encoder,
+            state_dict,
+            "no_graph_encoder",
+        )
+
+
 class HedgerFlatAblation(HedgerHeuristicMixin, Hedger):
     """Flat ablation with one PPO module deciding deployment and offloading together."""
 
@@ -615,12 +638,12 @@ class HedgerFlatAblation(HedgerHeuristicMixin, Hedger):
             meta = ckpt.get('meta', {})
             self._loaded_checkpoint_path = target_path
             if self.checkpoint_cfg.load.restore_encoder and ckpt.get('encoder') is not None:
-                self.shared_topology_encoder.load_state_dict(ckpt['encoder'])
+                self._load_encoder_state(ckpt['encoder'])
             flat_state = ckpt.get('flat_agent')
             if flat_state is not None:
                 self._load_state_dict_compatible(self.flat_agent, flat_state, "flat_agent")
             else:
-                LOGGER.warning("[HedgerFlat][Checkpoint] Missing flat_agent state.")
+                self._load_flat_agent_from_hierarchical_checkpoint(ckpt)
             if self.checkpoint_cfg.load.restore_optimizer:
                 if 'flat_actor_opt' in ckpt:
                     try:
@@ -645,6 +668,53 @@ class HedgerFlatAblation(HedgerHeuristicMixin, Hedger):
             self._deployment_update_steps = int(meta.get('deployment_updates', 0))
             self._offloading_update_steps = int(meta.get('offloading_updates', 0))
             self._epoch = int(meta.get('stage_step', self._epoch))
+
+    def _load_flat_agent_from_hierarchical_checkpoint(self, ckpt: dict) -> None:
+        loaded_any = False
+        if self.checkpoint_cfg.load.restore_deployment_agent:
+            dep_state = ckpt.get('deployment_agent')
+            if dep_state is not None:
+                self._load_state_dict_compatible(
+                    self.flat_agent,
+                    dep_state,
+                    "flat_agent_from_deployment_agent",
+                )
+                loaded_any = True
+            else:
+                LOGGER.warning("[HedgerFlat][Checkpoint] Missing deployment_agent state in hierarchical checkpoint.")
+
+        if self.checkpoint_cfg.load.restore_offloading_agent:
+            off_state = ckpt.get('offloading_agent')
+            if off_state is not None:
+                mapped_state = self._map_offloading_agent_state_to_flat(
+                    off_state,
+                    include_shared=not loaded_any,
+                )
+                self._load_state_dict_compatible(
+                    self.flat_agent,
+                    mapped_state,
+                    "flat_agent_from_offloading_agent",
+                )
+                loaded_any = True
+            else:
+                LOGGER.warning("[HedgerFlat][Checkpoint] Missing offloading_agent state in hierarchical checkpoint.")
+
+        if not loaded_any:
+            LOGGER.warning(
+                "[HedgerFlat][Checkpoint] Missing flat_agent state and no compatible hierarchical agent "
+                "state was loaded."
+            )
+
+    @staticmethod
+    def _map_offloading_agent_state_to_flat(state_dict: dict, include_shared: bool = False) -> dict:
+        mapped = {}
+        shared_prefixes = ("encoder.", "service_adapter.", "device_adapter.", "critic.")
+        for key, value in (state_dict or {}).items():
+            if key.startswith("actor."):
+                mapped[f"offload_actor.{key[len('actor.'):]}"] = value
+            elif include_shared and key.startswith(shared_prefixes):
+                mapped[key] = value
+        return mapped
 
     def inference_hedger(self):
         assert self.logical_topology is not None and self.physical_topology is not None and self.state_buffer is not None
