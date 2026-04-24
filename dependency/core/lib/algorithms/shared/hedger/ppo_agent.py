@@ -75,7 +75,15 @@ def _build_mask_context(mask: Optional[torch.Tensor], h_p: torch.Tensor) -> torc
     return per_service_context.mean(dim=0, keepdim=True)
 
 
-class HedgerDeploymentPPO(nn.Module):
+class _DeploymentBackbonePPO(nn.Module):
+    """
+    Shared deployment-side backbone for Hedger PPO variants.
+
+    The plain deployment agent and the flat ablation both need the same
+    deployment feasibility logic, adapters, critic context, and optimizer
+    wiring. They intentionally remain sibling policies with different action
+    contracts instead of using inheritance between concrete PPO agents.
+    """
     def __init__(self, encoder: TopologyEncoders, d_model=64, actor_lr=3e-4, critic_lr=1e-3,
                  gamma=0.99, lamda=0.95, clip_eps=0.2, update_encoder: bool = True, cloud_node_idx: int = -1,
                  constraint_cfg: DeploymentConstraintCfg = DeploymentConstraintCfg()):
@@ -85,19 +93,33 @@ class HedgerDeploymentPPO(nn.Module):
         self.critic = ValueHead(d_model)
         self.service_adapter = FeatureAdapter(d_model)
         self.device_adapter = FeatureAdapter(d_model)
-
-        adapter_params = list(self.service_adapter.parameters()) + list(self.device_adapter.parameters())
-        encoder_params = list(self.encoder.parameters()) if update_encoder else []
-        params_actor = list(self.actor.parameters()) + adapter_params + encoder_params
-        self.actor_opt = torch.optim.Adam(params_actor, lr=actor_lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
-        self._actor_train_params = params_actor
 
         self.gamma = gamma
         self.lamda = lamda
         self.clip_eps = clip_eps
         self.cloud_idx = cloud_node_idx
         self.cfg = constraint_cfg
+        self._actor_lr = actor_lr
+        self._critic_lr = critic_lr
+        self._update_encoder = update_encoder
+        self.actor_opt = None
+        self._actor_train_params = []
+        self._rebuild_actor_optimizer()
+
+    def _rebuild_actor_optimizer(self, extra_actor_modules: Optional[List[nn.Module]] = None):
+        extra_actor_modules = extra_actor_modules or []
+        params_actor = list(self.actor.parameters())
+        for module in extra_actor_modules:
+            params_actor.extend(list(module.parameters()))
+        params_actor.extend(list(self.service_adapter.parameters()))
+        params_actor.extend(list(self.device_adapter.parameters()))
+        if self._update_encoder:
+            params_actor.extend(list(self.encoder.parameters()))
+        self.actor_opt = torch.optim.Adam(params_actor, lr=self._actor_lr)
+        self._actor_train_params = params_actor
+        if not hasattr(self, "critic_opt") or self.critic_opt is None:
+            self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=self._critic_lr)
 
     def _cloud_index(self, width: int) -> int:
         if width <= 0:
@@ -550,6 +572,8 @@ class HedgerDeploymentPPO(nn.Module):
             return set()
         return keep
 
+
+class HedgerDeploymentPPO(_DeploymentBackbonePPO):
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index,
                phys_feats, topo_order: Optional[list] = None,
@@ -1165,7 +1189,7 @@ class HedgerOffloadingPPO(nn.Module):
         }
 
 
-class HedgerFlatPPO(HedgerDeploymentPPO):
+class HedgerFlatPPO(_DeploymentBackbonePPO):
     """
     Flat ablation policy for joint deployment/offloading decisions.
 
@@ -1205,13 +1229,7 @@ class HedgerFlatPPO(HedgerDeploymentPPO):
         self.source = source_node_idx
         self.cloud_idx = cloud_node_idx
         self.offloading_cfg = offloading_constraint_cfg
-
-        adapter_params = list(self.service_adapter.parameters()) + list(self.device_adapter.parameters())
-        encoder_params = list(self.encoder.parameters()) if update_encoder else []
-        params_actor = list(self.actor.parameters()) + list(self.offload_actor.parameters()) + adapter_params + encoder_params
-        self.actor_opt = torch.optim.Adam(params_actor, lr=actor_lr)
-        self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
-        self._actor_train_params = params_actor
+        self._rebuild_actor_optimizer(extra_actor_modules=[self.offload_actor])
 
     @staticmethod
     def _build_parents(edge_index: torch.Tensor, num_nodes: int) -> List[List[int]]:
@@ -1279,20 +1297,6 @@ class HedgerFlatPPO(HedgerDeploymentPPO):
                 if cur != int(actions[parent].item()):
                     switches += 1
         return switches
-
-    @torch.no_grad()
-    def estimate_value(
-            self,
-            logic_edge_index,
-            logic_feats,
-            phys_edge_index,
-            phys_feats,
-            prev_deploy_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
-        h_s, h_p = self._adapt_embeddings(h_s, h_p)
-        value = self.critic(h_s, h_p, self._deployment_context(h_p, prev_deploy_mask))
-        return value.squeeze(0)
 
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index,
