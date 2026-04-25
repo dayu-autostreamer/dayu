@@ -1,0 +1,153 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'fixed_value':0,
+          'fixed_type':'position'
+        }
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'policy':{
+            'pedestrian-detection':['edge3'],
+            'exposure-identification':['edgexn10'],
+            'vehicle-detection':['edge3'],
+            'category-identification':['edgexn7'],
+            'license-plate-recognition':['edgexn13']
+          }
+        }
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: online_profiling
+    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'latency_profile': {
+            'pedestrian-detection': {
+              'edge3': 0.346751,
+              'edgexn10': 0.272675,
+              'edgexn7': 0.282497,
+              'edgexn13': 0.095160
+            },
+            'exposure-identification': {
+              'edge3': 0.149148,
+              'edgexn10': 0.105872,
+              'edgexn7': 0.095304,
+              'edgexn13': 0.031376
+            },
+            'vehicle-detection': {
+              'edge3': 0.249442,
+              'edgexn10': 0.190828,
+              'edgexn7': 0.178823,
+              'edgexn13': 0.097174
+            },
+            'category-identification': {
+              'edge3': 0.055533,
+              'edgexn10': 0.061447,
+              'edgexn7': 0.046104,
+              'edgexn13': 0.023312
+            },
+            'license-plate-recognition': {
+              'edge3': 0.069192,
+              'edgexn10': 0.078106,
+              'edgexn7': 0.077663,
+              'edgexn13': 0.052319
+            }
+          },
+          'service_importance_weights': {
+            'pedestrian-detection': 1.0,
+            'exposure-identification': 5.0,
+            'vehicle-detection': 1.0,
+            'category-identification': 5.0,
+            'license-plate-recognition': 5.0
+          },
+          'service_replica_count': {
+            'pedestrian-detection': 1,
+            'exposure-identification': 3,
+            'vehicle-detection': 1,
+            'category-identification': 1,
+            'license-plate-recognition': 2
+          },
+          'default_service_limit': 2,
+          'default_replica_count': 2
+        }
+    - name: SCH_AGENT_NAME
+      value: online_profiling
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'configuration':{
+            'resolution': '720p',
+            'fps': 10,
+            'encoding': 'mp4v',
+            'buffer_size': 4
+          },
+          'bandwidth_threshold': 100.0,
+          'latency_profile': {
+            'pedestrian-detection': {
+              'edge3': 0.346751,
+              'edgexn10': 0.272675,
+              'edgexn7': 0.282497,
+              'edgexn13': 0.095160
+            },
+            'exposure-identification': {
+              'edge3': 0.149148,
+              'edgexn10': 0.105872,
+              'edgexn7': 0.095304,
+              'edgexn13': 0.031376
+            },
+            'vehicle-detection': {
+              'edge3': 0.249442,
+              'edgexn10': 0.190828,
+              'edgexn7': 0.178823,
+              'edgexn13': 0.097174
+            },
+            'category-identification': {
+              'edge3': 0.055533,
+              'edgexn10': 0.061447,
+              'edgexn7': 0.046104,
+              'edgexn13': 0.023312
+            },
+            'license-plate-recognition': {
+              'edge3': 0.069192,
+              'edgexn10': 0.078106,
+              'edgexn7': 0.077663,
+              'edgexn13': 0.052319
+            }
+          },
+          'service_importance_weights': {
+            'pedestrian-detection': 1.0,
+            'exposure-identification': 5.0,
+            'vehicle-detection': 1.0,
+            'category-identification': 5.0,
+            'license-plate-recognition': 5.0
+          },
+          'per_obj_services': [
+            'exposure-identification',
+            'category-identification',
+            'license-plate-recognition'
+          ],
+          'profile_update_interval': 2
+        }
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/online_profiling/'
+
