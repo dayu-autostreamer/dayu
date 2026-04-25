@@ -1,6 +1,4 @@
-import copy
 import importlib
-import multiprocessing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -317,7 +315,7 @@ def test_schedule_config_extractors_load_expected_knobs_and_config_files(monkeyp
                 "encoder": {
                     "embedding_dim": 64,
                     "logical_heads": 4,
-                    "physical_role_count": 3,
+                    "physical_role_count": 2,
                     "physical_role_embedding_dim": 8,
                     "dropout": 0.0,
                 },

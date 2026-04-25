@@ -13,11 +13,19 @@ class DeploymentActor(nn.Module):
         self.k = nn.Linear(d_model, d_model)
         self.temperature = temperature
 
-    def forward(self, h_s: torch.Tensor, h_p: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+            self,
+            h_s: torch.Tensor,
+            h_p: torch.Tensor,
+            mask: Optional[torch.Tensor] = None,
+            pair_bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         Q = self.q(h_s)
         K = self.k(h_p)
         scores = (Q @ K.t()) / math.sqrt(Q.size(-1))
         scores = scores / max(self.temperature, 1e-6)
+        if pair_bias is not None:
+            scores = scores + pair_bias
         if mask is not None:
             scores = scores.masked_fill(~mask, float('-inf'))
         return torch.sigmoid(scores)  # Element-wise probability for multilabel Bernoulli sampling
@@ -30,11 +38,19 @@ class OffloadActor(nn.Module):
         self.k = nn.Linear(d_model, d_model)
         self.temperature = temperature
 
-    def forward(self, h_s: torch.Tensor, h_p: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+            self,
+            h_s: torch.Tensor,
+            h_p: torch.Tensor,
+            mask: Optional[torch.Tensor] = None,
+            pair_bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         Q = self.q(h_s)
         K = self.k(h_p)
         scores = (Q @ K.t()) / math.sqrt(Q.size(-1))
         scores = scores / max(self.temperature, 1e-6)
+        if pair_bias is not None:
+            scores = scores + pair_bias
         if mask is not None:
             scores = scores.masked_fill(~mask, float('-inf'))
         return F.softmax(scores, dim=-1)  # One categorical distribution per service
@@ -86,3 +102,26 @@ class FeatureAdapter(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # `x` has shape `[..., d_model]`.
         return x + self.net(x)
+
+
+class PairBiasHead(nn.Module):
+    """
+    Lightweight projector from explicit pair features to one additive bias.
+
+    The shared topology encoder still learns service and device embeddings.
+    This head only turns explicit service-device statistics into a small score
+    correction that is added on top of the dot-product actor logits.
+    """
+    def __init__(self, input_dim: int, hidden_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, pair_features: torch.Tensor) -> torch.Tensor:
+        if pair_features.numel() == 0:
+            return torch.zeros(pair_features.shape[:-1], device=pair_features.device, dtype=pair_features.dtype)
+        return self.net(pair_features).squeeze(-1)

@@ -125,7 +125,7 @@ class HedgerHeuristicMixin:
             range(num_services),
             key=lambda s_idx: (
                 -float(model_mem[s_idx].item()),
-                -self._latest_seq_value(logic_feats, "hist_latency_seq", s_idx, 0.0),
+                -self._latest_seq_value(logic_feats, "task_complexity_seq", s_idx, 0.0),
                 int(s_idx),
             ),
         )
@@ -202,7 +202,6 @@ class HedgerHeuristicMixin:
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         num_services, num_devices = static_mask.size()
         cloud_idx = self.physical_topology.cloud_idx
-        source_idx = self.physical_topology.source_idx
         topo_order = self._topological_order(logic_edge_index, num_services)
         parents = self._parents(logic_edge_index, num_services)
         actions = torch.full((num_services,), cloud_idx, dtype=torch.long)
@@ -221,36 +220,21 @@ class HedgerHeuristicMixin:
                 gpu_util = self._latest_seq_value(phys_feats, "gpu_util_seq", device_idx, 0.0)
                 mem_util = self._latest_seq_value(phys_feats, "mem_util_seq", device_idx, 0.0)
                 bandwidth = max(1.0, self._latest_seq_value(phys_feats, "bandwidth_seq", device_idx, 1.0))
-                parent_switch = 0.0
-                if parent_targets:
-                    parent_switch = sum(1 for target in parent_targets if target != device_idx) / float(len(parent_targets))
-                elif device_idx != source_idx:
-                    parent_switch = 1.0
                 cloud_penalty = 0.6 if device_idx == cloud_idx else 0.0
                 cost = (
                     0.35 * gpu_util
                     + 0.35 * mem_util
-                    + 0.20 * parent_switch
                     + cloud_penalty
                     - 0.05 * math.log1p(bandwidth)
                 )
                 candidates.append((cost, int(device_idx)))
             actions[service_idx] = min(candidates)[1]
 
-        switches = 0
-        for service_idx, parent_indices in enumerate(parents):
-            cur = int(actions[service_idx].item())
-            if not parent_indices:
-                switches += 0 if cur == source_idx else 1
-            else:
-                switches += sum(1 for parent in parent_indices if int(actions[parent].item()) != cur)
-
         cloud_fraction = float((actions == cloud_idx).float().mean().item()) if actions.numel() else 0.0
         return actions, {
-            "switches": int(switches),
             "correction_cnt": 0,
             "correction_cost": 0.0,
-            "aux_cost": float(self.offloading_agent_params.get("penalty_switch", 0.0)) * float(switches),
+            "aux_cost": 0.0,
             "cloud_fraction": cloud_fraction,
             "raw_actions": actions.detach().clone(),
         }
@@ -342,17 +326,18 @@ class HedgerDeploymentAblation(HedgerHeuristicMixin, Hedger):
             self._stage_log_path("offloading_train.csv"),
             fmt="csv",
             fieldnames=["step", "epoch", "off_updates", "off_reward", "latency", "latency_cost",
-                        "latency_normalizer", "latency_clip", "slo_violation", "cloud_fraction",
-                        "aux_cost", "off_latency_weight", "off_slo_weight", "off_cloud_weight",
-                        "switch_cnt", "correction_cnt",
-                        "correction_cost", "policy_logp", "policy_entropy", "value_estimate",
+                        "off_latency_term", "off_latency_normalizer", "off_latency_clip",
+                        "off_latency_transform", "slo_violation", "off_slo_term", "cloud_fraction",
+                        "off_cloud_term", "aux_cost", "off_latency_weight", "off_slo_weight", "off_cloud_weight",
+                        "correction_cnt", "correction_cost", "off_correction_term",
+                        "policy_logp", "policy_entropy", "value_estimate",
                         "next_value", "raw_cloud_fraction", "executed_cloud_fraction",
                         "unique_targets", "feasible_targets_mean", "feasible_targets_min",
                         "feasible_targets_max", "transition_buffer", "raw_offloading_plan",
                         "offloading_plan", *self._state_record_fieldnames(),
                         "feedback_recorded", "feedback_deployment_version",
                         "feedback_task_observations", "feedback_deployment_versions",
-                        "switch_weight", "correction_weight"],
+                        "correction_weight"],
             overwrite=True,
             flush_every=10,
         )
@@ -414,8 +399,9 @@ class HedgerDeploymentAblation(HedgerHeuristicMixin, Hedger):
                     continue
                 last_reward_task_version = current_task_version
 
-                latency_cost = self._compute_offloading_latency_cost(metrics["latency"])
-                reward = self._compute_offloading_reward(metrics, aux)
+                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics, aux)
+                latency_cost = off_reward_breakdown["latency_cost"]
+                reward = off_reward_breakdown["reward"]
                 feedback_recorded = False
                 if feedback_deployment_version is not None:
                     feedback_recorded = self.state_buffer.add_offloading_reward(
@@ -442,17 +428,21 @@ class HedgerDeploymentAblation(HedgerHeuristicMixin, Hedger):
                     off_reward=reward,
                     latency=metrics["latency"],
                     latency_cost=latency_cost,
-                    latency_normalizer=self.offloading_agent_params["reward_off_latency_normalizer"],
-                    latency_clip=self.offloading_agent_params["reward_off_latency_clip"],
+                    off_latency_term=off_reward_breakdown["off_latency_term"],
+                    off_latency_normalizer=self.offloading_agent_params["reward_off_latency_normalizer"],
+                    off_latency_clip=self.offloading_agent_params["reward_off_latency_clip"],
+                    off_latency_transform=self.offloading_agent_params["reward_off_latency_transform"],
                     slo_violation=metrics["slo_violation"],
+                    off_slo_term=off_reward_breakdown["off_slo_term"],
                     cloud_fraction=metrics["cloud_fraction"],
+                    off_cloud_term=off_reward_breakdown["off_cloud_term"],
                     aux_cost=aux["aux_cost"],
                     off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
                     off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                     off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
-                    switch_cnt=aux["switches"],
                     correction_cnt=0,
                     correction_cost=0.0,
+                    off_correction_term=off_reward_breakdown["off_correction_term"],
                     policy_logp=0.0,
                     policy_entropy=0.0,
                     value_estimate=0.0,
@@ -473,7 +463,6 @@ class HedgerDeploymentAblation(HedgerHeuristicMixin, Hedger):
                     feedback_deployment_versions=self._json_for_record(
                         {str(k): v for k, v in task_feedback_summary.get("deployment_version_counts", {}).items()}
                     ),
-                    switch_weight=self.offloading_agent_params["penalty_switch"],
                     correction_weight=self.offloading_agent_params["penalty_relax"],
                 )
                 self._log_offloading_decisions(
@@ -582,7 +571,6 @@ class HedgerFlatAblation(HedgerHeuristicMixin, Hedger):
             lamda=self.offloading_agent_params['lamda'],
             clip_eps=min(self.deployment_agent_params['clip_eps'], self.offloading_agent_params['clip_eps']),
             update_encoder=self.offloading_agent_params['update_encoder'],
-            source_node_idx=self.physical_topology.source_idx if self.physical_topology is not None else 0,
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
             deployment_constraint_cfg=from_partial_dict(DeploymentConstraintCfg, self.deployment_agent_params),
             offloading_constraint_cfg=from_partial_dict(OffloadingConstraintCfg, self.offloading_agent_params),
@@ -595,7 +583,6 @@ class HedgerFlatAblation(HedgerHeuristicMixin, Hedger):
         super()._sync_agent_topology_bindings()
         flat_agent = getattr(self, "flat_agent", None)
         if flat_agent is not None and self.physical_topology is not None:
-            flat_agent.source = self.physical_topology.source_idx
             flat_agent.cloud_idx = self.physical_topology.cloud_idx
 
     def _build_checkpoint_payload(self, stage_step: int) -> dict:
@@ -788,7 +775,7 @@ class HedgerFlatAblation(HedgerHeuristicMixin, Hedger):
             fieldnames=["step", "epoch", "update", "decision_version", "reward", "latency",
                         "slo_violation", "cloud_fraction", "dep_change_cost", "cap_relax_cnt",
                         "cap_relax_cost", "edge_cover_repair_cnt", "edge_cover_unmet",
-                        "switch_cnt", "correction_cnt", "correction_cost", "policy_logp",
+                        "correction_cnt", "correction_cost", "policy_logp",
                         "policy_entropy", "value_estimate", "next_value", "transition_buffer",
                         "deployment_plan", "offloading_plan"],
             overwrite=True,
@@ -930,21 +917,19 @@ class HedgerFlatAblation(HedgerHeuristicMixin, Hedger):
                     deployment_version=feedback_version,
                 )
                 last_task_version = current_task_version
-                latency_cost = self._compute_offloading_latency_cost(metrics["latency"])
-                off_reward = self._compute_offloading_reward(metrics, aux)
+                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics, aux)
+                off_reward = off_reward_breakdown["reward"]
 
-                cloud_idx = self.physical_topology.cloud_idx
                 exec_deploy_mask = deploy_mask.detach().cpu().bool()
-                cloud_only = int((~exec_deploy_mask[:, :cloud_idx].any(dim=1)).sum().item()) if cloud_idx > 0 else 0
-                aux["cloud_only_ratio"] = float(cloud_only) / float(max(1, exec_deploy_mask.size(0)))
-                if cloud_idx > 0:
-                    empty = int((~exec_deploy_mask[:, :cloud_idx].any(dim=0)).sum().item())
-                    aux["empty_edge_device_ratio"] = float(empty) / float(cloud_idx)
-                else:
-                    aux["empty_edge_device_ratio"] = 0.0
+                layout_metrics = self._deployment_layout_metrics(exec_deploy_mask)
+                aux["cloud_only_ratio"] = float(layout_metrics["cloud_only_ratio"])
+                aux["empty_edge_device_ratio"] = float(layout_metrics["empty_edge_device_ratio"])
                 dep_metrics = {
                     "avg_offloading_reward": off_reward,
                     "deploy_change_cost": self._compute_deploy_change_cost(prev_deploy_mask),
+                    "e2e_latency_count": metrics.get("task_latency_count", 0),
+                    "e2e_latency_mean": metrics.get("latency", 0.0),
+                    "e2e_slo_violation": metrics.get("slo_violation", 0.0),
                     "latency_guard_penalty_cost": 0.0,
                 }
                 dep_reward = self._compute_deployment_reward(dep_metrics, aux)
@@ -1000,7 +985,6 @@ class HedgerFlatAblation(HedgerHeuristicMixin, Hedger):
                     cap_relax_cost=aux["capacity_relax_cost"],
                     edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
                     edge_cover_unmet=aux.get("edge_cover_unmet", 0),
-                    switch_cnt=aux["switches"],
                     correction_cnt=aux["correction_cnt"],
                     correction_cost=aux["correction_cost"],
                     policy_logp=float(logp.detach().cpu().item()),

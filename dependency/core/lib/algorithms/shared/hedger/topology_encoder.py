@@ -11,7 +11,7 @@ __all__ = ('TopologyEncoders', 'NoGraphTopologyEncoders')
 
 
 class TopologyEncoders(nn.Module):
-    def __init__(self, d_model: int = 64, heads: int = 4, num_roles: int = 3, role_emb_dim: int = 8,
+    def __init__(self, d_model: int = 64, heads: int = 4, num_roles: int = 2, role_emb_dim: int = 8,
                  dropout: float = 0.0):
         super().__init__()
         self.logic = LogicalEncoder(d_model=d_model, heads=heads, dropout=dropout)
@@ -28,7 +28,7 @@ class NoGraphTopologyEncoders(nn.Module):
     removing all logical/physical graph message passing.
     """
 
-    def __init__(self, d_model: int = 64, num_roles: int = 3, role_emb_dim: int = 8,
+    def __init__(self, d_model: int = 64, num_roles: int = 2, role_emb_dim: int = 8,
                  dropout: float = 0.0):
         super().__init__()
         self.logic = NoGraphLogicalEncoder(d_model=d_model, dropout=dropout)
@@ -64,7 +64,7 @@ class NoGraphLogicalEncoder(nn.Module):
     def __init__(self, d_model: int = 64, dropout: float = 0.0):
         super().__init__()
         self.lin_static = nn.Linear(2, d_model)
-        self.temporal = NodeTemporalEncoder(d_dyn=2, d_model=d_model)
+        self.temporal = NodeTemporalEncoder(d_dyn=1, d_model=d_model)
         self.fusion = NodeFeatureFusionBlock(d_model=d_model, dropout=dropout)
 
     def forward(self, feats: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -73,8 +73,7 @@ class NoGraphLogicalEncoder(nn.Module):
         h_static = self.lin_static(torch.cat([mf, mm], dim=-1))
 
         tc = feats["task_complexity_seq"].float()
-        hl = safe_log1p(feats["hist_latency_seq"].float())
-        h_dyn = self.temporal(torch.stack([tc, hl], dim=-1))
+        h_dyn = self.temporal(tc.unsqueeze(-1))
 
         return self.fusion(F.relu(h_static + h_dyn))
 
@@ -86,7 +85,7 @@ class NoGraphPhysicalEncoder(nn.Module):
       - removes physical-topology GCN message passing
     """
 
-    def __init__(self, d_model: int = 64, num_roles: int = 3, role_emb_dim: int = 8, dropout: float = 0.0):
+    def __init__(self, d_model: int = 64, num_roles: int = 2, role_emb_dim: int = 8, dropout: float = 0.0):
         super().__init__()
         self.role_emb = nn.Embedding(num_roles, role_emb_dim)
         static_in = 2 + role_emb_dim
@@ -115,13 +114,12 @@ class LogicalEncoder(nn.Module):
       - `model_flops`: `[Ms]`
       - `model_mem`: `[Ms]` in GB
       - `task_complexity_seq`: `[Ms, T]`
-      - `hist_latency_seq`: `[Ms, T]`
     """
 
     def __init__(self, d_model: int = 64, heads: int = 4, dropout: float = 0.0):
         super().__init__()
         self.lin_static = nn.Linear(2, d_model)  # [log(model_flops), log(model_mem)]
-        self.temporal = NodeTemporalEncoder(d_dyn=2, d_model=d_model)
+        self.temporal = NodeTemporalEncoder(d_dyn=1, d_model=d_model)
         self.lin_struct = nn.Linear(3, d_model)
 
         self.gnn1 = GATConv(d_model, d_model, heads=heads, concat=True, dropout=dropout)
@@ -136,8 +134,7 @@ class LogicalEncoder(nn.Module):
         h_static = self.lin_static(torch.cat([mf, mm], dim=-1))
 
         tc = feats["task_complexity_seq"].float()
-        hl = safe_log1p(feats["hist_latency_seq"].float())
-        h_dyn = self.temporal(torch.stack([tc, hl], dim=-1))
+        h_dyn = self.temporal(tc.unsqueeze(-1))
 
         in_deg, out_deg = graph_in_out_degree(edge_index, Ms)
         in_deg = in_deg / (in_deg.max() + 1e-6)
@@ -157,7 +154,7 @@ class PhysicalEncoder(nn.Module):
     """
     Physical-topology input features:
       - `gpu_flops`: `[Np]`
-      - `role_id`: `[Np]`, where `0=source edge / 1=other edge / 2=cloud`
+      - `role_id`: `[Np]`, where `0=edge / 1=cloud`
       - `mem_capacity`: `[Np]` in GB
       - `bandwidth_seq`: `[Np, T]`, where edge nodes carry fixed LAN bandwidth
         and the cloud node carries the latest monitored WAN bandwidth
@@ -165,7 +162,7 @@ class PhysicalEncoder(nn.Module):
       - `mem_util_seq`: `[Np, T]` in `[0, 1]`
     """
 
-    def __init__(self, d_model: int = 64, num_roles: int = 3, role_emb_dim: int = 8, dropout: float = 0.0):
+    def __init__(self, d_model: int = 64, num_roles: int = 2, role_emb_dim: int = 8, dropout: float = 0.0):
         super().__init__()
         self.role_emb = nn.Embedding(num_roles, role_emb_dim)
         static_in = 2 + role_emb_dim  # [log(gpu_flops), log(mem_capacity), role_emb]

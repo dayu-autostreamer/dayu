@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .topology_encoder import TopologyEncoders
-from .ppo_network import DeploymentActor, OffloadActor, ValueHead, FeatureAdapter
+from .ppo_network import DeploymentActor, OffloadActor, ValueHead, FeatureAdapter, PairBiasHead
 from .hedger_config import DeploymentConstraintCfg, OffloadingConstraintCfg
 from .utils import compute_returns_advantages
 
@@ -93,6 +93,7 @@ class _DeploymentBackbonePPO(nn.Module):
         self.critic = ValueHead(d_model)
         self.service_adapter = FeatureAdapter(d_model)
         self.device_adapter = FeatureAdapter(d_model)
+        self.deployment_pair_head = PairBiasHead(input_dim=9, hidden_dim=max(16, d_model // 2))
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
 
         self.gamma = gamma
@@ -110,6 +111,7 @@ class _DeploymentBackbonePPO(nn.Module):
     def _rebuild_actor_optimizer(self, extra_actor_modules: Optional[List[nn.Module]] = None):
         extra_actor_modules = extra_actor_modules or []
         params_actor = list(self.actor.parameters())
+        params_actor.extend(list(self.deployment_pair_head.parameters()))
         for module in extra_actor_modules:
             params_actor.extend(list(module.parameters()))
         params_actor.extend(list(self.service_adapter.parameters()))
@@ -271,6 +273,32 @@ class _DeploymentBackbonePPO(nn.Module):
         if prev_deploy_mask is None:
             return torch.zeros((1, h_p.size(-1)), device=h_p.device, dtype=h_p.dtype)
         return _build_mask_context(self._enforce_cloud_replica(prev_deploy_mask.bool()), h_p)
+
+    def _deployment_pair_bias(self, logic_feats: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+        latency_features = logic_feats.get("deployment_latency_pair_feat")
+        queue_features = logic_feats.get("deployment_queue_pair_feat")
+        if not isinstance(latency_features, torch.Tensor) or not isinstance(queue_features, torch.Tensor):
+            return None
+        if latency_features.numel() == 0 or queue_features.numel() == 0:
+            return None
+        pair_features = torch.cat([latency_features.float(), queue_features.float()], dim=-1)
+        return self.deployment_pair_head(pair_features)
+
+    def _deployment_actor_terms(
+            self,
+            h_s: torch.Tensor,
+            h_p: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        q_embedding = self.actor.q(h_s)
+        k_embedding = self.actor.k(h_p)
+        qk_scores = (q_embedding @ k_embedding.t()) / math.sqrt(q_embedding.size(-1))
+        qk_scores = qk_scores / max(self.actor.temperature, 1e-6)
+        pair_bias = self._deployment_pair_bias(logic_feats)
+        if pair_bias is None:
+            pair_bias = torch.zeros_like(qk_scores)
+        final_scores = qk_scores + pair_bias
+        return q_embedding, k_embedding, qk_scores, pair_bias, final_scores
 
     @torch.no_grad()
     def estimate_value(
@@ -588,6 +616,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
 
         # Static feasibility mask.
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
+        q_embedding, k_embedding, qk_scores, pair_bias, final_scores = self._deployment_actor_terms(
+            h_s,
+            h_p,
+            logic_feats,
+        )
+        policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_s.device)
 
         # Sample first from the static deployment distribution, then apply a
         # deterministic capacity projection. PPO is optimized on the raw sampled
@@ -602,11 +636,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             stochastic_allowed[cloud_idx] = False
             sampled_row = torch.zeros(Np, dtype=torch.bool, device=h_s.device)
             if stochastic_allowed.any():
-                probs_raw = self.actor(
-                    h_s[service_idx:service_idx + 1],
-                    h_p,
-                    mask=stochastic_allowed.unsqueeze(0),
-                )[0]
+                row_scores = final_scores[service_idx]
+                probs_raw = torch.where(
+                    stochastic_allowed,
+                    torch.sigmoid(row_scores),
+                    torch.zeros_like(row_scores),
+                )
                 probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
                 probs_log = torch.where(stochastic_allowed, probs_log, torch.full_like(probs_log, eps))
                 probs_sample = torch.where(stochastic_allowed, probs_raw, torch.zeros_like(probs_raw))
@@ -623,9 +658,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 logp_sum += dist.log_prob(sampled_row.float()).sum()
                 ent_terms.append(dist.entropy()[stochastic_allowed].mean())
                 raw_probs[service_idx] = probs_raw
+                policy_prob_matrix[service_idx] = probs_raw
             sampled_row[cloud_idx] = True
             raw_deploy_mask[service_idx] = sampled_row
             raw_probs[service_idx, cloud_idx] = 1.0
+            policy_prob_matrix[service_idx, cloud_idx] = 1.0
 
         ent_sum = torch.stack(ent_terms).mean() if ent_terms else torch.tensor(0.0, device=h_s.device)
         (
@@ -652,6 +689,17 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "edge_cover_repair_cost": edge_cover_repair_cost,
             "edge_cover_unmet": edge_cover_unmet,
             "raw_deploy_mask": raw_deploy_mask,
+            "actor_debug": {
+                "service_embedding": h_s.detach().cpu(),
+                "device_embedding": h_p.detach().cpu(),
+                "q_embedding": q_embedding.detach().cpu(),
+                "k_embedding": k_embedding.detach().cpu(),
+                "qk_score": qk_scores.detach().cpu(),
+                "pair_bias": pair_bias.detach().cpu(),
+                "final_score": final_scores.detach().cpu(),
+                "policy_prob": policy_prob_matrix.detach().cpu(),
+                "static_mask": static_allowed.detach().cpu(),
+            },
         }
 
     def evaluate(
@@ -679,6 +727,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
         cloud_idx = self._cloud_index(Np)
         deploy_mask = self._enforce_cloud_replica(deploy_mask.bool())
+        pair_bias = self._deployment_pair_bias(logic_feats)
         eps = 1e-6
 
         logp_sum = torch.tensor(0.0, device=h_s.device)
@@ -691,6 +740,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     h_s[service_idx:service_idx + 1],
                     h_p,
                     mask=stochastic_allowed.unsqueeze(0),
+                    pair_bias=None if pair_bias is None else pair_bias[service_idx:service_idx + 1],
                 )[0]
                 probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
                 probs_log = torch.where(stochastic_allowed, probs_log, torch.full_like(probs_log, eps))
@@ -831,7 +881,7 @@ class HedgerOffloadingPPO(nn.Module):
     def __init__(self, encoder: TopologyEncoders, d_model=64,
                  actor_lr=3e-4, critic_lr=1e-3, update_encoder: bool = True,
                  gamma=0.99, lamda=0.95, clip_eps=0.2,
-                 source_node_idx: int = 0, cloud_node_idx: int = -1,
+                 cloud_node_idx: int = -1,
                  constraint_cfg: OffloadingConstraintCfg = OffloadingConstraintCfg()):
         super().__init__()
         self.encoder = encoder
@@ -839,10 +889,16 @@ class HedgerOffloadingPPO(nn.Module):
         self.critic = ValueHead(d_model)
         self.service_adapter = FeatureAdapter(d_model)
         self.device_adapter = FeatureAdapter(d_model)
+        self.offloading_pair_head = PairBiasHead(input_dim=11, hidden_dim=max(16, d_model // 2))
 
         adapter_params = list(self.service_adapter.parameters()) + list(self.device_adapter.parameters())
         encoder_params = list(self.encoder.parameters()) if update_encoder else []
-        params_actor = list(self.actor.parameters()) + adapter_params + encoder_params
+        params_actor = (
+            list(self.actor.parameters())
+            + list(self.offloading_pair_head.parameters())
+            + adapter_params
+            + encoder_params
+        )
         self.actor_opt = torch.optim.Adam(params_actor, lr=actor_lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
         self._actor_train_params = params_actor
@@ -850,7 +906,6 @@ class HedgerOffloadingPPO(nn.Module):
         self.gamma = gamma
         self.lamda = lamda
         self.clip_eps = clip_eps
-        self.source = source_node_idx
         self.cloud_idx = cloud_node_idx
         self.cfg = constraint_cfg
 
@@ -883,6 +938,32 @@ class HedgerOffloadingPPO(nn.Module):
 
     def _offloading_context(self, h_p: torch.Tensor, static_mask: torch.Tensor) -> torch.Tensor:
         return _build_mask_context(static_mask.bool(), h_p)
+
+    def _offloading_pair_bias(self, logic_feats: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+        latency_features = logic_feats.get("offloading_latency_pair_feat")
+        queue_features = logic_feats.get("offloading_queue_pair_feat")
+        if not isinstance(latency_features, torch.Tensor) or not isinstance(queue_features, torch.Tensor):
+            return None
+        if latency_features.numel() == 0 or queue_features.numel() == 0:
+            return None
+        pair_features = torch.cat([latency_features.float(), queue_features.float()], dim=-1)
+        return self.offloading_pair_head(pair_features)
+
+    def _offloading_actor_terms(
+            self,
+            h_s: torch.Tensor,
+            h_p: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        q_embedding = self.actor.q(h_s)
+        k_embedding = self.actor.k(h_p)
+        qk_scores = (q_embedding @ k_embedding.t()) / math.sqrt(q_embedding.size(-1))
+        qk_scores = qk_scores / max(self.actor.temperature, 1e-6)
+        pair_bias = self._offloading_pair_bias(logic_feats)
+        if pair_bias is None:
+            pair_bias = torch.zeros_like(qk_scores)
+        final_scores = qk_scores + pair_bias
+        return q_embedding, k_embedding, qk_scores, pair_bias, final_scores
 
     @torch.no_grad()
     def estimate_value(
@@ -980,25 +1061,6 @@ class HedgerOffloadingPPO(nn.Module):
             correction_cost += -math.log(prob)
         return correction_cost / float(num_services)
 
-    def _count_switches(self, actions: torch.Tensor, parents: List[List[int]]) -> int:
-        """
-        Count execution-target changes along actual DAG edges.
-
-        Root services are compared against the source node. Non-root services are
-        compared against each parent on incoming logical edges.
-        """
-        switches = 0
-        for node, parent_indices in enumerate(parents):
-            cur = actions[node].item()
-            if not parent_indices:
-                if cur != self.source:
-                    switches += 1
-                continue
-            for parent in parent_indices:
-                if cur != actions[parent].item():
-                    switches += 1
-        return switches
-
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
                static_mask: torch.Tensor, topo_order: Optional[list] = None,
@@ -1010,6 +1072,13 @@ class HedgerOffloadingPPO(nn.Module):
         if topo_order is None:
             topo_order = self.topo_order(logic_edge_index, Ms)
         parents = self._build_parents(logic_edge_index, Ms)
+        q_embedding, k_embedding, qk_scores, pair_bias, final_scores = self._offloading_actor_terms(
+            h_s,
+            h_p,
+            logic_feats,
+        )
+        effective_mask = torch.zeros((Ms, Np), dtype=torch.bool, device=h_p.device)
+        policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
 
         raw_actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
         raw_probs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
@@ -1018,8 +1087,11 @@ class HedgerOffloadingPPO(nn.Module):
 
         for i in topo_order:
             allowed = self._normalize_offloading_mask(static_mask[i].clone())
-            probs_i = self.actor(h_s[i:i + 1], h_p, allowed.unsqueeze(0))[0]
+            effective_mask[i] = allowed
+            masked_scores = final_scores[i].masked_fill(~allowed, float('-inf'))
+            probs_i = F.softmax(masked_scores, dim=-1)
             raw_probs[i] = probs_i
+            policy_prob_matrix[i] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)
             raw_actions[i] = torch.argmax(probs_i) if deterministic else dist.sample()
             logp_sum += dist.log_prob(raw_actions[i])
@@ -1027,15 +1099,25 @@ class HedgerOffloadingPPO(nn.Module):
 
         actions, correction_cnt = self._correct_offloading_actions(raw_actions, parents, topo_order)
         correction_cost = self._offloading_correction_cost(raw_probs, raw_actions, actions)
-        switches = self._count_switches(actions, parents)
         value = self.critic(h_s, h_p, self._offloading_context(h_p, static_mask))
-        aux_cost = self.cfg.penalty_switch * switches + self.cfg.penalty_relax * correction_cost
+        aux_cost = self.cfg.penalty_relax * correction_cost
         return actions, logp_sum, ent_sum, value.squeeze(0), {
-            "switches": switches,
             "correction_cnt": correction_cnt,
             "correction_cost": correction_cost,
             "aux_cost": aux_cost,
             "raw_actions": raw_actions,
+            "actor_debug": {
+                "service_embedding": h_s.detach().cpu(),
+                "device_embedding": h_p.detach().cpu(),
+                "q_embedding": q_embedding.detach().cpu(),
+                "k_embedding": k_embedding.detach().cpu(),
+                "qk_score": qk_scores.detach().cpu(),
+                "pair_bias": pair_bias.detach().cpu(),
+                "final_score": final_scores.detach().cpu(),
+                "policy_prob": policy_prob_matrix.detach().cpu(),
+                "raw_static_mask": static_mask.detach().cpu(),
+                "effective_mask": effective_mask.detach().cpu(),
+            },
         }
 
     def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
@@ -1052,10 +1134,16 @@ class HedgerOffloadingPPO(nn.Module):
         parents = self._build_parents(logic_edge_index, Ms)
         corrected_actions, correction_cnt = self._correct_offloading_actions(actions, parents, topo_order)
         raw_probs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        pair_bias = self._offloading_pair_bias(logic_feats)
 
         for i in topo_order:
             allowed = self._normalize_offloading_mask(static_mask[i].clone())
-            probs_i = self.actor(h_s[i:i + 1], h_p, allowed.unsqueeze(0))[0]
+            probs_i = self.actor(
+                h_s[i:i + 1],
+                h_p,
+                allowed.unsqueeze(0),
+                pair_bias=None if pair_bias is None else pair_bias[i:i + 1],
+            )[0]
             raw_probs[i] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)
             a = actions[i]
@@ -1063,11 +1151,9 @@ class HedgerOffloadingPPO(nn.Module):
             ent_sum += dist.entropy()
 
         correction_cost = self._offloading_correction_cost(raw_probs, actions, corrected_actions)
-        switches = self._count_switches(corrected_actions, parents)
         value = self.critic(h_s, h_p, self._offloading_context(h_p, static_mask))
-        aux_cost = self.cfg.penalty_switch * switches + self.cfg.penalty_relax * correction_cost
+        aux_cost = self.cfg.penalty_relax * correction_cost
         return logp_sum, ent_sum, value.squeeze(0), {
-            "switches": switches,
             "correction_cnt": correction_cnt,
             "correction_cost": correction_cost,
             "aux_cost": aux_cost,
@@ -1208,7 +1294,6 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             lamda=0.95,
             clip_eps=0.2,
             update_encoder: bool = True,
-            source_node_idx: int = 0,
             cloud_node_idx: int = -1,
             deployment_constraint_cfg: DeploymentConstraintCfg = DeploymentConstraintCfg(),
             offloading_constraint_cfg: OffloadingConstraintCfg = OffloadingConstraintCfg(),
@@ -1226,7 +1311,6 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             constraint_cfg=deployment_constraint_cfg,
         )
         self.offload_actor = OffloadActor(d_model)
-        self.source = source_node_idx
         self.cloud_idx = cloud_node_idx
         self.offloading_cfg = offloading_constraint_cfg
         self._rebuild_actor_optimizer(extra_actor_modules=[self.offload_actor])
@@ -1284,19 +1368,6 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             prob = min(max(prob, 1e-6), 1.0)
             correction_cost += -math.log(prob)
         return correction_cost / float(num_services)
-
-    def _count_switches(self, actions: torch.Tensor, parents: List[List[int]]) -> int:
-        switches = 0
-        for node, parent_indices in enumerate(parents):
-            cur = int(actions[node].item())
-            if not parent_indices:
-                if cur != self.source:
-                    switches += 1
-                continue
-            for parent in parent_indices:
-                if cur != int(actions[parent].item()):
-                    switches += 1
-        return switches
 
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index,
@@ -1377,11 +1448,7 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
 
         actions, off_correction_cnt = self._correct_offloading_actions(raw_actions, parents, topo_order)
         off_correction_cost = self._offloading_correction_cost(raw_offloading_probs, raw_actions, actions)
-        switches = self._count_switches(actions, parents)
-        off_aux_cost = (
-            float(self.offloading_cfg.penalty_switch) * switches
-            + float(self.offloading_cfg.penalty_relax) * off_correction_cost
-        )
+        off_aux_cost = float(self.offloading_cfg.penalty_relax) * off_correction_cost
 
         deploy_entropy = (
             torch.stack(deploy_ent_terms).mean()
@@ -1400,7 +1467,6 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             "edge_cover_unmet": edge_cover_unmet,
             "raw_deploy_mask": raw_deploy_mask,
             "raw_actions": raw_actions,
-            "switches": switches,
             "correction_cnt": off_correction_cnt,
             "correction_cost": off_correction_cost,
             "aux_cost": off_aux_cost,
@@ -1469,14 +1535,9 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             if off_ent_terms else torch.tensor(0.0, device=h_s.device)
         )
         correction_cost = self._offloading_correction_cost(raw_probs, raw_actions, corrected_actions)
-        switches = self._count_switches(corrected_actions, parents)
-        aux_cost = (
-            float(self.offloading_cfg.penalty_switch) * switches
-            + float(self.offloading_cfg.penalty_relax) * correction_cost
-        )
+        aux_cost = float(self.offloading_cfg.penalty_relax) * correction_cost
         value = self.critic(h_s, h_p, self._deployment_context(h_p, prev_deploy_mask))
         return deploy_logp + off_logp, (deploy_entropy + off_entropy) * 0.5, value.squeeze(0), {
-            "switches": switches,
             "correction_cnt": correction_cnt,
             "correction_cost": correction_cost,
             "aux_cost": aux_cost,

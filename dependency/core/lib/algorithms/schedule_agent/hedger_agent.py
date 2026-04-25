@@ -212,6 +212,12 @@ class HedgerAgent(BaseAgent, abc.ABC):
         observe_queue = getattr(self.hedger, "update_latency_guard_queue_lengths", None)
         if queue_length is not None and callable(observe_queue):
             observe_queue(device, queue_length)
+        if isinstance(queue_length, dict) and queue_length:
+            self.hedger.state_buffer.add_queue_lengths(
+                device,
+                queue_length,
+                deployment_version=self.hedger.get_active_deployment_version(),
+            )
 
         model_flops_updates = resource.get('model_flops') or {}
         model_memory_updates = resource.get('model_memory') or {}
@@ -288,18 +294,15 @@ class HedgerAgent(BaseAgent, abc.ABC):
         updated_services = 0
         complexity_values = []
         latency_values = []
+        service_feedback = []
         for service_name in task.get_dag().nodes:
             if service_name in (TaskConstant.START.value, TaskConstant.END.value):
                 continue
             service = task.get_service(service_name)
             latency = service.get_execute_time()
+            execute_device = service.get_execute_device()
             complexity = self._extract_task_complexity(service)
-            self.hedger.state_buffer.add_task_complexity(service_name, complexity)
-            self.hedger.state_buffer.add_task_latency(
-                service_name,
-                latency,
-                deployment_version=deployment_version,
-            )
+            service_feedback.append((service_name, float(complexity), float(latency), execute_device))
             updated_services += 1
             complexity_values.append(float(complexity))
             latency_values.append(float(latency))
@@ -310,9 +313,19 @@ class HedgerAgent(BaseAgent, abc.ABC):
                 end_to_end_latency,
                 deployment_version=deployment_version,
             )
+            task_version = self.hedger.state_buffer.get_task_observation_version()
+            for service_name, complexity, latency, execute_device in service_feedback:
+                self.hedger.state_buffer.add_task_complexity(service_name, complexity)
+                if execute_device is not None:
+                    self.hedger.state_buffer.add_task_latency_pair(
+                        service_name,
+                        execute_device,
+                        latency,
+                        task_version=task_version,
+                        deployment_version=deployment_version,
+                    )
             observe_latency = getattr(self.hedger, "observe_task_end_to_end_latency", None)
             if callable(observe_latency):
-                task_version = self.hedger.state_buffer.get_task_observation_version()
                 observe_latency(
                     end_to_end_latency,
                     task_version=task_version,

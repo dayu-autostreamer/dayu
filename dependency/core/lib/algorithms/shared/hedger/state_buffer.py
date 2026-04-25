@@ -29,7 +29,7 @@ class BufferWaitCfg:
 
     min_dynamic_len:
         Minimum required length for each dynamic sequence buffer, such as
-        bandwidth, utilization, and latency history.
+        bandwidth, utilization, and task-complexity history.
 
     require_full_seq:
         If True, every dynamic buffer must satisfy `len(buf) >= seq_len`.
@@ -46,6 +46,21 @@ class BufferWaitCfg:
 
 class StateBuffer:
     DEFAULT_LAN_BANDWIDTH_MBPS = 100.0
+    LATENCY_SHORT_ALPHA = 0.30
+    LATENCY_LONG_ALPHA = 0.10
+    LATENCY_DEV_ALPHA = 0.20
+    LATENCY_PAIR_CONF_DENOM = 5.0
+    LATENCY_BASELINE_CONF_DENOM = 10.0
+    LATENCY_TASK_FRESHNESS_TAU = 150.0
+    LATENCY_DEPLOYMENT_FRESHNESS_TAU = 3.0
+
+    QUEUE_SHORT_ALPHA = 0.35
+    QUEUE_LONG_ALPHA = 0.10
+    QUEUE_BUSY_ALPHA = 0.20
+    QUEUE_PAIR_CONF_DENOM = 5.0
+    QUEUE_BASELINE_CONF_DENOM = 10.0
+    QUEUE_TIME_FRESHNESS_TAU_S = 10.0
+    QUEUE_DEPLOYMENT_FRESHNESS_TAU = 3.0
 
     def __init__(self, max_capacity: int, logical_topology, physical_topology,
                  fixed_lan_bandwidth_mbps: float = DEFAULT_LAN_BANDWIDTH_MBPS):
@@ -86,7 +101,6 @@ class StateBuffer:
 
         # Dynamic logical features, one time series per service.
         self.task_complexity_buffer: List[List[float]] = [[] for _ in range(num_services)]
-        self.task_latency_buffer: List[List[float]] = [[] for _ in range(num_services)]
         self.task_end_to_end_latency_buffer: List[Tuple[int, float, Optional[int]]] = []
 
         # Static physical features.
@@ -94,12 +108,10 @@ class StateBuffer:
         self.memory_capacity_buffer: List[float] = [0.0 for _ in range(num_devices)]
         self.device_role_buffer: List[int] = []
         for device_idx in range(num_devices):
-            if device_idx == self.physical_topology.source_idx:
-                self.device_role_buffer.append(0)
-            elif device_idx == self.physical_topology.cloud_idx:
-                self.device_role_buffer.append(2)
+            if device_idx == self.physical_topology.cloud_idx:
+                self.device_role_buffer.append(1)
             else:
-                self.device_role_buffer.append(1)  # 0: source edge, 1: other edge, 2: cloud
+                self.device_role_buffer.append(0)  # 0: edge, 1: cloud
 
         # Dynamic physical features, one time series per device.
         self.bandwidth_buffer: List[List[float]] = [[] for _ in range(num_devices)]
@@ -110,6 +122,54 @@ class StateBuffer:
         # versions so delayed tasks are not credited to a newer deployment.
         self.task_observation_version_buffer: List[Tuple[int, Optional[int]]] = []
         self.offloading_reward_buffer: List[Dict[str, Any]] = []
+
+        # Shared service-device latency pair table plus hierarchical backoff baselines.
+        self.latency_pair_short = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.latency_pair_long = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.latency_pair_dev = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.latency_pair_last = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.latency_pair_obs_count = np.zeros((num_services, num_devices), dtype=np.int32)
+        self.latency_pair_last_task_v = np.zeros((num_services, num_devices), dtype=np.int64)
+        self.latency_pair_last_dep_v = np.full((num_services, num_devices), -1, dtype=np.int64)
+
+        self.latency_service_short = np.zeros(num_services, dtype=np.float32)
+        self.latency_service_long = np.zeros(num_services, dtype=np.float32)
+        self.latency_service_dev = np.zeros(num_services, dtype=np.float32)
+        self.latency_service_obs_count = np.zeros(num_services, dtype=np.int32)
+
+        self.latency_device_short = np.zeros(num_devices, dtype=np.float32)
+        self.latency_device_long = np.zeros(num_devices, dtype=np.float32)
+        self.latency_device_dev = np.zeros(num_devices, dtype=np.float32)
+        self.latency_device_obs_count = np.zeros(num_devices, dtype=np.int32)
+
+        self.latency_global_short = 0.0
+        self.latency_global_long = 0.0
+        self.latency_global_dev = 0.0
+        self.latency_global_obs_count = 0
+
+        # Independent queue pair table with wall-clock freshness.
+        self.queue_pair_short = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.queue_pair_long = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.queue_pair_busy = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.queue_pair_last = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.queue_pair_obs_count = np.zeros((num_services, num_devices), dtype=np.int32)
+        self.queue_pair_last_t = np.zeros((num_services, num_devices), dtype=np.float64)
+        self.queue_pair_last_dep_v = np.full((num_services, num_devices), -1, dtype=np.int64)
+
+        self.queue_service_short = np.zeros(num_services, dtype=np.float32)
+        self.queue_service_long = np.zeros(num_services, dtype=np.float32)
+        self.queue_service_busy = np.zeros(num_services, dtype=np.float32)
+        self.queue_service_obs_count = np.zeros(num_services, dtype=np.int32)
+
+        self.queue_device_short = np.zeros(num_devices, dtype=np.float32)
+        self.queue_device_long = np.zeros(num_devices, dtype=np.float32)
+        self.queue_device_busy = np.zeros(num_devices, dtype=np.float32)
+        self.queue_device_obs_count = np.zeros(num_devices, dtype=np.int32)
+
+        self.queue_global_short = 0.0
+        self.queue_global_long = 0.0
+        self.queue_global_busy = 0.0
+        self.queue_global_obs_count = 0
 
         # Track whether each static entry has been observed at least once.
         self._logic_flops_seen = [False for _ in range(num_services)]
@@ -231,9 +291,6 @@ class StateBuffer:
             return False
         if min_dyn_len(self.task_complexity_buffer) < min_len:
             return False
-        if min_dyn_len(self.task_latency_buffer) < min_len:
-            return False
-
         if wait_cfg.require_full_seq:
             if min_dyn_len(self.bandwidth_buffer) < seq_len:
                 return False
@@ -243,10 +300,312 @@ class StateBuffer:
                 return False
             if min_dyn_len(self.task_complexity_buffer) < seq_len:
                 return False
-            if min_dyn_len(self.task_latency_buffer) < seq_len:
-                return False
-
         return True
+
+    @staticmethod
+    def _sanitize_non_negative(value: Any) -> Optional[float]:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(value):
+            return None
+        return max(0.0, value)
+
+    @staticmethod
+    def _ema_update_latency_state(
+            short_value: float,
+            long_value: float,
+            dev_value: float,
+            count: int,
+            x: float,
+            alpha_short: float,
+            alpha_long: float,
+            alpha_dev: float,
+    ) -> Tuple[float, float, float, int]:
+        if count <= 0:
+            return float(x), float(x), 0.0, 1
+        new_short = (1.0 - alpha_short) * float(short_value) + alpha_short * float(x)
+        new_long = (1.0 - alpha_long) * float(long_value) + alpha_long * float(x)
+        new_dev = (1.0 - alpha_dev) * float(dev_value) + alpha_dev * abs(float(x) - new_short)
+        return float(new_short), float(new_long), float(new_dev), int(count) + 1
+
+    @staticmethod
+    def _ema_update_queue_state(
+            short_value: float,
+            long_value: float,
+            busy_value: float,
+            count: int,
+            x: float,
+            busy: float,
+            alpha_short: float,
+            alpha_long: float,
+            alpha_busy: float,
+    ) -> Tuple[float, float, float, int]:
+        if count <= 0:
+            return float(x), float(x), float(busy), 1
+        new_short = (1.0 - alpha_short) * float(short_value) + alpha_short * float(x)
+        new_long = (1.0 - alpha_long) * float(long_value) + alpha_long * float(x)
+        new_busy = (1.0 - alpha_busy) * float(busy_value) + alpha_busy * float(busy)
+        return float(new_short), float(new_long), float(new_busy), int(count) + 1
+
+    @staticmethod
+    def _confidence(counts: np.ndarray, denom: float) -> np.ndarray:
+        counts = counts.astype(np.float32)
+        return counts / (counts + float(denom))
+
+    @staticmethod
+    def _service_device_baseline(
+            service_values: np.ndarray,
+            service_counts: np.ndarray,
+            device_values: np.ndarray,
+            device_counts: np.ndarray,
+            global_value: float,
+            denom: float,
+    ) -> np.ndarray:
+        service_conf = StateBuffer._confidence(service_counts, denom).reshape(-1, 1)
+        device_conf = StateBuffer._confidence(device_counts, denom).reshape(1, -1)
+        numerator = (
+            service_conf * service_values.reshape(-1, 1)
+            + device_conf * device_values.reshape(1, -1)
+            + float(global_value)
+        )
+        return numerator / (service_conf + device_conf + 1.0)
+
+    @staticmethod
+    def _freshness_from_versions(
+            last_versions: np.ndarray,
+            counts: np.ndarray,
+            current_version: Optional[int],
+            tau: float,
+    ) -> np.ndarray:
+        if current_version is None:
+            return np.where(counts > 0, 1.0, 0.0).astype(np.float32)
+        delta = np.maximum(0.0, float(current_version) - last_versions.astype(np.float32))
+        freshness = np.exp(-delta / float(tau))
+        freshness = np.where(counts > 0, freshness, 0.0)
+        return freshness.astype(np.float32)
+
+    @staticmethod
+    def _freshness_from_time(
+            last_timestamps: np.ndarray,
+            counts: np.ndarray,
+            now_monotonic: float,
+            tau_s: float,
+    ) -> np.ndarray:
+        delta = np.maximum(0.0, float(now_monotonic) - last_timestamps.astype(np.float32))
+        freshness = np.exp(-delta / float(tau_s))
+        freshness = np.where(counts > 0, freshness, 0.0)
+        return freshness.astype(np.float32)
+
+    def _service_names(self) -> List[str]:
+        return [self.logical_topology[i] for i in range(self.logical_topology.node_num)]
+
+    def _device_names(self) -> List[str]:
+        return [self.physical_topology[i] for i in range(self.physical_topology.node_num)]
+
+    def _build_pair_snapshot_locked(
+            self,
+            current_deployment_version: Optional[int] = None,
+            now_monotonic: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        current_task_version = int(self._task_observation_version)
+        current_deployment_version = self._normalize_deployment_version(current_deployment_version)
+        if now_monotonic is None:
+            now_monotonic = time.monotonic()
+
+        latency_base_short = self._service_device_baseline(
+            self.latency_service_short,
+            self.latency_service_obs_count,
+            self.latency_device_short,
+            self.latency_device_obs_count,
+            self.latency_global_short,
+            self.LATENCY_BASELINE_CONF_DENOM,
+        )
+        latency_base_long = self._service_device_baseline(
+            self.latency_service_long,
+            self.latency_service_obs_count,
+            self.latency_device_long,
+            self.latency_device_obs_count,
+            self.latency_global_long,
+            self.LATENCY_BASELINE_CONF_DENOM,
+        )
+        latency_base_dev = self._service_device_baseline(
+            self.latency_service_dev,
+            self.latency_service_obs_count,
+            self.latency_device_dev,
+            self.latency_device_obs_count,
+            self.latency_global_dev,
+            self.LATENCY_BASELINE_CONF_DENOM,
+        )
+
+        latency_pair_conf = self._confidence(self.latency_pair_obs_count, self.LATENCY_PAIR_CONF_DENOM)
+        latency_fresh_task = self._freshness_from_versions(
+            self.latency_pair_last_task_v,
+            self.latency_pair_obs_count,
+            current_task_version,
+            self.LATENCY_TASK_FRESHNESS_TAU,
+        )
+        latency_fresh_dep = self._freshness_from_versions(
+            self.latency_pair_last_dep_v,
+            self.latency_pair_obs_count,
+            current_deployment_version,
+            self.LATENCY_DEPLOYMENT_FRESHNESS_TAU,
+        )
+        latency_rel_off = latency_pair_conf * latency_fresh_task
+        latency_rel_dep = latency_pair_conf * latency_fresh_task * latency_fresh_dep
+
+        latency_pred_short_off = latency_rel_off * self.latency_pair_short + (1.0 - latency_rel_off) * latency_base_short
+        latency_pred_long_off = latency_rel_off * self.latency_pair_long + (1.0 - latency_rel_off) * latency_base_long
+        latency_pred_last_off = latency_rel_off * self.latency_pair_last + (1.0 - latency_rel_off) * latency_base_short
+        latency_pred_dev_off = latency_rel_off * self.latency_pair_dev + (1.0 - latency_rel_off) * latency_base_dev
+
+        latency_pred_short_dep = latency_rel_dep * self.latency_pair_short + (1.0 - latency_rel_dep) * latency_base_short
+        latency_pred_long_dep = latency_rel_dep * self.latency_pair_long + (1.0 - latency_rel_dep) * latency_base_long
+        latency_pred_dev_dep = latency_rel_dep * self.latency_pair_dev + (1.0 - latency_rel_dep) * latency_base_dev
+
+        deployment_latency_features = np.stack([
+            latency_pred_long_dep - latency_base_long,
+            latency_pred_short_dep - latency_base_short,
+            (latency_pred_short_dep - latency_base_short) - (latency_pred_long_dep - latency_base_long),
+            latency_pred_dev_dep,
+            latency_rel_dep,
+        ], axis=-1).astype(np.float32)
+        offloading_latency_features = np.stack([
+            latency_pred_short_off - latency_base_short,
+            latency_pred_long_off - latency_base_long,
+            latency_pred_last_off - latency_pred_short_off,
+            (latency_pred_short_off - latency_base_short) - (latency_pred_long_off - latency_base_long),
+            latency_pred_dev_off,
+            latency_rel_off,
+        ], axis=-1).astype(np.float32)
+
+        queue_base_short = self._service_device_baseline(
+            self.queue_service_short,
+            self.queue_service_obs_count,
+            self.queue_device_short,
+            self.queue_device_obs_count,
+            self.queue_global_short,
+            self.QUEUE_BASELINE_CONF_DENOM,
+        )
+        queue_base_long = self._service_device_baseline(
+            self.queue_service_long,
+            self.queue_service_obs_count,
+            self.queue_device_long,
+            self.queue_device_obs_count,
+            self.queue_global_long,
+            self.QUEUE_BASELINE_CONF_DENOM,
+        )
+        queue_base_busy = self._service_device_baseline(
+            self.queue_service_busy,
+            self.queue_service_obs_count,
+            self.queue_device_busy,
+            self.queue_device_obs_count,
+            self.queue_global_busy,
+            self.QUEUE_BASELINE_CONF_DENOM,
+        )
+
+        queue_pair_conf = self._confidence(self.queue_pair_obs_count, self.QUEUE_PAIR_CONF_DENOM)
+        queue_fresh_time = self._freshness_from_time(
+            self.queue_pair_last_t,
+            self.queue_pair_obs_count,
+            float(now_monotonic),
+            self.QUEUE_TIME_FRESHNESS_TAU_S,
+        )
+        queue_fresh_dep = self._freshness_from_versions(
+            self.queue_pair_last_dep_v,
+            self.queue_pair_obs_count,
+            current_deployment_version,
+            self.QUEUE_DEPLOYMENT_FRESHNESS_TAU,
+        )
+        queue_rel = queue_pair_conf * queue_fresh_time * queue_fresh_dep
+
+        queue_pred_short = queue_rel * self.queue_pair_short + (1.0 - queue_rel) * queue_base_short
+        queue_pred_long = queue_rel * self.queue_pair_long + (1.0 - queue_rel) * queue_base_long
+        queue_pred_busy = queue_rel * self.queue_pair_busy + (1.0 - queue_rel) * queue_base_busy
+        queue_pred_last = queue_rel * self.queue_pair_last + (1.0 - queue_rel) * queue_base_short
+
+        deployment_queue_features = np.stack([
+            queue_pred_long - queue_base_long,
+            queue_pred_short - queue_base_short,
+            queue_pred_busy,
+            queue_rel,
+        ], axis=-1).astype(np.float32)
+        offloading_queue_features = np.stack([
+            queue_pred_short - queue_base_short,
+            queue_pred_long - queue_base_long,
+            queue_pred_busy,
+            queue_pred_last - queue_pred_short,
+            queue_rel,
+        ], axis=-1).astype(np.float32)
+
+        return {
+            "service_names": self._service_names(),
+            "device_names": self._device_names(),
+            "current_task_version": current_task_version,
+            "current_deployment_version": current_deployment_version,
+            "monotonic_time": float(now_monotonic),
+            "latency_pair_snapshot": {
+                "pair_short": self.latency_pair_short.tolist(),
+                "pair_long": self.latency_pair_long.tolist(),
+                "pair_dev": self.latency_pair_dev.tolist(),
+                "pair_last": self.latency_pair_last.tolist(),
+                "pair_count": self.latency_pair_obs_count.tolist(),
+                "pair_last_task_v": self.latency_pair_last_task_v.tolist(),
+                "pair_last_dep_v": self.latency_pair_last_dep_v.tolist(),
+                "service_baseline": {
+                    "short": self.latency_service_short.tolist(),
+                    "long": self.latency_service_long.tolist(),
+                    "dev": self.latency_service_dev.tolist(),
+                    "count": self.latency_service_obs_count.tolist(),
+                },
+                "device_baseline": {
+                    "short": self.latency_device_short.tolist(),
+                    "long": self.latency_device_long.tolist(),
+                    "dev": self.latency_device_dev.tolist(),
+                    "count": self.latency_device_obs_count.tolist(),
+                },
+                "global_baseline": {
+                    "short": float(self.latency_global_short),
+                    "long": float(self.latency_global_long),
+                    "dev": float(self.latency_global_dev),
+                    "count": int(self.latency_global_obs_count),
+                },
+            },
+            "queue_pair_snapshot": {
+                "pair_short": self.queue_pair_short.tolist(),
+                "pair_long": self.queue_pair_long.tolist(),
+                "pair_busy": self.queue_pair_busy.tolist(),
+                "pair_last": self.queue_pair_last.tolist(),
+                "pair_count": self.queue_pair_obs_count.tolist(),
+                "pair_last_t": self.queue_pair_last_t.tolist(),
+                "pair_last_dep_v": self.queue_pair_last_dep_v.tolist(),
+                "service_baseline": {
+                    "short": self.queue_service_short.tolist(),
+                    "long": self.queue_service_long.tolist(),
+                    "busy": self.queue_service_busy.tolist(),
+                    "count": self.queue_service_obs_count.tolist(),
+                },
+                "device_baseline": {
+                    "short": self.queue_device_short.tolist(),
+                    "long": self.queue_device_long.tolist(),
+                    "busy": self.queue_device_busy.tolist(),
+                    "count": self.queue_device_obs_count.tolist(),
+                },
+                "global_baseline": {
+                    "short": float(self.queue_global_short),
+                    "long": float(self.queue_global_long),
+                    "busy": float(self.queue_global_busy),
+                    "count": int(self.queue_global_obs_count),
+                },
+            },
+            "pair_feature_snapshot": {
+                "deployment_latency": deployment_latency_features.tolist(),
+                "offloading_latency": offloading_latency_features.tolist(),
+                "deployment_queue": deployment_queue_features.tolist(),
+                "offloading_queue": offloading_queue_features.tolist(),
+            },
+        }
 
     def _mark_static_logic_ready(self):
         self._static_logic_ready = all(self._logic_flops_seen) and all(self._logic_memory_seen)
@@ -357,14 +716,89 @@ class StateBuffer:
             self._trim_inplace(self.task_complexity_buffer[s_idx])
             self._bump_version()
 
-    def add_task_latency(self, service_name: str, latency: float, deployment_version=None):
-        """Append a task-latency observation for a service."""
+    def add_task_latency_pair(
+            self,
+            service_name: str,
+            device_name: str,
+            latency: float,
+            task_version: Optional[int] = None,
+            deployment_version=None,
+    ):
         with self._cond:
             s_idx = self._resolve_service_index(service_name)
-            if s_idx is None:
+            d_idx = self._resolve_device_index(device_name)
+            value = self._sanitize_non_negative(latency)
+            if s_idx is None or d_idx is None or value is None:
                 return
-            self.task_latency_buffer[s_idx].append(float(latency))
-            self._trim_inplace(self.task_latency_buffer[s_idx])
+
+            x = float(np.log1p(value))
+            dep_version = self._normalize_deployment_version(deployment_version)
+            if task_version is None:
+                task_version = self._task_observation_version
+            task_version = int(task_version)
+
+            short, long_, dev, count = self._ema_update_latency_state(
+                self.latency_pair_short[s_idx, d_idx],
+                self.latency_pair_long[s_idx, d_idx],
+                self.latency_pair_dev[s_idx, d_idx],
+                int(self.latency_pair_obs_count[s_idx, d_idx]),
+                x,
+                self.LATENCY_SHORT_ALPHA,
+                self.LATENCY_LONG_ALPHA,
+                self.LATENCY_DEV_ALPHA,
+            )
+            self.latency_pair_short[s_idx, d_idx] = short
+            self.latency_pair_long[s_idx, d_idx] = long_
+            self.latency_pair_dev[s_idx, d_idx] = dev
+            self.latency_pair_last[s_idx, d_idx] = x
+            self.latency_pair_obs_count[s_idx, d_idx] = count
+            self.latency_pair_last_task_v[s_idx, d_idx] = task_version
+            self.latency_pair_last_dep_v[s_idx, d_idx] = -1 if dep_version is None else dep_version
+
+            short, long_, dev, count = self._ema_update_latency_state(
+                self.latency_service_short[s_idx],
+                self.latency_service_long[s_idx],
+                self.latency_service_dev[s_idx],
+                int(self.latency_service_obs_count[s_idx]),
+                x,
+                self.LATENCY_SHORT_ALPHA,
+                self.LATENCY_LONG_ALPHA,
+                self.LATENCY_DEV_ALPHA,
+            )
+            self.latency_service_short[s_idx] = short
+            self.latency_service_long[s_idx] = long_
+            self.latency_service_dev[s_idx] = dev
+            self.latency_service_obs_count[s_idx] = count
+
+            short, long_, dev, count = self._ema_update_latency_state(
+                self.latency_device_short[d_idx],
+                self.latency_device_long[d_idx],
+                self.latency_device_dev[d_idx],
+                int(self.latency_device_obs_count[d_idx]),
+                x,
+                self.LATENCY_SHORT_ALPHA,
+                self.LATENCY_LONG_ALPHA,
+                self.LATENCY_DEV_ALPHA,
+            )
+            self.latency_device_short[d_idx] = short
+            self.latency_device_long[d_idx] = long_
+            self.latency_device_dev[d_idx] = dev
+            self.latency_device_obs_count[d_idx] = count
+
+            short, long_, dev, count = self._ema_update_latency_state(
+                self.latency_global_short,
+                self.latency_global_long,
+                self.latency_global_dev,
+                int(self.latency_global_obs_count),
+                x,
+                self.LATENCY_SHORT_ALPHA,
+                self.LATENCY_LONG_ALPHA,
+                self.LATENCY_DEV_ALPHA,
+            )
+            self.latency_global_short = short
+            self.latency_global_long = long_
+            self.latency_global_dev = dev
+            self.latency_global_obs_count = count
             self._bump_version()
 
     def add_task_end_to_end_latency(self, latency: float, deployment_version=None):
@@ -474,6 +908,101 @@ class StateBuffer:
             self.memory_utilization_buffer[d_idx].append(float(util))
             self._trim_inplace(self.memory_utilization_buffer[d_idx])
             self._bump_version()
+
+    def add_queue_lengths(
+            self,
+            device_name: str,
+            queue_lengths: Dict[str, Any],
+            deployment_version=None,
+            now_monotonic: Optional[float] = None,
+    ):
+        with self._cond:
+            d_idx = self._resolve_device_index(device_name)
+            if d_idx is None or not isinstance(queue_lengths, dict) or not queue_lengths:
+                return
+            dep_version = self._normalize_deployment_version(deployment_version)
+            if now_monotonic is None:
+                now_monotonic = time.monotonic()
+
+            updated = False
+            for service_name, queue_length in queue_lengths.items():
+                s_idx = self._resolve_service_index(service_name)
+                value = self._sanitize_non_negative(queue_length)
+                if s_idx is None or value is None:
+                    continue
+                x = float(np.log1p(value))
+                busy = 1.0 if value > 0.0 else 0.0
+
+                short, long_, busy_ema, count = self._ema_update_queue_state(
+                    self.queue_pair_short[s_idx, d_idx],
+                    self.queue_pair_long[s_idx, d_idx],
+                    self.queue_pair_busy[s_idx, d_idx],
+                    int(self.queue_pair_obs_count[s_idx, d_idx]),
+                    x,
+                    busy,
+                    self.QUEUE_SHORT_ALPHA,
+                    self.QUEUE_LONG_ALPHA,
+                    self.QUEUE_BUSY_ALPHA,
+                )
+                self.queue_pair_short[s_idx, d_idx] = short
+                self.queue_pair_long[s_idx, d_idx] = long_
+                self.queue_pair_busy[s_idx, d_idx] = busy_ema
+                self.queue_pair_last[s_idx, d_idx] = x
+                self.queue_pair_obs_count[s_idx, d_idx] = count
+                self.queue_pair_last_t[s_idx, d_idx] = float(now_monotonic)
+                self.queue_pair_last_dep_v[s_idx, d_idx] = -1 if dep_version is None else dep_version
+
+                short, long_, busy_ema, count = self._ema_update_queue_state(
+                    self.queue_service_short[s_idx],
+                    self.queue_service_long[s_idx],
+                    self.queue_service_busy[s_idx],
+                    int(self.queue_service_obs_count[s_idx]),
+                    x,
+                    busy,
+                    self.QUEUE_SHORT_ALPHA,
+                    self.QUEUE_LONG_ALPHA,
+                    self.QUEUE_BUSY_ALPHA,
+                )
+                self.queue_service_short[s_idx] = short
+                self.queue_service_long[s_idx] = long_
+                self.queue_service_busy[s_idx] = busy_ema
+                self.queue_service_obs_count[s_idx] = count
+
+                short, long_, busy_ema, count = self._ema_update_queue_state(
+                    self.queue_device_short[d_idx],
+                    self.queue_device_long[d_idx],
+                    self.queue_device_busy[d_idx],
+                    int(self.queue_device_obs_count[d_idx]),
+                    x,
+                    busy,
+                    self.QUEUE_SHORT_ALPHA,
+                    self.QUEUE_LONG_ALPHA,
+                    self.QUEUE_BUSY_ALPHA,
+                )
+                self.queue_device_short[d_idx] = short
+                self.queue_device_long[d_idx] = long_
+                self.queue_device_busy[d_idx] = busy_ema
+                self.queue_device_obs_count[d_idx] = count
+
+                short, long_, busy_ema, count = self._ema_update_queue_state(
+                    self.queue_global_short,
+                    self.queue_global_long,
+                    self.queue_global_busy,
+                    int(self.queue_global_obs_count),
+                    x,
+                    busy,
+                    self.QUEUE_SHORT_ALPHA,
+                    self.QUEUE_LONG_ALPHA,
+                    self.QUEUE_BUSY_ALPHA,
+                )
+                self.queue_global_short = short
+                self.queue_global_long = long_
+                self.queue_global_busy = busy_ema
+                self.queue_global_obs_count = count
+                updated = True
+
+            if updated:
+                self._bump_version()
 
     def add_offloading_reward(self, reward: float, task_version: Optional[int] = None,
                               deployment_version=None) -> bool:
@@ -619,6 +1148,21 @@ class StateBuffer:
             wait_cfg: Optional[BufferWaitCfg] = None,
             pad_mode: str = "edge",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        logic_feats, phys_feats, _ = self.get_state_bundle(
+            seq_len=seq_len,
+            wait_cfg=wait_cfg,
+            pad_mode=pad_mode,
+        )
+        return logic_feats, phys_feats
+
+    def get_state_bundle(
+            self,
+            seq_len: int,
+            wait_cfg: Optional[BufferWaitCfg] = None,
+            pad_mode: str = "edge",
+            current_deployment_version: Optional[int] = None,
+            now_monotonic: Optional[float] = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
         """
         Return a snapshot of logical and physical features as Python lists.
 
@@ -629,7 +1173,6 @@ class StateBuffer:
             `model_flops`: `(Ms,)`
             `model_mem`: `(Ms,)`
             `task_complexity_seq`: `(Ms, T)`
-            `hist_latency_seq`: `(Ms, T)`
 
         `phys_feats`:
             `gpu_flops`: `(Np,)`
@@ -653,29 +1196,20 @@ class StateBuffer:
                     continue
                 elapsed = time.time() - start_t
                 if elapsed >= float(wait_cfg.timeout_s):
-                    # Timeout reached: return a best-effort snapshot.
                     break
-                # Wait for the next update.
                 self._cond.wait(timeout=min(0.5, float(wait_cfg.timeout_s) - elapsed))
 
-            # Build the logical snapshot.
             Ms = len(self.model_flops_buffer)
             logic_task_complexity = [
                 self._pad_trunc_1d(self.task_complexity_buffer[i], seq_len, pad_mode=pad_mode)
-                for i in range(Ms)
-            ]
-            logic_latency = [
-                self._pad_trunc_1d(self.task_latency_buffer[i], seq_len, pad_mode=pad_mode)
                 for i in range(Ms)
             ]
             logic_feats = {
                 "model_flops": list(self.model_flops_buffer),
                 "model_mem": list(self.model_memory_buffer),
                 "task_complexity_seq": logic_task_complexity,
-                "hist_latency_seq": logic_latency,
             }
 
-            # Build the physical snapshot.
             Np = len(self.gpu_flops_buffer)
             phys_bandwidth = [
                 self._pad_trunc_1d(self.bandwidth_buffer[i], seq_len, pad_mode=pad_mode)
@@ -698,7 +1232,13 @@ class StateBuffer:
                 "mem_util_seq": phys_mem_util,
             }
 
-            return logic_feats, phys_feats
+            pair_snapshot = self._build_pair_snapshot_locked(
+                current_deployment_version=current_deployment_version,
+                now_monotonic=now_monotonic,
+            )
+            pair_snapshot["logic_snapshot"] = logic_feats
+            pair_snapshot["phys_snapshot"] = phys_feats
+            return logic_feats, phys_feats, pair_snapshot
 
     def get_offloading_reward_stats(self, last_k: int = 1, deployment_version=None) -> Dict[str, float]:
         """Return the mean and std of the last `last_k` offloading rewards."""

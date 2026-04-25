@@ -115,8 +115,8 @@ def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
     )
 
     assert isinstance(off_cfg, OffloadingConstraintCfg)
-    assert off_cfg.penalty_switch == pytest.approx(1.5)
     assert off_cfg.penalty_relax == pytest.approx(2.5)
+    assert not hasattr(off_cfg, "penalty_switch")
     assert not hasattr(off_cfg, "allow_stay")
     assert not hasattr(off_cfg, "forbid_return")
     assert not hasattr(off_cfg, "cloud_sticky")
@@ -482,30 +482,44 @@ def test_deployment_projection_respects_min_edge_repair_capacity(monkeypatch):
 def test_deployment_reward_uses_relax_cost_not_relax_count():
     hedger = object.__new__(Hedger)
     hedger.deployment_agent_params = {
-        "reward_dep_change_weight": 0.1,
         "reward_dep_offload_weight": 1.0,
-        "reward_dep_cloud_only_weight": 0.75,
-        "reward_dep_empty_device_weight": 0.3,
+        "reward_dep_latency_weight": 0.2,
+        "reward_dep_slo_weight": 0.8,
+        "reward_dep_change_weight": 0.4,
+        "reward_dep_cloud_only_weight": 0.3,
+        "reward_dep_latency_transform": "clipped_ratio",
+        "reward_dep_latency_normalizer": 1.5,
+        "reward_dep_latency_clip": 6.0,
         "penalty_capacity_relax": 2.0,
         "penalty_edge_cover_repair": 0.5,
+        "penalty_latency_guard_trigger": 1.25,
     }
 
     reward = hedger._compute_deployment_reward(
         metrics={
             "avg_offloading_reward": 1.5,
-            "deploy_change_cost": 2.0,
+            "deploy_change_cost": 0.25,
+            "e2e_latency_count": 10,
+            "e2e_latency_mean": 3.0,
+            "e2e_slo_violation": 0.4,
+            "latency_guard_penalty_cost": 0.0,
         },
         aux={
             "capacity_relax_cnt": 5,
             "capacity_relax_cost": 0.25,
             "edge_cover_repair_cost": 0.2,
             "cloud_only_ratio": 0.4,
-            "empty_edge_device_ratio": 0.25,
         },
     )
 
     assert reward == pytest.approx(
-        1.5 - 0.1 * 2.0 - 0.75 * 0.4 - 0.3 * 0.25 - 2.0 * 0.25 - 0.5 * 0.2
+        1.5
+        - 0.2 * 2.0
+        - 0.8 * 0.4
+        - 0.4 * 0.25
+        - 0.3 * 0.4
+        - 2.0 * 0.25
+        - 0.5 * 0.2
     )
 
 
@@ -513,10 +527,14 @@ def test_deployment_reward_uses_relax_cost_not_relax_count():
 def test_deployment_reward_penalizes_latency_guard_trigger():
     hedger = object.__new__(Hedger)
     hedger.deployment_agent_params = {
-        "reward_dep_change_weight": 0.1,
         "reward_dep_offload_weight": 1.0,
+        "reward_dep_latency_weight": 0.2,
+        "reward_dep_slo_weight": 0.0,
+        "reward_dep_change_weight": 0.1,
         "reward_dep_cloud_only_weight": 0.0,
-        "reward_dep_empty_device_weight": 0.0,
+        "reward_dep_latency_transform": "clipped_ratio",
+        "reward_dep_latency_normalizer": 1.5,
+        "reward_dep_latency_clip": 6.0,
         "penalty_capacity_relax": 0.0,
         "penalty_edge_cover_repair": 0.0,
         "penalty_latency_guard_trigger": 1.25,
@@ -526,17 +544,19 @@ def test_deployment_reward_penalizes_latency_guard_trigger():
         metrics={
             "avg_offloading_reward": -0.2,
             "deploy_change_cost": 1.0,
+            "e2e_latency_count": 1,
+            "e2e_latency_mean": 1.5,
+            "e2e_slo_violation": 0.0,
             "latency_guard_penalty_cost": 0.8,
         },
         aux={
             "capacity_relax_cost": 0.0,
             "edge_cover_repair_cost": 0.0,
             "cloud_only_ratio": 0.0,
-            "empty_edge_device_ratio": 0.0,
         },
     )
 
-    assert reward == pytest.approx(-0.2 - 0.1 * 1.0 - 1.25 * 0.8)
+    assert reward == pytest.approx(-0.2 - 0.2 * 1.0 - 0.1 * 1.0 - 1.25 * 0.8)
 
 
 @pytest.mark.unit
@@ -549,9 +569,8 @@ def test_offloading_policy_corrects_cloud_descendants_after_sampling():
         encoder=encoder,
         d_model=2,
         update_encoder=False,
-        source_node_idx=0,
         cloud_node_idx=1,
-        constraint_cfg=OffloadingConstraintCfg(penalty_switch=0.0, penalty_relax=2.0),
+        constraint_cfg=OffloadingConstraintCfg(penalty_relax=2.0),
     )
     agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
 
@@ -594,7 +613,9 @@ def test_offloading_reward_uses_correction_cost_not_count():
         "reward_off_latency_weight": 1.0,
         "reward_off_slo_weight": 2.0,
         "reward_off_cloud_weight": 0.5,
-        "penalty_switch": 0.1,
+        "reward_off_latency_transform": "raw",
+        "reward_off_latency_normalizer": 1.0,
+        "reward_off_latency_clip": None,
         "penalty_relax": 3.0,
     }
 
@@ -605,14 +626,13 @@ def test_offloading_reward_uses_correction_cost_not_count():
             "cloud_fraction": 0.5,
         },
         aux={
-            "switches": 7,
             "correction_cnt": 9,
             "correction_cost": 0.75,
-            "aux_cost": 0.1 * 7 + 3.0 * 0.75,
+            "aux_cost": 3.0 * 0.75,
         },
     )
 
-    assert reward == pytest.approx(-(0.4 + 2.0 * 0.25 + 0.5 * 0.5) - (0.1 * 7 + 3.0 * 0.75))
+    assert reward == pytest.approx(-(0.4 + 2.0 * 0.25 + 0.5 * 0.5) - (3.0 * 0.75))
 
 
 @pytest.mark.unit
@@ -825,7 +845,7 @@ def test_hedger_collect_state_builds_metrics_from_buffer():
 
     _, _, dep_metrics, done = hedger._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
     assert dep_metrics["avg_offloading_reward"] == pytest.approx(2.0)
-    assert dep_metrics["deploy_change_cost"] == pytest.approx(1.0)
+    assert dep_metrics["deploy_change_cost"] == pytest.approx(0.25)
     assert done is False
 
 
@@ -1228,14 +1248,14 @@ def test_register_physical_topology_syncs_agent_indices():
     hedger = Hedger.__new__(Hedger)
     hedger.physical_topology = None
     hedger.deployment_agent = types.SimpleNamespace(cloud_idx=-1)
-    hedger.offloading_agent = types.SimpleNamespace(source=-1, cloud_idx=-1)
+    hedger.offloading_agent = types.SimpleNamespace(cloud_idx=-1)
 
     hedger.register_physical_topology(["edge-a", "edge-b"], "edge-b")
 
-    assert hedger.physical_topology.source_idx == 0
+    assert hedger.physical_topology.nodes == ["edge-a", "edge-b", "cloud.kubeedge"]
+    assert hedger.physical_topology.source_idx == 1
     assert hedger.physical_topology.cloud_idx == 2
     assert hedger.deployment_agent.cloud_idx == 2
-    assert hedger.offloading_agent.source == 0
     assert hedger.offloading_agent.cloud_idx == 2
 
 
