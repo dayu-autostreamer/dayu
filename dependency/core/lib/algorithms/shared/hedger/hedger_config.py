@@ -15,7 +15,6 @@ def from_partial_dict(cls, data: dict):
 
 @dataclass
 class OffloadingConstraintCfg:
-    penalty_switch: float = 0.0  # Penalty coefficient for device switches
     penalty_relax: float = 0.0  # Penalty coefficient for offloading corrections
 
 
@@ -46,18 +45,8 @@ class PhysicalTopology:
             self.cloud_idx = len(self.nodes) - 1
             return
 
-        if source_device in edge_nodes:
-            # edge_nodes.remove(source_device)
-            # TODO
-            source_device = edge_nodes[0]
-            edge_nodes.remove(edge_nodes[0])
-        else:
-            # If the configured source device is missing, fall back to the first edge node.
-            source_device = edge_nodes[0]
-            edge_nodes.remove(edge_nodes[0])
-
-        self.nodes = [source_device] + edge_nodes + [cloud_node]
-        self.source_idx = 0
+        self.nodes = edge_nodes + [cloud_node]
+        self.source_idx = edge_nodes.index(source_device) if source_device in edge_nodes else 0
         self.cloud_idx = len(self.nodes) - 1
 
     def __getitem__(self, item):
