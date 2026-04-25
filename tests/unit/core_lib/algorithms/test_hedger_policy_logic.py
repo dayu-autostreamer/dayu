@@ -13,6 +13,8 @@ from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingStageCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointSaveCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerInferenceCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerRecordCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerDeploymentDefaultWarmupCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerLatencyGuardCfg
 from core.lib.algorithms.schedule_agent.hedger_agent import HedgerAgent
@@ -956,6 +958,8 @@ def test_inference_hedger_initializes_runtime_and_starts_worker_threads(monkeypa
     hedger.deployment_plan = None
     hedger.initial_deployment_plan = {"svc-a": ["edge-a"], "svc-b": [cloud_name]}
     hedger.cur_deploy_mask = None
+    hedger.inference_cfg = HedgerInferenceCfg()
+    hedger.record_cfg = HedgerRecordCfg()
 
     created_threads = []
 
@@ -1000,6 +1004,81 @@ def test_inference_hedger_initializes_runtime_and_starts_worker_threads(monkeypa
     assert created_threads[1].target == hedger.inference_offloading_agent
     assert all(t.daemon is True for t in created_threads)
     assert all(t.started is True for t in created_threads)
+
+
+@pytest.mark.unit
+def test_inference_hedger_can_run_offloading_only_benchmark(monkeypatch):
+    logical_topology, physical_topology = build_test_topologies()
+    cloud_name = physical_topology[physical_topology.cloud_idx]
+
+    hedger = Hedger.__new__(Hedger)
+    hedger.logical_topology = logical_topology
+    hedger.physical_topology = physical_topology
+    hedger.device = torch.device("cpu")
+    hedger.seed = 0
+    hedger.shared_topology_encoder = torch.nn.Identity()
+    hedger.deployment_agent = torch.nn.Identity()
+    hedger.offloading_agent = torch.nn.Identity()
+    hedger.deployment_thread_stop_event = threading.Event()
+    hedger.offloading_thread_stop_event = threading.Event()
+    hedger.state_buffer = types.SimpleNamespace()
+    hedger.checkpoint_cfg = build_checkpoint_cfg(
+        "/tmp/hedger-test",
+        load=HedgerCheckpointLoadCfg(
+            enabled=True,
+            from_stage="offloading_warmup",
+            which="latest",
+            restore_deployment_agent=False,
+            restore_optimizer=False,
+        ),
+    )
+    hedger._loaded_checkpoint_path = "/tmp/hedger-test/offloading_warmup/latest.pt"
+    hedger.deployment_plan = None
+    hedger.initial_deployment_plan = {"svc-a": ["edge-a"], "svc-b": [cloud_name]}
+    hedger.cur_deploy_mask = None
+    hedger.inference_cfg = HedgerInferenceCfg(
+        run_deployment_worker=False,
+        run_offloading_worker=True,
+    )
+    hedger.record_cfg = HedgerRecordCfg()
+
+    created_threads = []
+
+    class FakeThread:
+        def __init__(self, target=None, daemon=None, **kwargs):
+            self.target = target
+            self.daemon = daemon
+            self.started = False
+            created_threads.append(self)
+
+        def start(self):
+            self.started = True
+
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            return None
+
+    def fake_sleep(_):
+        hedger.offloading_thread_stop_event.set()
+
+    monkeypatch.setattr(
+        "core.lib.algorithms.shared.hedger.hedger.threading.Thread",
+        FakeThread,
+    )
+    monkeypatch.setattr(
+        "core.lib.algorithms.shared.hedger.hedger.time.sleep",
+        fake_sleep,
+    )
+
+    hedger.inference_hedger()
+
+    assert hedger.deployment_plan == hedger.initial_deployment_plan
+    assert len(created_threads) == 1
+    assert created_threads[0].target == hedger.inference_offloading_agent
+    assert created_threads[0].daemon is True
+    assert created_threads[0].started is True
 
 
 @pytest.mark.unit

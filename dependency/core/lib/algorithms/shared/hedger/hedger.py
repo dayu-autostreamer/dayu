@@ -73,6 +73,8 @@ class HedgerTrainingCfg:
 
 @dataclass(frozen=True)
 class HedgerInferenceCfg:
+    run_deployment_worker: bool = True
+    run_offloading_worker: bool = True
     wait_for_initial_task_feedback: bool = True
     initial_task_feedback_min_samples: int = 2
     initial_task_feedback_timeout_s: Optional[float] = 60.0
@@ -424,7 +426,17 @@ class Hedger:
             default_min_samples,
         ))
 
+        run_deployment_worker = bool(inference.get("run_deployment_worker", True))
+        run_offloading_worker = bool(inference.get("run_offloading_worker", True))
+        if not run_deployment_worker and not run_offloading_worker:
+            raise ValueError(
+                "Hedger inference config requires at least one enabled worker: "
+                "`inference.run_deployment_worker` or `inference.run_offloading_worker`."
+            )
+
         return HedgerInferenceCfg(
+            run_deployment_worker=run_deployment_worker,
+            run_offloading_worker=run_offloading_worker,
             wait_for_initial_task_feedback=bool(inference.get("wait_for_initial_task_feedback", True)),
             initial_task_feedback_min_samples=max(
                 1,
@@ -3209,11 +3221,18 @@ class Hedger:
             )
 
         LOGGER.info(f"[Hedger][Inference] Start: {self._summarize_runtime_config()}, {self._summarize_topology()}")
+        LOGGER.info(
+            f"[Hedger][Inference] Worker config: "
+            f"deployment={self.inference_cfg.run_deployment_worker}, "
+            f"offloading={self.inference_cfg.run_offloading_worker}"
+        )
         self.set_seed()
 
         self.shared_topology_encoder.eval()
-        self.deployment_agent.eval()
-        self.offloading_agent.eval()
+        if self.inference_cfg.run_deployment_worker:
+            self.deployment_agent.eval()
+        if self.inference_cfg.run_offloading_worker:
+            self.offloading_agent.eval()
 
         logic_links = self._build_edge_index(self.logical_topology.links)
         phys_links = self._build_edge_index(self.physical_topology.links)
@@ -3254,46 +3273,70 @@ class Hedger:
             f"{self._summarize_offloading_plan(self.offloading_plan)}"
         )
 
-        self.dep_recorder = Recorder(
-            self._inference_log_path("deployment_inference.csv"),
-            fmt="csv",
-            fieldnames=self._inference_deployment_fieldnames(),
-            overwrite=True,
-            flush_every=1,
-        )
-        self.off_recorder = Recorder(
-            self._inference_log_path("offloading_inference.csv"),
-            fmt="csv",
-            fieldnames=self._inference_offloading_fieldnames(),
-            overwrite=True,
-            flush_every=1,
-        )
-        self.dep_decision_recorder = Recorder(
-            self._inference_log_path("deployment_decisions.csv"),
-            fmt="csv",
-            fieldnames=self._deployment_decision_fieldnames(),
-            overwrite=True,
-            flush_every=1,
-        )
-        self.off_decision_recorder = Recorder(
-            self._inference_log_path("offloading_decisions.csv"),
-            fmt="csv",
-            fieldnames=self._offloading_decision_fieldnames(),
-            overwrite=True,
-            flush_every=1,
-        )
+        if self.inference_cfg.run_deployment_worker:
+            self.dep_recorder = Recorder(
+                self._inference_log_path("deployment_inference.csv"),
+                fmt="csv",
+                fieldnames=self._inference_deployment_fieldnames(),
+                overwrite=True,
+                flush_every=1,
+            )
+            self.dep_decision_recorder = Recorder(
+                self._inference_log_path("deployment_decisions.csv"),
+                fmt="csv",
+                fieldnames=self._deployment_decision_fieldnames(),
+                overwrite=True,
+                flush_every=1,
+            )
+        else:
+            self.dep_recorder = None
+            self.dep_decision_recorder = None
 
-        deployment_thread = threading.Thread(target=self.inference_deployment_agent, daemon=True)
-        offloading_thread = threading.Thread(target=self.inference_offloading_agent, daemon=True)
-        deployment_thread.start()
-        offloading_thread.start()
+        if self.inference_cfg.run_offloading_worker:
+            self.off_recorder = Recorder(
+                self._inference_log_path("offloading_inference.csv"),
+                fmt="csv",
+                fieldnames=self._inference_offloading_fieldnames(),
+                overwrite=True,
+                flush_every=1,
+            )
+            self.off_decision_recorder = Recorder(
+                self._inference_log_path("offloading_decisions.csv"),
+                fmt="csv",
+                fieldnames=self._offloading_decision_fieldnames(),
+                overwrite=True,
+                flush_every=1,
+            )
+        else:
+            self.off_recorder = None
+            self.off_decision_recorder = None
 
-        while not (self.deployment_thread_stop_event.is_set() or self.offloading_thread_stop_event.is_set()):
-            if not deployment_thread.is_alive():
+        deployment_thread = None
+        offloading_thread = None
+        if self.inference_cfg.run_deployment_worker:
+            deployment_thread = threading.Thread(target=self.inference_deployment_agent, daemon=True)
+            deployment_thread.start()
+        if self.inference_cfg.run_offloading_worker:
+            offloading_thread = threading.Thread(target=self.inference_offloading_agent, daemon=True)
+            offloading_thread.start()
+
+        while True:
+            dep_alive = deployment_thread.is_alive() if deployment_thread is not None else False
+            off_alive = offloading_thread.is_alive() if offloading_thread is not None else False
+
+            if deployment_thread is None and offloading_thread is None:
+                break
+            if self.inference_cfg.run_deployment_worker and self.deployment_thread_stop_event.is_set():
+                self.offloading_thread_stop_event.set()
+                break
+            if self.inference_cfg.run_offloading_worker and self.offloading_thread_stop_event.is_set():
+                self.deployment_thread_stop_event.set()
+                break
+            if deployment_thread is not None and not dep_alive:
                 LOGGER.warning('[Hedger][Inference] Deployment worker stopped unexpectedly.')
                 self.offloading_thread_stop_event.set()
                 break
-            if not offloading_thread.is_alive():
+            if offloading_thread is not None and not off_alive:
                 LOGGER.warning('[Hedger][Inference] Offloading worker stopped unexpectedly.')
                 self.deployment_thread_stop_event.set()
                 break
@@ -3301,8 +3344,10 @@ class Hedger:
 
         self.deployment_thread_stop_event.set()
         self.offloading_thread_stop_event.set()
-        deployment_thread.join(timeout=5.0)
-        offloading_thread.join(timeout=5.0)
+        if deployment_thread is not None:
+            deployment_thread.join(timeout=5.0)
+        if offloading_thread is not None:
+            offloading_thread.join(timeout=5.0)
         LOGGER.info(
             f"[Hedger][Inference] Finished: "
             f"{self._summarize_deployment_plan(self.deployment_plan)}, "
