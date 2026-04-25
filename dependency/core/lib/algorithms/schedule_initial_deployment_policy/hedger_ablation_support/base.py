@@ -1,26 +1,15 @@
 import abc
 import copy
 
-from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, ConfigLoader, Context, LOGGER
+from core.lib.common import ConfigLoader, Context, GlobalInstanceManager, LOGGER
 from core.lib.content import Task
-from core.lib.algorithms.shared.hedger import (
-    HedgerDeploymentAblation,
-    HedgerFlatAblation,
-    HedgerNoGraphEncoder,
-    HedgerOffloadingAblation,
-)
 
-from .base_initial_deployment_policy import BaseInitialDeploymentPolicy
+from ..base_initial_deployment_policy import BaseInitialDeploymentPolicy
 
-__all__ = (
-    "HedgerFlatInitialDeploymentPolicy",
-    "HedgerNoGraphEncoderInitialDeploymentPolicy",
-    "HedgerDeploymentAblationInitialDeploymentPolicy",
-    "HedgerOffloadingAblationInitialDeploymentPolicy",
-)
+__all__ = ("HedgerAblationInitialDeploymentPolicyBase",)
 
 
-class _HedgerAblationInitialDeploymentPolicyBase(BaseInitialDeploymentPolicy, abc.ABC):
+class HedgerAblationInitialDeploymentPolicyBase(BaseInitialDeploymentPolicy, abc.ABC):
     controller_cls = None
     controller_alias = "hedger_ablation"
     use_heuristic_deployment = False
@@ -43,10 +32,12 @@ class _HedgerAblationInitialDeploymentPolicyBase(BaseInitialDeploymentPolicy, ab
 
     def register_hedger(self):
         if self.hedger is None:
+            hedger_config = copy.deepcopy(self.system.hedger_config)
+            hedger_config.setdefault("agent_id", self.agent_id)
             self.hedger = GlobalInstanceManager.get_instance(
                 self.controller_cls,
                 f"{self.controller_alias}_{self.agent_id}",
-                config=copy.deepcopy(self.system.hedger_config),
+                config=hedger_config,
             )
 
     @staticmethod
@@ -90,28 +81,3 @@ class _HedgerAblationInitialDeploymentPolicyBase(BaseInitialDeploymentPolicy, ab
         )
         LOGGER.debug(f"[HedgerAblation][InitialDeployment] source={source_id}, full_plan={deploy_plan}")
         return deploy_plan
-
-
-@ClassFactory.register(ClassType.SCH_INITIAL_DEPLOYMENT_POLICY, alias='hedger-flat')
-class HedgerFlatInitialDeploymentPolicy(_HedgerAblationInitialDeploymentPolicyBase):
-    controller_cls = HedgerFlatAblation
-    controller_alias = "hedger_flat"
-
-
-@ClassFactory.register(ClassType.SCH_INITIAL_DEPLOYMENT_POLICY, alias='hedger-no-graph-encoder')
-class HedgerNoGraphEncoderInitialDeploymentPolicy(_HedgerAblationInitialDeploymentPolicyBase):
-    controller_cls = HedgerNoGraphEncoder
-    controller_alias = "hedger_no_graph_encoder"
-
-
-@ClassFactory.register(ClassType.SCH_INITIAL_DEPLOYMENT_POLICY, alias='hedger-deployment')
-class HedgerDeploymentAblationInitialDeploymentPolicy(_HedgerAblationInitialDeploymentPolicyBase):
-    controller_cls = HedgerDeploymentAblation
-    controller_alias = "hedger_deployment"
-
-
-@ClassFactory.register(ClassType.SCH_INITIAL_DEPLOYMENT_POLICY, alias='hedger-offloading')
-class HedgerOffloadingAblationInitialDeploymentPolicy(_HedgerAblationInitialDeploymentPolicyBase):
-    controller_cls = HedgerOffloadingAblation
-    controller_alias = "hedger_offloading"
-    use_heuristic_deployment = True

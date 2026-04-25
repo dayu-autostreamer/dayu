@@ -1,0 +1,133 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: hedger
+    # Typical flow: offloading_warmup -> deployment_adaptation -> joint_finetune -> inference.
+    - name: SCH_CONFIG_EXTRACTION_PARAMETERS
+      value: >
+        {
+          'config':'hedger_config.yaml',
+          'profile':'deployment_adaptation',
+          'overrides':{
+            'device':'cuda:1',
+            'training':{
+              'total_updates': 40,
+              'ppo_epochs': 2,
+              'rollout': {'deployment': 8, 'offloading': 64},
+              'batch_size': {'deployment': 4, 'offloading': 32}
+            },
+            'agents':{
+              'deployment':{
+                'ppo':{
+                  'entropy_coef': 0.0008,
+                  'entropy_coef_final': 0.0002,
+                  'entropy_decay_updates': 30,
+                  'value_coef': 0.5
+                }
+              },
+              'offloading':{
+                 'reward':{
+                    'latency_weight': 0.12,
+                    'slo_weight': 0.8,
+                    'cloud_weight': 0.35
+                 },
+                 'penalty':{
+                    'correction': 0.15
+                 }
+              }
+            },
+            'latency_guard':{
+              'latency_threshold_s': 7.0,
+              'window_size':16,
+              'min_samples':8,
+              'trigger_violation_ratio': 0.5
+            },
+            'checkpoint':{
+              'load':{
+                'enabled': True,
+                'from_stage':'offloading_warmup',
+                'which':'final',
+                'restore':{
+                  'encoder': True,
+                  'deployment_agent': False,
+                  'offloading_agent': True,
+                  'optimizer': False
+                },
+                'reset_stage_counters': True
+              },
+              'save':{
+                'interval_updates': 4,
+                'keep_last': 10
+              }
+            }
+          }
+        }
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'scope': 'all_edge_nodes',
+          'fixed_value': 'edgexn12',
+          'fixed_type': 'hostname'
+        }
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: hedger-offloading-only
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'deployment':{
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5","edgexn11"],
+            "category-identification": ["edgexn8", "edgexn12"],
+            "license-plate-recognition": ["edgexn8", "edgexn11"],
+            "exposure-identification": ["edgexn11", "edgexn12"]
+          }
+        }
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: hedger-offloading-only
+    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'deployment':{
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5","edgexn11"],
+            "category-identification": ["edgexn8", "edgexn12"],
+            "license-plate-recognition": ["edgexn8", "edgexn11"],
+            "exposure-identification": ["edgexn11", "edgexn12"]
+          }
+        }
+    - name: SCH_AGENT_NAME
+      value: hedger-offloading-only
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'configuration':{
+            'resolution': '720p',
+            'fps': 10,
+            'encoding': 'mp4v',
+            'buffer_size': 4
+          },
+          'offloading':{
+            'pedestrian-detection':'edgexn11',
+            'exposure-identification':'edgexn12',
+            'vehicle-detection':'edge5',
+            'category-identification':'edgexn12',
+            'license-plate-recognition':'edgexn8'
+          }
+        }
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/hedger-offloading-only/'

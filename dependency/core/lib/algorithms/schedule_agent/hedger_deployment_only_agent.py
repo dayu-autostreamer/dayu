@@ -1,60 +1,20 @@
 import abc
-import copy
 
-from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, KubeConfig, LOGGER, TaskConstant
+from core.lib.common import ClassFactory, ClassType, KubeConfig, LOGGER, TaskConstant
 from core.lib.content import Task
-from core.lib.algorithms.shared.hedger import (
-    HedgerDeploymentAblation,
-    HedgerFlatAblation,
-    HedgerNoGraphEncoder,
-    HedgerOffloadingAblation,
-)
+from core.lib.algorithms.shared.hedger_ablation import HedgerDeploymentOnly
 
-from .hedger_agent import HedgerAgent
+from .hedger_ablation_support import HedgerAblationAgentBase
 
-__all__ = (
-    "HedgerFlatAgent",
-    "HedgerNoGraphEncoderAgent",
-    "HedgerDeploymentAblationAgent",
-    "HedgerOffloadingAblationAgent",
-)
+__all__ = ("HedgerDeploymentOnlyAgent",)
 
 
-class _HedgerAblationAgentBase(HedgerAgent, abc.ABC):
-    controller_cls = None
-    controller_alias = "hedger-ablation"
-
-    def register_hedger(self, hedger_id='hedger'):
-        if self.hedger is None:
-            self.hedger = GlobalInstanceManager.get_instance(
-                self.controller_cls,
-                f"{self.controller_alias}_{self.agent_id}",
-                config=copy.deepcopy(self.system.hedger_config),
-            )
-
-
-@ClassFactory.register(ClassType.SCH_AGENT, alias='hedger-flat')
-class HedgerFlatAgent(_HedgerAblationAgentBase):
-    """Flat ablation: one PPO controller publishes both deployment and offloading."""
-
-    controller_cls = HedgerFlatAblation
-    controller_alias = "hedger_flat"
-
-
-@ClassFactory.register(ClassType.SCH_AGENT, alias='hedger-no-graph-encoder')
-class HedgerNoGraphEncoderAgent(_HedgerAblationAgentBase):
-    """Topology encoder ablation: Hedger with graph message passing removed."""
-
-    controller_cls = HedgerNoGraphEncoder
-    controller_alias = "hedger_no_graph_encoder"
-
-
-@ClassFactory.register(ClassType.SCH_AGENT, alias='hedger-deployment')
-class HedgerDeploymentAblationAgent(_HedgerAblationAgentBase):
+@ClassFactory.register(ClassType.SCH_AGENT, alias='hedger-deployment-only')
+class HedgerDeploymentOnlyAgent(HedgerAblationAgentBase, abc.ABC):
     """Deployment-only ablation: Hedger deployment PPO plus heuristic offloading."""
 
-    controller_cls = HedgerDeploymentAblation
-    controller_alias = "hedger_deployment"
+    controller_cls = HedgerDeploymentOnly
+    controller_alias = "hedger_deployment_only"
 
     def get_schedule_plan(self, info):
         source_id = info['source_id']
@@ -64,9 +24,6 @@ class HedgerDeploymentAblationAgent(_HedgerAblationAgentBase):
         all_devices = [*all_edge_devices, cloud_device]
         dag = info['dag']
 
-        return self._get_schedule_plan_with_heuristic_offloading(info, source_id, source_edge_device, all_devices, dag)
-
-    def _get_schedule_plan_with_heuristic_offloading(self, info, source_id, source_edge_device, all_devices, dag):
         self.hedger.register_logical_topology(Task.extract_dag_from_dag_deployment(dag))
         self.hedger.register_physical_topology(info['all_edge_devices'], source_edge_device)
         self.hedger.register_state_buffer()
@@ -102,16 +59,8 @@ class HedgerDeploymentAblationAgent(_HedgerAblationAgentBase):
             if dag[service_name]['service'].get('execute_device') == cloud_device
         )
         LOGGER.info(
-            f"[HedgerDeploymentAblation][Schedule] source={source_id}, services={len(service_names)}, "
+            f"[HedgerDeploymentOnly][Schedule] source={source_id}, services={len(service_names)}, "
             f"deployment_version={deployment_version}, cloud={cloud_count}/{len(service_names) if service_names else 0}, "
             f"used_default_offloading={used_default_offloading}"
         )
         return policy
-
-
-@ClassFactory.register(ClassType.SCH_AGENT, alias='hedger-offloading')
-class HedgerOffloadingAblationAgent(_HedgerAblationAgentBase):
-    """Offloading-only ablation: heuristic deployment plus Hedger offloading PPO."""
-
-    controller_cls = HedgerOffloadingAblation
-    controller_alias = "hedger_offloading"

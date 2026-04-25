@@ -1,26 +1,15 @@
 import abc
 import copy
 
-from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, ConfigLoader, Context, LOGGER
+from core.lib.common import ConfigLoader, Context, GlobalInstanceManager, LOGGER
 from core.lib.content import Task
-from core.lib.algorithms.shared.hedger import (
-    HedgerDeploymentAblation,
-    HedgerFlatAblation,
-    HedgerNoGraphEncoder,
-    HedgerOffloadingAblation,
-)
 
-from .base_redeployment_policy import BaseRedeploymentPolicy
+from ..base_redeployment_policy import BaseRedeploymentPolicy
 
-__all__ = (
-    "HedgerFlatRedeploymentPolicy",
-    "HedgerNoGraphEncoderRedeploymentPolicy",
-    "HedgerDeploymentAblationRedeploymentPolicy",
-    "HedgerOffloadingAblationRedeploymentPolicy",
-)
+__all__ = ("HedgerAblationRedeploymentPolicyBase",)
 
 
-class _HedgerAblationRedeploymentPolicyBase(BaseRedeploymentPolicy, abc.ABC):
+class HedgerAblationRedeploymentPolicyBase(BaseRedeploymentPolicy, abc.ABC):
     controller_cls = None
     controller_alias = "hedger_ablation"
     use_heuristic_deployment = False
@@ -43,10 +32,12 @@ class _HedgerAblationRedeploymentPolicyBase(BaseRedeploymentPolicy, abc.ABC):
 
     def register_hedger(self):
         if self.hedger is None:
+            hedger_config = copy.deepcopy(self.system.hedger_config)
+            hedger_config.setdefault("agent_id", self.agent_id)
             self.hedger = GlobalInstanceManager.get_instance(
                 self.controller_cls,
                 f"{self.controller_alias}_{self.agent_id}",
-                config=copy.deepcopy(self.system.hedger_config),
+                config=hedger_config,
             )
 
     @staticmethod
@@ -93,28 +84,3 @@ class _HedgerAblationRedeploymentPolicyBase(BaseRedeploymentPolicy, abc.ABC):
         )
         LOGGER.debug(f"[HedgerAblation][Redeployment] source={source_id}, full_plan={deploy_plan}")
         return deploy_plan
-
-
-@ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='hedger-flat')
-class HedgerFlatRedeploymentPolicy(_HedgerAblationRedeploymentPolicyBase):
-    controller_cls = HedgerFlatAblation
-    controller_alias = "hedger_flat"
-
-
-@ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='hedger-no-graph-encoder')
-class HedgerNoGraphEncoderRedeploymentPolicy(_HedgerAblationRedeploymentPolicyBase):
-    controller_cls = HedgerNoGraphEncoder
-    controller_alias = "hedger_no_graph_encoder"
-
-
-@ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='hedger-deployment')
-class HedgerDeploymentAblationRedeploymentPolicy(_HedgerAblationRedeploymentPolicyBase):
-    controller_cls = HedgerDeploymentAblation
-    controller_alias = "hedger_deployment"
-
-
-@ClassFactory.register(ClassType.SCH_REDEPLOYMENT_POLICY, alias='hedger-offloading')
-class HedgerOffloadingAblationRedeploymentPolicy(_HedgerAblationRedeploymentPolicyBase):
-    controller_cls = HedgerOffloadingAblation
-    controller_alias = "hedger_offloading"
-    use_heuristic_deployment = True
