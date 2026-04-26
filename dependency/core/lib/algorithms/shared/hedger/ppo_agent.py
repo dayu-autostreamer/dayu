@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .topology_encoder import TopologyEncoders
-from .ppo_network import DeploymentActor, ValueHead, FeatureAdapter, PairBiasHead
+from .ppo_network import DeploymentActor, OffloadActor, ValueHead, FeatureAdapter, PairBiasHead
 from .hedger_config import DeploymentConstraintCfg, OffloadingConstraintCfg
 from .utils import compute_returns_advantages
 
