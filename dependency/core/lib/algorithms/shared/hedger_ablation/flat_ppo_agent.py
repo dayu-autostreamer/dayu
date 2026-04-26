@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import math
 
 import torch
@@ -82,7 +82,7 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             raw_actions: torch.Tensor,
             parents: List[List[int]],
             topo_order: List[int],
-    ) -> tuple[torch.Tensor, int]:
+    ) -> Tuple[torch.Tensor, int]:
         corrected = raw_actions.clone()
         correction_cnt = 0
         cloud_idx = int(self.cloud_idx)
