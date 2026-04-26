@@ -46,7 +46,7 @@ datasource:
   # default data root path in datasource container, only valid when use-simulation is true
   data-root: "/data/datasource/"
   # cycle/non-cycle, play mode of the simulation datasource, only valid when use-simulation is true. cycle: loop playing; non-cycle: stop when the data is finished
-  play-mode: non-cycle
+  play-mode: cycle
 # import scheduler policy configurations
 scheduler-policies:
   !include scheduler_policies.yaml
