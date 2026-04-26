@@ -33,6 +33,7 @@ object_number_visualizer_module = importlib.import_module("core.lib.algorithms.r
 roi_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.roi_frame_visualizer")
 roi_label_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.roi_label_frame_visualizer")
 service_delay_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.service_processing_delay_visualizer")
+service_queue_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.service_queue_length_visualizer")
 system_base_module = importlib.import_module("core.lib.algorithms.system_visualizer.base_visualizer")
 system_curve_module = importlib.import_module("core.lib.algorithms.system_visualizer.curve_visualizer")
 cpu_visualizer_module = importlib.import_module("core.lib.algorithms.system_visualizer.cpu_usage_visualizer")
@@ -443,3 +444,51 @@ def test_result_visualizers_render_task_data_and_fallback_images(monkeypatch):
     assert service_delay_visualizer_module.ServiceProcessingDelayVisualizer(
         variables=["detector", "classifier"]
     )(task) == {"detector": 0.4, "classifier": 0.6}
+
+
+@pytest.mark.unit
+def test_service_queue_length_visualizer_renders_replica_queue_bars(monkeypatch):
+    monkeypatch.setattr(service_queue_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
+    monkeypatch.setattr(service_queue_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
+    monkeypatch.setattr(service_queue_visualizer_module.PortInfo, "get_component_port", staticmethod(lambda component: 31000))
+    monkeypatch.setattr(
+        service_queue_visualizer_module,
+        "http_request",
+        lambda address, method=None: {
+            "edge-a": {"queue_length": {"detector": 7}},
+            "edge-b": {"queue_length": {"detector": 2, "classifier": 5}},
+        },
+    )
+    monkeypatch.setattr(service_queue_visualizer_module.KubeConfig, "force_refresh", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        service_queue_visualizer_module.KubeConfig,
+        "get_nodes_for_service",
+        staticmethod(lambda service_name: ["edge-a", "edge-b"] if service_name == "detector" else ["edge-b"]),
+    )
+    monkeypatch.setattr(
+        service_queue_visualizer_module.KubeConfig,
+        "get_pods_on_node",
+        staticmethod(
+            lambda node_name: {
+                "edge-a": ["processor-detector-edge-a-0", "processor-other-edge-a-0"],
+                "edge-b": ["processor-detector-edge-b-0", "processor-classifier-edge-b-0"],
+            }.get(node_name, [])
+        ),
+    )
+
+    visualizer = service_queue_visualizer_module.ServiceQueueLengthVisualizer(variables=["detector", "classifier"])
+    result = visualizer(build_visualization_task())
+
+    assert [item["pod_name"] for item in result["detector"]] == [
+        "processor-detector-edge-a-0",
+        "processor-detector-edge-b-0",
+    ]
+    assert [item["queue_length"] for item in result["detector"]] == [7.0, 2.0]
+    assert result["classifier"] == [
+        {
+            "device": "edge-b",
+            "pod_name": "processor-classifier-edge-b-0",
+            "replica_label": "edge-b/processor-classifier-edge-b-0",
+            "queue_length": 5.0,
+        }
+    ]

@@ -225,6 +225,7 @@ that appear in templates, environment variables, and visualization configs.
 | `multiple_obj_num`         | `dependency/core/lib/algorithms/result_visualizer/multiple_object_number_visualizer.py`   | Render mean object counts for requested DAG services as curve values.         |
 | `e2e_delay`                | `dependency/core/lib/algorithms/result_visualizer/end_to_end_delay_visualizer.py`         | Render total task delay as a curve value.                                     |
 | `service_processing_delay` | `dependency/core/lib/algorithms/result_visualizer/service_processing_delay_visualizer.py` | Render per-service execution time for requested DAG nodes.                    |
+| `service_queue_length`     | `dependency/core/lib/algorithms/result_visualizer/service_queue_length_visualizer.py`     | Render current queue lengths for all live replicas of requested services.     |
 | `dag_deployment`           | `dependency/core/lib/algorithms/result_visualizer/dag_deployment_topology_visualizer.py`  | Render the deployment topology of the current DAG.                            |
 | `dag_offloading`           | `dependency/core/lib/algorithms/result_visualizer/dag_offloading_topology_visualizer.py`  | Render the current offloading targets of DAG services.                        |
 
