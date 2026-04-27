@@ -10,8 +10,14 @@ export function useLayout(flowId = 'default') {
 		width: 96,
 		height: 36,
 	};
+	const defaultLayoutOptions = {
+		nodesep: 20,
+		ranksep: 42,
+		marginx: 16,
+		marginy: 16,
+	};
 
-	function layout(nodes, edges, direction) {
+	function layout(nodes, edges, direction, options = {}) {
 		if (!Array.isArray(nodes)) {
 			console.error('Invalid nodes:', nodes);
 			return [];
@@ -23,12 +29,13 @@ export function useLayout(flowId = 'default') {
 		graph.value = dagreGraph;
 		dagreGraph.setDefaultEdgeLabel(() => ({}));
 		const isHorizontal = direction === 'LR';
+		const layoutOptions = { ...defaultLayoutOptions, ...options };
 		dagreGraph.setGraph({
 			rankdir: direction,
-			nodesep: 20,
-			ranksep: 42,
-			marginx: 16,
-			marginy: 16,
+			nodesep: layoutOptions.nodesep,
+			ranksep: layoutOptions.ranksep,
+			marginx: layoutOptions.marginx,
+			marginy: layoutOptions.marginy,
 		});
 		previousDirection.value = direction;
 

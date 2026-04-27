@@ -133,9 +133,7 @@
 					<template #default="scope">
 						<div class="dag-name-cell">
 							<div class="dag-name">{{ scope.row.dag_name }}</div>
-							<div class="dag-subtitle">
-								{{ getStartNodes(scope.row.dag).length }} start nodes · {{ getDagNodeCount(scope.row.dag) }} services
-							</div>
+							<div class="dag-subtitle">{{ getDagNodeCount(scope.row.dag) }} services</div>
 						</div>
 					</template>
 				</el-table-column>
@@ -174,9 +172,6 @@
 										<el-tag type="success" size="small" effect="plain">
 											<el-icon><Link /></el-icon>
 											{{ countEdges(scope.row.dag) }} links
-										</el-tag>
-										<el-tag type="warning" size="small" effect="plain">
-											start · {{ getStartNodes(scope.row.dag).length }}
 										</el-tag>
 									</div>
 								</button>
@@ -242,6 +237,16 @@ import { Connection, Link, MagicStick } from '@element-plus/icons-vue';
 
 const MAIN_FLOW_ID = 'dag-builder-main';
 const PREVIEW_NODE_LIMIT = 4;
+const PREVIEW_LAYOUT_OPTIONS = {
+	nodesep: 44,
+	ranksep: 80,
+	marginx: 32,
+	marginy: 28,
+};
+const PREVIEW_NODE_DIMENSIONS = {
+	width: 124,
+	height: 44,
+};
 
 export default {
 	name: 'DagManage',
@@ -574,6 +579,16 @@ export default {
 					};
 				});
 		},
+		buildPreviewNodes(dag) {
+			return this.parseDag(dag).map((node) => ({
+				...node,
+				dimensions: { ...PREVIEW_NODE_DIMENSIONS },
+				style: {
+					...node.style,
+					fontSize: '11px',
+				},
+			}));
+		},
 		generateEdges(dag) {
 			const edges = [];
 			for (const [source, node] of Object.entries(dag || {})) {
@@ -598,9 +613,9 @@ export default {
 			return edges;
 		},
 		buildDagPresentation(dag) {
-			const nodeList = this.parseDag(dag.dag);
+			const nodeList = this.buildPreviewNodes(dag.dag);
 			const lineList = this.generateEdges(dag.dag);
-			const layoutNodes = this.layout(nodeList, lineList, 'LR');
+			const layoutNodes = this.layout(nodeList, lineList, 'LR', PREVIEW_LAYOUT_OPTIONS);
 
 			return {
 				...dag,
@@ -1055,7 +1070,7 @@ h3 {
 }
 
 .dag-preview-shell {
-	height: 320px;
+	height: 340px;
 	border-radius: 18px;
 	border: 1px solid #e2e8f0;
 	background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
@@ -1086,6 +1101,7 @@ h3 {
 .preview-flow :deep(.dag-node) {
 	display: flex;
 	align-items: center;
+	align-content: center;
 	justify-content: center;
 	padding: 0 6px;
 	font-size: 10px;
@@ -1097,9 +1113,8 @@ h3 {
 	overflow: hidden;
 	overflow-wrap: anywhere;
 	word-break: break-word;
-	display: -webkit-box;
-	-webkit-box-orient: vertical;
-	-webkit-line-clamp: 2;
+	height: 100%;
+	width: 100%;
 }
 
 .main-flow :deep(.dag-node.selected) {
@@ -1108,6 +1123,8 @@ h3 {
 
 .preview-flow :deep(.dag-node) {
 	cursor: default;
+	padding: 0 10px;
+	line-height: 1.25;
 }
 
 .preview-flow :deep(.vue-flow__edge-path),
