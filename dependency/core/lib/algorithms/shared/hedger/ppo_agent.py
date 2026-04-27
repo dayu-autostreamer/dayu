@@ -85,6 +85,8 @@ class _DeploymentBackbonePPO(nn.Module):
     """
     def __init__(self, encoder: TopologyEncoders, d_model=64, actor_lr=3e-4, critic_lr=1e-3,
                  gamma=0.99, lamda=0.95, clip_eps=0.2, update_encoder: bool = True, cloud_node_idx: int = -1,
+                 deployment_latency_bias_weight: float = 1.0,
+                 deployment_queue_bias_weight: float = 0.3,
                  constraint_cfg: DeploymentConstraintCfg = DeploymentConstraintCfg()):
         super().__init__()
         self.encoder = encoder
@@ -92,13 +94,17 @@ class _DeploymentBackbonePPO(nn.Module):
         self.critic = ValueHead(d_model)
         self.service_adapter = FeatureAdapter(d_model)
         self.device_adapter = FeatureAdapter(d_model)
-        self.deployment_pair_head = PairBiasHead(input_dim=9, hidden_dim=max(16, d_model // 2))
+        hidden_dim = max(16, d_model // 2)
+        self.deployment_latency_pair_head = PairBiasHead(input_dim=5, hidden_dim=hidden_dim)
+        self.deployment_queue_pair_head = PairBiasHead(input_dim=4, hidden_dim=hidden_dim)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
 
         self.gamma = gamma
         self.lamda = lamda
         self.clip_eps = clip_eps
         self.cloud_idx = cloud_node_idx
+        self.deployment_latency_bias_weight = float(deployment_latency_bias_weight)
+        self.deployment_queue_bias_weight = float(deployment_queue_bias_weight)
         self.cfg = constraint_cfg
         self._actor_lr = actor_lr
         self._critic_lr = critic_lr
@@ -110,7 +116,8 @@ class _DeploymentBackbonePPO(nn.Module):
     def _rebuild_actor_optimizer(self, extra_actor_modules: Optional[List[nn.Module]] = None):
         extra_actor_modules = extra_actor_modules or []
         params_actor = list(self.actor.parameters())
-        params_actor.extend(list(self.deployment_pair_head.parameters()))
+        params_actor.extend(list(self.deployment_latency_pair_head.parameters()))
+        params_actor.extend(list(self.deployment_queue_pair_head.parameters()))
         for module in extra_actor_modules:
             params_actor.extend(list(module.parameters()))
         params_actor.extend(list(self.service_adapter.parameters()))
@@ -273,31 +280,54 @@ class _DeploymentBackbonePPO(nn.Module):
             return torch.zeros((1, h_p.size(-1)), device=h_p.device, dtype=h_p.dtype)
         return _build_mask_context(self._enforce_cloud_replica(prev_deploy_mask.bool()), h_p)
 
-    def _deployment_pair_bias(self, logic_feats: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+    def _deployment_pair_bias_components(
+            self,
+            logic_feats: Dict[str, torch.Tensor],
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         latency_features = logic_feats.get("deployment_latency_pair_feat")
         queue_features = logic_feats.get("deployment_queue_pair_feat")
-        if not isinstance(latency_features, torch.Tensor) or not isinstance(queue_features, torch.Tensor):
-            return None
-        if latency_features.numel() == 0 or queue_features.numel() == 0:
-            return None
-        pair_features = torch.cat([latency_features.float(), queue_features.float()], dim=-1)
-        return self.deployment_pair_head(pair_features)
+        latency_bias: Optional[torch.Tensor] = None
+        queue_bias: Optional[torch.Tensor] = None
+        if isinstance(latency_features, torch.Tensor) and latency_features.numel() > 0:
+            latency_bias = self.deployment_latency_pair_head(latency_features.float())
+        if isinstance(queue_features, torch.Tensor) and queue_features.numel() > 0:
+            queue_bias = self.deployment_queue_pair_head(queue_features.float())
+        return latency_bias, queue_bias
+
+    def _combine_deployment_pair_biases(
+            self,
+            latency_pair_bias: Optional[torch.Tensor],
+            queue_pair_bias: Optional[torch.Tensor],
+            reference: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if latency_pair_bias is None:
+            latency_pair_bias = torch.zeros_like(reference)
+        if queue_pair_bias is None:
+            queue_pair_bias = torch.zeros_like(reference)
+        pair_bias = (
+            self.deployment_latency_bias_weight * latency_pair_bias
+            + self.deployment_queue_bias_weight * queue_pair_bias
+        )
+        return latency_pair_bias, queue_pair_bias, pair_bias
 
     def _deployment_actor_terms(
             self,
             h_s: torch.Tensor,
             h_p: torch.Tensor,
             logic_feats: Dict[str, torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q_embedding = self.actor.q(h_s)
         k_embedding = self.actor.k(h_p)
         qk_scores = (q_embedding @ k_embedding.t()) / math.sqrt(q_embedding.size(-1))
         qk_scores = qk_scores / max(self.actor.temperature, 1e-6)
-        pair_bias = self._deployment_pair_bias(logic_feats)
-        if pair_bias is None:
-            pair_bias = torch.zeros_like(qk_scores)
+        latency_pair_bias, queue_pair_bias = self._deployment_pair_bias_components(logic_feats)
+        latency_pair_bias, queue_pair_bias, pair_bias = self._combine_deployment_pair_biases(
+            latency_pair_bias,
+            queue_pair_bias,
+            qk_scores,
+        )
         final_scores = qk_scores + pair_bias
-        return q_embedding, k_embedding, qk_scores, pair_bias, final_scores
+        return q_embedding, k_embedding, qk_scores, latency_pair_bias, queue_pair_bias, pair_bias, final_scores
 
     @torch.no_grad()
     def estimate_value(
@@ -615,7 +645,15 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
 
         # Static feasibility mask.
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
-        q_embedding, k_embedding, qk_scores, pair_bias, final_scores = self._deployment_actor_terms(
+        (
+            q_embedding,
+            k_embedding,
+            qk_scores,
+            latency_pair_bias,
+            queue_pair_bias,
+            pair_bias,
+            final_scores,
+        ) = self._deployment_actor_terms(
             h_s,
             h_p,
             logic_feats,
@@ -694,10 +732,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "q_embedding": q_embedding.detach().cpu(),
                 "k_embedding": k_embedding.detach().cpu(),
                 "qk_score": qk_scores.detach().cpu(),
+                "latency_pair_bias": latency_pair_bias.detach().cpu(),
+                "queue_pair_bias": queue_pair_bias.detach().cpu(),
                 "pair_bias": pair_bias.detach().cpu(),
                 "final_score": final_scores.detach().cpu(),
                 "policy_prob": policy_prob_matrix.detach().cpu(),
                 "static_mask": static_allowed.detach().cpu(),
+                "latency_pair_bias_weight": self.deployment_latency_bias_weight,
+                "queue_pair_bias_weight": self.deployment_queue_bias_weight,
             },
         }
 
@@ -726,7 +768,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)  # [Ms, Np]
         cloud_idx = self._cloud_index(Np)
         deploy_mask = self._enforce_cloud_replica(deploy_mask.bool())
-        pair_bias = self._deployment_pair_bias(logic_feats)
+        latency_pair_bias, queue_pair_bias = self._deployment_pair_bias_components(logic_feats)
+        _, _, pair_bias = self._combine_deployment_pair_biases(
+            latency_pair_bias,
+            queue_pair_bias,
+            torch.zeros((Ms, Np), dtype=h_p.dtype, device=h_p.device),
+        )
         eps = 1e-6
 
         logp_sum = torch.tensor(0.0, device=h_s.device)
@@ -739,7 +786,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     h_s[service_idx:service_idx + 1],
                     h_p,
                     mask=stochastic_allowed.unsqueeze(0),
-                    pair_bias=None if pair_bias is None else pair_bias[service_idx:service_idx + 1],
+                    pair_bias=pair_bias[service_idx:service_idx + 1],
                 )[0]
                 probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
                 probs_log = torch.where(stochastic_allowed, probs_log, torch.full_like(probs_log, eps))
@@ -881,6 +928,8 @@ class HedgerOffloadingPPO(nn.Module):
                  actor_lr=3e-4, critic_lr=1e-3, update_encoder: bool = True,
                  gamma=0.99, lamda=0.95, clip_eps=0.2,
                  cloud_node_idx: int = -1,
+                 offloading_latency_bias_weight: float = 0.5,
+                 offloading_queue_bias_weight: float = 1.2,
                  constraint_cfg: OffloadingConstraintCfg = OffloadingConstraintCfg()):
         super().__init__()
         self.encoder = encoder
@@ -888,13 +937,16 @@ class HedgerOffloadingPPO(nn.Module):
         self.critic = ValueHead(d_model)
         self.service_adapter = FeatureAdapter(d_model)
         self.device_adapter = FeatureAdapter(d_model)
-        self.offloading_pair_head = PairBiasHead(input_dim=11, hidden_dim=max(16, d_model // 2))
+        hidden_dim = max(16, d_model // 2)
+        self.offloading_latency_pair_head = PairBiasHead(input_dim=6, hidden_dim=hidden_dim)
+        self.offloading_queue_pair_head = PairBiasHead(input_dim=5, hidden_dim=hidden_dim)
 
         adapter_params = list(self.service_adapter.parameters()) + list(self.device_adapter.parameters())
         encoder_params = list(self.encoder.parameters()) if update_encoder else []
         params_actor = (
             list(self.actor.parameters())
-            + list(self.offloading_pair_head.parameters())
+            + list(self.offloading_latency_pair_head.parameters())
+            + list(self.offloading_queue_pair_head.parameters())
             + adapter_params
             + encoder_params
         )
@@ -906,6 +958,8 @@ class HedgerOffloadingPPO(nn.Module):
         self.lamda = lamda
         self.clip_eps = clip_eps
         self.cloud_idx = cloud_node_idx
+        self.offloading_latency_bias_weight = float(offloading_latency_bias_weight)
+        self.offloading_queue_bias_weight = float(offloading_queue_bias_weight)
         self.cfg = constraint_cfg
 
     @staticmethod
@@ -938,31 +992,54 @@ class HedgerOffloadingPPO(nn.Module):
     def _offloading_context(self, h_p: torch.Tensor, static_mask: torch.Tensor) -> torch.Tensor:
         return _build_mask_context(static_mask.bool(), h_p)
 
-    def _offloading_pair_bias(self, logic_feats: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+    def _offloading_pair_bias_components(
+            self,
+            logic_feats: Dict[str, torch.Tensor],
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         latency_features = logic_feats.get("offloading_latency_pair_feat")
         queue_features = logic_feats.get("offloading_queue_pair_feat")
-        if not isinstance(latency_features, torch.Tensor) or not isinstance(queue_features, torch.Tensor):
-            return None
-        if latency_features.numel() == 0 or queue_features.numel() == 0:
-            return None
-        pair_features = torch.cat([latency_features.float(), queue_features.float()], dim=-1)
-        return self.offloading_pair_head(pair_features)
+        latency_bias: Optional[torch.Tensor] = None
+        queue_bias: Optional[torch.Tensor] = None
+        if isinstance(latency_features, torch.Tensor) and latency_features.numel() > 0:
+            latency_bias = self.offloading_latency_pair_head(latency_features.float())
+        if isinstance(queue_features, torch.Tensor) and queue_features.numel() > 0:
+            queue_bias = self.offloading_queue_pair_head(queue_features.float())
+        return latency_bias, queue_bias
+
+    def _combine_offloading_pair_biases(
+            self,
+            latency_pair_bias: Optional[torch.Tensor],
+            queue_pair_bias: Optional[torch.Tensor],
+            reference: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if latency_pair_bias is None:
+            latency_pair_bias = torch.zeros_like(reference)
+        if queue_pair_bias is None:
+            queue_pair_bias = torch.zeros_like(reference)
+        pair_bias = (
+            self.offloading_latency_bias_weight * latency_pair_bias
+            + self.offloading_queue_bias_weight * queue_pair_bias
+        )
+        return latency_pair_bias, queue_pair_bias, pair_bias
 
     def _offloading_actor_terms(
             self,
             h_s: torch.Tensor,
             h_p: torch.Tensor,
             logic_feats: Dict[str, torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q_embedding = self.actor.q(h_s)
         k_embedding = self.actor.k(h_p)
         qk_scores = (q_embedding @ k_embedding.t()) / math.sqrt(q_embedding.size(-1))
         qk_scores = qk_scores / max(self.actor.temperature, 1e-6)
-        pair_bias = self._offloading_pair_bias(logic_feats)
-        if pair_bias is None:
-            pair_bias = torch.zeros_like(qk_scores)
+        latency_pair_bias, queue_pair_bias = self._offloading_pair_bias_components(logic_feats)
+        latency_pair_bias, queue_pair_bias, pair_bias = self._combine_offloading_pair_biases(
+            latency_pair_bias,
+            queue_pair_bias,
+            qk_scores,
+        )
         final_scores = qk_scores + pair_bias
-        return q_embedding, k_embedding, qk_scores, pair_bias, final_scores
+        return q_embedding, k_embedding, qk_scores, latency_pair_bias, queue_pair_bias, pair_bias, final_scores
 
     @torch.no_grad()
     def estimate_value(
@@ -1071,7 +1148,15 @@ class HedgerOffloadingPPO(nn.Module):
         if topo_order is None:
             topo_order = self.topo_order(logic_edge_index, Ms)
         parents = self._build_parents(logic_edge_index, Ms)
-        q_embedding, k_embedding, qk_scores, pair_bias, final_scores = self._offloading_actor_terms(
+        (
+            q_embedding,
+            k_embedding,
+            qk_scores,
+            latency_pair_bias,
+            queue_pair_bias,
+            pair_bias,
+            final_scores,
+        ) = self._offloading_actor_terms(
             h_s,
             h_p,
             logic_feats,
@@ -1111,11 +1196,15 @@ class HedgerOffloadingPPO(nn.Module):
                 "q_embedding": q_embedding.detach().cpu(),
                 "k_embedding": k_embedding.detach().cpu(),
                 "qk_score": qk_scores.detach().cpu(),
+                "latency_pair_bias": latency_pair_bias.detach().cpu(),
+                "queue_pair_bias": queue_pair_bias.detach().cpu(),
                 "pair_bias": pair_bias.detach().cpu(),
                 "final_score": final_scores.detach().cpu(),
                 "policy_prob": policy_prob_matrix.detach().cpu(),
                 "raw_static_mask": static_mask.detach().cpu(),
                 "effective_mask": effective_mask.detach().cpu(),
+                "latency_pair_bias_weight": self.offloading_latency_bias_weight,
+                "queue_pair_bias_weight": self.offloading_queue_bias_weight,
             },
         }
 
@@ -1133,7 +1222,12 @@ class HedgerOffloadingPPO(nn.Module):
         parents = self._build_parents(logic_edge_index, Ms)
         corrected_actions, correction_cnt = self._correct_offloading_actions(actions, parents, topo_order)
         raw_probs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
-        pair_bias = self._offloading_pair_bias(logic_feats)
+        latency_pair_bias, queue_pair_bias = self._offloading_pair_bias_components(logic_feats)
+        _, _, pair_bias = self._combine_offloading_pair_biases(
+            latency_pair_bias,
+            queue_pair_bias,
+            torch.zeros((Ms, Np), dtype=h_p.dtype, device=h_p.device),
+        )
 
         for i in topo_order:
             allowed = self._normalize_offloading_mask(static_mask[i].clone())
@@ -1141,7 +1235,7 @@ class HedgerOffloadingPPO(nn.Module):
                 h_s[i:i + 1],
                 h_p,
                 allowed.unsqueeze(0),
-                pair_bias=None if pair_bias is None else pair_bias[i:i + 1],
+                pair_bias=pair_bias[i:i + 1],
             )[0]
             raw_probs[i] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)

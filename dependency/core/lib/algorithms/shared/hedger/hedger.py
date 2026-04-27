@@ -75,6 +75,8 @@ class HedgerTrainingCfg:
 class HedgerInferenceCfg:
     run_deployment_worker: bool = True
     run_offloading_worker: bool = True
+    deployment_deterministic: bool = True
+    offloading_deterministic: bool = True
     wait_for_initial_task_feedback: bool = True
     initial_task_feedback_min_samples: int = 2
     initial_task_feedback_timeout_s: Optional[float] = 60.0
@@ -437,6 +439,8 @@ class Hedger:
         return HedgerInferenceCfg(
             run_deployment_worker=run_deployment_worker,
             run_offloading_worker=run_offloading_worker,
+            deployment_deterministic=bool(inference.get("deployment_deterministic", True)),
+            offloading_deterministic=bool(inference.get("offloading_deterministic", True)),
             wait_for_initial_task_feedback=bool(inference.get("wait_for_initial_task_feedback", True)),
             initial_task_feedback_min_samples=max(
                 1,
@@ -748,6 +752,8 @@ class Hedger:
             "reward_dep_latency_transform": dep_latency_cfg["transform"],
             "reward_dep_latency_normalizer": dep_latency_cfg["normalizer"],
             "reward_dep_latency_clip": dep_latency_cfg["clip"],
+            "latency_pair_bias_weight": float(deployment.get("latency_pair_bias_weight", 1.0)),
+            "queue_pair_bias_weight": float(deployment.get("queue_pair_bias_weight", 0.3)),
             "penalty_capacity_relax": float(penalty["capacity_relax"]),
             "penalty_edge_cover_repair": float(penalty.get("edge_cover_repair", 0.0)),
             "penalty_latency_guard_trigger": float(penalty.get("latency_guard_trigger", 0.0)),
@@ -780,6 +786,8 @@ class Hedger:
             "reward_off_latency_transform": off_latency_cfg["transform"],
             "reward_off_latency_normalizer": off_latency_cfg["normalizer"],
             "reward_off_latency_clip": off_latency_cfg["clip"],
+            "latency_pair_bias_weight": float(offloading.get("latency_pair_bias_weight", 0.5)),
+            "queue_pair_bias_weight": float(offloading.get("queue_pair_bias_weight", 1.2)),
             "penalty_relax": float(penalty["correction"]),
             "ppo": ppo,
         }
@@ -1506,6 +1514,10 @@ class Hedger:
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"min_edge_replicas_per_service={dep_params.get('min_edge_replicas_per_service', 'na')}, "
+            f"dep_latency_pair_bias_weight={dep_params.get('latency_pair_bias_weight', 'na')}, "
+            f"dep_queue_pair_bias_weight={dep_params.get('queue_pair_bias_weight', 'na')}, "
+            f"off_latency_pair_bias_weight={off_params.get('latency_pair_bias_weight', 'na')}, "
+            f"off_queue_pair_bias_weight={off_params.get('queue_pair_bias_weight', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -1935,6 +1947,7 @@ class Hedger:
             "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95", "e2e_latency_p99",
             "e2e_slo_violation", "feedback_gate_enabled", "feedback_gate_required_samples",
             "feedback_gate_collected_samples", "feedback_gate_timed_out", "feedback_gate_guard_truncated",
+            "deployment_deterministic",
             "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
             "edge_cover_repair_cost", "edge_cover_unmet", "policy_logp", "policy_entropy",
             "value_estimate", "raw_edge_replicas", "edge_replicas", "cloud_replicas",
@@ -1944,6 +1957,7 @@ class Hedger:
             *Hedger._latency_guard_record_fieldnames(),
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
+            "dep_latency_pair_bias_weight", "dep_queue_pair_bias_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "latency_guard_penalty_weight", "max_edge_replicas_per_device",
             "edge_memory_budget_ratio", "min_edge_replicas_per_service", "loaded_checkpoint",
@@ -1962,13 +1976,15 @@ class Hedger:
             "off_cloud_term", "correction_cnt", "correction_cost", "off_correction_term", "policy_logp",
             "policy_entropy", "value_estimate", "raw_cloud_fraction",
             "executed_cloud_fraction", "unique_targets", "feasible_targets_mean",
+            "offloading_deterministic",
             "feasible_targets_min", "feasible_targets_max", "raw_offloading_plan",
             "offloading_plan", "active_deployment_plan", *self._state_record_fieldnames(),
             *Hedger._latency_guard_record_fieldnames(),
             "feedback_task_observations", "feedback_deployment_version",
             "feedback_deployment_versions", "feedback_recorded", "off_latency_weight",
             "off_latency_transform", "off_latency_normalizer", "off_latency_clip",
-            "off_slo_weight", "off_cloud_weight", "correction_weight", "loaded_checkpoint",
+            "off_slo_weight", "off_cloud_weight", "off_latency_pair_bias_weight",
+            "off_queue_pair_bias_weight", "correction_weight", "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
             insert_at = fieldnames.index("latency_guard_active")
@@ -2010,7 +2026,8 @@ class Hedger:
             ])
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
-                "deployment_qk_scores", "deployment_pair_bias", "deployment_final_scores",
+                "deployment_qk_scores", "deployment_latency_pair_bias", "deployment_queue_pair_bias",
+                "deployment_pair_bias", "deployment_final_scores",
                 "deployment_policy_probs", "deployment_static_mask",
             ])
         return fieldnames
@@ -2029,7 +2046,8 @@ class Hedger:
             ])
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
-                "offloading_qk_scores", "offloading_pair_bias", "offloading_final_scores",
+                "offloading_qk_scores", "offloading_latency_pair_bias", "offloading_queue_pair_bias",
+                "offloading_pair_bias", "offloading_final_scores",
                 "offloading_policy_probs", "offloading_effective_mask",
             ])
         return fieldnames
@@ -2108,6 +2126,12 @@ class Hedger:
                 row.update({
                     "deployment_qk_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "qk_score", service_idx)
+                    ),
+                    "deployment_latency_pair_bias": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "latency_pair_bias", service_idx)
+                    ),
+                    "deployment_queue_pair_bias": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "queue_pair_bias", service_idx)
                     ),
                     "deployment_pair_bias": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_bias", service_idx)
@@ -2194,6 +2218,12 @@ class Hedger:
                     "offloading_qk_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "qk_score", service_idx)
                     ),
+                    "offloading_latency_pair_bias": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "latency_pair_bias", service_idx)
+                    ),
+                    "offloading_queue_pair_bias": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "queue_pair_bias", service_idx)
+                    ),
                     "offloading_pair_bias": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_bias", service_idx)
                     ),
@@ -2245,6 +2275,8 @@ class Hedger:
             clip_eps=self.deployment_agent_params['clip_eps'],
             update_encoder=False,
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
+            deployment_latency_bias_weight=self.deployment_agent_params["latency_pair_bias_weight"],
+            deployment_queue_bias_weight=self.deployment_agent_params["queue_pair_bias_weight"],
             constraint_cfg=from_partial_dict(DeploymentConstraintCfg, self.deployment_agent_params),
         ).to(self.device)
         self._sync_agent_topology_bindings()
@@ -2265,6 +2297,8 @@ class Hedger:
             clip_eps=self.offloading_agent_params['clip_eps'],
             update_encoder=self.offloading_agent_params['update_encoder'],
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
+            offloading_latency_bias_weight=self.offloading_agent_params["latency_pair_bias_weight"],
+            offloading_queue_bias_weight=self.offloading_agent_params["queue_pair_bias_weight"],
             constraint_cfg=from_partial_dict(OffloadingConstraintCfg, self.offloading_agent_params),
         ).to(self.device)
         self._sync_agent_topology_bindings()
@@ -3224,7 +3258,9 @@ class Hedger:
         LOGGER.info(
             f"[Hedger][Inference] Worker config: "
             f"deployment={self.inference_cfg.run_deployment_worker}, "
-            f"offloading={self.inference_cfg.run_offloading_worker}"
+            f"offloading={self.inference_cfg.run_offloading_worker}, "
+            f"deployment_deterministic={self.inference_cfg.deployment_deterministic}, "
+            f"offloading_deterministic={self.inference_cfg.offloading_deterministic}"
         )
         self.set_seed()
 
@@ -3357,7 +3393,8 @@ class Hedger:
     def inference_deployment_agent(self):
         LOGGER.info(
             f"[Hedger][Inference][Deployment] Worker started: "
-            f"interval={self._format_log_value(self.deployment_interval, 2)}s"
+            f"interval={self._format_log_value(self.deployment_interval, 2)}s, "
+            f"deterministic={self.inference_cfg.deployment_deterministic}"
         )
 
         assert self.logical_topology is not None and self.physical_topology is not None, \
@@ -3401,7 +3438,7 @@ class Hedger:
                             phys_feats=phys_feats_dev,
                             topo_order=None,
                             prev_deploy_mask=prev_deploy_mask_dev,
-                            deterministic=True,
+                            deterministic=self.inference_cfg.deployment_deterministic,
                         )
                         deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
                         raw_deploy_mask = aux["raw_deploy_mask"].detach().cpu().bool()
@@ -3499,6 +3536,7 @@ class Hedger:
                         feedback_gate_collected_samples=int(feedback_gate.get("count", 0) or 0),
                         feedback_gate_timed_out=int(bool(feedback_gate.get("timed_out", False))),
                         feedback_gate_guard_truncated=int(bool(feedback_gate.get("guard_truncated", False))),
+                        deployment_deterministic=int(bool(self.inference_cfg.deployment_deterministic)),
                         cap_relax_cnt=aux["capacity_relax_cnt"],
                         cap_relax_cost=aux["capacity_relax_cost"],
                         edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
@@ -3525,6 +3563,8 @@ class Hedger:
                         dep_latency_normalizer=self.deployment_agent_params["reward_dep_latency_normalizer"],
                         dep_latency_clip=self.deployment_agent_params["reward_dep_latency_clip"],
                         dep_slo_weight=self.deployment_agent_params["reward_dep_slo_weight"],
+                        dep_latency_pair_bias_weight=self.deployment_agent_params["latency_pair_bias_weight"],
+                        dep_queue_pair_bias_weight=self.deployment_agent_params["queue_pair_bias_weight"],
                         dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
                         dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
                         cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
@@ -3579,7 +3619,8 @@ class Hedger:
     def inference_offloading_agent(self):
         LOGGER.info(
             f"[Hedger][Inference][Offloading] Worker started: "
-            f"interval={self._format_log_value(self.offloading_interval, 2)}s"
+            f"interval={self._format_log_value(self.offloading_interval, 2)}s, "
+            f"deterministic={self.inference_cfg.offloading_deterministic}"
         )
 
         assert self.logical_topology is not None and self.physical_topology is not None, \
@@ -3624,7 +3665,7 @@ class Hedger:
                             phys_feats=phys_feats_dev,
                             static_mask=static_mask_dev,
                             topo_order=None,
-                            deterministic=True,
+                            deterministic=self.inference_cfg.offloading_deterministic,
                         )
                         offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
                         self._sync_decision_device()
@@ -3723,6 +3764,7 @@ class Hedger:
                         executed_cloud_fraction=executed_cloud_fraction,
                         unique_targets=unique_targets,
                         feasible_targets_mean=feasible_targets_mean,
+                        offloading_deterministic=int(bool(self.inference_cfg.offloading_deterministic)),
                         feasible_targets_min=feasible_targets_min,
                         feasible_targets_max=feasible_targets_max,
                         raw_offloading_plan=self._json_for_record(raw_offloading_plan),
@@ -3745,6 +3787,8 @@ class Hedger:
                         off_latency_clip=self.offloading_agent_params["reward_off_latency_clip"],
                         off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                         off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
+                        off_latency_pair_bias_weight=self.offloading_agent_params["latency_pair_bias_weight"],
+                        off_queue_pair_bias_weight=self.offloading_agent_params["queue_pair_bias_weight"],
                         correction_weight=self.offloading_agent_params["penalty_relax"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
@@ -4052,6 +4096,7 @@ class Hedger:
         dep_train_fieldnames.extend([
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
+            "dep_latency_pair_bias_weight", "dep_queue_pair_bias_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "latency_guard_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
@@ -4308,6 +4353,8 @@ class Hedger:
                     dep_latency_normalizer=self.deployment_agent_params["reward_dep_latency_normalizer"],
                     dep_latency_clip=self.deployment_agent_params["reward_dep_latency_clip"],
                     dep_slo_weight=self.deployment_agent_params["reward_dep_slo_weight"],
+                    dep_latency_pair_bias_weight=self.deployment_agent_params["latency_pair_bias_weight"],
+                    dep_queue_pair_bias_weight=self.deployment_agent_params["queue_pair_bias_weight"],
                     dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
                     dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
@@ -4388,6 +4435,7 @@ class Hedger:
                                 "off_latency_term", "off_latency_normalizer", "off_latency_clip", "off_latency_transform",
                                 "slo_violation", "off_slo_term", "cloud_fraction", "off_cloud_term",
                                 "aux_cost", "off_latency_weight", "off_slo_weight", "off_cloud_weight",
+                                "off_latency_pair_bias_weight", "off_queue_pair_bias_weight",
                                 "correction_cnt", "correction_cost", "off_correction_term", "policy_logp",
                                 "policy_entropy", "value_estimate",
                                 "next_value", "raw_cloud_fraction", "executed_cloud_fraction",
@@ -4602,6 +4650,8 @@ class Hedger:
                     off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
                     off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                     off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
+                    off_latency_pair_bias_weight=self.offloading_agent_params["latency_pair_bias_weight"],
+                    off_queue_pair_bias_weight=self.offloading_agent_params["queue_pair_bias_weight"],
                     correction_cnt=aux["correction_cnt"],
                     correction_cost=aux["correction_cost"],
                     off_correction_term=off_reward_breakdown["off_correction_term"],
