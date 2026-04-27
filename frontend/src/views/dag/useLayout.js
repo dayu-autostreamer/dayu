@@ -2,10 +2,14 @@ import dagre from '@dagrejs/dagre';
 import { Position, useVueFlow } from '@vue-flow/core';
 import { ref } from 'vue';
 
-export function useLayout() {
-	const { findNode } = useVueFlow();
+export function useLayout(flowId = 'default') {
+	const { findNode } = useVueFlow({ id: flowId });
 	const graph = ref(new dagre.graphlib.Graph());
 	const previousDirection = ref('LR');
+	const defaultNodeSize = {
+		width: 180,
+		height: 56,
+	};
 
 	function layout(nodes, edges, direction) {
 		if (!Array.isArray(nodes)) {
@@ -19,16 +23,19 @@ export function useLayout() {
 		graph.value = dagreGraph;
 		dagreGraph.setDefaultEdgeLabel(() => ({}));
 		const isHorizontal = direction === 'LR';
-		dagreGraph.setGraph({ rankdir: direction });
+		dagreGraph.setGraph({
+			rankdir: direction,
+			nodesep: 36,
+			ranksep: 72,
+			marginx: 24,
+			marginy: 24,
+		});
 		previousDirection.value = direction;
 
 		nodesCopy.forEach((node) => {
 			const graphNode = findNode(node.id);
 
-			const dimensions = graphNode?.dimensions || {
-				width: 150,
-				height: 50,
-			};
+			const dimensions = graphNode?.dimensions || node.dimensions || defaultNodeSize;
 
 			dagreGraph.setNode(node.id, {
 				width: dimensions.width,
@@ -53,13 +60,17 @@ export function useLayout() {
 		return nodesCopy.map((node) => {
 			try {
 				const nodeWithPosition = dagreGraph.node(node.id);
+				const graphNode = findNode(node.id);
+				const dimensions = graphNode?.dimensions || node.dimensions || defaultNodeSize;
+				const fallbackPosition = node.position || { x: 0, y: 0 };
+
 				return {
 					...node,
 					targetPosition: isHorizontal ? Position.Left : Position.Top,
 					sourcePosition: isHorizontal ? Position.Right : Position.Bottom,
 					position: {
-						x: nodeWithPosition?.x || node.position.x,
-						y: nodeWithPosition?.y || node.position.y,
+						x: nodeWithPosition ? nodeWithPosition.x - dimensions.width / 2 : fallbackPosition.x,
+						y: nodeWithPosition ? nodeWithPosition.y - dimensions.height / 2 : fallbackPosition.y,
 					},
 				};
 			} catch {
