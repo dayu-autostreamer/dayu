@@ -26,7 +26,7 @@
 						<el-icon class="canvas-placeholder__icon">
 							<MagicStick />
 						</el-icon>
-						<div class="canvas-placeholder__title">Open the canvas to start composing</div>
+						<div class="canvas-placeholder__title">Open the canvas to start drawing</div>
 					</div>
 
 					<div v-else :class="['draw-container', { 'is-drag-over': isDragOver }]" @drop="handleCanvasDrop">
