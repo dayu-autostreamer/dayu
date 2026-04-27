@@ -9,14 +9,12 @@ const state = {
 };
 const GRID_SIZE = 24;
 const NODE_TONES = [
-	{ background: '#eff6ff', border: '#93c5fd' },
-	{ background: '#ecfeff', border: '#67e8f9' },
-	{ background: '#f0fdf4', border: '#86efac' },
-	{ background: '#fff7ed', border: '#fdba74' },
-	{ background: '#fdf2f8', border: '#f9a8d4' },
-	{ background: '#eef2ff', border: '#a5b4fc' },
-	{ background: '#fefce8', border: '#fde047' },
-	{ background: '#f8fafc', border: '#cbd5e1' },
+	{ accent: '#2563eb', background: '#f8fbff', border: '#bfdbfe' },
+	{ accent: '#0f766e', background: '#f4fffd', border: '#99f6e4' },
+	{ accent: '#15803d', background: '#f7fff8', border: '#bbf7d0' },
+	{ accent: '#b45309', background: '#fffaf3', border: '#fcd34d' },
+	{ accent: '#be185d', background: '#fff8fb', border: '#fbcfe8' },
+	{ accent: '#7c3aed', background: '#faf7ff', border: '#ddd6fe' },
 ];
 
 export default function useDragAndDrop(flowId = 'default') {
@@ -110,11 +108,12 @@ export default function useDragAndDrop(flowId = 'default') {
 			style: {
 				backgroundColor: tone.background,
 				border: `1px solid ${tone.border}`,
+				borderLeft: `4px solid ${tone.accent}`,
 				borderRadius: '16px',
-				boxShadow: '0 12px 28px rgba(15, 23, 42, 0.08)',
+				boxShadow: '0 8px 18px rgba(15, 23, 42, 0.06)',
 				color: '#0f172a',
-				width: '180px',
-				height: '56px',
+				width: '148px',
+				height: '44px',
 			},
 			data: nodeData,
 			sourcePosition: 'right',

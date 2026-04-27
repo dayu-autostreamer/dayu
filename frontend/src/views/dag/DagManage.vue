@@ -3,15 +3,7 @@
 		<section class="section-card composer-section">
 			<div class="section-heading">
 				<div>
-					<div class="eyebrow">Workflow Builder</div>
 					<h3>Add Application Dag</h3>
-					<p class="section-description">
-						Drag services onto the canvas, connect them from left to right, then save the DAG once the flow looks right.
-					</p>
-				</div>
-				<div class="heading-metrics">
-					<el-tag effect="plain" type="info">{{ services.length }} services</el-tag>
-					<el-tag effect="plain" type="success">{{ flowNodes.length }} staged nodes</el-tag>
 				</div>
 			</div>
 
@@ -23,12 +15,6 @@
 					</div>
 
 					<div class="builder-actions">
-						<div class="builder-hint">
-							<el-icon class="tip-icon">
-								<MagicStick />
-							</el-icon>
-							<span>1. Drag services 2. Connect nodes 3. Auto layout 4. Save the DAG</span>
-						</div>
 						<div class="builder-buttons">
 							<el-button type="warning" plain @click="draw">{{ drawing ? 'Hide Canvas' : 'Open Canvas' }}</el-button>
 							<el-button plain :disabled="!drawing || !flowNodes.length" @click="focusCanvas">Fit View</el-button>
@@ -42,9 +28,6 @@
 							<MagicStick />
 						</el-icon>
 						<div class="canvas-placeholder__title">Open the canvas to start composing</div>
-						<div class="canvas-placeholder__copy">
-							The canvas snaps nodes to a grid and supports one-click auto layout for cleaner workflows.
-						</div>
 					</div>
 
 					<div v-else :class="['draw-container', { 'is-drag-over': isDragOver }]" @drop="handleCanvasDrop">
@@ -59,7 +42,6 @@
 									{{ flowEdges.length }} links
 								</el-tag>
 							</div>
-							<div class="canvas-status-copy">Drop services here and keep arrows flowing left to right for the clearest DAG.</div>
 						</div>
 
 						<VueFlow
@@ -84,7 +66,7 @@
 								<el-icon class="tip-icon">
 									<MagicStick />
 								</el-icon>
-								<span>Drag service nodes to build your workflow</span>
+								<span>Drag services here</span>
 							</div>
 
 							<Background pattern-color="#cbd5e1" :gap="20" />
@@ -108,41 +90,28 @@
 
 				<aside class="service-sidebar">
 					<div class="sidebar-header">
-						<div class="new-dag-font-style">
-							Service Containers
-							<el-tooltip placement="right">
-								<template #content>From docker Registry: https://hub.docker.com/u/dayuhub</template>
-								<el-button size="small" circle>i</el-button>
-							</el-tooltip>
-						</div>
-						<p class="sidebar-copy">Each service can be used once in a DAG. Hover a card to inspect its inputs and outputs.</p>
+						<div class="new-dag-font-style">Service Containers</div>
 					</div>
 
 					<div class="service-grid">
-						<el-tooltip
+						<button
 							v-for="service in services"
 							:key="service.id"
-							placement="left"
-							:open-delay="350"
-							enterable
+							type="button"
+							class="service-card"
+							:style="getServiceCardStyle(service)"
+							draggable="true"
+							@dragstart="onDragStart($event, '', service)"
 						>
-							<template #content>
-								<div class="description">{{ service.description }}</div>
-							</template>
-							<button
-								type="button"
-								class="service-card"
-								:style="getServiceCardStyle(service)"
-								draggable="true"
-								@dragstart="onDragStart($event, '', service)"
-							>
-								<div class="service-card__header">
-									<span class="service-card__name">{{ formatServiceName(service) }}</span>
-									<span class="service-card__drag">Drag</span>
-								</div>
-								<div class="service-card__desc">{{ service.description }}</div>
-							</button>
-						</el-tooltip>
+							<div class="service-card__header">
+								<span class="service-card__name">{{ formatServiceName(service) }}</span>
+								<span class="service-card__drag">Drag</span>
+							</div>
+							<div class="service-card__meta">
+								<span class="service-chip">IN {{ formatIoValue(service.input) }}</span>
+								<span class="service-chip">OUT {{ formatIoValue(service.output) }}</span>
+							</div>
+						</button>
 					</div>
 				</aside>
 			</div>
@@ -151,11 +120,7 @@
 		<section class="section-card dag-list-section">
 			<div class="section-heading">
 				<div>
-					<div class="eyebrow">Saved Workflows</div>
 					<h3>Current Application Dags</h3>
-					<p class="section-description">
-						Hover a DAG summary to inspect its structure in place without leaving the list.
-					</p>
 				</div>
 			</div>
 
@@ -195,7 +160,6 @@
 												+{{ getOverflowServiceCount(scope.row.dag, previewNodeLimit) }}
 											</span>
 										</div>
-										<span class="hover-hint">Hover to inspect</span>
 									</div>
 
 									<div class="stats">
@@ -260,7 +224,7 @@
 </template>
 
 <script>
-import { ElButton, ElInput, ElMessage, ElPopover, ElTable, ElTableColumn, ElTag, ElTooltip } from 'element-plus';
+import { ElButton, ElInput, ElMessage, ElPopover, ElTable, ElTableColumn, ElTag } from 'element-plus';
 import { nextTick, ref } from 'vue';
 import { MarkerType, Panel, useVueFlow, VueFlow } from '@vue-flow/core';
 import { Controls } from '@vue-flow/controls';
@@ -272,14 +236,12 @@ import { useLayout } from './useLayout';
 import { Connection, Link, MagicStick } from '@element-plus/icons-vue';
 
 const NODE_TONES = [
-	{ background: '#eff6ff', border: '#93c5fd' },
-	{ background: '#ecfeff', border: '#67e8f9' },
-	{ background: '#f0fdf4', border: '#86efac' },
-	{ background: '#fff7ed', border: '#fdba74' },
-	{ background: '#fdf2f8', border: '#f9a8d4' },
-	{ background: '#eef2ff', border: '#a5b4fc' },
-	{ background: '#fefce8', border: '#fde047' },
-	{ background: '#f8fafc', border: '#cbd5e1' },
+	{ accent: '#2563eb', background: '#f8fbff', border: '#bfdbfe' },
+	{ accent: '#0f766e', background: '#f4fffd', border: '#99f6e4' },
+	{ accent: '#15803d', background: '#f7fff8', border: '#bbf7d0' },
+	{ accent: '#b45309', background: '#fffaf3', border: '#fcd34d' },
+	{ accent: '#be185d', background: '#fff8fb', border: '#fbcfe8' },
+	{ accent: '#7c3aed', background: '#faf7ff', border: '#ddd6fe' },
 ];
 const MAIN_FLOW_ID = 'dag-builder-main';
 const PREVIEW_NODE_LIMIT = 4;
@@ -289,7 +251,6 @@ export default {
 	components: {
 		ElTable,
 		ElTableColumn,
-		ElTooltip,
 		ElPopover,
 		ElTag,
 		ElInput,
@@ -581,8 +542,9 @@ export default {
 			return {
 				backgroundColor: tone.background,
 				border: `1px solid ${tone.border}`,
+				borderLeft: `4px solid ${tone.accent}`,
 				borderRadius: '16px',
-				boxShadow: '0 12px 28px rgba(15, 23, 42, 0.08)',
+				boxShadow: '0 8px 18px rgba(15, 23, 42, 0.06)',
 				color: '#0f172a',
 			};
 		},
@@ -591,10 +553,14 @@ export default {
 			return {
 				backgroundColor: tone.background,
 				borderColor: tone.border,
+				'--service-accent': tone.accent,
 			};
 		},
 		formatServiceName(service) {
 			return service?.name || service?.id || 'Unknown Service';
+		},
+		formatIoValue(value) {
+			return value || '-';
 		},
 		parseDag(dag) {
 			return Object.keys(dag || {})
@@ -606,7 +572,7 @@ export default {
 						label: dag[key]?.service_id || dag[key]?.id || key,
 						service_id: dag[key]?.service_id || key,
 					},
-					dimensions: { width: 180, height: 56 },
+					dimensions: { width: 148, height: 44 },
 					style: this.getNodeStyle(key),
 				}));
 		},
@@ -687,37 +653,14 @@ export default {
 	align-items: flex-start;
 	justify-content: space-between;
 	gap: 16px;
-	margin-bottom: 20px;
-}
-
-.eyebrow {
-	font-size: 12px;
-	font-weight: 700;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
-	color: #2563eb;
-	margin-bottom: 8px;
+	margin-bottom: 16px;
 }
 
 h3 {
 	margin: 0;
-	font-size: 26px;
+	font-size: 24px;
 	line-height: 1.2;
 	color: #0f172a;
-}
-
-.section-description {
-	margin: 10px 0 0;
-	max-width: 720px;
-	font-size: 14px;
-	line-height: 1.6;
-	color: #475569;
-}
-
-.heading-metrics {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
 }
 
 .builder-grid {
@@ -760,24 +703,10 @@ h3 {
 
 .builder-actions {
 	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 16px;
+	justify-content: flex-end;
+	gap: 12px;
 	flex-wrap: wrap;
-	margin-bottom: 18px;
-	padding: 14px 16px;
-	border-radius: 18px;
-	background: #f8fafc;
-	border: 1px solid #e2e8f0;
-}
-
-.builder-hint {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	font-size: 13px;
-	font-weight: 500;
-	color: #475569;
+	margin-bottom: 16px;
 }
 
 .builder-buttons {
@@ -792,7 +721,7 @@ h3 {
 }
 
 .canvas-placeholder {
-	min-height: 520px;
+	min-height: 500px;
 	display: grid;
 	place-items: center;
 	text-align: center;
@@ -811,21 +740,13 @@ h3 {
 }
 
 .canvas-placeholder__title {
-	font-size: 20px;
+	font-size: 18px;
 	font-weight: 700;
 	color: #0f172a;
-	margin-bottom: 8px;
-}
-
-.canvas-placeholder__copy {
-	max-width: 420px;
-	font-size: 14px;
-	line-height: 1.6;
-	color: #475569;
 }
 
 .draw-container {
-	min-height: 560px;
+	min-height: 520px;
 	display: flex;
 	flex-direction: column;
 	border-radius: 22px;
@@ -844,10 +765,10 @@ h3 {
 .canvas-status-bar {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
+	justify-content: flex-end;
+	gap: 8px;
 	flex-wrap: wrap;
-	padding: 14px 18px;
+	padding: 10px 14px;
 	border-bottom: 1px solid #e2e8f0;
 	background: rgba(248, 250, 252, 0.92);
 }
@@ -858,15 +779,10 @@ h3 {
 	flex-wrap: wrap;
 }
 
-.canvas-status-copy {
-	font-size: 13px;
-	color: #64748b;
-}
-
 .main-flow {
 	position: relative;
 	flex: 1;
-	min-height: 500px;
+	min-height: 460px;
 	background:
 		linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.98)),
 		#ffffff;
@@ -879,7 +795,7 @@ h3 {
 	transform: translateX(-50%);
 	z-index: 10;
 	background: rgba(255, 255, 255, 0.92);
-	padding: 10px 18px;
+	padding: 8px 14px;
 	border-radius: 999px;
 	box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
 	display: flex;
@@ -935,14 +851,7 @@ h3 {
 }
 
 .sidebar-header {
-	margin-bottom: 16px;
-}
-
-.sidebar-copy {
-	margin: 0;
-	font-size: 13px;
-	line-height: 1.6;
-	color: #64748b;
+	margin-bottom: 12px;
 }
 
 .service-grid {
@@ -955,10 +864,11 @@ h3 {
 
 .service-card {
 	width: 100%;
-	padding: 14px 14px 16px;
+	padding: 12px 12px 13px;
 	text-align: left;
-	border-radius: 18px;
-	border: 1px solid #cbd5e1;
+	border-radius: 16px;
+	border: 1px solid #dbe4ee;
+	border-left: 4px solid var(--service-accent);
 	cursor: grab;
 	transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
@@ -995,13 +905,22 @@ h3 {
 	color: #2563eb;
 }
 
-.service-card__desc,
-.description {
-	font-size: 13px;
-	line-height: 1.55;
+.service-card__meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.service-chip {
+	display: inline-flex;
+	align-items: center;
+	padding: 4px 8px;
+	border-radius: 999px;
+	background: rgba(255, 255, 255, 0.9);
+	border: 1px solid #dbe4ee;
+	font-size: 11px;
+	font-weight: 700;
 	color: #475569;
-	white-space: pre-wrap;
-	word-break: break-word;
 }
 
 .dag-list-section {
@@ -1046,16 +965,8 @@ h3 {
 .dag-overview-header {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 16px;
+	gap: 12px;
 	margin-bottom: 12px;
-}
-
-.hover-hint {
-	flex-shrink: 0;
-	font-size: 12px;
-	font-weight: 600;
-	color: #2563eb;
 }
 
 .dag-pill-group {
@@ -1144,8 +1055,8 @@ h3 {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	padding: 0 14px;
-	font-size: 13px;
+	padding: 0 10px;
+	font-size: 12px;
 	font-weight: 700;
 	line-height: 1.4;
 	color: #0f172a;
