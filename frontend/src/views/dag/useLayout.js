@@ -7,8 +7,8 @@ export function useLayout(flowId = 'default') {
 	const graph = ref(new dagre.graphlib.Graph());
 	const previousDirection = ref('LR');
 	const defaultNodeSize = {
-		width: 112,
-		height: 34,
+		width: 96,
+		height: 30,
 	};
 
 	function layout(nodes, edges, direction) {

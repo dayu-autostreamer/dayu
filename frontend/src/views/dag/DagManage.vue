@@ -17,7 +17,6 @@
 					<div class="builder-actions">
 						<div class="builder-buttons">
 							<el-button type="warning" plain @click="draw">{{ drawing ? 'Hide Canvas' : 'Open Canvas' }}</el-button>
-							<el-button plain :disabled="!drawing || !flowNodes.length" @click="focusCanvas">Fit View</el-button>
 							<el-button type="primary" round :disabled="!flowNodes.length" @click="handleNewSubmit">Save Dag</el-button>
 							<el-button round :disabled="!newInputName && !flowNodes.length" @click="clearInput">Reset</el-button>
 						</div>
@@ -558,7 +557,7 @@ export default {
 						label: dag[key]?.service_id || dag[key]?.id || key,
 						service_id: dag[key]?.service_id || key,
 					},
-					dimensions: { width: 112, height: 34 },
+					dimensions: { width: 96, height: 30 },
 					style: this.getNodeStyle(key),
 				}));
 		},
@@ -615,6 +614,7 @@ export default {
 
 <style scoped lang="scss">
 .dag-manage-page {
+	--dag-service-name-font-size: 12px;
 	padding: 20px;
 	display: grid;
 	gap: 24px;
@@ -878,7 +878,7 @@ h3 {
 }
 
 .service-card__name {
-	font-size: 14px;
+	font-size: var(--dag-service-name-font-size);
 	font-weight: 700;
 	color: #0f172a;
 }
@@ -1041,12 +1041,15 @@ h3 {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	padding: 0 8px;
-	font-size: 10px;
+	padding: 0 6px;
+	font-size: var(--dag-service-name-font-size);
 	font-weight: 700;
 	line-height: 1.2;
 	color: #0f172a;
 	text-align: center;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .main-flow :deep(.dag-node.selected) {
