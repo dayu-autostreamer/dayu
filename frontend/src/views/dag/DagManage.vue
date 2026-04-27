@@ -68,7 +68,7 @@
 								<span>Drag services here</span>
 							</div>
 
-							<Background pattern-color="#cbd5e1" :gap="20" />
+							<Background pattern-color="#cbd5e1" :gap="14" />
 							<div class="minimap-toggle-wrap" :class="{ expanded: isMiniMapExpanded }">
 								<button type="button" class="minimap-toggle" @click="toggleMiniMap">
 									{{ isMiniMapExpanded ? 'Hide Map' : 'Map' }}
@@ -242,10 +242,6 @@ const PREVIEW_LAYOUT_OPTIONS = {
 	ranksep: 80,
 	marginx: 32,
 	marginy: 28,
-};
-const PREVIEW_NODE_DIMENSIONS = {
-	width: 124,
-	height: 44,
 };
 
 export default {
@@ -579,16 +575,6 @@ export default {
 					};
 				});
 		},
-		buildPreviewNodes(dag) {
-			return this.parseDag(dag).map((node) => ({
-				...node,
-				dimensions: { ...PREVIEW_NODE_DIMENSIONS },
-				style: {
-					...node.style,
-					fontSize: '11px',
-				},
-			}));
-		},
 		generateEdges(dag) {
 			const edges = [];
 			for (const [source, node] of Object.entries(dag || {})) {
@@ -613,7 +599,7 @@ export default {
 			return edges;
 		},
 		buildDagPresentation(dag) {
-			const nodeList = this.buildPreviewNodes(dag.dag);
+			const nodeList = this.parseDag(dag.dag);
 			const lineList = this.generateEdges(dag.dag);
 			const layoutNodes = this.layout(nodeList, lineList, 'LR', PREVIEW_LAYOUT_OPTIONS);
 
