@@ -1482,12 +1482,13 @@ class Hedger:
         training_cfg = getattr(self, "training_cfg", None)
         checkpoint_cfg = getattr(self, "checkpoint_cfg", None)
         checkpoint_save_cfg = getattr(checkpoint_cfg, "save", None)
-        stage_name = training_cfg.stage if training_cfg is not None else "none"
+        stage_name = getattr(training_cfg, "stage", "none")
         state_cfg = getattr(self, "state_cfg", None)
         latency_guard_cfg = getattr(self, "latency_guard_cfg", None)
         dep_seq_len = getattr(state_cfg, "deployment_seq_len", "na")
         off_seq_len = getattr(state_cfg, "offloading_seq_len", "na")
         dep_params = getattr(self, "deployment_agent_params", {}) or {}
+        off_params = getattr(self, "offloading_agent_params", {}) or {}
         default_warmup_cfg = getattr(training_cfg, "deployment_default_warmup", None)
         return (
             f"mode={getattr(self, 'mode', 'unknown')}, train_stage={stage_name}, "
