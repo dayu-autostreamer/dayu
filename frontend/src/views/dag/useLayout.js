@@ -8,7 +8,7 @@ export function useLayout(flowId = 'default') {
 	const previousDirection = ref('LR');
 	const defaultNodeSize = {
 		width: 96,
-		height: 30,
+		height: 36,
 	};
 
 	function layout(nodes, edges, direction) {

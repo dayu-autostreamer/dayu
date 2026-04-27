@@ -17,8 +17,8 @@
 					<div class="builder-actions">
 						<div class="builder-buttons">
 							<el-button type="warning" plain @click="draw">{{ drawing ? 'Hide Canvas' : 'Open Canvas' }}</el-button>
-							<el-button type="primary" round :disabled="!flowNodes.length" @click="handleNewSubmit">Save Dag</el-button>
-							<el-button round :disabled="!newInputName && !flowNodes.length" @click="clearInput">Reset</el-button>
+							<el-button type="primary" round :disabled="!drawing || !flowNodes.length" @click="handleNewSubmit">Add Dag</el-button>
+							<el-button round :disabled="!drawing" @click="clearInput">Reset</el-button>
 						</div>
 					</div>
 
@@ -69,7 +69,12 @@
 							</div>
 
 							<Background pattern-color="#cbd5e1" :gap="20" />
-							<MiniMap />
+							<div class="minimap-toggle-wrap" :class="{ expanded: isMiniMapExpanded }">
+								<button type="button" class="minimap-toggle" @click="toggleMiniMap">
+									{{ isMiniMapExpanded ? 'Hide Map' : 'Map' }}
+								</button>
+							</div>
+							<MiniMap v-if="isMiniMapExpanded" class="dag-minimap" />
 							<Controls position="bottom-right" />
 
 							<Panel class="process-panel" position="top-right">
@@ -232,7 +237,7 @@ import { MiniMap } from '@vue-flow/minimap';
 import useDragAndDrop from './useDnD';
 import Icon from './Icon.vue';
 import { useLayout } from './useLayout';
-import { getServiceTone } from './nodePalette';
+import { getServiceNodeFontSize, getServiceTone } from './nodePalette';
 import { Connection, Link, MagicStick } from '@element-plus/icons-vue';
 
 const MAIN_FLOW_ID = 'dag-builder-main';
@@ -353,6 +358,7 @@ export default {
 			dagList: [],
 			refreshTimer: null,
 			previewNodeLimit: PREVIEW_NODE_LIMIT,
+			isMiniMapExpanded: false,
 		};
 	},
 	methods: {
@@ -373,6 +379,9 @@ export default {
 		clearInput() {
 			this.newInputName = '';
 			this.flushDrawData();
+		},
+		toggleMiniMap() {
+			this.isMiniMapExpanded = !this.isMiniMapExpanded;
 		},
 		async handleCanvasDrop(event) {
 			if (!this.serviceData) {
@@ -522,7 +531,7 @@ export default {
 		getNodeTone(key) {
 			return getServiceTone(key);
 		},
-		getNodeStyle(key) {
+		getNodeStyle(key, label = key) {
 			const tone = this.getNodeTone(key);
 			return {
 				backgroundColor: tone.background,
@@ -531,6 +540,7 @@ export default {
 				borderRadius: '14px',
 				boxShadow: '0 6px 14px rgba(15, 23, 42, 0.06)',
 				color: '#0f172a',
+				fontSize: getServiceNodeFontSize(label),
 			};
 		},
 		getServiceCardStyle(service) {
@@ -550,16 +560,19 @@ export default {
 		parseDag(dag) {
 			return Object.keys(dag || {})
 				.filter((key) => key !== '_start')
-				.map((key) => ({
-					id: key,
-					class: 'dag-node',
-					data: {
-						label: dag[key]?.service_id || dag[key]?.id || key,
-						service_id: dag[key]?.service_id || key,
-					},
-					dimensions: { width: 96, height: 30 },
-					style: this.getNodeStyle(key),
-				}));
+				.map((key) => {
+					const label = dag[key]?.service_id || dag[key]?.id || key;
+					return {
+						id: key,
+						class: 'dag-node',
+						data: {
+							label,
+							service_id: dag[key]?.service_id || key,
+						},
+						dimensions: { width: 96, height: 36 },
+						style: this.getNodeStyle(key, label),
+					};
+				});
 		},
 		generateEdges(dag) {
 			const edges = [];
@@ -772,6 +785,37 @@ h3 {
 	background:
 		linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.98)),
 		#ffffff;
+}
+
+.minimap-toggle-wrap {
+	position: absolute;
+	right: 16px;
+	bottom: 76px;
+	z-index: 12;
+}
+
+.minimap-toggle-wrap.expanded {
+	bottom: 188px;
+}
+
+.minimap-toggle {
+	border: 1px solid #cbd5e1;
+	border-radius: 999px;
+	background: rgba(255, 255, 255, 0.96);
+	color: #334155;
+	padding: 7px 12px;
+	font-size: 12px;
+	font-weight: 700;
+	line-height: 1;
+	cursor: pointer;
+	box-shadow: 0 10px 22px rgba(15, 23, 42, 0.12);
+	transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.minimap-toggle:hover {
+	border-color: #93c5fd;
+	color: #1d4ed8;
+	transform: translateY(-1px);
 }
 
 .drag-tip {
@@ -1034,6 +1078,8 @@ h3 {
 	border-radius: 16px;
 	overflow: hidden;
 	box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+	right: 16px;
+	bottom: 116px;
 }
 
 .main-flow :deep(.dag-node),
@@ -1042,14 +1088,18 @@ h3 {
 	align-items: center;
 	justify-content: center;
 	padding: 0 6px;
-	font-size: var(--dag-service-name-font-size);
+	font-size: 10px;
 	font-weight: 700;
-	line-height: 1.2;
+	line-height: 1.15;
 	color: #0f172a;
 	text-align: center;
-	white-space: nowrap;
+	white-space: normal;
 	overflow: hidden;
-	text-overflow: ellipsis;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
 }
 
 .main-flow :deep(.dag-node.selected) {

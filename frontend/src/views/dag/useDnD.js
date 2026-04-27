@@ -1,6 +1,6 @@
 import { useVueFlow } from '@vue-flow/core';
 import { ref, watch } from 'vue';
-import { getServiceTone } from './nodePalette';
+import { getServiceNodeFontSize, getServiceTone } from './nodePalette';
 
 const state = {
 	serviceData: ref(null),
@@ -95,8 +95,9 @@ export default function useDragAndDrop(flowId = 'default') {
 				borderRadius: '14px',
 				boxShadow: '0 6px 14px rgba(15, 23, 42, 0.06)',
 				color: '#0f172a',
+				fontSize: getServiceNodeFontSize(nodeName),
 				width: '96px',
-				height: '30px',
+				height: '36px',
 			},
 			data: nodeData,
 			sourcePosition: 'right',

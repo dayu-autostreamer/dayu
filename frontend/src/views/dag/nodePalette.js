@@ -24,3 +24,21 @@ export function getServiceTone(key) {
 		border: `hsl(${hue} ${Math.max(saturation - 6, 42)}% ${borderLightness}%)`,
 	};
 }
+
+export function getServiceNodeFontSize(label) {
+	const length = String(label || '').length;
+
+	if (length > 22) {
+		return '8px';
+	}
+
+	if (length > 16) {
+		return '9px';
+	}
+
+	if (length > 10) {
+		return '10px';
+	}
+
+	return '11px';
+}
