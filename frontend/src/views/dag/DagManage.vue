@@ -233,16 +233,9 @@ import { MiniMap } from '@vue-flow/minimap';
 import useDragAndDrop from './useDnD';
 import Icon from './Icon.vue';
 import { useLayout } from './useLayout';
+import { getServiceTone } from './nodePalette';
 import { Connection, Link, MagicStick } from '@element-plus/icons-vue';
 
-const NODE_TONES = [
-	{ accent: '#2563eb', background: '#f8fbff', border: '#bfdbfe' },
-	{ accent: '#0f766e', background: '#f4fffd', border: '#99f6e4' },
-	{ accent: '#15803d', background: '#f7fff8', border: '#bbf7d0' },
-	{ accent: '#b45309', background: '#fffaf3', border: '#fcd34d' },
-	{ accent: '#be185d', background: '#fff8fb', border: '#fbcfe8' },
-	{ accent: '#7c3aed', background: '#faf7ff', border: '#ddd6fe' },
-];
 const MAIN_FLOW_ID = 'dag-builder-main';
 const PREVIEW_NODE_LIMIT = 4;
 
@@ -528,14 +521,7 @@ export default {
 			return Math.max(this.getDagServiceLabels(dag).length - limit, 0);
 		},
 		getNodeTone(key) {
-			const source = String(key || '');
-			let hash = 0;
-			for (let i = 0; i < source.length; i += 1) {
-				hash = (hash << 5) - hash + source.charCodeAt(i);
-				hash |= 0;
-			}
-
-			return NODE_TONES[Math.abs(hash) % NODE_TONES.length];
+			return getServiceTone(key);
 		},
 		getNodeStyle(key) {
 			const tone = this.getNodeTone(key);
@@ -543,8 +529,8 @@ export default {
 				backgroundColor: tone.background,
 				border: `1px solid ${tone.border}`,
 				borderLeft: `4px solid ${tone.accent}`,
-				borderRadius: '16px',
-				boxShadow: '0 8px 18px rgba(15, 23, 42, 0.06)',
+				borderRadius: '14px',
+				boxShadow: '0 6px 14px rgba(15, 23, 42, 0.06)',
 				color: '#0f172a',
 			};
 		},
@@ -572,7 +558,7 @@ export default {
 						label: dag[key]?.service_id || dag[key]?.id || key,
 						service_id: dag[key]?.service_id || key,
 					},
-					dimensions: { width: 148, height: 44 },
+					dimensions: { width: 112, height: 34 },
 					style: this.getNodeStyle(key),
 				}));
 		},
@@ -782,7 +768,7 @@ h3 {
 .main-flow {
 	position: relative;
 	flex: 1;
-	min-height: 460px;
+	min-height: 430px;
 	background:
 		linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.98)),
 		#ffffff;
@@ -1055,10 +1041,10 @@ h3 {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	padding: 0 10px;
-	font-size: 12px;
+	padding: 0 8px;
+	font-size: 10px;
 	font-weight: 700;
-	line-height: 1.4;
+	line-height: 1.2;
 	color: #0f172a;
 	text-align: center;
 }

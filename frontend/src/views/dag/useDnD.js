@@ -1,5 +1,6 @@
 import { useVueFlow } from '@vue-flow/core';
 import { ref, watch } from 'vue';
+import { getServiceTone } from './nodePalette';
 
 const state = {
 	serviceData: ref(null),
@@ -8,14 +9,6 @@ const state = {
 	isDragging: ref(false),
 };
 const GRID_SIZE = 24;
-const NODE_TONES = [
-	{ accent: '#2563eb', background: '#f8fbff', border: '#bfdbfe' },
-	{ accent: '#0f766e', background: '#f4fffd', border: '#99f6e4' },
-	{ accent: '#15803d', background: '#f7fff8', border: '#bbf7d0' },
-	{ accent: '#b45309', background: '#fffaf3', border: '#fcd34d' },
-	{ accent: '#be185d', background: '#fff8fb', border: '#fbcfe8' },
-	{ accent: '#7c3aed', background: '#faf7ff', border: '#ddd6fe' },
-];
 
 export default function useDragAndDrop(flowId = 'default') {
 	const { draggedType, isDragOver, isDragging, serviceData } = state;
@@ -63,16 +56,6 @@ export default function useDragAndDrop(flowId = 'default') {
 		document.removeEventListener('drop', onDragEnd);
 	}
 
-	function getNodeTone(key) {
-		const source = String(key || '');
-		let hash = 0;
-		for (let i = 0; i < source.length; i += 1) {
-			hash = (hash << 5) - hash + source.charCodeAt(i);
-			hash |= 0;
-		}
-
-		return NODE_TONES[Math.abs(hash) % NODE_TONES.length];
-	}
 	function snapToGrid(value) {
 		return Math.round(value / GRID_SIZE) * GRID_SIZE;
 	}
@@ -92,7 +75,7 @@ export default function useDragAndDrop(flowId = 'default') {
 
 		const nodeId = serviceData.value.id;
 		const nodeName = serviceData.value.name || serviceData.value.id;
-		const tone = getNodeTone(nodeId);
+		const tone = getServiceTone(nodeId);
 		const nodeData = {
 			label: nodeName,
 			prev: [],
@@ -109,11 +92,11 @@ export default function useDragAndDrop(flowId = 'default') {
 				backgroundColor: tone.background,
 				border: `1px solid ${tone.border}`,
 				borderLeft: `4px solid ${tone.accent}`,
-				borderRadius: '16px',
-				boxShadow: '0 8px 18px rgba(15, 23, 42, 0.06)',
+				borderRadius: '14px',
+				boxShadow: '0 6px 14px rgba(15, 23, 42, 0.06)',
 				color: '#0f172a',
-				width: '148px',
-				height: '44px',
+				width: '112px',
+				height: '34px',
 			},
 			data: nodeData,
 			sourcePosition: 'right',

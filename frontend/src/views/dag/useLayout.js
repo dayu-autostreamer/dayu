@@ -7,8 +7,8 @@ export function useLayout(flowId = 'default') {
 	const graph = ref(new dagre.graphlib.Graph());
 	const previousDirection = ref('LR');
 	const defaultNodeSize = {
-		width: 148,
-		height: 44,
+		width: 112,
+		height: 34,
 	};
 
 	function layout(nodes, edges, direction) {
@@ -25,10 +25,10 @@ export function useLayout(flowId = 'default') {
 		const isHorizontal = direction === 'LR';
 		dagreGraph.setGraph({
 			rankdir: direction,
-			nodesep: 28,
-			ranksep: 56,
-			marginx: 20,
-			marginy: 20,
+			nodesep: 20,
+			ranksep: 42,
+			marginx: 16,
+			marginy: 16,
 		});
 		previousDirection.value = direction;
 
