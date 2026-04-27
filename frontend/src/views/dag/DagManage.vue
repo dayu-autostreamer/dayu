@@ -243,6 +243,10 @@ const PREVIEW_LAYOUT_OPTIONS = {
 	marginx: 32,
 	marginy: 28,
 };
+const PREVIEW_NODE_DIMENSIONS = {
+	width: 78,
+	height: 30,
+};
 
 export default {
 	name: 'DagManage',
@@ -575,6 +579,16 @@ export default {
 					};
 				});
 		},
+		buildPreviewNodes(dag) {
+			return this.parseDag(dag).map((node) => ({
+				...node,
+				dimensions: { ...PREVIEW_NODE_DIMENSIONS },
+				style: {
+					...node.style,
+					fontSize: '9px',
+				},
+			}));
+		},
 		generateEdges(dag) {
 			const edges = [];
 			for (const [source, node] of Object.entries(dag || {})) {
@@ -599,7 +613,7 @@ export default {
 			return edges;
 		},
 		buildDagPresentation(dag) {
-			const nodeList = this.parseDag(dag.dag);
+			const nodeList = this.buildPreviewNodes(dag.dag);
 			const lineList = this.generateEdges(dag.dag);
 			const layoutNodes = this.layout(nodeList, lineList, 'LR', PREVIEW_LAYOUT_OPTIONS);
 
@@ -665,7 +679,7 @@ h3 {
 
 .builder-grid {
 	display: grid;
-	grid-template-columns: minmax(0, 1.65fr) minmax(280px, 0.95fr);
+	grid-template-columns: minmax(0, 2.1fr) minmax(240px, 0.72fr);
 	gap: 20px;
 	align-items: start;
 }
@@ -1109,8 +1123,8 @@ h3 {
 
 .preview-flow :deep(.dag-node) {
 	cursor: default;
-	padding: 0 10px;
-	line-height: 1.25;
+	padding: 0 4px;
+	line-height: 1.1;
 }
 
 .preview-flow :deep(.vue-flow__edge-path),
