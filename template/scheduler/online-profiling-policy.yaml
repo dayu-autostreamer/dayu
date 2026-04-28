@@ -16,6 +16,7 @@ pod-template:
     - name: SCH_SELECTION_POLICY_PARAMETERS
       value: >
         {
+          'scope': 'selected_edge_nodes',
           'fixed_value':0,
           'fixed_type':'position'
         }
@@ -150,4 +151,3 @@ port-open:
 file-mount:
   - pos: cloud
     path: 'scheduler/online_profiling/'
-

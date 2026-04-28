@@ -173,13 +173,17 @@ def test_selection_policies_cover_invalid_configuration_and_empty_candidates(mon
     assert fallback_hostname(info) == "edge-a"
     assert fixed_selection_module.FixedSelectionPolicy(SimpleNamespace(), 1)({"source": {"id": 1}, "node_set": []}) is None
 
-    selector = selection_base_module.BaseSelectionPolicy(scope="source_bound")
+    selector = selection_base_module.BaseSelectionPolicy(scope="selected_edge_nodes")
     assert selector.get_candidate_node_set(info) == ["edge-a", "edge-b"]
     selector.scope = "all_edge_nodes"
     monkeypatch.setattr(selection_base_module.NodeInfo, "get_all_edge_nodes", staticmethod(lambda: ["edge-b", "edge-c"]))
     assert selector.get_candidate_node_set({"node_set": ["edge-a"], "all_edge_nodes": None}) == ["edge-b", "edge-c"]
 
-    random_selector = random_selection_module.RandomSelectionPolicy(SimpleNamespace(), 1, scope="node_set")
+    fallback_selector = selection_base_module.BaseSelectionPolicy(scope="source_bound")
+    assert fallback_selector.scope == "selected_edge_nodes"
+    assert fallback_selector.get_candidate_node_set(info) == ["edge-a", "edge-b"]
+
+    random_selector = random_selection_module.RandomSelectionPolicy(SimpleNamespace(), 1, scope="selected_edge_nodes")
     monkeypatch.setattr(random_selection_module.random, "choice", lambda seq: seq[-1])
     assert random_selector(info) == "edge-b"
     assert random_selector({"source": {"id": 2}, "node_set": []}) is None

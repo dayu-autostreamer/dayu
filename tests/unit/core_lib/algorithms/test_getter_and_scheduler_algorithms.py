@@ -269,20 +269,21 @@ def test_scheduler_helper_algorithms_cover_base_contracts_selection_and_retrieva
     assert casva_scenario["content_dynamics"] == 0.4
 
     monkeypatch.setattr(selection_base_module.NodeInfo, "get_all_edge_nodes", staticmethod(lambda: ["edge-a", "edge-b", "edge-c"]))
-    selector = selection_base_module.BaseSelectionPolicy(scope="cluster")
+    selector = selection_base_module.BaseSelectionPolicy(scope="all_edge_nodes")
     assert selector.get_candidate_node_set({"node_set": ["edge-a", "edge-b"], "all_edge_nodes": ["edge-b", "edge-c"]}) == [
         "edge-b",
         "edge-c",
     ]
-    selector.scope = "unknown"
-    assert selector.get_candidate_node_set({"node_set": ["edge-a", "edge-b"]}) == ["edge-a", "edge-b"]
+    fallback_selector = selection_base_module.BaseSelectionPolicy(scope="cluster")
+    assert fallback_selector.scope == "selected_edge_nodes"
+    assert fallback_selector.get_candidate_node_set({"node_set": ["edge-a", "edge-b"]}) == ["edge-a", "edge-b"]
 
     fixed_position = selection_policy_module.FixedSelectionPolicy(SimpleNamespace(), 1, fixed_value=1, fixed_type="position")
     assert fixed_position({"source": {"id": 1}, "node_set": ["edge-a", "edge-b"]}) == "edge-b"
     fixed_hostname = selection_policy_module.FixedSelectionPolicy(SimpleNamespace(), 1, fixed_value="edge-b", fixed_type="hostname")
     assert fixed_hostname({"source": {"id": 1}, "node_set": ["edge-a", "edge-b"]}) == "edge-b"
 
-    random_selector = selection_policy_module.RandomSelectionPolicy(SimpleNamespace(), 1, scope="node_set")
+    random_selector = selection_policy_module.RandomSelectionPolicy(SimpleNamespace(), 1, scope="selected_edge_nodes")
     monkeypatch.setattr(random_selection_module.random, "choice", lambda seq: seq[-1])
     assert random_selector({"source": {"id": 1}, "node_set": ["edge-a", "edge-b"]}) == "edge-b"
 
