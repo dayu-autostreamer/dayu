@@ -424,8 +424,9 @@ class Task:
         assert dag, 'DAG is empty!'
 
         for node_name in dag.nodes:
-            node = dag.nodes[node_name]
-            node.service.set_execute_device(device)
+            if node_name != TaskConstant.START.value and node_name != TaskConstant.END.value:
+                node = dag.nodes[node_name]
+                node.service.set_execute_device(device)
         return dag
 
     def fork_task(self, new_flow_index: str = None) -> 'Task':

@@ -24,35 +24,47 @@ class VideoGenerator(Generator):
         super().submit_task_to_controller(cur_task)
 
     def run(self):
-        # initialize with default schedule policy
+        # Start with the default local scheduling view. Once runtime services are
+        # healthy, request a fresh scheduler decision before ingesting data.
         self.after_schedule_operation(self, None)
 
-        service_running_flag = False
+        services_ready = False
+        initial_schedule_pending = True
         while True:
             if not KubeConfig.check_services_running():
-                service_running_flag = False
+                services_ready = False
+                initial_schedule_pending = True
                 LOGGER.debug("Services not in running state, wait for service deployment..")
                 time.sleep(0.5)
                 continue
-            if not service_running_flag:
-                if HealthChecker.check_processors_health():
-                    service_running_flag = True
-                else:
-                    LOGGER.debug("Services not in running state, wait for service deployment..")
+
+            if not services_ready:
+                if not HealthChecker.check_processors_health():
+                    LOGGER.debug("Processors are not healthy yet, wait before requesting scheduler decisions..")
                     time.sleep(0.5)
                     continue
-            # skip getter according to some specific requirements
+                services_ready = True
+                initial_schedule_pending = True
+
+            if initial_schedule_pending:
+                LOGGER.debug('[Scheduling Request] Request an initial scheduling policy after services become healthy.')
+                self.request_schedule_policy()
+                self.cumulative_scheduling_frame_count = 0
+                initial_schedule_pending = False
+
+            # Skip this round when the getter filter decides not to ingest data.
             if not self.getter_filter(self):
                 LOGGER.info('[Filter Getter] step to next round of getter.')
                 time.sleep(0.5)
                 continue
 
-            # request schedule policy for subsequent tasks
-            if self.cumulative_scheduling_frame_count > \
-                    self.request_scheduling_interval * self.raw_meta_data.get('fps', 0):
+            # Refresh scheduling policy periodically after enough frames have
+            # been processed since the last scheduling decision.
+            scheduling_threshold = self.request_scheduling_interval * self.raw_meta_data.get('fps', 0)
+            if self.cumulative_scheduling_frame_count > scheduling_threshold:
                 LOGGER.debug(f'[Scheduling Request] Request a Scheduling policy from scheduler.')
                 self.request_schedule_policy()
                 self.cumulative_scheduling_frame_count = 0
 
-            # get data from source
+            # Ingest the next chunk/frame from the source.
             self.data_getter(self)

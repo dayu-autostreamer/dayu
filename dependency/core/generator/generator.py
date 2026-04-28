@@ -30,11 +30,12 @@ class Generator:
 
         """distributed devices information"""
         self.local_device = NodeInfo.get_local_device()
+        self.cloud_device = NodeInfo.get_cloud_node()
         self.all_edge_devices = Context.get_parameter('ALL_EDGE_DEVICES', direct=False)
         self.task_dag = Task.set_execute_device(self.task_dag, self.local_device)
 
         """network communication base information"""
-        self.scheduler_hostname = NodeInfo.get_cloud_node()
+        self.scheduler_hostname = self.cloud_device
         self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
         self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
         self.schedule_address = merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),

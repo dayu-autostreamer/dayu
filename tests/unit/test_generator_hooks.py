@@ -231,22 +231,24 @@ def test_video_generator_submit_records_total_start_before_parent_submit(monkeyp
 
 
 @pytest.mark.unit
-def test_video_generator_run_waits_for_health_skips_filtered_rounds_and_requests_schedule(monkeypatch):
+def test_video_generator_run_requests_initial_schedule_after_health_before_data_getter(monkeypatch):
     generator_module = importlib.import_module("core.generator.generator")
     video_generator_module = importlib.import_module("core.generator.video_generator")
 
     after_schedule_calls = []
     getter_filter_calls = []
     schedule_requests = []
+    data_getter_calls = []
 
-    service_states = iter([False, True, True, True])
+    service_states = iter([False, True, True, True, True])
     health_states = iter([False, True])
-    getter_states = iter([False, True])
+    getter_states = iter([False, True, True])
 
     def after_schedule(system, scheduler_response):
         after_schedule_calls.append(scheduler_response)
 
     def data_getter(system):
+        data_getter_calls.append(system.source_id)
         system.cumulative_scheduling_frame_count = (
             system.request_scheduling_interval * system.raw_meta_data["fps"] + 1
         )
@@ -287,9 +289,13 @@ def test_video_generator_run_waits_for_health_skips_filtered_rounds_and_requests
         dag=build_dag_deployment(),
     )
 
+    request_count = {"value": 0}
+
     def fake_request_schedule_policy():
         schedule_requests.append(generator.cumulative_scheduling_frame_count)
-        raise StopGeneratorLoop
+        request_count["value"] += 1
+        if request_count["value"] >= 2:
+            raise StopGeneratorLoop
 
     monkeypatch.setattr(generator, "request_schedule_policy", fake_request_schedule_policy)
 
@@ -297,5 +303,6 @@ def test_video_generator_run_waits_for_health_skips_filtered_rounds_and_requests
         generator.run()
 
     assert after_schedule_calls == [None]
-    assert getter_filter_calls == [9, 9]
-    assert schedule_requests == [6]
+    assert getter_filter_calls == [9, 9, 9]
+    assert data_getter_calls == [9]
+    assert schedule_requests == [0, 6]
