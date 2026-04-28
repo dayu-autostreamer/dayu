@@ -145,7 +145,6 @@
 							placement="left-start"
 							:width="480"
 							popper-class="dag-preview-popper"
-							@show="prepareDagPreview(scope.row)"
 						>
 							<template #reference>
 								<button type="button" class="dag-overview-button">
@@ -192,20 +191,7 @@
 								</div>
 
 								<div class="dag-preview-shell">
-									<VueFlow
-										:id="`dag-preview-${scope.row.dag_id}`"
-										class="preview-flow"
-										:nodes="scope.row.nodeList"
-										:edges="scope.row.lineList"
-										:fit-view-on-init="true"
-										:nodes-draggable="false"
-										:nodes-connectable="false"
-										:elements-selectable="false"
-										:zoom-on-scroll="false"
-										:pan-on-drag="false"
-									>
-										<Background pattern-color="#e2e8f0" :gap="24" />
-									</VueFlow>
+									<DagPreviewGraph :dag="scope.row.dag" />
 								</div>
 							</div>
 						</el-popover>
@@ -229,24 +215,15 @@ import { MarkerType, Panel, useVueFlow, VueFlow } from '@vue-flow/core';
 import { Controls } from '@vue-flow/controls';
 import { Background } from '@vue-flow/background';
 import { MiniMap } from '@vue-flow/minimap';
+import DagPreviewGraph from './DagPreviewGraph.vue';
 import useDragAndDrop from './useDnD';
 import Icon from './Icon.vue';
 import { useLayout } from './useLayout';
-import { getServiceNodeFontSize, getServiceTone } from './nodePalette';
+import { getServiceTone } from './nodePalette';
 import { Connection, Link, MagicStick } from '@element-plus/icons-vue';
 
 const MAIN_FLOW_ID = 'dag-builder-main';
 const PREVIEW_NODE_LIMIT = 4;
-const PREVIEW_LAYOUT_OPTIONS = {
-	nodesep: 44,
-	ranksep: 80,
-	marginx: 32,
-	marginy: 28,
-};
-const PREVIEW_NODE_DIMENSIONS = {
-	width: 78,
-	height: 30,
-};
 
 export default {
 	name: 'DagManage',
@@ -261,6 +238,7 @@ export default {
 		Background,
 		MiniMap,
 		Controls,
+		DagPreviewGraph,
 		Icon,
 		Panel,
 		Connection,
@@ -461,7 +439,7 @@ export default {
 			try {
 				const response = await fetch('/api/dag_workflow');
 				const data = await response.json();
-				this.dagList = data.map((dag) => this.buildDagPresentation(dag));
+				this.dagList = data;
 			} catch (error) {
 				console.error('Error fetching data:', error);
 			}
@@ -507,20 +485,11 @@ export default {
 				ElMessage.error('Failed to fetch services');
 			}
 		},
-		prepareDagPreview(row) {
-			if (!row?.nodeList || !row?.lineList) {
-				Object.assign(row, this.buildDagPresentation(row));
-			}
-		},
 		countEdges(dag) {
 			return this.generateEdges(dag).length;
 		},
 		getDagNodeCount(dag) {
 			return Object.keys(dag || {}).filter((key) => key !== '_start').length;
-		},
-		getStartNodes(dag) {
-			const startNodes = dag?._start;
-			return Array.isArray(startNodes) ? startNodes : [];
 		},
 		getDagServiceLabels(dag) {
 			return Object.entries(dag || {})
@@ -536,18 +505,6 @@ export default {
 		getNodeTone(key) {
 			return getServiceTone(key);
 		},
-		getNodeStyle(key, label = key) {
-			const tone = this.getNodeTone(key);
-			return {
-				backgroundColor: tone.background,
-				border: `1px solid ${tone.border}`,
-				borderLeft: `4px solid ${tone.accent}`,
-				borderRadius: '14px',
-				boxShadow: '0 6px 14px rgba(15, 23, 42, 0.06)',
-				color: '#0f172a',
-				fontSize: getServiceNodeFontSize(label),
-			};
-		},
 		getServiceCardStyle(service) {
 			const tone = this.getNodeTone(service?.id || service?.name);
 			return {
@@ -561,33 +518,6 @@ export default {
 		},
 		formatIoValue(value) {
 			return value || '-';
-		},
-		parseDag(dag) {
-			return Object.keys(dag || {})
-				.filter((key) => key !== '_start')
-				.map((key) => {
-					const label = dag[key]?.service_id || dag[key]?.id || key;
-					return {
-						id: key,
-						class: 'dag-node',
-						data: {
-							label,
-							service_id: dag[key]?.service_id || key,
-						},
-						dimensions: { width: 96, height: 36 },
-						style: this.getNodeStyle(key, label),
-					};
-				});
-		},
-		buildPreviewNodes(dag) {
-			return this.parseDag(dag).map((node) => ({
-				...node,
-				dimensions: { ...PREVIEW_NODE_DIMENSIONS },
-				style: {
-					...node.style,
-					fontSize: '9px',
-				},
-			}));
 		},
 		generateEdges(dag) {
 			const edges = [];
@@ -611,17 +541,6 @@ export default {
 				});
 			}
 			return edges;
-		},
-		buildDagPresentation(dag) {
-			const nodeList = this.buildPreviewNodes(dag.dag);
-			const lineList = this.generateEdges(dag.dag);
-			const layoutNodes = this.layout(nodeList, lineList, 'LR', PREVIEW_LAYOUT_OPTIONS);
-
-			return {
-				...dag,
-				nodeList: layoutNodes,
-				lineList,
-			};
 		},
 	},
 	mounted() {
@@ -1077,13 +996,7 @@ h3 {
 	overflow: hidden;
 }
 
-.preview-flow {
-	height: 100%;
-	width: 100%;
-}
-
-.main-flow :deep(.vue-flow__controls),
-.preview-flow :deep(.vue-flow__controls) {
+.main-flow :deep(.vue-flow__controls) {
 	box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
 	border-radius: 14px;
 	overflow: hidden;
@@ -1097,8 +1010,7 @@ h3 {
 	bottom: 116px;
 }
 
-.main-flow :deep(.dag-node),
-.preview-flow :deep(.dag-node) {
+.main-flow :deep(.dag-node) {
 	display: flex;
 	align-items: center;
 	align-content: center;
@@ -1121,19 +1033,8 @@ h3 {
 	box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22), 0 18px 34px rgba(37, 99, 235, 0.14);
 }
 
-.preview-flow :deep(.dag-node) {
-	cursor: default;
-	padding: 0 4px;
-	line-height: 1.1;
-}
-
-.preview-flow :deep(.vue-flow__edge-path),
 .main-flow :deep(.vue-flow__edge-path) {
 	stroke-linecap: round;
-}
-
-.preview-flow :deep(.vue-flow__attribution) {
-	display: none;
 }
 
 :deep(.dag-preview-popper.el-popover) {
