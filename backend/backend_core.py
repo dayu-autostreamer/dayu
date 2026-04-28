@@ -137,8 +137,8 @@ class BackendCore:
 
         self.yaml_dict = yaml_dict
 
-        first_stage_components = ['scheduler', 'distributor', 'monitor', 'controller']
-        second_stage_components = ['generator', 'processor']
+        first_stage_components = ['scheduler', 'distributor', 'monitor']
+        second_stage_components = ['controller', 'generator', 'processor']
 
         LOGGER.info(f'[First Deployment Stage] deploy components:{first_stage_components}')
         first_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),

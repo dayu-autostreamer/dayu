@@ -81,6 +81,45 @@ def test_template_helper_dispatches_only_requested_scopes(monkeypatch, mounted_r
 
 
 @pytest.mark.unit
+def test_template_helper_adds_controller_for_selected_source_node_outside_processing_nodes(monkeypatch, mounted_runtime):
+    template_helper_module = importlib.import_module("template_helper")
+    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
+
+    recorded = {}
+
+    def record_generator(yaml_doc, source_deploy):
+        source_deploy[0]["source"]["source_device"] = "edgex3"
+        return "GEN"
+
+    def record_controller(yaml_doc, edge_nodes, cloud_node):
+        recorded["controller"] = list(edge_nodes)
+        return "CTRL"
+
+    def record_monitor(yaml_doc, edge_nodes, cloud_node):
+        recorded["monitor"] = list(edge_nodes)
+        return "MON"
+
+    monkeypatch.setattr(helper, "get_all_selected_edge_nodes", lambda yaml_dict: ["edgex1"])
+    monkeypatch.setattr(template_helper_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
+    monkeypatch.setattr(helper, "finetune_generator_yaml", record_generator)
+    monkeypatch.setattr(helper, "finetune_controller_yaml", record_controller)
+    monkeypatch.setattr(helper, "finetune_monitor_yaml", record_monitor)
+
+    yaml_dict = {
+        "generator": {},
+        "controller": {},
+        "monitor": {},
+        "processor": {"svc-a": {"node": ["edgex1"]}},
+    }
+
+    docs = helper.finetune_yaml_parameters(yaml_dict, build_source_deploy(), scopes=["generator", "controller", "monitor"])
+
+    assert docs == ["GEN", "CTRL", "MON"]
+    assert recorded["controller"] == ["edgex1", "edgex3"]
+    assert recorded["monitor"] == ["edgex1"]
+
+
+@pytest.mark.unit
 def test_template_helper_finetunes_controller_and_monitor_nodes_and_jetpack_env(mounted_runtime, monkeypatch):
     template_helper_module = importlib.import_module("template_helper")
     monkeypatch.setattr(

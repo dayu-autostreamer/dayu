@@ -38,14 +38,14 @@ def backend_core_instance(mounted_runtime, monkeypatch):
 def test_parse_and_apply_templates_runs_two_stage_install_and_starts_cycle_thread(backend_core_instance, monkeypatch):
     backend_core_module = importlib.import_module("backend_core")
     source_deploy = [{"source": {"id": 0, "name": "camera-0"}, "dag": {}, "node_set": ["edge1"]}]
-    first_docs = [_processor_doc("scheduler"), _processor_doc("controller")]
-    second_docs = [_processor_doc("generator"), _processor_doc("processor-face")]
+    first_docs = [_processor_doc("scheduler"), _processor_doc("monitor")]
+    second_docs = [_processor_doc("controller"), _processor_doc("generator"), _processor_doc("processor-face")]
     saved_docs = []
     install_calls = []
     created_threads = []
 
     def finetune_yaml_parameters(yaml_dict, deploy, scopes):
-        if scopes == ["generator", "processor"]:
+        if scopes == ["controller", "generator", "processor"]:
             deploy[0]["source"]["source_device"] = "edge1"
             return copy.deepcopy(second_docs)
         return copy.deepcopy(first_docs)
@@ -130,7 +130,7 @@ def test_parse_and_apply_templates_handles_first_stage_timeout(backend_core_inst
 def test_parse_and_apply_templates_handles_second_stage_exception(backend_core_instance, monkeypatch):
     backend_core_module = importlib.import_module("backend_core")
     first_docs = [_processor_doc("scheduler")]
-    second_docs = [_processor_doc("processor-face")]
+    second_docs = [_processor_doc("controller"), _processor_doc("processor-face")]
     saved_docs = []
     install_count = {"count": 0}
 
@@ -138,7 +138,7 @@ def test_parse_and_apply_templates_handles_second_stage_exception(backend_core_i
         load_policy_apply_yaml=lambda policy: {"scheduler": {"policy": policy["id"]}},
         load_application_apply_yaml=lambda service_dict: service_dict,
         finetune_yaml_parameters=lambda yaml_dict, deploy, scopes: copy.deepcopy(
-            first_docs if scopes == ["scheduler", "distributor", "monitor", "controller"] else second_docs
+            first_docs if scopes == ["scheduler", "distributor", "monitor"] else second_docs
         ),
     )
     monkeypatch.setattr(backend_core_instance, "extract_service_from_source_deployment", lambda deploy: {})

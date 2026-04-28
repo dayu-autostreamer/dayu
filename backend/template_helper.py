@@ -133,14 +133,17 @@ class TemplateHelper:
         return template_doc
 
     def finetune_yaml_parameters(self, yaml_dict, source_deploy, scopes=None, current_docs=None):
-        edge_nodes = self.get_all_selected_edge_nodes(yaml_dict)
         cloud_node = NodeInfo.get_cloud_node()
 
         docs_list = []
         if not scopes or 'generator' in scopes:
             docs_list.append(self.finetune_generator_yaml(yaml_dict['generator'], source_deploy))
+
+        edge_nodes = self.get_all_selected_edge_nodes(yaml_dict)
+        controller_edge_nodes = self.get_controller_target_edge_nodes(source_deploy, edge_nodes, cloud_node)
+
         if not scopes or 'controller' in scopes:
-            docs_list.append(self.finetune_controller_yaml(yaml_dict['controller'], edge_nodes, cloud_node))
+            docs_list.append(self.finetune_controller_yaml(yaml_dict['controller'], controller_edge_nodes, cloud_node))
         if not scopes or 'distributor' in scopes:
             docs_list.append(self.finetune_distributor_yaml(yaml_dict['distributor'], cloud_node))
         if not scopes or 'scheduler' in scopes:
@@ -300,6 +303,18 @@ class TemplateHelper:
         yaml_doc['spec']['cloudWorker'] = new_cloud_worker
 
         return yaml_doc
+
+    def get_controller_target_edge_nodes(self, source_deploy, base_edge_nodes, cloud_node):
+        controller_edge_nodes = list(dict.fromkeys(base_edge_nodes or []))
+        for source_info in source_deploy or []:
+            source = source_info.get('source') or {}
+            selected_source_node = source.get('source_device')
+            if not selected_source_node or selected_source_node == cloud_node:
+                continue
+            if selected_source_node not in controller_edge_nodes:
+                controller_edge_nodes.append(selected_source_node)
+
+        return controller_edge_nodes
 
     @staticmethod
     def get_processor_service_name(doc):
@@ -768,7 +783,7 @@ class TemplateHelper:
 
     @staticmethod
     def get_all_selected_edge_nodes(yaml_dict):
-        service_dict = yaml_dict['processor']
+        service_dict = yaml_dict.get('processor', {})
         edge_nodes = set()
         for service_id in service_dict:
             edge_nodes.update(service_dict[service_id]['node'])
