@@ -2,7 +2,10 @@ import copy
 import json
 import threading
 import time
+import tempfile
 from datetime import datetime
+from pathlib import Path
+from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks, HTTPException
 from fastapi.routing import APIRoute
@@ -368,24 +371,76 @@ class BackendServer:
 
         return info
 
-    async def upload_datasource_config_file(self, file: UploadFile = File(...)):
+    async def upload_datasource_config_file(self,
+                                            files: Optional[List[UploadFile]] = File(None),
+                                            file: Optional[UploadFile] = File(None)):
         """
-        body: file
+        body: file/files
         :return:
             {'state':success/fail, 'msg':'...'}
         """
-        file_data = await file.read()
-        with open('datasource_config.yaml', 'wb') as buffer:
-            buffer.write(file_data)
+        upload_items = []
+        if files:
+            upload_items.extend(files)
+        if file:
+            upload_items.append(file)
 
-        config = self.server.check_datasource_config('datasource_config.yaml')
-        FileOps.remove_file('datasource_config.yaml')
-        if config:
+        if not upload_items:
+            return {'state': 'fail', 'msg': 'No datasource config files uploaded', 'results': []}
 
-            self.server.source_configs.append(self.server.fill_datasource_config(config))
-            return {'state': 'success', 'msg': 'Datasource configured successfully'}
+        results = []
+        success_count = 0
+
+        for upload in upload_items:
+            file_name = upload.filename or 'datasource_config.yaml'
+            file_data = await upload.read()
+            suffix = Path(file_name).suffix or '.yaml'
+            temp_path = None
+
+            try:
+                with tempfile.NamedTemporaryFile(prefix='datasource_config_', suffix=suffix, delete=False) as buffer:
+                    buffer.write(file_data)
+                    temp_path = buffer.name
+
+                config = self.server.check_datasource_config(temp_path)
+            finally:
+                if temp_path:
+                    FileOps.remove_file(temp_path)
+
+            if config:
+                datasource_config = self.server.fill_datasource_config(config)
+                self.server.source_configs.append(datasource_config)
+                success_count += 1
+                results.append({
+                    'filename': file_name,
+                    'state': 'success',
+                    'msg': 'Datasource configured successfully',
+                    'source_label': datasource_config['source_label'],
+                })
+            else:
+                results.append({
+                    'filename': file_name,
+                    'state': 'fail',
+                    'msg': 'Datasource configured failed, please check uploading file format',
+                })
+
+        total_count = len(upload_items)
+        if success_count == total_count:
+            state = 'success'
+            msg = 'Datasource configured successfully' if total_count == 1 else \
+                f'Datasource configured successfully for {success_count} file(s)'
+        elif success_count == 0:
+            state = 'fail'
+            msg = 'Datasource configured failed, please check uploading file format'
         else:
-            return {'state': 'fail', 'msg': 'Datasource configured failed, please check uploading file format'}
+            state = 'partial'
+            msg = f'Datasource configured successfully for {success_count} of {total_count} file(s)'
+
+        return {
+            'state': state,
+            'msg': msg,
+            'results': results,
+        }
 
     async def get_datasource_info(self):
         """

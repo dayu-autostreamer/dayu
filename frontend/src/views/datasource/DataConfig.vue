@@ -16,7 +16,7 @@
 
 			<div
 				class="upload-inline-card"
-				:class="{ 'is-drag-over': isDragOver, 'has-file': pendingFile }"
+				:class="{ 'is-drag-over': isDragOver, 'has-file': pendingFiles.length }"
 				@dragover.prevent="handleDragOver"
 				@dragleave.prevent="handleDragLeave"
 				@drop.prevent="handleFileDrop"
@@ -26,20 +26,32 @@
 						<UploadFilled />
 					</el-icon>
 					<div class="upload-inline-trigger__content">
-						<div class="upload-inline-trigger__title">{{ pendingFile ? pendingFile.name : 'Select a config file' }}</div>
+						<div class="upload-inline-trigger__title">
+							{{ pendingFiles.length === 1 ? pendingFiles[0].name : pendingFiles.length ? `${pendingFiles.length} files selected` : 'Select config files' }}
+						</div>
 						<div class="upload-inline-trigger__subtitle">
-							{{ pendingFile ? formatFileSize(pendingFile.size) : 'Drag a file here or click to browse' }}
+							{{ pendingFiles.length ? `${formatFileSize(pendingFilesTotalSize)} total` : 'Drag YAML files here or click to browse' }}
 						</div>
 					</div>
 				</button>
 
 				<div class="upload-inline-actions">
-					<el-button v-if="pendingFile" text @click="clearPendingFile">Remove</el-button>
-					<el-button type="primary" round :loading="uploadLoading" :disabled="!pendingFile" @click="uploadFile">Upload</el-button>
+					<el-button v-if="pendingFiles.length" text @click="clearPendingFiles">Clear all</el-button>
+					<el-button type="primary" round :loading="uploadLoading" :disabled="!pendingFiles.length" @click="uploadFile">Upload</el-button>
 				</div>
 			</div>
 
-			<input ref="fileInput" class="hidden-file-input" type="file" accept=".yaml,.yml,.json" @change="handleFileChange" />
+			<div v-if="pendingFiles.length" class="upload-queue">
+				<div v-for="file in pendingFiles" :key="getPendingFileKey(file)" class="upload-queue__item">
+					<div class="upload-queue__text">
+						<div class="upload-queue__name">{{ file.name }}</div>
+						<div class="upload-queue__meta">{{ formatFileSize(file.size) }}</div>
+					</div>
+					<button type="button" class="upload-queue__remove" @click="removePendingFile(getPendingFileKey(file))">Remove</button>
+				</div>
+			</div>
+
+			<input ref="fileInput" class="hidden-file-input" type="file" accept=".yaml,.yml" multiple @change="handleFileChange" />
 		</section>
 
 		<section class="section-card source-list-section">
@@ -174,7 +186,7 @@ export default {
 			selected_label: null,
 			state: 'close',
 			source_label: null,
-			pendingFile: null,
+			pendingFiles: [],
 			isDragOver: false,
 		};
 	},
@@ -185,13 +197,16 @@ export default {
 		activeSource() {
 			return this.sources.find((item) => item.source_label === this.source_label) || null;
 		},
+		pendingFilesTotalSize() {
+			return this.pendingFiles.reduce((total, file) => total + (file.size || 0), 0);
+		},
 	},
 	methods: {
 		showMsg(state, msg) {
 			ElMessage({
 				message: msg,
 				showClose: true,
-				type: state === 'success' ? 'success' : 'error',
+				type: state === 'success' ? 'success' : state === 'partial' ? 'warning' : 'error',
 				duration: 3000,
 			});
 		},
@@ -231,6 +246,9 @@ export default {
 		getSourceList(item) {
 			return Array.isArray(item?.source_list) ? item.source_list : [];
 		},
+		getPendingFileKey(file) {
+			return `${file.name}-${file.size}-${file.lastModified}`;
+		},
 		triggerFilePicker() {
 			const fileInput = this.$refs.fileInput;
 			if (!fileInput) {
@@ -240,15 +258,28 @@ export default {
 			fileInput.value = '';
 			fileInput.click();
 		},
-		setPendingFile(file) {
-			if (!file) {
+		addPendingFiles(fileList) {
+			const files = Array.from(fileList || []).filter(Boolean);
+			if (!files.length) {
 				return;
 			}
-			this.pendingFile = file;
+
+			const existingKeys = new Set(this.pendingFiles.map((file) => this.getPendingFileKey(file)));
+			const nextPendingFiles = [...this.pendingFiles];
+
+			files.forEach((file) => {
+				const key = this.getPendingFileKey(file);
+				if (!existingKeys.has(key)) {
+					existingKeys.add(key);
+					nextPendingFiles.push(file);
+				}
+			});
+
+			this.pendingFiles = nextPendingFiles;
 		},
 		handleFileChange(event) {
-			const [file] = event.target.files || [];
-			this.setPendingFile(file);
+			this.addPendingFiles(event.target.files);
+			event.target.value = '';
 		},
 		handleDragOver() {
 			this.isDragOver = true;
@@ -258,25 +289,29 @@ export default {
 		},
 		handleFileDrop(event) {
 			this.isDragOver = false;
-			const [file] = event.dataTransfer?.files || [];
-			this.setPendingFile(file);
+			this.addPendingFiles(event.dataTransfer?.files);
 		},
-		clearPendingFile() {
-			this.pendingFile = null;
+		removePendingFile(fileKey) {
+			this.pendingFiles = this.pendingFiles.filter((file) => this.getPendingFileKey(file) !== fileKey);
+		},
+		clearPendingFiles() {
+			this.pendingFiles = [];
 			if (this.$refs.fileInput) {
 				this.$refs.fileInput.value = '';
 			}
 		},
 		async uploadFile() {
-			if (!this.pendingFile) {
-				ElMessage.error('Please choose a source configuration file');
+			if (!this.pendingFiles.length) {
+				ElMessage.error('Please choose source configuration files');
 				return;
 			}
 
 			this.uploadLoading = true;
 			try {
 				const formData = new FormData();
-				formData.append('file', this.pendingFile);
+				this.pendingFiles.forEach((file) => {
+					formData.append('files', file);
+				});
 
 				const response = await fetch('/api/datasource', {
 					method: 'POST',
@@ -285,8 +320,17 @@ export default {
 				const data = await response.json();
 				this.showMsg(data.state, data.msg);
 
+				const uploadResults = Array.isArray(data.results) ? data.results : [];
+				const succeeded = uploadResults.filter((result) => result.state === 'success');
+				const failedNames = new Set(uploadResults.filter((result) => result.state !== 'success').map((result) => result.filename));
+
 				if (data.state === 'success') {
-					this.clearPendingFile();
+					this.clearPendingFiles();
+				} else if (data.state === 'partial') {
+					this.pendingFiles = this.pendingFiles.filter((file) => failedNames.has(file.name));
+				}
+
+				if (succeeded.length > 0 || data.state === 'success') {
 					await this.getInfo();
 					await this.query_state();
 				}
@@ -548,6 +592,55 @@ export default {
 	flex-wrap: wrap;
 	gap: 8px;
 	flex-shrink: 0;
+}
+
+.upload-queue {
+	display: grid;
+	gap: 10px;
+	margin-top: 14px;
+}
+
+.upload-queue__item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 10px 14px;
+	border-radius: 16px;
+	border: 1px solid #e2e8f0;
+	background: #f8fafc;
+}
+
+.upload-queue__text {
+	min-width: 0;
+}
+
+.upload-queue__name {
+	font-size: 13px;
+	font-weight: 700;
+	color: #0f172a;
+	overflow-wrap: anywhere;
+}
+
+.upload-queue__meta {
+	margin-top: 2px;
+	font-size: 12px;
+	color: #64748b;
+}
+
+.upload-queue__remove {
+	border: none;
+	background: transparent;
+	padding: 0;
+	font-size: 12px;
+	font-weight: 700;
+	color: #2563eb;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.upload-queue__remove:hover {
+	color: #1d4ed8;
 }
 
 .builder-buttons {
