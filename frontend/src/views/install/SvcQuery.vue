@@ -13,14 +13,6 @@
 			</div>
 		</div>
 
-		<div class="summary-tags">
-			<el-tag :type="installed === 'install' ? 'success' : 'info'" effect="plain">
-				{{ installed === 'install' ? 'Installed' : 'Not installed' }}
-			</el-tag>
-			<el-tag type="info" effect="plain">{{ services.length }} services</el-tag>
-			<el-tag type="info" effect="plain">{{ urlData.length }} hosts</el-tag>
-		</div>
-
 		<section class="panel-section">
 			<div class="section-heading">
 				<div class="section-heading__title">Service List</div>
@@ -70,10 +62,6 @@
 		</section>
 
 		<div class="action-bar">
-			<div class="action-bar__summary">
-				{{ installed === 'install' ? 'Uninstall removes the currently deployed application stack.' : 'No deployed application stack to remove.' }}
-			</div>
-
 			<el-button type="danger" round :loading="loading" :disabled="installed !== 'install'" @click="uninstallServices">
 				Uninstall
 			</el-button>
@@ -266,14 +254,10 @@ export default {
 }
 
 .panel-actions,
-.summary-tags {
+.panel-actions {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 8px;
-}
-
-.summary-tags {
-	margin-top: -6px;
 }
 
 .panel-section {
@@ -287,8 +271,7 @@ export default {
 	gap: 16px;
 }
 
-.section-heading__title,
-.action-bar__summary {
+.section-heading__title {
 	font-size: 13px;
 	font-weight: 700;
 	letter-spacing: 0.06em;
@@ -382,14 +365,7 @@ export default {
 }
 
 .action-bar {
-	padding-top: 4px;
-	border-top: 1px solid #e2e8f0;
-}
-
-.action-bar__summary {
-	text-transform: none;
-	letter-spacing: normal;
-	line-height: 1.6;
+	justify-content: flex-end;
 }
 
 @media (max-width: 768px) {

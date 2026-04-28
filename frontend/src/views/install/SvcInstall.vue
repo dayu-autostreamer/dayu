@@ -13,16 +13,6 @@
 			</div>
 		</div>
 
-		<div class="summary-tags">
-			<el-tag :type="installed === 'install' ? 'success' : 'info'" effect="plain">
-				{{ installed === 'install' ? 'Installed' : 'Ready to install' }}
-			</el-tag>
-			<el-tag type="info" effect="plain">{{ selectedSources.length }} sources</el-tag>
-			<el-tag :type="readySourceCount === selectedSources.length && selectedSources.length ? 'success' : 'warning'" effect="plain">
-				{{ readySourceCount }}/{{ selectedSources.length || 0 }} mapped
-			</el-tag>
-		</div>
-
 		<div class="selection-grid">
 			<section class="selector-card">
 				<div class="selector-card__label">Scheduler Policy</div>
@@ -31,9 +21,6 @@
 						<el-option v-if="isValidIndex(index, policyOptions)" :value="index" :label="option.policy_name" />
 					</template>
 				</el-select>
-				<div class="selector-card__meta">
-					{{ selectedPolicyIndex !== null && isValidIndex(selectedPolicyIndex, policyOptions) ? policyOptions[selectedPolicyIndex].policy_name : 'No policy selected' }}
-				</div>
 			</section>
 
 			<section class="selector-card">
@@ -48,13 +35,6 @@
 						<el-option v-if="isValidIndex(index, datasourceOptions)" :value="index" :label="option.source_name" />
 					</template>
 				</el-select>
-				<div class="selector-card__meta">
-					{{
-						selectedDatasourceIndex !== null && isValidIndex(selectedDatasourceIndex, datasourceOptions)
-							? `${datasourceOptions[selectedDatasourceIndex].source_name} · ${selectedSources.length} sources`
-							: 'No datasource selected'
-					}}
-				</div>
 			</section>
 		</div>
 
@@ -79,10 +59,6 @@
 							<div class="source-card__title">Source {{ source.id }}</div>
 							<div class="source-card__subtitle">{{ source.name }}</div>
 						</div>
-
-						<el-tag :type="isSourceReady(source) ? 'success' : 'warning'" size="small" effect="plain">
-							{{ isSourceReady(source) ? 'Ready' : 'Incomplete' }}
-						</el-tag>
 					</div>
 
 					<div class="field-stack">
@@ -108,8 +84,6 @@
 								placeholder="Bind edge nodes"
 								class="field-block__control"
 								multiple
-								collapse-tags
-								collapse-tags-tooltip
 							>
 								<template v-for="(option, nodeIndex) in nodeOptions" :key="nodeIndex">
 									<el-option v-if="isValidIndex(nodeIndex, nodeOptions)" :label="option.name" :value="option.name" />
@@ -134,14 +108,9 @@
 		<div v-else class="empty-state">
 			<el-icon class="empty-state__icon"><Connection /></el-icon>
 			<div class="empty-state__title">No sources to map</div>
-			<div class="empty-state__subtitle">Choose a datasource configuration to continue.</div>
 		</div>
 
 		<div class="action-bar">
-			<div class="action-bar__summary">
-				{{ installSummary }}
-			</div>
-
 			<div class="builder-buttons">
 				<el-button
 					type="primary"
@@ -183,26 +152,6 @@ export default {
 		return {
 			loading: false,
 		};
-	},
-	computed: {
-		readySourceCount() {
-			return this.selectedSources.filter((source) => this.isSourceReady(source)).length;
-		},
-		installSummary() {
-			if (this.installed === 'install') {
-				return 'Services are already installed. Uninstall from the right panel before installing again.';
-			}
-
-			if (!this.selectedSources.length) {
-				return 'Choose a datasource configuration to begin mapping.';
-			}
-
-			if (this.readySourceCount === this.selectedSources.length) {
-				return 'All sources are ready for installation.';
-			}
-
-			return `${this.selectedSources.length - this.readySourceCount} source mapping${this.selectedSources.length - this.readySourceCount === 1 ? '' : 's'} still need attention.`;
-		},
 	},
 	setup() {
 		const LENGTH_KEYS = {
@@ -384,8 +333,11 @@ export default {
 		};
 	},
 	methods: {
+		hasAssignedDag(source) {
+			return source?.dag_selected !== null && source?.dag_selected !== undefined && source?.dag_selected !== '';
+		},
 		isSourceReady(source) {
-			return Boolean(source?.dag_selected) && Array.isArray(source?.node_selected) && source.node_selected.length > 0;
+			return this.hasAssignedDag(source) && Array.isArray(source?.node_selected) && source.node_selected.length > 0;
 		},
 		updateDagSelection(index, selected) {
 			this.selectedSources[index].dag_selected = selected;
@@ -439,7 +391,7 @@ export default {
 
 			for (let i = 0; i < this.selectedSources.length; i += 1) {
 				const source = this.selectedSources[i];
-				if (!source?.dag_selected) {
+				if (!this.hasAssignedDag(source)) {
 					ElMessage.error(`Please assign a dag for source ${source?.id ?? i}`);
 					return;
 				}
@@ -533,17 +485,12 @@ export default {
 }
 
 .panel-actions,
-.summary-tags,
 .section-heading__actions,
 .builder-buttons,
 .source-card__footer-actions {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 8px;
-}
-
-.summary-tags {
-	margin-top: -6px;
 }
 
 .selection-grid {
@@ -581,8 +528,6 @@ export default {
 	width: 100%;
 }
 
-.selector-card__meta,
-.action-bar__summary,
 .source-card__subtitle,
 .source-card__footer-text {
 	font-size: 13px;
@@ -691,22 +636,8 @@ export default {
 	color: #0f172a;
 }
 
-.empty-state__subtitle {
-	margin-top: 8px;
-	font-size: 14px;
-	line-height: 1.6;
-	color: #64748b;
-}
-
 .action-bar {
-	padding-top: 4px;
-	border-top: 1px solid #e2e8f0;
-}
-
-@media (max-width: 900px) {
-	.selection-grid {
-		grid-template-columns: 1fr;
-	}
+	justify-content: flex-end;
 }
 
 @media (max-width: 768px) {
@@ -720,6 +651,10 @@ export default {
 	}
 
 	.source-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.selection-grid {
 		grid-template-columns: 1fr;
 	}
 }
