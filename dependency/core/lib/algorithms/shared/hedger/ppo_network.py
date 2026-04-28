@@ -125,3 +125,20 @@ class PairBiasHead(nn.Module):
         if pair_features.numel() == 0:
             return torch.zeros(pair_features.shape[:-1], device=pair_features.device, dtype=pair_features.dtype)
         return self.net(pair_features).squeeze(-1)
+
+
+class ScalarGateHead(nn.Module):
+    """Project service-level features to one bounded mixing logit."""
+    def __init__(self, input_dim: int, hidden_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.numel() == 0:
+            return torch.zeros(features.shape[:-1], device=features.device, dtype=features.dtype)
+        return self.net(features).squeeze(-1)

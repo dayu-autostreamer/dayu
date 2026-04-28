@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .topology_encoder import TopologyEncoders
-from .ppo_network import DeploymentActor, OffloadActor, ValueHead, FeatureAdapter, PairBiasHead
+from .ppo_network import DeploymentActor, OffloadActor, ValueHead, FeatureAdapter, PairBiasHead, ScalarGateHead
 from .hedger_config import DeploymentConstraintCfg, OffloadingConstraintCfg
 from .utils import compute_returns_advantages
 
@@ -924,12 +924,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
 
 
 class HedgerOffloadingPPO(nn.Module):
+    CONGESTION_GATE_MIN = 0.15
+
     def __init__(self, encoder: TopologyEncoders, d_model=64,
                  actor_lr=3e-4, critic_lr=1e-3, update_encoder: bool = True,
                  gamma=0.99, lamda=0.95, clip_eps=0.2,
                  cloud_node_idx: int = -1,
-                 offloading_latency_bias_weight: float = 0.5,
-                 offloading_queue_bias_weight: float = 1.2,
                  constraint_cfg: OffloadingConstraintCfg = OffloadingConstraintCfg()):
         super().__init__()
         self.encoder = encoder
@@ -938,15 +938,32 @@ class HedgerOffloadingPPO(nn.Module):
         self.service_adapter = FeatureAdapter(d_model)
         self.device_adapter = FeatureAdapter(d_model)
         hidden_dim = max(16, d_model // 2)
-        self.offloading_latency_pair_head = PairBiasHead(input_dim=6, hidden_dim=hidden_dim)
-        self.offloading_queue_pair_head = PairBiasHead(input_dim=5, hidden_dim=hidden_dim)
+        self.offloading_congestion_pair_head = PairBiasHead(input_dim=7, hidden_dim=hidden_dim)
+        self.offloading_gate_head = ScalarGateHead(input_dim=6, hidden_dim=hidden_dim)
+        self.service_static_adapter = nn.Sequential(
+            nn.LayerNorm(2),
+            nn.Linear(2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, d_model),
+        )
+        self.device_static_adapter = nn.Sequential(
+            nn.LayerNorm(4),
+            nn.Linear(4, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, d_model),
+        )
 
-        adapter_params = list(self.service_adapter.parameters()) + list(self.device_adapter.parameters())
+        adapter_params = (
+            list(self.service_adapter.parameters())
+            + list(self.device_adapter.parameters())
+            + list(self.service_static_adapter.parameters())
+            + list(self.device_static_adapter.parameters())
+        )
         encoder_params = list(self.encoder.parameters()) if update_encoder else []
         params_actor = (
             list(self.actor.parameters())
-            + list(self.offloading_latency_pair_head.parameters())
-            + list(self.offloading_queue_pair_head.parameters())
+            + list(self.offloading_congestion_pair_head.parameters())
+            + list(self.offloading_gate_head.parameters())
             + adapter_params
             + encoder_params
         )
@@ -958,8 +975,6 @@ class HedgerOffloadingPPO(nn.Module):
         self.lamda = lamda
         self.clip_eps = clip_eps
         self.cloud_idx = cloud_node_idx
-        self.offloading_latency_bias_weight = float(offloading_latency_bias_weight)
-        self.offloading_queue_bias_weight = float(offloading_queue_bias_weight)
         self.cfg = constraint_cfg
 
     @staticmethod
@@ -992,54 +1007,235 @@ class HedgerOffloadingPPO(nn.Module):
     def _offloading_context(self, h_p: torch.Tensor, static_mask: torch.Tensor) -> torch.Tensor:
         return _build_mask_context(static_mask.bool(), h_p)
 
-    def _offloading_pair_bias_components(
+    @staticmethod
+    def _masked_span(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        if values.numel() == 0:
+            return torch.zeros((values.size(0),), dtype=values.dtype, device=values.device)
+        mask = mask.bool()
+        row_has_any = mask.any(dim=1)
+        max_values = values.masked_fill(~mask, float("-inf")).max(dim=1).values
+        min_values = values.masked_fill(~mask, float("inf")).min(dim=1).values
+        span = max_values - min_values
+        return torch.where(row_has_any, span, torch.zeros_like(span))
+
+    def _effective_offloading_mask(self, static_mask: torch.Tensor) -> torch.Tensor:
+        effective_mask = static_mask.detach().clone().bool()
+        row_has_any = effective_mask.any(dim=1)
+        if (~row_has_any).any():
+            effective_mask[~row_has_any, self.cloud_idx] = True
+        return effective_mask
+
+    def _derive_offloading_demand_features(
             self,
             logic_feats: Dict[str, torch.Tensor],
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
-        latency_features = logic_feats.get("offloading_latency_pair_feat")
-        queue_features = logic_feats.get("offloading_queue_pair_feat")
-        latency_bias: Optional[torch.Tensor] = None
-        queue_bias: Optional[torch.Tensor] = None
-        if isinstance(latency_features, torch.Tensor) and latency_features.numel() > 0:
-            latency_bias = self.offloading_latency_pair_head(latency_features.float())
-        if isinstance(queue_features, torch.Tensor) and queue_features.numel() > 0:
-            queue_bias = self.offloading_queue_pair_head(queue_features.float())
-        return latency_bias, queue_bias
+            num_services: int,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> torch.Tensor:
+        demand_feat = logic_feats.get("offloading_demand_feat")
+        if isinstance(demand_feat, torch.Tensor) and demand_feat.dim() == 2 and demand_feat.size(0) == num_services:
+            return demand_feat.to(device=device, dtype=dtype)
 
-    def _combine_offloading_pair_biases(
+        tc = logic_feats.get("task_complexity_seq")
+        mf = logic_feats.get("model_flops")
+        if not isinstance(tc, torch.Tensor) or tc.dim() != 2 or tc.size(0) != num_services:
+            tc = torch.zeros((num_services, 1), dtype=dtype, device=device)
+        else:
+            tc = tc.to(device=device, dtype=dtype)
+        if not isinstance(mf, torch.Tensor) or mf.dim() != 1 or mf.size(0) != num_services:
+            mf = torch.zeros((num_services,), dtype=dtype, device=device)
+        else:
+            mf = mf.to(device=device, dtype=dtype)
+
+        current = tc[:, -1]
+        prev = tc[:, -2] if tc.size(1) >= 2 else current
+        mean = tc.mean(dim=1)
+        std = tc.std(dim=1, unbiased=False)
+        demand_raw = torch.log1p(current.clamp_min(0.0))
+        demand_delta = current - prev
+        demand_norm = (current - mean) / (std + 1e-6)
+        demand_compute = torch.log1p(current.clamp_min(0.0) * mf.clamp_min(0.0))
+        return torch.stack([demand_raw, demand_delta, demand_norm, demand_compute], dim=-1)
+
+    def _derive_offloading_congestion_features(
             self,
-            latency_pair_bias: Optional[torch.Tensor],
-            queue_pair_bias: Optional[torch.Tensor],
-            reference: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if latency_pair_bias is None:
-            latency_pair_bias = torch.zeros_like(reference)
-        if queue_pair_bias is None:
-            queue_pair_bias = torch.zeros_like(reference)
-        pair_bias = (
-            self.offloading_latency_bias_weight * latency_pair_bias
-            + self.offloading_queue_bias_weight * queue_pair_bias
+            logic_feats: Dict[str, torch.Tensor],
+            num_services: int,
+            num_devices: int,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        demand_feat = self._derive_offloading_demand_features(logic_feats, num_services, device, dtype)
+        congestion_feat = logic_feats.get("offloading_congestion_pair_feat")
+        if isinstance(congestion_feat, torch.Tensor) and congestion_feat.dim() == 3 \
+                and congestion_feat.size(0) == num_services and congestion_feat.size(1) == num_devices:
+            return congestion_feat.to(device=device, dtype=dtype), demand_feat
+
+        latency_feat = logic_feats.get("offloading_latency_pair_feat")
+        queue_feat = logic_feats.get("offloading_queue_pair_feat")
+        if not isinstance(latency_feat, torch.Tensor) or latency_feat.dim() != 3 \
+                or latency_feat.size(0) != num_services or latency_feat.size(1) != num_devices:
+            latency_feat = torch.zeros((num_services, num_devices, 6), dtype=dtype, device=device)
+        else:
+            latency_feat = latency_feat.to(device=device, dtype=dtype)
+        if not isinstance(queue_feat, torch.Tensor) or queue_feat.dim() != 3 \
+                or queue_feat.size(0) != num_services or queue_feat.size(1) != num_devices:
+            queue_feat = torch.zeros((num_services, num_devices, 5), dtype=dtype, device=device)
+        else:
+            queue_feat = queue_feat.to(device=device, dtype=dtype)
+
+        demand_compute = demand_feat[:, 3].unsqueeze(1).expand(-1, num_devices)
+        q_short = queue_feat[..., 0]
+        q_busy = queue_feat[..., 2]
+        lat_short_residual = latency_feat[..., 0]
+        lat_spike = latency_feat[..., 2]
+        reliability = torch.minimum(queue_feat[..., 4], latency_feat[..., 5])
+        congestion_feat = torch.stack(
+            [
+                q_short,
+                q_busy,
+                lat_short_residual,
+                lat_spike,
+                demand_compute * q_short,
+                demand_compute * lat_short_residual,
+                reliability,
+            ],
+            dim=-1,
         )
-        return latency_pair_bias, queue_pair_bias, pair_bias
+        return congestion_feat, demand_feat
+
+    def _build_offloading_static_features(
+            self,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            num_services: int,
+            num_devices: int,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        model_flops = logic_feats.get("model_flops")
+        model_mem = logic_feats.get("model_mem")
+        gpu_flops = phys_feats.get("gpu_flops")
+        mem_capacity = phys_feats.get("mem_capacity")
+        role_id = phys_feats.get("role_id")
+
+        if not isinstance(model_flops, torch.Tensor) or model_flops.dim() != 1 or model_flops.size(0) != num_services:
+            model_flops = torch.zeros((num_services,), dtype=dtype, device=device)
+        else:
+            model_flops = model_flops.to(device=device, dtype=dtype)
+        if not isinstance(model_mem, torch.Tensor) or model_mem.dim() != 1 or model_mem.size(0) != num_services:
+            model_mem = torch.zeros((num_services,), dtype=dtype, device=device)
+        else:
+            model_mem = model_mem.to(device=device, dtype=dtype)
+        if not isinstance(gpu_flops, torch.Tensor) or gpu_flops.dim() != 1 or gpu_flops.size(0) != num_devices:
+            gpu_flops = torch.zeros((num_devices,), dtype=dtype, device=device)
+        else:
+            gpu_flops = gpu_flops.to(device=device, dtype=dtype)
+        if not isinstance(mem_capacity, torch.Tensor) or mem_capacity.dim() != 1 or mem_capacity.size(0) != num_devices:
+            mem_capacity = torch.zeros((num_devices,), dtype=dtype, device=device)
+        else:
+            mem_capacity = mem_capacity.to(device=device, dtype=dtype)
+        if not isinstance(role_id, torch.Tensor) or role_id.dim() != 1 or role_id.size(0) != num_devices:
+            role_id = torch.zeros((num_devices,), dtype=torch.long, device=device)
+        else:
+            role_id = role_id.to(device=device, dtype=torch.long)
+
+        service_static = torch.stack(
+            [
+                torch.log1p(model_flops.clamp_min(0.0)),
+                torch.log1p(model_mem.clamp_min(0.0)),
+            ],
+            dim=-1,
+        )
+        device_static = torch.cat(
+            [
+                torch.log1p(gpu_flops.clamp_min(0.0)).unsqueeze(-1),
+                torch.log1p(mem_capacity.clamp_min(0.0)).unsqueeze(-1),
+                (role_id == 0).float().unsqueeze(-1),
+                (role_id == 1).float().unsqueeze(-1),
+            ],
+            dim=-1,
+        ).to(dtype=dtype)
+        return service_static, device_static
+
+    @staticmethod
+    def _normalize_branch_scores(scores: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        mask_f = mask.float()
+        counts = mask_f.sum(dim=1, keepdim=True).clamp_min(1.0)
+        masked_scores = scores * mask_f
+        mean = masked_scores.sum(dim=1, keepdim=True) / counts
+        centered = (scores - mean) * mask_f
+        var = centered.pow(2).sum(dim=1, keepdim=True) / counts
+        std = torch.sqrt(var + 1e-6)
+        return ((scores - mean) / std) * mask_f
+
+    def _build_offloading_gate_inputs(
+            self,
+            demand_feat: torch.Tensor,
+            congestion_feat: torch.Tensor,
+            effective_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        q_short_span = self._masked_span(congestion_feat[..., 0], effective_mask)
+        lat_residual_span = self._masked_span(congestion_feat[..., 2], effective_mask)
+        return torch.cat(
+            [
+                demand_feat,
+                q_short_span.unsqueeze(-1),
+                lat_residual_span.unsqueeze(-1),
+            ],
+            dim=-1,
+        )
 
     def _offloading_actor_terms(
             self,
             h_s: torch.Tensor,
             h_p: torch.Tensor,
             logic_feats: Dict[str, torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        q_embedding = self.actor.q(h_s)
-        k_embedding = self.actor.k(h_p)
+            phys_feats: Dict[str, torch.Tensor],
+            effective_mask: torch.Tensor,
+    ) -> Tuple[torch.Tensor, ...]:
+        ms, nd = h_s.size(0), h_p.size(0)
+        device = h_s.device
+        dtype = h_s.dtype
+        service_static, device_static = self._build_offloading_static_features(
+            logic_feats, phys_feats, ms, nd, device, dtype
+        )
+        h_s_qk = h_s + self.service_static_adapter(service_static)
+        h_p_qk = h_p + self.device_static_adapter(device_static)
+        q_embedding = self.actor.q(h_s_qk)
+        k_embedding = self.actor.k(h_p_qk)
         qk_scores = (q_embedding @ k_embedding.t()) / math.sqrt(q_embedding.size(-1))
         qk_scores = qk_scores / max(self.actor.temperature, 1e-6)
-        latency_pair_bias, queue_pair_bias = self._offloading_pair_bias_components(logic_feats)
-        latency_pair_bias, queue_pair_bias, pair_bias = self._combine_offloading_pair_biases(
-            latency_pair_bias,
-            queue_pair_bias,
-            qk_scores,
+
+        congestion_feat, demand_feat = self._derive_offloading_congestion_features(
+            logic_feats, ms, nd, device, dtype
         )
-        final_scores = qk_scores + pair_bias
-        return q_embedding, k_embedding, qk_scores, latency_pair_bias, queue_pair_bias, pair_bias, final_scores
+        congestion_scores = self.offloading_congestion_pair_head(congestion_feat.float())
+        qk_scores_norm = self._normalize_branch_scores(qk_scores, effective_mask)
+        congestion_scores_norm = self._normalize_branch_scores(congestion_scores, effective_mask)
+        gate_input = self._build_offloading_gate_inputs(demand_feat, congestion_feat, effective_mask)
+        congestion_weight = self.CONGESTION_GATE_MIN + (1.0 - 2.0 * self.CONGESTION_GATE_MIN) * torch.sigmoid(
+            self.offloading_gate_head(gate_input.float())
+        )
+        qk_weight = 1.0 - congestion_weight
+        final_scores = (
+            qk_weight.unsqueeze(-1) * qk_scores_norm
+            + congestion_weight.unsqueeze(-1) * congestion_scores_norm
+        )
+        return (
+            q_embedding,
+            k_embedding,
+            qk_scores,
+            qk_scores_norm,
+            congestion_scores,
+            congestion_scores_norm,
+            congestion_feat,
+            demand_feat,
+            gate_input,
+            qk_weight,
+            congestion_weight,
+            final_scores,
+        )
 
     @torch.no_grad()
     def estimate_value(
@@ -1059,7 +1255,7 @@ class HedgerOffloadingPPO(nn.Module):
         """
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
-        value = self.critic(h_s, h_p, self._offloading_context(h_p, static_mask))
+        value = self.critic(h_s, h_p, self._offloading_context(h_p, self._effective_offloading_mask(static_mask)))
         return value.squeeze(0)
 
     @staticmethod
@@ -1069,21 +1265,6 @@ class HedgerOffloadingPPO(nn.Module):
         for u, v in zip(row.tolist(), col.tolist()):
             parents[v].append(u)
         return parents
-
-    def _normalize_offloading_mask(self, base: torch.Tensor) -> torch.Tensor:
-        """
-        Normalize a per-service offloading mask.
-
-        Assume that deployment always leaves at least one feasible replica for
-        every service and that the cloud is a fallback. This extra guard prevents
-        an all-False row from invalidating categorical sampling.
-        """
-        if base.any():
-            return base
-
-        allowed = torch.zeros_like(base)
-        allowed[self.cloud_idx] = True
-        return allowed
 
     def _correct_offloading_actions(
             self,
@@ -1144,6 +1325,7 @@ class HedgerOffloadingPPO(nn.Module):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
+        effective_mask = self._effective_offloading_mask(static_mask)
 
         if topo_order is None:
             topo_order = self.topo_order(logic_edge_index, Ms)
@@ -1152,16 +1334,22 @@ class HedgerOffloadingPPO(nn.Module):
             q_embedding,
             k_embedding,
             qk_scores,
-            latency_pair_bias,
-            queue_pair_bias,
-            pair_bias,
+            qk_scores_norm,
+            congestion_scores,
+            congestion_scores_norm,
+            congestion_feat,
+            demand_feat,
+            gate_input,
+            qk_weight,
+            congestion_weight,
             final_scores,
         ) = self._offloading_actor_terms(
             h_s,
             h_p,
             logic_feats,
+            phys_feats,
+            effective_mask,
         )
-        effective_mask = torch.zeros((Ms, Np), dtype=torch.bool, device=h_p.device)
         policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
 
         raw_actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
@@ -1170,8 +1358,7 @@ class HedgerOffloadingPPO(nn.Module):
         ent_sum = torch.tensor(0.0, device=h_p.device)
 
         for i in topo_order:
-            allowed = self._normalize_offloading_mask(static_mask[i].clone())
-            effective_mask[i] = allowed
+            allowed = effective_mask[i]
             masked_scores = final_scores[i].masked_fill(~allowed, float('-inf'))
             probs_i = F.softmax(masked_scores, dim=-1)
             raw_probs[i] = probs_i
@@ -1183,7 +1370,7 @@ class HedgerOffloadingPPO(nn.Module):
 
         actions, correction_cnt = self._correct_offloading_actions(raw_actions, parents, topo_order)
         correction_cost = self._offloading_correction_cost(raw_probs, raw_actions, actions)
-        value = self.critic(h_s, h_p, self._offloading_context(h_p, static_mask))
+        value = self.critic(h_s, h_p, self._offloading_context(h_p, effective_mask))
         aux_cost = self.cfg.penalty_relax * correction_cost
         return actions, logp_sum, ent_sum, value.squeeze(0), {
             "correction_cnt": correction_cnt,
@@ -1196,15 +1383,18 @@ class HedgerOffloadingPPO(nn.Module):
                 "q_embedding": q_embedding.detach().cpu(),
                 "k_embedding": k_embedding.detach().cpu(),
                 "qk_score": qk_scores.detach().cpu(),
-                "latency_pair_bias": latency_pair_bias.detach().cpu(),
-                "queue_pair_bias": queue_pair_bias.detach().cpu(),
-                "pair_bias": pair_bias.detach().cpu(),
+                "qk_score_norm": qk_scores_norm.detach().cpu(),
+                "congestion_score": congestion_scores.detach().cpu(),
+                "congestion_score_norm": congestion_scores_norm.detach().cpu(),
+                "congestion_pair_feature": congestion_feat.detach().cpu(),
+                "demand_feature": demand_feat.detach().cpu(),
+                "gate_input": gate_input.detach().cpu(),
+                "qk_weight": qk_weight.detach().cpu(),
+                "congestion_weight": congestion_weight.detach().cpu(),
                 "final_score": final_scores.detach().cpu(),
                 "policy_prob": policy_prob_matrix.detach().cpu(),
                 "raw_static_mask": static_mask.detach().cpu(),
                 "effective_mask": effective_mask.detach().cpu(),
-                "latency_pair_bias_weight": self.offloading_latency_bias_weight,
-                "queue_pair_bias_weight": self.offloading_queue_bias_weight,
             },
         }
 
@@ -1213,6 +1403,7 @@ class HedgerOffloadingPPO(nn.Module):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
+        effective_mask = self._effective_offloading_mask(static_mask)
 
         logp_sum = torch.tensor(0., device=h_p.device)
         ent_sum = torch.tensor(0., device=h_p.device)
@@ -1222,21 +1413,30 @@ class HedgerOffloadingPPO(nn.Module):
         parents = self._build_parents(logic_edge_index, Ms)
         corrected_actions, correction_cnt = self._correct_offloading_actions(actions, parents, topo_order)
         raw_probs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
-        latency_pair_bias, queue_pair_bias = self._offloading_pair_bias_components(logic_feats)
-        _, _, pair_bias = self._combine_offloading_pair_biases(
-            latency_pair_bias,
-            queue_pair_bias,
-            torch.zeros((Ms, Np), dtype=h_p.dtype, device=h_p.device),
+        (
+            _q_embedding,
+            _k_embedding,
+            _qk_scores,
+            _qk_scores_norm,
+            _congestion_scores,
+            _congestion_scores_norm,
+            _congestion_feat,
+            _demand_feat,
+            _gate_input,
+            _qk_weight,
+            _congestion_weight,
+            final_scores,
+        ) = self._offloading_actor_terms(
+            h_s,
+            h_p,
+            logic_feats,
+            phys_feats,
+            effective_mask,
         )
 
         for i in topo_order:
-            allowed = self._normalize_offloading_mask(static_mask[i].clone())
-            probs_i = self.actor(
-                h_s[i:i + 1],
-                h_p,
-                allowed.unsqueeze(0),
-                pair_bias=pair_bias[i:i + 1],
-            )[0]
+            allowed = effective_mask[i]
+            probs_i = F.softmax(final_scores[i].masked_fill(~allowed, float('-inf')), dim=-1)
             raw_probs[i] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)
             a = actions[i]
@@ -1244,7 +1444,7 @@ class HedgerOffloadingPPO(nn.Module):
             ent_sum += dist.entropy()
 
         correction_cost = self._offloading_correction_cost(raw_probs, actions, corrected_actions)
-        value = self.critic(h_s, h_p, self._offloading_context(h_p, static_mask))
+        value = self.critic(h_s, h_p, self._offloading_context(h_p, effective_mask))
         aux_cost = self.cfg.penalty_relax * correction_cost
         return logp_sum, ent_sum, value.squeeze(0), {
             "correction_cnt": correction_cnt,

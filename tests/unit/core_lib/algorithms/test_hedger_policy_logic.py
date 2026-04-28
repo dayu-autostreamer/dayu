@@ -638,6 +638,45 @@ def test_offloading_reward_uses_correction_cost_not_count():
 
 
 @pytest.mark.unit
+def test_offloading_demand_and_congestion_feature_builders():
+    task_complexity_seq = torch.tensor(
+        [
+            [1.0, 3.0, 5.0],
+            [2.0, 2.0, 2.0],
+        ],
+        dtype=torch.float32,
+    )
+    model_flops = torch.tensor([10.0, 20.0], dtype=torch.float32)
+    demand = Hedger._build_offloading_demand_features(task_complexity_seq, model_flops)
+
+    assert tuple(demand.shape) == (2, 4)
+    assert demand[0, 1].item() == pytest.approx(2.0)
+    assert demand[1, 1].item() == pytest.approx(0.0)
+
+    latency_pair_feat = torch.zeros((2, 3, 6), dtype=torch.float32)
+    latency_pair_feat[0, 0, 0] = 0.4
+    latency_pair_feat[0, 0, 2] = 0.1
+    latency_pair_feat[0, 0, 5] = 0.7
+    queue_pair_feat = torch.zeros((2, 3, 5), dtype=torch.float32)
+    queue_pair_feat[0, 0, 0] = 0.5
+    queue_pair_feat[0, 0, 2] = 0.8
+    queue_pair_feat[0, 0, 4] = 0.6
+
+    congestion = Hedger._build_offloading_congestion_features(
+        latency_pair_feat,
+        queue_pair_feat,
+        demand,
+    )
+
+    assert tuple(congestion.shape) == (2, 3, 7)
+    assert congestion[0, 0, 0].item() == pytest.approx(0.5)
+    assert congestion[0, 0, 2].item() == pytest.approx(0.4)
+    assert congestion[0, 0, 4].item() == pytest.approx(demand[0, 3].item() * 0.5)
+    assert congestion[0, 0, 5].item() == pytest.approx(demand[0, 3].item() * 0.4)
+    assert congestion[0, 0, 6].item() == pytest.approx(0.6)
+
+
+@pytest.mark.unit
 def test_logical_topology_excludes_start_and_end_from_sizes():
     logical_topology, _ = build_test_topologies()
 
