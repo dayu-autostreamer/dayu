@@ -1,424 +1,907 @@
 <template>
-	<div>
-		<div class="content">
-			<!-- 选择视频流 -->
-			<!-- <el-card shadow="hover" style="margin: 20px;display: flex;justify-content: center;"> -->
-			<div style="margin: 20px">
-				<div style="display: flex; align-items: center">
-					<h3>Data Source</h3>
-
-					<input type="file" ref="fileInput" style="width: 400px; margin-left: 20px" />
-					<!-- <button @click="uploadFile">上传文件</button> -->
-					<el-button plain @click="uploadFile" style="margin-left: 20px; margin-bottom: 8px">Upload File</el-button>
-				</div>
-				<div><br /><br /></div>
-
-				<!-- 显示视频流 -->
-				<div style="display: flex; height: 500px; overflow-y: scroll; justify-content: center">
-					<div v-for="item in info" style="display: inline-block">
-						<div
-							class="available-node"
-							v-on:click="selectItem({ key: item })"
-							v-bind:class="{ selected: selected_label === item.source_label }"
-						>
-							<ul style="list-style-type: none; font-size: 16px" class="info-ui">
-								<li class="info-li">Source Name: {{ item.source_name }}</li>
-								<li class="info-li">Source Type: {{ item.source_type }}</li>
-								<li class="info-li">Source Mode: {{ item.source_mode }}</li>
-								<li class="info-li">Source List:</li>
-								<div class="info-li" v-for="source in item.source_list" style="display: flex; justify-content: center">
-									<div style="width: 100%; display: flex; align-items: center">
-										<div style="margin-right: 10px">{{ source.name }}</div>
-										<el-tooltip
-											class="box-item"
-											effect="dark"
-											placement="right"
-											:hide-after="10"
-											popper-class="tooltip-width"
-										>
-											<template #content>
-												<div>Source URL: {{ source.url }}</div>
-												<template v-for="(value, key) in source.metadata" :key="key">
-													<div>{{ key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase()) }}: {{ value }}</div>
-												</template>
-											</template>
-											<el-button type="" text>details</el-button>
-										</el-tooltip>
-									</div>
-								</div>
-							</ul>
-							<div style="text-align: center; margin-top: 20px">
-								<el-button type="danger" @click="delete_source(item.source_label)">Delete </el-button>
-							</div>
-						</div>
-					</div>
+	<div class="outline datasource-page">
+		<section class="section-card upload-section">
+			<div class="section-heading">
+				<div>
+					<h3>Source Configuration</h3>
+					<p class="section-subtitle">Upload datasource manifests, review available inputs, and choose which source the platform should open.</p>
 				</div>
 
-				<div style="display: flex; justify-content: center; margin-top: 20px">
-					<el-button
-						type="primary"
-						:disabled="state !== 'close' || selected_label === null"
-						:loading="loading"
-						@click="submit_query"
-						>Open Datasource
-					</el-button>
-					<el-button
-						type="danger"
-						:disabled="state === 'close' || selected_label !== source_label"
-						:loading="kill_loading"
-						@click="stop_query"
-						>Close Datasource
-					</el-button>
+				<div class="section-actions">
+					<el-tag type="info" size="small" effect="plain">
+						<el-icon><Connection /></el-icon>
+						{{ sources.length }} configs
+					</el-tag>
+					<el-tag :type="state === 'open' ? 'success' : 'warning'" size="small" effect="plain">
+						<el-icon>
+							<VideoPlay v-if="state === 'open'" />
+							<VideoPause v-else />
+						</el-icon>
+						{{ state === 'open' ? 'Datasource Active' : 'Datasource Idle' }}
+					</el-tag>
 				</div>
 			</div>
-		</div>
+
+			<div class="upload-layout">
+				<button
+					type="button"
+					class="upload-dropzone"
+					:class="{ 'is-drag-over': isDragOver, 'has-file': pendingFile }"
+					@click="triggerFilePicker"
+					@dragover.prevent="handleDragOver"
+					@dragleave.prevent="handleDragLeave"
+					@drop.prevent="handleFileDrop"
+				>
+					<el-icon class="upload-dropzone__icon">
+						<UploadFilled />
+					</el-icon>
+					<div class="upload-dropzone__title">{{ pendingFile ? 'Ready to Upload' : 'Drop a Source Config Here' }}</div>
+					<div class="upload-dropzone__subtitle">
+						{{ pendingFile ? pendingFile.name : 'Or click to browse .yaml, .yml, or .json files' }}
+					</div>
+					<span v-if="pendingFile" class="upload-pill">{{ formatFileSize(pendingFile.size) }}</span>
+				</button>
+
+				<div class="upload-panel">
+					<div class="upload-panel__header">
+						<div class="upload-panel__title">Upload Queue</div>
+						<div class="upload-panel__hint">One file at a time for predictable updates</div>
+					</div>
+
+					<div class="upload-file-card" :class="{ empty: !pendingFile }">
+						<template v-if="pendingFile">
+							<div class="upload-file-card__meta">
+								<el-icon class="upload-file-card__icon">
+									<Document />
+								</el-icon>
+								<div class="upload-file-card__text">
+									<div class="upload-file-card__name">{{ pendingFile.name }}</div>
+									<div class="upload-file-card__detail">{{ formatFileSize(pendingFile.size) }} · waiting for upload</div>
+								</div>
+							</div>
+						</template>
+						<template v-else>
+							<div class="upload-file-card__meta">
+								<el-icon class="upload-file-card__icon upload-file-card__icon--muted">
+									<FolderOpened />
+								</el-icon>
+								<div class="upload-file-card__text">
+									<div class="upload-file-card__name">No file selected</div>
+									<div class="upload-file-card__detail">Choose a datasource manifest to enable upload.</div>
+								</div>
+							</div>
+						</template>
+					</div>
+
+					<div class="builder-buttons">
+						<el-button round @click="triggerFilePicker">Choose File</el-button>
+						<el-button round :disabled="!pendingFile" @click="clearPendingFile">Clear</el-button>
+						<el-button type="primary" round :loading="uploadLoading" :disabled="!pendingFile" @click="uploadFile">Upload File</el-button>
+					</div>
+				</div>
+			</div>
+
+			<input ref="fileInput" class="hidden-file-input" type="file" accept=".yaml,.yml,.json" @change="handleFileChange" />
+		</section>
+
+		<section class="section-card source-list-section">
+			<div class="section-heading">
+				<div>
+					<h3>Available Source Configurations</h3>
+					<p class="section-subtitle">
+						{{ selectedSource ? `Selected: ${selectedSource.source_name || selectedSource.source_label}` : 'Pick a configuration card, then open it as the active datasource.' }}
+					</p>
+				</div>
+
+				<div class="section-actions section-actions--stack">
+					<div class="section-actions">
+						<el-tag v-if="activeSource" type="success" size="small" effect="plain">
+							<el-icon><VideoPlay /></el-icon>
+							Running: {{ activeSource.source_name || activeSource.source_label }}
+						</el-tag>
+						<el-tag v-else type="info" size="small" effect="plain">
+							<el-icon><VideoPause /></el-icon>
+							No active datasource
+						</el-tag>
+					</div>
+
+					<div class="builder-buttons">
+						<el-button type="primary" round :disabled="state !== 'close' || !selected_label" :loading="loading" @click="submit_query">
+							Open Datasource
+						</el-button>
+						<el-button type="danger" round :disabled="state === 'close'" :loading="kill_loading" @click="stop_query">
+							Close Datasource
+						</el-button>
+					</div>
+				</div>
+			</div>
+
+			<div v-if="sources.length" class="source-grid">
+				<article
+					v-for="item in sources"
+					:key="item.source_label"
+					class="source-card"
+					:class="{
+						'is-selected': selected_label === item.source_label,
+						'is-active': state === 'open' && source_label === item.source_label,
+					}"
+					role="button"
+					tabindex="0"
+					@click="selectItem(item)"
+					@keydown.enter.prevent="selectItem(item)"
+					@keydown.space.prevent="selectItem(item)"
+				>
+					<div class="source-card__header">
+						<div class="source-card__title-group">
+							<div class="source-card__title">{{ item.source_name || item.source_label }}</div>
+							<div class="source-card__subtitle">{{ item.source_label }}</div>
+						</div>
+
+						<div class="source-card__status">
+							<el-tag v-if="state === 'open' && source_label === item.source_label" type="success" size="small" effect="plain">Running</el-tag>
+							<el-tag v-else-if="selected_label === item.source_label" type="info" size="small" effect="plain">Selected</el-tag>
+						</div>
+					</div>
+
+					<div class="source-pill-group">
+						<span class="source-pill">Type {{ formatValue(item.source_type) }}</span>
+						<span class="source-pill">Mode {{ formatValue(item.source_mode) }}</span>
+						<span class="source-pill">{{ getSourceList(item).length }} entries</span>
+					</div>
+
+					<div class="source-list-block">
+						<div class="source-list-block__title">Source List</div>
+						<div v-if="getSourceList(item).length" class="source-list-rows">
+							<div
+								v-for="(source, index) in getSourceList(item)"
+								:key="`${item.source_label}-${source.name || 'source'}-${source.url || index}`"
+								class="source-row"
+							>
+								<div class="source-row__main">
+									<div class="source-row__name">{{ source.name || `Source ${index + 1}` }}</div>
+									<div class="source-row__url">{{ source.url || 'No URL provided' }}</div>
+								</div>
+
+								<el-tooltip effect="dark" placement="right" :hide-after="0" popper-class="tooltip-width">
+									<template #content>
+										<div>Source URL: {{ source.url || 'N/A' }}</div>
+										<template v-for="(value, key) in source.metadata || {}" :key="key">
+											<div>{{ formatFieldLabel(key) }}: {{ formatValue(value) }}</div>
+										</template>
+									</template>
+									<button type="button" class="details-link" @click.stop>Details</button>
+								</el-tooltip>
+							</div>
+						</div>
+						<div v-else class="source-list-empty">No source entries were defined in this configuration.</div>
+					</div>
+
+					<div class="source-card__footer">
+						<div class="source-card__footer-text">{{ getSourceList(item).length }} source entries ready</div>
+						<el-button size="small" type="danger" plain @click.stop="delete_source(item.source_label)">
+							<el-icon><Delete /></el-icon>
+							Delete
+						</el-button>
+					</div>
+				</article>
+			</div>
+
+			<div v-else class="empty-state">
+				<el-icon class="empty-state__icon">
+					<Document />
+				</el-icon>
+				<div class="empty-state__title">No source configurations yet</div>
+				<div class="empty-state__subtitle">Upload a manifest above to create your first datasource option.</div>
+			</div>
+		</section>
 	</div>
 </template>
 
 <script>
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { Connection, Delete, Document, FolderOpened, UploadFilled, VideoPause, VideoPlay } from '@element-plus/icons-vue';
 
 export default {
+	components: {
+		Connection,
+		Delete,
+		Document,
+		FolderOpened,
+		UploadFilled,
+		VideoPause,
+		VideoPlay,
+	},
 	data() {
 		return {
+			info: [],
 			loading: false,
-
-			// 视频流信息
-			info: null,
-
-			// 已选择的视频流相关
-			selected_label: null,
-
-			state: null,
-			source_label: null,
-
+			uploadLoading: false,
 			kill_loading: false,
+			selected_label: null,
+			state: 'close',
+			source_label: null,
+			pendingFile: null,
+			isDragOver: false,
 		};
+	},
+	computed: {
+		sources() {
+			return Array.isArray(this.info) ? this.info : [];
+		},
+		selectedSource() {
+			return this.sources.find((item) => item.source_label === this.selected_label) || null;
+		},
+		activeSource() {
+			return this.sources.find((item) => item.source_label === this.source_label) || null;
+		},
 	},
 	methods: {
 		showMsg(state, msg) {
-			if (state === 'success') {
-				ElMessage({
-					message: msg,
-					showClose: true,
-					type: 'success',
-					duration: 3000,
-				});
-			} else {
-				ElMessage({
-					message: msg,
-					showClose: true,
-					type: 'error',
-					duration: 3000,
-				});
-			}
+			ElMessage({
+				message: msg,
+				showClose: true,
+				type: state === 'success' ? 'success' : 'error',
+				duration: 3000,
+			});
 		},
 		handleError(error) {
 			ElMessage.error('System Error');
-			console.log(error);
+			console.error(error);
 		},
-		uploadFile() {
-			// 获取文件输入框的引用
+		formatFieldLabel(key) {
+			return String(key || '')
+				.replace(/_/g, ' ')
+				.replace(/\b\w/g, (letter) => letter.toUpperCase());
+		},
+		formatValue(value) {
+			if (Array.isArray(value)) {
+				return value.join(', ');
+			}
+			if (value && typeof value === 'object') {
+				return JSON.stringify(value);
+			}
+			return value === null || value === undefined || value === '' ? 'N/A' : String(value);
+		},
+		formatFileSize(size) {
+			if (!Number.isFinite(size)) {
+				return 'Unknown size';
+			}
+
+			if (size < 1024) {
+				return `${size} B`;
+			}
+
+			if (size < 1024 * 1024) {
+				return `${(size / 1024).toFixed(1)} KB`;
+			}
+
+			return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+		},
+		getSourceList(item) {
+			return Array.isArray(item?.source_list) ? item.source_list : [];
+		},
+		triggerFilePicker() {
 			const fileInput = this.$refs.fileInput;
-			console.log(fileInput.files.length);
+			if (!fileInput) {
+				return;
+			}
 
-			if (fileInput.files.length > 0) {
-				const formData = new FormData();
-				// 将文件添加到FormData对象中
-				formData.append('file', fileInput.files[0]);
-
-				const url = '/api/datasource';
-
-				// 发送POST请求
-				fetch(url, {
-					method: 'POST',
-					body: formData,
-				})
-					.then((response) => response.json())
-					.then((data) => {
-						const state = data['state'];
-						const msg = data['msg'];
-						this.showMsg(state, msg);
-						this.getInfo();
-					})
-					.catch((error) => {
-						this.handleError(error);
-					});
-			} else {
-				ElMessage.error('Please choose the file');
+			fileInput.value = '';
+			fileInput.click();
+		},
+		setPendingFile(file) {
+			if (!file) {
+				return;
+			}
+			this.pendingFile = file;
+		},
+		handleFileChange(event) {
+			const [file] = event.target.files || [];
+			this.setPendingFile(file);
+		},
+		handleDragOver() {
+			this.isDragOver = true;
+		},
+		handleDragLeave() {
+			this.isDragOver = false;
+		},
+		handleFileDrop(event) {
+			this.isDragOver = false;
+			const [file] = event.dataTransfer?.files || [];
+			this.setPendingFile(file);
+		},
+		clearPendingFile() {
+			this.pendingFile = null;
+			if (this.$refs.fileInput) {
+				this.$refs.fileInput.value = '';
 			}
 		},
+		async uploadFile() {
+			if (!this.pendingFile) {
+				ElMessage.error('Please choose a source configuration file');
+				return;
+			}
 
-		// 获取视频流信息
-		getInfo() {
-			fetch('/api/datasource')
-				.then((response) => response.json())
-				.then((data) => {
-					this.info = data;
-				})
-				.catch((error) => {
-					this.handleError(error);
+			this.uploadLoading = true;
+			try {
+				const formData = new FormData();
+				formData.append('file', this.pendingFile);
+
+				const response = await fetch('/api/datasource', {
+					method: 'POST',
+					body: formData,
 				});
-		},
+				const data = await response.json();
+				this.showMsg(data.state, data.msg);
 
-		// 选择视频流
+				if (data.state === 'success') {
+					this.clearPendingFile();
+					await this.getInfo();
+					await this.query_state();
+				}
+			} catch (error) {
+				this.handleError(error);
+			} finally {
+				this.uploadLoading = false;
+			}
+		},
+		async getInfo() {
+			try {
+				const response = await fetch('/api/datasource');
+				const data = await response.json();
+				this.info = Array.isArray(data) ? data : [];
+			} catch (error) {
+				this.handleError(error);
+			}
+		},
 		selectItem(item) {
-			this.selected_label = item.key.source_label;
+			this.selected_label = item.source_label;
+			localStorage.setItem('source_item', item.source_label);
 		},
-
-		// 提交任务
-		submit_query() {
-			// 检查所有字段是否都已填写
+		async submit_query() {
 			if (!this.selected_label) {
 				ElMessage.error('Please choose datasource');
 				return;
 			}
 
 			this.loading = true;
-
-			const content = {
-				source_label: this.selected_label,
-			};
-			const task_info = JSON.stringify(content);
-			fetch('/api/submit_query', {
-				method: 'POST',
-				body: task_info,
-			})
-				.then((response) => response.json())
-				.then((data) => {
-					const state = data.state;
-					let msg = data.msg;
-					this.loading = false;
-					if (state === 'success') {
-						this.state = 'open';
-						msg += '. Refreshing..';
-						setTimeout(() => {
-							location.reload();
-						}, 3000);
-					}
+			try {
+				const response = await fetch('/api/submit_query', {
+					method: 'POST',
+					body: JSON.stringify({
+						source_label: this.selected_label,
+					}),
+				});
+				const data = await response.json();
+				if (data.state === 'success') {
 					localStorage.setItem('source_item', this.selected_label);
-					this.showMsg(state, msg);
-				})
-				.catch((error) => {
-					this.loading = false;
-					this.handleError(error);
-				});
+					await this.query_state();
+				}
+				this.showMsg(data.state, data.msg);
+			} catch (error) {
+				this.handleError(error);
+			} finally {
+				this.loading = false;
+			}
 		},
-
-		query_state() {
-			fetch('/api/query_state')
-				.then((response) => response.json())
-				.then((data) => {
-					this.state = data.state;
-					this.source_label = data.source_label;
-				});
+		async query_state() {
+			try {
+				const response = await fetch('/api/query_state');
+				const data = await response.json();
+				this.state = data.state;
+				this.source_label = data.source_label;
+			} catch (error) {
+				this.handleError(error);
+			}
 		},
+		async stop_query() {
+			if (this.state === 'close') {
+				return;
+			}
 
-		stop_query() {
 			this.kill_loading = true;
-			const content = {
-				source_label: this.source_label,
-			};
-			const task_info = JSON.stringify(content);
-			fetch('/api/stop_query', {
-				method: 'POST',
-				body: task_info,
-			})
-				.then((response) => response.json())
-				.then((data) => {
-					const state = data.state;
-					const msg = data.msg;
-					if (state === 'success') {
-						this.kill_loading = false;
-						this.state = 'close';
-						this.selected_label = null;
-						localStorage.removeItem('source_item');
-					} else {
-						this.kill_loading = false;
-					}
-					this.showMsg(state, msg);
-				})
-				.catch((error) => {
-					this.kill_loading = false;
-					this.handleError(error);
+			try {
+				const response = await fetch('/api/stop_query', {
+					method: 'POST',
+					body: JSON.stringify({
+						source_label: this.source_label,
+					}),
 				});
+				const data = await response.json();
+				if (data.state === 'success') {
+					this.state = 'close';
+					this.selected_label = null;
+					this.source_label = null;
+					localStorage.removeItem('source_item');
+				}
+				this.showMsg(data.state, data.msg);
+			} catch (error) {
+				this.handleError(error);
+			} finally {
+				this.kill_loading = false;
+			}
 		},
+		async delete_source(sourceLabel) {
+			if (this.state === 'open' && this.source_label === sourceLabel) {
+				ElMessage.warning('Please close the active datasource before deleting its configuration');
+				return;
+			}
 
-		delete_source(source_label) {
-			const content = {
-				source_label: source_label,
-			};
-			fetch('/api/datasource', {
-				method: 'DELETE',
-				body: JSON.stringify(content),
-			})
-				.then((response) => response.json())
-				.then((data) => {
-					const state = data['state'];
-					let msg = data['msg'];
-					msg += '. Refreshing..';
-					this.showMsg(state, msg);
-					setTimeout(() => {
-						location.reload();
-					}, 1000);
-				})
-				.catch((error) => {
-					ElMessage.error('System Error');
-					console.log(error);
+			try {
+				await ElMessageBox.confirm(
+					`Delete source configuration "${sourceLabel}"?`,
+					'Delete Source Configuration',
+					{
+						confirmButtonText: 'Delete',
+						cancelButtonText: 'Cancel',
+						type: 'warning',
+					}
+				);
+			} catch {
+				return;
+			}
+
+			try {
+				const response = await fetch('/api/datasource', {
+					method: 'DELETE',
+					body: JSON.stringify({
+						source_label: sourceLabel,
+					}),
 				});
+				const data = await response.json();
+
+				if (data.state === 'success' && this.selected_label === sourceLabel) {
+					this.selected_label = null;
+					localStorage.removeItem('source_item');
+				}
+
+				this.showMsg(data.state, data.msg);
+				if (data.state === 'success') {
+					await this.getInfo();
+					await this.query_state();
+				}
+			} catch (error) {
+				this.handleError(error);
+			}
 		},
 	},
-	mounted() {
-		this.query_state();
-		this.getInfo();
+	async mounted() {
 		this.selected_label = localStorage.getItem('source_item');
-		console.log('mount:', this.selected_label);
+		await Promise.all([this.query_state(), this.getInfo()]);
 	},
 };
 </script>
 
-<style>
-.content {
-	margin-top: 20px;
-}
-
-.param {
-	font-size: 18px;
-}
-
-.available-node {
-	display: inline-block;
-	margin: 20px;
-	/* background-color: cadetblue; */
-	width: max-content;
-	border: 1px solid #5c5858;
-	border-radius: 10px;
-	/* height: 220px;  移除这行 */
-	padding: 10px; /* 添加内边距 */
-}
-
-.info-li {
-	margin-top: 10px;
-	margin-left: 10px;
-	margin-right: 10px;
-}
-
-.centered-item {
-	display: flex;
-	justify-content: center;
-	align-items: center;
-	/* height: 100%; */
-}
-
-.selected {
-	/* background-color: rgb(96, 158, 254);
-  color:white; */
-	background-color: #deebf7;
-}
-
-select {
-	width: 100%;
-	padding: 10px; /* 自定义内边距 */
-	background-color: transparent; /* 透明背景色 */
-	border: none; /* 移除默认边框 */
-	outline: none; /* 移除选中边框 */
-	appearance: none; /* 隐藏默认下拉箭头 */
-	cursor: pointer; /* 鼠标样式 */
-}
-</style>
-<style scoped>
-body {
-	font-family: Arial, sans-serif;
-	background-color: #f9f9f9;
-	margin: 0;
-	display: flex;
-	justify-content: center;
-	align-items: center;
-	height: 100vh;
-}
-
-form {
-	max-width: 600px;
+<style scoped lang="scss">
+.datasource-page {
 	padding: 20px;
-	background-color: #fff;
-	border-radius: 8px;
-	/* box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1); */
+	display: grid;
+	gap: 24px;
+	background:
+		radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
+		radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.08), transparent 24%);
 }
 
-h3 {
-	font-size: 24px;
-	color: #333;
+.section-card {
+	padding: 24px;
+	border-radius: 28px;
+	border: 1px solid #e2e8f0;
+	background:
+		linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96)),
+		#ffffff;
+	box-shadow: 0 22px 48px rgba(15, 23, 42, 0.06);
+}
+
+.section-heading {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
 	margin-bottom: 20px;
 }
 
-input[type='text'],
-input[type='file'] {
-	width: calc(100% - 20px);
-	padding: 10px;
-	margin-bottom: 10px;
-	border: 1px solid #ccc;
-	border-radius: 4px;
-	font-size: 16px;
+.section-heading h3 {
+	margin: 0;
+	font-size: 24px;
+	color: #0f172a;
 }
 
-input[type='file'] {
-	cursor: pointer;
-}
-
-.el-button {
-	font-size: 16px;
-	margin-right: 10px;
-}
-
-.el-button:first-child {
-	margin-left: 0;
-}
-
-.outline {
-	/* max-width: 600px; */
-	padding: 20px;
-	background-color: #fff;
-	border-radius: 8px;
-	/* box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1); */
-}
-
-.el-button {
-	font-size: 16px;
-	margin-right: 10px;
-}
-
-.el-button:first-child {
-	margin-left: 0;
-}
-
-.custom-file-input {
-	display: inline-block;
-	padding: 8px 12px;
-	cursor: pointer;
-	background-color: #f2f2f2;
-	border: 1px solid #ccc;
-	border-radius: 4px;
-	color: #333;
-	margin-right: 10px;
-	font-size: 16px;
-	transition: background-color 0.3s ease;
-}
-
-.custom-file-input:hover {
-	background-color: #e1e1e1;
-}
-
-.tooltip-width {
-	max-width: 300px;
+.section-subtitle {
+	margin: 8px 0 0;
+	font-size: 14px;
 	line-height: 1.6;
+	color: #64748b;
+	max-width: 720px;
+}
 
-	div {
-		margin: 3px 0;
+.section-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+}
 
-		&:not(:last-child) {
-			border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-			padding-bottom: 3px;
-		}
+.section-actions--stack {
+	display: grid;
+	justify-items: end;
+	gap: 12px;
+}
+
+.upload-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.85fr);
+	gap: 18px;
+	align-items: stretch;
+}
+
+.upload-dropzone {
+	border: 1.5px dashed #bfdbfe;
+	border-radius: 22px;
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.08), transparent 34%),
+		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	min-height: 220px;
+	padding: 32px;
+	display: grid;
+	place-items: center;
+	text-align: center;
+	gap: 12px;
+	cursor: pointer;
+	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.upload-dropzone:hover,
+.upload-dropzone.is-drag-over,
+.upload-dropzone.has-file {
+	border-color: #60a5fa;
+	box-shadow: 0 18px 40px rgba(37, 99, 235, 0.12);
+	transform: translateY(-1px);
+}
+
+.upload-dropzone__icon {
+	font-size: 38px;
+	color: #2563eb;
+}
+
+.upload-dropzone__title {
+	font-size: 20px;
+	font-weight: 700;
+	color: #0f172a;
+}
+
+.upload-dropzone__subtitle {
+	font-size: 14px;
+	line-height: 1.6;
+	color: #64748b;
+	max-width: 360px;
+	overflow-wrap: anywhere;
+}
+
+.upload-pill,
+.source-pill {
+	display: inline-flex;
+	align-items: center;
+	padding: 6px 10px;
+	border-radius: 999px;
+	border: 1px solid #dbe4ee;
+	background: #ffffff;
+	font-size: 12px;
+	font-weight: 700;
+	color: #334155;
+}
+
+.upload-panel {
+	display: grid;
+	gap: 14px;
+	padding: 18px;
+	border-radius: 22px;
+	border: 1px solid #dbe4ee;
+	background: #ffffff;
+}
+
+.upload-panel__header {
+	display: grid;
+	gap: 4px;
+}
+
+.upload-panel__title {
+	font-size: 16px;
+	font-weight: 700;
+	color: #0f172a;
+}
+
+.upload-panel__hint {
+	font-size: 13px;
+	color: #64748b;
+}
+
+.upload-file-card {
+	padding: 16px;
+	border-radius: 18px;
+	border: 1px solid #dbe4ee;
+	background: #f8fafc;
+	min-height: 92px;
+	display: flex;
+	align-items: center;
+}
+
+.upload-file-card.empty {
+	border-style: dashed;
+}
+
+.upload-file-card__meta {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-width: 0;
+}
+
+.upload-file-card__icon {
+	font-size: 24px;
+	color: #2563eb;
+	flex-shrink: 0;
+}
+
+.upload-file-card__icon--muted {
+	color: #94a3b8;
+}
+
+.upload-file-card__text {
+	min-width: 0;
+}
+
+.upload-file-card__name {
+	font-size: 14px;
+	font-weight: 700;
+	color: #0f172a;
+	overflow-wrap: anywhere;
+}
+
+.upload-file-card__detail {
+	margin-top: 4px;
+	font-size: 13px;
+	line-height: 1.5;
+	color: #64748b;
+}
+
+.builder-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.hidden-file-input {
+	display: none;
+}
+
+.source-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	gap: 16px;
+	align-items: start;
+}
+
+.source-card {
+	display: grid;
+	gap: 16px;
+	padding: 18px;
+	border-radius: 22px;
+	border: 1px solid #e2e8f0;
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 34%),
+		#ffffff;
+	box-shadow: 0 16px 34px rgba(15, 23, 42, 0.05);
+	cursor: pointer;
+	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+	min-width: 0;
+}
+
+.source-card:hover {
+	border-color: #93c5fd;
+	box-shadow: 0 18px 40px rgba(37, 99, 235, 0.1);
+	transform: translateY(-2px);
+}
+
+.source-card.is-selected {
+	border-color: #3b82f6;
+	box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.16), 0 18px 40px rgba(37, 99, 235, 0.1);
+}
+
+.source-card.is-active {
+	background:
+		linear-gradient(135deg, rgba(16, 185, 129, 0.08), transparent 34%),
+		#ffffff;
+}
+
+.source-card__header,
+.source-card__footer {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.source-card__title-group {
+	display: grid;
+	gap: 4px;
+	min-width: 0;
+}
+
+.source-card__title {
+	font-size: 18px;
+	font-weight: 700;
+	color: #0f172a;
+	overflow-wrap: anywhere;
+}
+
+.source-card__subtitle,
+.source-card__footer-text {
+	font-size: 13px;
+	line-height: 1.6;
+	color: #64748b;
+	overflow-wrap: anywhere;
+}
+
+.source-card__status {
+	flex-shrink: 0;
+}
+
+.source-pill-group {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.source-list-block {
+	display: grid;
+	gap: 12px;
+	padding: 14px;
+	border-radius: 18px;
+	border: 1px solid #e2e8f0;
+	background: #f8fafc;
+	min-width: 0;
+}
+
+.source-list-block__title {
+	font-size: 13px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: #475569;
+}
+
+.source-list-rows {
+	display: grid;
+}
+
+.source-row {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 10px 0;
+}
+
+.source-row + .source-row {
+	border-top: 1px solid #e2e8f0;
+}
+
+.source-row__main {
+	min-width: 0;
+}
+
+.source-row__name {
+	font-size: 14px;
+	font-weight: 700;
+	color: #0f172a;
+	overflow-wrap: anywhere;
+}
+
+.source-row__url {
+	margin-top: 4px;
+	font-size: 12px;
+	line-height: 1.6;
+	color: #64748b;
+	overflow-wrap: anywhere;
+}
+
+.details-link {
+	border: none;
+	background: transparent;
+	padding: 0;
+	font-size: 12px;
+	font-weight: 700;
+	color: #2563eb;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.details-link:hover {
+	color: #1d4ed8;
+}
+
+.source-list-empty {
+	font-size: 13px;
+	color: #64748b;
+	line-height: 1.6;
+}
+
+.empty-state {
+	min-height: 260px;
+	display: grid;
+	place-items: center;
+	text-align: center;
+	border: 1.5px dashed #cbd5e1;
+	border-radius: 22px;
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%),
+		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	padding: 32px;
+}
+
+.empty-state__icon {
+	font-size: 36px;
+	color: #2563eb;
+	margin-bottom: 12px;
+}
+
+.empty-state__title {
+	font-size: 18px;
+	font-weight: 700;
+	color: #0f172a;
+}
+
+.empty-state__subtitle {
+	margin-top: 8px;
+	font-size: 14px;
+	line-height: 1.6;
+	color: #64748b;
+	max-width: 420px;
+}
+
+:deep(.tooltip-width.el-popper) {
+	max-width: 320px;
+	line-height: 1.6;
+}
+
+@media (max-width: 1100px) {
+	.upload-layout {
+		grid-template-columns: 1fr;
+	}
+}
+
+@media (max-width: 768px) {
+	.datasource-page {
+		padding: 14px;
+		gap: 16px;
+	}
+
+	.section-card {
+		padding: 18px;
+		border-radius: 20px;
+	}
+
+	.section-heading,
+	.source-card__header,
+	.source-card__footer {
+		flex-direction: column;
+		align-items: flex-start;
+	}
+
+	.section-actions,
+	.section-actions--stack {
+		justify-items: stretch;
+		justify-content: flex-start;
+	}
+
+	.source-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.upload-dropzone,
+	.empty-state {
+		min-height: 200px;
 	}
 }
 </style>
