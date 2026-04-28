@@ -3,21 +3,13 @@
 		<section class="section-card upload-section">
 			<div class="section-heading">
 				<div>
-					<h3>Source Configuration</h3>
-					<p class="section-subtitle">Upload a config file and choose a source.</p>
+					<h3>Upload Source Configuration</h3>
 				</div>
 
 				<div class="section-actions">
 					<el-tag type="info" size="small" effect="plain">
 						<el-icon><Connection /></el-icon>
 						{{ sources.length }} configs
-					</el-tag>
-					<el-tag :type="state === 'open' ? 'success' : 'warning'" size="small" effect="plain">
-						<el-icon>
-							<VideoPlay v-if="state === 'open'" />
-							<VideoPause v-else />
-						</el-icon>
-						{{ state === 'open' ? 'Datasource Active' : 'Datasource Idle' }}
 					</el-tag>
 				</div>
 			</div>
@@ -54,9 +46,6 @@
 			<div class="section-heading">
 				<div>
 					<h3>Available Source Configurations</h3>
-					<p class="section-subtitle">
-						{{ selectedSource ? `Selected: ${selectedSource.source_name || selectedSource.source_label}` : 'Select a card to open it.' }}
-					</p>
 				</div>
 
 				<div class="section-actions section-actions--stack">
@@ -192,9 +181,6 @@ export default {
 	computed: {
 		sources() {
 			return Array.isArray(this.info) ? this.info : [];
-		},
-		selectedSource() {
-			return this.sources.find((item) => item.source_label === this.selected_label) || null;
 		},
 		activeSource() {
 			return this.sources.find((item) => item.source_label === this.source_label) || null;
@@ -471,14 +457,6 @@ export default {
 	color: #0f172a;
 }
 
-.section-subtitle {
-	margin: 8px 0 0;
-	font-size: 14px;
-	line-height: 1.6;
-	color: #64748b;
-	max-width: 720px;
-}
-
 .section-actions {
 	display: flex;
 	flex-wrap: wrap;
@@ -583,14 +561,12 @@ export default {
 }
 
 .source-grid {
-	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-	gap: 16px;
-	align-items: start;
+	column-width: 352px;
+	column-gap: 16px;
 }
 
 .source-card {
-	display: grid;
+	display: inline-grid;
 	gap: 16px;
 	padding: 18px;
 	border-radius: 22px;
@@ -601,7 +577,13 @@ export default {
 	box-shadow: 0 16px 34px rgba(15, 23, 42, 0.05);
 	cursor: pointer;
 	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+	width: 100%;
+	max-width: 352px;
 	min-width: 0;
+	margin: 0 0 16px;
+	break-inside: avoid;
+	-webkit-column-break-inside: avoid;
+	page-break-inside: avoid;
 }
 
 .source-card:hover {
@@ -804,7 +786,8 @@ export default {
 	}
 
 	.source-grid {
-		grid-template-columns: 1fr;
+		column-count: 1;
+		column-width: auto;
 	}
 
 	.upload-inline-card,
