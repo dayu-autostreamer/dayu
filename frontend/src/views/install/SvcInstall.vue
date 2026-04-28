@@ -41,10 +41,6 @@
 		<section v-if="selectedSources.length" class="mapping-section">
 			<div class="section-heading">
 				<div class="section-heading__title">Source Mapping</div>
-				<div class="section-heading__actions">
-					<el-button size="small" round @click="assignAllNodes" :disabled="!nodeOptions.length">All Nodes</el-button>
-					<el-button size="small" round @click="clearAllNodeBindings" :disabled="!selectedSources.length">Clear Nodes</el-button>
-				</div>
 			</div>
 
 			<div class="source-grid">
@@ -359,19 +355,6 @@ export default {
 				node_selected: [],
 			}));
 		},
-		assignAllNodes() {
-			const allNodeNames = this.nodeOptions.map((node) => node.name);
-			this.selectedSources = this.selectedSources.map((source) => ({
-				...source,
-				node_selected: [...allNodeNames],
-			}));
-		},
-		clearAllNodeBindings() {
-			this.selectedSources = this.selectedSources.map((source) => ({
-				...source,
-				node_selected: [],
-			}));
-		},
 		assignAllNodesForSource(index) {
 			this.selectedSources[index].node_selected = this.nodeOptions.map((node) => node.name);
 		},
@@ -485,7 +468,6 @@ export default {
 }
 
 .panel-actions,
-.section-heading__actions,
 .builder-buttons,
 .source-card__footer-actions {
 	display: flex;
