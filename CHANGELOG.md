@@ -18,6 +18,7 @@
 - Reconstruct the dataset format for datasource to support more flexible video data organization and processing (`datasource`).
 - Change generator selection scope to optional for node set or all edge nodes (`backend`/`scheduler`).
 - Update file mount to be compatible with different deployment environments.
+- Optimize the frontend interfaces of dayu system (`frontend`/`backend`).
 
 ---
 
