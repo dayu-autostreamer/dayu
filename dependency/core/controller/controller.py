@@ -209,7 +209,8 @@ class Controller:
             return 'error'
 
         LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
-                    f'current service: {cur_task.get_flow_index()}')
+                    f'current service: {cur_task.get_flow_index()} dst device: {cur_task.get_current_stage_device()} '
+                    f'current device: {self.local_device}')
 
         service_name, _ = cur_task.get_current_service_info()
         dst_device = cur_task.get_current_stage_device()
