@@ -524,8 +524,9 @@ export default {
 }
 
 .toolbar-field {
-	display: grid;
-	gap: 6px;
+	display: flex;
+	align-items: center;
+	gap: 10px;
 	min-width: 240px;
 }
 
@@ -535,10 +536,11 @@ export default {
 	color: #475569;
 	text-transform: uppercase;
 	letter-spacing: 0.06em;
+	white-space: nowrap;
 }
 
 .toolbar-select {
-	width: 100%;
+	width: 220px;
 }
 
 .checkbox-shell {
@@ -677,6 +679,11 @@ export default {
 
 	.toolbar-field {
 		min-width: 100%;
+		flex-wrap: wrap;
+	}
+
+	.toolbar-select {
+		width: 100%;
 	}
 }
 </style>

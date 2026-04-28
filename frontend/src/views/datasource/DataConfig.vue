@@ -165,7 +165,7 @@
 </template>
 
 <script>
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { Connection, Delete, Document, UploadFilled, VideoPause, VideoPlay } from '@element-plus/icons-vue';
 
 export default {
@@ -419,20 +419,6 @@ export default {
 		async delete_source(sourceLabel) {
 			if (this.state === 'open' && this.source_label === sourceLabel) {
 				ElMessage.warning('Please close the active datasource before deleting its configuration');
-				return;
-			}
-
-			try {
-				await ElMessageBox.confirm(
-					`Delete source configuration "${sourceLabel}"?`,
-					'Delete Source Configuration',
-					{
-						confirmButtonText: 'Delete',
-						cancelButtonText: 'Cancel',
-						type: 'warning',
-					}
-				);
-			} catch {
 				return;
 			}
 
