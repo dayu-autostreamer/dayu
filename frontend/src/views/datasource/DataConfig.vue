@@ -4,7 +4,7 @@
 			<div class="section-heading">
 				<div>
 					<h3>Source Configuration</h3>
-					<p class="section-subtitle">Upload datasource manifests, review available inputs, and choose which source the platform should open.</p>
+					<p class="section-subtitle">Upload a config file and choose a source.</p>
 				</div>
 
 				<div class="section-actions">
@@ -22,62 +22,28 @@
 				</div>
 			</div>
 
-			<div class="upload-layout">
-				<button
-					type="button"
-					class="upload-dropzone"
-					:class="{ 'is-drag-over': isDragOver, 'has-file': pendingFile }"
-					@click="triggerFilePicker"
-					@dragover.prevent="handleDragOver"
-					@dragleave.prevent="handleDragLeave"
-					@drop.prevent="handleFileDrop"
-				>
-					<el-icon class="upload-dropzone__icon">
+			<div
+				class="upload-inline-card"
+				:class="{ 'is-drag-over': isDragOver, 'has-file': pendingFile }"
+				@dragover.prevent="handleDragOver"
+				@dragleave.prevent="handleDragLeave"
+				@drop.prevent="handleFileDrop"
+			>
+				<button type="button" class="upload-inline-trigger" @click="triggerFilePicker">
+					<el-icon class="upload-inline-trigger__icon">
 						<UploadFilled />
 					</el-icon>
-					<div class="upload-dropzone__title">{{ pendingFile ? 'Ready to Upload' : 'Drop a Source Config Here' }}</div>
-					<div class="upload-dropzone__subtitle">
-						{{ pendingFile ? pendingFile.name : 'Or click to browse .yaml, .yml, or .json files' }}
+					<div class="upload-inline-trigger__content">
+						<div class="upload-inline-trigger__title">{{ pendingFile ? pendingFile.name : 'Select a config file' }}</div>
+						<div class="upload-inline-trigger__subtitle">
+							{{ pendingFile ? formatFileSize(pendingFile.size) : 'Drag a file here or click to browse' }}
+						</div>
 					</div>
-					<span v-if="pendingFile" class="upload-pill">{{ formatFileSize(pendingFile.size) }}</span>
 				</button>
 
-				<div class="upload-panel">
-					<div class="upload-panel__header">
-						<div class="upload-panel__title">Upload Queue</div>
-						<div class="upload-panel__hint">One file at a time for predictable updates</div>
-					</div>
-
-					<div class="upload-file-card" :class="{ empty: !pendingFile }">
-						<template v-if="pendingFile">
-							<div class="upload-file-card__meta">
-								<el-icon class="upload-file-card__icon">
-									<Document />
-								</el-icon>
-								<div class="upload-file-card__text">
-									<div class="upload-file-card__name">{{ pendingFile.name }}</div>
-									<div class="upload-file-card__detail">{{ formatFileSize(pendingFile.size) }} · waiting for upload</div>
-								</div>
-							</div>
-						</template>
-						<template v-else>
-							<div class="upload-file-card__meta">
-								<el-icon class="upload-file-card__icon upload-file-card__icon--muted">
-									<FolderOpened />
-								</el-icon>
-								<div class="upload-file-card__text">
-									<div class="upload-file-card__name">No file selected</div>
-									<div class="upload-file-card__detail">Choose a datasource manifest to enable upload.</div>
-								</div>
-							</div>
-						</template>
-					</div>
-
-					<div class="builder-buttons">
-						<el-button round @click="triggerFilePicker">Choose File</el-button>
-						<el-button round :disabled="!pendingFile" @click="clearPendingFile">Clear</el-button>
-						<el-button type="primary" round :loading="uploadLoading" :disabled="!pendingFile" @click="uploadFile">Upload File</el-button>
-					</div>
+				<div class="upload-inline-actions">
+					<el-button v-if="pendingFile" text @click="clearPendingFile">Remove</el-button>
+					<el-button type="primary" round :loading="uploadLoading" :disabled="!pendingFile" @click="uploadFile">Upload</el-button>
 				</div>
 			</div>
 
@@ -89,7 +55,7 @@
 				<div>
 					<h3>Available Source Configurations</h3>
 					<p class="section-subtitle">
-						{{ selectedSource ? `Selected: ${selectedSource.source_name || selectedSource.source_label}` : 'Pick a configuration card, then open it as the active datasource.' }}
+						{{ selectedSource ? `Selected: ${selectedSource.source_name || selectedSource.source_label}` : 'Select a card to open it.' }}
 					</p>
 				</div>
 
@@ -144,9 +110,9 @@
 					</div>
 
 					<div class="source-pill-group">
-						<span class="source-pill">Type {{ formatValue(item.source_type) }}</span>
-						<span class="source-pill">Mode {{ formatValue(item.source_mode) }}</span>
-						<span class="source-pill">{{ getSourceList(item).length }} entries</span>
+						<span class="source-pill">Type: {{ formatValue(item.source_type) }}</span>
+						<span class="source-pill">Mode: {{ formatValue(item.source_mode) }}</span>
+						<span class="source-pill">{{ getSourceList(item).length }} sources</span>
 					</div>
 
 					<div class="source-list-block">
@@ -173,11 +139,11 @@
 								</el-tooltip>
 							</div>
 						</div>
-						<div v-else class="source-list-empty">No source entries were defined in this configuration.</div>
+						<div v-else class="source-list-empty">No sources in this configuration.</div>
 					</div>
 
 					<div class="source-card__footer">
-						<div class="source-card__footer-text">{{ getSourceList(item).length }} source entries ready</div>
+						<div class="source-card__footer-text">{{ getSourceList(item).length }} sources ready</div>
 						<el-button size="small" type="danger" plain @click.stop="delete_source(item.source_label)">
 							<el-icon><Delete /></el-icon>
 							Delete
@@ -190,8 +156,8 @@
 				<el-icon class="empty-state__icon">
 					<Document />
 				</el-icon>
-				<div class="empty-state__title">No source configurations yet</div>
-				<div class="empty-state__subtitle">Upload a manifest above to create your first datasource option.</div>
+				<div class="empty-state__title">No source configurations</div>
+				<div class="empty-state__subtitle">Upload a config file to get started.</div>
 			</div>
 		</section>
 	</div>
@@ -199,14 +165,13 @@
 
 <script>
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Connection, Delete, Document, FolderOpened, UploadFilled, VideoPause, VideoPlay } from '@element-plus/icons-vue';
+import { Connection, Delete, Document, UploadFilled, VideoPause, VideoPlay } from '@element-plus/icons-vue';
 
 export default {
 	components: {
 		Connection,
 		Delete,
 		Document,
-		FolderOpened,
 		UploadFilled,
 		VideoPause,
 		VideoPlay,
@@ -528,57 +493,28 @@ export default {
 	gap: 12px;
 }
 
-.upload-layout {
-	display: grid;
-	grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.85fr);
-	gap: 18px;
-	align-items: stretch;
-}
-
-.upload-dropzone {
+.upload-inline-card {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 16px 18px;
 	border: 1.5px dashed #bfdbfe;
 	border-radius: 22px;
 	background:
 		linear-gradient(135deg, rgba(37, 99, 235, 0.08), transparent 34%),
 		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-	min-height: 220px;
-	padding: 32px;
-	display: grid;
-	place-items: center;
-	text-align: center;
-	gap: 12px;
-	cursor: pointer;
 	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
-.upload-dropzone:hover,
-.upload-dropzone.is-drag-over,
-.upload-dropzone.has-file {
+.upload-inline-card:hover,
+.upload-inline-card.is-drag-over,
+.upload-inline-card.has-file {
 	border-color: #60a5fa;
-	box-shadow: 0 18px 40px rgba(37, 99, 235, 0.12);
+	box-shadow: 0 14px 30px rgba(37, 99, 235, 0.1);
 	transform: translateY(-1px);
 }
 
-.upload-dropzone__icon {
-	font-size: 38px;
-	color: #2563eb;
-}
-
-.upload-dropzone__title {
-	font-size: 20px;
-	font-weight: 700;
-	color: #0f172a;
-}
-
-.upload-dropzone__subtitle {
-	font-size: 14px;
-	line-height: 1.6;
-	color: #64748b;
-	max-width: 360px;
-	overflow-wrap: anywhere;
-}
-
-.upload-pill,
 .source-pill {
 	display: inline-flex;
 	align-items: center;
@@ -591,78 +527,49 @@ export default {
 	color: #334155;
 }
 
-.upload-panel {
-	display: grid;
+.upload-inline-trigger {
+	flex: 1;
+	display: flex;
+	align-items: center;
 	gap: 14px;
-	padding: 18px;
-	border-radius: 22px;
-	border: 1px solid #dbe4ee;
-	background: #ffffff;
-}
-
-.upload-panel__header {
-	display: grid;
-	gap: 4px;
-}
-
-.upload-panel__title {
-	font-size: 16px;
-	font-weight: 700;
-	color: #0f172a;
-}
-
-.upload-panel__hint {
-	font-size: 13px;
-	color: #64748b;
-}
-
-.upload-file-card {
-	padding: 16px;
-	border-radius: 18px;
-	border: 1px solid #dbe4ee;
-	background: #f8fafc;
-	min-height: 92px;
-	display: flex;
-	align-items: center;
-}
-
-.upload-file-card.empty {
-	border-style: dashed;
-}
-
-.upload-file-card__meta {
-	display: flex;
-	align-items: center;
-	gap: 12px;
 	min-width: 0;
+	border: none;
+	background: transparent;
+	padding: 0;
+	text-align: left;
+	cursor: pointer;
 }
 
-.upload-file-card__icon {
-	font-size: 24px;
+.upload-inline-trigger__icon {
+	font-size: 28px;
 	color: #2563eb;
 	flex-shrink: 0;
 }
 
-.upload-file-card__icon--muted {
-	color: #94a3b8;
-}
-
-.upload-file-card__text {
+.upload-inline-trigger__content {
 	min-width: 0;
 }
 
-.upload-file-card__name {
+.upload-inline-trigger__title {
 	font-size: 14px;
 	font-weight: 700;
 	color: #0f172a;
 	overflow-wrap: anywhere;
 }
 
-.upload-file-card__detail {
+.upload-inline-trigger__subtitle {
 	margin-top: 4px;
 	font-size: 13px;
 	line-height: 1.5;
 	color: #64748b;
+}
+
+.upload-inline-actions {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	flex-shrink: 0;
 }
 
 .builder-buttons {
@@ -866,8 +773,9 @@ export default {
 }
 
 @media (max-width: 1100px) {
-	.upload-layout {
-		grid-template-columns: 1fr;
+	.upload-inline-card {
+		flex-direction: column;
+		align-items: stretch;
 	}
 }
 
@@ -899,9 +807,9 @@ export default {
 		grid-template-columns: 1fr;
 	}
 
-	.upload-dropzone,
+	.upload-inline-card,
 	.empty-state {
-		min-height: 200px;
+		min-height: 0;
 	}
 }
 </style>
