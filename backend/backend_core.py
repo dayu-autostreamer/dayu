@@ -160,7 +160,7 @@ class BackendCore:
         if not result:
             return False, msg
         # Wait for scheduler to be ready
-        time.sleep(1)
+        time.sleep(3)
 
         LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
         second_stage_source_deploy = copy.deepcopy(source_deploy)
