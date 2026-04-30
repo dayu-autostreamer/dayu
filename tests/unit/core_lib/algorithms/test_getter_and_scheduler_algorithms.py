@@ -145,7 +145,7 @@ def test_http_video_getter_call_generates_tasks_and_cleans_files(monkeypatch, tm
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(getter, "request_source_data", lambda cur_system, task_id: setattr(getter, "hash_codes", ["hash-0", "hash-1"]) or setattr(getter, "file_name", "payload.mp4") or Path("payload.mp4").write_bytes(b"video") is None or True)
     monkeypatch.setattr(http_getter_module.Counter, "get_count", staticmethod(lambda name: 11))
-    monkeypatch.setattr(http_getter_module.time, "time", lambda: 10.0)
+    monkeypatch.setattr(http_getter_module.time, "monotonic", lambda: 10.0)
     monkeypatch.setattr(http_getter_module.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(http_getter_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
 
@@ -154,6 +154,57 @@ def test_http_video_getter_call_generates_tasks_and_cleans_files(monkeypatch, tm
     assert system.cumulative_scheduling_frame_count == 4
     assert submitted == [{"task_id": 11, "file_name": "payload.mp4", "hashes": ["hash-0", "hash-1"]}]
     assert removed == ["payload.mp4"]
+
+
+@pytest.mark.unit
+def test_http_video_getter_rate_limits_between_task_submissions(monkeypatch, tmp_path):
+    getter = http_getter_module.HttpVideoGetter()
+    submitted = []
+    removed = []
+    sleep_calls = []
+    clock = {"now": 100.0}
+
+    system = SimpleNamespace(
+        source_id=5,
+        video_data_source="http://datasource",
+        meta_data={"fps": 10, "buffer_size": 4},
+        raw_meta_data={"fps": 10},
+        cumulative_scheduling_frame_count=0,
+        task_dag=build_task().get_dag(),
+        service_deployment={"detector": ["edge-a"]},
+        generate_task=lambda task_id, dag, deployment, metadata, file_name, hash_codes: {
+            "task_id": task_id,
+            "file_name": file_name,
+            "hashes": hash_codes,
+        },
+        submit_task_to_controller=lambda task: submitted.append((clock["now"], task)),
+    )
+
+    def fake_request_source_data(cur_system, task_id):
+        clock["now"] += 0.05
+        getter.hash_codes = ["hash-0", "hash-1", "hash-2", "hash-3"]
+        getter.file_name = str(tmp_path / f"payload-{task_id}.mp4")
+        Path(getter.file_name).write_bytes(b"video")
+        return True
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        clock["now"] += seconds
+
+    task_ids = iter([11, 12])
+    monkeypatch.setattr(getter, "request_source_data", fake_request_source_data)
+    monkeypatch.setattr(http_getter_module.Counter, "get_count", staticmethod(lambda name: next(task_ids)))
+    monkeypatch.setattr(http_getter_module.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(http_getter_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(http_getter_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
+
+    getter(system)
+    getter(system)
+
+    assert sleep_calls == pytest.approx([0, 0.35])
+    assert submitted[1][0] - submitted[0][0] == pytest.approx(0.4)
+    assert [task["task_id"] for _, task in submitted] == [11, 12]
+    assert len(removed) == 2
 
 
 @pytest.mark.unit
