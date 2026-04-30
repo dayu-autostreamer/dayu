@@ -59,6 +59,7 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
     @staticmethod
     def compute_cost_time(system, cost, actual_buffer_size=None):
         buffer_size = actual_buffer_size if actual_buffer_size is not None else system.meta_data['buffer_size']
+        LOGGER.info(f'[Camera Simulation] fps:{system.meta_data["fps"]}, cost time: {cost}s, buffer size: {buffer_size}')
         return max(1 / system.meta_data['fps'] * buffer_size - cost, 0)
 
     def __call__(self, system):
