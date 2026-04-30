@@ -91,9 +91,10 @@
 </template>
 
 <script>
-import { markRaw, reactive } from 'vue';
+import { reactive } from 'vue';
 import mitt from 'mitt';
 import { useSystemParametersStore } from '/@/stores/systemParameters';
+import { registerVisualizationModules } from '../shared/visualizationRegistry';
 
 const emitter = mitt();
 
@@ -188,21 +189,12 @@ export default {
 
 		async autoRegisterComponents() {
 			try {
-				const modules = import.meta.glob('./visualization/*Template.vue');
-				const controls = import.meta.glob('./visualization/*Controls.vue');
-
-				await Promise.all([
-					...Object.entries(modules).map(async ([path, loader]) => {
-						const type = path.split('/').pop().replace('Template.vue', '').toLowerCase();
-						const comp = await loader();
-						this.visualizationComponents[type] = markRaw(comp.default);
-					}),
-					...Object.entries(controls).map(async ([path, loader]) => {
-						const type = path.split('/').pop().replace('Controls.vue', '').toLowerCase();
-						const comp = await loader();
-						this.vizControls[type] = markRaw(comp.default);
-					}),
-				]);
+				await registerVisualizationModules({
+					templateModules: import.meta.glob('../shared/visualization/*Template.vue'),
+					controlModules: import.meta.glob('../shared/visualization/*Controls.vue'),
+					templatesTarget: this.visualizationComponents,
+					controlsTarget: this.vizControls,
+				});
 			} catch (error) {
 				console.error('Component registration failed:', error);
 			}

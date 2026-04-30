@@ -1,0 +1,117 @@
+<template>
+	<div class="controls-shell">
+		<span class="controls-label">{{ label }}</span>
+		<el-checkbox-group v-model="selectedVariables" class="controls-options" @change="handleVariableChange">
+			<el-checkbox-button v-for="varName in config.variables" :key="varName" :label="varName" class="controls-option">
+				{{ formatVariableName(varName) }}
+			</el-checkbox-button>
+		</el-checkbox-group>
+	</div>
+</template>
+
+<script>
+import { ref, watch, toRefs } from 'vue';
+
+export default {
+	props: {
+		config: {
+			type: Object,
+			required: true,
+		},
+		variableStates: {
+			type: Object,
+			default: () => ({}),
+		},
+		label: {
+			type: String,
+			default: 'Variables',
+		},
+	},
+	emits: ['update:variable-states'],
+
+	setup(props, { emit }) {
+		const { variableStates } = toRefs(props);
+		const selectedVariables = ref([]);
+
+		const syncSelectedVariables = (states) => {
+			selectedVariables.value = Object.keys(states || {}).filter((key) => states[key]);
+		};
+
+		const handleVariableChange = () => {
+			const newStates = {};
+			(props.config.variables || []).forEach((varName) => {
+				newStates[varName] = selectedVariables.value.includes(varName);
+			});
+			emit('update:variable-states', newStates);
+		};
+
+		const formatVariableName = (value) =>
+			String(value || '')
+				.replace(/_/g, ' ')
+				.replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+		syncSelectedVariables(variableStates.value);
+
+		watch(
+			() => props.variableStates,
+			(newValue) => {
+				syncSelectedVariables(newValue);
+			},
+			{ deep: true }
+		);
+
+		return {
+			selectedVariables,
+			handleVariableChange,
+			formatVariableName,
+		};
+	},
+};
+</script>
+
+<style scoped lang="scss">
+.controls-shell {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	padding-top: 2px;
+}
+
+.controls-label {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: #64748b;
+}
+
+.controls-options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	justify-content: center;
+}
+
+.controls-option {
+	margin: 0;
+}
+
+.controls-option :deep(.el-checkbox-button__inner) {
+	border-radius: 999px;
+	border: 1px solid #cbd5e1;
+	background: #f8fafc;
+	color: #334155;
+	box-shadow: none;
+	padding: 7px 12px;
+	font-size: 12px;
+	line-height: 1.1;
+}
+
+.controls-option.is-checked :deep(.el-checkbox-button__inner) {
+	border-color: #2563eb;
+	background: rgba(37, 99, 235, 0.12);
+	color: #1d4ed8;
+}
+</style>
