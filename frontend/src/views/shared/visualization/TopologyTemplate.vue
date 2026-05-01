@@ -49,20 +49,14 @@
 				/>
 				<text class="topology-node__text" text-anchor="middle" dominant-baseline="middle">
 					<tspan
-						class="topology-node__title"
+						v-for="(line, index) in node.lines"
+						:key="`${node.id}-${index}`"
+						:class="index === 0 ? 'topology-node__title' : 'topology-node__content'"
 						:x="node.width / 2"
-						:y="node.titleY"
+						:y="node.textStartY + index * node.lineHeight"
 						:fill="node.foregroundColor"
 					>
-						{{ node.title }}
-					</tspan>
-					<tspan
-						class="topology-node__content"
-						:x="node.width / 2"
-						:y="node.contentY"
-						:fill="node.foregroundColor"
-					>
-						{{ node.displayData }}
+						{{ line }}
 					</tspan>
 				</text>
 			</g>
@@ -92,8 +86,10 @@ import { PieChart } from '@element-plus/icons-vue';
 
 const GRAPH_PADDING = 10;
 const NODE_MIN_WIDTH = 68;
-const NODE_MAX_WIDTH = 118;
-const NODE_HEIGHT = 34;
+const NODE_MAX_WIDTH = 132;
+const NODE_HORIZONTAL_PADDING = 10;
+const NODE_VERTICAL_PADDING = 6;
+const NODE_LINE_HEIGHT = 10;
 const COLOR_PALETTE = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#8b5cf6', '#14b8a6', '#f97316'];
 
 function hashString(value) {
@@ -108,9 +104,47 @@ function hashString(value) {
 	return Math.abs(hash);
 }
 
-function truncateLabel(value, maxLength = 20) {
-	const text = String(value ?? '');
-	return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+function chunkWord(word, maxLength) {
+	if (word.length <= maxLength) {
+		return [word];
+	}
+
+	const chunks = [];
+	for (let index = 0; index < word.length; index += maxLength) {
+		chunks.push(word.slice(index, index + maxLength));
+	}
+	return chunks;
+}
+
+function wrapLabel(value, maxLineLength = 18) {
+	const normalized = String(value ?? '')
+		.replace(/[_-]+/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+
+	if (!normalized) {
+		return ['N/A'];
+	}
+
+	const tokens = normalized.split(' ').flatMap((token) => chunkWord(token, maxLineLength));
+	const lines = [];
+	let currentLine = '';
+
+	tokens.forEach((token) => {
+		const candidate = currentLine ? `${currentLine} ${token}` : token;
+		if (candidate.length <= maxLineLength || !currentLine) {
+			currentLine = candidate;
+			return;
+		}
+		lines.push(currentLine);
+		currentLine = token;
+	});
+
+	if (currentLine) {
+		lines.push(currentLine);
+	}
+
+	return lines;
 }
 
 function getContrastColor(hex, opacity = 1) {
@@ -140,23 +174,24 @@ function getFirstNonEmptyValue(obj, variables) {
 function getNodeMetrics(id, nodeInfo) {
 	const serviceName = nodeInfo?.service?.service_name || id;
 	const data = nodeInfo?.service?.data ?? 'No data';
-	const title = truncateLabel(serviceName, 14);
-	const displayData = truncateLabel(data, 14);
-	const longestLine = Math.max(title.length, displayData.length, 8);
-	const width = Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, longestLine * 5.8 + 18));
-	const height = NODE_HEIGHT;
+	const titleLines = wrapLabel(serviceName, 18);
+	const dataLines = wrapLabel(data, 18);
+	const lines = [...titleLines, ...dataLines];
+	const longestLine = Math.max(...lines.map((line) => line.length), 8);
+	const width = Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, longestLine * 5.7 + NODE_HORIZONTAL_PADDING * 2));
+	const height = NODE_VERTICAL_PADDING * 2 + lines.length * NODE_LINE_HEIGHT;
 	const backgroundColor = getNodeColor(String(data));
+	const textBlockHeight = (lines.length - 1) * NODE_LINE_HEIGHT;
 
 	return {
 		id,
 		name: serviceName,
 		data,
-		title,
-		displayData,
+		lines,
 		width,
 		height,
-		titleY: 12,
-		contentY: 24,
+		lineHeight: NODE_LINE_HEIGHT,
+		textStartY: height / 2 - textBlockHeight / 2,
 		backgroundColor,
 		foregroundColor: getContrastColor(backgroundColor),
 	};
