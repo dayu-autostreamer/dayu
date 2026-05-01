@@ -1,24 +1,292 @@
 <template>
-	<div class="viz-surface">
-		<div ref="chart" class="topology-chart"></div>
+	<div class="topology-surface" @mouseleave="hideTooltip">
+		<svg
+			v-if="layoutGraph"
+			class="topology-svg"
+			:viewBox="`0 0 ${layoutGraph.width} ${layoutGraph.height}`"
+			preserveAspectRatio="xMidYMid meet"
+			role="img"
+			:aria-label="config.name || 'Topology visualization'"
+		>
+			<defs>
+				<marker
+					:id="layoutGraph.markerId"
+					markerWidth="9"
+					markerHeight="9"
+					refX="8"
+					refY="4.5"
+					orient="auto"
+					markerUnits="strokeWidth"
+				>
+					<path d="M 0 0 L 9 4.5 L 0 9 z" fill="#64748b" />
+				</marker>
+			</defs>
 
-		<div v-if="showEmptyState" class="viz-empty">
-			<el-icon :size="36" class="viz-empty__icon">
+			<path
+				v-for="edge in layoutGraph.edges"
+				:key="edge.id"
+				class="topology-edge"
+				:d="edge.path"
+				:marker-end="`url(#${layoutGraph.markerId})`"
+			/>
+
+			<g
+				v-for="node in layoutGraph.nodes"
+				:key="node.id"
+				class="topology-node"
+				:transform="`translate(${node.x}, ${node.y})`"
+				@mouseenter="showTooltip(node, $event)"
+				@mousemove="moveTooltip($event)"
+				@mouseleave="hideTooltip"
+			>
+				<rect
+					:width="node.width"
+					:height="node.height"
+					rx="10"
+					:fill="node.backgroundColor"
+					stroke="rgba(15, 23, 42, 0.16)"
+					stroke-width="1"
+				/>
+				<text class="topology-node__text" text-anchor="middle" dominant-baseline="middle">
+					<tspan
+						class="topology-node__title"
+						:x="node.width / 2"
+						:y="node.titleY"
+						:fill="node.foregroundColor"
+					>
+						{{ node.title }}
+					</tspan>
+					<tspan
+						class="topology-node__divider"
+						:x="node.width / 2"
+						:y="node.dividerY"
+						:fill="node.dividerColor"
+					>
+						{{ node.divider }}
+					</tspan>
+					<tspan
+						class="topology-node__content"
+						:x="node.width / 2"
+						:y="node.contentY"
+						:fill="node.foregroundColor"
+					>
+						{{ node.displayData }}
+					</tspan>
+				</text>
+			</g>
+		</svg>
+
+		<div v-else class="topology-empty">
+			<el-icon :size="36">
 				<PieChart />
 			</el-icon>
-			<p>{{ emptyMessage }}</p>
+			<p>No topology data available</p>
+		</div>
+
+		<div v-if="tooltip.visible" class="topology-tooltip" :style="tooltipStyle">
+			<div class="topology-tooltip__title">{{ tooltip.node.name }}</div>
+			<div class="topology-tooltip__row">
+				<span>Data:</span>
+				<strong :style="{ color: tooltip.node.backgroundColor }">{{ tooltip.node.data }}</strong>
+			</div>
 		</div>
 	</div>
 </template>
 
 <script>
-import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick } from 'vue';
-import * as echarts from 'echarts';
+import { computed, reactive } from 'vue';
+import dagre from '@dagrejs/dagre';
 import { PieChart } from '@element-plus/icons-vue';
-import { graphlib, layout as dagreLayout } from '@dagrejs/dagre';
 
+const GRAPH_PADDING = 14;
+const NODE_MIN_WIDTH = 84;
+const NODE_MAX_WIDTH = 148;
+const NODE_MIN_HEIGHT = 42;
 const COLOR_PALETTE = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#8b5cf6', '#14b8a6', '#f97316'];
-const MIN_NODE_SCALE = 0.18;
+
+function hashString(value) {
+	const source = String(value || '');
+	let hash = 0;
+
+	for (let index = 0; index < source.length; index += 1) {
+		hash = source.charCodeAt(index) + ((hash << 5) - hash);
+		hash |= 0;
+	}
+
+	return Math.abs(hash);
+}
+
+function truncateLabel(value, maxLength = 20) {
+	const text = String(value ?? '');
+	return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function getContrastColor(hex, opacity = 1) {
+	const r = parseInt(hex.slice(1, 3), 16);
+	const g = parseInt(hex.slice(3, 5), 16);
+	const b = parseInt(hex.slice(5, 7), 16);
+	const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+	return brightness > 150 ? `rgba(15, 23, 42, ${opacity})` : `rgba(248, 250, 252, ${opacity})`;
+}
+
+function getNodeColor(value) {
+	const index = hashString(value) % COLOR_PALETTE.length;
+	return COLOR_PALETTE[index];
+}
+
+function getFirstNonEmptyValue(obj, variables) {
+	if (!obj || typeof obj !== 'object' || !Array.isArray(variables)) return null;
+	for (const key of variables) {
+		const value = obj[key];
+		if (value !== null && value !== undefined && value !== '') {
+			return value;
+		}
+	}
+	return null;
+}
+
+function getNodeMetrics(id, nodeInfo) {
+	const serviceName = nodeInfo?.service?.service_name || id;
+	const data = nodeInfo?.service?.data ?? 'No data';
+	const title = truncateLabel(serviceName, 18);
+	const displayData = truncateLabel(data, 22);
+	const longestLine = Math.max(title.length, displayData.length, 8);
+	const width = Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, longestLine * 6.2 + 26));
+	const height = Math.max(NODE_MIN_HEIGHT, 48);
+	const backgroundColor = getNodeColor(String(data));
+
+	return {
+		id,
+		name: serviceName,
+		data,
+		title,
+		displayData,
+		divider: '────────',
+		width,
+		height,
+		titleY: 15,
+		dividerY: 25,
+		contentY: 36,
+		backgroundColor,
+		foregroundColor: getContrastColor(backgroundColor),
+		dividerColor: getContrastColor(backgroundColor, 0.45),
+	};
+}
+
+function buildEdgePath(sourceNode, targetNode) {
+	const startX = sourceNode.x + sourceNode.width;
+	const startY = sourceNode.y + sourceNode.height / 2;
+	const endX = targetNode.x;
+	const endY = targetNode.y + targetNode.height / 2;
+	const distance = Math.max(endX - startX, 16);
+	const curve = Math.min(Math.max(distance * 0.42, 18), 48);
+
+	return `M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`;
+}
+
+function buildLayout(config, data) {
+	const variables = config?.variables;
+	if (!Array.isArray(variables)) return null;
+
+	const latestData = [...(data || [])]
+		.reverse()
+		.map((item) => getFirstNonEmptyValue(item, variables))
+		.find((value) => value !== null);
+
+	if (!latestData || typeof latestData !== 'object') return null;
+
+	const entries = Object.entries(latestData);
+	if (!entries.length) return null;
+
+	const graph = new dagre.graphlib.Graph();
+	graph.setGraph({
+		rankdir: 'LR',
+		nodesep: 6,
+		ranksep: 14,
+		marginx: 0,
+		marginy: 0,
+	});
+	graph.setDefaultEdgeLabel(() => ({}));
+
+	const nodes = entries.map(([rawId, nodeInfo]) => {
+		const id = String(rawId);
+		const node = getNodeMetrics(id, nodeInfo);
+		graph.setNode(id, {
+			width: node.width,
+			height: node.height,
+		});
+		return node;
+	});
+
+	const nodeIds = new Set(nodes.map((node) => node.id));
+	const edges = [];
+
+	entries.forEach(([rawSourceId, nodeInfo]) => {
+		const source = String(rawSourceId);
+		(nodeInfo?.next_nodes || []).forEach((rawTargetId) => {
+			const target = String(rawTargetId);
+			if (!nodeIds.has(target)) return;
+			graph.setEdge(source, target);
+			edges.push({
+				id: `${source}-${target}`,
+				source,
+				target,
+			});
+		});
+	});
+
+	dagre.layout(graph);
+
+	const positionedNodes = nodes.map((node) => {
+		const position = graph.node(node.id) || { x: node.width / 2, y: node.height / 2 };
+		return {
+			...node,
+			x: position.x - node.width / 2,
+			y: position.y - node.height / 2,
+		};
+	});
+
+	const bounds = positionedNodes.reduce(
+		(acc, node) => ({
+			minX: Math.min(acc.minX, node.x),
+			minY: Math.min(acc.minY, node.y),
+			maxX: Math.max(acc.maxX, node.x + node.width),
+			maxY: Math.max(acc.maxY, node.y + node.height),
+		}),
+		{
+			minX: Infinity,
+			minY: Infinity,
+			maxX: -Infinity,
+			maxY: -Infinity,
+		}
+	);
+
+	const normalizedNodes = positionedNodes.map((node) => ({
+		...node,
+		x: node.x - bounds.minX + GRAPH_PADDING,
+		y: node.y - bounds.minY + GRAPH_PADDING,
+	}));
+	const nodeMap = new Map(normalizedNodes.map((node) => [node.id, node]));
+	const normalizedEdges = edges
+		.map((edge) => {
+			const sourceNode = nodeMap.get(edge.source);
+			const targetNode = nodeMap.get(edge.target);
+			if (!sourceNode || !targetNode) return null;
+			return {
+				...edge,
+				path: buildEdgePath(sourceNode, targetNode),
+			};
+		})
+		.filter(Boolean);
+
+	return {
+		nodes: normalizedNodes,
+		edges: normalizedEdges,
+		width: Math.max(bounds.maxX - bounds.minX + GRAPH_PADDING * 2, 180),
+		height: Math.max(bounds.maxY - bounds.minY + GRAPH_PADDING * 2, 120),
+		markerId: `topology-arrow-${hashString(`${config?.id || config?.name || 'topology'}-${entries.map(([id]) => id).join('-')}`)}`,
+	};
+}
 
 export default {
 	name: 'TopologyTemplate',
@@ -41,398 +309,103 @@ export default {
 		},
 	},
 	setup(props) {
-		const chartRef = ref(null);
-		const chartInstance = ref(null);
-		const resizeObserver = ref(null);
-		const resizeFrame = ref(null);
-		const showEmptyState = ref(true);
-		const emptyMessage = ref('No topology data available');
-		const colorMap = ref(new Map());
-
-		const getContrastColor = (hex, opacity = 1) => {
-			const r = parseInt(hex.slice(1, 3), 16);
-			const g = parseInt(hex.slice(3, 5), 16);
-			const b = parseInt(hex.slice(5, 7), 16);
-			const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-			return brightness > 150 ? `rgba(15, 23, 42, ${opacity})` : `rgba(248, 250, 252, ${opacity})`;
-		};
-
-		const generateColor = (value) => {
-			if (!colorMap.value.has(value)) {
-				let hash = 0;
-				for (let index = 0; index < value.length; index += 1) {
-					hash = value.charCodeAt(index) + ((hash << 5) - hash);
-				}
-				colorMap.value.set(value, COLOR_PALETTE[Math.abs(hash) % COLOR_PALETTE.length]);
-			}
-			return colorMap.value.get(value);
-		};
-
-		const calculateNodeSize = (text) => {
-			const lines = String(text || '').split('\n');
-			const maxLineLength = Math.max(...lines.map((line) => line.length), 10);
-			return [Math.min(180, Math.max(94, maxLineLength * 6.8)), Math.max(52, lines.length * 18 + 12)];
-		};
-
-		const truncateLabel = (value, maxLength = 24) => {
-			const text = String(value ?? '');
-			return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
-		};
-
-		const getFirstNonEmptyValue = (obj, variables) => {
-			if (!obj || typeof obj !== 'object' || !Array.isArray(variables)) return null;
-			for (const key of variables) {
-				const value = obj[key];
-				if (value !== null && value !== undefined && value !== '') {
-					return value;
-				}
-			}
-			return null;
-		};
-
-		const topologyData = computed(() => {
-			try {
-				const variables = props.config?.variables;
-				if (!Array.isArray(variables)) return null;
-
-				const latestData = [...(props.data || [])]
-					.reverse()
-					.map((item) => getFirstNonEmptyValue(item, variables))
-					.find((value) => value !== null);
-
-				if (!latestData || typeof latestData !== 'object') return null;
-
-				colorMap.value.clear();
-				const nodes = [];
-				const edges = [];
-
-				Object.entries(latestData).forEach(([nodeId, nodeInfo]) => {
-					const serviceName = nodeInfo?.service?.service_name || nodeId;
-					const payload = nodeInfo?.service?.data ?? 'No data';
-					const displayPayload = truncateLabel(payload, 26);
-					const labelText = `${serviceName}\n${displayPayload}`;
-					const [width, height] = calculateNodeSize(labelText);
-					const backgroundColor = generateColor(String(payload));
-					const foregroundColor = getContrastColor(backgroundColor);
-
-					nodes.push({
-						id: nodeId,
-						name: serviceName,
-						data: payload,
-						displayData: displayPayload,
-						symbol: 'roundRect',
-						symbolSize: [width, height],
-						itemStyle: {
-							color: backgroundColor,
-							borderColor: 'rgba(15, 23, 42, 0.12)',
-							borderWidth: 1,
-							shadowBlur: 12,
-							shadowColor: 'rgba(15, 23, 42, 0.1)',
-							borderRadius: 12,
-						},
-						label: {
-							show: true,
-							position: 'inside',
-							formatter: `{title|${truncateLabel(serviceName, 22)}}\n{divider|${'─'.repeat(8)}}\n{content|${displayPayload}}`,
-							rich: {
-								title: {
-									fontSize: 11,
-									fontWeight: 700,
-									color: foregroundColor,
-									padding: [0, 0, 1, 0],
-								},
-								divider: {
-									fontSize: 9,
-									lineHeight: 8,
-									color: getContrastColor(backgroundColor, 0.45),
-								},
-								content: {
-									fontSize: 10,
-									fontWeight: 500,
-									lineHeight: 13,
-									color: foregroundColor,
-								},
-							},
-						},
-					});
-
-					(nodeInfo?.next_nodes || []).forEach((nextNodeId) => {
-						edges.push({
-							source: nodeId,
-							target: nextNodeId,
-						});
-					});
-				});
-
-				const graph = new graphlib.Graph();
-				graph.setGraph({
-					rankdir: 'LR',
-					nodesep: 6,
-					ranksep: 8,
-					marginx: 4,
-					marginy: 4,
-				});
-				graph.setDefaultEdgeLabel(() => ({}));
-
-				nodes.forEach((node) => {
-					graph.setNode(node.id, {
-						width: node.symbolSize[0],
-						height: node.symbolSize[1],
-					});
-				});
-				edges.forEach((edge) => {
-					graph.setEdge(edge.source, edge.target);
-				});
-				dagreLayout(graph);
-
-				nodes.forEach((node) => {
-					const position = graph.node(node.id);
-					node.x = position?.x || 0;
-					node.y = position?.y || 0;
-				});
-
-				const bounds = nodes.reduce(
-					(acc, node) => {
-						const [width, height] = node.symbolSize;
-						acc.minX = Math.min(acc.minX, node.x - width / 2);
-						acc.maxX = Math.max(acc.maxX, node.x + width / 2);
-						acc.minY = Math.min(acc.minY, node.y - height / 2);
-						acc.maxY = Math.max(acc.maxY, node.y + height / 2);
-						return acc;
-					},
-					{
-						minX: Number.POSITIVE_INFINITY,
-						maxX: Number.NEGATIVE_INFINITY,
-						minY: Number.POSITIVE_INFINITY,
-						maxY: Number.NEGATIVE_INFINITY,
-					}
-				);
-
-				bounds.width = Math.max(1, bounds.maxX - bounds.minX);
-				bounds.height = Math.max(1, bounds.maxY - bounds.minY);
-				bounds.centerX = bounds.minX + bounds.width / 2;
-				bounds.centerY = bounds.minY + bounds.height / 2;
-
-				return { nodes, edges, bounds };
-			} catch (error) {
-				console.error('Process topology data failed:', error);
-				return null;
-			}
+		const tooltip = reactive({
+			visible: false,
+			x: 0,
+			y: 0,
+			node: {},
 		});
 
-		const handleResize = () => {
-			chartInstance.value?.resize();
+		const layoutGraph = computed(() => buildLayout(props.config, props.data));
+		const tooltipStyle = computed(() => ({
+			left: `${tooltip.x + 14}px`,
+			top: `${tooltip.y + 14}px`,
+		}));
+
+		const showTooltip = (node, event) => {
+			tooltip.node = node;
+			tooltip.visible = true;
+			moveTooltip(event);
 		};
 
-		const getFittedTopologyData = () => {
-			const data = topologyData.value;
-			const rect = chartRef.value?.getBoundingClientRect();
-			if (!data || !rect?.width || !rect?.height) {
-				return data;
-			}
-
-			const bounds = data.bounds;
-			const padding = 16;
-			const availableWidth = Math.max(120, rect.width - padding * 2);
-			const availableHeight = Math.max(120, rect.height - padding * 2);
-			const scale = Math.max(MIN_NODE_SCALE, Math.min(1, availableWidth / bounds.width, availableHeight / bounds.height));
-			const centerX = rect.width / 2;
-			const centerY = rect.height / 2;
-
-			const nodes = data.nodes.map((node) => {
-				const [width, height] = node.symbolSize;
-				const scaledWidth = Math.max(36, width * scale);
-				const scaledHeight = Math.max(24, height * scale);
-				const labelScale = Math.max(0.55, scale);
-				return {
-					...node,
-					x: centerX + (node.x - bounds.centerX) * scale,
-					y: centerY + (node.y - bounds.centerY) * scale,
-					symbolSize: [scaledWidth, scaledHeight],
-					itemStyle: {
-						...node.itemStyle,
-						shadowBlur: Math.max(4, 10 * scale),
-					},
-					label: {
-						...node.label,
-						rich: {
-							title: {
-								...node.label.rich.title,
-								fontSize: Math.max(7, 11 * labelScale),
-							},
-							divider: {
-								...node.label.rich.divider,
-								fontSize: Math.max(6, 9 * labelScale),
-								lineHeight: Math.max(5, 8 * labelScale),
-							},
-							content: {
-								...node.label.rich.content,
-								fontSize: Math.max(6, 10 * labelScale),
-								lineHeight: Math.max(8, 13 * labelScale),
-							},
-						},
-					},
-				};
-			});
-
-			return {
-				nodes,
-				edges: data.edges,
-			};
+		const moveTooltip = (event) => {
+			tooltip.x = event.clientX;
+			tooltip.y = event.clientY;
 		};
 
-		const scheduleFit = () => {
-			if (resizeFrame.value) {
-				cancelAnimationFrame(resizeFrame.value);
-			}
-			resizeFrame.value = requestAnimationFrame(() => {
-				resizeFrame.value = null;
-				handleResize();
-				updateChart();
-			});
+		const hideTooltip = () => {
+			tooltip.visible = false;
 		};
-
-		const initChart = () => {
-			if (!chartRef.value) return;
-			if (chartInstance.value) {
-				chartInstance.value.dispose();
-			}
-			chartInstance.value = echarts.init(chartRef.value, null, {
-				renderer: 'canvas',
-				useDirtyRect: true,
-			});
-			window.addEventListener('resize', scheduleFit);
-			if (typeof ResizeObserver !== 'undefined') {
-				resizeObserver.value = new ResizeObserver(() => {
-					scheduleFit();
-				});
-				resizeObserver.value.observe(chartRef.value);
-			}
-		};
-
-		const updateChart = async () => {
-			if (!chartInstance.value || !topologyData.value) return;
-
-			await nextTick();
-			const fittedData = getFittedTopologyData();
-
-			chartInstance.value.setOption({
-				animationDuration: 450,
-				tooltip: {
-					backgroundColor: 'rgba(255, 255, 255, 0.95)',
-					borderWidth: 0,
-					formatter: (params) => {
-						if (params.dataType !== 'node') return '';
-						return `
-							<div style="max-width: 300px">
-								<div style="font-size:16px;font-weight:bold;color:#2c3e50;margin-bottom:8px">
-									${params.data.name}
-								</div>
-								<div style="color:#7f8c8d">
-									Data:
-									<span style="color:${params.data.itemStyle.color};font-weight:500">
-										${params.data.data}
-									</span>
-								</div>
-							</div>
-						`;
-					},
-				},
-				series: [
-					{
-						type: 'graph',
-						layout: 'none',
-						left: 10,
-						right: 10,
-						top: 10,
-						bottom: 10,
-						roam: true,
-						draggable: false,
-						zoom: 1,
-						nodeScaleRatio: 1,
-						scaleLimit: {
-							min: 0.15,
-							max: 2,
-						},
-						edgeSymbol: ['none', 'arrow'],
-						edgeSymbolSize: [0, 8],
-						label: {
-							show: true,
-						},
-						lineStyle: {
-							color: 'rgba(100, 116, 139, 0.65)',
-							width: 2,
-							curveness: 0.14,
-						},
-						emphasis: {
-							scale: false,
-							lineStyle: {
-								width: 2.4,
-								color: '#475569',
-							},
-						},
-						data: fittedData.nodes,
-						edges: fittedData.edges,
-					},
-				],
-			});
-
-			handleResize();
-		};
-
-		watch(topologyData, async (value) => {
-			showEmptyState.value = !value?.nodes?.length;
-			if (!showEmptyState.value) {
-				await nextTick();
-				updateChart();
-			}
-		});
-
-		onMounted(() => {
-			initChart();
-			if (props.data.length > 0) {
-				updateChart();
-			}
-		});
-
-		onBeforeUnmount(() => {
-			if (resizeFrame.value) {
-				cancelAnimationFrame(resizeFrame.value);
-			}
-			resizeObserver.value?.disconnect();
-			window.removeEventListener('resize', scheduleFit);
-			chartInstance.value?.dispose();
-		});
 
 		return {
-			chart: chartRef,
-			showEmptyState,
-			emptyMessage,
+			layoutGraph,
+			tooltip,
+			tooltipStyle,
+			showTooltip,
+			moveTooltip,
+			hideTooltip,
 		};
 	},
 };
 </script>
 
 <style scoped lang="scss">
-.viz-surface {
+.topology-surface {
 	position: relative;
 	width: 100%;
 	height: 100%;
-	min-height: 500px;
+	min-height: 0;
+	flex: 1 1 auto;
 	border-radius: 18px;
 	background:
-		radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 28%),
+		linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+		linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
 		linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.92)),
 		#ffffff;
+	background-size: 24px 24px, 24px 24px, auto, auto;
+	overflow: hidden;
 }
 
-.topology-chart {
+.topology-svg {
 	width: 100%;
 	height: 100%;
-	min-height: 500px;
+	min-height: 0;
+	display: block;
 }
 
-.viz-empty {
+.topology-edge {
+	fill: none;
+	stroke: #64748b;
+	stroke-width: 1.8;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	opacity: 0.82;
+}
+
+.topology-node {
+	cursor: default;
+	filter: drop-shadow(0 10px 16px rgba(15, 23, 42, 0.12));
+}
+
+.topology-node__text {
+	pointer-events: none;
+}
+
+.topology-node__title {
+	font-size: 10px;
+	font-weight: 700;
+}
+
+.topology-node__divider {
+	font-size: 8px;
+}
+
+.topology-node__content {
+	font-size: 9px;
+	font-weight: 600;
+}
+
+.topology-empty {
 	position: absolute;
 	inset: 0;
 	display: grid;
@@ -443,12 +416,32 @@ export default {
 	color: #64748b;
 }
 
-.viz-empty__icon {
-	color: #94a3b8;
-}
-
-.viz-empty p {
+.topology-empty p {
 	margin: 0;
 	font-size: 14px;
+}
+
+.topology-tooltip {
+	position: fixed;
+	z-index: 3000;
+	max-width: 300px;
+	padding: 10px 12px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.96);
+	box-shadow: 0 14px 36px rgba(15, 23, 42, 0.18);
+	pointer-events: none;
+	color: #2c3e50;
+}
+
+.topology-tooltip__title {
+	margin-bottom: 8px;
+	font-size: 16px;
+	font-weight: 700;
+}
+
+.topology-tooltip__row {
+	display: flex;
+	gap: 8px;
+	color: #7f8c8d;
 }
 </style>

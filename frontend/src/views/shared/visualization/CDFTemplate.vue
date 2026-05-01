@@ -51,6 +51,7 @@ export default {
 		const container = ref(null);
 		const resizeObserver = ref(null);
 		const mutationObserver = ref(null);
+		const legendScrollIndex = ref(0);
 
 		const activeVariables = computed(() => {
 			return props.config.variables?.filter((varName) => props.variableStates[varName] === true) || [];
@@ -154,6 +155,9 @@ export default {
 				renderer: 'canvas',
 				useDirtyRect: true,
 			});
+			chart.value.on('legendscroll', (event) => {
+				legendScrollIndex.value = event.scrollDataIndex || 0;
+			});
 			return true;
 		};
 
@@ -163,6 +167,8 @@ export default {
 				return {};
 			}
 
+			const legendData = Object.keys(safeData.value);
+			const legendStartIndex = Math.min(legendScrollIndex.value, Math.max(legendData.length - 1, 0));
 			const series = Object.entries(safeData.value).map(([varName, points], index) => ({
 				name: varName,
 				type: 'line',
@@ -210,11 +216,23 @@ export default {
 				},
 				legend: {
 					top: 8,
+					left: 16,
+					right: 16,
 					type: 'scroll',
+					orient: 'horizontal',
+					scrollDataIndex: legendStartIndex,
 					icon: 'roundRect',
 					itemWidth: 12,
+					itemHeight: 8,
+					itemGap: 14,
+					pageButtonPosition: 'end',
+					pageButtonGap: 8,
+					pageIconSize: 10,
+					pageTextStyle: {
+						color: '#64748b',
+					},
 					textStyle: { color: '#334155' },
-					data: Object.keys(safeData.value),
+					data: legendData,
 				},
 				grid: {
 					top: 56,

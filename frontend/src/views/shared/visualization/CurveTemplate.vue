@@ -52,6 +52,7 @@ export default {
 		const container = ref(null);
 		const resizeObserver = ref(null);
 		const mutationObserver = ref(null);
+		const legendScrollIndex = ref(0);
 
 		const safeData = computed(() => {
 			return (props.data || []).map((item) => {
@@ -198,6 +199,9 @@ export default {
 				renderer: 'canvas',
 				useDirtyRect: true,
 			});
+			chart.value.on('legendscroll', (event) => {
+				legendScrollIndex.value = event.scrollDataIndex || 0;
+			});
 			return true;
 		};
 
@@ -208,6 +212,7 @@ export default {
 
 			const primaryVariable = activeVariables.value[0];
 			const useXAxisZoom = safeData.value.length > 25;
+			const legendStartIndex = Math.min(legendScrollIndex.value, Math.max(activeVariables.value.length - 1, 0));
 			const series = activeVariables.value.map((varName, index) => {
 				const values = safeData.value.map((entry) => entry[varName]);
 				return {
@@ -267,9 +272,21 @@ export default {
 				},
 				legend: {
 					top: 8,
+					left: 16,
+					right: 16,
 					type: 'scroll',
+					orient: 'horizontal',
+					scrollDataIndex: legendStartIndex,
 					icon: 'roundRect',
 					itemWidth: 12,
+					itemHeight: 8,
+					itemGap: 14,
+					pageButtonPosition: 'end',
+					pageButtonGap: 8,
+					pageIconSize: 10,
+					pageTextStyle: {
+						color: '#64748b',
+					},
 					textStyle: { color: '#334155' },
 					data: activeVariables.value,
 				},
