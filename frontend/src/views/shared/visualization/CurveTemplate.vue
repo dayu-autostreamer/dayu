@@ -17,6 +17,7 @@ import * as echarts from 'echarts';
 import { PieChart } from '@element-plus/icons-vue';
 
 const CHART_COLORS = ['#2563eb', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+const LOG_SCALE_RATIO = 1000;
 
 export default {
 	name: 'CurveTemplate',
@@ -92,6 +93,41 @@ export default {
 			const mapping = discreteValueMap.value[varName] || {};
 			const entry = Object.entries(mapping).find(([, value]) => value === code);
 			return entry ? entry[0] : code;
+		};
+
+		const numericValues = computed(() => {
+			if (!activeVariables.value.length) return [];
+			return activeVariables.value
+				.flatMap((varName) => safeData.value.map((entry) => entry[varName]))
+				.map(Number)
+				.filter((value) => Number.isFinite(value));
+		});
+
+		const shouldUseLogScale = computed(() => {
+			if (!numericValues.value.length) return false;
+			if (activeVariables.value.some((varName) => valueTypes.value[varName] !== 'value')) return false;
+			const positiveValues = numericValues.value.filter((value) => value > 0);
+			if (positiveValues.length !== numericValues.value.length) return false;
+			const minValue = Math.min(...positiveValues);
+			const maxValue = Math.max(...positiveValues);
+			return minValue > 0 && maxValue / minValue >= LOG_SCALE_RATIO;
+		});
+
+		const formatNumericValue = (value) => {
+			const numericValue = Number(value);
+			if (!Number.isFinite(numericValue)) return String(value);
+			const absoluteValue = Math.abs(numericValue);
+			if (absoluteValue === 0) return '0';
+			if (absoluteValue >= 1000000 || absoluteValue < 0.01) {
+				return numericValue.toExponential(1);
+			}
+			if (absoluteValue >= 1000) {
+				return `${(numericValue / 1000).toFixed(absoluteValue >= 100000 ? 0 : 1)}k`;
+			}
+			if (Number.isInteger(numericValue)) {
+				return String(numericValue);
+			}
+			return numericValue.toFixed(absoluteValue >= 10 ? 1 : 2);
 		};
 
 		const showEmptyState = computed(() => {
@@ -171,19 +207,23 @@ export default {
 			}
 
 			const primaryVariable = activeVariables.value[0];
+			const useXAxisZoom = safeData.value.length > 25;
 			const series = activeVariables.value.map((varName, index) => {
 				const values = safeData.value.map((entry) => entry[varName]);
 				return {
 					name: varName,
 					type: 'line',
 					smooth: true,
-					symbol: values.length > 40 ? 'none' : 'circle',
+					symbol: 'emptyCircle',
 					symbolSize: 7,
-					showSymbol: values.length <= 40,
+					showSymbol: true,
 					connectNulls: false,
 					progressive: 200,
 					lineStyle: { width: 2.5 },
-					itemStyle: { color: CHART_COLORS[index % CHART_COLORS.length] },
+					itemStyle: {
+						color: CHART_COLORS[index % CHART_COLORS.length],
+						borderWidth: 2,
+					},
 					data: values.map((value) => {
 						if (value === undefined) return null;
 						return valueTypes.value[varName] === 'category' ? getDiscreteValue(varName, value) : Number(value);
@@ -195,23 +235,19 @@ export default {
 				color: CHART_COLORS,
 				animationDuration: 450,
 				tooltip: {
-					trigger: 'axis',
+					trigger: 'item',
 					backgroundColor: 'rgba(15, 23, 42, 0.92)',
 					borderWidth: 0,
 					textStyle: { color: '#e2e8f0' },
-					formatter: (items) => {
-						if (!Array.isArray(items) || !items.length) return '';
-						const lines = [String(items[0].axisValueLabel || items[0].name || '-')];
-						items.forEach((item) => {
-							const varType = valueTypes.value[item.seriesName];
-							const rawValue = Array.isArray(item.value) ? item.value[1] : item.value;
-							const formattedValue =
-								varType === 'category'
-									? getOriginalDiscreteLabel(item.seriesName, rawValue)
-									: Number(rawValue).toFixed(2);
-							lines.push(`${item.marker} ${item.seriesName}: ${formattedValue}`);
-						});
-						return lines.join('<br/>');
+					formatter: (params) => {
+						if (!params) return '';
+						const varType = valueTypes.value[params.seriesName];
+						const rawValue = Array.isArray(params.value) ? params.value[1] : params.value;
+						const formattedValue =
+							varType === 'category'
+								? getOriginalDiscreteLabel(params.seriesName, rawValue)
+								: formatNumericValue(rawValue);
+						return `${params.name}<br/>${params.marker} ${params.seriesName}: ${formattedValue}`;
 					},
 				},
 				legend: {
@@ -226,34 +262,39 @@ export default {
 					top: 56,
 					left: 18,
 					right: 16,
-					bottom: safeData.value.length > 25 ? 52 : 26,
+					bottom: useXAxisZoom ? 68 : 50,
 					containLabel: true,
 				},
 				xAxis: {
 					type: 'category',
 					name: props.config.x_axis,
 					nameLocation: 'center',
-					nameGap: 24,
+					nameGap: 30,
 					data: safeData.value.map((entry) => entry.taskId),
 					axisLine: { lineStyle: { color: '#94a3b8' } },
 					axisLabel: {
 						color: '#475569',
+						margin: 12,
+						hideOverlap: true,
 						formatter: (value) => (String(value).length > 10 ? `${String(value).slice(0, 10)}...` : value),
 					},
 				},
 				yAxis: {
-					type: valueTypes.value[primaryVariable],
+					type: shouldUseLogScale.value ? 'log' : valueTypes.value[primaryVariable],
 					name: props.config.y_axis,
 					nameLocation: 'end',
 					nameGap: 20,
+					scale: true,
+					...(shouldUseLogScale.value ? { logBase: 10 } : {}),
 					axisLine: { show: false },
 					axisLabel: {
 						color: '#475569',
+						hideOverlap: true,
 						formatter: (value) => {
 							if (valueTypes.value[primaryVariable] === 'category') {
 								return getOriginalDiscreteLabel(primaryVariable, value);
 							}
-							return Number(value).toFixed(2);
+							return formatNumericValue(value);
 						},
 					},
 					splitLine: {
@@ -263,7 +304,7 @@ export default {
 					},
 				},
 				dataZoom:
-					safeData.value.length > 25
+					useXAxisZoom
 						? [
 								{ type: 'inside', xAxisIndex: 0 },
 								{

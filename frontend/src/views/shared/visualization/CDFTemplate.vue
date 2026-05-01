@@ -167,10 +167,14 @@ export default {
 				name: varName,
 				type: 'line',
 				smooth: true,
-				symbol: points.length > 40 ? 'none' : 'circle',
+				symbol: 'emptyCircle',
 				symbolSize: 7,
+				showSymbol: true,
 				lineStyle: { width: 2.5 },
-				itemStyle: { color: CHART_COLORS[index % CHART_COLORS.length] },
+				itemStyle: {
+					color: CHART_COLORS[index % CHART_COLORS.length],
+					borderWidth: 2,
+				},
 				areaStyle: { opacity: 0.08 },
 				data: points.map((point) => [point.value, point.probability]),
 			}));

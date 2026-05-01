@@ -1,5 +1,5 @@
 <template>
-	<SharedVariableControls :config="config" :variable-states="variableStates" label="Variables" @update:variable-states="$emit('update:variable-states', $event)" />
+	<SharedVariableControls :config="config" :variable-states="variableStates" label="variables" @update:variable-states="$emit('update:variable-states', $event)" />
 </template>
 
 <script>

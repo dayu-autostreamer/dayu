@@ -3,7 +3,7 @@
 		<span class="controls-label">{{ label }}</span>
 		<el-checkbox-group v-model="selectedVariables" class="controls-options" @change="handleVariableChange">
 			<el-checkbox-button v-for="varName in config.variables" :key="varName" :label="varName" class="controls-option">
-				{{ formatVariableName(varName) }}
+				{{ varName }}
 			</el-checkbox-button>
 		</el-checkbox-group>
 	</div>
@@ -45,11 +45,6 @@ export default {
 			emit('update:variable-states', newStates);
 		};
 
-		const formatVariableName = (value) =>
-			String(value || '')
-				.replace(/_/g, ' ')
-				.replace(/\b\w/g, (letter) => letter.toUpperCase());
-
 		syncSelectedVariables(variableStates.value);
 
 		watch(
@@ -63,7 +58,6 @@ export default {
 		return {
 			selectedVariables,
 			handleVariableChange,
-			formatVariableName,
 		};
 	},
 };
@@ -82,8 +76,6 @@ export default {
 .controls-label {
 	font-size: 11px;
 	font-weight: 700;
-	letter-spacing: 0.06em;
-	text-transform: uppercase;
 	color: #64748b;
 }
 

@@ -43,6 +43,7 @@ export default {
 		const chartRef = ref(null);
 		const chartInstance = ref(null);
 		const resizeObserver = ref(null);
+		const resizeFrame = ref(null);
 		const showEmptyState = ref(true);
 		const emptyMessage = ref('No topology data available');
 		const colorMap = ref(new Map());
@@ -69,7 +70,7 @@ export default {
 		const calculateNodeSize = (text) => {
 			const lines = String(text || '').split('\n');
 			const maxLineLength = Math.max(...lines.map((line) => line.length), 10);
-			return [Math.min(280, Math.max(156, maxLineLength * 9)), Math.max(92, lines.length * 30 + 22)];
+			return [Math.min(220, Math.max(118, maxLineLength * 7.6)), Math.max(64, lines.length * 22 + 16)];
 		};
 
 		const getFirstNonEmptyValue = (obj, variables) => {
@@ -117,30 +118,30 @@ export default {
 							color: backgroundColor,
 							borderColor: 'rgba(15, 23, 42, 0.12)',
 							borderWidth: 1,
-							shadowBlur: 20,
-							shadowColor: 'rgba(15, 23, 42, 0.12)',
-							borderRadius: 18,
+							shadowBlur: 12,
+							shadowColor: 'rgba(15, 23, 42, 0.1)',
+							borderRadius: 12,
 						},
 						label: {
 							show: true,
 							position: 'inside',
-							formatter: `{title|${serviceName}}\n{divider|${'─'.repeat(12)}}\n{content|${String(payload)}}`,
+							formatter: `{title|${serviceName}}\n{divider|${'─'.repeat(10)}}\n{content|${String(payload)}}`,
 							rich: {
 								title: {
-									fontSize: 14,
+									fontSize: 12,
 									fontWeight: 700,
 									color: foregroundColor,
-									padding: [2, 0, 4, 0],
+									padding: [0, 0, 2, 0],
 								},
 								divider: {
-									fontSize: 12,
-									lineHeight: 12,
+									fontSize: 10,
+									lineHeight: 10,
 									color: getContrastColor(backgroundColor, 0.45),
 								},
 								content: {
-									fontSize: 13,
+									fontSize: 11,
 									fontWeight: 500,
-									lineHeight: 18,
+									lineHeight: 15,
 									color: foregroundColor,
 								},
 							},
@@ -158,10 +159,10 @@ export default {
 				const graph = new graphlib.Graph();
 				graph.setGraph({
 					rankdir: 'LR',
-					nodesep: 44,
-					ranksep: 68,
-					marginx: 32,
-					marginy: 32,
+					nodesep: 20,
+					ranksep: 34,
+					marginx: 16,
+					marginy: 16,
 				});
 				graph.setDefaultEdgeLabel(() => ({}));
 
@@ -182,7 +183,29 @@ export default {
 					node.y = position?.y || 0;
 				});
 
-				return { nodes, edges };
+				const bounds = nodes.reduce(
+					(acc, node) => {
+						const [width, height] = node.symbolSize;
+						acc.minX = Math.min(acc.minX, node.x - width / 2);
+						acc.maxX = Math.max(acc.maxX, node.x + width / 2);
+						acc.minY = Math.min(acc.minY, node.y - height / 2);
+						acc.maxY = Math.max(acc.maxY, node.y + height / 2);
+						return acc;
+					},
+					{
+						minX: Number.POSITIVE_INFINITY,
+						maxX: Number.NEGATIVE_INFINITY,
+						minY: Number.POSITIVE_INFINITY,
+						maxY: Number.NEGATIVE_INFINITY,
+					}
+				);
+
+				bounds.width = Math.max(1, bounds.maxX - bounds.minX);
+				bounds.height = Math.max(1, bounds.maxY - bounds.minY);
+				bounds.centerX = bounds.minX + bounds.width / 2;
+				bounds.centerY = bounds.minY + bounds.height / 2;
+
+				return { nodes, edges, bounds };
 			} catch (error) {
 				console.error('Process topology data failed:', error);
 				return null;
@@ -191,6 +214,36 @@ export default {
 
 		const handleResize = () => {
 			chartInstance.value?.resize();
+		};
+
+		const getFitViewport = () => {
+			const bounds = topologyData.value?.bounds;
+			const rect = chartRef.value?.getBoundingClientRect();
+			if (!bounds || !rect?.width || !rect?.height) {
+				return {
+					center: undefined,
+					zoom: 0.9,
+				};
+			}
+
+			const availableWidth = Math.max(120, rect.width - 52);
+			const availableHeight = Math.max(120, rect.height - 52);
+			const fitZoom = Math.min(1, availableWidth / bounds.width, availableHeight / bounds.height);
+			return {
+				center: [bounds.centerX, bounds.centerY],
+				zoom: Math.max(0.18, fitZoom),
+			};
+		};
+
+		const scheduleFit = () => {
+			if (resizeFrame.value) {
+				cancelAnimationFrame(resizeFrame.value);
+			}
+			resizeFrame.value = requestAnimationFrame(() => {
+				resizeFrame.value = null;
+				handleResize();
+				updateChart();
+			});
 		};
 
 		const initChart = () => {
@@ -202,10 +255,10 @@ export default {
 				renderer: 'canvas',
 				useDirtyRect: true,
 			});
-			window.addEventListener('resize', handleResize);
+			window.addEventListener('resize', scheduleFit);
 			if (typeof ResizeObserver !== 'undefined') {
 				resizeObserver.value = new ResizeObserver(() => {
-					handleResize();
+					scheduleFit();
 				});
 				resizeObserver.value.observe(chartRef.value);
 			}
@@ -215,19 +268,28 @@ export default {
 			if (!chartInstance.value || !topologyData.value) return;
 
 			await nextTick();
+			const fitViewport = getFitViewport();
 
 			chartInstance.value.setOption({
 				animationDuration: 450,
 				tooltip: {
-					backgroundColor: 'rgba(15, 23, 42, 0.92)',
+					backgroundColor: 'rgba(255, 255, 255, 0.95)',
 					borderWidth: 0,
-					textStyle: { color: '#e2e8f0' },
 					formatter: (params) => {
 						if (params.dataType !== 'node') return '';
-						return [
-							`${params.data.name}`,
-							`Data: ${params.data.data}`,
-						].join('<br/>');
+						return `
+							<div style="max-width: 300px">
+								<div style="font-size:16px;font-weight:bold;color:#2c3e50;margin-bottom:8px">
+									${params.data.name}
+								</div>
+								<div style="color:#7f8c8d">
+									Data:
+									<span style="color:${params.data.itemStyle.color};font-weight:500">
+										${params.data.data}
+									</span>
+								</div>
+							</div>
+						`;
 					},
 				},
 				series: [
@@ -240,9 +302,15 @@ export default {
 						bottom: 10,
 						roam: true,
 						draggable: false,
-						zoom: 0.92,
+						center: fitViewport.center,
+						zoom: fitViewport.zoom,
+						nodeScaleRatio: 1,
+						scaleLimit: {
+							min: 0.15,
+							max: 2,
+						},
 						edgeSymbol: ['none', 'arrow'],
-						edgeSymbolSize: [0, 10],
+						edgeSymbolSize: [0, 8],
 						label: {
 							show: true,
 						},
@@ -283,8 +351,11 @@ export default {
 		});
 
 		onBeforeUnmount(() => {
+			if (resizeFrame.value) {
+				cancelAnimationFrame(resizeFrame.value);
+			}
 			resizeObserver.value?.disconnect();
-			window.removeEventListener('resize', handleResize);
+			window.removeEventListener('resize', scheduleFit);
 			chartInstance.value?.dispose();
 		});
 

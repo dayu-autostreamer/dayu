@@ -13,11 +13,20 @@
 			<p>Image load failed</p>
 		</div>
 
-		<template v-else-if="currentImage">
+		<el-tooltip v-else-if="currentImage" effect="dark" placement="top" :hide-after="0">
+			<template #content>
+				<div class="image-tooltip">
+					<div v-for="row in tooltipRows" :key="row.label" class="image-tooltip__row">
+						<span>{{ row.label }}:</span>
+						<strong>{{ row.value }}</strong>
+					</div>
+				</div>
+			</template>
+
 			<div class="image-frame">
 				<img :src="currentImage" :alt="config.name" class="responsive-image" @error="loadError = true" />
 			</div>
-		</template>
+		</el-tooltip>
 
 		<div v-else class="image-state-overlay">
 			<el-icon class="image-state-icon" :size="34">
@@ -29,7 +38,7 @@
 </template>
 
 <script>
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { Picture, Warning, Loading } from '@element-plus/icons-vue';
 
 const BASE64_REGEX = /^data:image\/(\w+);base64,/;
@@ -48,6 +57,7 @@ export default {
 	},
 	setup(props) {
 		const currentImage = ref(null);
+		const currentImageMeta = ref(null);
 		const isLoading = ref(false);
 		const loadError = ref(false);
 
@@ -67,18 +77,50 @@ export default {
 			return null;
 		};
 
+		const getFirstNonEmptyEntry = (obj, variables) => {
+			if (!obj || typeof obj !== 'object' || !Array.isArray(variables)) return null;
+			for (const key of variables) {
+				const value = obj[key];
+				if (value !== null && value !== undefined && value !== '') {
+					return { key, value };
+				}
+			}
+			return null;
+		};
+
+		const formatImageDataSize = (value) => {
+			const rawLength = String(value || '').replace(BASE64_REGEX, '').length;
+			const bytes = Math.round((rawLength * 3) / 4);
+			if (bytes < 1024) return `${bytes} B`;
+			if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+			return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+		};
+
+		const tooltipRows = computed(() => {
+			if (!currentImageMeta.value) return [];
+			const rows = [];
+			if (currentImageMeta.value.taskId) {
+				rows.push({ label: 'Task', value: currentImageMeta.value.taskId });
+			}
+			rows.push({ label: 'Variable', value: currentImageMeta.value.variable });
+			rows.push({ label: 'Image Data', value: formatImageDataSize(currentImageMeta.value.value) });
+			return rows;
+		});
+
 		watch(
 			() => [props.data, props.config?.variables],
 			([newData, variables]) => {
 				loadError.value = false;
 				if (!Array.isArray(variables)) {
 					currentImage.value = null;
+					currentImageMeta.value = null;
 					return;
 				}
 
 				const validItems = (newData || []).filter((item) => getFirstNonEmptyValue(item, variables) !== null);
 				if (!validItems.length) {
 					currentImage.value = null;
+					currentImageMeta.value = null;
 					return;
 				}
 
@@ -89,11 +131,18 @@ export default {
 
 				try {
 					isLoading.value = true;
-					currentImage.value = processBase64(getFirstNonEmptyValue(latestItem, variables));
+					const imageEntry = getFirstNonEmptyEntry(latestItem, variables);
+					currentImage.value = processBase64(imageEntry.value);
+					currentImageMeta.value = {
+						taskId: latestItem.taskId || latestItem.timestamp || '',
+						variable: imageEntry.key,
+						value: imageEntry.value,
+					};
 				} catch (error) {
 					console.error('Image process error:', error);
 					loadError.value = true;
 					currentImage.value = null;
+					currentImageMeta.value = null;
 				} finally {
 					isLoading.value = false;
 				}
@@ -103,6 +152,7 @@ export default {
 
 		return {
 			currentImage,
+			tooltipRows,
 			isLoading,
 			loadError,
 		};
@@ -140,6 +190,22 @@ export default {
 		linear-gradient(-45deg, transparent 75%, rgba(226, 232, 240, 0.6) 75%);
 	background-size: 24px 24px;
 	background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+}
+
+.image-tooltip {
+	display: grid;
+	gap: 6px;
+	min-width: 180px;
+}
+
+.image-tooltip__row {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.image-tooltip__row span {
+	color: #cbd5e1;
 }
 
 .responsive-image {
