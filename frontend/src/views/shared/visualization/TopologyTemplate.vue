@@ -18,6 +18,7 @@ import { PieChart } from '@element-plus/icons-vue';
 import { graphlib, layout as dagreLayout } from '@dagrejs/dagre';
 
 const COLOR_PALETTE = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#8b5cf6', '#14b8a6', '#f97316'];
+const MIN_NODE_SCALE = 0.18;
 
 export default {
 	name: 'TopologyTemplate',
@@ -70,7 +71,12 @@ export default {
 		const calculateNodeSize = (text) => {
 			const lines = String(text || '').split('\n');
 			const maxLineLength = Math.max(...lines.map((line) => line.length), 10);
-			return [Math.min(220, Math.max(118, maxLineLength * 7.6)), Math.max(64, lines.length * 22 + 16)];
+			return [Math.min(180, Math.max(94, maxLineLength * 6.8)), Math.max(52, lines.length * 18 + 12)];
+		};
+
+		const truncateLabel = (value, maxLength = 24) => {
+			const text = String(value ?? '');
+			return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 		};
 
 		const getFirstNonEmptyValue = (obj, variables) => {
@@ -103,7 +109,8 @@ export default {
 				Object.entries(latestData).forEach(([nodeId, nodeInfo]) => {
 					const serviceName = nodeInfo?.service?.service_name || nodeId;
 					const payload = nodeInfo?.service?.data ?? 'No data';
-					const labelText = `${serviceName}\n${payload}`;
+					const displayPayload = truncateLabel(payload, 26);
+					const labelText = `${serviceName}\n${displayPayload}`;
 					const [width, height] = calculateNodeSize(labelText);
 					const backgroundColor = generateColor(String(payload));
 					const foregroundColor = getContrastColor(backgroundColor);
@@ -112,6 +119,7 @@ export default {
 						id: nodeId,
 						name: serviceName,
 						data: payload,
+						displayData: displayPayload,
 						symbol: 'roundRect',
 						symbolSize: [width, height],
 						itemStyle: {
@@ -125,23 +133,23 @@ export default {
 						label: {
 							show: true,
 							position: 'inside',
-							formatter: `{title|${serviceName}}\n{divider|${'─'.repeat(10)}}\n{content|${String(payload)}}`,
+							formatter: `{title|${truncateLabel(serviceName, 22)}}\n{divider|${'─'.repeat(8)}}\n{content|${displayPayload}}`,
 							rich: {
 								title: {
-									fontSize: 12,
+									fontSize: 11,
 									fontWeight: 700,
 									color: foregroundColor,
-									padding: [0, 0, 2, 0],
+									padding: [0, 0, 1, 0],
 								},
 								divider: {
-									fontSize: 10,
-									lineHeight: 10,
+									fontSize: 9,
+									lineHeight: 8,
 									color: getContrastColor(backgroundColor, 0.45),
 								},
 								content: {
-									fontSize: 11,
+									fontSize: 10,
 									fontWeight: 500,
-									lineHeight: 15,
+									lineHeight: 13,
 									color: foregroundColor,
 								},
 							},
@@ -159,10 +167,10 @@ export default {
 				const graph = new graphlib.Graph();
 				graph.setGraph({
 					rankdir: 'LR',
-					nodesep: 20,
-					ranksep: 34,
-					marginx: 16,
-					marginy: 16,
+					nodesep: 6,
+					ranksep: 8,
+					marginx: 4,
+					marginy: 4,
 				});
 				graph.setDefaultEdgeLabel(() => ({}));
 
@@ -216,22 +224,60 @@ export default {
 			chartInstance.value?.resize();
 		};
 
-		const getFitViewport = () => {
-			const bounds = topologyData.value?.bounds;
+		const getFittedTopologyData = () => {
+			const data = topologyData.value;
 			const rect = chartRef.value?.getBoundingClientRect();
-			if (!bounds || !rect?.width || !rect?.height) {
-				return {
-					center: undefined,
-					zoom: 0.9,
-				};
+			if (!data || !rect?.width || !rect?.height) {
+				return data;
 			}
 
-			const availableWidth = Math.max(120, rect.width - 52);
-			const availableHeight = Math.max(120, rect.height - 52);
-			const fitZoom = Math.min(1, availableWidth / bounds.width, availableHeight / bounds.height);
+			const bounds = data.bounds;
+			const padding = 16;
+			const availableWidth = Math.max(120, rect.width - padding * 2);
+			const availableHeight = Math.max(120, rect.height - padding * 2);
+			const scale = Math.max(MIN_NODE_SCALE, Math.min(1, availableWidth / bounds.width, availableHeight / bounds.height));
+			const centerX = rect.width / 2;
+			const centerY = rect.height / 2;
+
+			const nodes = data.nodes.map((node) => {
+				const [width, height] = node.symbolSize;
+				const scaledWidth = Math.max(36, width * scale);
+				const scaledHeight = Math.max(24, height * scale);
+				const labelScale = Math.max(0.55, scale);
+				return {
+					...node,
+					x: centerX + (node.x - bounds.centerX) * scale,
+					y: centerY + (node.y - bounds.centerY) * scale,
+					symbolSize: [scaledWidth, scaledHeight],
+					itemStyle: {
+						...node.itemStyle,
+						shadowBlur: Math.max(4, 10 * scale),
+					},
+					label: {
+						...node.label,
+						rich: {
+							title: {
+								...node.label.rich.title,
+								fontSize: Math.max(7, 11 * labelScale),
+							},
+							divider: {
+								...node.label.rich.divider,
+								fontSize: Math.max(6, 9 * labelScale),
+								lineHeight: Math.max(5, 8 * labelScale),
+							},
+							content: {
+								...node.label.rich.content,
+								fontSize: Math.max(6, 10 * labelScale),
+								lineHeight: Math.max(8, 13 * labelScale),
+							},
+						},
+					},
+				};
+			});
+
 			return {
-				center: [bounds.centerX, bounds.centerY],
-				zoom: Math.max(0.18, fitZoom),
+				nodes,
+				edges: data.edges,
 			};
 		};
 
@@ -268,7 +314,7 @@ export default {
 			if (!chartInstance.value || !topologyData.value) return;
 
 			await nextTick();
-			const fitViewport = getFitViewport();
+			const fittedData = getFittedTopologyData();
 
 			chartInstance.value.setOption({
 				animationDuration: 450,
@@ -302,8 +348,7 @@ export default {
 						bottom: 10,
 						roam: true,
 						draggable: false,
-						center: fitViewport.center,
-						zoom: fitViewport.zoom,
+						zoom: 1,
 						nodeScaleRatio: 1,
 						scaleLimit: {
 							min: 0.15,
@@ -326,8 +371,8 @@ export default {
 								color: '#475569',
 							},
 						},
-						data: topologyData.value.nodes,
-						edges: topologyData.value.edges,
+						data: fittedData.nodes,
+						edges: fittedData.edges,
 					},
 				],
 			});

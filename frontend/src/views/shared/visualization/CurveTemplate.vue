@@ -213,16 +213,29 @@ export default {
 				return {
 					name: varName,
 					type: 'line',
-					smooth: true,
+					smooth: false,
 					symbol: 'emptyCircle',
-					symbolSize: 7,
+					symbolSize: 8,
 					showSymbol: true,
+					showAllSymbol: true,
 					connectNulls: false,
 					progressive: 200,
+					hoverAnimation: true,
 					lineStyle: { width: 2.5 },
 					itemStyle: {
 						color: CHART_COLORS[index % CHART_COLORS.length],
 						borderWidth: 2,
+					},
+					emphasis: {
+						focus: 'series',
+						itemStyle: {
+							borderWidth: 3,
+							shadowBlur: 8,
+							shadowColor: 'rgba(15, 23, 42, 0.18)',
+						},
+					},
+					tooltip: {
+						trigger: 'item',
 					},
 					data: values.map((value) => {
 						if (value === undefined) return null;
@@ -236,6 +249,8 @@ export default {
 				animationDuration: 450,
 				tooltip: {
 					trigger: 'item',
+					triggerOn: 'mousemove|click',
+					confine: true,
 					backgroundColor: 'rgba(15, 23, 42, 0.92)',
 					borderWidth: 0,
 					textStyle: { color: '#e2e8f0' },

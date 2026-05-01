@@ -67,10 +67,14 @@ export default {
 .controls-shell {
 	display: flex;
 	flex-wrap: wrap;
-	align-items: center;
-	justify-content: center;
+	align-items: flex-start;
+	justify-content: flex-start;
 	gap: 10px;
 	padding-top: 2px;
+	max-height: 64px;
+	overflow-y: auto;
+	overflow-x: hidden;
+	scrollbar-width: thin;
 }
 
 .controls-label {
@@ -83,7 +87,9 @@ export default {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 8px;
-	justify-content: center;
+	justify-content: flex-start;
+	flex: 1 1 220px;
+	min-width: 0;
 }
 
 .controls-option {
@@ -91,6 +97,7 @@ export default {
 }
 
 .controls-option :deep(.el-checkbox-button__inner) {
+	max-width: 160px;
 	border-radius: 999px;
 	border: 1px solid #cbd5e1;
 	background: #f8fafc;
@@ -99,6 +106,9 @@ export default {
 	padding: 7px 12px;
 	font-size: 12px;
 	line-height: 1.1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .controls-option.is-checked :deep(.el-checkbox-button__inner) {
