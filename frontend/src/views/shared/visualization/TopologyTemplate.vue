@@ -42,7 +42,7 @@
 				<rect
 					:width="node.width"
 					:height="node.height"
-					rx="10"
+					rx="7"
 					:fill="node.backgroundColor"
 					stroke="rgba(15, 23, 42, 0.16)"
 					stroke-width="1"
@@ -55,14 +55,6 @@
 						:fill="node.foregroundColor"
 					>
 						{{ node.title }}
-					</tspan>
-					<tspan
-						class="topology-node__divider"
-						:x="node.width / 2"
-						:y="node.dividerY"
-						:fill="node.dividerColor"
-					>
-						{{ node.divider }}
 					</tspan>
 					<tspan
 						class="topology-node__content"
@@ -98,10 +90,10 @@ import { computed, reactive } from 'vue';
 import dagre from '@dagrejs/dagre';
 import { PieChart } from '@element-plus/icons-vue';
 
-const GRAPH_PADDING = 14;
-const NODE_MIN_WIDTH = 84;
-const NODE_MAX_WIDTH = 148;
-const NODE_MIN_HEIGHT = 42;
+const GRAPH_PADDING = 10;
+const NODE_MIN_WIDTH = 68;
+const NODE_MAX_WIDTH = 118;
+const NODE_HEIGHT = 34;
 const COLOR_PALETTE = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#8b5cf6', '#14b8a6', '#f97316'];
 
 function hashString(value) {
@@ -148,11 +140,11 @@ function getFirstNonEmptyValue(obj, variables) {
 function getNodeMetrics(id, nodeInfo) {
 	const serviceName = nodeInfo?.service?.service_name || id;
 	const data = nodeInfo?.service?.data ?? 'No data';
-	const title = truncateLabel(serviceName, 18);
-	const displayData = truncateLabel(data, 22);
+	const title = truncateLabel(serviceName, 14);
+	const displayData = truncateLabel(data, 14);
 	const longestLine = Math.max(title.length, displayData.length, 8);
-	const width = Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, longestLine * 6.2 + 26));
-	const height = Math.max(NODE_MIN_HEIGHT, 48);
+	const width = Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, longestLine * 5.8 + 18));
+	const height = NODE_HEIGHT;
 	const backgroundColor = getNodeColor(String(data));
 
 	return {
@@ -161,15 +153,12 @@ function getNodeMetrics(id, nodeInfo) {
 		data,
 		title,
 		displayData,
-		divider: '────────',
 		width,
 		height,
-		titleY: 15,
-		dividerY: 25,
-		contentY: 36,
+		titleY: 12,
+		contentY: 24,
 		backgroundColor,
 		foregroundColor: getContrastColor(backgroundColor),
-		dividerColor: getContrastColor(backgroundColor, 0.45),
 	};
 }
 
@@ -178,10 +167,9 @@ function buildEdgePath(sourceNode, targetNode) {
 	const startY = sourceNode.y + sourceNode.height / 2;
 	const endX = targetNode.x;
 	const endY = targetNode.y + targetNode.height / 2;
-	const distance = Math.max(endX - startX, 16);
-	const curve = Math.min(Math.max(distance * 0.42, 18), 48);
+	const midX = startX + Math.max(6, (endX - startX) / 2);
 
-	return `M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`;
+	return `M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${endY} L ${endX} ${endY}`;
 }
 
 function buildLayout(config, data) {
@@ -201,8 +189,8 @@ function buildLayout(config, data) {
 	const graph = new dagre.graphlib.Graph();
 	graph.setGraph({
 		rankdir: 'LR',
-		nodesep: 6,
-		ranksep: 14,
+		nodesep: 4,
+		ranksep: 6,
 		marginx: 0,
 		marginy: 0,
 	});
@@ -376,15 +364,15 @@ export default {
 .topology-edge {
 	fill: none;
 	stroke: #64748b;
-	stroke-width: 1.8;
+	stroke-width: 1.4;
 	stroke-linecap: round;
 	stroke-linejoin: round;
-	opacity: 0.82;
+	opacity: 0.72;
 }
 
 .topology-node {
 	cursor: default;
-	filter: drop-shadow(0 10px 16px rgba(15, 23, 42, 0.12));
+	filter: drop-shadow(0 6px 10px rgba(15, 23, 42, 0.1));
 }
 
 .topology-node__text {
@@ -392,16 +380,12 @@ export default {
 }
 
 .topology-node__title {
-	font-size: 10px;
+	font-size: 8.6px;
 	font-weight: 700;
 }
 
-.topology-node__divider {
-	font-size: 8px;
-}
-
 .topology-node__content {
-	font-size: 9px;
+	font-size: 7.8px;
 	font-weight: 600;
 }
 
