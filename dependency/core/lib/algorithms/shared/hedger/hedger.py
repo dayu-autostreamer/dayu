@@ -4047,8 +4047,6 @@ class Hedger:
                         len(self.offloading_transitions) >= self.training_cfg.offloading_rollout_len:
                     with self._data_lock:
                         off_transitions = self.offloading_transitions[:self.training_cfg.offloading_rollout_len]
-                        del self.offloading_transitions[:self.training_cfg.offloading_rollout_len]
-                        off_remaining = len(self.offloading_transitions)
 
                     with self._model_lock:
                         off_ppo_cfg = self.offloading_agent_params["ppo"]
@@ -4063,6 +4061,9 @@ class Hedger:
                             entropy_coef=off_entropy_coef,
                             value_coef=off_ppo_cfg.value_coef,
                         )
+                    with self._data_lock:
+                        del self.offloading_transitions[:len(off_transitions)]
+                        off_remaining = len(self.offloading_transitions)
                     self._offloading_update_steps += 1
                     updates_in_tick += 1
                     self._record_ppo_update(
@@ -4090,8 +4091,6 @@ class Hedger:
                         len(self.deployment_transitions) >= self.training_cfg.deployment_rollout_len:
                     with self._data_lock:
                         dep_transitions = self.deployment_transitions[:self.training_cfg.deployment_rollout_len]
-                        del self.deployment_transitions[:self.training_cfg.deployment_rollout_len]
-                        dep_remaining = len(self.deployment_transitions)
 
                     with self._model_lock:
                         dep_ppo_cfg = self.deployment_agent_params["ppo"]
@@ -4106,6 +4105,9 @@ class Hedger:
                             entropy_coef=dep_entropy_coef,
                             value_coef=dep_ppo_cfg.value_coef,
                         )
+                    with self._data_lock:
+                        del self.deployment_transitions[:len(dep_transitions)]
+                        dep_remaining = len(self.deployment_transitions)
                     self._deployment_update_steps += 1
                     updates_in_tick += 1
                     self._record_ppo_update(

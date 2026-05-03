@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Sequence, Union
 import math
 
 import torch
@@ -1314,11 +1314,16 @@ class HedgerOffloadingPPO(nn.Module):
         qk_feature = _masked_center_tanh(qk_scores, mask)
         return q_embedding, k_embedding, qk_scores, qk_feature
 
+    @staticmethod
+    def _offloading_action_at(actions: Union[Sequence[int], torch.Tensor], idx: int) -> int:
+        value = actions[idx]
+        return int(value.item()) if isinstance(value, torch.Tensor) else int(value)
+
     def _offloading_dependency_context(
             self,
             parents: List[List[int]],
             service_idx: int,
-            actions: torch.Tensor,
+            actions: Union[Sequence[int], torch.Tensor],
             phys_feats: Dict[str, torch.Tensor],
             num_devices: int,
             device: torch.device,
@@ -1339,11 +1344,11 @@ class HedgerOffloadingPPO(nn.Module):
             context[:, 3] = is_cloud * torch.log1p(edge_bw_ref / bandwidth)
             return context
 
-        valid_parent_actions = [
-            int(actions[parent_idx].item())
-            for parent_idx in parent_indices
-            if 0 <= int(actions[parent_idx].item()) < num_devices
-        ]
+        valid_parent_actions = []
+        for parent_idx in parent_indices:
+            action = self._offloading_action_at(actions, parent_idx)
+            if 0 <= action < num_devices:
+                valid_parent_actions.append(action)
         if not valid_parent_actions:
             return context
         denom = float(max(1, len(valid_parent_actions)))
@@ -1390,7 +1395,7 @@ class HedgerOffloadingPPO(nn.Module):
             demand_feat: torch.Tensor,
             parents: List[List[int]],
             service_idx: int,
-            actions: torch.Tensor,
+            actions: Union[Sequence[int], torch.Tensor],
     ) -> torch.Tensor:
         num_devices = qk_feature.size(1)
         device = qk_feature.device
@@ -1511,11 +1516,12 @@ class HedgerOffloadingPPO(nn.Module):
             self,
             base_mask: torch.Tensor,
             parent_indices: List[int],
-            actions: torch.Tensor,
+            actions: Union[Sequence[int], torch.Tensor],
     ) -> torch.Tensor:
         allowed = base_mask.clone().bool()
         cloud_idx = self._cloud_index(allowed.numel())
-        if parent_indices and any(int(actions[parent_idx].item()) == cloud_idx for parent_idx in parent_indices):
+        if parent_indices and any(self._offloading_action_at(actions, parent_idx) == cloud_idx
+                                  for parent_idx in parent_indices):
             allowed = torch.zeros_like(allowed)
             allowed[cloud_idx] = True
         if not bool(allowed.any().item()):
@@ -1641,12 +1647,12 @@ class HedgerOffloadingPPO(nn.Module):
         candidate_costs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         candidate_features_matrix = torch.zeros((Ms, Np, 16), dtype=h_s.dtype, device=h_p.device)
 
-        proposal_actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
+        proposal_action_list = [-1 for _ in range(Ms)]
         logp_sum = torch.tensor(0.0, device=h_p.device)
         ent_sum = torch.tensor(0.0, device=h_p.device)
 
         for i in topo_order:
-            allowed = self._dynamic_allowed_row(effective_mask[i], parents[i], proposal_actions)
+            allowed = self._dynamic_allowed_row(effective_mask[i], parents[i], proposal_action_list)
             candidate_row = self._offloading_candidate_row(
                 logic_feats,
                 phys_feats,
@@ -1655,7 +1661,7 @@ class HedgerOffloadingPPO(nn.Module):
                 demand_feat,
                 parents,
                 i,
-                proposal_actions,
+                proposal_action_list,
             )
             candidate_cost = self.offloading_cost_head(candidate_row.float())
             candidate_scores = -candidate_cost
@@ -1667,9 +1673,12 @@ class HedgerOffloadingPPO(nn.Module):
             probs_i = F.softmax(masked_scores, dim=-1)
             policy_prob_matrix[i] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)
-            proposal_actions[i] = torch.argmax(probs_i) if deterministic else dist.sample()
-            logp_sum += dist.log_prob(proposal_actions[i])
+            sampled_action = torch.argmax(probs_i) if deterministic else dist.sample()
+            proposal_action_list[i] = int(sampled_action.item())
+            logp_sum += dist.log_prob(sampled_action)
             ent_sum += dist.entropy()
+
+        proposal_actions = torch.tensor(proposal_action_list, dtype=torch.long, device=h_p.device)
 
         projected_actions, projection_info = self._project_offloading_actions(
             proposal_actions,
@@ -1712,7 +1721,7 @@ class HedgerOffloadingPPO(nn.Module):
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
         effective_mask = self._effective_offloading_mask(static_mask)
-        proposal_actions = proposal_actions.long()
+        proposal_action_list = [int(action) for action in proposal_actions.detach().cpu().long().tolist()]
 
         logp_sum = torch.tensor(0., device=h_p.device)
         ent_sum = torch.tensor(0., device=h_p.device)
@@ -1735,7 +1744,7 @@ class HedgerOffloadingPPO(nn.Module):
         )
 
         for i in topo_order:
-            allowed = self._dynamic_allowed_row(effective_mask[i], parents[i], proposal_actions)
+            allowed = self._dynamic_allowed_row(effective_mask[i], parents[i], proposal_action_list)
             candidate_row = self._offloading_candidate_row(
                 logic_feats,
                 phys_feats,
@@ -1744,12 +1753,12 @@ class HedgerOffloadingPPO(nn.Module):
                 demand_feat,
                 parents,
                 i,
-                proposal_actions,
+                proposal_action_list,
             )
             scores_i = -self.offloading_cost_head(candidate_row.float())
             probs_i = F.softmax(scores_i.masked_fill(~allowed, float('-inf')), dim=-1)
             dist = torch.distributions.Categorical(probs=probs_i)
-            a = proposal_actions[i]
+            a = torch.tensor(proposal_action_list[i], dtype=torch.long, device=h_p.device)
             logp_sum += dist.log_prob(a)
             ent_sum += dist.entropy()
 
