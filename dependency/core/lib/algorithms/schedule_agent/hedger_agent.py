@@ -299,7 +299,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
             if service_name in (TaskConstant.START.value, TaskConstant.END.value):
                 continue
             service = task.get_service(service_name)
-            latency = service.get_execute_time()
+            latency = service.get_service_total_time()
             execute_device = service.get_execute_device()
             complexity = self._extract_task_complexity(service)
             service_feedback.append((service_name, float(complexity), float(latency), execute_device))

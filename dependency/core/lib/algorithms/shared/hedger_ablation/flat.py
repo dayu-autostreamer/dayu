@@ -9,7 +9,6 @@ from core.lib.common import LOGGER, Recorder
 from core.lib.algorithms.shared.hedger import Hedger
 from core.lib.algorithms.shared.hedger.hedger_config import (
     DeploymentConstraintCfg,
-    OffloadingConstraintCfg,
     from_partial_dict,
 )
 from .flat_ppo_agent import HedgerFlatPPO
@@ -36,7 +35,6 @@ class HedgerFlat(Hedger):
             update_encoder=self.offloading_agent_params['update_encoder'],
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
             deployment_constraint_cfg=from_partial_dict(DeploymentConstraintCfg, self.deployment_agent_params),
-            offloading_constraint_cfg=from_partial_dict(OffloadingConstraintCfg, self.offloading_agent_params),
         ).to(self.device)
         self.deployment_agent = self.flat_agent
         self.offloading_agent = self.flat_agent
@@ -189,7 +187,7 @@ class HedgerFlat(Hedger):
         phys_edge_index = self._build_edge_index(self.physical_topology.links)
         tick = 0
         prev_deploy_mask = self._current_deploy_mask()
-        logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+        logic_feats, phys_feats, _, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
         while not self.deployment_thread_stop_event.is_set():
             try:
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
@@ -213,7 +211,7 @@ class HedgerFlat(Hedger):
                     self._mark_deployment_decision_pending()
                 tick = self._sleep_until_next_tick(tick, self.deployment_interval)
                 prev_deploy_mask = self._current_deploy_mask()
-                logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+                logic_feats, phys_feats, _, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
             except Exception as exc:
                 LOGGER.exception(f"[HedgerFlat][Inference] Worker loop error: {exc}")
                 time.sleep(0.5)
@@ -238,8 +236,7 @@ class HedgerFlat(Hedger):
             fieldnames=["step", "epoch", "update", "decision_version", "reward", "latency",
                         "slo_violation", "cloud_fraction", "dep_change_cost", "cap_relax_cnt",
                         "cap_relax_cost", "edge_cover_repair_cnt", "edge_cover_unmet",
-                        "correction_cnt", "correction_cost", "policy_logp",
-                        "policy_entropy", "value_estimate", "next_value", "transition_buffer",
+                        "policy_logp", "policy_entropy", "value_estimate", "next_value", "transition_buffer",
                         "deployment_plan", "offloading_plan"],
             overwrite=True,
             flush_every=1,
@@ -331,13 +328,13 @@ class HedgerFlat(Hedger):
         step = 0
         deployment_time_ticket = 0
         prev_deploy_mask = self._current_deploy_mask()
-        logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+        logic_feats, phys_feats, _, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
         last_task_version = self.state_buffer.get_task_observation_version() if self.state_buffer is not None else 0
         while not self.deployment_thread_stop_event.is_set():
             try:
                 if self._sleep_while_latency_guard_active("flat worker"):
                     prev_deploy_mask = self._current_deploy_mask()
-                    logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+                    logic_feats, phys_feats, _, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
                     last_task_version = self.state_buffer.get_task_observation_version()
                     continue
 
@@ -372,15 +369,17 @@ class HedgerFlat(Hedger):
                 task_feedback_summary = self.state_buffer.get_task_observation_deployment_summary(last_task_version)
                 current_task_version = int(task_feedback_summary["current_version"])
                 if current_task_version <= last_task_version:
-                    logic_feats, phys_feats, _, _ = self._collect_deployment_state(prev_deploy_mask=deploy_mask.detach().cpu())
+                    logic_feats, phys_feats, _, _, _ = self._collect_deployment_state(
+                        prev_deploy_mask=deploy_mask.detach().cpu()
+                    )
                     continue
                 feedback_version = decision_version if task_feedback_summary.get("count", 0) > 0 else None
-                new_logic_feats, new_phys_feats, metrics, done = self._collect_offloading_state(
+                new_logic_feats, new_phys_feats, metrics, done, _ = self._collect_offloading_state(
                     since_task_version=last_task_version,
                     deployment_version=feedback_version,
                 )
                 last_task_version = current_task_version
-                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics, aux)
+                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics)
                 off_reward = off_reward_breakdown["reward"]
 
                 exec_deploy_mask = deploy_mask.detach().cpu().bool()
@@ -415,7 +414,7 @@ class HedgerFlat(Hedger):
                     "phys_edge_index": phys_edge_index.cpu(),
                     "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
                     "raw_deploy_mask": aux["raw_deploy_mask"].detach().cpu(),
-                    "raw_actions": aux["raw_actions"].detach().cpu(),
+                    "actions": actions.detach().cpu(),
                     "static_mask": deploy_mask.detach().cpu(),
                     "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
                     "topo_order": None,
@@ -448,8 +447,6 @@ class HedgerFlat(Hedger):
                     cap_relax_cost=aux["capacity_relax_cost"],
                     edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
                     edge_cover_unmet=aux.get("edge_cover_unmet", 0),
-                    correction_cnt=aux["correction_cnt"],
-                    correction_cost=aux["correction_cost"],
                     policy_logp=float(logp.detach().cpu().item()),
                     policy_entropy=float(ent.detach().cpu().item()),
                     value_estimate=float(value.detach().cpu().item()),
@@ -466,8 +463,7 @@ class HedgerFlat(Hedger):
                 )
                 self._log_offloading_decisions(
                     step=step,
-                    raw_actions=aux["raw_actions"].detach().cpu(),
-                    executed_actions=actions.detach().cpu(),
+                    actions=actions.detach().cpu(),
                     static_mask=deploy_mask.detach().cpu(),
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,

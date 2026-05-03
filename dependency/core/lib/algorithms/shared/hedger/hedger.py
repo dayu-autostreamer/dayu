@@ -1,6 +1,6 @@
 import copy
 from collections import deque
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import threading
 import random
 import math
@@ -16,7 +16,7 @@ from core.lib.estimation import OverheadEstimator
 
 from .topology_encoder import TopologyEncoders
 from .ppo_agent import HedgerOffloadingPPO, HedgerDeploymentPPO
-from .hedger_config import from_partial_dict, OffloadingConstraintCfg, DeploymentConstraintCfg, LogicalTopology, \
+from .hedger_config import from_partial_dict, DeploymentConstraintCfg, LogicalTopology, \
     PhysicalTopology
 from .state_buffer import StateBuffer, BufferWaitCfg
 
@@ -90,10 +90,13 @@ class HedgerInferenceCfg:
 @dataclass(frozen=True)
 class HedgerRecordCfg:
     state_summary: bool = True
+    debug_mode: bool = False
     state_snapshot_debug: bool = False
     actor_snapshot_debug: bool = False
-    decision_pair_features_debug: bool = False
+    decision_candidate_features_debug: bool = False
     decision_actor_debug: bool = False
+    normal_json_max_chars: int = 12000
+    debug_json_max_chars: int = 200000
 
 
 @dataclass(frozen=True)
@@ -463,12 +466,16 @@ class Hedger:
         record = config.get("record") or {}
         if not isinstance(record, dict):
             raise ValueError("Hedger config `record` must be a mapping when provided.")
+        debug_mode = bool(record.get("debug_mode", False))
         return HedgerRecordCfg(
             state_summary=bool(record.get("state_summary", True)),
-            state_snapshot_debug=bool(record.get("state_snapshot_debug", False)),
-            actor_snapshot_debug=bool(record.get("actor_snapshot_debug", False)),
-            decision_pair_features_debug=bool(record.get("decision_pair_features_debug", False)),
-            decision_actor_debug=bool(record.get("decision_actor_debug", False)),
+            debug_mode=debug_mode,
+            state_snapshot_debug=bool(record.get("state_snapshot_debug", debug_mode)),
+            actor_snapshot_debug=bool(record.get("actor_snapshot_debug", debug_mode)),
+            decision_candidate_features_debug=bool(record.get("decision_candidate_features_debug", debug_mode)),
+            decision_actor_debug=bool(record.get("decision_actor_debug", debug_mode)),
+            normal_json_max_chars=max(0, int(record.get("normal_json_max_chars", 12000))),
+            debug_json_max_chars=max(0, int(record.get("debug_json_max_chars", 200000))),
         )
 
     def _build_state_cfg(self, config: dict) -> HedgerStateCfg:
@@ -752,8 +759,6 @@ class Hedger:
             "reward_dep_latency_transform": dep_latency_cfg["transform"],
             "reward_dep_latency_normalizer": dep_latency_cfg["normalizer"],
             "reward_dep_latency_clip": dep_latency_cfg["clip"],
-            "latency_pair_bias_weight": float(deployment.get("latency_pair_bias_weight", 1.0)),
-            "queue_pair_bias_weight": float(deployment.get("queue_pair_bias_weight", 0.3)),
             "penalty_capacity_relax": float(penalty["capacity_relax"]),
             "penalty_edge_cover_repair": float(penalty.get("edge_cover_repair", 0.0)),
             "penalty_latency_guard_trigger": float(penalty.get("latency_guard_trigger", 0.0)),
@@ -766,7 +771,6 @@ class Hedger:
     def _build_offloading_agent_params(self, agents_cfg: dict) -> dict:
         offloading = self._require_mapping(agents_cfg, "offloading")
         reward = self._require_mapping(offloading, "reward")
-        penalty = self._require_mapping(offloading, "penalty")
         ppo = self._build_ppo_update_cfg(offloading)
         off_latency_cfg = self._parse_latency_reward_cfg(
             reward,
@@ -786,7 +790,6 @@ class Hedger:
             "reward_off_latency_transform": off_latency_cfg["transform"],
             "reward_off_latency_normalizer": off_latency_cfg["normalizer"],
             "reward_off_latency_clip": off_latency_cfg["clip"],
-            "penalty_relax": float(penalty["correction"]),
             "ppo": ppo,
         }
 
@@ -1512,8 +1515,6 @@ class Hedger:
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"min_edge_replicas_per_service={dep_params.get('min_edge_replicas_per_service', 'na')}, "
-            f"dep_latency_pair_bias_weight={dep_params.get('latency_pair_bias_weight', 'na')}, "
-            f"dep_queue_pair_bias_weight={dep_params.get('queue_pair_bias_weight', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -1655,8 +1656,7 @@ class Hedger:
             base += f", metrics=({self._summarize_metrics(metrics)})"
         return base
 
-    @staticmethod
-    def _json_for_record(value) -> str:
+    def _json_for_record(self, value) -> str:
         def _normalize(obj):
             if obj is None:
                 return None
@@ -1672,7 +1672,31 @@ class Hedger:
                 return obj
 
         normalized = {} if value is None else _normalize(value)
-        return json.dumps(normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        encoded = json.dumps(normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        debug_enabled = (
+                self.record_cfg.debug_mode
+                or self.record_cfg.state_snapshot_debug
+                or self.record_cfg.actor_snapshot_debug
+                or self.record_cfg.decision_candidate_features_debug
+                or self.record_cfg.decision_actor_debug
+        )
+        limit = (
+            self.record_cfg.debug_json_max_chars
+            if debug_enabled else self.record_cfg.normal_json_max_chars
+        )
+        if limit > 0 and len(encoded) > limit:
+            preview = encoded[:limit]
+            return json.dumps(
+                {
+                    "truncated": True,
+                    "original_chars": len(encoded),
+                    "preview": preview,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return encoded
 
     @staticmethod
     def _nested_float_mean(value) -> float:
@@ -1740,6 +1764,25 @@ class Hedger:
             return {}
         return {
             self._device_name(device_idx): float(value[service_idx, device_idx].item())
+            for device_idx in range(value.size(1))
+        }
+
+    def _actor_debug_pair_feature_map(
+            self,
+            actor_debug: Optional[Dict[str, Any]],
+            key: str,
+            service_idx: int,
+    ) -> Dict[str, List[float]]:
+        if not isinstance(actor_debug, dict):
+            return {}
+        value = actor_debug.get(key)
+        if not isinstance(value, torch.Tensor) or value.numel() == 0:
+            return {}
+        value = value.detach().float().cpu()
+        if value.dim() != 3 or service_idx < 0 or service_idx >= value.size(0):
+            return {}
+        return {
+            self._device_name(device_idx): [float(item) for item in value[service_idx, device_idx].tolist()]
             for device_idx in range(value.size(1))
         }
 
@@ -1817,7 +1860,6 @@ class Hedger:
         `record.state_snapshot_debug`.
         """
         state_debug = state_debug or {}
-        pair_features = state_debug.get("pair_feature_snapshot", {}) or {}
         latency_pair_snapshot = state_debug.get("latency_pair_snapshot", {}) or {}
         queue_pair_snapshot = state_debug.get("queue_pair_snapshot", {}) or {}
         row: Dict[str, Any] = {}
@@ -1861,6 +1903,15 @@ class Hedger:
                     edge_bandwidth = torch.empty(0, dtype=edge_bandwidth.dtype)
                 latest_edge_bw = float(edge_bandwidth.float().mean().item()) if edge_bandwidth.numel() else 0.0
 
+            runtime_means = [0.0] * 7
+            runtime_candidate = logic_feats.get("runtime_candidate_feat")
+            if isinstance(runtime_candidate, torch.Tensor) and runtime_candidate.dim() == 3 \
+                    and runtime_candidate.size(-1) >= 7 and runtime_candidate.numel():
+                runtime_means = [
+                    float(runtime_candidate[..., idx].detach().float().mean().cpu().item())
+                    for idx in range(7)
+                ]
+
             row.update({
                 "state_services": service_count,
                 "state_devices": device_count,
@@ -1877,30 +1928,13 @@ class Hedger:
                 "state_mem_capacity_mean": self._tensor_mean(phys_feats.get("mem_capacity")),
                 "state_latency_pair_obs_count": self._nested_float_mean(latency_pair_snapshot.get("pair_count")),
                 "state_queue_pair_obs_count": self._nested_float_mean(queue_pair_snapshot.get("pair_count")),
-                "state_latency_pair_off_reliability_mean": self._nested_float_mean(
-                    [
-                        row[-1] for service_rows in pair_features.get("offloading_latency", [])
-                        for row in service_rows
-                    ]
-                ),
-                "state_latency_pair_dep_reliability_mean": self._nested_float_mean(
-                    [
-                        row[-1] for service_rows in pair_features.get("deployment_latency", [])
-                        for row in service_rows
-                    ]
-                ),
-                "state_queue_pair_off_reliability_mean": self._nested_float_mean(
-                    [
-                        row[-1] for service_rows in pair_features.get("offloading_queue", [])
-                        for row in service_rows
-                    ]
-                ),
-                "state_queue_pair_dep_reliability_mean": self._nested_float_mean(
-                    [
-                        row[-1] for service_rows in pair_features.get("deployment_queue", [])
-                        for row in service_rows
-                    ]
-                ),
+                "state_runtime_availability_mean": runtime_means[0],
+                "state_runtime_queue_short_mean": runtime_means[1],
+                "state_runtime_queue_mean": runtime_means[2],
+                "state_runtime_busy_ratio_mean": runtime_means[3],
+                "state_runtime_latency_short_mean": runtime_means[4],
+                "state_runtime_latency_residual_mean": runtime_means[5],
+                "state_runtime_confidence_mean": runtime_means[6],
             })
 
         if self.record_cfg.state_snapshot_debug:
@@ -1909,7 +1943,7 @@ class Hedger:
                 "state_phys_snapshot": self._json_for_record(state_debug.get("phys_snapshot")),
                 "state_latency_pair_snapshot": self._json_for_record(latency_pair_snapshot),
                 "state_queue_pair_snapshot": self._json_for_record(queue_pair_snapshot),
-                "state_pair_feature_snapshot": self._json_for_record(pair_features),
+                "state_runtime_candidate_snapshot": self._json_for_record(logic_feats.get("runtime_candidate_feat")),
             })
         return row
 
@@ -1922,15 +1956,17 @@ class Hedger:
             "state_model_flops_mean", "state_model_mem_mean",
             "state_gpu_flops_mean", "state_mem_capacity_mean",
             "state_latency_pair_obs_count", "state_queue_pair_obs_count",
-            "state_latency_pair_off_reliability_mean", "state_latency_pair_dep_reliability_mean",
-            "state_queue_pair_off_reliability_mean", "state_queue_pair_dep_reliability_mean",
+            "state_runtime_availability_mean", "state_runtime_queue_short_mean",
+            "state_runtime_queue_mean", "state_runtime_busy_ratio_mean",
+            "state_runtime_latency_short_mean", "state_runtime_latency_residual_mean",
+            "state_runtime_confidence_mean",
         ]
 
     @staticmethod
     def _state_record_debug_fieldnames() -> List[str]:
         return [
             "state_logic_snapshot", "state_phys_snapshot",
-            "state_latency_pair_snapshot", "state_queue_pair_snapshot", "state_pair_feature_snapshot",
+            "state_latency_pair_snapshot", "state_queue_pair_snapshot", "state_runtime_candidate_snapshot",
         ]
 
     def _state_record_fieldnames(self) -> List[str]:
@@ -1983,7 +2019,6 @@ class Hedger:
             *Hedger._latency_guard_record_fieldnames(),
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
-            "dep_latency_pair_bias_weight", "dep_queue_pair_bias_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "latency_guard_penalty_weight", "max_edge_replicas_per_device",
             "edge_memory_budget_ratio", "min_edge_replicas_per_service", "loaded_checkpoint",
@@ -1998,18 +2033,20 @@ class Hedger:
             "step", "epoch", "served_deployment_version", "interval_s",
             "offloading_decision_overhead_s", "off_reward_estimate",
             "latency", "latency_cost", "off_latency_term", "slo_violation", "off_slo_term",
-            "cloud_fraction", "task_latency_count", "latest_task_latency", "aux_cost",
-            "off_cloud_term", "correction_cnt", "correction_cost", "off_correction_term", "policy_logp",
-            "policy_entropy", "value_estimate", "raw_cloud_fraction",
-            "executed_cloud_fraction", "unique_targets", "feasible_targets_mean",
+            "cloud_fraction", "task_latency_count", "latest_task_latency",
+            "off_cloud_term", "policy_logp", "policy_entropy", "value_estimate",
+            "proposal_cloud_fraction", "projected_cloud_fraction",
+            "offloading_projection_cnt", "offloading_dependency_projection_cnt",
+            "offloading_infeasible_projection_cnt", "offloading_projection_cost",
+            "unique_targets", "feasible_targets_mean",
             "offloading_deterministic",
-            "feasible_targets_min", "feasible_targets_max", "raw_offloading_plan",
+            "feasible_targets_min", "feasible_targets_max",
             "offloading_plan", "active_deployment_plan", *self._state_record_fieldnames(),
             *Hedger._latency_guard_record_fieldnames(),
             "feedback_task_observations", "feedback_deployment_version",
             "feedback_deployment_versions", "feedback_recorded", "off_latency_weight",
             "off_latency_transform", "off_latency_normalizer", "off_latency_clip",
-            "off_slo_weight", "off_cloud_weight", "correction_weight", "loaded_checkpoint",
+            "off_slo_weight", "off_cloud_weight", "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
             insert_at = fieldnames.index("latency_guard_active")
@@ -2044,15 +2081,15 @@ class Hedger:
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
             "capacity_corrected",
         ]
-        if self.record_cfg.decision_pair_features_debug:
+        if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
-                "deployment_latency_pair_features",
-                "deployment_queue_pair_features",
+                "deployment_runtime_candidate_features",
+                "deployment_candidate_features",
             ])
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
-                "deployment_qk_scores", "deployment_latency_pair_bias", "deployment_queue_pair_bias",
-                "deployment_pair_bias", "deployment_final_scores",
+                "deployment_qk_scores", "deployment_qk_features",
+                "deployment_candidate_costs", "deployment_final_scores",
                 "deployment_policy_probs", "deployment_static_mask",
             ])
         return fieldnames
@@ -2060,20 +2097,20 @@ class Hedger:
     def _offloading_decision_fieldnames(self) -> List[str]:
         fieldnames = [
             *Hedger._decision_common_fieldnames(),
-            "raw_target", "executed_target", "corrected", "raw_is_cloud", "executed_is_cloud",
+            "proposal_target", "target", "projected", "projection_reason", "is_cloud",
             "feasible_targets", "feasible_target_count", "parent_targets",
             "target_gpu_util", "target_mem_util", "target_bandwidth",
         ]
-        if self.record_cfg.decision_pair_features_debug:
+        if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
                 "offloading_demand_features",
-                "offloading_congestion_pair_features",
+                "offloading_runtime_candidate_features",
+                "offloading_candidate_features",
             ])
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
-                "offloading_qk_scores", "offloading_qk_scores_norm",
-                "offloading_congestion_scores", "offloading_congestion_scores_norm",
-                "offloading_qk_weight", "offloading_congestion_weight",
+                "offloading_qk_scores", "offloading_qk_features",
+                "offloading_candidate_costs",
                 "offloading_final_scores",
                 "offloading_policy_probs", "offloading_effective_mask",
             ])
@@ -2140,13 +2177,13 @@ class Hedger:
                 cloud_replica=bool(exec_mask[service_idx, cloud_idx].item()),
                 capacity_corrected=bool(not torch.equal(raw_mask[service_idx], exec_mask[service_idx])),
             )
-            if self.record_cfg.decision_pair_features_debug:
+            if self.record_cfg.decision_candidate_features_debug:
                 row.update({
-                    "deployment_latency_pair_features": self._json_for_record(
-                        self._pair_feature_map(logic_feats, "deployment_latency_pair_feat", service_idx)
+                    "deployment_runtime_candidate_features": self._json_for_record(
+                        self._pair_feature_map(logic_feats, "runtime_candidate_feat", service_idx)
                     ),
-                    "deployment_queue_pair_features": self._json_for_record(
-                        self._pair_feature_map(logic_feats, "deployment_queue_pair_feat", service_idx)
+                    "deployment_candidate_features": self._json_for_record(
+                        self._actor_debug_pair_feature_map(actor_debug, "candidate_feature", service_idx)
                     ),
                 })
             if self.record_cfg.decision_actor_debug:
@@ -2154,14 +2191,11 @@ class Hedger:
                     "deployment_qk_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "qk_score", service_idx)
                     ),
-                    "deployment_latency_pair_bias": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "latency_pair_bias", service_idx)
+                    "deployment_qk_features": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "qk_feature", service_idx)
                     ),
-                    "deployment_queue_pair_bias": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "queue_pair_bias", service_idx)
-                    ),
-                    "deployment_pair_bias": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "pair_bias", service_idx)
+                    "deployment_candidate_costs": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "candidate_cost", service_idx)
                     ),
                     "deployment_final_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "final_score", service_idx)
@@ -2179,34 +2213,39 @@ class Hedger:
             self,
             *,
             step: int,
-            raw_actions: torch.Tensor,
-            executed_actions: torch.Tensor,
+            actions: torch.Tensor,
             static_mask: torch.Tensor,
             logic_feats: Dict[str, torch.Tensor],
             phys_feats: Dict[str, torch.Tensor],
+            proposal_actions: Optional[torch.Tensor] = None,
+            projection_reasons: Optional[List[str]] = None,
             actor_debug: Optional[Dict[str, Any]] = None,
     ) -> None:
         if self.off_decision_recorder is None or self.physical_topology is None:
             return
 
-        raw_actions = raw_actions.detach().cpu().long()
-        executed_actions = executed_actions.detach().cpu().long()
+        actions = actions.detach().cpu().long()
+        if proposal_actions is None:
+            proposal_actions = actions
+        else:
+            proposal_actions = proposal_actions.detach().cpu().long()
+        projection_reasons = projection_reasons or ["none" for _ in range(actions.numel())]
         static_mask = static_mask.detach().cpu().bool()
-        parents = [[] for _ in range(raw_actions.numel())]
+        parents = [[] for _ in range(actions.numel())]
         if self.logical_topology is not None:
             for parent, child in self.logical_topology.links:
                 parents[child].append(parent)
 
         cloud_idx = self.physical_topology.cloud_idx
-        for service_idx in range(raw_actions.numel()):
-            raw_target_idx = int(raw_actions[service_idx].item())
-            executed_target_idx = int(executed_actions[service_idx].item())
+        for service_idx in range(actions.numel()):
+            target_idx = int(actions[service_idx].item())
+            proposal_idx = int(proposal_actions[service_idx].item())
             feasible_row = static_mask[service_idx].clone()
             if not feasible_row.any():
                 feasible_row[cloud_idx] = True
             feasible_indices = torch.nonzero(feasible_row, as_tuple=False).flatten().tolist()
             parent_target_names = [
-                self._device_name(int(executed_actions[parent].item()))
+                self._device_name(int(actions[parent].item()))
                 for parent in parents[service_idx]
             ]
 
@@ -2219,25 +2258,31 @@ class Hedger:
                 service_model_flops=self._latest_feature_value(logic_feats, "model_flops", service_idx),
                 service_model_mem=self._latest_feature_value(logic_feats, "model_mem", service_idx),
                 state_complexity=self._latest_feature_value(logic_feats, "task_complexity_seq", service_idx),
-                raw_target=self._device_name(raw_target_idx),
-                executed_target=self._device_name(executed_target_idx),
-                corrected=bool(raw_target_idx != executed_target_idx),
-                raw_is_cloud=bool(raw_target_idx == cloud_idx),
-                executed_is_cloud=bool(executed_target_idx == cloud_idx),
+                proposal_target=self._device_name(proposal_idx) if 0 <= proposal_idx < len(self.physical_topology) else "",
+                target=self._device_name(target_idx),
+                projected=bool(proposal_idx != target_idx),
+                projection_reason=(
+                    projection_reasons[service_idx]
+                    if service_idx < len(projection_reasons) else "none"
+                ),
+                is_cloud=bool(target_idx == cloud_idx),
                 feasible_targets=self._json_for_record(self._device_names_from_indices(feasible_indices)),
                 feasible_target_count=len(feasible_indices),
                 parent_targets=self._json_for_record(parent_target_names),
-                target_gpu_util=self._latest_feature_value(phys_feats, "gpu_util_seq", executed_target_idx),
-                target_mem_util=self._latest_feature_value(phys_feats, "mem_util_seq", executed_target_idx),
-                target_bandwidth=self._latest_feature_value(phys_feats, "bandwidth_seq", executed_target_idx),
+                target_gpu_util=self._latest_feature_value(phys_feats, "gpu_util_seq", target_idx),
+                target_mem_util=self._latest_feature_value(phys_feats, "mem_util_seq", target_idx),
+                target_bandwidth=self._latest_feature_value(phys_feats, "bandwidth_seq", target_idx),
             )
-            if self.record_cfg.decision_pair_features_debug:
+            if self.record_cfg.decision_candidate_features_debug:
                 row.update({
                     "offloading_demand_features": self._json_for_record(
                         self._service_feature_vector(logic_feats, "offloading_demand_feat", service_idx)
                     ),
-                    "offloading_congestion_pair_features": self._json_for_record(
-                        self._pair_feature_map(logic_feats, "offloading_congestion_pair_feat", service_idx)
+                    "offloading_runtime_candidate_features": self._json_for_record(
+                        self._pair_feature_map(logic_feats, "runtime_candidate_feat", service_idx)
+                    ),
+                    "offloading_candidate_features": self._json_for_record(
+                        self._actor_debug_pair_feature_map(actor_debug, "candidate_feature", service_idx)
                     ),
                 })
             if self.record_cfg.decision_actor_debug:
@@ -2245,20 +2290,11 @@ class Hedger:
                     "offloading_qk_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "qk_score", service_idx)
                     ),
-                    "offloading_qk_scores_norm": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "qk_score_norm", service_idx)
+                    "offloading_qk_features": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "qk_feature", service_idx)
                     ),
-                    "offloading_congestion_scores": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "congestion_score", service_idx)
-                    ),
-                    "offloading_congestion_scores_norm": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "congestion_score_norm", service_idx)
-                    ),
-                    "offloading_qk_weight": self._actor_debug_service_scalar(
-                        actor_debug, "qk_weight", service_idx
-                    ),
-                    "offloading_congestion_weight": self._actor_debug_service_scalar(
-                        actor_debug, "congestion_weight", service_idx
+                    "offloading_candidate_costs": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "candidate_cost", service_idx)
                     ),
                     "offloading_final_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "final_score", service_idx)
@@ -2308,8 +2344,6 @@ class Hedger:
             clip_eps=self.deployment_agent_params['clip_eps'],
             update_encoder=False,
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
-            deployment_latency_bias_weight=self.deployment_agent_params["latency_pair_bias_weight"],
-            deployment_queue_bias_weight=self.deployment_agent_params["queue_pair_bias_weight"],
             constraint_cfg=from_partial_dict(DeploymentConstraintCfg, self.deployment_agent_params),
         ).to(self.device)
         self._sync_agent_topology_bindings()
@@ -2330,7 +2364,6 @@ class Hedger:
             clip_eps=self.offloading_agent_params['clip_eps'],
             update_encoder=self.offloading_agent_params['update_encoder'],
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
-            constraint_cfg=from_partial_dict(OffloadingConstraintCfg, self.offloading_agent_params),
         ).to(self.device)
         self._sync_agent_topology_bindings()
 
@@ -2738,28 +2771,57 @@ class Hedger:
         return torch.stack([demand_raw, demand_delta, demand_norm, demand_compute], dim=-1)
 
     @staticmethod
-    def _build_offloading_congestion_features(
-            offloading_latency_pair_feat: torch.Tensor,
-            offloading_queue_pair_feat: torch.Tensor,
-            demand_feat: torch.Tensor,
+    def _snapshot_pair_tensor(
+            snapshot: Dict[str, Any],
+            key: str,
+            shape: Tuple[int, int],
     ) -> torch.Tensor:
-        latency_feat = offloading_latency_pair_feat.detach().float()
-        queue_feat = offloading_queue_pair_feat.detach().float()
-        demand_compute = demand_feat[:, 3].unsqueeze(1).expand(-1, queue_feat.size(1))
-        q_short = queue_feat[..., 0]
-        q_busy = queue_feat[..., 2]
-        lat_short_residual = latency_feat[..., 0]
-        lat_spike = latency_feat[..., 2]
-        reliability = torch.minimum(queue_feat[..., 4], latency_feat[..., 5])
+        value = snapshot.get(key) if isinstance(snapshot, dict) else None
+        try:
+            tensor = torch.tensor(value, dtype=torch.float32)
+        except (TypeError, ValueError):
+            return torch.zeros(shape, dtype=torch.float32)
+        if tensor.dim() != 2 or tuple(tensor.shape) != tuple(shape):
+            return torch.zeros(shape, dtype=torch.float32)
+        return tensor
+
+    @staticmethod
+    def _build_runtime_candidate_features(
+            latency_pair_snapshot: Dict[str, Any],
+            queue_pair_snapshot: Dict[str, Any],
+    ) -> torch.Tensor:
+        latency_pair = torch.tensor(latency_pair_snapshot.get("pair_short", []), dtype=torch.float32)
+        queue_pair = torch.tensor(queue_pair_snapshot.get("pair_short", []), dtype=torch.float32)
+        if latency_pair.dim() != 2 or queue_pair.dim() != 2 or tuple(latency_pair.shape) != tuple(queue_pair.shape):
+            return torch.zeros((0, 0, 7), dtype=torch.float32)
+        shape = (latency_pair.size(0), latency_pair.size(1))
+        latency_short = Hedger._snapshot_pair_tensor(latency_pair_snapshot, "pair_short", shape)
+        latency_service_base = torch.tensor(
+            latency_pair_snapshot.get("service_baseline", {}).get("short", []),
+            dtype=torch.float32,
+        )
+        if latency_service_base.dim() != 1 or latency_service_base.size(0) != shape[0]:
+            latency_service_base = torch.zeros((shape[0],), dtype=torch.float32)
+        queue_short = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_short", shape)
+        queue_mean = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_long", shape)
+        queue_busy = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_busy", shape)
+        queue_count = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_count", shape)
+        latency_count = Hedger._snapshot_pair_tensor(latency_pair_snapshot, "pair_count", shape)
+        lat_short_residual = latency_short - latency_service_base.view(-1, 1)
+        confidence = torch.clamp(
+            torch.log1p(torch.minimum(latency_count, queue_count).clamp_min(0.0)) / math.log1p(20.0),
+            min=0.0,
+            max=1.0,
+        )
         return torch.stack(
             [
-                q_short,
-                q_busy,
+                torch.log1p(queue_count.clamp_min(0.0)),
+                torch.log1p(queue_short.clamp_min(0.0)),
+                torch.log1p(queue_mean.clamp_min(0.0)),
+                queue_busy,
+                torch.log1p(latency_short.clamp_min(0.0)),
                 lat_short_residual,
-                lat_spike,
-                demand_compute * q_short,
-                demand_compute * lat_short_residual,
-                reliability,
+                confidence,
             ],
             dim=-1,
         )
@@ -2781,31 +2843,14 @@ class Hedger:
             "model_flops": torch.tensor(logic_feats_raw["model_flops"], dtype=torch.float32),
             "model_mem": torch.tensor(logic_feats_raw["model_mem"], dtype=torch.float32),
             "task_complexity_seq": torch.tensor(logic_feats_raw["task_complexity_seq"], dtype=torch.float32),
-            "deployment_latency_pair_feat": torch.tensor(
-                state_debug["pair_feature_snapshot"]["deployment_latency"],
-                dtype=torch.float32,
-            ),
-            "offloading_latency_pair_feat": torch.tensor(
-                state_debug["pair_feature_snapshot"]["offloading_latency"],
-                dtype=torch.float32,
-            ),
-            "deployment_queue_pair_feat": torch.tensor(
-                state_debug["pair_feature_snapshot"]["deployment_queue"],
-                dtype=torch.float32,
-            ),
-            "offloading_queue_pair_feat": torch.tensor(
-                state_debug["pair_feature_snapshot"]["offloading_queue"],
-                dtype=torch.float32,
-            ),
         }
         logic_feats["offloading_demand_feat"] = self._build_offloading_demand_features(
             logic_feats["task_complexity_seq"],
             logic_feats["model_flops"],
         )
-        logic_feats["offloading_congestion_pair_feat"] = self._build_offloading_congestion_features(
-            logic_feats["offloading_latency_pair_feat"],
-            logic_feats["offloading_queue_pair_feat"],
-            logic_feats["offloading_demand_feat"],
+        logic_feats["runtime_candidate_feat"] = self._build_runtime_candidate_features(
+            state_debug.get("latency_pair_snapshot", {}),
+            state_debug.get("queue_pair_snapshot", {}),
         )
         phys_feats = {
             "gpu_flops": torch.tensor(phys_feats_raw["gpu_flops"], dtype=torch.float32),
@@ -3647,8 +3692,6 @@ class Hedger:
                         dep_latency_normalizer=self.deployment_agent_params["reward_dep_latency_normalizer"],
                         dep_latency_clip=self.deployment_agent_params["reward_dep_latency_clip"],
                         dep_slo_weight=self.deployment_agent_params["reward_dep_slo_weight"],
-                        dep_latency_pair_bias_weight=self.deployment_agent_params["latency_pair_bias_weight"],
-                        dep_queue_pair_bias_weight=self.deployment_agent_params["queue_pair_bias_weight"],
                         dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
                         dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
                         cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
@@ -3789,7 +3832,7 @@ class Hedger:
                 if current_task_version > last_task_version:
                     last_task_version = current_task_version
 
-                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics, aux)
+                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics)
                 latency_cost = off_reward_breakdown["latency_cost"]
                 off_reward_estimate = off_reward_breakdown["reward"]
                 feedback_recorded = False
@@ -3805,11 +3848,16 @@ class Hedger:
                         deployment_version=feedback_deployment_version,
                     )
                 cloud_idx = self.physical_topology.cloud_idx
-                raw_actions_cpu = aux["raw_actions"].detach().cpu()
                 actions_cpu = actions.detach().cpu()
-                raw_offloading_plan = self._map_offloading_mask_to_offloading_plan(raw_actions_cpu)
-                raw_cloud_fraction = float((raw_actions_cpu == cloud_idx).float().mean().item())
-                executed_cloud_fraction = float((actions_cpu == cloud_idx).float().mean().item())
+                proposal_actions_cpu = aux["proposal_actions"].detach().cpu()
+                proposal_cloud_fraction = (
+                    float((proposal_actions_cpu == cloud_idx).float().mean().item())
+                    if proposal_actions_cpu.numel() else 0.0
+                )
+                projected_cloud_fraction = (
+                    float((actions_cpu == cloud_idx).float().mean().item())
+                    if actions_cpu.numel() else 0.0
+                )
                 unique_targets = int(actions_cpu.unique().numel())
                 feasible_counts = static_mask.detach().cpu().float().sum(dim=1)
                 feasible_targets_mean = float(feasible_counts.mean().item()) if feasible_counts.numel() else 0.0
@@ -3836,22 +3884,21 @@ class Hedger:
                         cloud_fraction=metrics["cloud_fraction"],
                         task_latency_count=metrics["task_latency_count"],
                         latest_task_latency=metrics["latest_task_latency"],
-                        aux_cost=aux["aux_cost"],
                         off_cloud_term=off_reward_breakdown["off_cloud_term"],
-                        correction_cnt=aux["correction_cnt"],
-                        correction_cost=aux["correction_cost"],
-                        off_correction_term=off_reward_breakdown["off_correction_term"],
                         policy_logp=self._scalar_value(logp),
                         policy_entropy=self._scalar_value(ent),
                         value_estimate=self._scalar_value(value),
-                        raw_cloud_fraction=raw_cloud_fraction,
-                        executed_cloud_fraction=executed_cloud_fraction,
+                        proposal_cloud_fraction=proposal_cloud_fraction,
+                        projected_cloud_fraction=projected_cloud_fraction,
+                        offloading_projection_cnt=aux.get("projection_cnt", 0),
+                        offloading_dependency_projection_cnt=aux.get("dependency_projection_cnt", 0),
+                        offloading_infeasible_projection_cnt=aux.get("infeasible_projection_cnt", 0),
+                        offloading_projection_cost=aux.get("projection_cost", 0.0),
                         unique_targets=unique_targets,
                         feasible_targets_mean=feasible_targets_mean,
                         offloading_deterministic=int(bool(self.inference_cfg.offloading_deterministic)),
                         feasible_targets_min=feasible_targets_min,
                         feasible_targets_max=feasible_targets_max,
-                        raw_offloading_plan=self._json_for_record(raw_offloading_plan),
                         offloading_plan=self._json_for_record(self.offloading_plan),
                         active_deployment_plan=self._json_for_record(active_deployment_plan),
                         **state_record,
@@ -3871,7 +3918,6 @@ class Hedger:
                         off_latency_clip=self.offloading_agent_params["reward_off_latency_clip"],
                         off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                         off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
-                        correction_weight=self.offloading_agent_params["penalty_relax"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
                     if self.record_cfg.actor_snapshot_debug:
@@ -3879,11 +3925,12 @@ class Hedger:
                     self.off_recorder.log_dict(row)
                 self._log_offloading_decisions(
                     step=step,
-                    raw_actions=raw_actions_cpu,
-                    executed_actions=actions_cpu,
+                    actions=actions_cpu,
                     static_mask=static_mask,
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,
+                    proposal_actions=proposal_actions_cpu,
+                    projection_reasons=aux.get("projection_reasons"),
                     actor_debug=aux.get("actor_debug"),
                 )
                 LOGGER.debug(
@@ -3891,9 +3938,9 @@ class Hedger:
                     f"decision_overhead={self._format_log_value(offloading_decision_overhead_s, 6)}s, "
                     f"{self._summarize_offloading_plan(self.offloading_plan)}, "
                     f"{self._summarize_state_snapshot(new_logic_feats, new_phys_feats, metrics)}, "
-                    f"correction_cnt={aux['correction_cnt']}, "
-                    f"correction_cost={self._format_log_value(aux['correction_cost'])}, "
-                    f"aux_cost={self._format_log_value(aux['aux_cost'])}"
+                    f"projection_cnt={aux.get('projection_cnt', 0)}, "
+                    f"dependency_projection_cnt={aux.get('dependency_projection_cnt', 0)}, "
+                    f"infeasible_projection_cnt={aux.get('infeasible_projection_cnt', 0)}"
                 )
                 logic_feats = new_logic_feats
                 phys_feats = new_phys_feats
@@ -4178,7 +4225,6 @@ class Hedger:
         dep_train_fieldnames.extend([
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
-            "dep_latency_pair_bias_weight", "dep_queue_pair_bias_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "latency_guard_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
@@ -4435,8 +4481,6 @@ class Hedger:
                     dep_latency_normalizer=self.deployment_agent_params["reward_dep_latency_normalizer"],
                     dep_latency_clip=self.deployment_agent_params["reward_dep_latency_clip"],
                     dep_slo_weight=self.deployment_agent_params["reward_dep_slo_weight"],
-                    dep_latency_pair_bias_weight=self.deployment_agent_params["latency_pair_bias_weight"],
-                    dep_queue_pair_bias_weight=self.deployment_agent_params["queue_pair_bias_weight"],
                     dep_change_weight=self.deployment_agent_params["reward_dep_change_weight"],
                     dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
@@ -4516,19 +4560,20 @@ class Hedger:
         off_train_fieldnames = ["step", "epoch", "off_updates", "off_reward", "latency", "latency_cost",
                                 "off_latency_term", "off_latency_normalizer", "off_latency_clip", "off_latency_transform",
                                 "slo_violation", "off_slo_term", "cloud_fraction", "off_cloud_term",
-                                "aux_cost", "off_latency_weight", "off_slo_weight", "off_cloud_weight",
-                                "correction_cnt", "correction_cost", "off_correction_term", "policy_logp",
-                                "policy_entropy", "value_estimate",
-                                "next_value", "raw_cloud_fraction", "executed_cloud_fraction",
+                                "off_latency_weight", "off_slo_weight", "off_cloud_weight",
+                                "policy_logp", "policy_entropy", "value_estimate",
+                                "next_value",
+                                "proposal_cloud_fraction", "projected_cloud_fraction",
+                                "offloading_projection_cnt", "offloading_dependency_projection_cnt",
+                                "offloading_infeasible_projection_cnt", "offloading_projection_cost",
                                 "unique_targets", "feasible_targets_mean", "feasible_targets_min",
-                                "feasible_targets_max", "transition_buffer", "raw_offloading_plan",
+                                "feasible_targets_max", "transition_buffer",
                                 "offloading_plan", *self._state_record_fieldnames()]
         if self.record_cfg.actor_snapshot_debug:
             off_train_fieldnames.append("state_offloading_actor_snapshot")
         off_train_fieldnames.extend([
             "feedback_recorded", "feedback_deployment_version",
             "feedback_task_observations", "feedback_deployment_versions",
-            "correction_weight",
         ])
         self.off_recorder = Recorder(
             self._stage_log_path("offloading_train.csv"),
@@ -4654,7 +4699,7 @@ class Hedger:
                         )
                     )
 
-                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics, aux)
+                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics)
                 latency_cost = off_reward_breakdown["latency_cost"]
                 reward = off_reward_breakdown["reward"]
                 if self.is_latency_guard_active():
@@ -4670,15 +4715,13 @@ class Hedger:
                         deployment_version=feedback_deployment_version,
                     )
 
-                # PPO is trained against the raw sampled action, while the
-                # environment executes the corrected offloading plan.
                 if self.stage_cfg.update_offloading_policy:
                     tr = {
                         "logic_edge_index": logic_edge_index.cpu(),
                         "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
                         "phys_edge_index": phys_edge_index.cpu(),
                         "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
-                        "actions": aux["raw_actions"].detach().cpu(),
+                        "proposal_actions": aux["proposal_actions"].detach().cpu(),
                         "static_mask": static_mask_dev.cpu(),
                         "topo_order": None,
                         "logp": logp.detach().cpu(),
@@ -4702,10 +4745,15 @@ class Hedger:
 
                 cloud_idx = self.physical_topology.cloud_idx
                 actions_cpu = actions.detach().cpu()
-                raw_actions_cpu = aux["raw_actions"].detach().cpu()
-                raw_offloading_plan = self._map_offloading_mask_to_offloading_plan(raw_actions_cpu)
-                raw_cloud_fraction = float((raw_actions_cpu == cloud_idx).float().mean().item())
-                executed_cloud_fraction = float((actions_cpu == cloud_idx).float().mean().item())
+                proposal_actions_cpu = aux["proposal_actions"].detach().cpu()
+                proposal_cloud_fraction = (
+                    float((proposal_actions_cpu == cloud_idx).float().mean().item())
+                    if proposal_actions_cpu.numel() else 0.0
+                )
+                projected_cloud_fraction = (
+                    float((actions_cpu == cloud_idx).float().mean().item())
+                    if actions_cpu.numel() else 0.0
+                )
                 unique_targets = int(actions_cpu.unique().numel())
                 feasible_counts = static_mask.detach().cpu().float().sum(dim=1)
                 feasible_targets_mean = float(feasible_counts.mean().item()) if feasible_counts.numel() else 0.0
@@ -4727,25 +4775,24 @@ class Hedger:
                     off_slo_term=off_reward_breakdown["off_slo_term"],
                     cloud_fraction=metrics["cloud_fraction"],
                     off_cloud_term=off_reward_breakdown["off_cloud_term"],
-                    aux_cost=aux["aux_cost"],
                     off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
                     off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                     off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
-                    correction_cnt=aux["correction_cnt"],
-                    correction_cost=aux["correction_cost"],
-                    off_correction_term=off_reward_breakdown["off_correction_term"],
                     policy_logp=float(logp.detach().cpu().item()),
                     policy_entropy=float(ent.detach().cpu().item()),
                     value_estimate=float(value.detach().cpu().item()),
                     next_value=float(next_value),
-                    raw_cloud_fraction=raw_cloud_fraction,
-                    executed_cloud_fraction=executed_cloud_fraction,
+                    proposal_cloud_fraction=proposal_cloud_fraction,
+                    projected_cloud_fraction=projected_cloud_fraction,
+                    offloading_projection_cnt=aux.get("projection_cnt", 0),
+                    offloading_dependency_projection_cnt=aux.get("dependency_projection_cnt", 0),
+                    offloading_infeasible_projection_cnt=aux.get("infeasible_projection_cnt", 0),
+                    offloading_projection_cost=aux.get("projection_cost", 0.0),
                     unique_targets=unique_targets,
                     feasible_targets_mean=feasible_targets_mean,
                     feasible_targets_min=feasible_targets_min,
                     feasible_targets_max=feasible_targets_max,
                     transition_buffer=transition_count,
-                    raw_offloading_plan=self._json_for_record(raw_offloading_plan),
                     offloading_plan=self._json_for_record(self.offloading_plan),
                     **state_record,
                     feedback_recorded=feedback_recorded,
@@ -4757,27 +4804,27 @@ class Hedger:
                             for key, value in task_feedback_summary.get("deployment_version_counts", {}).items()
                         }
                     ),
-                    correction_weight=self.offloading_agent_params["penalty_relax"],
                 )
                 if self.record_cfg.actor_snapshot_debug:
                     row["state_offloading_actor_snapshot"] = self._json_for_record(aux.get("actor_debug"))
                 self.off_recorder.log_dict(row)
                 self._log_offloading_decisions(
                     step=step,
-                    raw_actions=raw_actions_cpu,
-                    executed_actions=actions_cpu,
+                    actions=actions_cpu,
                     static_mask=static_mask,
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,
+                    proposal_actions=proposal_actions_cpu,
+                    projection_reasons=aux.get("projection_reasons"),
                     actor_debug=aux.get("actor_debug"),
                 )
                 LOGGER.debug(
                     f"[Hedger][Train][{log_scope}] step={step}, reward={self._format_log_value(reward)}, "
                     f"{self._summarize_offloading_plan(self.offloading_plan)}, "
                     f"{self._summarize_state_snapshot(logic_feats, phys_feats, metrics)}, "
-                    f"correction_cnt={aux['correction_cnt']}, "
-                    f"correction_cost={self._format_log_value(aux['correction_cost'])}, "
-                    f"aux_cost={self._format_log_value(aux['aux_cost'])}, "
+                    f"projection_cnt={aux.get('projection_cnt', 0)}, "
+                    f"dependency_projection_cnt={aux.get('dependency_projection_cnt', 0)}, "
+                    f"infeasible_projection_cnt={aux.get('infeasible_projection_cnt', 0)}, "
                     f"feedback_recorded={feedback_recorded}, "
                     f"update_policy={self.stage_cfg.update_offloading_policy}, transitions={transition_count}"
                 )
@@ -4835,7 +4882,7 @@ class Hedger:
     def _sum_reward_terms(terms: Dict[str, float]) -> float:
         return float(sum(float(value) for value in terms.values()))
 
-    def _compute_offloading_reward_breakdown(self, metrics, aux) -> Dict[str, float]:
+    def _compute_offloading_reward_breakdown(self, metrics) -> Dict[str, float]:
         """Named reward terms for offloading, reused by logging and PPO."""
         metrics = metrics or {}
         latency = float(metrics["latency"])
@@ -4846,13 +4893,11 @@ class Hedger:
         w_lat = float(self.offloading_agent_params["reward_off_latency_weight"])
         w_slo = float(self.offloading_agent_params["reward_off_slo_weight"])
         w_cloud = float(self.offloading_agent_params["reward_off_cloud_weight"])
-        correction_cost = float(aux.get("aux_cost", 0.0))
 
         terms = {
             "off_latency_term": -w_lat * latency_cost,
             "off_slo_term": -w_slo * slo_v,
             "off_cloud_term": -w_cloud * cloud_frac,
-            "off_correction_term": -correction_cost,
         }
         return {
             "latency_cost": float(latency_cost),
@@ -4860,8 +4905,8 @@ class Hedger:
             "reward": self._sum_reward_terms(terms),
         }
 
-    def _compute_offloading_reward(self, metrics, aux) -> float:
-        return self._compute_offloading_reward_breakdown(metrics, aux)["reward"]
+    def _compute_offloading_reward(self, metrics) -> float:
+        return self._compute_offloading_reward_breakdown(metrics)["reward"]
 
     def _compute_deployment_reward_breakdown(self, metrics, aux) -> Dict[str, float]:
         """Named deployment reward terms mixing direct e2e and bottom-up feedback."""

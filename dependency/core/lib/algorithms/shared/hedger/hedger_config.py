@@ -14,11 +14,6 @@ def from_partial_dict(cls, data: dict):
 
 
 @dataclass
-class OffloadingConstraintCfg:
-    penalty_relax: float = 0.0  # Penalty coefficient for offloading corrections
-
-
-@dataclass
 class DeploymentConstraintCfg:
     penalty_capacity_relax: float = 1.0  # Penalty coefficient for deployment capacity corrections
     # Uniform cap for the number of edge replicas placed on one edge node.

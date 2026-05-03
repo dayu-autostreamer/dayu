@@ -79,11 +79,7 @@ class HedgerHeuristicOffloadingMixin:
 
         cloud_fraction = float((actions == cloud_idx).float().mean().item()) if actions.numel() else 0.0
         return actions, {
-            "correction_cnt": 0,
-            "correction_cost": 0.0,
-            "aux_cost": 0.0,
             "cloud_fraction": cloud_fraction,
-            "raw_actions": actions.detach().clone(),
         }
 
     def get_heuristic_offloading_plan(self, default_offloading=None) -> dict:
@@ -91,7 +87,7 @@ class HedgerHeuristicOffloadingMixin:
             return copy.deepcopy(default_offloading) if isinstance(default_offloading, dict) else {}
         try:
             logic_edge_index = self._build_edge_index(self.logical_topology.links)
-            logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+            logic_feats, phys_feats, _, _, _ = self._collect_offloading_state()
             actions, _ = self.heuristic_offloading_actions(
                 logic_edge_index=logic_edge_index,
                 logic_feats=logic_feats,

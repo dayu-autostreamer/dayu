@@ -49,18 +49,10 @@ class StateBuffer:
     LATENCY_SHORT_ALPHA = 0.30
     LATENCY_LONG_ALPHA = 0.10
     LATENCY_DEV_ALPHA = 0.20
-    LATENCY_PAIR_CONF_DENOM = 5.0
-    LATENCY_BASELINE_CONF_DENOM = 10.0
-    LATENCY_TASK_FRESHNESS_TAU = 150.0
-    LATENCY_DEPLOYMENT_FRESHNESS_TAU = 3.0
 
     QUEUE_SHORT_ALPHA = 0.35
     QUEUE_LONG_ALPHA = 0.10
     QUEUE_BUSY_ALPHA = 0.20
-    QUEUE_PAIR_CONF_DENOM = 5.0
-    QUEUE_BASELINE_CONF_DENOM = 10.0
-    QUEUE_TIME_FRESHNESS_TAU_S = 10.0
-    QUEUE_DEPLOYMENT_FRESHNESS_TAU = 3.0
 
     def __init__(self, max_capacity: int, logical_topology, physical_topology,
                  fixed_lan_bandwidth_mbps: float = DEFAULT_LAN_BANDWIDTH_MBPS):
@@ -349,55 +341,6 @@ class StateBuffer:
         new_busy = (1.0 - alpha_busy) * float(busy_value) + alpha_busy * float(busy)
         return float(new_short), float(new_long), float(new_busy), int(count) + 1
 
-    @staticmethod
-    def _confidence(counts: np.ndarray, denom: float) -> np.ndarray:
-        counts = counts.astype(np.float32)
-        return counts / (counts + float(denom))
-
-    @staticmethod
-    def _service_device_baseline(
-            service_values: np.ndarray,
-            service_counts: np.ndarray,
-            device_values: np.ndarray,
-            device_counts: np.ndarray,
-            global_value: float,
-            denom: float,
-    ) -> np.ndarray:
-        service_conf = StateBuffer._confidence(service_counts, denom).reshape(-1, 1)
-        device_conf = StateBuffer._confidence(device_counts, denom).reshape(1, -1)
-        numerator = (
-            service_conf * service_values.reshape(-1, 1)
-            + device_conf * device_values.reshape(1, -1)
-            + float(global_value)
-        )
-        return numerator / (service_conf + device_conf + 1.0)
-
-    @staticmethod
-    def _freshness_from_versions(
-            last_versions: np.ndarray,
-            counts: np.ndarray,
-            current_version: Optional[int],
-            tau: float,
-    ) -> np.ndarray:
-        if current_version is None:
-            return np.where(counts > 0, 1.0, 0.0).astype(np.float32)
-        delta = np.maximum(0.0, float(current_version) - last_versions.astype(np.float32))
-        freshness = np.exp(-delta / float(tau))
-        freshness = np.where(counts > 0, freshness, 0.0)
-        return freshness.astype(np.float32)
-
-    @staticmethod
-    def _freshness_from_time(
-            last_timestamps: np.ndarray,
-            counts: np.ndarray,
-            now_monotonic: float,
-            tau_s: float,
-    ) -> np.ndarray:
-        delta = np.maximum(0.0, float(now_monotonic) - last_timestamps.astype(np.float32))
-        freshness = np.exp(-delta / float(tau_s))
-        freshness = np.where(counts > 0, freshness, 0.0)
-        return freshness.astype(np.float32)
-
     def _service_names(self) -> List[str]:
         return [self.logical_topology[i] for i in range(self.logical_topology.node_num)]
 
@@ -413,131 +356,6 @@ class StateBuffer:
         current_deployment_version = self._normalize_deployment_version(current_deployment_version)
         if now_monotonic is None:
             now_monotonic = time.monotonic()
-
-        latency_base_short = self._service_device_baseline(
-            self.latency_service_short,
-            self.latency_service_obs_count,
-            self.latency_device_short,
-            self.latency_device_obs_count,
-            self.latency_global_short,
-            self.LATENCY_BASELINE_CONF_DENOM,
-        )
-        latency_base_long = self._service_device_baseline(
-            self.latency_service_long,
-            self.latency_service_obs_count,
-            self.latency_device_long,
-            self.latency_device_obs_count,
-            self.latency_global_long,
-            self.LATENCY_BASELINE_CONF_DENOM,
-        )
-        latency_base_dev = self._service_device_baseline(
-            self.latency_service_dev,
-            self.latency_service_obs_count,
-            self.latency_device_dev,
-            self.latency_device_obs_count,
-            self.latency_global_dev,
-            self.LATENCY_BASELINE_CONF_DENOM,
-        )
-
-        latency_pair_conf = self._confidence(self.latency_pair_obs_count, self.LATENCY_PAIR_CONF_DENOM)
-        latency_fresh_task = self._freshness_from_versions(
-            self.latency_pair_last_task_v,
-            self.latency_pair_obs_count,
-            current_task_version,
-            self.LATENCY_TASK_FRESHNESS_TAU,
-        )
-        latency_fresh_dep = self._freshness_from_versions(
-            self.latency_pair_last_dep_v,
-            self.latency_pair_obs_count,
-            current_deployment_version,
-            self.LATENCY_DEPLOYMENT_FRESHNESS_TAU,
-        )
-        latency_rel_off = latency_pair_conf * latency_fresh_task
-        latency_rel_dep = latency_pair_conf * latency_fresh_task * latency_fresh_dep
-
-        latency_pred_short_off = latency_rel_off * self.latency_pair_short + (1.0 - latency_rel_off) * latency_base_short
-        latency_pred_long_off = latency_rel_off * self.latency_pair_long + (1.0 - latency_rel_off) * latency_base_long
-        latency_pred_last_off = latency_rel_off * self.latency_pair_last + (1.0 - latency_rel_off) * latency_base_short
-        latency_pred_dev_off = latency_rel_off * self.latency_pair_dev + (1.0 - latency_rel_off) * latency_base_dev
-
-        latency_pred_short_dep = latency_rel_dep * self.latency_pair_short + (1.0 - latency_rel_dep) * latency_base_short
-        latency_pred_long_dep = latency_rel_dep * self.latency_pair_long + (1.0 - latency_rel_dep) * latency_base_long
-        latency_pred_dev_dep = latency_rel_dep * self.latency_pair_dev + (1.0 - latency_rel_dep) * latency_base_dev
-
-        deployment_latency_features = np.stack([
-            latency_pred_long_dep - latency_base_long,
-            latency_pred_short_dep - latency_base_short,
-            (latency_pred_short_dep - latency_base_short) - (latency_pred_long_dep - latency_base_long),
-            latency_pred_dev_dep,
-            latency_rel_dep,
-        ], axis=-1).astype(np.float32)
-        offloading_latency_features = np.stack([
-            latency_pred_short_off - latency_base_short,
-            latency_pred_long_off - latency_base_long,
-            latency_pred_last_off - latency_pred_short_off,
-            (latency_pred_short_off - latency_base_short) - (latency_pred_long_off - latency_base_long),
-            latency_pred_dev_off,
-            latency_rel_off,
-        ], axis=-1).astype(np.float32)
-
-        queue_base_short = self._service_device_baseline(
-            self.queue_service_short,
-            self.queue_service_obs_count,
-            self.queue_device_short,
-            self.queue_device_obs_count,
-            self.queue_global_short,
-            self.QUEUE_BASELINE_CONF_DENOM,
-        )
-        queue_base_long = self._service_device_baseline(
-            self.queue_service_long,
-            self.queue_service_obs_count,
-            self.queue_device_long,
-            self.queue_device_obs_count,
-            self.queue_global_long,
-            self.QUEUE_BASELINE_CONF_DENOM,
-        )
-        queue_base_busy = self._service_device_baseline(
-            self.queue_service_busy,
-            self.queue_service_obs_count,
-            self.queue_device_busy,
-            self.queue_device_obs_count,
-            self.queue_global_busy,
-            self.QUEUE_BASELINE_CONF_DENOM,
-        )
-
-        queue_pair_conf = self._confidence(self.queue_pair_obs_count, self.QUEUE_PAIR_CONF_DENOM)
-        queue_fresh_time = self._freshness_from_time(
-            self.queue_pair_last_t,
-            self.queue_pair_obs_count,
-            float(now_monotonic),
-            self.QUEUE_TIME_FRESHNESS_TAU_S,
-        )
-        queue_fresh_dep = self._freshness_from_versions(
-            self.queue_pair_last_dep_v,
-            self.queue_pair_obs_count,
-            current_deployment_version,
-            self.QUEUE_DEPLOYMENT_FRESHNESS_TAU,
-        )
-        queue_rel = queue_pair_conf * queue_fresh_time * queue_fresh_dep
-
-        queue_pred_short = queue_rel * self.queue_pair_short + (1.0 - queue_rel) * queue_base_short
-        queue_pred_long = queue_rel * self.queue_pair_long + (1.0 - queue_rel) * queue_base_long
-        queue_pred_busy = queue_rel * self.queue_pair_busy + (1.0 - queue_rel) * queue_base_busy
-        queue_pred_last = queue_rel * self.queue_pair_last + (1.0 - queue_rel) * queue_base_short
-
-        deployment_queue_features = np.stack([
-            queue_pred_long - queue_base_long,
-            queue_pred_short - queue_base_short,
-            queue_pred_busy,
-            queue_rel,
-        ], axis=-1).astype(np.float32)
-        offloading_queue_features = np.stack([
-            queue_pred_short - queue_base_short,
-            queue_pred_long - queue_base_long,
-            queue_pred_busy,
-            queue_pred_last - queue_pred_short,
-            queue_rel,
-        ], axis=-1).astype(np.float32)
 
         return {
             "service_names": self._service_names(),
@@ -598,12 +416,6 @@ class StateBuffer:
                     "busy": float(self.queue_global_busy),
                     "count": int(self.queue_global_obs_count),
                 },
-            },
-            "pair_feature_snapshot": {
-                "deployment_latency": deployment_latency_features.tolist(),
-                "offloading_latency": offloading_latency_features.tolist(),
-                "deployment_queue": deployment_queue_features.tolist(),
-                "offloading_queue": offloading_queue_features.tolist(),
             },
         }
 

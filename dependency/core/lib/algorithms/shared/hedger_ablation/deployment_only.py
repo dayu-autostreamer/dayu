@@ -74,16 +74,13 @@ class HedgerDeploymentOnly(HedgerHeuristicOffloadingMixin, Hedger):
             fieldnames=["step", "epoch", "off_updates", "off_reward", "latency", "latency_cost",
                         "off_latency_term", "off_latency_normalizer", "off_latency_clip",
                         "off_latency_transform", "slo_violation", "off_slo_term", "cloud_fraction",
-                        "off_cloud_term", "aux_cost", "off_latency_weight", "off_slo_weight", "off_cloud_weight",
-                        "correction_cnt", "correction_cost", "off_correction_term",
-                        "policy_logp", "policy_entropy", "value_estimate",
-                        "next_value", "raw_cloud_fraction", "executed_cloud_fraction",
+                        "off_cloud_term", "off_latency_weight", "off_slo_weight", "off_cloud_weight",
+                        "policy_logp", "policy_entropy", "value_estimate", "next_value",
                         "unique_targets", "feasible_targets_mean", "feasible_targets_min",
-                        "feasible_targets_max", "transition_buffer", "raw_offloading_plan",
+                        "feasible_targets_max", "transition_buffer",
                         "offloading_plan", *self._state_record_fieldnames(),
                         "feedback_recorded", "feedback_deployment_version",
-                        "feedback_task_observations", "feedback_deployment_versions",
-                        "correction_weight"],
+                        "feedback_task_observations", "feedback_deployment_versions"],
             overwrite=True,
             flush_every=10,
         )
@@ -98,12 +95,12 @@ class HedgerDeploymentOnly(HedgerHeuristicOffloadingMixin, Hedger):
         logic_edge_index = self._build_edge_index(self.logical_topology.links)
         step = 0
         offloading_time_ticket = 0
-        logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+        logic_feats, phys_feats, _, _, state_debug = self._collect_offloading_state()
         last_reward_task_version = self.state_buffer.get_task_observation_version() if self.state_buffer is not None else 0
         while not self.offloading_thread_stop_event.is_set():
             try:
                 if self._sleep_while_latency_guard_active(f"{log_scope} worker"):
-                    logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+                    logic_feats, phys_feats, _, _, state_debug = self._collect_offloading_state()
                     last_reward_task_version = (
                         self.state_buffer.get_task_observation_version()
                         if self.state_buffer is not None else last_reward_task_version
@@ -123,7 +120,7 @@ class HedgerDeploymentOnly(HedgerHeuristicOffloadingMixin, Hedger):
 
                 offloading_time_ticket = self._sleep_until_next_tick(offloading_time_ticket, self.offloading_interval)
                 if self.is_latency_guard_active():
-                    logic_feats, phys_feats, _, _ = self._collect_offloading_state()
+                    logic_feats, phys_feats, _, _, state_debug = self._collect_offloading_state()
                     last_reward_task_version = (
                         self.state_buffer.get_task_observation_version()
                         if self.state_buffer is not None else last_reward_task_version
@@ -135,17 +132,18 @@ class HedgerDeploymentOnly(HedgerHeuristicOffloadingMixin, Hedger):
                 feedback_deployment_version = None
                 if task_feedback_summary.get("all_same_deployment_version") and task_feedback_summary.get("count", 0) > 0:
                     feedback_deployment_version = task_feedback_summary.get("dominant_deployment_version")
-                new_logic_feats, new_phys_feats, metrics, _ = self._collect_offloading_state(
+                new_logic_feats, new_phys_feats, metrics, _, new_state_debug = self._collect_offloading_state(
                     since_task_version=last_reward_task_version,
                     deployment_version=feedback_deployment_version,
                 )
                 if current_task_version <= last_reward_task_version:
                     logic_feats = new_logic_feats
                     phys_feats = new_phys_feats
+                    state_debug = new_state_debug
                     continue
                 last_reward_task_version = current_task_version
 
-                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics, aux)
+                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics)
                 latency_cost = off_reward_breakdown["latency_cost"]
                 reward = off_reward_breakdown["reward"]
                 feedback_recorded = False
@@ -158,13 +156,13 @@ class HedgerDeploymentOnly(HedgerHeuristicOffloadingMixin, Hedger):
 
                 state_logic_feats = logic_feats
                 state_phys_feats = phys_feats
-                state_record = self._state_record_metrics(state_logic_feats, state_phys_feats)
+                state_debug_record = state_debug
+                state_record = self._state_record_metrics(state_logic_feats, state_phys_feats, state_debug_record)
                 logic_feats = new_logic_feats
                 phys_feats = new_phys_feats
+                state_debug = new_state_debug
 
-                cloud_idx = self.physical_topology.cloud_idx
-                raw_actions_cpu = actions.detach().cpu()
-                cloud_fraction = float((raw_actions_cpu == cloud_idx).float().mean().item()) if raw_actions_cpu.numel() else 0.0
+                actions_cpu = actions.detach().cpu()
                 feasible_counts = static_mask.detach().cpu().float().sum(dim=1)
                 transition_count = len(self.offloading_transitions)
                 self.off_recorder.log(
@@ -182,25 +180,18 @@ class HedgerDeploymentOnly(HedgerHeuristicOffloadingMixin, Hedger):
                     off_slo_term=off_reward_breakdown["off_slo_term"],
                     cloud_fraction=metrics["cloud_fraction"],
                     off_cloud_term=off_reward_breakdown["off_cloud_term"],
-                    aux_cost=aux["aux_cost"],
                     off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
                     off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                     off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
-                    correction_cnt=0,
-                    correction_cost=0.0,
-                    off_correction_term=off_reward_breakdown["off_correction_term"],
                     policy_logp=0.0,
                     policy_entropy=0.0,
                     value_estimate=0.0,
                     next_value=0.0,
-                    raw_cloud_fraction=cloud_fraction,
-                    executed_cloud_fraction=cloud_fraction,
-                    unique_targets=int(raw_actions_cpu.unique().numel()) if raw_actions_cpu.numel() else 0,
+                    unique_targets=int(actions_cpu.unique().numel()) if actions_cpu.numel() else 0,
                     feasible_targets_mean=float(feasible_counts.mean().item()) if feasible_counts.numel() else 0.0,
                     feasible_targets_min=float(feasible_counts.min().item()) if feasible_counts.numel() else 0.0,
                     feasible_targets_max=float(feasible_counts.max().item()) if feasible_counts.numel() else 0.0,
                     transition_buffer=transition_count,
-                    raw_offloading_plan=self._json_for_record(offloading_plan),
                     offloading_plan=self._json_for_record(offloading_plan),
                     **state_record,
                     feedback_recorded=feedback_recorded,
@@ -209,12 +200,10 @@ class HedgerDeploymentOnly(HedgerHeuristicOffloadingMixin, Hedger):
                     feedback_deployment_versions=self._json_for_record(
                         {str(k): v for k, v in task_feedback_summary.get("deployment_version_counts", {}).items()}
                     ),
-                    correction_weight=self.offloading_agent_params["penalty_relax"],
                 )
                 self._log_offloading_decisions(
                     step=step,
-                    raw_actions=raw_actions_cpu,
-                    executed_actions=raw_actions_cpu,
+                    actions=actions_cpu,
                     static_mask=static_mask,
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,

@@ -1,11 +1,10 @@
-from typing import Optional, List, Tuple
-import math
+from typing import Optional, List
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.lib.algorithms.shared.hedger.hedger_config import DeploymentConstraintCfg, OffloadingConstraintCfg
+from core.lib.algorithms.shared.hedger.hedger_config import DeploymentConstraintCfg
 from core.lib.algorithms.shared.hedger.ppo_agent import (
     _DeploymentBackbonePPO,
     _mean_or_zero,
@@ -26,7 +25,7 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
     """
     Flat ablation policy for joint deployment/offloading decisions.
 
-    This keeps Hedger's graph encoder and action corrections, but removes the
+    This keeps Hedger's graph encoder and action projection, but removes the
     two-timescale hierarchy: one PPO module samples both deployment replicas and
     offloading targets, then optimizes the joint log-probability with one critic.
     """
@@ -43,7 +42,6 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             update_encoder: bool = True,
             cloud_node_idx: int = -1,
             deployment_constraint_cfg: DeploymentConstraintCfg = DeploymentConstraintCfg(),
-            offloading_constraint_cfg: OffloadingConstraintCfg = OffloadingConstraintCfg(),
     ):
         super().__init__(
             encoder=encoder,
@@ -59,7 +57,6 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
         )
         self.offload_actor = OffloadActor(d_model)
         self.cloud_idx = cloud_node_idx
-        self.offloading_cfg = offloading_constraint_cfg
         self._rebuild_actor_optimizer(extra_actor_modules=[self.offload_actor])
 
     @staticmethod
@@ -77,44 +74,22 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
         allowed[self._cloud_index(base.numel())] = True
         return allowed
 
-    def _correct_offloading_actions(
+    def _dynamic_allowed_row(
             self,
-            raw_actions: torch.Tensor,
+            base_allowed: torch.Tensor,
             parents: List[List[int]],
-            topo_order: List[int],
-    ) -> Tuple[torch.Tensor, int]:
-        corrected = raw_actions.clone()
-        correction_cnt = 0
-        cloud_idx = int(self.cloud_idx)
+            service_idx: int,
+            actions: torch.Tensor,
+    ) -> torch.Tensor:
+        allowed = self._normalize_offloading_mask(base_allowed)
+        cloud_idx = self._cloud_index(allowed.numel())
         if cloud_idx < 0:
-            cloud_idx = int(raw_actions.max().item()) if raw_actions.numel() else -1
-        for node_idx in topo_order:
-            parent_indices = parents[node_idx]
-            if not parent_indices:
-                continue
-            if any(int(corrected[parent].item()) == cloud_idx for parent in parent_indices):
-                if int(corrected[node_idx].item()) != cloud_idx:
-                    corrected[node_idx] = cloud_idx
-                    correction_cnt += 1
-        return corrected, correction_cnt
-
-    @staticmethod
-    def _offloading_correction_cost(
-            raw_probs: torch.Tensor,
-            raw_actions: torch.Tensor,
-            corrected_actions: torch.Tensor,
-    ) -> float:
-        num_services = max(1, int(raw_actions.numel()))
-        correction_cost = 0.0
-        for service_idx in range(num_services):
-            corrected = int(corrected_actions[service_idx].item())
-            raw = int(raw_actions[service_idx].item())
-            if corrected == raw:
-                continue
-            prob = float(raw_probs[service_idx, corrected].item())
-            prob = min(max(prob, 1e-6), 1.0)
-            correction_cost += -math.log(prob)
-        return correction_cost / float(num_services)
+            return allowed
+        if any(int(actions[parent].item()) == cloud_idx for parent in parents[service_idx]):
+            cloud_only = torch.zeros_like(allowed)
+            cloud_only[cloud_idx] = True
+            return cloud_only
+        return allowed
 
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index,
@@ -180,22 +155,16 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
         )
 
         parents = self._build_parents(logic_edge_index, Ms)
-        raw_actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
-        raw_offloading_probs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        actions = torch.empty(Ms, dtype=torch.long, device=h_p.device)
         off_logp = torch.tensor(0.0, device=h_p.device)
         off_ent_terms = []
         for service_idx in topo_order:
-            allowed = self._normalize_offloading_mask(deploy_mask[service_idx].clone())
+            allowed = self._dynamic_allowed_row(deploy_mask[service_idx].clone(), parents, service_idx, actions)
             probs_i = self.offload_actor(h_s[service_idx:service_idx + 1], h_p, allowed.unsqueeze(0))[0]
-            raw_offloading_probs[service_idx] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)
-            raw_actions[service_idx] = torch.argmax(probs_i) if deterministic else dist.sample()
-            off_logp += dist.log_prob(raw_actions[service_idx])
+            actions[service_idx] = torch.argmax(probs_i) if deterministic else dist.sample()
+            off_logp += dist.log_prob(actions[service_idx])
             off_ent_terms.append(dist.entropy())
-
-        actions, off_correction_cnt = self._correct_offloading_actions(raw_actions, parents, topo_order)
-        off_correction_cost = self._offloading_correction_cost(raw_offloading_probs, raw_actions, actions)
-        off_aux_cost = float(self.offloading_cfg.penalty_relax) * off_correction_cost
 
         deploy_entropy = (
             torch.stack(deploy_ent_terms).mean()
@@ -205,7 +174,16 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             torch.stack(off_ent_terms).mean()
             if off_ent_terms else torch.tensor(0.0, device=h_s.device)
         )
-        value = self.critic(h_s, h_p, self._deployment_context(h_p, prev_deploy_mask))
+        _, _, _, _, _, candidate_features, _ = self._deployment_actor_terms(
+            h_s,
+            h_p,
+            logic_edge_index,
+            logic_feats,
+            phys_feats,
+            static_allowed,
+            prev_deploy_mask=prev_deploy_mask,
+        )
+        value = self.critic(h_s, h_p, candidate_features, static_allowed)
         return deploy_mask, actions, deploy_logp + off_logp, (deploy_entropy + off_entropy) * 0.5, value.squeeze(0), {
             "capacity_relax_cnt": capacity_relax_cnt,
             "capacity_relax_cost": capacity_relax_cost,
@@ -213,10 +191,6 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             "edge_cover_repair_cost": edge_cover_repair_cost,
             "edge_cover_unmet": edge_cover_unmet,
             "raw_deploy_mask": raw_deploy_mask,
-            "raw_actions": raw_actions,
-            "correction_cnt": off_correction_cnt,
-            "correction_cost": off_correction_cost,
-            "aux_cost": off_aux_cost,
         }
 
     def evaluate(
@@ -226,7 +200,7 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             phys_edge_index,
             phys_feats,
             raw_deploy_mask: torch.Tensor,
-            raw_actions: torch.Tensor,
+            actions: torch.Tensor,
             static_mask: torch.Tensor,
             prev_deploy_mask: Optional[torch.Tensor] = None,
             topo_order: Optional[list] = None,
@@ -244,6 +218,7 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
 
         deploy_logp = torch.tensor(0.0, device=h_s.device)
         deploy_ent_terms = []
+        actions = actions.long()
         for service_idx in topo_order:
             stochastic_allowed = static_allowed[service_idx].clone()
             stochastic_allowed[cloud_idx] = False
@@ -261,16 +236,13 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
                 deploy_ent_terms.append(dist.entropy().masked_select(stochastic_allowed).mean())
 
         parents = self._build_parents(logic_edge_index, Ms)
-        corrected_actions, correction_cnt = self._correct_offloading_actions(raw_actions, parents, topo_order)
-        raw_probs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         off_logp = torch.tensor(0.0, device=h_p.device)
         off_ent_terms = []
         for service_idx in topo_order:
-            allowed = self._normalize_offloading_mask(static_mask[service_idx].clone())
+            allowed = self._dynamic_allowed_row(static_mask[service_idx].clone(), parents, service_idx, actions)
             probs_i = self.offload_actor(h_s[service_idx:service_idx + 1], h_p, allowed.unsqueeze(0))[0]
-            raw_probs[service_idx] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)
-            off_logp += dist.log_prob(raw_actions[service_idx])
+            off_logp += dist.log_prob(actions[service_idx])
             off_ent_terms.append(dist.entropy())
 
         deploy_entropy = (
@@ -281,14 +253,17 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             torch.stack(off_ent_terms).mean()
             if off_ent_terms else torch.tensor(0.0, device=h_s.device)
         )
-        correction_cost = self._offloading_correction_cost(raw_probs, raw_actions, corrected_actions)
-        aux_cost = float(self.offloading_cfg.penalty_relax) * correction_cost
-        value = self.critic(h_s, h_p, self._deployment_context(h_p, prev_deploy_mask))
-        return deploy_logp + off_logp, (deploy_entropy + off_entropy) * 0.5, value.squeeze(0), {
-            "correction_cnt": correction_cnt,
-            "correction_cost": correction_cost,
-            "aux_cost": aux_cost,
-        }
+        _, _, _, _, _, candidate_features, _ = self._deployment_actor_terms(
+            h_s,
+            h_p,
+            logic_edge_index,
+            logic_feats,
+            phys_feats,
+            static_allowed,
+            prev_deploy_mask=prev_deploy_mask,
+        )
+        value = self.critic(h_s, h_p, candidate_features, static_allowed)
+        return deploy_logp + off_logp, (deploy_entropy + off_entropy) * 0.5, value.squeeze(0), {}
 
     def ppo_update(self, transitions: List[dict], epochs=4, batch_size=16, clip_eps=None, entropy_coef=0.01,
                    value_coef=0.5):
@@ -312,7 +287,7 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
                 "phys_edge_index": tr["phys_edge_index"].to(device),
                 "phys_feats": _move_tensor_dict_to_device(tr["phys_feats"], device),
                 "raw_deploy_mask": tr["raw_deploy_mask"].to(device),
-                "raw_actions": tr["raw_actions"].to(device),
+                "actions": tr["actions"].to(device),
                 "static_mask": tr["static_mask"].to(device),
                 "prev_deploy_mask": (
                     tr["prev_deploy_mask"].to(device) if tr.get("prev_deploy_mask") is not None else None
@@ -347,7 +322,7 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
                         tr['phys_edge_index'],
                         tr['phys_feats'],
                         tr['raw_deploy_mask'],
-                        tr['raw_actions'],
+                        tr['actions'],
                         tr['static_mask'],
                         prev_deploy_mask=tr['prev_deploy_mask'],
                         topo_order=tr['topo_order'],
