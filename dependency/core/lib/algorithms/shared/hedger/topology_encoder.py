@@ -28,12 +28,13 @@ class LogicalEncoder(nn.Module):
       - `model_flops`: `[Ms]`
       - `model_mem`: `[Ms]` in GB
       - `task_complexity_seq`: `[Ms, T]`
+      - `task_arrival_rate_seq`: `[Ms, T]`
     """
 
     def __init__(self, d_model: int = 64, heads: int = 4, dropout: float = 0.0):
         super().__init__()
         self.lin_static = nn.Linear(2, d_model)  # [log(model_flops), log(model_mem)]
-        self.temporal = NodeTemporalEncoder(d_dyn=1, d_model=d_model)
+        self.temporal = NodeTemporalEncoder(d_dyn=2, d_model=d_model)
         self.lin_struct = nn.Linear(3, d_model)
 
         self.gnn1 = GATConv(d_model, d_model, heads=heads, concat=True, dropout=dropout)
@@ -47,8 +48,9 @@ class LogicalEncoder(nn.Module):
         mm = safe_log1p(feats["model_mem"].float()).unsqueeze(-1)
         h_static = self.lin_static(torch.cat([mf, mm], dim=-1))
 
-        tc = feats["task_complexity_seq"].float()
-        h_dyn = self.temporal(tc.unsqueeze(-1))
+        tc = safe_log1p(feats["task_complexity_seq"].float())
+        ar = feats["task_arrival_rate_seq"].float()
+        h_dyn = self.temporal(torch.stack([tc, ar], dim=-1))
 
         in_deg, out_deg = graph_in_out_degree(edge_index, Ms)
         in_deg = in_deg / (in_deg.max() + 1e-6)
@@ -70,19 +72,15 @@ class PhysicalEncoder(nn.Module):
       - `gpu_flops`: `[Np]`
       - `role_id`: `[Np]`, where `0=edge / 1=cloud`
       - `mem_capacity`: `[Np]` in GB
-      - `bandwidth_seq`: `[Np, T]`, where edge nodes carry fixed LAN bandwidth
+      - `bandwidth_latest`: `[Np]`, where edge nodes carry fixed LAN bandwidth
         and the cloud node carries the latest monitored WAN bandwidth
-      - `gpu_util_seq`: `[Np, T]` in `[0, 1]`
-      - `mem_util_seq`: `[Np, T]` in `[0, 1]`
     """
 
     def __init__(self, d_model: int = 64, num_roles: int = 2, role_emb_dim: int = 8, dropout: float = 0.0):
         super().__init__()
         self.role_emb = nn.Embedding(num_roles, role_emb_dim)
-        static_in = 2 + role_emb_dim  # [log(gpu_flops), log(mem_capacity), role_emb]
-        dyn_in = 3  # [log(bw), gpu_util, mem_util]
+        static_in = 4 + role_emb_dim  # [log(gpu_flops), log(mem_capacity), log(bw), is_cloud, role_emb]
         self.lin_static = nn.Linear(static_in, d_model)
-        self.temporal = NodeTemporalEncoder(d_dyn=dyn_in, d_model=d_model)
         self.gnn1 = GCNConv(d_model, d_model)
         self.gnn2 = GCNConv(d_model, d_model)
         self.norm1 = nn.LayerNorm(d_model)
@@ -92,15 +90,13 @@ class PhysicalEncoder(nn.Module):
     def forward(self, edge_index: torch.Tensor, feats: Dict[str, torch.Tensor]) -> torch.Tensor:
         gf = safe_log1p(feats["gpu_flops"].float()).unsqueeze(-1)
         mc = safe_log1p(feats["mem_capacity"].float()).unsqueeze(-1)
-        role_vec = self.role_emb(feats["role_id"].long())
-        h_static = self.lin_static(torch.cat([gf, mc, role_vec], dim=-1))
+        role_id = feats["role_id"].long()
+        role_vec = self.role_emb(role_id)
+        is_cloud = (role_id == 1).float().unsqueeze(-1)
+        bw = safe_log1p(feats["bandwidth_latest"].float()).unsqueeze(-1)
+        h_static = self.lin_static(torch.cat([gf, mc, bw, is_cloud, role_vec], dim=-1))
 
-        bw = safe_log1p(feats["bandwidth_seq"].float())
-        gu = feats["gpu_util_seq"].float()
-        mu = feats["mem_util_seq"].float()
-        h_dyn = self.temporal(torch.stack([bw, gu, mu], dim=-1))
-
-        x0 = F.relu(h_static + h_dyn)
+        x0 = F.relu(h_static)
         h1 = self.gnn1(x0, edge_index)
         h1 = self.norm1(F.relu(h1))
         h1 = self.dropout(h1)

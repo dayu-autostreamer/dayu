@@ -60,8 +60,7 @@ class HedgerHeuristicDeploymentMixin:
             static_allowed = self.deployment_agent._static_allowed_mask(phys_feats, logic_feats).bool()
         else:
             cap = phys_feats["mem_capacity"].float()
-            util = phys_feats["mem_util_seq"][:, -1].float()
-            residual = cap * torch.clamp(1.0 - util, min=0.0)
+            residual = cap
             static_allowed = model_mem.view(num_services, 1) <= residual.view(1, num_devices)
             static_allowed[:, cloud_idx] = True
 
@@ -92,14 +91,12 @@ class HedgerHeuristicDeploymentMixin:
                 remaining_after = float(residual[device_idx].item()) - float(used_mem[device_idx].item()) - service_mem
                 if remaining_after < -1e-6:
                     continue
-                gpu_util = latest_seq_value(phys_feats, "gpu_util_seq", device_idx, 0.0)
-                mem_util = latest_seq_value(phys_feats, "mem_util_seq", device_idx, 0.0)
-                bandwidth = max(1.0, latest_seq_value(phys_feats, "bandwidth_seq", device_idx, 1.0))
+                gpu_flops = float(phys_feats["gpu_flops"][device_idx].float().item())
+                bandwidth = max(1.0, float(phys_feats["bandwidth_latest"][device_idx].float().item()))
                 was_selected = bool(prev_deploy_mask[service_idx, device_idx].item())
                 device_empty = int(used_count[device_idx].item()) == 0
                 cost = (
-                    0.45 * gpu_util
-                    + 0.45 * mem_util
+                    - 0.35 * math.log1p(max(gpu_flops, 0.0))
                     - 0.05 * math.log1p(bandwidth)
                     - (0.15 if was_selected else 0.0)
                     - (0.05 if device_empty else 0.0)

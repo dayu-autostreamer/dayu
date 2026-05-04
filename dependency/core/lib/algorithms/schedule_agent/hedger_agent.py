@@ -201,12 +201,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
             self.hedger.state_buffer.add_memory_capacity(device, memory_capacity)
 
         gpu_usage = resource.get('gpu_usage')
-        if gpu_usage is not None:
-            self.hedger.state_buffer.add_gpu_utilization(device, gpu_usage)
-
         memory_usage = resource.get('memory_usage')
-        if memory_usage is not None:
-            self.hedger.state_buffer.add_memory_utilization(device, memory_usage)
 
         queue_length = resource.get('queue_length')
         observe_queue = getattr(self.hedger, "update_latency_guard_queue_lengths", None)

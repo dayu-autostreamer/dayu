@@ -5,7 +5,6 @@ from typing import Dict, List, Tuple
 import torch
 
 from core.lib.common import LOGGER
-from core.lib.algorithms.shared.hedger_ablation.utils import latest_seq_value
 
 __all__ = ("HedgerHeuristicOffloadingMixin",)
 
@@ -64,14 +63,24 @@ class HedgerHeuristicOffloadingMixin:
 
             candidates = []
             for device_idx in allowed:
-                gpu_util = latest_seq_value(phys_feats, "gpu_util_seq", device_idx, 0.0)
-                mem_util = latest_seq_value(phys_feats, "mem_util_seq", device_idx, 0.0)
-                bandwidth = max(1.0, latest_seq_value(phys_feats, "bandwidth_seq", device_idx, 1.0))
+                gpu_flops = float(phys_feats["gpu_flops"][device_idx].float().item())
+                bandwidth = max(1.0, float(phys_feats["bandwidth_latest"][device_idx].float().item()))
+                runtime = logic_feats.get("runtime_pair_feat")
+                if isinstance(runtime, torch.Tensor) and runtime.dim() == 3 and runtime.size(-1) >= 5:
+                    queue_short = float(runtime[service_idx, device_idx, 1].float().item())
+                    queue_busy = float(runtime[service_idx, device_idx, 2].float().item())
+                    utilization = float(runtime[service_idx, device_idx, 4].float().item())
+                else:
+                    queue_short = 0.0
+                    queue_busy = 0.0
+                    utilization = 0.0
                 cloud_penalty = 0.6 if device_idx == cloud_idx else 0.0
                 cost = (
-                    0.35 * gpu_util
-                    + 0.35 * mem_util
+                    0.35 * utilization
+                    + 0.20 * queue_short
+                    + 0.15 * queue_busy
                     + cloud_penalty
+                    - 0.15 * math.log1p(max(gpu_flops, 0.0))
                     - 0.05 * math.log1p(bandwidth)
                 )
                 candidates.append((cost, int(device_idx)))

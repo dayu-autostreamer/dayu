@@ -15,7 +15,12 @@ from core.lib.common import LOGGER, FileOps, Context, Recorder, KubeConfig
 from core.lib.estimation import OverheadEstimator
 
 from .topology_encoder import TopologyEncoders
-from .ppo_agent import HedgerOffloadingPPO, HedgerDeploymentPPO
+from .ppo_agent import (
+    HedgerOffloadingPPO,
+    HedgerDeploymentPPO,
+    SERVICE_DEMAND_FEATURE_NAMES,
+    RUNTIME_PAIR_FEATURE_NAMES,
+)
 from .hedger_config import from_partial_dict, DeploymentConstraintCfg, LogicalTopology, \
     PhysicalTopology
 from .state_buffer import StateBuffer, BufferWaitCfg
@@ -1785,21 +1790,21 @@ class Hedger:
         if "task_complexity_seq" in logic_feats and logic_feats["task_complexity_seq"].numel():
             latest_complexity = float(logic_feats["task_complexity_seq"][:, -1].mean().item())
 
-        latest_gpu_util = 0.0
-        if "gpu_util_seq" in phys_feats and phys_feats["gpu_util_seq"].numel():
-            latest_gpu_util = float(phys_feats["gpu_util_seq"][:, -1].mean().item())
-
-        latest_mem_util = 0.0
-        if "mem_util_seq" in phys_feats and phys_feats["mem_util_seq"].numel():
-            latest_mem_util = float(phys_feats["mem_util_seq"][:, -1].mean().item())
+        latest_arrival_rate = 0.0
+        if "task_arrival_rate_seq" in logic_feats and logic_feats["task_arrival_rate_seq"].numel():
+            latest_arrival_rate = float(logic_feats["task_arrival_rate_seq"][:, -1].mean().item())
 
         latest_cloud_bw = 0.0
         latest_edge_bw = 0.0
-        if "bandwidth_seq" in phys_feats and phys_feats["bandwidth_seq"].numel():
-            bandwidth_seq = phys_feats["bandwidth_seq"]
-            cloud_idx = self.physical_topology.cloud_idx if self.physical_topology is not None else bandwidth_seq.size(0) - 1
-            latest_cloud_bw = float(bandwidth_seq[cloud_idx, -1].item())
-            edge_bandwidth = bandwidth_seq[:, -1]
+        if "bandwidth_latest" in phys_feats and phys_feats["bandwidth_latest"].numel():
+            bandwidth_latest = phys_feats["bandwidth_latest"]
+            cloud_idx = (
+                self.physical_topology.cloud_idx
+                if self.physical_topology is not None
+                else bandwidth_latest.size(0) - 1
+            )
+            latest_cloud_bw = float(bandwidth_latest[cloud_idx].item())
+            edge_bandwidth = bandwidth_latest
             if edge_bandwidth.numel() > 1:
                 edge_bandwidth = torch.cat([edge_bandwidth[:cloud_idx], edge_bandwidth[cloud_idx + 1:]])
             else:
@@ -1809,10 +1814,9 @@ class Hedger:
         base = (
             f"services={service_count}, devices={device_count}, "
             f"latest_complexity={self._format_log_value(latest_complexity)}, "
+            f"latest_arrival_rate={self._format_log_value(latest_arrival_rate)}, "
             f"latest_edge_bw={self._format_log_value(latest_edge_bw)}, "
-            f"latest_cloud_bw={self._format_log_value(latest_cloud_bw)}, "
-            f"latest_gpu_util={self._format_utilization_for_log(latest_gpu_util)}, "
-            f"latest_mem_util={self._format_utilization_for_log(latest_mem_util)}"
+            f"latest_cloud_bw={self._format_log_value(latest_cloud_bw)}"
         )
         if metrics:
             base += f", metrics=({self._summarize_metrics(metrics)})"
@@ -1884,31 +1888,40 @@ class Hedger:
             logic_feats: Dict[str, torch.Tensor],
             key: str,
             service_idx: int,
-    ) -> Dict[str, List[float]]:
+            names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         value = logic_feats.get(key)
         if not isinstance(value, torch.Tensor) or value.numel() == 0:
             return {}
         value = value.detach().float().cpu()
         if value.dim() != 3 or service_idx < 0 or service_idx >= value.size(0):
             return {}
-        return {
-            self._device_name(device_idx): [float(item) for item in value[service_idx, device_idx].tolist()]
-            for device_idx in range(value.size(1))
-        }
+        result = {}
+        for device_idx in range(value.size(1)):
+            row = [float(item) for item in value[service_idx, device_idx].tolist()]
+            if names and len(names) == len(row):
+                result[self._device_name(device_idx)] = dict(zip(names, row))
+            else:
+                result[self._device_name(device_idx)] = row
+        return result
 
     @staticmethod
     def _service_feature_vector(
             logic_feats: Dict[str, torch.Tensor],
             key: str,
             service_idx: int,
-    ) -> List[float]:
+            names: Optional[List[str]] = None,
+    ) -> Any:
         value = logic_feats.get(key)
         if not isinstance(value, torch.Tensor) or value.numel() == 0:
             return []
         value = value.detach().float().cpu()
         if value.dim() != 2 or service_idx < 0 or service_idx >= value.size(0):
             return []
-        return [float(item) for item in value[service_idx].tolist()]
+        row = [float(item) for item in value[service_idx].tolist()]
+        if names and len(names) == len(row):
+            return dict(zip(names, row))
+        return row
 
     def _actor_debug_row_map(
             self,
@@ -1943,10 +1956,19 @@ class Hedger:
         value = value.detach().float().cpu()
         if value.dim() != 3 or service_idx < 0 or service_idx >= value.size(0):
             return {}
-        return {
-            self._device_name(device_idx): [float(item) for item in value[service_idx, device_idx].tolist()]
-            for device_idx in range(value.size(1))
-        }
+        names = actor_debug.get(f"{key}_names")
+        if key == "candidate_feature":
+            names = actor_debug.get("candidate_feature_names", names)
+        elif key == "runtime_pair_feature":
+            names = actor_debug.get("runtime_pair_feature_names", names)
+        result = {}
+        for device_idx in range(value.size(1)):
+            row = [float(item) for item in value[service_idx, device_idx].tolist()]
+            if isinstance(names, list) and len(names) == len(row):
+                result[self._device_name(device_idx)] = dict(zip(names, row))
+            else:
+                result[self._device_name(device_idx)] = row
+        return result
 
     @staticmethod
     def _actor_debug_service_scalar(
@@ -2034,56 +2056,48 @@ class Hedger:
             if isinstance(complexity_seq, torch.Tensor) and complexity_seq.numel():
                 latest_complexity = float(complexity_seq[:, -1].float().mean().item())
 
-            latest_gpu_util = 0.0
-            latest_gpu_util_max = 0.0
-            gpu_util_seq = phys_feats.get("gpu_util_seq")
-            if isinstance(gpu_util_seq, torch.Tensor) and gpu_util_seq.numel():
-                latest_gpu_util = float(gpu_util_seq[:, -1].float().mean().item())
-                latest_gpu_util_max = float(gpu_util_seq[:, -1].float().max().item())
-
-            latest_mem_util = 0.0
-            latest_mem_util_max = 0.0
-            mem_util_seq = phys_feats.get("mem_util_seq")
-            if isinstance(mem_util_seq, torch.Tensor) and mem_util_seq.numel():
-                latest_mem_util = float(mem_util_seq[:, -1].float().mean().item())
-                latest_mem_util_max = float(mem_util_seq[:, -1].float().max().item())
+            latest_arrival_rate = 0.0
+            latest_arrival_rate_max = 0.0
+            arrival_rate_seq = logic_feats.get("task_arrival_rate_seq")
+            if isinstance(arrival_rate_seq, torch.Tensor) and arrival_rate_seq.numel():
+                latest_arrival = arrival_rate_seq[:, -1].float()
+                latest_arrival_rate = float(latest_arrival.mean().item())
+                latest_arrival_rate_max = float(latest_arrival.max().item())
 
             latest_cloud_bw = 0.0
             latest_edge_bw = 0.0
-            bandwidth_seq = phys_feats.get("bandwidth_seq")
-            if isinstance(bandwidth_seq, torch.Tensor) and bandwidth_seq.numel():
+            bandwidth_latest = phys_feats.get("bandwidth_latest")
+            if isinstance(bandwidth_latest, torch.Tensor) and bandwidth_latest.numel():
                 cloud_idx = (
                     self.physical_topology.cloud_idx
                     if self.physical_topology is not None
-                    else bandwidth_seq.size(0) - 1
+                    else bandwidth_latest.size(0) - 1
                 )
-                latest_cloud_bw = float(bandwidth_seq[cloud_idx, -1].float().item())
-                edge_bandwidth = bandwidth_seq[:, -1]
+                latest_cloud_bw = float(bandwidth_latest[cloud_idx].float().item())
+                edge_bandwidth = bandwidth_latest
                 if edge_bandwidth.numel() > 1:
                     edge_bandwidth = torch.cat([edge_bandwidth[:cloud_idx], edge_bandwidth[cloud_idx + 1:]])
                 else:
                     edge_bandwidth = torch.empty(0, dtype=edge_bandwidth.dtype)
                 latest_edge_bw = float(edge_bandwidth.float().mean().item()) if edge_bandwidth.numel() else 0.0
 
-            runtime_means = [0.0] * 7
-            runtime_candidate = logic_feats.get("runtime_candidate_feat")
-            if isinstance(runtime_candidate, torch.Tensor) and runtime_candidate.dim() == 3 \
-                    and runtime_candidate.size(-1) >= 7 and runtime_candidate.numel():
+            runtime_means = [0.0] * len(RUNTIME_PAIR_FEATURE_NAMES)
+            runtime_pair = logic_feats.get("runtime_pair_feat")
+            if isinstance(runtime_pair, torch.Tensor) and runtime_pair.dim() == 3 \
+                    and runtime_pair.size(-1) >= len(RUNTIME_PAIR_FEATURE_NAMES) and runtime_pair.numel():
                 runtime_means = [
-                    float(runtime_candidate[..., idx].detach().float().mean().cpu().item())
-                    for idx in range(7)
+                    float(runtime_pair[..., idx].detach().float().mean().cpu().item())
+                    for idx in range(len(RUNTIME_PAIR_FEATURE_NAMES))
                 ]
 
             row.update({
                 "state_services": service_count,
                 "state_devices": device_count,
                 "state_complexity": latest_complexity,
+                "state_arrival_rate_mean": latest_arrival_rate,
+                "state_arrival_rate_max": latest_arrival_rate_max,
                 "state_edge_bw": latest_edge_bw,
                 "state_cloud_bw": latest_cloud_bw,
-                "state_gpu_util_mean": latest_gpu_util,
-                "state_gpu_util_max": latest_gpu_util_max,
-                "state_mem_util_mean": latest_mem_util,
-                "state_mem_util_max": latest_mem_util_max,
                 "state_model_flops_mean": self._tensor_mean(logic_feats.get("model_flops")),
                 "state_model_mem_mean": self._tensor_mean(logic_feats.get("model_mem")),
                 "state_gpu_flops_mean": self._tensor_mean(phys_feats.get("gpu_flops")),
@@ -2092,11 +2106,10 @@ class Hedger:
                 "state_queue_pair_obs_count": self._nested_float_mean(queue_pair_snapshot.get("pair_count")),
                 "state_runtime_availability_mean": runtime_means[0],
                 "state_runtime_queue_short_mean": runtime_means[1],
-                "state_runtime_queue_mean": runtime_means[2],
-                "state_runtime_busy_ratio_mean": runtime_means[3],
-                "state_runtime_latency_short_mean": runtime_means[4],
-                "state_runtime_latency_residual_mean": runtime_means[5],
-                "state_runtime_confidence_mean": runtime_means[6],
+                "state_runtime_busy_ratio_mean": runtime_means[2],
+                "state_runtime_service_time_short_mean": runtime_means[3],
+                "state_runtime_utilization_estimate_mean": runtime_means[4],
+                "state_runtime_confidence_mean": runtime_means[5],
             })
 
         if self.record_cfg.state_snapshot_debug:
@@ -2105,7 +2118,8 @@ class Hedger:
                 "state_phys_snapshot": self._json_for_record(state_debug.get("phys_snapshot")),
                 "state_latency_pair_snapshot": self._json_for_record(latency_pair_snapshot),
                 "state_queue_pair_snapshot": self._json_for_record(queue_pair_snapshot),
-                "state_runtime_candidate_snapshot": self._json_for_record(logic_feats.get("runtime_candidate_feat")),
+                "state_service_demand_snapshot": self._json_for_record(logic_feats.get("service_demand_feat")),
+                "state_runtime_pair_snapshot": self._json_for_record(logic_feats.get("runtime_pair_feat")),
             })
         return row
 
@@ -2113,22 +2127,22 @@ class Hedger:
     def _state_record_summary_fieldnames() -> List[str]:
         return [
             "state_services", "state_devices", "state_complexity",
-            "state_edge_bw", "state_cloud_bw", "state_gpu_util_mean",
-            "state_gpu_util_max", "state_mem_util_mean", "state_mem_util_max",
+            "state_arrival_rate_mean", "state_arrival_rate_max",
+            "state_edge_bw", "state_cloud_bw",
             "state_model_flops_mean", "state_model_mem_mean",
             "state_gpu_flops_mean", "state_mem_capacity_mean",
             "state_latency_pair_obs_count", "state_queue_pair_obs_count",
             "state_runtime_availability_mean", "state_runtime_queue_short_mean",
-            "state_runtime_queue_mean", "state_runtime_busy_ratio_mean",
-            "state_runtime_latency_short_mean", "state_runtime_latency_residual_mean",
-            "state_runtime_confidence_mean",
+            "state_runtime_busy_ratio_mean", "state_runtime_service_time_short_mean",
+            "state_runtime_utilization_estimate_mean", "state_runtime_confidence_mean",
         ]
 
     @staticmethod
     def _state_record_debug_fieldnames() -> List[str]:
         return [
             "state_logic_snapshot", "state_phys_snapshot",
-            "state_latency_pair_snapshot", "state_queue_pair_snapshot", "state_runtime_candidate_snapshot",
+            "state_latency_pair_snapshot", "state_queue_pair_snapshot",
+            "state_service_demand_snapshot", "state_runtime_pair_snapshot",
         ]
 
     def _state_record_fieldnames(self) -> List[str]:
@@ -2245,7 +2259,7 @@ class Hedger:
         ]
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
-                "deployment_runtime_candidate_features",
+                "deployment_runtime_pair_features",
                 "deployment_candidate_features",
             ])
         if self.record_cfg.decision_actor_debug:
@@ -2261,12 +2275,12 @@ class Hedger:
             *Hedger._decision_common_fieldnames(),
             "proposal_target", "target", "projected", "projection_reason", "is_cloud",
             "feasible_targets", "feasible_target_count", "parent_targets",
-            "target_gpu_util", "target_mem_util", "target_bandwidth",
+            "target_gpu_flops", "target_bandwidth", "target_role",
         ]
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
-                "offloading_demand_features",
-                "offloading_runtime_candidate_features",
+                "offloading_service_demand_features",
+                "offloading_runtime_pair_features",
                 "offloading_candidate_features",
             ])
         if self.record_cfg.decision_actor_debug:
@@ -2341,8 +2355,13 @@ class Hedger:
             )
             if self.record_cfg.decision_candidate_features_debug:
                 row.update({
-                    "deployment_runtime_candidate_features": self._json_for_record(
-                        self._pair_feature_map(logic_feats, "runtime_candidate_feat", service_idx)
+                    "deployment_runtime_pair_features": self._json_for_record(
+                        self._pair_feature_map(
+                            logic_feats,
+                            "runtime_pair_feat",
+                            service_idx,
+                            names=RUNTIME_PAIR_FEATURE_NAMES,
+                        )
                     ),
                     "deployment_candidate_features": self._json_for_record(
                         self._actor_debug_pair_feature_map(actor_debug, "candidate_feature", service_idx)
@@ -2431,17 +2450,27 @@ class Hedger:
                 feasible_targets=self._json_for_record(self._device_names_from_indices(feasible_indices)),
                 feasible_target_count=len(feasible_indices),
                 parent_targets=self._json_for_record(parent_target_names),
-                target_gpu_util=self._latest_feature_value(phys_feats, "gpu_util_seq", target_idx),
-                target_mem_util=self._latest_feature_value(phys_feats, "mem_util_seq", target_idx),
-                target_bandwidth=self._latest_feature_value(phys_feats, "bandwidth_seq", target_idx),
+                target_gpu_flops=self._latest_feature_value(phys_feats, "gpu_flops", target_idx),
+                target_bandwidth=self._latest_feature_value(phys_feats, "bandwidth_latest", target_idx),
+                target_role=self._latest_feature_value(phys_feats, "role_id", target_idx),
             )
             if self.record_cfg.decision_candidate_features_debug:
                 row.update({
-                    "offloading_demand_features": self._json_for_record(
-                        self._service_feature_vector(logic_feats, "offloading_demand_feat", service_idx)
+                    "offloading_service_demand_features": self._json_for_record(
+                        self._service_feature_vector(
+                            logic_feats,
+                            "service_demand_feat",
+                            service_idx,
+                            names=SERVICE_DEMAND_FEATURE_NAMES,
+                        )
                     ),
-                    "offloading_runtime_candidate_features": self._json_for_record(
-                        self._pair_feature_map(logic_feats, "runtime_candidate_feat", service_idx)
+                    "offloading_runtime_pair_features": self._json_for_record(
+                        self._pair_feature_map(
+                            logic_feats,
+                            "runtime_pair_feat",
+                            service_idx,
+                            names=RUNTIME_PAIR_FEATURE_NAMES,
+                        )
                     ),
                     "offloading_candidate_features": self._json_for_record(
                         self._actor_debug_pair_feature_map(actor_debug, "candidate_feature", service_idx)
@@ -3063,21 +3092,22 @@ class Hedger:
         }
 
     @staticmethod
-    def _build_offloading_demand_features(
+    def _build_service_demand_features(
             task_complexity_seq: torch.Tensor,
             model_flops: torch.Tensor,
+            task_arrival_rate_seq: torch.Tensor,
     ) -> torch.Tensor:
         task_complexity_seq = task_complexity_seq.detach().float()
         model_flops = model_flops.detach().float()
+        task_arrival_rate_seq = task_arrival_rate_seq.detach().float()
         current = task_complexity_seq[:, -1]
-        prev = task_complexity_seq[:, -2] if task_complexity_seq.size(1) >= 2 else current
         mean = task_complexity_seq.mean(dim=1)
         std = task_complexity_seq.std(dim=1, unbiased=False)
-        demand_raw = torch.log1p(current.clamp_min(0.0))
-        demand_delta = current - prev
-        demand_norm = (current - mean) / (std + 1e-6)
+        log_complexity = torch.log1p(current.clamp_min(0.0))
+        complexity_zscore = (current - mean) / (std + 1e-6)
         demand_compute = torch.log1p(current.clamp_min(0.0) * model_flops.clamp_min(0.0))
-        return torch.stack([demand_raw, demand_delta, demand_norm, demand_compute], dim=-1)
+        arrival_rate = task_arrival_rate_seq[:, -1].clamp_min(0.0)
+        return torch.stack([log_complexity, complexity_zscore, demand_compute, arrival_rate], dim=-1)
 
     @staticmethod
     def _snapshot_pair_tensor(
@@ -3095,41 +3125,38 @@ class Hedger:
         return tensor
 
     @staticmethod
-    def _build_runtime_candidate_features(
+    def _build_runtime_pair_features(
             latency_pair_snapshot: Dict[str, Any],
             queue_pair_snapshot: Dict[str, Any],
+            arrival_rate_short: torch.Tensor,
     ) -> torch.Tensor:
         latency_pair = torch.tensor(latency_pair_snapshot.get("pair_short", []), dtype=torch.float32)
         queue_pair = torch.tensor(queue_pair_snapshot.get("pair_short", []), dtype=torch.float32)
         if latency_pair.dim() != 2 or queue_pair.dim() != 2 or tuple(latency_pair.shape) != tuple(queue_pair.shape):
-            return torch.zeros((0, 0, 7), dtype=torch.float32)
+            return torch.zeros((0, 0, len(RUNTIME_PAIR_FEATURE_NAMES)), dtype=torch.float32)
         shape = (latency_pair.size(0), latency_pair.size(1))
         latency_short = Hedger._snapshot_pair_tensor(latency_pair_snapshot, "pair_short", shape)
-        latency_service_base = torch.tensor(
-            latency_pair_snapshot.get("service_baseline", {}).get("short", []),
-            dtype=torch.float32,
-        )
-        if latency_service_base.dim() != 1 or latency_service_base.size(0) != shape[0]:
-            latency_service_base = torch.zeros((shape[0],), dtype=torch.float32)
         queue_short = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_short", shape)
-        queue_mean = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_long", shape)
         queue_busy = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_busy", shape)
         queue_count = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_count", shape)
         latency_count = Hedger._snapshot_pair_tensor(latency_pair_snapshot, "pair_count", shape)
-        lat_short_residual = latency_short - latency_service_base.view(-1, 1)
         confidence = torch.clamp(
             torch.log1p(torch.minimum(latency_count, queue_count).clamp_min(0.0)) / math.log1p(20.0),
             min=0.0,
             max=1.0,
         )
+        if arrival_rate_short.dim() != 1 or arrival_rate_short.size(0) != shape[0]:
+            arrival_rate_short = torch.zeros((shape[0],), dtype=torch.float32)
+        service_time_raw = torch.expm1(latency_short.clamp_min(0.0)).clamp_min(0.0)
+        utilization_estimate = torch.clamp(arrival_rate_short.view(-1, 1) * service_time_raw, min=0.0, max=10.0)
+        available = (torch.maximum(queue_count, latency_count) > 0.0).float()
         return torch.stack(
             [
-                torch.log1p(queue_count.clamp_min(0.0)),
-                torch.log1p(queue_short.clamp_min(0.0)),
-                torch.log1p(queue_mean.clamp_min(0.0)),
+                available,
+                queue_short,
                 queue_busy,
-                torch.log1p(latency_short.clamp_min(0.0)),
-                lat_short_residual,
+                latency_short,
+                utilization_estimate,
                 confidence,
             ],
             dim=-1,
@@ -3152,22 +3179,23 @@ class Hedger:
             "model_flops": torch.tensor(logic_feats_raw["model_flops"], dtype=torch.float32),
             "model_mem": torch.tensor(logic_feats_raw["model_mem"], dtype=torch.float32),
             "task_complexity_seq": torch.tensor(logic_feats_raw["task_complexity_seq"], dtype=torch.float32),
+            "task_arrival_rate_seq": torch.tensor(logic_feats_raw["task_arrival_rate_seq"], dtype=torch.float32),
         }
-        logic_feats["offloading_demand_feat"] = self._build_offloading_demand_features(
+        logic_feats["service_demand_feat"] = self._build_service_demand_features(
             logic_feats["task_complexity_seq"],
             logic_feats["model_flops"],
+            logic_feats["task_arrival_rate_seq"],
         )
-        logic_feats["runtime_candidate_feat"] = self._build_runtime_candidate_features(
+        logic_feats["runtime_pair_feat"] = self._build_runtime_pair_features(
             state_debug.get("latency_pair_snapshot", {}),
             state_debug.get("queue_pair_snapshot", {}),
+            logic_feats["service_demand_feat"][:, 3],
         )
         phys_feats = {
             "gpu_flops": torch.tensor(phys_feats_raw["gpu_flops"], dtype=torch.float32),
             "role_id": torch.tensor(phys_feats_raw["role_id"], dtype=torch.long),
             "mem_capacity": torch.tensor(phys_feats_raw["mem_capacity"], dtype=torch.float32),
-            "bandwidth_seq": torch.tensor(phys_feats_raw["bandwidth_seq"], dtype=torch.float32),
-            "gpu_util_seq": torch.tensor(phys_feats_raw["gpu_util_seq"], dtype=torch.float32),
-            "mem_util_seq": torch.tensor(phys_feats_raw["mem_util_seq"], dtype=torch.float32),
+            "bandwidth_latest": torch.tensor(phys_feats_raw["bandwidth_latest"], dtype=torch.float32),
         }
         return logic_feats, phys_feats, state_debug
 

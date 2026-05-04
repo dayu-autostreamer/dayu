@@ -45,6 +45,13 @@ def _tensor_std_float(values: torch.Tensor) -> float:
     return float(values.std(unbiased=False).cpu().item())
 
 
+def _masked_min(values: torch.Tensor, mask: torch.Tensor, dim: int) -> torch.Tensor:
+    masked = values.masked_fill(~mask.bool(), float("inf"))
+    result = masked.min(dim=dim).values
+    fallback = values.min(dim=dim).values
+    return torch.where(torch.isfinite(result), result, fallback)
+
+
 def _parameters_grad_norm(parameters) -> float:
     total_sq_norm = 0.0
     for param in parameters:
@@ -53,26 +60,6 @@ def _parameters_grad_norm(parameters) -> float:
         param_norm = float(param.grad.detach().data.norm(2).cpu().item())
         total_sq_norm += param_norm * param_norm
     return float(math.sqrt(total_sq_norm))
-
-
-def _series_latest(
-        feats: Dict[str, torch.Tensor],
-        key: str,
-        length: int,
-        device: torch.device,
-        dtype: torch.dtype,
-) -> torch.Tensor:
-    value = feats.get(key)
-    if not isinstance(value, torch.Tensor) or value.numel() == 0:
-        return torch.zeros((length,), device=device, dtype=dtype)
-    value = value.to(device=device, dtype=dtype)
-    if value.dim() == 1:
-        if value.size(0) != length:
-            return torch.zeros((length,), device=device, dtype=dtype)
-        return value
-    if value.dim() >= 2 and value.size(0) == length:
-        return value[:, -1]
-    return torch.zeros((length,), device=device, dtype=dtype)
 
 
 def _feature_vector(
@@ -88,40 +75,93 @@ def _feature_vector(
     return value.to(device=device, dtype=dtype)
 
 
-def _demand_features(
+SERVICE_DEMAND_FEATURE_NAMES = [
+    "log_complexity",
+    "complexity_zscore",
+    "log_demand_compute",
+    "arrival_rate_short",
+]
+
+RUNTIME_PAIR_FEATURE_NAMES = [
+    "available",
+    "queue_short",
+    "queue_busy",
+    "service_time_short",
+    "utilization_estimate",
+    "confidence",
+]
+
+OFFLOADING_CANDIDATE_FEATURE_NAMES = [
+    "qk_feature",
+    "compute_pressure",
+    "queue_short",
+    "queue_busy",
+    "service_time_short",
+    "utilization_estimate",
+    "queue_gap_to_best",
+    "time_gap_to_best",
+    "utilization_gap_to_best",
+    "confidence",
+    "parent_same_device",
+    "parent_cross_tier",
+    "cross_tier_bandwidth_penalty",
+    "is_cloud",
+]
+
+DEPLOYMENT_CANDIDATE_FEATURE_NAMES = [
+    "qk_feature",
+    "compute_pressure",
+    "mem_pressure",
+    "residual_after_place",
+    "current_replica",
+    "service_replica_count",
+    "service_edge_replica_count",
+    "device_replica_count",
+    "service_runtime_pressure",
+    "device_runtime_pressure",
+    "pair_runtime_benefit",
+    "parent_coverage",
+    "child_coverage",
+    "is_cloud",
+    "static_allowed",
+]
+
+
+def _service_demand_features(
         logic_feats: Dict[str, torch.Tensor],
         num_services: int,
         device: torch.device,
         dtype: torch.dtype,
 ) -> torch.Tensor:
-    existing = logic_feats.get("offloading_demand_feat")
+    existing = logic_feats.get("service_demand_feat")
     if isinstance(existing, torch.Tensor) and existing.dim() == 2 \
             and existing.size(0) == num_services and existing.size(1) >= 4:
         return existing[:, :4].to(device=device, dtype=dtype)
 
     tc = logic_feats.get("task_complexity_seq")
+    ar = logic_feats.get("task_arrival_rate_seq")
     mf = logic_feats.get("model_flops")
     if not isinstance(tc, torch.Tensor) or tc.dim() != 2 or tc.size(0) != num_services:
-        tc = torch.zeros((num_services, 1), device=device, dtype=dtype)
-    else:
-        tc = tc.to(device=device, dtype=dtype)
+        raise ValueError("Hedger state is missing `task_complexity_seq`.")
+    if not isinstance(ar, torch.Tensor) or ar.dim() != 2 or ar.size(0) != num_services:
+        raise ValueError("Hedger state is missing `task_arrival_rate_seq`.")
     if not isinstance(mf, torch.Tensor) or mf.dim() != 1 or mf.size(0) != num_services:
-        mf = torch.zeros((num_services,), device=device, dtype=dtype)
-    else:
-        mf = mf.to(device=device, dtype=dtype)
+        raise ValueError("Hedger state is missing `model_flops`.")
+    tc = tc.to(device=device, dtype=dtype)
+    ar = ar.to(device=device, dtype=dtype)
+    mf = mf.to(device=device, dtype=dtype)
 
     current = tc[:, -1]
-    prev = tc[:, -2] if tc.size(1) >= 2 else current
     mean = tc.mean(dim=1)
     std = tc.std(dim=1, unbiased=False)
-    demand_raw = torch.log1p(current.clamp_min(0.0))
-    demand_delta = current - prev
-    demand_norm = (current - mean) / (std + 1e-6)
+    log_complexity = torch.log1p(current.clamp_min(0.0))
+    complexity_zscore = (current - mean) / (std + 1e-6)
     demand_compute = torch.log1p(current.clamp_min(0.0) * mf.clamp_min(0.0))
-    return torch.stack([demand_raw, demand_delta, demand_norm, demand_compute], dim=-1)
+    arrival_rate = ar[:, -1].clamp_min(0.0)
+    return torch.stack([log_complexity, complexity_zscore, demand_compute, arrival_rate], dim=-1)
 
 
-def _runtime_candidate_features(
+def _runtime_pair_features(
         logic_feats: Dict[str, torch.Tensor],
         num_services: int,
         num_devices: int,
@@ -132,17 +172,17 @@ def _runtime_candidate_features(
     """
     Build the shared service-device runtime state:
 
-    [log replica/availability, queue_short, queue_mean, busy_ratio,
-     total_latency_short, total_latency_residual, confidence].
+    [available, queue_short, queue_busy, service_time_short,
+     utilization_estimate, confidence].
     """
-    existing = logic_feats.get("runtime_candidate_feat")
+    existing = logic_feats.get("runtime_pair_feat")
     if isinstance(existing, torch.Tensor) and existing.dim() == 3 \
-            and existing.size(0) == num_services and existing.size(1) == num_devices and existing.size(2) >= 7:
-        runtime = existing[..., :7].to(device=device, dtype=dtype).clone()
+            and existing.size(0) == num_services and existing.size(1) == num_devices and existing.size(2) >= 6:
+        runtime = existing[..., :6].to(device=device, dtype=dtype).clone()
         if availability_mask is not None:
-            runtime[..., 0] = torch.log1p(availability_mask.to(device=device, dtype=dtype).clamp_min(0.0))
+            runtime[..., 0] = availability_mask.to(device=device, dtype=dtype).clamp_min(0.0)
         return runtime
-    raise ValueError("Hedger state is missing `runtime_candidate_feat`; collect state with the current runtime builder.")
+    raise ValueError("Hedger state is missing `runtime_pair_feat`; collect state with the current runtime builder.")
 
 
 def _masked_center_tanh(scores: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -272,8 +312,11 @@ class _DeploymentBackbonePPO(nn.Module):
         self.service_adapter = FeatureAdapter(d_model)
         self.device_adapter = FeatureAdapter(d_model)
         hidden_dim = max(32, d_model)
-        self.deployment_cost_head = CandidateCostHead(input_dim=22, hidden_dim=hidden_dim)
-        self.critic = CandidateValueHead(input_dim=22, d_model=d_model)
+        self.deployment_cost_head = CandidateCostHead(
+            input_dim=len(DEPLOYMENT_CANDIDATE_FEATURE_NAMES),
+            hidden_dim=hidden_dim,
+        )
+        self.critic = CandidateValueHead(input_dim=len(DEPLOYMENT_CANDIDATE_FEATURE_NAMES), d_model=d_model)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
 
         self.gamma = gamma
@@ -417,42 +460,15 @@ class _DeploymentBackbonePPO(nn.Module):
         prev_deploy_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
-            Compute the memory budget available to the current deployment step.
+        Compute the deployment memory budget used by the projection layer.
 
-            - If `logic_feats` or `prev_deploy_mask` is missing, fall back to:
-              `residual = mem_capacity * (1 - mem_util).`
-
-            - If `prev_deploy_mask` is provided, assume the previous deployment
-              is released before placing the new one:
-
-              `total_used = cap * util`
-              `prev_usage = sum_i prev_deploy_mask[i, n] * model_mem[i]`
-
-              `baseline = max(total_used - prev_usage, 0)`  # memory used by non-RL workloads
-              `residual_0 = max(cap - baseline, 0)`  # budget for the new deployment
-
-            The configured edge memory budget ratio is applied after residual
-            memory is computed, so projection only spends a guarded fraction of
-            currently available edge memory.
+        Hedger controls the processor replicas in the deployment mask, so the
+        scheduler treats a new deployment decision as a fresh placement under
+        the configured edge memory budget rather than feeding instantaneous
+        device memory utilization into the policy.
         """
         cap = phys_feats["mem_capacity"].float()  # [Np] GB
-
-        if logic_feats is None or prev_deploy_mask is None:
-            util = phys_feats["mem_util_seq"][:, -1].float()  # Current total memory utilization.
-            return self._scale_edge_memory_budget(cap * (1.0 - util))
-
-        util = phys_feats["mem_util_seq"][:, -1].float()  # [Np]
-        total_used = cap * util  # [Np], current total memory usage.
-
-        model_mem = logic_feats["model_mem"].float()  # [Ms]
-        # `prev_deploy_mask`: [Ms, Np] -> [Np], total memory used by the
-        # previous RL deployment on each node.
-        prev_usage = torch.matmul(prev_deploy_mask.float().t(), model_mem)  # [Np]
-        baseline = torch.clamp(total_used - prev_usage, min=0.0)  # [Np]
-
-        # Budget available to the new deployment round.
-        residual = torch.clamp(cap - baseline, min=0.0)  # [Np]
-        return self._scale_edge_memory_budget(residual)
+        return self._scale_edge_memory_budget(cap)
 
     def _adapt_embeddings(self, h_s: torch.Tensor, h_p: torch.Tensor):
         """Apply task-specific residual adapters to the shared encoder outputs."""
@@ -473,55 +489,36 @@ class _DeploymentBackbonePPO(nn.Module):
         qk_feature = _masked_center_tanh(qk_scores, mask)
         return q_embedding, k_embedding, qk_scores, qk_feature
 
-    def _deployment_coverage_context(
+    def _deployment_topology_coverage(
             self,
             logic_edge_index: torch.Tensor,
-            role_id: torch.Tensor,
             prev_deploy_mask: Optional[torch.Tensor],
             num_services: int,
             num_devices: int,
             device: torch.device,
             dtype: torch.dtype,
     ) -> torch.Tensor:
-        parents, children, levels = _topology_context(logic_edge_index, num_services)
-        levels = levels.to(device=device, dtype=dtype)
+        parents, children, _ = _topology_context(logic_edge_index, num_services)
         if prev_deploy_mask is None:
             prev_mask = torch.zeros((num_services, num_devices), device=device, dtype=torch.bool)
         else:
             prev_mask = prev_deploy_mask.to(device=device).bool()
 
-        coverage = torch.zeros((num_services, num_devices, 4), device=device, dtype=dtype)
+        coverage = torch.zeros((num_services, num_devices, 2), device=device, dtype=dtype)
         for service_idx in range(num_services):
             for device_idx in range(num_devices):
-                role = int(role_id[device_idx].item())
-                parent_same_tier = 0.0
+                parent_coverage = 0.0
                 if parents[service_idx]:
-                    matched = 0
-                    for parent_idx in parents[service_idx]:
-                        parent_devices = torch.nonzero(prev_mask[parent_idx], as_tuple=False).flatten()
-                        if any(
-                            int(role_id[int(parent_device.item())].item()) == role
-                            for parent_device in parent_devices
-                        ):
-                            matched += 1
-                    parent_same_tier = matched / float(len(parents[service_idx]))
+                    matched = sum(1 for parent_idx in parents[service_idx] if bool(prev_mask[parent_idx, device_idx]))
+                    parent_coverage = matched / float(len(parents[service_idx]))
 
-                child_same_tier = 0.0
+                child_coverage = 0.0
                 if children[service_idx]:
-                    matched = 0
-                    for child_idx in children[service_idx]:
-                        child_devices = torch.nonzero(prev_mask[child_idx], as_tuple=False).flatten()
-                        if any(
-                            int(role_id[int(child_device.item())].item()) == role
-                            for child_device in child_devices
-                        ):
-                            matched += 1
-                    child_same_tier = matched / float(len(children[service_idx]))
+                    matched = sum(1 for child_idx in children[service_idx] if bool(prev_mask[child_idx, device_idx]))
+                    child_coverage = matched / float(len(children[service_idx]))
 
-                coverage[service_idx, device_idx, 0] = parent_same_tier
-                coverage[service_idx, device_idx, 1] = (1.0 - parent_same_tier) if parents[service_idx] else 0.0
-                coverage[service_idx, device_idx, 2] = child_same_tier
-                coverage[service_idx, device_idx, 3] = levels[service_idx]
+                coverage[service_idx, device_idx, 0] = parent_coverage
+                coverage[service_idx, device_idx, 1] = child_coverage
         return coverage
 
     def _deployment_candidate_features(
@@ -537,14 +534,13 @@ class _DeploymentBackbonePPO(nn.Module):
         device = qk_feature.device
         dtype = qk_feature.dtype
         cloud_idx = self._cloud_index(num_devices)
-        demand_feat = _demand_features(logic_feats, num_services, device, dtype)
-        runtime_feat = _runtime_candidate_features(
+        demand_feat = _service_demand_features(logic_feats, num_services, device, dtype)
+        runtime_feat = _runtime_pair_features(
             logic_feats, num_services, num_devices, device, dtype, availability_mask=static_allowed
         )
         model_mem = _feature_vector(logic_feats, "model_mem", num_services, device, dtype)
         gpu_flops = _feature_vector(phys_feats, "gpu_flops", num_devices, device, dtype)
         _, is_cloud = _role_tensors(phys_feats, num_devices, device, dtype, cloud_idx)
-        role_id, _ = _role_tensors(phys_feats, num_devices, device, dtype, cloud_idx)
 
         residual_mem = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask).to(device=device, dtype=dtype)
         if prev_deploy_mask is None:
@@ -552,48 +548,57 @@ class _DeploymentBackbonePPO(nn.Module):
         else:
             prev_mask = prev_deploy_mask.to(device=device, dtype=dtype)
         current_replica_count = prev_mask.sum(dim=1).clamp_min(0.0)
+        edge_mask = torch.ones((num_devices,), device=device, dtype=torch.bool)
+        if 0 <= cloud_idx < num_devices:
+            edge_mask[cloud_idx] = False
+        service_edge_replica_count = prev_mask[:, edge_mask].sum(dim=1).clamp_min(0.0)
         device_service_count = prev_mask.sum(dim=0).clamp_min(0.0)
 
         compute_pressure = torch.tanh(
-            demand_feat[:, 3].view(num_services, 1)
+            demand_feat[:, 2].view(num_services, 1)
             - torch.log1p(gpu_flops.clamp_min(0.0)).view(1, num_devices)
         )
         mem_pressure = torch.tanh(
             torch.log1p(model_mem.clamp_min(0.0)).view(num_services, 1)
             - torch.log1p(residual_mem.clamp_min(0.0)).view(1, num_devices)
         )
-        queue_pressure = torch.tanh(runtime_feat[..., 1] + runtime_feat[..., 2])
-        latency_pressure = torch.tanh(runtime_feat[..., 5])
-        cloud_role = is_cloud.view(1, num_devices).expand(num_services, -1)
-        deployment_pressure = torch.stack(
-            [compute_pressure, mem_pressure, queue_pressure, latency_pressure, cloud_role],
-            dim=-1,
-        )
-
-        coverage_context = self._deployment_coverage_context(
-            logic_edge_index, role_id, prev_deploy_mask, num_services, num_devices, device, dtype
-        )
         residual_after_place = torch.tanh(
             torch.log1p(residual_mem.clamp_min(0.0)).view(1, num_devices)
             - torch.log1p(model_mem.clamp_min(0.0)).view(num_services, 1)
         )
-        placement_context = torch.stack(
+        utilization = runtime_feat[..., 4]
+        prev_bool = prev_mask.bool()
+        runtime_source_mask = torch.where(
+            prev_bool.any(dim=1, keepdim=True),
+            prev_bool,
+            static_allowed.to(device=device).bool(),
+        )
+        service_runtime_pressure = _masked_min(utilization, runtime_source_mask, dim=1)
+        device_denom = prev_mask.sum(dim=0).clamp_min(1.0)
+        device_runtime_pressure = (utilization * prev_mask).sum(dim=0) / device_denom
+        pair_runtime_benefit = service_runtime_pressure.view(num_services, 1) - utilization
+        topology_coverage = self._deployment_topology_coverage(
+            logic_edge_index, prev_deploy_mask, num_services, num_devices, device, dtype
+        )
+        cloud_role = is_cloud.view(1, num_devices).expand(num_services, -1)
+        static_allowed_float = static_allowed.to(device=device, dtype=dtype)
+        return torch.stack(
             [
+                qk_feature,
+                compute_pressure,
+                mem_pressure,
+                residual_after_place,
                 prev_mask,
                 torch.log1p(current_replica_count).view(num_services, 1).expand(-1, num_devices),
+                torch.log1p(service_edge_replica_count).view(num_services, 1).expand(-1, num_devices),
                 torch.log1p(device_service_count).view(1, num_devices).expand(num_services, -1),
-                residual_after_place,
-                1.0 - prev_mask,
-            ],
-            dim=-1,
-        )
-        return torch.cat(
-            [
-                qk_feature.unsqueeze(-1),
-                runtime_feat,
-                deployment_pressure,
-                coverage_context,
-                placement_context,
+                service_runtime_pressure.view(num_services, 1).expand(-1, num_devices),
+                device_runtime_pressure.view(1, num_devices).expand(num_services, -1),
+                pair_runtime_benefit,
+                topology_coverage[..., 0],
+                topology_coverage[..., 1],
+                cloud_role,
+                static_allowed_float,
             ],
             dim=-1,
         )
@@ -607,7 +612,7 @@ class _DeploymentBackbonePPO(nn.Module):
             phys_feats: Dict[str, torch.Tensor],
             static_allowed: torch.Tensor,
             prev_deploy_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q_embedding, k_embedding, qk_scores, qk_feature = self._qk_components(h_s, h_p, static_allowed)
         candidate_features = self._deployment_candidate_features(
             logic_edge_index,
@@ -1043,6 +1048,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "qk_feature": qk_feature.detach().cpu(),
                 "candidate_cost": candidate_cost.detach().cpu(),
                 "candidate_feature": candidate_features.detach().cpu(),
+                "candidate_feature_names": DEPLOYMENT_CANDIDATE_FEATURE_NAMES,
+                "runtime_pair_feature_names": RUNTIME_PAIR_FEATURE_NAMES,
+                "service_demand_feature_names": SERVICE_DEMAND_FEATURE_NAMES,
                 "final_score": final_scores.detach().cpu(),
                 "policy_prob": policy_prob_matrix.detach().cpu(),
                 "static_mask": static_allowed.detach().cpu(),
@@ -1416,8 +1424,11 @@ class HedgerOffloadingPPO(nn.Module):
         self.service_adapter = FeatureAdapter(d_model)
         self.device_adapter = FeatureAdapter(d_model)
         hidden_dim = max(32, d_model)
-        self.offloading_cost_head = CandidateCostHead(input_dim=16, hidden_dim=hidden_dim)
-        self.critic = CandidateValueHead(input_dim=16, d_model=d_model)
+        self.offloading_cost_head = CandidateCostHead(
+            input_dim=len(OFFLOADING_CANDIDATE_FEATURE_NAMES),
+            hidden_dim=hidden_dim,
+        )
+        self.critic = CandidateValueHead(input_dim=len(OFFLOADING_CANDIDATE_FEATURE_NAMES), d_model=d_model)
 
         adapter_params = (
             list(self.service_adapter.parameters())
@@ -1522,17 +1533,15 @@ class HedgerOffloadingPPO(nn.Module):
     ) -> torch.Tensor:
         cloud_idx = self._cloud_index(num_devices)
         role_id, is_cloud = _role_tensors(phys_feats, num_devices, device, dtype, cloud_idx)
-        bandwidth = _series_latest(phys_feats, "bandwidth_seq", num_devices, device, dtype).clamp_min(1e-6)
+        bandwidth = _feature_vector(phys_feats, "bandwidth_latest", num_devices, device, dtype).clamp_min(1e-6)
         edge_mask = is_cloud < 0.5
         edge_bw_ref = bandwidth[edge_mask].mean() if edge_mask.any() else bandwidth.mean()
 
-        context = torch.zeros((num_devices, 4), device=device, dtype=dtype)
+        context = torch.zeros((num_devices, 3), device=device, dtype=dtype)
         parent_indices = parents[service_idx]
         if not parent_indices:
-            # Treat task source as an edge-side pseudo parent. This keeps root
-            # services aware that sending the first hop to cloud pays a cross-tier price.
             context[:, 1] = is_cloud
-            context[:, 3] = is_cloud * torch.log1p(edge_bw_ref / bandwidth)
+            context[:, 2] = is_cloud * torch.log1p(edge_bw_ref / bandwidth)
             return context
 
         valid_parent_actions = []
@@ -1543,39 +1552,14 @@ class HedgerOffloadingPPO(nn.Module):
         if not valid_parent_actions:
             return context
         denom = float(max(1, len(valid_parent_actions)))
-        parent_cloud = sum(1 for action in valid_parent_actions if action == cloud_idx) / denom
         for device_idx in range(num_devices):
             role = int(role_id[device_idx].item())
             same_device = sum(1 for action in valid_parent_actions if action == device_idx) / denom
             cross_tier = sum(1 for action in valid_parent_actions if int(role_id[action].item()) != role) / denom
             context[device_idx, 0] = same_device
             context[device_idx, 1] = cross_tier
-            context[device_idx, 2] = parent_cloud
-            context[device_idx, 3] = cross_tier * torch.log1p(edge_bw_ref / bandwidth[device_idx])
+            context[device_idx, 2] = cross_tier * torch.log1p(edge_bw_ref / bandwidth[device_idx])
         return context
-
-    def _offloading_pressure_features(
-            self,
-            demand_feat: torch.Tensor,
-            runtime_row: torch.Tensor,
-            dependency_context: torch.Tensor,
-            phys_feats: Dict[str, torch.Tensor],
-            service_idx: int,
-            num_devices: int,
-            device: torch.device,
-            dtype: torch.dtype,
-    ) -> torch.Tensor:
-        gpu_flops = _feature_vector(phys_feats, "gpu_flops", num_devices, device, dtype)
-        compute_pressure = torch.tanh(
-            demand_feat[service_idx, 3] - torch.log1p(gpu_flops.clamp_min(0.0))
-        )
-        queue_pressure = torch.tanh(runtime_row[..., 2] + runtime_row[..., 3] + demand_feat[service_idx, 2])
-        latency_pressure = torch.tanh(runtime_row[..., 5])
-        payload_cross_tier_pressure = torch.tanh(dependency_context[..., 3] + demand_feat[service_idx, 0])
-        return torch.stack(
-            [compute_pressure, queue_pressure, latency_pressure, payload_cross_tier_pressure],
-            dim=-1,
-        )
 
     def _offloading_candidate_row(
             self,
@@ -1587,10 +1571,15 @@ class HedgerOffloadingPPO(nn.Module):
             parents: List[List[int]],
             service_idx: int,
             actions: Union[Sequence[int], torch.Tensor],
+            allowed: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         num_devices = qk_feature.size(1)
         device = qk_feature.device
         dtype = qk_feature.dtype
+        if allowed is None:
+            allowed = torch.ones((num_devices,), device=device, dtype=torch.bool)
+        else:
+            allowed = allowed.to(device=device).bool()
         dependency_context = self._offloading_dependency_context(
             parents,
             service_idx,
@@ -1600,22 +1589,36 @@ class HedgerOffloadingPPO(nn.Module):
             device,
             dtype,
         )
-        pressure = self._offloading_pressure_features(
-            demand_feat,
-            runtime_feat[service_idx],
-            dependency_context,
-            phys_feats,
-            service_idx,
-            num_devices,
-            device,
-            dtype,
+        runtime_row = runtime_feat[service_idx]
+        gpu_flops = _feature_vector(phys_feats, "gpu_flops", num_devices, device, dtype)
+        _, is_cloud = _role_tensors(phys_feats, num_devices, device, dtype, self._cloud_index(num_devices))
+        compute_pressure = torch.tanh(
+            demand_feat[service_idx, 2] - torch.log1p(gpu_flops.clamp_min(0.0))
         )
-        return torch.cat(
+        queue_short = runtime_row[..., 1]
+        queue_busy = runtime_row[..., 2]
+        service_time_short = runtime_row[..., 3]
+        utilization = runtime_row[..., 4]
+        confidence = runtime_row[..., 5]
+        queue_best = _masked_min(queue_short.view(1, -1), allowed.view(1, -1), dim=1).squeeze(0)
+        time_best = _masked_min(service_time_short.view(1, -1), allowed.view(1, -1), dim=1).squeeze(0)
+        util_best = _masked_min(utilization.view(1, -1), allowed.view(1, -1), dim=1).squeeze(0)
+        return torch.stack(
             [
-                qk_feature[service_idx].unsqueeze(-1),
-                runtime_feat[service_idx],
-                dependency_context,
-                pressure,
+                qk_feature[service_idx],
+                compute_pressure,
+                queue_short,
+                queue_busy,
+                service_time_short,
+                utilization,
+                queue_short - queue_best,
+                service_time_short - time_best,
+                utilization - util_best,
+                confidence,
+                dependency_context[..., 0],
+                dependency_context[..., 1],
+                dependency_context[..., 2],
+                is_cloud,
             ],
             dim=-1,
         )
@@ -1630,7 +1633,7 @@ class HedgerOffloadingPPO(nn.Module):
     ) -> torch.Tensor:
         num_services, num_devices = qk_feature.shape
         parents = self._build_parents(logic_edge_index, num_services)
-        demand_feat = _demand_features(logic_feats, num_services, qk_feature.device, qk_feature.dtype)
+        demand_feat = _service_demand_features(logic_feats, num_services, qk_feature.device, qk_feature.dtype)
         unknown_actions = torch.full(
             (num_services,),
             fill_value=-1,
@@ -1647,6 +1650,7 @@ class HedgerOffloadingPPO(nn.Module):
                 parents,
                 service_idx,
                 unknown_actions,
+                allowed=runtime_feat[service_idx, :, 0] > 0.0,
             )
             for service_idx in range(num_services)
         ]
@@ -1661,10 +1665,10 @@ class HedgerOffloadingPPO(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_services, num_devices = h_s.size(0), h_p.size(0)
         q_embedding, k_embedding, qk_scores, qk_feature = self._qk_components(h_s, h_p, effective_mask)
-        runtime_feat = _runtime_candidate_features(
+        runtime_feat = _runtime_pair_features(
             logic_feats, num_services, num_devices, h_s.device, h_s.dtype, availability_mask=effective_mask
         )
-        demand_feat = _demand_features(logic_feats, num_services, h_s.device, h_s.dtype)
+        demand_feat = _service_demand_features(logic_feats, num_services, h_s.device, h_s.dtype)
         return q_embedding, k_embedding, qk_scores, qk_feature, runtime_feat, demand_feat
 
     @torch.no_grad()
@@ -1840,7 +1844,11 @@ class HedgerOffloadingPPO(nn.Module):
         policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         final_scores = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         candidate_costs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
-        candidate_features_matrix = torch.zeros((Ms, Np, 16), dtype=h_s.dtype, device=h_p.device)
+        candidate_features_matrix = torch.zeros(
+            (Ms, Np, len(OFFLOADING_CANDIDATE_FEATURE_NAMES)),
+            dtype=h_s.dtype,
+            device=h_p.device,
+        )
 
         proposal_action_list = [-1 for _ in range(Ms)]
         logp_sum = torch.tensor(0.0, device=h_p.device)
@@ -1857,6 +1865,7 @@ class HedgerOffloadingPPO(nn.Module):
                 parents,
                 i,
                 proposal_action_list,
+                allowed=allowed,
             )
             candidate_cost = self.offloading_cost_head(candidate_row.float())
             candidate_scores = -candidate_cost
@@ -1900,7 +1909,10 @@ class HedgerOffloadingPPO(nn.Module):
                 "qk_feature": qk_feature.detach().cpu(),
                 "candidate_cost": candidate_costs.detach().cpu(),
                 "candidate_feature": candidate_features_matrix.detach().cpu(),
-                "demand_feature": demand_feat.detach().cpu(),
+                "candidate_feature_names": OFFLOADING_CANDIDATE_FEATURE_NAMES,
+                "runtime_pair_feature_names": RUNTIME_PAIR_FEATURE_NAMES,
+                "service_demand_feature": demand_feat.detach().cpu(),
+                "service_demand_feature_names": SERVICE_DEMAND_FEATURE_NAMES,
                 "final_score": final_scores.detach().cpu(),
                 "policy_prob": policy_prob_matrix.detach().cpu(),
                 "raw_static_mask": static_mask.detach().cpu(),
@@ -1949,6 +1961,7 @@ class HedgerOffloadingPPO(nn.Module):
                 parents,
                 i,
                 proposal_action_list,
+                allowed=allowed,
             )
             scores_i = -self.offloading_cost_head(candidate_row.float())
             probs_i = F.softmax(scores_i.masked_fill(~allowed, float('-inf')), dim=-1)

@@ -29,7 +29,7 @@ class BufferWaitCfg:
 
     min_dynamic_len:
         Minimum required length for each dynamic sequence buffer, such as
-        bandwidth, utilization, and task-complexity history.
+        bandwidth, arrival-rate, and task-complexity history.
 
     require_full_seq:
         If True, every dynamic buffer must satisfy `len(buf) >= seq_len`.
@@ -47,12 +47,10 @@ class BufferWaitCfg:
 class StateBuffer:
     DEFAULT_LAN_BANDWIDTH_MBPS = 100.0
     LATENCY_SHORT_ALPHA = 0.30
-    LATENCY_LONG_ALPHA = 0.10
-    LATENCY_DEV_ALPHA = 0.20
 
     QUEUE_SHORT_ALPHA = 0.35
-    QUEUE_LONG_ALPHA = 0.10
     QUEUE_BUSY_ALPHA = 0.20
+    ARRIVAL_RATE_ALPHA = 0.30
 
     def __init__(self, max_capacity: int, logical_topology, physical_topology,
                  fixed_lan_bandwidth_mbps: float = DEFAULT_LAN_BANDWIDTH_MBPS):
@@ -93,6 +91,8 @@ class StateBuffer:
 
         # Dynamic logical features, one time series per service.
         self.task_complexity_buffer: List[List[float]] = [[] for _ in range(num_services)]
+        self.task_arrival_rate_buffer: List[List[float]] = [[] for _ in range(num_services)]
+        self.task_complexity_last_t: List[float] = [0.0 for _ in range(num_services)]
         self.task_end_to_end_latency_buffer: List[Tuple[int, float, Optional[int]]] = []
 
         # Static physical features.
@@ -105,63 +105,27 @@ class StateBuffer:
             else:
                 self.device_role_buffer.append(0)  # 0: edge, 1: cloud
 
-        # Dynamic physical features, one time series per device.
+        # Dynamic physical feature, one time series per device.
         self.bandwidth_buffer: List[List[float]] = [[] for _ in range(num_devices)]
-        self.gpu_utilization_buffer: List[List[float]] = [[] for _ in range(num_devices)]
-        self.memory_utilization_buffer: List[List[float]] = [[] for _ in range(num_devices)]
 
         # Task-level observations and offloading rewards carry deployment
         # versions so delayed tasks are not credited to a newer deployment.
         self.task_observation_version_buffer: List[Tuple[int, Optional[int]]] = []
         self.offloading_reward_buffer: List[Dict[str, Any]] = []
 
-        # Shared service-device latency pair table plus hierarchical backoff baselines.
+        # Shared service-device runtime tables.
         self.latency_pair_short = np.zeros((num_services, num_devices), dtype=np.float32)
-        self.latency_pair_long = np.zeros((num_services, num_devices), dtype=np.float32)
-        self.latency_pair_dev = np.zeros((num_services, num_devices), dtype=np.float32)
         self.latency_pair_last = np.zeros((num_services, num_devices), dtype=np.float32)
         self.latency_pair_obs_count = np.zeros((num_services, num_devices), dtype=np.int32)
         self.latency_pair_last_task_v = np.zeros((num_services, num_devices), dtype=np.int64)
         self.latency_pair_last_dep_v = np.full((num_services, num_devices), -1, dtype=np.int64)
 
-        self.latency_service_short = np.zeros(num_services, dtype=np.float32)
-        self.latency_service_long = np.zeros(num_services, dtype=np.float32)
-        self.latency_service_dev = np.zeros(num_services, dtype=np.float32)
-        self.latency_service_obs_count = np.zeros(num_services, dtype=np.int32)
-
-        self.latency_device_short = np.zeros(num_devices, dtype=np.float32)
-        self.latency_device_long = np.zeros(num_devices, dtype=np.float32)
-        self.latency_device_dev = np.zeros(num_devices, dtype=np.float32)
-        self.latency_device_obs_count = np.zeros(num_devices, dtype=np.int32)
-
-        self.latency_global_short = 0.0
-        self.latency_global_long = 0.0
-        self.latency_global_dev = 0.0
-        self.latency_global_obs_count = 0
-
-        # Independent queue pair table with wall-clock freshness.
         self.queue_pair_short = np.zeros((num_services, num_devices), dtype=np.float32)
-        self.queue_pair_long = np.zeros((num_services, num_devices), dtype=np.float32)
         self.queue_pair_busy = np.zeros((num_services, num_devices), dtype=np.float32)
         self.queue_pair_last = np.zeros((num_services, num_devices), dtype=np.float32)
         self.queue_pair_obs_count = np.zeros((num_services, num_devices), dtype=np.int32)
         self.queue_pair_last_t = np.zeros((num_services, num_devices), dtype=np.float64)
         self.queue_pair_last_dep_v = np.full((num_services, num_devices), -1, dtype=np.int64)
-
-        self.queue_service_short = np.zeros(num_services, dtype=np.float32)
-        self.queue_service_long = np.zeros(num_services, dtype=np.float32)
-        self.queue_service_busy = np.zeros(num_services, dtype=np.float32)
-        self.queue_service_obs_count = np.zeros(num_services, dtype=np.int32)
-
-        self.queue_device_short = np.zeros(num_devices, dtype=np.float32)
-        self.queue_device_long = np.zeros(num_devices, dtype=np.float32)
-        self.queue_device_busy = np.zeros(num_devices, dtype=np.float32)
-        self.queue_device_obs_count = np.zeros(num_devices, dtype=np.int32)
-
-        self.queue_global_short = 0.0
-        self.queue_global_long = 0.0
-        self.queue_global_busy = 0.0
-        self.queue_global_obs_count = 0
 
         # Track whether each static entry has been observed at least once.
         self._logic_flops_seen = [False for _ in range(num_services)]
@@ -277,20 +241,16 @@ class StateBuffer:
         # First satisfy the minimum dynamic-length requirement.
         if min_dyn_len(self.bandwidth_buffer) < min_len:
             return False
-        if min_dyn_len(self.gpu_utilization_buffer) < min_len:
-            return False
-        if min_dyn_len(self.memory_utilization_buffer) < min_len:
-            return False
         if min_dyn_len(self.task_complexity_buffer) < min_len:
+            return False
+        if min_dyn_len(self.task_arrival_rate_buffer) < min_len:
             return False
         if wait_cfg.require_full_seq:
             if min_dyn_len(self.bandwidth_buffer) < seq_len:
                 return False
-            if min_dyn_len(self.gpu_utilization_buffer) < seq_len:
-                return False
-            if min_dyn_len(self.memory_utilization_buffer) < seq_len:
-                return False
             if min_dyn_len(self.task_complexity_buffer) < seq_len:
+                return False
+            if min_dyn_len(self.task_arrival_rate_buffer) < seq_len:
                 return False
         return True
 
@@ -307,39 +267,30 @@ class StateBuffer:
     @staticmethod
     def _ema_update_latency_state(
             short_value: float,
-            long_value: float,
-            dev_value: float,
             count: int,
             x: float,
             alpha_short: float,
-            alpha_long: float,
-            alpha_dev: float,
-    ) -> Tuple[float, float, float, int]:
+    ) -> Tuple[float, int]:
         if count <= 0:
-            return float(x), float(x), 0.0, 1
+            return float(x), 1
         new_short = (1.0 - alpha_short) * float(short_value) + alpha_short * float(x)
-        new_long = (1.0 - alpha_long) * float(long_value) + alpha_long * float(x)
-        new_dev = (1.0 - alpha_dev) * float(dev_value) + alpha_dev * abs(float(x) - new_short)
-        return float(new_short), float(new_long), float(new_dev), int(count) + 1
+        return float(new_short), int(count) + 1
 
     @staticmethod
     def _ema_update_queue_state(
             short_value: float,
-            long_value: float,
             busy_value: float,
             count: int,
             x: float,
             busy: float,
             alpha_short: float,
-            alpha_long: float,
             alpha_busy: float,
-    ) -> Tuple[float, float, float, int]:
+    ) -> Tuple[float, float, int]:
         if count <= 0:
-            return float(x), float(x), float(busy), 1
+            return float(x), float(busy), 1
         new_short = (1.0 - alpha_short) * float(short_value) + alpha_short * float(x)
-        new_long = (1.0 - alpha_long) * float(long_value) + alpha_long * float(x)
         new_busy = (1.0 - alpha_busy) * float(busy_value) + alpha_busy * float(busy)
-        return float(new_short), float(new_long), float(new_busy), int(count) + 1
+        return float(new_short), float(new_busy), int(count) + 1
 
     def _service_names(self) -> List[str]:
         return [self.logical_topology[i] for i in range(self.logical_topology.node_num)]
@@ -365,57 +316,18 @@ class StateBuffer:
             "monotonic_time": float(now_monotonic),
             "latency_pair_snapshot": {
                 "pair_short": self.latency_pair_short.tolist(),
-                "pair_long": self.latency_pair_long.tolist(),
-                "pair_dev": self.latency_pair_dev.tolist(),
                 "pair_last": self.latency_pair_last.tolist(),
                 "pair_count": self.latency_pair_obs_count.tolist(),
                 "pair_last_task_v": self.latency_pair_last_task_v.tolist(),
                 "pair_last_dep_v": self.latency_pair_last_dep_v.tolist(),
-                "service_baseline": {
-                    "short": self.latency_service_short.tolist(),
-                    "long": self.latency_service_long.tolist(),
-                    "dev": self.latency_service_dev.tolist(),
-                    "count": self.latency_service_obs_count.tolist(),
-                },
-                "device_baseline": {
-                    "short": self.latency_device_short.tolist(),
-                    "long": self.latency_device_long.tolist(),
-                    "dev": self.latency_device_dev.tolist(),
-                    "count": self.latency_device_obs_count.tolist(),
-                },
-                "global_baseline": {
-                    "short": float(self.latency_global_short),
-                    "long": float(self.latency_global_long),
-                    "dev": float(self.latency_global_dev),
-                    "count": int(self.latency_global_obs_count),
-                },
             },
             "queue_pair_snapshot": {
                 "pair_short": self.queue_pair_short.tolist(),
-                "pair_long": self.queue_pair_long.tolist(),
                 "pair_busy": self.queue_pair_busy.tolist(),
                 "pair_last": self.queue_pair_last.tolist(),
                 "pair_count": self.queue_pair_obs_count.tolist(),
                 "pair_last_t": self.queue_pair_last_t.tolist(),
                 "pair_last_dep_v": self.queue_pair_last_dep_v.tolist(),
-                "service_baseline": {
-                    "short": self.queue_service_short.tolist(),
-                    "long": self.queue_service_long.tolist(),
-                    "busy": self.queue_service_busy.tolist(),
-                    "count": self.queue_service_obs_count.tolist(),
-                },
-                "device_baseline": {
-                    "short": self.queue_device_short.tolist(),
-                    "long": self.queue_device_long.tolist(),
-                    "busy": self.queue_device_busy.tolist(),
-                    "count": self.queue_device_obs_count.tolist(),
-                },
-                "global_baseline": {
-                    "short": float(self.queue_global_short),
-                    "long": float(self.queue_global_long),
-                    "busy": float(self.queue_global_busy),
-                    "count": int(self.queue_global_obs_count),
-                },
             },
         }
 
@@ -524,8 +436,28 @@ class StateBuffer:
             s_idx = self._resolve_service_index(service_name)
             if s_idx is None:
                 return
+            now = time.monotonic()
+            last_t = float(self.task_complexity_last_t[s_idx])
+            prev_rate = (
+                float(self.task_arrival_rate_buffer[s_idx][-1])
+                if self.task_arrival_rate_buffer[s_idx] else 0.0
+            )
+            if last_t > 0.0 and now > last_t:
+                instant_rate = 1.0 / max(now - last_t, 1e-6)
+                if prev_rate > 0.0:
+                    arrival_rate = (
+                        (1.0 - self.ARRIVAL_RATE_ALPHA) * prev_rate
+                        + self.ARRIVAL_RATE_ALPHA * instant_rate
+                    )
+                else:
+                    arrival_rate = instant_rate
+            else:
+                arrival_rate = prev_rate
+            self.task_complexity_last_t[s_idx] = now
             self.task_complexity_buffer[s_idx].append(float(complexity))
             self._trim_inplace(self.task_complexity_buffer[s_idx])
+            self.task_arrival_rate_buffer[s_idx].append(float(arrival_rate))
+            self._trim_inplace(self.task_arrival_rate_buffer[s_idx])
             self._bump_version()
 
     def add_task_latency_pair(
@@ -549,68 +481,17 @@ class StateBuffer:
                 task_version = self._task_observation_version
             task_version = int(task_version)
 
-            short, long_, dev, count = self._ema_update_latency_state(
+            short, count = self._ema_update_latency_state(
                 self.latency_pair_short[s_idx, d_idx],
-                self.latency_pair_long[s_idx, d_idx],
-                self.latency_pair_dev[s_idx, d_idx],
                 int(self.latency_pair_obs_count[s_idx, d_idx]),
                 x,
                 self.LATENCY_SHORT_ALPHA,
-                self.LATENCY_LONG_ALPHA,
-                self.LATENCY_DEV_ALPHA,
             )
             self.latency_pair_short[s_idx, d_idx] = short
-            self.latency_pair_long[s_idx, d_idx] = long_
-            self.latency_pair_dev[s_idx, d_idx] = dev
             self.latency_pair_last[s_idx, d_idx] = x
             self.latency_pair_obs_count[s_idx, d_idx] = count
             self.latency_pair_last_task_v[s_idx, d_idx] = task_version
             self.latency_pair_last_dep_v[s_idx, d_idx] = -1 if dep_version is None else dep_version
-
-            short, long_, dev, count = self._ema_update_latency_state(
-                self.latency_service_short[s_idx],
-                self.latency_service_long[s_idx],
-                self.latency_service_dev[s_idx],
-                int(self.latency_service_obs_count[s_idx]),
-                x,
-                self.LATENCY_SHORT_ALPHA,
-                self.LATENCY_LONG_ALPHA,
-                self.LATENCY_DEV_ALPHA,
-            )
-            self.latency_service_short[s_idx] = short
-            self.latency_service_long[s_idx] = long_
-            self.latency_service_dev[s_idx] = dev
-            self.latency_service_obs_count[s_idx] = count
-
-            short, long_, dev, count = self._ema_update_latency_state(
-                self.latency_device_short[d_idx],
-                self.latency_device_long[d_idx],
-                self.latency_device_dev[d_idx],
-                int(self.latency_device_obs_count[d_idx]),
-                x,
-                self.LATENCY_SHORT_ALPHA,
-                self.LATENCY_LONG_ALPHA,
-                self.LATENCY_DEV_ALPHA,
-            )
-            self.latency_device_short[d_idx] = short
-            self.latency_device_long[d_idx] = long_
-            self.latency_device_dev[d_idx] = dev
-            self.latency_device_obs_count[d_idx] = count
-
-            short, long_, dev, count = self._ema_update_latency_state(
-                self.latency_global_short,
-                self.latency_global_long,
-                self.latency_global_dev,
-                int(self.latency_global_obs_count),
-                x,
-                self.LATENCY_SHORT_ALPHA,
-                self.LATENCY_LONG_ALPHA,
-                self.LATENCY_DEV_ALPHA,
-            )
-            self.latency_global_short = short
-            self.latency_global_long = long_
-            self.latency_global_dev = dev
-            self.latency_global_obs_count = count
             self._bump_version()
 
     def add_task_end_to_end_latency(self, latency: float, deployment_version=None):
@@ -703,24 +584,6 @@ class StateBuffer:
                 self._trim_inplace(self.bandwidth_buffer[d_idx])
             self._bump_version()
 
-    def add_gpu_utilization(self, device_name: str, util: float):
-        with self._cond:
-            d_idx = self._resolve_device_index(device_name)
-            if d_idx is None:
-                return
-            self.gpu_utilization_buffer[d_idx].append(float(util))
-            self._trim_inplace(self.gpu_utilization_buffer[d_idx])
-            self._bump_version()
-
-    def add_memory_utilization(self, device_name: str, util: float):
-        with self._cond:
-            d_idx = self._resolve_device_index(device_name)
-            if d_idx is None:
-                return
-            self.memory_utilization_buffer[d_idx].append(float(util))
-            self._trim_inplace(self.memory_utilization_buffer[d_idx])
-            self._bump_version()
-
     def add_queue_lengths(
             self,
             device_name: str,
@@ -745,72 +608,21 @@ class StateBuffer:
                 x = float(np.log1p(value))
                 busy = 1.0 if value > 0.0 else 0.0
 
-                short, long_, busy_ema, count = self._ema_update_queue_state(
+                short, busy_ema, count = self._ema_update_queue_state(
                     self.queue_pair_short[s_idx, d_idx],
-                    self.queue_pair_long[s_idx, d_idx],
                     self.queue_pair_busy[s_idx, d_idx],
                     int(self.queue_pair_obs_count[s_idx, d_idx]),
                     x,
                     busy,
                     self.QUEUE_SHORT_ALPHA,
-                    self.QUEUE_LONG_ALPHA,
                     self.QUEUE_BUSY_ALPHA,
                 )
                 self.queue_pair_short[s_idx, d_idx] = short
-                self.queue_pair_long[s_idx, d_idx] = long_
                 self.queue_pair_busy[s_idx, d_idx] = busy_ema
                 self.queue_pair_last[s_idx, d_idx] = x
                 self.queue_pair_obs_count[s_idx, d_idx] = count
                 self.queue_pair_last_t[s_idx, d_idx] = float(now_monotonic)
                 self.queue_pair_last_dep_v[s_idx, d_idx] = -1 if dep_version is None else dep_version
-
-                short, long_, busy_ema, count = self._ema_update_queue_state(
-                    self.queue_service_short[s_idx],
-                    self.queue_service_long[s_idx],
-                    self.queue_service_busy[s_idx],
-                    int(self.queue_service_obs_count[s_idx]),
-                    x,
-                    busy,
-                    self.QUEUE_SHORT_ALPHA,
-                    self.QUEUE_LONG_ALPHA,
-                    self.QUEUE_BUSY_ALPHA,
-                )
-                self.queue_service_short[s_idx] = short
-                self.queue_service_long[s_idx] = long_
-                self.queue_service_busy[s_idx] = busy_ema
-                self.queue_service_obs_count[s_idx] = count
-
-                short, long_, busy_ema, count = self._ema_update_queue_state(
-                    self.queue_device_short[d_idx],
-                    self.queue_device_long[d_idx],
-                    self.queue_device_busy[d_idx],
-                    int(self.queue_device_obs_count[d_idx]),
-                    x,
-                    busy,
-                    self.QUEUE_SHORT_ALPHA,
-                    self.QUEUE_LONG_ALPHA,
-                    self.QUEUE_BUSY_ALPHA,
-                )
-                self.queue_device_short[d_idx] = short
-                self.queue_device_long[d_idx] = long_
-                self.queue_device_busy[d_idx] = busy_ema
-                self.queue_device_obs_count[d_idx] = count
-
-                short, long_, busy_ema, count = self._ema_update_queue_state(
-                    self.queue_global_short,
-                    self.queue_global_long,
-                    self.queue_global_busy,
-                    int(self.queue_global_obs_count),
-                    x,
-                    busy,
-                    self.QUEUE_SHORT_ALPHA,
-                    self.QUEUE_LONG_ALPHA,
-                    self.QUEUE_BUSY_ALPHA,
-                )
-                self.queue_global_short = short
-                self.queue_global_long = long_
-                self.queue_global_busy = busy_ema
-                self.queue_global_obs_count = count
                 updated = True
 
             if updated:
@@ -985,14 +797,13 @@ class StateBuffer:
             `model_flops`: `(Ms,)`
             `model_mem`: `(Ms,)`
             `task_complexity_seq`: `(Ms, T)`
+            `task_arrival_rate_seq`: `(Ms, T)`
 
         `phys_feats`:
             `gpu_flops`: `(Np,)`
             `role_id`: `(Np,)`
             `mem_capacity`: `(Np,)`
-            `bandwidth_seq`: `(Np, T)`
-            `gpu_util_seq`: `(Np, T)`
-            `mem_util_seq`: `(Np, T)`
+            `bandwidth_latest`: `(Np,)`
         """
         if wait_cfg is None:
             wait_cfg = BufferWaitCfg()
@@ -1016,32 +827,27 @@ class StateBuffer:
                 self._pad_trunc_1d(self.task_complexity_buffer[i], seq_len, pad_mode=pad_mode)
                 for i in range(Ms)
             ]
+            logic_task_arrival_rate = [
+                self._pad_trunc_1d(self.task_arrival_rate_buffer[i], seq_len, pad_mode=pad_mode)
+                for i in range(Ms)
+            ]
             logic_feats = {
                 "model_flops": list(self.model_flops_buffer),
                 "model_mem": list(self.model_memory_buffer),
                 "task_complexity_seq": logic_task_complexity,
+                "task_arrival_rate_seq": logic_task_arrival_rate,
             }
 
             Np = len(self.gpu_flops_buffer)
-            phys_bandwidth = [
-                self._pad_trunc_1d(self.bandwidth_buffer[i], seq_len, pad_mode=pad_mode)
-                for i in range(Np)
-            ]
-            phys_gpu_util = [
-                self._pad_trunc_1d(self.gpu_utilization_buffer[i], seq_len, pad_mode=pad_mode)
-                for i in range(Np)
-            ]
-            phys_mem_util = [
-                self._pad_trunc_1d(self.memory_utilization_buffer[i], seq_len, pad_mode=pad_mode)
+            phys_bandwidth_latest = [
+                float(self.bandwidth_buffer[i][-1]) if self.bandwidth_buffer[i] else 0.0
                 for i in range(Np)
             ]
             phys_feats = {
                 "gpu_flops": list(self.gpu_flops_buffer),
                 "role_id": list(self.device_role_buffer),
                 "mem_capacity": list(self.memory_capacity_buffer),
-                "bandwidth_seq": phys_bandwidth,
-                "gpu_util_seq": phys_gpu_util,
-                "mem_util_seq": phys_mem_util,
+                "bandwidth_latest": phys_bandwidth_latest,
             }
 
             pair_snapshot = self._build_pair_snapshot_locked(
