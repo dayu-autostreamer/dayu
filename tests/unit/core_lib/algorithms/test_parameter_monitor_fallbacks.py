@@ -156,3 +156,63 @@ def test_gpu_flops_monitor_covers_pycuda_loading_and_arm_jetson_detection(monkey
         lambda path: path == "/sys/module/tegra_fuse/parameters/tegra_chip_id",
     )
     assert gpu_flops_module.GPUFlopsMonitor.is_jetson_device() is True
+
+
+@pytest.mark.unit
+def test_gpu_flops_monitor_uses_current_clock_for_each_sample(monkeypatch):
+    monkeypatch.setattr(
+        gpu_flops_module.GPUFlopsMonitor,
+        "is_jetson_device",
+        staticmethod(lambda: True),
+    )
+    monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
+    monitor._device_meta = [{
+        "idx": 0,
+        "name": "jetson-test-gpu",
+        "max_freq_khz": 1_000_000.0,
+        "capability": (8, 7),
+        "sm_count": 2,
+        "fp32_cores_per_sm": 128,
+        "dual_factor": 2.0,
+    }]
+
+    samples = iter([[500_000_000], [250_000_000]])  # Jetson devfreq reports Hz.
+    monkeypatch.setattr(
+        gpu_flops_module.GPUFlopsMonitor,
+        "_get_current_clocks_via_jetson_sysfs",
+        staticmethod(lambda: next(samples)),
+    )
+
+    first = monitor.get_parameter_value()
+    second = monitor.get_parameter_value()
+
+    assert first == pytest.approx(
+        gpu_flops_module.GPUFlopsMonitor.calculate_flops(2, 128, 500_000, 2.0) / 1e9
+    )
+    assert second == pytest.approx(first / 2.0)
+
+
+@pytest.mark.unit
+def test_gpu_flops_monitor_normalizes_clock_units_and_caps_to_max(monkeypatch):
+    monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
+    monitor._device_meta = [{
+        "idx": 0,
+        "name": "desktop-test-gpu",
+        "max_freq_khz": 1_000_000.0,
+        "capability": (8, 6),
+        "sm_count": 1,
+        "fp32_cores_per_sm": 128,
+        "dual_factor": 2.0,
+    }]
+    monkeypatch.setattr(
+        gpu_flops_module.GPUFlopsMonitor,
+        "_get_current_clocks_via_nvml",
+        staticmethod(lambda: [1_500]),  # NVML reports MHz; monitor caps to max PyCUDA clock.
+    )
+
+    assert gpu_flops_module.GPUFlopsMonitor._clock_value_to_khz(1_500) == 1_500_000
+    assert gpu_flops_module.GPUFlopsMonitor._clock_value_to_khz(1_500_000) == 1_500_000
+    assert gpu_flops_module.GPUFlopsMonitor._clock_value_to_khz(1_500_000_000) == 1_500_000
+    assert monitor.get_parameter_value() == pytest.approx(
+        gpu_flops_module.GPUFlopsMonitor.calculate_flops(1, 128, 1_000_000, 2.0) / 1e9
+    )
