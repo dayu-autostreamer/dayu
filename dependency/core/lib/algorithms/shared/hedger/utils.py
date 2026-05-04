@@ -9,28 +9,44 @@ def safe_log1p(x: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
 
 def graph_in_out_degree(edge_index: torch.Tensor, num_nodes: int) -> Tuple[torch.Tensor, torch.Tensor]:
     row, col = edge_index
-    out_deg = torch.zeros(num_nodes, device=edge_index.device).scatter_add_(0, row,
-                                                                            torch.ones_like(row, dtype=torch.float))
-    in_deg = torch.zeros(num_nodes, device=edge_index.device).scatter_add_(0, col,
-                                                                           torch.ones_like(col, dtype=torch.float))
+    out_deg = torch.zeros(num_nodes, device=edge_index.device).scatter_add(
+        0,
+        row,
+        torch.ones_like(row, dtype=torch.float),
+    )
+    in_deg = torch.zeros(num_nodes, device=edge_index.device).scatter_add(
+        0,
+        col,
+        torch.ones_like(col, dtype=torch.float),
+    )
     return in_deg, out_deg
 
 
 def topo_levels_dag(edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
-    row, col = edge_index
-    indeg = torch.zeros(num_nodes, dtype=torch.long, device=edge_index.device)
-    indeg.scatter_add_(0, col, torch.ones_like(col, dtype=torch.long))
-    q = [i for i in range(num_nodes) if indeg[i] == 0]
-    levels = torch.zeros(num_nodes, device=edge_index.device)
+    if num_nodes <= 0:
+        return torch.zeros((0,), device=edge_index.device)
+    if edge_index.numel() == 0:
+        return torch.zeros((num_nodes,), device=edge_index.device)
+
+    row, col = edge_index.detach().cpu()
+    indeg = [0 for _ in range(num_nodes)]
+    levels = [0 for _ in range(num_nodes)]
     cur_level = 0
     visited = 0
     adj = [[] for _ in range(num_nodes)]
-    for u, v in zip(row.tolist(), col.tolist()):
-        adj[u].append(v)
+    for u_raw, v_raw in zip(row.tolist(), col.tolist()):
+        u, v = int(u_raw), int(v_raw)
+        if 0 <= u < num_nodes and 0 <= v < num_nodes:
+            adj[u].append(v)
+            indeg[v] += 1
+
+    q = [i for i, deg in enumerate(indeg) if deg == 0]
+    visited_nodes = set()
     while q:
         next_q = []
         for u in q:
             levels[u] = cur_level
+            visited_nodes.add(u)
             visited += 1
             for v in adj[u]:
                 indeg[v] -= 1
@@ -39,10 +55,14 @@ def topo_levels_dag(edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
         q = next_q
         cur_level += 1
     if visited < num_nodes:
-        levels[levels == 0] = cur_level
-    if levels.max() > 0:
-        levels = levels / (levels.max() + 1e-6)
-    return levels
+        for idx in range(num_nodes):
+            if idx not in visited_nodes:
+                levels[idx] = cur_level
+    max_level = max(levels) if levels else 0
+    if max_level > 0:
+        denom = float(max_level) + 1e-6
+        levels = [level / denom for level in levels]
+    return torch.tensor(levels, device=edge_index.device, dtype=torch.float32)
 
 
 def compute_returns_advantages(

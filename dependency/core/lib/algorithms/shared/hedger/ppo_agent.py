@@ -163,7 +163,7 @@ def _role_tensors(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     role_id = phys_feats.get("role_id")
     if isinstance(role_id, torch.Tensor) and role_id.dim() == 1 and role_id.size(0) == num_devices:
-        role_id = role_id.to(device=device, dtype=torch.long)
+        role_id = role_id.to(device=device, dtype=torch.long).clone()
         is_cloud = (role_id == 1).to(dtype=dtype)
     else:
         role_id = torch.zeros((num_devices,), device=device, dtype=torch.long)
@@ -380,20 +380,31 @@ class _DeploymentBackbonePPO(nn.Module):
 
     @staticmethod
     def topo_order(edge_index: torch.Tensor, num_nodes: int):
-        row, col = edge_index
-        indeg = torch.zeros(num_nodes, dtype=torch.long, device=edge_index.device)
-        indeg.scatter_add_(0, col, torch.ones_like(col))
-        q = [i for i in range(num_nodes) if indeg[i] == 0]
-        order = []
+        if num_nodes <= 0:
+            return []
+        if edge_index.numel() == 0:
+            return list(range(num_nodes))
+
+        row, col = edge_index.detach().cpu()
         adj = [[] for _ in range(num_nodes)]
-        for u, v in zip(row.tolist(), col.tolist()):
-            adj[u].append(v)
-        while q:
-            u = q.pop(0)
+        indeg = [0 for _ in range(num_nodes)]
+        for u_raw, v_raw in zip(row.tolist(), col.tolist()):
+            u, v = int(u_raw), int(v_raw)
+            if 0 <= u < num_nodes and 0 <= v < num_nodes:
+                adj[u].append(v)
+                indeg[v] += 1
+
+        q = [i for i, deg in enumerate(indeg) if deg == 0]
+        order = []
+        head = 0
+        while head < len(q):
+            u = q[head]
+            head += 1
             order.append(u)
             for v in adj[u]:
                 indeg[v] -= 1
-                if indeg[v] == 0: q.append(v)
+                if indeg[v] == 0:
+                    q.append(v)
         if len(order) < num_nodes:
             seen = set(order)
             order += [i for i in range(num_nodes) if i not in seen]
@@ -1269,20 +1280,31 @@ class HedgerOffloadingPPO(nn.Module):
 
     @staticmethod
     def topo_order(edge_index: torch.Tensor, num_nodes: int):
-        row, col = edge_index
-        indeg = torch.zeros(num_nodes, dtype=torch.long, device=edge_index.device)
-        indeg.scatter_add_(0, col, torch.ones_like(col))
-        q = [i for i in range(num_nodes) if indeg[i] == 0]
-        order = []
+        if num_nodes <= 0:
+            return []
+        if edge_index.numel() == 0:
+            return list(range(num_nodes))
+
+        row, col = edge_index.detach().cpu()
         adj = [[] for _ in range(num_nodes)]
-        for u, v in zip(row.tolist(), col.tolist()):
-            adj[u].append(v)
-        while q:
-            u = q.pop(0)
+        indeg = [0 for _ in range(num_nodes)]
+        for u_raw, v_raw in zip(row.tolist(), col.tolist()):
+            u, v = int(u_raw), int(v_raw)
+            if 0 <= u < num_nodes and 0 <= v < num_nodes:
+                adj[u].append(v)
+                indeg[v] += 1
+
+        q = [i for i, deg in enumerate(indeg) if deg == 0]
+        order = []
+        head = 0
+        while head < len(q):
+            u = q[head]
+            head += 1
             order.append(u)
             for v in adj[u]:
                 indeg[v] -= 1
-                if indeg[v] == 0: q.append(v)
+                if indeg[v] == 0:
+                    q.append(v)
         if len(order) < num_nodes:
             seen = set(order)
             order += [i for i in range(num_nodes) if i not in seen]
@@ -1506,10 +1528,14 @@ class HedgerOffloadingPPO(nn.Module):
 
     @staticmethod
     def _build_parents(edge_index: torch.Tensor, num_nodes: int) -> List[List[int]]:
-        row, col = edge_index
         parents = [[] for _ in range(num_nodes)]
-        for u, v in zip(row.tolist(), col.tolist()):
-            parents[v].append(u)
+        if num_nodes <= 0 or edge_index.numel() == 0:
+            return parents
+        row, col = edge_index.detach().cpu()
+        for u_raw, v_raw in zip(row.tolist(), col.tolist()):
+            u, v = int(u_raw), int(v_raw)
+            if 0 <= u < num_nodes and 0 <= v < num_nodes:
+                parents[v].append(u)
         return parents
 
     def _dynamic_allowed_row(
