@@ -19,10 +19,17 @@ from .ppo_agent import HedgerOffloadingPPO, HedgerDeploymentPPO
 from .hedger_config import from_partial_dict, DeploymentConstraintCfg, LogicalTopology, \
     PhysicalTopology
 from .state_buffer import StateBuffer, BufferWaitCfg
+from .deployment_dataset import DeploymentTransitionDataset, DeploymentTransitionWriter
 
 __all__ = ('Hedger',)
 
-TRAINING_STAGE_NAMES = {"offloading_warmup", "deployment_adaptation", "joint_finetune"}
+TRAINING_STAGE_NAMES = {
+    "offloading_warmup",
+    "deployment_collect",
+    "deployment_offline",
+    "deployment_online",
+    "joint_finetune",
+}
 
 
 @dataclass(frozen=True)
@@ -58,6 +65,41 @@ class HedgerDeploymentDefaultWarmupCfg:
 
 
 @dataclass(frozen=True)
+class HedgerDeploymentDatasetCfg:
+    enabled: bool = True
+    root_dir: str = "hedger_deployment_dataset"
+    shard_size: int = 32
+    clear_on_collect_start: bool = True
+
+
+@dataclass(frozen=True)
+class HedgerDeploymentCollectCfg:
+    keep_prob: float = 0.35
+    actor_prob: float = 0.35
+    perturb_prob: float = 0.30
+    actor_logit_noise_std: float = 0.25
+    perturb_edge_prob: float = 0.08
+    max_perturb_flips: int = 4
+
+
+@dataclass(frozen=True)
+class HedgerDeploymentOfflineRLCfg:
+    batch_size: int = 32
+    action_target: str = "executed"
+    advantage_temperature: float = 1.0
+    min_advantage_weight: float = 0.05
+    max_advantage_weight: float = 20.0
+    actor_bc_coef: float = 1.0
+    value_coef: float = 0.5
+    entropy_coef: float = 0.0
+    conservative_coef: float = 0.01
+    bootstrap_current_value: bool = True
+    offline_replay_ratio: float = 0.5
+    online_replay_capacity: int = 512
+    online_min_new_transitions: int = 1
+
+
+@dataclass(frozen=True)
 class HedgerTrainingCfg:
     stage: str
     total_updates: int
@@ -69,6 +111,9 @@ class HedgerTrainingCfg:
     deployment_default_warmup: HedgerDeploymentDefaultWarmupCfg = field(
         default_factory=HedgerDeploymentDefaultWarmupCfg
     )
+    deployment_dataset: HedgerDeploymentDatasetCfg = field(default_factory=HedgerDeploymentDatasetCfg)
+    deployment_collect: HedgerDeploymentCollectCfg = field(default_factory=HedgerDeploymentCollectCfg)
+    deployment_offline_rl: HedgerDeploymentOfflineRLCfg = field(default_factory=HedgerDeploymentOfflineRLCfg)
 
 
 @dataclass(frozen=True)
@@ -188,6 +233,7 @@ class HedgerTrainingStageCfg:
     run_offloading_worker: bool
     update_offloading_policy: bool
     use_frozen_offloading_rollout: bool = False
+    deployment_train_mode: str = "none"
 
 
 class Hedger:
@@ -268,6 +314,12 @@ class Hedger:
 
         self.deployment_transitions: List[dict] = []
         self.offloading_transitions: List[dict] = []
+        self.deployment_dataset_writer: Optional[DeploymentTransitionWriter] = None
+        self.deployment_offline_dataset: Optional[DeploymentTransitionDataset] = None
+        self._deployment_collected_transition_count = 0
+        self._deployment_last_online_update_transition_count = 0
+        self._deployment_last_collect_checkpoint_step = 0
+        self._init_deployment_dataset_runtime()
 
         self.dep_recorder = None
         self.off_recorder = None
@@ -323,6 +375,37 @@ class Hedger:
         else:
             LOGGER.info("[Hedger][Lifecycle] Training start is deferred until the first task update arrives.")
 
+    def _init_deployment_dataset_runtime(self) -> None:
+        if self.mode != "train" or self.training_cfg is None:
+            return
+        if not self.training_cfg.deployment_dataset.enabled:
+            return
+        mode = self.stage_cfg.deployment_train_mode if self.stage_cfg is not None else "none"
+        if mode in {"collect", "online"}:
+            self.deployment_dataset_writer = DeploymentTransitionWriter(
+                self.training_cfg.deployment_dataset.root_dir,
+                shard_size=self.training_cfg.deployment_dataset.shard_size,
+                clear_existing=(
+                    mode == "collect"
+                    and self.training_cfg.deployment_dataset.clear_on_collect_start
+                ),
+            )
+            self._deployment_collected_transition_count = self.deployment_dataset_writer.count
+            LOGGER.info(
+                f"[Hedger][DeploymentDataset] Writer ready: "
+                f"mode={mode}, root={self.training_cfg.deployment_dataset.root_dir}, "
+                f"count={self._deployment_collected_transition_count}"
+            )
+        if mode in {"offline", "online"}:
+            self.deployment_offline_dataset = DeploymentTransitionDataset(
+                self.training_cfg.deployment_dataset.root_dir
+            )
+            LOGGER.info(
+                f"[Hedger][DeploymentDataset] Loaded offline replay: "
+                f"root={self.training_cfg.deployment_dataset.root_dir}, "
+                f"samples={len(self.deployment_offline_dataset)}"
+            )
+
     def set_seed(self):
         random.seed(self.seed)
         torch.manual_seed(self.seed)
@@ -376,7 +459,8 @@ class Hedger:
         if stage not in TRAINING_STAGE_NAMES:
             raise ValueError(
                 "Hedger training stage must be one of: "
-                "'offloading_warmup', 'deployment_adaptation', 'joint_finetune'."
+                "'offloading_warmup', 'deployment_collect', 'deployment_offline', "
+                "'deployment_online', 'joint_finetune'."
             )
         default_warmup = training.get("deployment_default_warmup") or {}
         if not isinstance(default_warmup, dict):
@@ -400,6 +484,57 @@ class Hedger:
             clear_feedback_window=bool(default_warmup.get("clear_feedback_window", True)),
         )
 
+        dataset_cfg = training.get("deployment_dataset") or {}
+        if not isinstance(dataset_cfg, dict):
+            raise ValueError("Hedger config `training.deployment_dataset` must be a mapping when provided.")
+        deployment_dataset = HedgerDeploymentDatasetCfg(
+            enabled=bool(dataset_cfg.get("enabled", True)),
+            root_dir=self._resolve_path(str(dataset_cfg.get("root_dir", "hedger_deployment_dataset"))),
+            shard_size=max(1, int(dataset_cfg.get("shard_size", 32))),
+            clear_on_collect_start=bool(dataset_cfg.get("clear_on_collect_start", True)),
+        )
+
+        collect_cfg = training.get("deployment_collect") or {}
+        if not isinstance(collect_cfg, dict):
+            raise ValueError("Hedger config `training.deployment_collect` must be a mapping when provided.")
+        keep_prob = max(0.0, float(collect_cfg.get("keep_prob", 0.35)))
+        actor_prob = max(0.0, float(collect_cfg.get("actor_prob", 0.35)))
+        perturb_prob = max(0.0, float(collect_cfg.get("perturb_prob", 0.30)))
+        total_prob = keep_prob + actor_prob + perturb_prob
+        if total_prob <= 0.0:
+            keep_prob, actor_prob, perturb_prob = 1.0, 0.0, 0.0
+            total_prob = 1.0
+        deployment_collect = HedgerDeploymentCollectCfg(
+            keep_prob=keep_prob / total_prob,
+            actor_prob=actor_prob / total_prob,
+            perturb_prob=perturb_prob / total_prob,
+            actor_logit_noise_std=max(0.0, float(collect_cfg.get("actor_logit_noise_std", 0.25))),
+            perturb_edge_prob=min(1.0, max(0.0, float(collect_cfg.get("perturb_edge_prob", 0.08)))),
+            max_perturb_flips=max(1, int(collect_cfg.get("max_perturb_flips", 4))),
+        )
+
+        offline_rl_cfg = training.get("deployment_offline_rl") or {}
+        if not isinstance(offline_rl_cfg, dict):
+            raise ValueError("Hedger config `training.deployment_offline_rl` must be a mapping when provided.")
+        action_target = str(offline_rl_cfg.get("action_target", "executed")).strip().lower()
+        if action_target not in {"executed", "raw"}:
+            raise ValueError("Hedger training.deployment_offline_rl.action_target must be 'executed' or 'raw'.")
+        deployment_offline_rl = HedgerDeploymentOfflineRLCfg(
+            batch_size=max(1, int(offline_rl_cfg.get("batch_size", batch_size["deployment"]))),
+            action_target=action_target,
+            advantage_temperature=max(1e-6, float(offline_rl_cfg.get("advantage_temperature", 1.0))),
+            min_advantage_weight=max(0.0, float(offline_rl_cfg.get("min_advantage_weight", 0.05))),
+            max_advantage_weight=max(1.0, float(offline_rl_cfg.get("max_advantage_weight", 20.0))),
+            actor_bc_coef=max(0.0, float(offline_rl_cfg.get("actor_bc_coef", 1.0))),
+            value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.5))),
+            entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
+            conservative_coef=max(0.0, float(offline_rl_cfg.get("conservative_coef", 0.01))),
+            bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", True)),
+            offline_replay_ratio=min(1.0, max(0.0, float(offline_rl_cfg.get("offline_replay_ratio", 0.5)))),
+            online_replay_capacity=max(1, int(offline_rl_cfg.get("online_replay_capacity", 512))),
+            online_min_new_transitions=max(1, int(offline_rl_cfg.get("online_min_new_transitions", 1))),
+        )
+
         return HedgerTrainingCfg(
             stage=stage,
             total_updates=max(0, int(training["total_updates"])),
@@ -409,6 +544,9 @@ class Hedger:
             deployment_batch_size=max(1, int(batch_size["deployment"])),
             offloading_batch_size=max(1, int(batch_size["offloading"])),
             deployment_default_warmup=deployment_default_warmup,
+            deployment_dataset=deployment_dataset,
+            deployment_collect=deployment_collect,
+            deployment_offline_rl=deployment_offline_rl,
         )
 
     def _build_inference_cfg(self, config: dict) -> HedgerInferenceCfg:
@@ -597,7 +735,8 @@ class Hedger:
             if from_stage not in TRAINING_STAGE_NAMES:
                 raise ValueError(
                     "Hedger checkpoint.load.from_stage must be one of: "
-                    "'offloading_warmup', 'deployment_adaptation', 'joint_finetune'."
+                    "'offloading_warmup', 'deployment_collect', 'deployment_offline', "
+                    "'deployment_online', 'joint_finetune'."
                 )
         load_enabled = bool(load_cfg.get("enabled", False))
         if self.mode == "inference" and not load_enabled:
@@ -695,7 +834,27 @@ class Hedger:
                 run_offloading_worker=True,
                 update_offloading_policy=True,
             )
-        if stage_name == "deployment_adaptation":
+        if stage_name == "deployment_collect":
+            return HedgerTrainingStageCfg(
+                name=stage_name,
+                run_deployment_worker=True,
+                update_deployment_policy=False,
+                run_offloading_worker=True,
+                update_offloading_policy=False,
+                use_frozen_offloading_rollout=True,
+                deployment_train_mode="collect",
+            )
+        if stage_name == "deployment_offline":
+            return HedgerTrainingStageCfg(
+                name=stage_name,
+                run_deployment_worker=False,
+                update_deployment_policy=True,
+                run_offloading_worker=False,
+                update_offloading_policy=False,
+                use_frozen_offloading_rollout=False,
+                deployment_train_mode="offline",
+            )
+        if stage_name == "deployment_online":
             return HedgerTrainingStageCfg(
                 name=stage_name,
                 run_deployment_worker=True,
@@ -703,6 +862,7 @@ class Hedger:
                 run_offloading_worker=True,
                 update_offloading_policy=False,
                 use_frozen_offloading_rollout=True,
+                deployment_train_mode="online",
             )
         if stage_name == "joint_finetune":
             return HedgerTrainingStageCfg(
@@ -711,11 +871,13 @@ class Hedger:
                 update_deployment_policy=True,
                 run_offloading_worker=True,
                 update_offloading_policy=True,
+                deployment_train_mode="ppo",
             )
 
         raise ValueError(
             f"Unsupported training stage {stage_name!r}. "
-            f"Expected one of: offloading_warmup, deployment_adaptation, joint_finetune."
+            f"Expected one of: offloading_warmup, deployment_collect, "
+            f"deployment_offline, deployment_online, joint_finetune."
         )
 
     def _build_deployment_agent_params(self, agents_cfg: dict) -> dict:
@@ -2552,6 +2714,153 @@ class Hedger:
     def _current_offloading_rollout_agent(self):
         return self._frozen_offloading_agent if self._frozen_offloading_agent is not None else self.offloading_agent
 
+    def _sample_deployment_action_for_training(
+            self,
+            logic_edge_index: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_edge_index: torch.Tensor,
+            phys_feats: Dict[str, torch.Tensor],
+            prev_deploy_mask: Optional[torch.Tensor],
+    ):
+        mode = self.stage_cfg.deployment_train_mode if self.stage_cfg is not None else "ppo"
+        if mode == "collect":
+            return self._sample_deployment_collection_action(
+                logic_edge_index,
+                logic_feats,
+                phys_edge_index,
+                phys_feats,
+                prev_deploy_mask,
+            )
+        deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
+            logic_edge_index=logic_edge_index,
+            logic_feats=logic_feats,
+            phys_edge_index=phys_edge_index,
+            phys_feats=phys_feats,
+            topo_order=None,
+            prev_deploy_mask=prev_deploy_mask,
+        )
+        aux["behavior_kind"] = "actor"
+        return deploy_mask, logp, ent, value, aux
+
+    def _sample_deployment_collection_action(
+            self,
+            logic_edge_index: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_edge_index: torch.Tensor,
+            phys_feats: Dict[str, torch.Tensor],
+            prev_deploy_mask: Optional[torch.Tensor],
+    ):
+        cfg = self.training_cfg.deployment_collect
+        roll = random.random()
+        if roll < cfg.actor_prob:
+            deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
+                logic_edge_index=logic_edge_index,
+                logic_feats=logic_feats,
+                phys_edge_index=phys_edge_index,
+                phys_feats=phys_feats,
+                topo_order=None,
+                prev_deploy_mask=prev_deploy_mask,
+                logit_noise_std=cfg.actor_logit_noise_std,
+            )
+            aux["behavior_kind"] = "actor_noise" if cfg.actor_logit_noise_std > 0.0 else "actor"
+            return deploy_mask, logp, ent, value, aux
+        if roll < cfg.actor_prob + cfg.perturb_prob:
+            return self._sample_projected_mask_behavior(
+                logic_edge_index,
+                logic_feats,
+                phys_edge_index,
+                phys_feats,
+                prev_deploy_mask,
+                behavior_kind="safe_perturb",
+                perturb=True,
+            )
+        return self._sample_projected_mask_behavior(
+            logic_edge_index,
+            logic_feats,
+            phys_edge_index,
+            phys_feats,
+            prev_deploy_mask,
+            behavior_kind="keep",
+            perturb=False,
+        )
+
+    def _sample_projected_mask_behavior(
+            self,
+            logic_edge_index: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_edge_index: torch.Tensor,
+            phys_feats: Dict[str, torch.Tensor],
+            prev_deploy_mask: Optional[torch.Tensor],
+            behavior_kind: str,
+            perturb: bool,
+    ):
+        static_allowed = self.deployment_agent._static_allowed_mask(phys_feats, logic_feats)
+        num_services, num_devices = static_allowed.shape
+        cloud_idx = self.physical_topology.cloud_idx
+        if prev_deploy_mask is None:
+            raw_mask = torch.zeros((num_services, num_devices), dtype=torch.bool, device=self.device)
+            raw_mask[:, cloud_idx] = True
+        else:
+            raw_mask = prev_deploy_mask.detach().clone().to(self.device).bool()
+            raw_mask[:, cloud_idx] = True
+
+        if perturb:
+            cfg = self.training_cfg.deployment_collect
+            candidates = []
+            for service_idx in range(num_services):
+                for device_idx in range(num_devices):
+                    if device_idx == cloud_idx:
+                        continue
+                    if bool(static_allowed[service_idx, device_idx].item()):
+                        candidates.append((service_idx, device_idx))
+            random.shuffle(candidates)
+            flips = 0
+            for service_idx, device_idx in candidates:
+                if flips >= cfg.max_perturb_flips:
+                    break
+                if random.random() > cfg.perturb_edge_prob:
+                    continue
+                raw_mask[service_idx, device_idx] = ~raw_mask[service_idx, device_idx]
+                flips += 1
+
+        raw_probs = torch.full(raw_mask.shape, 0.15, dtype=torch.float32, device=self.device)
+        raw_probs = torch.where(raw_mask, torch.full_like(raw_probs, 0.85), raw_probs)
+        raw_probs = torch.where(static_allowed, raw_probs, torch.zeros_like(raw_probs))
+        raw_probs[:, cloud_idx] = 1.0
+        (
+            deploy_mask,
+            capacity_relax_cnt,
+            capacity_relax_cost,
+            edge_cover_repair_cnt,
+            edge_cover_repair_cost,
+            edge_cover_unmet,
+        ) = self.deployment_agent._project_deployment_mask(
+            raw_mask,
+            raw_probs=raw_probs,
+            logic_feats=logic_feats,
+            phys_feats=phys_feats,
+            prev_deploy_mask=prev_deploy_mask,
+            static_allowed=static_allowed,
+        )
+        logp, ent, value = self.deployment_agent.evaluate(
+            logic_edge_index,
+            logic_feats,
+            phys_edge_index,
+            phys_feats,
+            deploy_mask,
+            prev_deploy_mask=prev_deploy_mask,
+            topo_order=None,
+        )
+        return deploy_mask, logp, ent, value, {
+            "capacity_relax_cnt": capacity_relax_cnt,
+            "capacity_relax_cost": capacity_relax_cost,
+            "edge_cover_repair_cnt": edge_cover_repair_cnt,
+            "edge_cover_repair_cost": edge_cover_repair_cost,
+            "edge_cover_unmet": edge_cover_unmet,
+            "raw_deploy_mask": raw_mask,
+            "behavior_kind": behavior_kind,
+        }
+
     def _sleep_until_next_tick(self, last_tick: float, interval_s: float) -> float:
         """Sleep long enough to preserve the target loop cadence."""
         interval_s = max(0.0, float(interval_s))
@@ -3992,6 +4301,10 @@ class Hedger:
             f"[Hedger][Train] Initial deployment state: {self._summarize_deploy_mask(self.cur_deploy_mask)}"
         )
 
+        if self.stage_cfg.deployment_train_mode == "offline":
+            self.train_deployment_offline()
+            return
+
         if not self.stage_cfg.run_deployment_worker and not self.stage_cfg.run_offloading_worker:
             LOGGER.warning('[Hedger][Train] All training workers are disabled for the selected stage, skip training run.')
             return
@@ -4086,49 +4399,107 @@ class Hedger:
                         f"clip_fraction={self._format_log_value(off_ppo_stats.get('clip_fraction', 0.0))}"
                     )
 
-                # Run a PPO update for the deployment agent.
+                # Run a deployment update. The online deployment stage uses
+                # replay-style AWAC updates over offline+fresh macro transitions;
+                # joint fine-tuning keeps the original online PPO update.
                 if self.stage_cfg.update_deployment_policy and \
                         len(self.deployment_transitions) >= self.training_cfg.deployment_rollout_len:
-                    with self._data_lock:
-                        dep_transitions = self.deployment_transitions[:self.training_cfg.deployment_rollout_len]
+                    if self.stage_cfg.deployment_train_mode == "online":
+                        new_online = (
+                            self._deployment_collected_transition_count
+                            - self._deployment_last_online_update_transition_count
+                        )
+                        if new_online >= self.training_cfg.deployment_offline_rl.online_min_new_transitions:
+                            dep_transitions = self._sample_deployment_online_replay_batch()
+                            if dep_transitions:
+                                with self._model_lock:
+                                    dep_ppo_stats = self.deployment_agent.offline_update(
+                                        dep_transitions,
+                                        batch_size=len(dep_transitions),
+                                        **self._deployment_offline_update_kwargs(),
+                                    )
+                                with self._data_lock:
+                                    dep_remaining = len(self.deployment_transitions)
+                                self._deployment_last_online_update_transition_count = (
+                                    self._deployment_collected_transition_count
+                                )
+                                self._deployment_update_steps += 1
+                                updates_in_tick += 1
+                                self._record_ppo_update(
+                                    self.dep_update_recorder,
+                                    "deployment_online",
+                                    self._deployment_update_steps,
+                                    used=len(dep_transitions),
+                                    remaining=dep_remaining,
+                                    stats=dep_ppo_stats,
+                                )
+                                LOGGER.info(
+                                    f"[Hedger][Train][DeploymentOnline] replay_update="
+                                    f"{self._deployment_update_steps}, used={len(dep_transitions)}, "
+                                    f"online_buffer={dep_remaining}, offline_samples="
+                                    f"{len(self.deployment_offline_dataset) if self.deployment_offline_dataset else 0}, "
+                                    f"reward_mean={self._format_log_value(dep_ppo_stats.get('reward_mean', 0.0))}, "
+                                    f"policy_loss={self._format_log_value(dep_ppo_stats.get('policy_loss', 0.0))}, "
+                                    f"value_loss={self._format_log_value(dep_ppo_stats.get('value_loss', 0.0))}, "
+                                    f"adv_mean={self._format_log_value(dep_ppo_stats.get('adv_mean', 0.0))}"
+                                )
+                    else:
+                        with self._data_lock:
+                            dep_transitions = self.deployment_transitions[:self.training_cfg.deployment_rollout_len]
 
-                    with self._model_lock:
-                        dep_ppo_cfg = self.deployment_agent_params["ppo"]
-                        dep_entropy_coef = self._scheduled_entropy_coef(
-                            dep_ppo_cfg,
-                            self._deployment_update_steps + 1,
+                        with self._model_lock:
+                            dep_ppo_cfg = self.deployment_agent_params["ppo"]
+                            dep_entropy_coef = self._scheduled_entropy_coef(
+                                dep_ppo_cfg,
+                                self._deployment_update_steps + 1,
+                            )
+                            dep_ppo_stats = self.deployment_agent.ppo_update(
+                                dep_transitions,
+                                epochs=self.training_cfg.ppo_epochs,
+                                batch_size=self.training_cfg.deployment_batch_size,
+                                entropy_coef=dep_entropy_coef,
+                                value_coef=dep_ppo_cfg.value_coef,
+                            )
+                        with self._data_lock:
+                            del self.deployment_transitions[:len(dep_transitions)]
+                            dep_remaining = len(self.deployment_transitions)
+                        self._deployment_update_steps += 1
+                        updates_in_tick += 1
+                        self._record_ppo_update(
+                            self.dep_update_recorder,
+                            "deployment",
+                            self._deployment_update_steps,
+                            used=len(dep_transitions),
+                            remaining=dep_remaining,
+                            stats=dep_ppo_stats,
                         )
-                        dep_ppo_stats = self.deployment_agent.ppo_update(
-                            dep_transitions,
-                            epochs=self.training_cfg.ppo_epochs,
-                            batch_size=self.training_cfg.deployment_batch_size,
-                            entropy_coef=dep_entropy_coef,
-                            value_coef=dep_ppo_cfg.value_coef,
+                        LOGGER.info(
+                            f"[Hedger][Train][Deployment] PPO update={self._deployment_update_steps}, "
+                            f"used={len(dep_transitions)}, remaining={dep_remaining}, "
+                            f"reward_mean={self._format_log_value(dep_ppo_stats.get('reward_mean', 0.0))}, "
+                            f"policy_loss={self._format_log_value(dep_ppo_stats.get('policy_loss', 0.0))}, "
+                            f"value_loss={self._format_log_value(dep_ppo_stats.get('value_loss', 0.0))}, "
+                            f"entropy={self._format_log_value(dep_ppo_stats.get('entropy', 0.0))}, "
+                            f"entropy_coef={self._format_log_value(dep_ppo_stats.get('entropy_coef', 0.0))}, "
+                            f"approx_kl={self._format_log_value(dep_ppo_stats.get('approx_kl', 0.0))}, "
+                            f"clip_fraction={self._format_log_value(dep_ppo_stats.get('clip_fraction', 0.0))}"
                         )
-                    with self._data_lock:
-                        del self.deployment_transitions[:len(dep_transitions)]
-                        dep_remaining = len(self.deployment_transitions)
-                    self._deployment_update_steps += 1
-                    updates_in_tick += 1
-                    self._record_ppo_update(
-                        self.dep_update_recorder,
-                        "deployment",
-                        self._deployment_update_steps,
-                        used=len(dep_transitions),
-                        remaining=dep_remaining,
-                        stats=dep_ppo_stats,
-                    )
-                    LOGGER.info(
-                        f"[Hedger][Train][Deployment] PPO update={self._deployment_update_steps}, "
-                        f"used={len(dep_transitions)}, remaining={dep_remaining}, "
-                        f"reward_mean={self._format_log_value(dep_ppo_stats.get('reward_mean', 0.0))}, "
-                        f"policy_loss={self._format_log_value(dep_ppo_stats.get('policy_loss', 0.0))}, "
-                        f"value_loss={self._format_log_value(dep_ppo_stats.get('value_loss', 0.0))}, "
-                        f"entropy={self._format_log_value(dep_ppo_stats.get('entropy', 0.0))}, "
-                        f"entropy_coef={self._format_log_value(dep_ppo_stats.get('entropy_coef', 0.0))}, "
-                        f"approx_kl={self._format_log_value(dep_ppo_stats.get('approx_kl', 0.0))}, "
-                        f"clip_fraction={self._format_log_value(dep_ppo_stats.get('clip_fraction', 0.0))}"
-                    )
+
+                if self.stage_cfg.deployment_train_mode == "collect" and self.deployment_dataset_writer is not None:
+                    collect_step = self.deployment_dataset_writer.count
+                    if collect_step > self._epoch:
+                        prev_epoch = self._epoch
+                        self._epoch = collect_step
+                        save_interval = self.checkpoint_cfg.save.interval_updates
+                        if (prev_epoch // save_interval) != (self._epoch // save_interval):
+                            try:
+                                self.save_checkpoint(stage_step=self._epoch, is_final=False)
+                                self._deployment_last_collect_checkpoint_step = self._epoch
+                            except Exception as e:
+                                LOGGER.exception(
+                                    f"[Hedger][Train] Failed to save collect checkpoint "
+                                    f"at stage_step={self._epoch}: {e}"
+                                )
 
                 # Save a checkpoint.
                 if updates_in_tick > 0:
@@ -4160,6 +4531,8 @@ class Hedger:
 
         self.deployment_thread_stop_event.set()
         self.offloading_thread_stop_event.set()
+        if self.deployment_dataset_writer is not None:
+            self.deployment_dataset_writer.close()
         try:
             self.save_checkpoint(stage_step=self._epoch, is_final=True)
         except Exception as e:
@@ -4217,10 +4590,12 @@ class Hedger:
                                 "cap_relax_cnt", "cap_relax_cost",
                                 "edge_cover_repair_cnt", "edge_cover_repair_cost", "edge_cover_unmet",
                                 "policy_logp", "policy_entropy", "value_estimate", "next_value",
+                                "behavior_kind",
                                 "raw_edge_replicas", "edge_replicas", "cloud_replicas",
                                 "cloud_only", "cloud_only_ratio",
                                 "empty_edge_devices", "empty_edge_device_ratio",
-                                "transition_buffer", "raw_deployment_plan", "deployment_plan",
+                                "transition_buffer", "dataset_transitions",
+                                "raw_deployment_plan", "deployment_plan",
                                 *self._state_record_fieldnames()]
         if self.record_cfg.actor_snapshot_debug:
             dep_train_fieldnames.append("state_deployment_actor_snapshot")
@@ -4286,13 +4661,12 @@ class Hedger:
                 with self._model_lock, torch.no_grad():
                     # Sample a raw deployment action, then execute the corrected
                     # deployment mask returned by the policy.
-                    deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
-                        logic_edge_index=logic_edge_index,
-                        logic_feats=logic_feats_dev,
-                        phys_edge_index=phys_edge_index,
-                        phys_feats=phys_feats_dev,
-                        topo_order=None,  # Derived internally from the logical graph.
-                        prev_deploy_mask=prev_deploy_mask_dev
+                    deploy_mask, logp, ent, value, aux = self._sample_deployment_action_for_training(
+                        logic_edge_index,
+                        logic_feats_dev,
+                        phys_edge_index,
+                        phys_feats_dev,
+                        prev_deploy_mask_dev,
                     )
                 deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
                 with self._data_lock:
@@ -4387,29 +4761,46 @@ class Hedger:
                     continue
 
                 # Keep transition payloads on CPU to avoid cross-thread device issues.
-                # PPO is trained against the raw sampled action, while the
-                # environment executes the corrected deployment mask.
-                if self.stage_cfg.update_deployment_policy:
-                    tr = {
-                        "logic_edge_index": logic_edge_index.cpu(),
-                        "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
-                        "phys_edge_index": phys_edge_index.cpu(),
-                        "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
-                        "deploy_mask": deploy_mask.cpu(),
-                        "raw_deploy_mask": aux["raw_deploy_mask"].detach().cpu(),
-                        "topo_order": None,  # Recomputed during evaluation if needed.
-                        "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
-                        "logp": logp.detach().cpu(),
-                        "value": value.detach().cpu(),
-                        "next_value": float(next_value),
-                        "reward": float(reward),
-                        "done": bool(done),
-                        "feedback_guard_interrupted": bool(feedback_result.guard_interrupted),
-                        "latency_guard_penalty_cost": float(metrics["latency_guard_penalty_cost"]),
-                    }
+                # Offline/online deployment learning is trained on the executed
+                # post-projection action, while `raw_deploy_mask` is still saved
+                # for correction analysis and optional ablations.
+                tr = {
+                    "logic_edge_index": logic_edge_index.cpu(),
+                    "logic_feats": {k: v.cpu() for k, v in logic_feats_dev.items()},
+                    "phys_edge_index": phys_edge_index.cpu(),
+                    "phys_feats": {k: v.cpu() for k, v in phys_feats_dev.items()},
+                    "next_logic_feats": {k: v.cpu() for k, v in new_logic_feats_dev.items()},
+                    "next_phys_feats": {k: v.cpu() for k, v in new_phys_feats_dev.items()},
+                    "deploy_mask": deploy_mask.detach().cpu(),
+                    "raw_deploy_mask": aux["raw_deploy_mask"].detach().cpu(),
+                    "topo_order": None,  # Recomputed during evaluation if needed.
+                    "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
+                    "logp": logp.detach().cpu(),
+                    "value": value.detach().cpu(),
+                    "next_value": float(next_value),
+                    "reward": float(reward),
+                    "done": bool(done),
+                    "feedback_guard_interrupted": bool(feedback_result.guard_interrupted),
+                    "latency_guard_penalty_cost": float(metrics["latency_guard_penalty_cost"]),
+                    "behavior_kind": str(aux.get("behavior_kind", "actor")),
+                    "decision_version": int(decision_version),
+                    "feedback_count": int(feedback_result.count),
+                    "reward_breakdown": dict(dep_reward_breakdown),
+                    "metrics": dict(metrics),
+                    "capacity_relax_cnt": int(aux["capacity_relax_cnt"]),
+                    "edge_cover_repair_cnt": int(aux.get("edge_cover_repair_cnt", 0)),
+                }
 
+                if self.deployment_dataset_writer is not None \
+                        and self.stage_cfg.deployment_train_mode in {"collect", "online"}:
+                    self._deployment_collected_transition_count = self.deployment_dataset_writer.append(tr)
+
+                if self.stage_cfg.update_deployment_policy:
                     with self._data_lock:
                         self.deployment_transitions.append(tr)
+                        capacity = self.training_cfg.deployment_offline_rl.online_replay_capacity
+                        if len(self.deployment_transitions) > capacity:
+                            del self.deployment_transitions[:len(self.deployment_transitions) - capacity]
                         transition_count = len(self.deployment_transitions)
                 else:
                     with self._data_lock:
@@ -4466,6 +4857,7 @@ class Hedger:
                     policy_entropy=float(ent.detach().cpu().item()),
                     value_estimate=float(value.detach().cpu().item()),
                     next_value=float(next_value),
+                    behavior_kind=aux.get("behavior_kind", "actor"),
                     raw_edge_replicas=raw_edge_replicas,
                     edge_replicas=edge_replicas,
                     cloud_replicas=cloud_replicas,
@@ -4474,6 +4866,7 @@ class Hedger:
                     empty_edge_devices=empty_edge_devices,
                     empty_edge_device_ratio=empty_edge_device_ratio,
                     transition_buffer=transition_count,
+                    dataset_transitions=self._deployment_collected_transition_count,
                     raw_deployment_plan=self._json_for_record(raw_deploy_plan),
                     deployment_plan=self._json_for_record(self.deployment_plan),
                     **state_record,
@@ -4956,6 +5349,107 @@ class Hedger:
     def _compute_deployment_reward(self, metrics, aux) -> float:
         return self._compute_deployment_reward_breakdown(metrics, aux)["reward"]
 
+    def _deployment_offline_update_kwargs(self) -> Dict[str, Any]:
+        cfg = self.training_cfg.deployment_offline_rl
+        return {
+            "action_target": cfg.action_target,
+            "advantage_temperature": cfg.advantage_temperature,
+            "min_advantage_weight": cfg.min_advantage_weight,
+            "max_advantage_weight": cfg.max_advantage_weight,
+            "actor_bc_coef": cfg.actor_bc_coef,
+            "value_coef": cfg.value_coef,
+            "entropy_coef": cfg.entropy_coef,
+            "conservative_coef": cfg.conservative_coef,
+            "bootstrap_current_value": cfg.bootstrap_current_value,
+        }
+
+    def _sample_deployment_online_replay_batch(self) -> List[dict]:
+        cfg = self.training_cfg.deployment_offline_rl
+        total_batch = max(1, int(cfg.batch_size))
+        with self._data_lock:
+            online_pool = list(self.deployment_transitions)
+
+        offline_count = 0
+        if self.deployment_offline_dataset is not None and len(self.deployment_offline_dataset) > 0:
+            offline_count = int(round(total_batch * cfg.offline_replay_ratio))
+        offline_count = min(total_batch, max(0, offline_count))
+        online_count = max(0, total_batch - offline_count)
+
+        batch: List[dict] = []
+        if offline_count > 0 and self.deployment_offline_dataset is not None:
+            batch.extend(self.deployment_offline_dataset.sample(offline_count))
+        if online_pool and online_count > 0:
+            if len(online_pool) >= online_count:
+                batch.extend(random.sample(online_pool, online_count))
+            else:
+                batch.extend(random.choice(online_pool) for _ in range(online_count))
+        if not batch and online_pool:
+            batch.extend(random.sample(online_pool, min(len(online_pool), total_batch)))
+        return batch
+
+    def train_deployment_offline(self):
+        dataset = self.deployment_offline_dataset
+        if dataset is None:
+            dataset = DeploymentTransitionDataset(self.training_cfg.deployment_dataset.root_dir)
+            self.deployment_offline_dataset = dataset
+        if len(dataset) <= 0:
+            raise RuntimeError(
+                "[Hedger][Train][DeploymentOffline] Empty deployment dataset. "
+                f"Run stage=deployment_collect first or check root={self.training_cfg.deployment_dataset.root_dir}."
+            )
+
+        LOGGER.info(
+            f"[Hedger][Train][DeploymentOffline] Start: samples={len(dataset)}, "
+            f"updates={self.training_cfg.total_updates}, batch={self.training_cfg.deployment_offline_rl.batch_size}, "
+            f"dataset={self.training_cfg.deployment_dataset.root_dir}"
+        )
+        self.dep_update_recorder = Recorder(
+            self._stage_log_path("deployment_offline_updates.csv"),
+            fmt="csv",
+            fieldnames=self._ppo_update_fieldnames(),
+            overwrite=True,
+            flush_every=1,
+        )
+        try:
+            while self._epoch < self.training_cfg.total_updates:
+                batch = dataset.sample(self.training_cfg.deployment_offline_rl.batch_size)
+                with self._model_lock:
+                    stats = self.deployment_agent.offline_update(
+                        batch,
+                        batch_size=len(batch),
+                        **self._deployment_offline_update_kwargs(),
+                    )
+                self._deployment_update_steps += 1
+                self._epoch += 1
+                self._global_update_step += 1
+                self._record_ppo_update(
+                    self.dep_update_recorder,
+                    "deployment_offline",
+                    self._deployment_update_steps,
+                    used=len(batch),
+                    remaining=len(dataset),
+                    stats=stats,
+                )
+                LOGGER.info(
+                    f"[Hedger][Train][DeploymentOffline] update={self._deployment_update_steps}, "
+                    f"reward_mean={self._format_log_value(stats.get('reward_mean', 0.0))}, "
+                    f"policy_loss={self._format_log_value(stats.get('policy_loss', 0.0))}, "
+                    f"value_loss={self._format_log_value(stats.get('value_loss', 0.0))}, "
+                    f"adv_mean={self._format_log_value(stats.get('adv_mean', 0.0))}"
+                )
+                save_interval = self.checkpoint_cfg.save.interval_updates
+                if self._epoch % save_interval == 0:
+                    self.save_checkpoint(stage_step=self._epoch, is_final=False)
+        finally:
+            if self.dep_update_recorder is not None:
+                self.dep_update_recorder.close()
+                self.dep_update_recorder = None
+            self.save_checkpoint(stage_step=self._epoch, is_final=True)
+            LOGGER.info(
+                f"[Hedger][Train][DeploymentOffline] Finished: "
+                f"stage_step={self._epoch}, global_step={self._global_update_step}"
+            )
+
     def _checkpoint_stage_dir(self, stage_name: Optional[str] = None) -> str:
         resolved_stage = stage_name if stage_name is not None else (self.training_cfg.stage if self.training_cfg else None)
         if not resolved_stage:
@@ -5066,6 +5560,14 @@ class Hedger:
                 'seed': self.seed,
                 'mode': self.mode,
                 'training_stage': self.training_cfg.stage if self.training_cfg is not None else None,
+                'deployment_train_mode': (
+                    self.stage_cfg.deployment_train_mode
+                    if self.stage_cfg is not None else None
+                ),
+                'deployment_dataset_root': (
+                    self.training_cfg.deployment_dataset.root_dir
+                    if self.training_cfg is not None else None
+                ),
                 'stage_step': int(stage_step),
                 'global_step': int(self._global_update_step),
                 'deployment_updates': int(self._deployment_update_steps),

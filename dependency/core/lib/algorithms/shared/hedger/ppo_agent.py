@@ -937,7 +937,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
     def policy(self, logic_edge_index, logic_feats, phys_edge_index,
                phys_feats, topo_order: Optional[list] = None,
                prev_deploy_mask: Optional[torch.Tensor] = None,
-               deterministic: bool = False):
+               deterministic: bool = False,
+               logit_noise_std: float = 0.0):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
@@ -964,11 +965,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             static_allowed,
             prev_deploy_mask=prev_deploy_mask,
         )
+        if logit_noise_std > 0.0:
+            final_scores = final_scores + torch.randn_like(final_scores) * float(logit_noise_std)
         policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_s.device)
 
         # Sample first from the static deployment distribution, then apply a
-        # deterministic capacity projection. PPO is optimized on the raw sampled
-        # action, while the environment executes the corrected one.
+        # deterministic capacity projection. The executed post-projection mask
+        # is the default training target for offline, online, and PPO updates.
         raw_deploy_mask = torch.zeros((Ms, Np), dtype=torch.bool, device=h_s.device)
         raw_probs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_s.device)
         logp_sum = torch.tensor(0.0, device=h_s.device)
@@ -1055,12 +1058,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             deploy_mask: torch.Tensor,
             prev_deploy_mask: Optional[torch.Tensor] = None,
             topo_order: Optional[list] = None,
+            return_policy: bool = False,
     ):
         """
         Evaluate `deploy_mask` under the current parameters.
 
-        PPO is evaluated against the raw pre-correction deployment sample, while
-        the environment executes the corrected mask returned by `policy()`.
+        PPO is evaluated against the executed post-projection deployment mask.
+        The policy still samples a raw Bernoulli mask and projects it before
+        execution; training follows the action that actually touched the system.
         """
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
@@ -1092,6 +1097,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
 
         logp_sum = torch.tensor(0.0, device=h_s.device)
         ent_terms = []
+        policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_s.device)
         for service_idx in topo_order:
             stochastic_allowed = static_allowed[service_idx].clone()
             stochastic_allowed[cloud_idx] = False
@@ -1107,9 +1113,16 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 acts_row = deploy_mask[service_idx].float()
                 logp_sum += dist.log_prob(acts_row).masked_select(stochastic_allowed).sum()
                 ent_terms.append(dist.entropy().masked_select(stochastic_allowed).mean())
+                policy_prob_matrix[service_idx] = probs_raw
+            policy_prob_matrix[service_idx, cloud_idx] = 1.0
 
         ent_sum = torch.stack(ent_terms).mean() if ent_terms else torch.tensor(0.0, device=h_s.device)
         value = self.critic(h_s, h_p, candidate_features, static_allowed)
+        if return_policy:
+            return logp_sum, ent_sum, value.squeeze(0), {
+                "policy_prob": policy_prob_matrix,
+                "static_allowed": static_allowed,
+            }
         return logp_sum, ent_sum, value.squeeze(0)
 
     def ppo_update(self, transitions: List[dict], epochs=4, batch_size=16, clip_eps=None, entropy_coef=0.01,
@@ -1133,7 +1146,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "logic_feats": _move_tensor_dict_to_device(tr["logic_feats"], device),
                 "phys_edge_index": tr["phys_edge_index"].to(device),
                 "phys_feats": _move_tensor_dict_to_device(tr["phys_feats"], device),
-                "deploy_mask": tr.get("raw_deploy_mask", tr["deploy_mask"]).to(device),
+                "deploy_mask": tr["deploy_mask"].to(device),
                 "prev_deploy_mask": (
                     tr["prev_deploy_mask"].to(device) if tr.get("prev_deploy_mask") is not None else None
                 ),
@@ -1233,6 +1246,162 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "ratio_std": _mean_or_zero(ratio_stds),
             "actor_grad_norm": _mean_or_zero(actor_grad_norms),
             "critic_grad_norm": _mean_or_zero(critic_grad_norms),
+        }
+
+    def offline_update(
+            self,
+            transitions: List[dict],
+            batch_size: Optional[int] = None,
+            action_target: str = "executed",
+            advantage_temperature: float = 1.0,
+            min_advantage_weight: float = 0.05,
+            max_advantage_weight: float = 20.0,
+            actor_bc_coef: float = 1.0,
+            value_coef: float = 0.5,
+            entropy_coef: float = 0.0,
+            conservative_coef: float = 0.0,
+            bootstrap_current_value: bool = True,
+    ):
+        """
+        Offline/replay update for deployment macro-transitions.
+
+        This is an AWAC-style actor-critic step: fit the critic to one-step
+        bootstrapped returns, then improve the Bernoulli deployment actor by
+        advantage-weighted log-likelihood of the actually executed placement.
+        """
+        if not transitions:
+            return None
+
+        target_name = str(action_target or "executed").strip().lower()
+        if target_name not in {"executed", "raw"}:
+            raise ValueError("deployment offline action_target must be one of: executed, raw.")
+
+        device = next(self.parameters()).device
+        batch = transitions if batch_size is None else transitions[:max(1, int(batch_size))]
+        values = []
+        logps = []
+        entropies = []
+        targets = []
+        rewards = []
+        conservative_terms = []
+        for tr in batch:
+            logic_edge_index = tr["logic_edge_index"].to(device)
+            logic_feats = _move_tensor_dict_to_device(tr["logic_feats"], device)
+            phys_edge_index = tr["phys_edge_index"].to(device)
+            phys_feats = _move_tensor_dict_to_device(tr["phys_feats"], device)
+            prev_deploy_mask = (
+                tr["prev_deploy_mask"].to(device) if tr.get("prev_deploy_mask") is not None else None
+            )
+            action_key = "raw_deploy_mask" if target_name == "raw" else "deploy_mask"
+            deploy_mask = tr.get(action_key, tr["deploy_mask"]).to(device).bool()
+            logp, ent, value, policy_aux = self.evaluate(
+                logic_edge_index,
+                logic_feats,
+                phys_edge_index,
+                phys_feats,
+                deploy_mask,
+                prev_deploy_mask=prev_deploy_mask,
+                topo_order=tr.get("topo_order"),
+                return_policy=True,
+            )
+
+            reward = float(tr["reward"])
+            rewards.append(reward)
+            done = bool(tr.get("done", False))
+            next_value = float(tr.get("next_value", 0.0))
+            if bootstrap_current_value and not done \
+                    and tr.get("next_logic_feats") is not None and tr.get("next_phys_feats") is not None:
+                with torch.no_grad():
+                    next_value = _scalar_to_float(
+                        self.estimate_value(
+                            logic_edge_index=logic_edge_index,
+                            logic_feats=_move_tensor_dict_to_device(tr["next_logic_feats"], device),
+                            phys_edge_index=phys_edge_index,
+                            phys_feats=_move_tensor_dict_to_device(tr["next_phys_feats"], device),
+                            prev_deploy_mask=deploy_mask,
+                        )
+                    )
+            targets.append(reward + self.gamma * next_value * (0.0 if done else 1.0))
+            values.append(value.squeeze())
+            logps.append(logp)
+            entropies.append(ent)
+
+            if conservative_coef > 0.0:
+                probs = policy_aux["policy_prob"]
+                allowed = policy_aux["static_allowed"].float()
+                cloud_idx = self._cloud_index(probs.size(1))
+                allowed[:, cloud_idx] = 0.0
+                negative_mask = (1.0 - deploy_mask.float()) * allowed
+                conservative_terms.append((probs * negative_mask).sum() / allowed.sum().clamp_min(1.0))
+
+        value_t = torch.stack(values).float()
+        logp_t = torch.stack(logps).float()
+        ent_t = torch.stack(entropies).float()
+        target_t = torch.tensor(targets, device=device, dtype=torch.float32)
+        adv_t = target_t.detach() - value_t.detach()
+        temp = max(1e-6, float(advantage_temperature))
+        min_weight = max(0.0, float(min_advantage_weight))
+        max_weight = max(min_weight, float(max_advantage_weight))
+        awac_weight = torch.exp(adv_t / temp).clamp(min=min_weight, max=max_weight)
+
+        actor_loss = -(awac_weight * logp_t).mean() * float(actor_bc_coef)
+        value_loss = F.mse_loss(value_t, target_t)
+        entropy = ent_t.mean()
+        conservative_loss = (
+            torch.stack(conservative_terms).mean()
+            if conservative_terms
+            else torch.tensor(0.0, device=device)
+        )
+        critic_loss = float(value_coef) * value_loss
+        actor_objective_loss = actor_loss \
+            + float(conservative_coef) * conservative_loss \
+            - float(entropy_coef) * entropy
+
+        # Keep the deployment actor update behavior-cloning/AWAC driven.
+        # The critic is fit in a separate step so value gradients do not move
+        # the Bernoulli deployment policy through shared candidate features.
+        self.actor_opt.zero_grad()
+        self.critic_opt.zero_grad()
+        critic_loss.backward(retain_graph=True)
+        critic_grad_norm = _parameters_grad_norm(self.critic.parameters())
+        self.critic_opt.step()
+
+        self.actor_opt.zero_grad()
+        self.critic_opt.zero_grad()
+        actor_objective_loss.backward()
+        actor_grad_norm = nn.utils.clip_grad_norm_(self._actor_train_params, 1.0)
+        self.actor_opt.step()
+
+        return {
+            "samples": len(batch),
+            "epochs": 1,
+            "batch_size": len(batch),
+            "minibatches": 1,
+            "reward_mean": _mean_or_zero(rewards),
+            "reward_std": _std_or_zero(rewards),
+            "reward_min": float(min(rewards)) if rewards else 0.0,
+            "reward_max": float(max(rewards)) if rewards else 0.0,
+            "value_old_mean": _scalar_to_float(value_t.detach().mean()),
+            "value_old_std": _tensor_std_float(value_t.detach()),
+            "value_new_mean": _scalar_to_float(value_t.detach().mean()),
+            "return_mean": _scalar_to_float(target_t.detach().mean()),
+            "return_std": _tensor_std_float(target_t.detach()),
+            "adv_mean": _scalar_to_float(adv_t.detach().mean()),
+            "adv_std": _tensor_std_float(adv_t.detach()),
+            "last_value": float(targets[-1] if targets else 0.0),
+            "done_fraction": _mean_or_zero([1.0 if bool(tr.get("done", False)) else 0.0 for tr in batch]),
+            "policy_loss": _scalar_to_float(actor_loss.detach()),
+            "value_loss": _scalar_to_float(value_loss.detach()),
+            "entropy": _scalar_to_float(entropy.detach()),
+            "entropy_coef": float(entropy_coef),
+            "value_coef": float(value_coef),
+            "approx_kl": 0.0,
+            "clip_fraction": 0.0,
+            "ratio_mean": _scalar_to_float(awac_weight.detach().mean()),
+            "ratio_std": _tensor_std_float(awac_weight.detach()),
+            "actor_grad_norm": _scalar_to_float(actor_grad_norm),
+            "critic_grad_norm": float(critic_grad_norm),
+            "conservative_loss": _scalar_to_float(conservative_loss.detach()),
         }
 
 
