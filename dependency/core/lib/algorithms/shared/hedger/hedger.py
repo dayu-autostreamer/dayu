@@ -954,6 +954,14 @@ class Hedger:
             "reward_off_latency_weight": float(reward["latency_weight"]),
             "reward_off_slo_weight": float(reward["slo_weight"]),
             "reward_off_cloud_weight": float(reward["cloud_weight"]),
+            "reward_off_projection_weight": float(reward.get("projection_weight", 0.0)),
+            "reward_off_queue_gap_weight": float((reward.get("runtime_gap") or {}).get("queue_weight", 0.0)),
+            "reward_off_service_time_gap_weight": float(
+                (reward.get("runtime_gap") or {}).get("service_time_weight", 0.0)
+            ),
+            "reward_off_utilization_gap_weight": float(
+                (reward.get("runtime_gap") or {}).get("utilization_weight", 0.0)
+            ),
             "reward_off_latency_transform": off_latency_cfg["transform"],
             "reward_off_latency_normalizer": off_latency_cfg["normalizer"],
             "reward_off_latency_clip": off_latency_cfg["clip"],
@@ -1971,6 +1979,28 @@ class Hedger:
         return result
 
     @staticmethod
+    def _actor_debug_candidate_value(
+            actor_debug: Optional[Dict[str, Any]],
+            service_idx: int,
+            device_idx: int,
+            feature_name: str,
+    ) -> float:
+        if not isinstance(actor_debug, dict):
+            return 0.0
+        value = actor_debug.get("candidate_feature")
+        names = actor_debug.get("candidate_feature_names")
+        if not isinstance(value, torch.Tensor) or value.numel() == 0 or not isinstance(names, list):
+            return 0.0
+        if feature_name not in names:
+            return 0.0
+        value = value.detach().float().cpu()
+        if value.dim() != 3 or service_idx < 0 or service_idx >= value.size(0):
+            return 0.0
+        if device_idx < 0 or device_idx >= value.size(1):
+            return 0.0
+        return float(value[service_idx, device_idx, names.index(feature_name)].item())
+
+    @staticmethod
     def _actor_debug_service_scalar(
             actor_debug: Optional[Dict[str, Any]],
             key: str,
@@ -2210,7 +2240,10 @@ class Hedger:
             "offloading_decision_overhead_s", "off_reward_estimate",
             "latency", "latency_cost", "off_latency_term", "slo_violation", "off_slo_term",
             "cloud_fraction", "task_latency_count", "latest_task_latency",
-            "off_cloud_term", "policy_logp", "policy_entropy", "value_estimate",
+            "off_cloud_term", "off_projection_term", "off_queue_gap_term",
+            "off_service_time_gap_term", "off_utilization_gap_term",
+            "off_queue_gap_cost", "off_service_time_gap_cost", "off_utilization_gap_cost",
+            "off_runtime_gap_samples", "policy_logp", "policy_entropy", "value_estimate",
             "proposal_cloud_fraction", "projected_cloud_fraction",
             "offloading_projection_cnt", "offloading_dependency_projection_cnt",
             "offloading_infeasible_projection_cnt", "offloading_projection_cost",
@@ -2222,7 +2255,9 @@ class Hedger:
             "feedback_task_observations", "feedback_deployment_version",
             "feedback_deployment_versions", "feedback_recorded", "off_latency_weight",
             "off_latency_transform", "off_latency_normalizer", "off_latency_clip",
-            "off_slo_weight", "off_cloud_weight", "loaded_checkpoint",
+            "off_slo_weight", "off_cloud_weight", "off_projection_weight",
+            "off_queue_gap_weight", "off_service_time_gap_weight", "off_utilization_gap_weight",
+            "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
             insert_at = fieldnames.index("latency_guard_active")
@@ -2276,6 +2311,8 @@ class Hedger:
             "proposal_target", "target", "projected", "projection_reason", "is_cloud",
             "feasible_targets", "feasible_target_count", "parent_targets",
             "target_gpu_flops", "target_bandwidth", "target_role",
+            "target_queue_gap_to_best", "target_time_gap_to_best",
+            "target_utilization_gap_to_best", "target_runtime_confidence",
         ]
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
@@ -2453,6 +2490,18 @@ class Hedger:
                 target_gpu_flops=self._latest_feature_value(phys_feats, "gpu_flops", target_idx),
                 target_bandwidth=self._latest_feature_value(phys_feats, "bandwidth_latest", target_idx),
                 target_role=self._latest_feature_value(phys_feats, "role_id", target_idx),
+                target_queue_gap_to_best=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "queue_gap_to_best"
+                ),
+                target_time_gap_to_best=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "time_gap_to_best"
+                ),
+                target_utilization_gap_to_best=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "utilization_gap_to_best"
+                ),
+                target_runtime_confidence=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "confidence"
+                ),
             )
             if self.record_cfg.decision_candidate_features_debug:
                 row.update({
@@ -4169,7 +4218,7 @@ class Hedger:
                 if current_task_version > last_task_version:
                     last_task_version = current_task_version
 
-                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics)
+                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics, aux=aux)
                 latency_cost = off_reward_breakdown["latency_cost"]
                 off_reward_estimate = off_reward_breakdown["reward"]
                 feedback_recorded = False
@@ -4222,6 +4271,14 @@ class Hedger:
                         task_latency_count=metrics["task_latency_count"],
                         latest_task_latency=metrics["latest_task_latency"],
                         off_cloud_term=off_reward_breakdown["off_cloud_term"],
+                        off_projection_term=off_reward_breakdown["off_projection_term"],
+                        off_queue_gap_term=off_reward_breakdown["off_queue_gap_term"],
+                        off_service_time_gap_term=off_reward_breakdown["off_service_time_gap_term"],
+                        off_utilization_gap_term=off_reward_breakdown["off_utilization_gap_term"],
+                        off_queue_gap_cost=off_reward_breakdown["off_queue_gap_cost"],
+                        off_service_time_gap_cost=off_reward_breakdown["off_service_time_gap_cost"],
+                        off_utilization_gap_cost=off_reward_breakdown["off_utilization_gap_cost"],
+                        off_runtime_gap_samples=off_reward_breakdown["off_runtime_gap_samples"],
                         policy_logp=self._scalar_value(logp),
                         policy_entropy=self._scalar_value(ent),
                         value_estimate=self._scalar_value(value),
@@ -4255,6 +4312,10 @@ class Hedger:
                         off_latency_clip=self.offloading_agent_params["reward_off_latency_clip"],
                         off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                         off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
+                        off_projection_weight=self.offloading_agent_params["reward_off_projection_weight"],
+                        off_queue_gap_weight=self.offloading_agent_params["reward_off_queue_gap_weight"],
+                        off_service_time_gap_weight=self.offloading_agent_params["reward_off_service_time_gap_weight"],
+                        off_utilization_gap_weight=self.offloading_agent_params["reward_off_utilization_gap_weight"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
                     if self.record_cfg.actor_snapshot_debug:
@@ -4983,7 +5044,12 @@ class Hedger:
         off_train_fieldnames = ["step", "epoch", "off_updates", "off_reward", "latency", "latency_cost",
                                 "off_latency_term", "off_latency_normalizer", "off_latency_clip", "off_latency_transform",
                                 "slo_violation", "off_slo_term", "cloud_fraction", "off_cloud_term",
+                                "off_projection_term", "off_queue_gap_term", "off_service_time_gap_term",
+                                "off_utilization_gap_term", "off_queue_gap_cost", "off_service_time_gap_cost",
+                                "off_utilization_gap_cost", "off_runtime_gap_samples",
                                 "off_latency_weight", "off_slo_weight", "off_cloud_weight",
+                                "off_projection_weight", "off_queue_gap_weight",
+                                "off_service_time_gap_weight", "off_utilization_gap_weight",
                                 "policy_logp", "policy_entropy", "value_estimate",
                                 "next_value",
                                 "proposal_cloud_fraction", "projected_cloud_fraction",
@@ -5122,7 +5188,7 @@ class Hedger:
                         )
                     )
 
-                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics)
+                off_reward_breakdown = self._compute_offloading_reward_breakdown(metrics, aux=aux)
                 latency_cost = off_reward_breakdown["latency_cost"]
                 reward = off_reward_breakdown["reward"]
                 if self.is_latency_guard_active():
@@ -5198,9 +5264,21 @@ class Hedger:
                     off_slo_term=off_reward_breakdown["off_slo_term"],
                     cloud_fraction=metrics["cloud_fraction"],
                     off_cloud_term=off_reward_breakdown["off_cloud_term"],
+                    off_projection_term=off_reward_breakdown["off_projection_term"],
+                    off_queue_gap_term=off_reward_breakdown["off_queue_gap_term"],
+                    off_service_time_gap_term=off_reward_breakdown["off_service_time_gap_term"],
+                    off_utilization_gap_term=off_reward_breakdown["off_utilization_gap_term"],
+                    off_queue_gap_cost=off_reward_breakdown["off_queue_gap_cost"],
+                    off_service_time_gap_cost=off_reward_breakdown["off_service_time_gap_cost"],
+                    off_utilization_gap_cost=off_reward_breakdown["off_utilization_gap_cost"],
+                    off_runtime_gap_samples=off_reward_breakdown["off_runtime_gap_samples"],
                     off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
                     off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                     off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
+                    off_projection_weight=self.offloading_agent_params["reward_off_projection_weight"],
+                    off_queue_gap_weight=self.offloading_agent_params["reward_off_queue_gap_weight"],
+                    off_service_time_gap_weight=self.offloading_agent_params["reward_off_service_time_gap_weight"],
+                    off_utilization_gap_weight=self.offloading_agent_params["reward_off_utilization_gap_weight"],
                     policy_logp=float(logp.detach().cpu().item()),
                     policy_entropy=float(ent.detach().cpu().item()),
                     value_estimate=float(value.detach().cpu().item()),
@@ -5305,31 +5383,142 @@ class Hedger:
     def _sum_reward_terms(terms: Dict[str, float]) -> float:
         return float(sum(float(value) for value in terms.values()))
 
-    def _compute_offloading_reward_breakdown(self, metrics) -> Dict[str, float]:
+    @staticmethod
+    def _feature_index(names: Any, name: str) -> Optional[int]:
+        if not isinstance(names, list):
+            return None
+        try:
+            return names.index(name)
+        except ValueError:
+            return None
+
+    def _compute_offloading_runtime_gap_costs(self, aux) -> Dict[str, float]:
+        aux = aux or {}
+        actor_debug = aux.get("actor_debug") if isinstance(aux, dict) else None
+        if not isinstance(actor_debug, dict):
+            return {
+                "off_queue_gap_cost": 0.0,
+                "off_service_time_gap_cost": 0.0,
+                "off_utilization_gap_cost": 0.0,
+                "off_runtime_gap_samples": 0,
+            }
+
+        candidate_feature = actor_debug.get("candidate_feature")
+        feature_names = actor_debug.get("candidate_feature_names")
+        projected_actions = aux.get("projected_actions")
+        proposal_actions = aux.get("proposal_actions")
+        if not isinstance(candidate_feature, torch.Tensor) or candidate_feature.dim() != 3:
+            return {
+                "off_queue_gap_cost": 0.0,
+                "off_service_time_gap_cost": 0.0,
+                "off_utilization_gap_cost": 0.0,
+                "off_runtime_gap_samples": 0,
+            }
+        if not isinstance(projected_actions, torch.Tensor) or projected_actions.numel() == 0:
+            return {
+                "off_queue_gap_cost": 0.0,
+                "off_service_time_gap_cost": 0.0,
+                "off_utilization_gap_cost": 0.0,
+                "off_runtime_gap_samples": 0,
+            }
+
+        queue_idx = self._feature_index(feature_names, "queue_gap_to_best")
+        time_idx = self._feature_index(feature_names, "time_gap_to_best")
+        util_idx = self._feature_index(feature_names, "utilization_gap_to_best")
+        confidence_idx = self._feature_index(feature_names, "confidence")
+        if queue_idx is None or time_idx is None or util_idx is None:
+            return {
+                "off_queue_gap_cost": 0.0,
+                "off_service_time_gap_cost": 0.0,
+                "off_utilization_gap_cost": 0.0,
+                "off_runtime_gap_samples": 0,
+            }
+
+        candidate_feature = candidate_feature.detach().float().cpu()
+        projected_actions = projected_actions.detach().long().cpu()
+        if isinstance(proposal_actions, torch.Tensor):
+            proposal_actions = proposal_actions.detach().long().cpu()
+        else:
+            proposal_actions = projected_actions
+
+        queue_cost = 0.0
+        time_cost = 0.0
+        util_cost = 0.0
+        sample_count = 0
+        num_services, num_devices, _ = candidate_feature.shape
+        for service_idx in range(min(num_services, int(projected_actions.numel()))):
+            target_idx = int(projected_actions[service_idx].item())
+            proposal_idx = (
+                int(proposal_actions[service_idx].item())
+                if service_idx < int(proposal_actions.numel()) else target_idx
+            )
+            if proposal_idx != target_idx or target_idx < 0 or target_idx >= num_devices:
+                continue
+            row = candidate_feature[service_idx, target_idx]
+            confidence = (
+                float(row[confidence_idx].item())
+                if confidence_idx is not None and confidence_idx < row.numel()
+                else 1.0
+            )
+            confidence = min(max(confidence, 0.0), 1.0)
+            queue_cost += confidence * max(0.0, float(row[queue_idx].item()))
+            time_cost += confidence * max(0.0, float(row[time_idx].item()))
+            util_cost += confidence * max(0.0, float(row[util_idx].item()))
+            sample_count += 1
+
+        if sample_count <= 0:
+            return {
+                "off_queue_gap_cost": 0.0,
+                "off_service_time_gap_cost": 0.0,
+                "off_utilization_gap_cost": 0.0,
+                "off_runtime_gap_samples": 0,
+            }
+        denom = float(sample_count)
+        return {
+            "off_queue_gap_cost": float(queue_cost / denom),
+            "off_service_time_gap_cost": float(time_cost / denom),
+            "off_utilization_gap_cost": float(util_cost / denom),
+            "off_runtime_gap_samples": int(sample_count),
+        }
+
+    def _compute_offloading_reward_breakdown(self, metrics, aux=None) -> Dict[str, float]:
         """Named reward terms for offloading, reused by logging and PPO."""
         metrics = metrics or {}
+        aux = aux or {}
         latency = float(metrics["latency"])
         latency_cost = self._compute_offloading_latency_cost(latency)
         slo_v = float(metrics["slo_violation"])
         cloud_frac = float(metrics["cloud_fraction"])
+        projection_cost = float(aux.get("projection_cost", 0.0) or 0.0)
+        runtime_gap_costs = self._compute_offloading_runtime_gap_costs(aux)
 
         w_lat = float(self.offloading_agent_params["reward_off_latency_weight"])
         w_slo = float(self.offloading_agent_params["reward_off_slo_weight"])
         w_cloud = float(self.offloading_agent_params["reward_off_cloud_weight"])
+        w_projection = float(self.offloading_agent_params.get("reward_off_projection_weight", 0.0))
+        w_queue_gap = float(self.offloading_agent_params.get("reward_off_queue_gap_weight", 0.0))
+        w_service_time_gap = float(self.offloading_agent_params.get("reward_off_service_time_gap_weight", 0.0))
+        w_util_gap = float(self.offloading_agent_params.get("reward_off_utilization_gap_weight", 0.0))
 
         terms = {
             "off_latency_term": -w_lat * latency_cost,
             "off_slo_term": -w_slo * slo_v,
             "off_cloud_term": -w_cloud * cloud_frac,
+            "off_projection_term": -w_projection * projection_cost,
+            "off_queue_gap_term": -w_queue_gap * runtime_gap_costs["off_queue_gap_cost"],
+            "off_service_time_gap_term": -w_service_time_gap * runtime_gap_costs["off_service_time_gap_cost"],
+            "off_utilization_gap_term": -w_util_gap * runtime_gap_costs["off_utilization_gap_cost"],
         }
         return {
             "latency_cost": float(latency_cost),
+            "off_projection_cost": float(projection_cost),
+            **runtime_gap_costs,
             **terms,
             "reward": self._sum_reward_terms(terms),
         }
 
-    def _compute_offloading_reward(self, metrics) -> float:
-        return self._compute_offloading_reward_breakdown(metrics)["reward"]
+    def _compute_offloading_reward(self, metrics, aux=None) -> float:
+        return self._compute_offloading_reward_breakdown(metrics, aux=aux)["reward"]
 
     def _compute_deployment_reward_breakdown(self, metrics, aux) -> Dict[str, float]:
         """Named deployment reward terms mixing direct e2e and bottom-up feedback."""

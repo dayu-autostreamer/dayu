@@ -250,6 +250,9 @@ class CandidateCostHead(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, 1),
         )
+        last_layer = self.net[-1]
+        nn.init.zeros_(last_layer.weight)
+        nn.init.zeros_(last_layer.bias)
 
     def forward(self, candidate_features: torch.Tensor) -> torch.Tensor:
         if candidate_features.numel() == 0:
