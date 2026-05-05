@@ -613,10 +613,12 @@ class Hedger:
         return HedgerRecordCfg(
             state_summary=bool(record.get("state_summary", True)),
             debug_mode=debug_mode,
-            state_snapshot_debug=bool(record.get("state_snapshot_debug", debug_mode)),
-            actor_snapshot_debug=bool(record.get("actor_snapshot_debug", debug_mode)),
-            decision_candidate_features_debug=bool(record.get("decision_candidate_features_debug", debug_mode)),
-            decision_actor_debug=bool(record.get("decision_actor_debug", debug_mode)),
+            state_snapshot_debug=debug_mode or bool(record.get("state_snapshot_debug", False)),
+            actor_snapshot_debug=debug_mode or bool(record.get("actor_snapshot_debug", False)),
+            decision_candidate_features_debug=debug_mode or bool(
+                record.get("decision_candidate_features_debug", False)
+            ),
+            decision_actor_debug=debug_mode or bool(record.get("decision_actor_debug", False)),
             normal_json_max_chars=max(0, int(record.get("normal_json_max_chars", 12000))),
             debug_json_max_chars=max(0, int(record.get("debug_json_max_chars", 200000))),
         )
