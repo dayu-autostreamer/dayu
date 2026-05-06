@@ -1,0 +1,117 @@
+position: cloud
+pod-template:
+  image: scheduler:shy
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+
+    # ---------------------------------------------------------------
+    # Source selection: always use edgexn12 as the source device
+    # ---------------------------------------------------------------
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'fixed_value': 'edgexn12',
+          'fixed_type': 'hostname'
+        }
+
+    # ---------------------------------------------------------------
+    # Initial deployment: one service per device as the starting point
+    # for the first profiling round.
+    # ---------------------------------------------------------------
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'policy': {
+            'pedestrian-detection':    ['edge5'],
+            'exposure-identification': ['edgexn12'],
+            'vehicle-detection':       ['edge5'],
+            'category-identification': ['edgexn11'],
+            'license-plate-recognition': ['edgexn13']
+          }
+        }
+
+    # ---------------------------------------------------------------
+    # Redeployment policy: latency_matrix
+    #
+    # services          — rows of the profiling matrix (edge-only)
+    # devices           — columns of the profiling matrix
+    # device_service_limits — max concurrent services per device
+    #                         (missing device → default_device_limit)
+    # default_device_limit  — fallback limit when not listed above
+    # ---------------------------------------------------------------
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: latency_matrix
+    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'services': [
+            'pedestrian-detection',
+            'exposure-identification',
+            'vehicle-detection',
+            'category-identification',
+            'license-plate-recognition'
+          ],
+          'devices': ['edge5', 'edgexn11', 'edgexn12', 'edgexn13'],
+          'device_service_limits': {
+            'edge5':    2,
+            'edgexn11':  3,
+            'edgexn12':  2,
+            'edgexn13': 2
+          },
+          'default_device_limit': 2
+        }
+
+    # ---------------------------------------------------------------
+    # Scheduling agent: latency_matrix
+    #
+    # services         — same list as in the redeployment policy
+    # devices          — same list as in the redeployment policy
+    # per_obj_services — latency recorded as real_exe_time / obj_num
+    # min_samples      — samples needed before a cell is finalised
+    # configuration    — video encoding settings forwarded to tasks
+    # ---------------------------------------------------------------
+    - name: SCH_AGENT_NAME
+      value: latency_matrix
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'services': [
+            'pedestrian-detection',
+            'exposure-identification',
+            'vehicle-detection',
+            'category-identification',
+            'license-plate-recognition'
+          ],
+          'devices': ['edge5', 'edgexn11', 'edgexn12', 'edgexn13'],
+          'per_obj_services': [
+            'exposure-identification',
+            'category-identification',
+            'license-plate-recognition'
+          ],
+          'min_samples': 50,
+          'configuration': {
+            'resolution': '720p',
+            'fps': 6,
+            'encoding': 'mp4v',
+            'buffer_size': 2
+          }
+        }
+
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/latency_matrix/'
