@@ -52,7 +52,7 @@ pod-template:
     # default_device_limit  — fallback limit when not listed above
     # ---------------------------------------------------------------
     - name: SCH_REDEPLOYMENT_POLICY_NAME
-      value: latency_matrix
+      value: latency_matrix_collector
     - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
       value: >
         {
@@ -83,7 +83,7 @@ pod-template:
     # configuration    — video encoding settings forwarded to tasks
     # ---------------------------------------------------------------
     - name: SCH_AGENT_NAME
-      value: latency_matrix
+      value: latency_matrix_collector
     - name: SCH_AGENT_PARAMETERS
       value: >
         {
