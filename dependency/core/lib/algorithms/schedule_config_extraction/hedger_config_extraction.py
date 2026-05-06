@@ -96,10 +96,18 @@ class HedgerConfigExtraction(BaseConfigExtraction, abc.ABC):
         if mode == "train":
             training = self._ensure_mapping("training", merged.get("training"))
             stage = training.get("stage")
-            if stage not in {"offloading_warmup", "deployment_adaptation", "joint_finetune"}:
+            allowed_stages = {
+                "offloading_warmup",
+                "deployment_collect",
+                "deployment_offline",
+                "deployment_online",
+                "joint_finetune",
+            }
+            if stage not in allowed_stages:
                 raise ValueError(
                     "Hedger train mode requires `training.stage` to be one of "
-                    "'offloading_warmup', 'deployment_adaptation', or 'joint_finetune'."
+                    "'offloading_warmup', 'deployment_collect', 'deployment_offline', "
+                    "'deployment_online', or 'joint_finetune'."
                 )
 
         return merged

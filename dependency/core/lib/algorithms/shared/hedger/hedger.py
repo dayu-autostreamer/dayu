@@ -72,7 +72,7 @@ class HedgerDeploymentDefaultWarmupCfg:
 @dataclass(frozen=True)
 class HedgerDeploymentDatasetCfg:
     enabled: bool = True
-    root_dir: str = "hedger_deployment_dataset"
+    root_dir: str = "deployment_dataset"
     shard_size: int = 32
     clear_on_collect_start: bool = True
 
@@ -494,7 +494,7 @@ class Hedger:
             raise ValueError("Hedger config `training.deployment_dataset` must be a mapping when provided.")
         deployment_dataset = HedgerDeploymentDatasetCfg(
             enabled=bool(dataset_cfg.get("enabled", True)),
-            root_dir=self._resolve_path(str(dataset_cfg.get("root_dir", "hedger_deployment_dataset"))),
+            root_dir=self._resolve_path(str(dataset_cfg.get("root_dir", "deployment_dataset"))),
             shard_size=max(1, int(dataset_cfg.get("shard_size", 32))),
             clear_on_collect_start=bool(dataset_cfg.get("clear_on_collect_start", True)),
         )
