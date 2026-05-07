@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.lib.algorithms.shared.hedger.topology_encoder import NodeTemporalEncoder
+from core.lib.algorithms.shared.hedger.topology_encoder import TopologyEncoders
 from core.lib.algorithms.shared.hedger.utils import safe_log1p
 
 __all__ = ("NoGraphTopologyEncoders",)
@@ -31,7 +31,7 @@ class NoGraphLogicalEncoder(nn.Module):
     def __init__(self, d_model: int = 64, dropout: float = 0.0):
         super().__init__()
         self.lin_static = nn.Linear(2, d_model)
-        self.temporal = NodeTemporalEncoder(d_dyn=2, d_model=d_model)
+        self.temporal = TopologyEncoders(d_dyn=2, d_model=d_model)
         self.fusion = NodeFeatureFusionBlock(d_model=d_model, dropout=dropout)
 
     def forward(self, feats: Dict[str, torch.Tensor]) -> torch.Tensor:
