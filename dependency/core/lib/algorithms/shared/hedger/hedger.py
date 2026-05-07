@@ -19,6 +19,7 @@ from .ppo_agent import (
     HedgerOffloadingPPO,
     HedgerDeploymentPPO,
     SERVICE_DEMAND_FEATURE_NAMES,
+    DEVICE_CAPABILITY_FEATURE_NAMES,
     RUNTIME_PAIR_FEATURE_NAMES,
 )
 from .hedger_config import from_partial_dict, DeploymentConstraintCfg, LogicalTopology, \
@@ -54,9 +55,6 @@ class HedgerStateCfg:
 @dataclass(frozen=True)
 class HedgerEncoderCfg:
     embedding_dim: int
-    logical_heads: int
-    physical_role_count: int
-    physical_role_embedding_dim: int
     dropout: float
 
 
@@ -450,9 +448,6 @@ class Hedger:
         encoder = self._require_mapping(config, "encoder")
         return HedgerEncoderCfg(
             embedding_dim=max(1, int(encoder["embedding_dim"])),
-            logical_heads=max(1, int(encoder["logical_heads"])),
-            physical_role_count=max(2, int(encoder["physical_role_count"])),
-            physical_role_embedding_dim=max(1, int(encoder["physical_role_embedding_dim"])),
             dropout=float(encoder.get("dropout", 0.0)),
         )
 
@@ -957,13 +952,6 @@ class Hedger:
             "reward_off_slo_weight": float(reward["slo_weight"]),
             "reward_off_cloud_weight": float(reward["cloud_weight"]),
             "reward_off_projection_weight": float(reward.get("projection_weight", 0.0)),
-            "reward_off_queue_gap_weight": float((reward.get("runtime_gap") or {}).get("queue_weight", 0.0)),
-            "reward_off_service_time_gap_weight": float(
-                (reward.get("runtime_gap") or {}).get("service_time_weight", 0.0)
-            ),
-            "reward_off_utilization_gap_weight": float(
-                (reward.get("runtime_gap") or {}).get("utilization_weight", 0.0)
-            ),
             "reward_off_latency_transform": off_latency_cfg["transform"],
             "reward_off_latency_normalizer": off_latency_cfg["normalizer"],
             "reward_off_latency_clip": off_latency_cfg["clip"],
@@ -1933,6 +1921,27 @@ class Hedger:
             return dict(zip(names, row))
         return row
 
+    def _device_feature_map(
+            self,
+            phys_feats: Dict[str, torch.Tensor],
+            key: str,
+            names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        value = phys_feats.get(key)
+        if not isinstance(value, torch.Tensor) or value.numel() == 0:
+            return {}
+        value = value.detach().float().cpu()
+        if value.dim() != 2:
+            return {}
+        result = {}
+        for device_idx in range(value.size(0)):
+            row = [float(item) for item in value[device_idx].tolist()]
+            if names and len(names) == len(row):
+                result[self._device_name(device_idx)] = dict(zip(names, row))
+            else:
+                result[self._device_name(device_idx)] = row
+        return result
+
     def _actor_debug_row_map(
             self,
             actor_debug: Optional[Dict[str, Any]],
@@ -2076,7 +2085,7 @@ class Hedger:
         `record.state_snapshot_debug`.
         """
         state_debug = state_debug or {}
-        latency_pair_snapshot = state_debug.get("latency_pair_snapshot", {}) or {}
+        runtime_pair_snapshot = state_debug.get("runtime_pair_snapshot", {}) or {}
         queue_pair_snapshot = state_debug.get("queue_pair_snapshot", {}) or {}
         row: Dict[str, Any] = {}
         if self.record_cfg.state_summary:
@@ -2134,23 +2143,23 @@ class Hedger:
                 "state_model_mem_mean": self._tensor_mean(logic_feats.get("model_mem")),
                 "state_gpu_flops_mean": self._tensor_mean(phys_feats.get("gpu_flops")),
                 "state_mem_capacity_mean": self._tensor_mean(phys_feats.get("mem_capacity")),
-                "state_latency_pair_obs_count": self._nested_float_mean(latency_pair_snapshot.get("pair_count")),
+                "state_runtime_pair_obs_count": self._nested_float_mean(runtime_pair_snapshot.get("pair_count")),
                 "state_queue_pair_obs_count": self._nested_float_mean(queue_pair_snapshot.get("pair_count")),
-                "state_runtime_availability_mean": runtime_means[0],
-                "state_runtime_queue_short_mean": runtime_means[1],
-                "state_runtime_busy_ratio_mean": runtime_means[2],
-                "state_runtime_service_time_short_mean": runtime_means[3],
-                "state_runtime_utilization_estimate_mean": runtime_means[4],
-                "state_runtime_confidence_mean": runtime_means[5],
+                "state_runtime_queue_short_mean": runtime_means[0],
+                "state_runtime_busy_ratio_mean": runtime_means[1],
+                "state_runtime_real_time_per_complexity_mean": runtime_means[2],
+                "state_runtime_confidence_mean": runtime_means[3],
+                "state_runtime_freshness_mean": runtime_means[4],
             })
 
         if self.record_cfg.state_snapshot_debug:
             row.update({
                 "state_logic_snapshot": self._json_for_record(state_debug.get("logic_snapshot")),
                 "state_phys_snapshot": self._json_for_record(state_debug.get("phys_snapshot")),
-                "state_latency_pair_snapshot": self._json_for_record(latency_pair_snapshot),
+                "state_runtime_source_snapshot": self._json_for_record(runtime_pair_snapshot),
                 "state_queue_pair_snapshot": self._json_for_record(queue_pair_snapshot),
                 "state_service_demand_snapshot": self._json_for_record(logic_feats.get("service_demand_feat")),
+                "state_device_capability_snapshot": self._json_for_record(phys_feats.get("device_capability_feat")),
                 "state_runtime_pair_snapshot": self._json_for_record(logic_feats.get("runtime_pair_feat")),
             })
         return row
@@ -2163,18 +2172,18 @@ class Hedger:
             "state_edge_bw", "state_cloud_bw",
             "state_model_flops_mean", "state_model_mem_mean",
             "state_gpu_flops_mean", "state_mem_capacity_mean",
-            "state_latency_pair_obs_count", "state_queue_pair_obs_count",
-            "state_runtime_availability_mean", "state_runtime_queue_short_mean",
-            "state_runtime_busy_ratio_mean", "state_runtime_service_time_short_mean",
-            "state_runtime_utilization_estimate_mean", "state_runtime_confidence_mean",
+            "state_runtime_pair_obs_count", "state_queue_pair_obs_count",
+            "state_runtime_queue_short_mean", "state_runtime_busy_ratio_mean",
+            "state_runtime_real_time_per_complexity_mean", "state_runtime_confidence_mean",
+            "state_runtime_freshness_mean",
         ]
 
     @staticmethod
     def _state_record_debug_fieldnames() -> List[str]:
         return [
             "state_logic_snapshot", "state_phys_snapshot",
-            "state_latency_pair_snapshot", "state_queue_pair_snapshot",
-            "state_service_demand_snapshot", "state_runtime_pair_snapshot",
+            "state_runtime_source_snapshot", "state_queue_pair_snapshot",
+            "state_service_demand_snapshot", "state_device_capability_snapshot", "state_runtime_pair_snapshot",
         ]
 
     def _state_record_fieldnames(self) -> List[str]:
@@ -2242,10 +2251,7 @@ class Hedger:
             "offloading_decision_overhead_s", "off_reward_estimate",
             "latency", "latency_cost", "off_latency_term", "slo_violation", "off_slo_term",
             "cloud_fraction", "task_latency_count", "latest_task_latency",
-            "off_cloud_term", "off_projection_term", "off_queue_gap_term",
-            "off_service_time_gap_term", "off_utilization_gap_term",
-            "off_queue_gap_cost", "off_service_time_gap_cost", "off_utilization_gap_cost",
-            "off_runtime_gap_samples", "policy_logp", "policy_entropy", "value_estimate",
+            "off_cloud_term", "off_projection_term", "policy_logp", "policy_entropy", "value_estimate",
             "proposal_cloud_fraction", "projected_cloud_fraction",
             "offloading_projection_cnt", "offloading_dependency_projection_cnt",
             "offloading_infeasible_projection_cnt", "offloading_projection_cost",
@@ -2258,7 +2264,6 @@ class Hedger:
             "feedback_deployment_versions", "feedback_recorded", "off_latency_weight",
             "off_latency_transform", "off_latency_normalizer", "off_latency_clip",
             "off_slo_weight", "off_cloud_weight", "off_projection_weight",
-            "off_queue_gap_weight", "off_service_time_gap_weight", "off_utilization_gap_weight",
             "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -2297,6 +2302,7 @@ class Hedger:
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
                 "deployment_runtime_pair_features",
+                "deployment_device_capability_features",
                 "deployment_candidate_features",
             ])
         if self.record_cfg.decision_actor_debug:
@@ -2313,12 +2319,14 @@ class Hedger:
             "proposal_target", "target", "projected", "projection_reason", "is_cloud",
             "feasible_targets", "feasible_target_count", "parent_targets",
             "target_gpu_flops", "target_bandwidth", "target_role",
-            "target_queue_gap_to_best", "target_time_gap_to_best",
-            "target_utilization_gap_to_best", "target_runtime_confidence",
+            "target_qk_feature", "target_compute_gap", "target_load_score",
+            "target_real_time_per_complexity", "target_runtime_confidence", "target_runtime_freshness",
+            "target_cross_tier_penalty",
         ]
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
                 "offloading_service_demand_features",
+                "offloading_device_capability_features",
                 "offloading_runtime_pair_features",
                 "offloading_candidate_features",
             ])
@@ -2355,6 +2363,7 @@ class Hedger:
             raw_deploy_mask: torch.Tensor,
             exec_deploy_mask: torch.Tensor,
             logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
             actor_debug: Optional[Dict[str, Any]] = None,
     ) -> None:
         if self.dep_decision_recorder is None or self.physical_topology is None:
@@ -2400,6 +2409,13 @@ class Hedger:
                             "runtime_pair_feat",
                             service_idx,
                             names=RUNTIME_PAIR_FEATURE_NAMES,
+                        )
+                    ),
+                    "deployment_device_capability_features": self._json_for_record(
+                        self._device_feature_map(
+                            phys_feats,
+                            key="device_capability_feat",
+                            names=DEVICE_CAPABILITY_FEATURE_NAMES,
                         )
                     ),
                     "deployment_candidate_features": self._json_for_record(
@@ -2492,17 +2508,26 @@ class Hedger:
                 target_gpu_flops=self._latest_feature_value(phys_feats, "gpu_flops", target_idx),
                 target_bandwidth=self._latest_feature_value(phys_feats, "bandwidth_latest", target_idx),
                 target_role=self._latest_feature_value(phys_feats, "role_id", target_idx),
-                target_queue_gap_to_best=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "queue_gap_to_best"
+                target_qk_feature=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "qk_feature"
                 ),
-                target_time_gap_to_best=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "time_gap_to_best"
+                target_compute_gap=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "compute_gap"
                 ),
-                target_utilization_gap_to_best=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "utilization_gap_to_best"
+                target_load_score=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "load_score"
+                ),
+                target_real_time_per_complexity=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "real_time_per_complexity"
                 ),
                 target_runtime_confidence=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "confidence"
+                    actor_debug, service_idx, target_idx, "runtime_confidence"
+                ),
+                target_runtime_freshness=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "runtime_freshness"
+                ),
+                target_cross_tier_penalty=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "cross_tier_penalty"
                 ),
             )
             if self.record_cfg.decision_candidate_features_debug:
@@ -2513,6 +2538,13 @@ class Hedger:
                             "service_demand_feat",
                             service_idx,
                             names=SERVICE_DEMAND_FEATURE_NAMES,
+                        )
+                    ),
+                    "offloading_device_capability_features": self._json_for_record(
+                        self._device_feature_map(
+                            phys_feats,
+                            "device_capability_feat",
+                            names=DEVICE_CAPABILITY_FEATURE_NAMES,
                         )
                     ),
                     "offloading_runtime_pair_features": self._json_for_record(
@@ -2556,9 +2588,6 @@ class Hedger:
 
         self.shared_topology_encoder = TopologyEncoders(
             d_model=self.encoder_cfg.embedding_dim,
-            heads=self.encoder_cfg.logical_heads,
-            num_roles=self.encoder_cfg.physical_role_count,
-            role_emb_dim=self.encoder_cfg.physical_role_embedding_dim,
             dropout=self.encoder_cfg.dropout,
         ).to(self.device)
 
@@ -3146,19 +3175,52 @@ class Hedger:
     def _build_service_demand_features(
             task_complexity_seq: torch.Tensor,
             model_flops: torch.Tensor,
+            model_mem: torch.Tensor,
             task_arrival_rate_seq: torch.Tensor,
     ) -> torch.Tensor:
         task_complexity_seq = task_complexity_seq.detach().float()
         model_flops = model_flops.detach().float()
+        model_mem = model_mem.detach().float()
         task_arrival_rate_seq = task_arrival_rate_seq.detach().float()
         current = task_complexity_seq[:, -1]
         mean = task_complexity_seq.mean(dim=1)
         std = task_complexity_seq.std(dim=1, unbiased=False)
-        log_complexity = torch.log1p(current.clamp_min(0.0))
+        log_compute_demand = torch.log1p(current.clamp_min(0.0) * model_flops.clamp_min(0.0))
         complexity_zscore = (current - mean) / (std + 1e-6)
-        demand_compute = torch.log1p(current.clamp_min(0.0) * model_flops.clamp_min(0.0))
         arrival_rate = task_arrival_rate_seq[:, -1].clamp_min(0.0)
-        return torch.stack([log_complexity, complexity_zscore, demand_compute, arrival_rate], dim=-1)
+        log_model_mem = torch.log1p(model_mem.clamp_min(0.0))
+        return torch.stack([log_compute_demand, complexity_zscore, arrival_rate, log_model_mem], dim=-1)
+
+    @staticmethod
+    def _build_device_capability_features(
+            gpu_flops: torch.Tensor,
+            mem_capacity: torch.Tensor,
+            role_id: torch.Tensor,
+            bandwidth_latest: torch.Tensor,
+            cloud_idx: int,
+    ) -> torch.Tensor:
+        gpu_flops = gpu_flops.detach().float()
+        mem_capacity = mem_capacity.detach().float()
+        role_id = role_id.detach().long()
+        bandwidth_latest = bandwidth_latest.detach().float().clamp_min(1e-6)
+        is_cloud = (role_id == 1).float()
+        if 0 <= cloud_idx < is_cloud.numel():
+            is_cloud[cloud_idx] = 1.0
+        edge_mask = is_cloud < 0.5
+        log_gpu = torch.log1p(gpu_flops.clamp_min(0.0))
+        log_mem = torch.log1p(mem_capacity.clamp_min(0.0))
+        if edge_mask.any():
+            edge_compute_mean = log_gpu[edge_mask].mean()
+            edge_bw_ref = bandwidth_latest[edge_mask].mean().clamp_min(1e-6)
+        else:
+            edge_compute_mean = log_gpu.mean()
+            edge_bw_ref = bandwidth_latest.mean().clamp_min(1e-6)
+        relative_edge_compute = torch.where(edge_mask, log_gpu - edge_compute_mean, torch.zeros_like(log_gpu))
+        cloud_bandwidth_penalty = is_cloud * torch.log1p(edge_bw_ref / bandwidth_latest)
+        return torch.stack(
+            [log_gpu, log_mem, relative_edge_compute, is_cloud, cloud_bandwidth_penalty],
+            dim=-1,
+        )
 
     @staticmethod
     def _snapshot_pair_tensor(
@@ -3177,38 +3239,47 @@ class Hedger:
 
     @staticmethod
     def _build_runtime_pair_features(
-            latency_pair_snapshot: Dict[str, Any],
+            runtime_pair_snapshot: Dict[str, Any],
             queue_pair_snapshot: Dict[str, Any],
-            arrival_rate_short: torch.Tensor,
     ) -> torch.Tensor:
-        latency_pair = torch.tensor(latency_pair_snapshot.get("pair_short", []), dtype=torch.float32)
+        runtime_pair = torch.tensor(
+            runtime_pair_snapshot.get("pair_time_per_complexity_short", []),
+            dtype=torch.float32,
+        )
         queue_pair = torch.tensor(queue_pair_snapshot.get("pair_short", []), dtype=torch.float32)
-        if latency_pair.dim() != 2 or queue_pair.dim() != 2 or tuple(latency_pair.shape) != tuple(queue_pair.shape):
+        if runtime_pair.dim() != 2 or queue_pair.dim() != 2 or tuple(runtime_pair.shape) != tuple(queue_pair.shape):
             return torch.zeros((0, 0, len(RUNTIME_PAIR_FEATURE_NAMES)), dtype=torch.float32)
-        shape = (latency_pair.size(0), latency_pair.size(1))
-        latency_short = Hedger._snapshot_pair_tensor(latency_pair_snapshot, "pair_short", shape)
+        shape = (runtime_pair.size(0), runtime_pair.size(1))
+        real_time_per_complexity = Hedger._snapshot_pair_tensor(
+            runtime_pair_snapshot,
+            "pair_time_per_complexity_short",
+            shape,
+        )
         queue_short = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_short", shape)
         queue_busy = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_busy", shape)
         queue_count = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_count", shape)
-        latency_count = Hedger._snapshot_pair_tensor(latency_pair_snapshot, "pair_count", shape)
+        runtime_count = Hedger._snapshot_pair_tensor(runtime_pair_snapshot, "pair_count", shape)
+        runtime_last_task_v = Hedger._snapshot_pair_tensor(runtime_pair_snapshot, "pair_last_task_v", shape)
+        queue_last_t = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_last_t", shape)
+        current_task_version = float(runtime_pair_snapshot.get("current_task_version", 0.0) or 0.0)
+        monotonic_time = float(runtime_pair_snapshot.get("monotonic_time", 0.0) or 0.0)
         confidence = torch.clamp(
-            torch.log1p(torch.minimum(latency_count, queue_count).clamp_min(0.0)) / math.log1p(20.0),
+            torch.log1p(torch.minimum(runtime_count, queue_count).clamp_min(0.0)) / math.log1p(20.0),
             min=0.0,
             max=1.0,
         )
-        if arrival_rate_short.dim() != 1 or arrival_rate_short.size(0) != shape[0]:
-            arrival_rate_short = torch.zeros((shape[0],), dtype=torch.float32)
-        service_time_raw = torch.expm1(latency_short.clamp_min(0.0)).clamp_min(0.0)
-        utilization_estimate = torch.clamp(arrival_rate_short.view(-1, 1) * service_time_raw, min=0.0, max=10.0)
-        available = (torch.maximum(queue_count, latency_count) > 0.0).float()
+        runtime_age = torch.clamp(current_task_version - runtime_last_task_v, min=0.0)
+        runtime_freshness = torch.where(runtime_count > 0.0, 1.0 / (1.0 + runtime_age), torch.zeros_like(runtime_age))
+        queue_age = torch.clamp(monotonic_time - queue_last_t, min=0.0)
+        queue_freshness = torch.where(queue_count > 0.0, torch.exp(-queue_age / 30.0), torch.zeros_like(queue_age))
+        freshness = torch.minimum(runtime_freshness, queue_freshness)
         return torch.stack(
             [
-                available,
                 queue_short,
                 queue_busy,
-                latency_short,
-                utilization_estimate,
+                real_time_per_complexity,
                 confidence,
+                freshness,
             ],
             dim=-1,
         )
@@ -3235,12 +3306,12 @@ class Hedger:
         logic_feats["service_demand_feat"] = self._build_service_demand_features(
             logic_feats["task_complexity_seq"],
             logic_feats["model_flops"],
+            logic_feats["model_mem"],
             logic_feats["task_arrival_rate_seq"],
         )
         logic_feats["runtime_pair_feat"] = self._build_runtime_pair_features(
-            state_debug.get("latency_pair_snapshot", {}),
+            state_debug.get("runtime_pair_snapshot", {}),
             state_debug.get("queue_pair_snapshot", {}),
-            logic_feats["service_demand_feat"][:, 3],
         )
         phys_feats = {
             "gpu_flops": torch.tensor(phys_feats_raw["gpu_flops"], dtype=torch.float32),
@@ -3248,6 +3319,16 @@ class Hedger:
             "mem_capacity": torch.tensor(phys_feats_raw["mem_capacity"], dtype=torch.float32),
             "bandwidth_latest": torch.tensor(phys_feats_raw["bandwidth_latest"], dtype=torch.float32),
         }
+        cloud_idx = self.physical_topology.cloud_idx if self.physical_topology is not None else len(
+            phys_feats_raw["gpu_flops"]
+        ) - 1
+        phys_feats["device_capability_feat"] = self._build_device_capability_features(
+            phys_feats["gpu_flops"],
+            phys_feats["mem_capacity"],
+            phys_feats["role_id"],
+            phys_feats["bandwidth_latest"],
+            cloud_idx,
+        )
         return logic_feats, phys_feats, state_debug
 
     @staticmethod
@@ -4098,6 +4179,7 @@ class Hedger:
                     raw_deploy_mask=raw_deploy_mask,
                     exec_deploy_mask=exec_deploy_mask,
                     logic_feats=state_logic_feats,
+                    phys_feats=state_phys_feats,
                     actor_debug=aux.get("actor_debug"),
                 )
                 LOGGER.debug(
@@ -4274,13 +4356,6 @@ class Hedger:
                         latest_task_latency=metrics["latest_task_latency"],
                         off_cloud_term=off_reward_breakdown["off_cloud_term"],
                         off_projection_term=off_reward_breakdown["off_projection_term"],
-                        off_queue_gap_term=off_reward_breakdown["off_queue_gap_term"],
-                        off_service_time_gap_term=off_reward_breakdown["off_service_time_gap_term"],
-                        off_utilization_gap_term=off_reward_breakdown["off_utilization_gap_term"],
-                        off_queue_gap_cost=off_reward_breakdown["off_queue_gap_cost"],
-                        off_service_time_gap_cost=off_reward_breakdown["off_service_time_gap_cost"],
-                        off_utilization_gap_cost=off_reward_breakdown["off_utilization_gap_cost"],
-                        off_runtime_gap_samples=off_reward_breakdown["off_runtime_gap_samples"],
                         policy_logp=self._scalar_value(logp),
                         policy_entropy=self._scalar_value(ent),
                         value_estimate=self._scalar_value(value),
@@ -4315,9 +4390,6 @@ class Hedger:
                         off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                         off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
                         off_projection_weight=self.offloading_agent_params["reward_off_projection_weight"],
-                        off_queue_gap_weight=self.offloading_agent_params["reward_off_queue_gap_weight"],
-                        off_service_time_gap_weight=self.offloading_agent_params["reward_off_service_time_gap_weight"],
-                        off_utilization_gap_weight=self.offloading_agent_params["reward_off_utilization_gap_weight"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
                     if self.record_cfg.actor_snapshot_debug:
@@ -4989,6 +5061,7 @@ class Hedger:
                     raw_deploy_mask=raw_deploy_mask,
                     exec_deploy_mask=exec_deploy_mask,
                     logic_feats=state_logic_feats,
+                    phys_feats=state_phys_feats,
                     actor_debug=aux.get("actor_debug"),
                 )
                 LOGGER.debug(
@@ -5046,12 +5119,9 @@ class Hedger:
         off_train_fieldnames = ["step", "epoch", "off_updates", "off_reward", "latency", "latency_cost",
                                 "off_latency_term", "off_latency_normalizer", "off_latency_clip", "off_latency_transform",
                                 "slo_violation", "off_slo_term", "cloud_fraction", "off_cloud_term",
-                                "off_projection_term", "off_queue_gap_term", "off_service_time_gap_term",
-                                "off_utilization_gap_term", "off_queue_gap_cost", "off_service_time_gap_cost",
-                                "off_utilization_gap_cost", "off_runtime_gap_samples",
+                                "off_projection_term",
                                 "off_latency_weight", "off_slo_weight", "off_cloud_weight",
-                                "off_projection_weight", "off_queue_gap_weight",
-                                "off_service_time_gap_weight", "off_utilization_gap_weight",
+                                "off_projection_weight",
                                 "policy_logp", "policy_entropy", "value_estimate",
                                 "next_value",
                                 "proposal_cloud_fraction", "projected_cloud_fraction",
@@ -5267,20 +5337,10 @@ class Hedger:
                     cloud_fraction=metrics["cloud_fraction"],
                     off_cloud_term=off_reward_breakdown["off_cloud_term"],
                     off_projection_term=off_reward_breakdown["off_projection_term"],
-                    off_queue_gap_term=off_reward_breakdown["off_queue_gap_term"],
-                    off_service_time_gap_term=off_reward_breakdown["off_service_time_gap_term"],
-                    off_utilization_gap_term=off_reward_breakdown["off_utilization_gap_term"],
-                    off_queue_gap_cost=off_reward_breakdown["off_queue_gap_cost"],
-                    off_service_time_gap_cost=off_reward_breakdown["off_service_time_gap_cost"],
-                    off_utilization_gap_cost=off_reward_breakdown["off_utilization_gap_cost"],
-                    off_runtime_gap_samples=off_reward_breakdown["off_runtime_gap_samples"],
                     off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
                     off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                     off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
                     off_projection_weight=self.offloading_agent_params["reward_off_projection_weight"],
-                    off_queue_gap_weight=self.offloading_agent_params["reward_off_queue_gap_weight"],
-                    off_service_time_gap_weight=self.offloading_agent_params["reward_off_service_time_gap_weight"],
-                    off_utilization_gap_weight=self.offloading_agent_params["reward_off_utilization_gap_weight"],
                     policy_logp=float(logp.detach().cpu().item()),
                     policy_entropy=float(ent.detach().cpu().item()),
                     value_estimate=float(value.detach().cpu().item()),
@@ -5385,104 +5445,6 @@ class Hedger:
     def _sum_reward_terms(terms: Dict[str, float]) -> float:
         return float(sum(float(value) for value in terms.values()))
 
-    @staticmethod
-    def _feature_index(names: Any, name: str) -> Optional[int]:
-        if not isinstance(names, list):
-            return None
-        try:
-            return names.index(name)
-        except ValueError:
-            return None
-
-    def _compute_offloading_runtime_gap_costs(self, aux) -> Dict[str, float]:
-        aux = aux or {}
-        actor_debug = aux.get("actor_debug") if isinstance(aux, dict) else None
-        if not isinstance(actor_debug, dict):
-            return {
-                "off_queue_gap_cost": 0.0,
-                "off_service_time_gap_cost": 0.0,
-                "off_utilization_gap_cost": 0.0,
-                "off_runtime_gap_samples": 0,
-            }
-
-        candidate_feature = actor_debug.get("candidate_feature")
-        feature_names = actor_debug.get("candidate_feature_names")
-        projected_actions = aux.get("projected_actions")
-        proposal_actions = aux.get("proposal_actions")
-        if not isinstance(candidate_feature, torch.Tensor) or candidate_feature.dim() != 3:
-            return {
-                "off_queue_gap_cost": 0.0,
-                "off_service_time_gap_cost": 0.0,
-                "off_utilization_gap_cost": 0.0,
-                "off_runtime_gap_samples": 0,
-            }
-        if not isinstance(projected_actions, torch.Tensor) or projected_actions.numel() == 0:
-            return {
-                "off_queue_gap_cost": 0.0,
-                "off_service_time_gap_cost": 0.0,
-                "off_utilization_gap_cost": 0.0,
-                "off_runtime_gap_samples": 0,
-            }
-
-        queue_idx = self._feature_index(feature_names, "queue_gap_to_best")
-        time_idx = self._feature_index(feature_names, "time_gap_to_best")
-        util_idx = self._feature_index(feature_names, "utilization_gap_to_best")
-        confidence_idx = self._feature_index(feature_names, "confidence")
-        if queue_idx is None or time_idx is None or util_idx is None:
-            return {
-                "off_queue_gap_cost": 0.0,
-                "off_service_time_gap_cost": 0.0,
-                "off_utilization_gap_cost": 0.0,
-                "off_runtime_gap_samples": 0,
-            }
-
-        candidate_feature = candidate_feature.detach().float().cpu()
-        projected_actions = projected_actions.detach().long().cpu()
-        if isinstance(proposal_actions, torch.Tensor):
-            proposal_actions = proposal_actions.detach().long().cpu()
-        else:
-            proposal_actions = projected_actions
-
-        queue_cost = 0.0
-        time_cost = 0.0
-        util_cost = 0.0
-        sample_count = 0
-        num_services, num_devices, _ = candidate_feature.shape
-        for service_idx in range(min(num_services, int(projected_actions.numel()))):
-            target_idx = int(projected_actions[service_idx].item())
-            proposal_idx = (
-                int(proposal_actions[service_idx].item())
-                if service_idx < int(proposal_actions.numel()) else target_idx
-            )
-            if proposal_idx != target_idx or target_idx < 0 or target_idx >= num_devices:
-                continue
-            row = candidate_feature[service_idx, target_idx]
-            confidence = (
-                float(row[confidence_idx].item())
-                if confidence_idx is not None and confidence_idx < row.numel()
-                else 1.0
-            )
-            confidence = min(max(confidence, 0.0), 1.0)
-            queue_cost += confidence * max(0.0, float(row[queue_idx].item()))
-            time_cost += confidence * max(0.0, float(row[time_idx].item()))
-            util_cost += confidence * max(0.0, float(row[util_idx].item()))
-            sample_count += 1
-
-        if sample_count <= 0:
-            return {
-                "off_queue_gap_cost": 0.0,
-                "off_service_time_gap_cost": 0.0,
-                "off_utilization_gap_cost": 0.0,
-                "off_runtime_gap_samples": 0,
-            }
-        denom = float(sample_count)
-        return {
-            "off_queue_gap_cost": float(queue_cost / denom),
-            "off_service_time_gap_cost": float(time_cost / denom),
-            "off_utilization_gap_cost": float(util_cost / denom),
-            "off_runtime_gap_samples": int(sample_count),
-        }
-
     def _compute_offloading_reward_breakdown(self, metrics, aux=None) -> Dict[str, float]:
         """Named reward terms for offloading, reused by logging and PPO."""
         metrics = metrics or {}
@@ -5492,29 +5454,21 @@ class Hedger:
         slo_v = float(metrics["slo_violation"])
         cloud_frac = float(metrics["cloud_fraction"])
         projection_cost = float(aux.get("projection_cost", 0.0) or 0.0)
-        runtime_gap_costs = self._compute_offloading_runtime_gap_costs(aux)
 
         w_lat = float(self.offloading_agent_params["reward_off_latency_weight"])
         w_slo = float(self.offloading_agent_params["reward_off_slo_weight"])
         w_cloud = float(self.offloading_agent_params["reward_off_cloud_weight"])
         w_projection = float(self.offloading_agent_params.get("reward_off_projection_weight", 0.0))
-        w_queue_gap = float(self.offloading_agent_params.get("reward_off_queue_gap_weight", 0.0))
-        w_service_time_gap = float(self.offloading_agent_params.get("reward_off_service_time_gap_weight", 0.0))
-        w_util_gap = float(self.offloading_agent_params.get("reward_off_utilization_gap_weight", 0.0))
 
         terms = {
             "off_latency_term": -w_lat * latency_cost,
             "off_slo_term": -w_slo * slo_v,
             "off_cloud_term": -w_cloud * cloud_frac,
             "off_projection_term": -w_projection * projection_cost,
-            "off_queue_gap_term": -w_queue_gap * runtime_gap_costs["off_queue_gap_cost"],
-            "off_service_time_gap_term": -w_service_time_gap * runtime_gap_costs["off_service_time_gap_cost"],
-            "off_utilization_gap_term": -w_util_gap * runtime_gap_costs["off_utilization_gap_cost"],
         }
         return {
             "latency_cost": float(latency_cost),
             "off_projection_cost": float(projection_cost),
-            **runtime_gap_costs,
             **terms,
             "reward": self._sum_reward_terms(terms),
         }

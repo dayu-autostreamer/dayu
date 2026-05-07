@@ -2,117 +2,57 @@ from typing import Dict
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn import GATConv, GCNConv
 
-from .utils import safe_log1p, graph_in_out_degree, topo_levels_dag
+__all__ = ("TopologyEncoders",)
 
-__all__ = ('TopologyEncoders',)
+
+class _FeatureEncoder(nn.Module):
+    def __init__(self, input_dim: int, d_model: int, dropout: float = 0.0):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x.float())
 
 
 class TopologyEncoders(nn.Module):
-    def __init__(self, d_model: int = 64, heads: int = 4, num_roles: int = 2, role_emb_dim: int = 8,
-                 dropout: float = 0.0):
-        super().__init__()
-        self.logic = LogicalEncoder(d_model=d_model, heads=heads, dropout=dropout)
-        self.physical = PhysicalEncoder(d_model=d_model, num_roles=num_roles, role_emb_dim=role_emb_dim,
-                                        dropout=dropout)
-
-    def encode(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats):
-        return self.logic(logic_edge_index, logic_feats), self.physical(phys_edge_index, phys_feats)
-
-
-class LogicalEncoder(nn.Module):
     """
-    Logical-topology input features:
-      - `model_flops`: `[Ms]`
-      - `model_mem`: `[Ms]` in GB
-      - `task_complexity_seq`: `[Ms, T]`
-      - `task_arrival_rate_seq`: `[Ms, T]`
+    Hedger's shared local encoders.
+
+    The current policy intentionally keeps capability matching independent from
+    graph message passing. Each service and each device is encoded by the same
+    MLP, so the policy remains size-agnostic without smoothing away edge-device
+    capability differences.
     """
 
-    def __init__(self, d_model: int = 64, heads: int = 4, dropout: float = 0.0):
+    service_input_dim = 4
+    device_input_dim = 5
+
+    def __init__(self, d_model: int = 64, dropout: float = 0.0):
         super().__init__()
-        self.lin_static = nn.Linear(2, d_model)  # [log(model_flops), log(model_mem)]
-        self.temporal = NodeTemporalEncoder(d_dyn=2, d_model=d_model)
-        self.lin_struct = nn.Linear(3, d_model)
+        self.service = _FeatureEncoder(self.service_input_dim, d_model, dropout=dropout)
+        self.device = _FeatureEncoder(self.device_input_dim, d_model, dropout=dropout)
 
-        self.gnn1 = GATConv(d_model, d_model, heads=heads, concat=True, dropout=dropout)
-        self.gnn2 = GATConv(d_model * heads, d_model, heads=1, concat=False, dropout=dropout)
-        self.norm1 = nn.LayerNorm(d_model * heads)
-        self.norm2 = nn.LayerNorm(d_model)
-
-    def forward(self, edge_index: torch.Tensor, feats: Dict[str, torch.Tensor]) -> torch.Tensor:
-        Ms = feats["model_flops"].shape[0]
-        mf = safe_log1p(feats["model_flops"].float()).unsqueeze(-1)
-        mm = safe_log1p(feats["model_mem"].float()).unsqueeze(-1)
-        h_static = self.lin_static(torch.cat([mf, mm], dim=-1))
-
-        tc = safe_log1p(feats["task_complexity_seq"].float())
-        ar = feats["task_arrival_rate_seq"].float()
-        h_dyn = self.temporal(torch.stack([tc, ar], dim=-1))
-
-        in_deg, out_deg = graph_in_out_degree(edge_index, Ms)
-        in_deg = in_deg / (in_deg.max() + 1e-6)
-        out_deg = out_deg / (out_deg.max() + 1e-6)
-        level = topo_levels_dag(edge_index, Ms)
-        h_struct = self.lin_struct(torch.stack([in_deg, out_deg, level], dim=-1))
-
-        x0 = F.relu(h_static + h_dyn + h_struct)
-        h1 = self.gnn1(x0, edge_index)
-        h1 = self.norm1(F.elu(h1))
-        h2 = self.gnn2(h1, edge_index)
-        h2 = self.norm2(h2)
-        return h2
-
-
-class PhysicalEncoder(nn.Module):
-    """
-    Physical-topology input features:
-      - `gpu_flops`: `[Np]`
-      - `role_id`: `[Np]`, where `0=edge / 1=cloud`
-      - `mem_capacity`: `[Np]` in GB
-      - `bandwidth_latest`: `[Np]`, where edge nodes carry fixed LAN bandwidth
-        and the cloud node carries the latest monitored WAN bandwidth
-    """
-
-    def __init__(self, d_model: int = 64, num_roles: int = 2, role_emb_dim: int = 8, dropout: float = 0.0):
-        super().__init__()
-        self.role_emb = nn.Embedding(num_roles, role_emb_dim)
-        static_in = 4 + role_emb_dim  # [log(gpu_flops), log(mem_capacity), log(bw), is_cloud, role_emb]
-        self.lin_static = nn.Linear(static_in, d_model)
-        self.gnn1 = GCNConv(d_model, d_model)
-        self.gnn2 = GCNConv(d_model, d_model)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, edge_index: torch.Tensor, feats: Dict[str, torch.Tensor]) -> torch.Tensor:
-        gf = safe_log1p(feats["gpu_flops"].float()).unsqueeze(-1)
-        mc = safe_log1p(feats["mem_capacity"].float()).unsqueeze(-1)
-        role_id = feats["role_id"].long()
-        role_vec = self.role_emb(role_id)
-        is_cloud = (role_id == 1).float().unsqueeze(-1)
-        bw = safe_log1p(feats["bandwidth_latest"].float()).unsqueeze(-1)
-        h_static = self.lin_static(torch.cat([gf, mc, bw, is_cloud, role_vec], dim=-1))
-
-        x0 = F.relu(h_static)
-        h1 = self.gnn1(x0, edge_index)
-        h1 = self.norm1(F.relu(h1))
-        h1 = self.dropout(h1)
-        h2 = self.gnn2(h1, edge_index)
-        h2 = self.norm2(h2)
-        return h2
-
-
-class NodeTemporalEncoder(nn.Module):
-    def __init__(self, d_dyn: int, d_model: int, num_layers: int = 1, dropout: float = 0.0):
-        super().__init__()
-        self.rnn = nn.GRU(input_size=d_dyn, hidden_size=d_model, num_layers=num_layers,
-                          batch_first=True, dropout=dropout if num_layers > 1 else 0.0)
-        self.norm = nn.LayerNorm(d_model)
-
-    def forward(self, x_seq: torch.Tensor) -> torch.Tensor:
-        _, hT = self.rnn(x_seq)  # [L,N,d]
-        h = hT[-1]  # [N,d]
-        return self.norm(h)
+    def encode(
+            self,
+            logic_edge_index,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_edge_index,
+            phys_feats: Dict[str, torch.Tensor],
+    ):
+        service_state = logic_feats.get("service_demand_feat")
+        device_state = phys_feats.get("device_capability_feat")
+        if not isinstance(service_state, torch.Tensor) or service_state.dim() != 2 \
+                or service_state.size(-1) != self.service_input_dim:
+            raise ValueError("Hedger state is missing `service_demand_feat` with shape [S, 4].")
+        if not isinstance(device_state, torch.Tensor) or device_state.dim() != 2 \
+                or device_state.size(-1) != self.device_input_dim:
+            raise ValueError("Hedger state is missing `device_capability_feat` with shape [D, 5].")
+        return self.service(service_state), self.device(device_state)

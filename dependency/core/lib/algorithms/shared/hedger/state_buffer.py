@@ -46,7 +46,7 @@ class BufferWaitCfg:
 
 class StateBuffer:
     DEFAULT_LAN_BANDWIDTH_MBPS = 100.0
-    LATENCY_SHORT_ALPHA = 0.30
+    RUNTIME_SHORT_ALPHA = 0.30
 
     QUEUE_SHORT_ALPHA = 0.35
     QUEUE_BUSY_ALPHA = 0.20
@@ -113,12 +113,13 @@ class StateBuffer:
         self.task_observation_version_buffer: List[Tuple[int, Optional[int]]] = []
         self.offloading_reward_buffer: List[Dict[str, Any]] = []
 
-        # Shared service-device runtime tables.
-        self.latency_pair_short = np.zeros((num_services, num_devices), dtype=np.float32)
-        self.latency_pair_last = np.zeros((num_services, num_devices), dtype=np.float32)
-        self.latency_pair_obs_count = np.zeros((num_services, num_devices), dtype=np.int32)
-        self.latency_pair_last_task_v = np.zeros((num_services, num_devices), dtype=np.int64)
-        self.latency_pair_last_dep_v = np.full((num_services, num_devices), -1, dtype=np.int64)
+        # Shared service-device runtime tables. Runtime time is stored as
+        # log1p(real_execute_time / max(complexity, 1)).
+        self.runtime_pair_time_per_complexity_short = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.runtime_pair_time_per_complexity_last = np.zeros((num_services, num_devices), dtype=np.float32)
+        self.runtime_pair_obs_count = np.zeros((num_services, num_devices), dtype=np.int32)
+        self.runtime_pair_last_task_v = np.zeros((num_services, num_devices), dtype=np.int64)
+        self.runtime_pair_last_dep_v = np.full((num_services, num_devices), -1, dtype=np.int64)
 
         self.queue_pair_short = np.zeros((num_services, num_devices), dtype=np.float32)
         self.queue_pair_busy = np.zeros((num_services, num_devices), dtype=np.float32)
@@ -265,7 +266,7 @@ class StateBuffer:
         return max(0.0, value)
 
     @staticmethod
-    def _ema_update_latency_state(
+    def _ema_update_runtime_state(
             short_value: float,
             count: int,
             x: float,
@@ -314,12 +315,14 @@ class StateBuffer:
             "current_task_version": current_task_version,
             "current_deployment_version": current_deployment_version,
             "monotonic_time": float(now_monotonic),
-            "latency_pair_snapshot": {
-                "pair_short": self.latency_pair_short.tolist(),
-                "pair_last": self.latency_pair_last.tolist(),
-                "pair_count": self.latency_pair_obs_count.tolist(),
-                "pair_last_task_v": self.latency_pair_last_task_v.tolist(),
-                "pair_last_dep_v": self.latency_pair_last_dep_v.tolist(),
+            "runtime_pair_snapshot": {
+                "current_task_version": current_task_version,
+                "monotonic_time": float(now_monotonic),
+                "pair_time_per_complexity_short": self.runtime_pair_time_per_complexity_short.tolist(),
+                "pair_time_per_complexity_last": self.runtime_pair_time_per_complexity_last.tolist(),
+                "pair_count": self.runtime_pair_obs_count.tolist(),
+                "pair_last_task_v": self.runtime_pair_last_task_v.tolist(),
+                "pair_last_dep_v": self.runtime_pair_last_dep_v.tolist(),
             },
             "queue_pair_snapshot": {
                 "pair_short": self.queue_pair_short.tolist(),
@@ -460,38 +463,41 @@ class StateBuffer:
             self._trim_inplace(self.task_arrival_rate_buffer[s_idx])
             self._bump_version()
 
-    def add_task_latency_pair(
+    def add_task_runtime_pair(
             self,
             service_name: str,
             device_name: str,
-            latency: float,
+            real_execute_time: float,
+            complexity: float,
             task_version: Optional[int] = None,
             deployment_version=None,
     ):
         with self._cond:
             s_idx = self._resolve_service_index(service_name)
             d_idx = self._resolve_device_index(device_name)
-            value = self._sanitize_non_negative(latency)
+            value = self._sanitize_non_negative(real_execute_time)
             if s_idx is None or d_idx is None or value is None:
                 return
 
-            x = float(np.log1p(value))
+            complexity_value = self._sanitize_non_negative(complexity)
+            denom = max(float(complexity_value or 0.0), 1.0)
+            x = float(np.log1p(value / denom))
             dep_version = self._normalize_deployment_version(deployment_version)
             if task_version is None:
                 task_version = self._task_observation_version
             task_version = int(task_version)
 
-            short, count = self._ema_update_latency_state(
-                self.latency_pair_short[s_idx, d_idx],
-                int(self.latency_pair_obs_count[s_idx, d_idx]),
+            short, count = self._ema_update_runtime_state(
+                self.runtime_pair_time_per_complexity_short[s_idx, d_idx],
+                int(self.runtime_pair_obs_count[s_idx, d_idx]),
                 x,
-                self.LATENCY_SHORT_ALPHA,
+                self.RUNTIME_SHORT_ALPHA,
             )
-            self.latency_pair_short[s_idx, d_idx] = short
-            self.latency_pair_last[s_idx, d_idx] = x
-            self.latency_pair_obs_count[s_idx, d_idx] = count
-            self.latency_pair_last_task_v[s_idx, d_idx] = task_version
-            self.latency_pair_last_dep_v[s_idx, d_idx] = -1 if dep_version is None else dep_version
+            self.runtime_pair_time_per_complexity_short[s_idx, d_idx] = short
+            self.runtime_pair_time_per_complexity_last[s_idx, d_idx] = x
+            self.runtime_pair_obs_count[s_idx, d_idx] = count
+            self.runtime_pair_last_task_v[s_idx, d_idx] = task_version
+            self.runtime_pair_last_dep_v[s_idx, d_idx] = -1 if dep_version is None else dep_version
             self._bump_version()
 
     def add_task_end_to_end_latency(self, latency: float, deployment_version=None):

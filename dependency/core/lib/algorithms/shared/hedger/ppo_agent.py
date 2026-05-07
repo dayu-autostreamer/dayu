@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .topology_encoder import TopologyEncoders
-from .ppo_network import DeploymentActor, OffloadActor, FeatureAdapter
+from .ppo_network import DeploymentActor, OffloadActor
 from .hedger_config import DeploymentConstraintCfg
 from .utils import compute_returns_advantages
 
@@ -45,13 +45,6 @@ def _tensor_std_float(values: torch.Tensor) -> float:
     return float(values.std(unbiased=False).cpu().item())
 
 
-def _masked_min(values: torch.Tensor, mask: torch.Tensor, dim: int) -> torch.Tensor:
-    masked = values.masked_fill(~mask.bool(), float("inf"))
-    result = masked.min(dim=dim).values
-    fallback = values.min(dim=dim).values
-    return torch.where(torch.isfinite(result), result, fallback)
-
-
 def _parameters_grad_norm(parameters) -> float:
     total_sq_norm = 0.0
     for param in parameters:
@@ -75,53 +68,61 @@ def _feature_vector(
     return value.to(device=device, dtype=dtype)
 
 
+def _debug_tensor(feats: Dict[str, torch.Tensor], key: str) -> torch.Tensor:
+    value = feats.get(key)
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu()
+    return torch.empty(0)
+
+
 SERVICE_DEMAND_FEATURE_NAMES = [
-    "log_complexity",
+    "log_compute_demand",
     "complexity_zscore",
-    "log_demand_compute",
     "arrival_rate_short",
+    "log_model_mem",
+]
+
+DEVICE_CAPABILITY_FEATURE_NAMES = [
+    "log_effective_gpu_flops",
+    "log_mem_capacity",
+    "relative_edge_compute",
+    "is_cloud",
+    "cloud_bandwidth_penalty",
 ]
 
 RUNTIME_PAIR_FEATURE_NAMES = [
-    "available",
     "queue_short",
     "queue_busy",
-    "service_time_short",
-    "utilization_estimate",
-    "confidence",
+    "real_time_per_complexity",
+    "runtime_confidence",
+    "runtime_freshness",
 ]
 
 OFFLOADING_CANDIDATE_FEATURE_NAMES = [
     "qk_feature",
-    "compute_pressure",
+    "compute_gap",
     "queue_short",
     "queue_busy",
-    "service_time_short",
-    "utilization_estimate",
-    "queue_gap_to_best",
-    "time_gap_to_best",
-    "utilization_gap_to_best",
-    "confidence",
+    "real_time_per_complexity",
+    "load_score",
+    "runtime_confidence",
+    "runtime_freshness",
     "parent_same_device",
-    "parent_cross_tier",
-    "cross_tier_bandwidth_penalty",
+    "cross_tier_penalty",
     "is_cloud",
 ]
 
 DEPLOYMENT_CANDIDATE_FEATURE_NAMES = [
     "qk_feature",
-    "compute_pressure",
-    "mem_pressure",
+    "compute_gap",
+    "mem_gap",
     "residual_after_place",
     "current_replica",
     "service_replica_count",
-    "service_edge_replica_count",
     "device_replica_count",
-    "service_runtime_pressure",
-    "device_runtime_pressure",
-    "pair_runtime_benefit",
-    "parent_coverage",
-    "child_coverage",
+    "pair_queue_short",
+    "pair_real_time_per_complexity",
+    "parent_child_coverage",
     "is_cloud",
     "static_allowed",
 ]
@@ -141,24 +142,59 @@ def _service_demand_features(
     tc = logic_feats.get("task_complexity_seq")
     ar = logic_feats.get("task_arrival_rate_seq")
     mf = logic_feats.get("model_flops")
+    mm = logic_feats.get("model_mem")
     if not isinstance(tc, torch.Tensor) or tc.dim() != 2 or tc.size(0) != num_services:
         raise ValueError("Hedger state is missing `task_complexity_seq`.")
     if not isinstance(ar, torch.Tensor) or ar.dim() != 2 or ar.size(0) != num_services:
         raise ValueError("Hedger state is missing `task_arrival_rate_seq`.")
     if not isinstance(mf, torch.Tensor) or mf.dim() != 1 or mf.size(0) != num_services:
         raise ValueError("Hedger state is missing `model_flops`.")
+    if not isinstance(mm, torch.Tensor) or mm.dim() != 1 or mm.size(0) != num_services:
+        raise ValueError("Hedger state is missing `model_mem`.")
     tc = tc.to(device=device, dtype=dtype)
     ar = ar.to(device=device, dtype=dtype)
     mf = mf.to(device=device, dtype=dtype)
+    mm = mm.to(device=device, dtype=dtype)
 
     current = tc[:, -1]
     mean = tc.mean(dim=1)
     std = tc.std(dim=1, unbiased=False)
-    log_complexity = torch.log1p(current.clamp_min(0.0))
+    log_compute_demand = torch.log1p(current.clamp_min(0.0) * mf.clamp_min(0.0))
     complexity_zscore = (current - mean) / (std + 1e-6)
-    demand_compute = torch.log1p(current.clamp_min(0.0) * mf.clamp_min(0.0))
     arrival_rate = ar[:, -1].clamp_min(0.0)
-    return torch.stack([log_complexity, complexity_zscore, demand_compute, arrival_rate], dim=-1)
+    log_model_mem = torch.log1p(mm.clamp_min(0.0))
+    return torch.stack([log_compute_demand, complexity_zscore, arrival_rate, log_model_mem], dim=-1)
+
+
+def _device_capability_features(
+        phys_feats: Dict[str, torch.Tensor],
+        num_devices: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        cloud_idx: int,
+) -> torch.Tensor:
+    existing = phys_feats.get("device_capability_feat")
+    if isinstance(existing, torch.Tensor) and existing.dim() == 2 \
+            and existing.size(0) == num_devices and existing.size(1) >= 5:
+        return existing[:, :5].to(device=device, dtype=dtype)
+
+    gpu_flops = _feature_vector(phys_feats, "gpu_flops", num_devices, device, dtype)
+    mem_capacity = _feature_vector(phys_feats, "mem_capacity", num_devices, device, dtype)
+    bandwidth = _feature_vector(phys_feats, "bandwidth_latest", num_devices, device, dtype).clamp_min(1e-6)
+    _, is_cloud = _role_tensors(phys_feats, num_devices, device, dtype, cloud_idx)
+    edge_mask = is_cloud < 0.5
+
+    log_gpu = torch.log1p(gpu_flops.clamp_min(0.0))
+    log_mem = torch.log1p(mem_capacity.clamp_min(0.0))
+    if edge_mask.any():
+        edge_compute_mean = log_gpu[edge_mask].mean()
+        edge_bw_ref = bandwidth[edge_mask].mean().clamp_min(1e-6)
+    else:
+        edge_compute_mean = log_gpu.mean()
+        edge_bw_ref = bandwidth.mean().clamp_min(1e-6)
+    relative_edge_compute = torch.where(edge_mask, log_gpu - edge_compute_mean, torch.zeros_like(log_gpu))
+    cloud_bandwidth_penalty = is_cloud * torch.log1p(edge_bw_ref / bandwidth)
+    return torch.stack([log_gpu, log_mem, relative_edge_compute, is_cloud, cloud_bandwidth_penalty], dim=-1)
 
 
 def _runtime_pair_features(
@@ -167,31 +203,28 @@ def _runtime_pair_features(
         num_devices: int,
         device: torch.device,
         dtype: torch.dtype,
-        availability_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Build the shared service-device runtime state:
 
-    [available, queue_short, queue_busy, service_time_short,
-     utilization_estimate, confidence].
+    [queue_short, queue_busy, real_time_per_complexity,
+     runtime_confidence, runtime_freshness].
     """
     existing = logic_feats.get("runtime_pair_feat")
     if isinstance(existing, torch.Tensor) and existing.dim() == 3 \
-            and existing.size(0) == num_services and existing.size(1) == num_devices and existing.size(2) >= 6:
-        runtime = existing[..., :6].to(device=device, dtype=dtype).clone()
-        if availability_mask is not None:
-            runtime[..., 0] = availability_mask.to(device=device, dtype=dtype).clamp_min(0.0)
-        return runtime
+            and existing.size(0) == num_services and existing.size(1) == num_devices and existing.size(2) >= 5:
+        return existing[..., :5].to(device=device, dtype=dtype)
     raise ValueError("Hedger state is missing `runtime_pair_feat`; collect state with the current runtime builder.")
 
 
-def _masked_center_tanh(scores: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def _masked_standardize(scores: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     mask = mask.bool()
     mask_f = mask.float()
     counts = mask_f.sum(dim=1, keepdim=True).clamp_min(1.0)
     mean = (scores * mask_f).sum(dim=1, keepdim=True) / counts
-    centered = torch.tanh(scores - mean)
-    return centered * mask_f
+    var = (((scores - mean) * mask_f) ** 2).sum(dim=1, keepdim=True) / counts
+    standardized = torch.clamp((scores - mean) / torch.sqrt(var + 1e-6), min=-5.0, max=5.0)
+    return standardized * mask_f
 
 
 def _role_tensors(
@@ -312,8 +345,6 @@ class _DeploymentBackbonePPO(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.actor = DeploymentActor(d_model)
-        self.service_adapter = FeatureAdapter(d_model)
-        self.device_adapter = FeatureAdapter(d_model)
         hidden_dim = max(32, d_model)
         self.deployment_cost_head = CandidateCostHead(
             input_dim=len(DEPLOYMENT_CANDIDATE_FEATURE_NAMES),
@@ -340,8 +371,6 @@ class _DeploymentBackbonePPO(nn.Module):
         params_actor.extend(list(self.deployment_cost_head.parameters()))
         for module in extra_actor_modules:
             params_actor.extend(list(module.parameters()))
-        params_actor.extend(list(self.service_adapter.parameters()))
-        params_actor.extend(list(self.device_adapter.parameters()))
         if self._update_encoder:
             params_actor.extend(list(self.encoder.parameters()))
         self.actor_opt = torch.optim.Adam(params_actor, lr=self._actor_lr)
@@ -474,9 +503,6 @@ class _DeploymentBackbonePPO(nn.Module):
         return self._scale_edge_memory_budget(cap)
 
     def _adapt_embeddings(self, h_s: torch.Tensor, h_p: torch.Tensor):
-        """Apply task-specific residual adapters to the shared encoder outputs."""
-        h_s = self.service_adapter(h_s)
-        h_p = self.device_adapter(h_p)
         return h_s, h_p
 
     def _qk_components(
@@ -489,7 +515,7 @@ class _DeploymentBackbonePPO(nn.Module):
         k_embedding = self.actor.k(h_p)
         qk_scores = (q_embedding @ k_embedding.t()) / math.sqrt(q_embedding.size(-1))
         qk_scores = qk_scores / max(self.actor.temperature, 1e-6)
-        qk_feature = _masked_center_tanh(qk_scores, mask)
+        qk_feature = _masked_standardize(qk_scores, mask)
         return q_embedding, k_embedding, qk_scores, qk_feature
 
     def _deployment_topology_coverage(
@@ -538,11 +564,9 @@ class _DeploymentBackbonePPO(nn.Module):
         dtype = qk_feature.dtype
         cloud_idx = self._cloud_index(num_devices)
         demand_feat = _service_demand_features(logic_feats, num_services, device, dtype)
-        runtime_feat = _runtime_pair_features(
-            logic_feats, num_services, num_devices, device, dtype, availability_mask=static_allowed
-        )
+        runtime_feat = _runtime_pair_features(logic_feats, num_services, num_devices, device, dtype)
         model_mem = _feature_vector(logic_feats, "model_mem", num_services, device, dtype)
-        gpu_flops = _feature_vector(phys_feats, "gpu_flops", num_devices, device, dtype)
+        device_feat = _device_capability_features(phys_feats, num_devices, device, dtype, cloud_idx)
         _, is_cloud = _role_tensors(phys_feats, num_devices, device, dtype, cloud_idx)
 
         residual_mem = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask).to(device=device, dtype=dtype)
@@ -551,55 +575,35 @@ class _DeploymentBackbonePPO(nn.Module):
         else:
             prev_mask = prev_deploy_mask.to(device=device, dtype=dtype)
         current_replica_count = prev_mask.sum(dim=1).clamp_min(0.0)
-        edge_mask = torch.ones((num_devices,), device=device, dtype=torch.bool)
-        if 0 <= cloud_idx < num_devices:
-            edge_mask[cloud_idx] = False
-        service_edge_replica_count = prev_mask[:, edge_mask].sum(dim=1).clamp_min(0.0)
         device_service_count = prev_mask.sum(dim=0).clamp_min(0.0)
 
-        compute_pressure = torch.tanh(
-            demand_feat[:, 2].view(num_services, 1)
-            - torch.log1p(gpu_flops.clamp_min(0.0)).view(1, num_devices)
+        compute_gap = demand_feat[:, 0].view(num_services, 1) - device_feat[:, 0].view(1, num_devices)
+        mem_gap = demand_feat[:, 3].view(num_services, 1) - torch.log1p(
+            residual_mem.clamp_min(0.0)
+        ).view(1, num_devices)
+        residual_after_place = torch.log1p(
+            (residual_mem.view(1, num_devices) - model_mem.view(num_services, 1)).clamp_min(0.0)
         )
-        mem_pressure = torch.tanh(
-            torch.log1p(model_mem.clamp_min(0.0)).view(num_services, 1)
-            - torch.log1p(residual_mem.clamp_min(0.0)).view(1, num_devices)
-        )
-        residual_after_place = torch.tanh(
-            torch.log1p(residual_mem.clamp_min(0.0)).view(1, num_devices)
-            - torch.log1p(model_mem.clamp_min(0.0)).view(num_services, 1)
-        )
-        utilization = runtime_feat[..., 4]
-        prev_bool = prev_mask.bool()
-        runtime_source_mask = torch.where(
-            prev_bool.any(dim=1, keepdim=True),
-            prev_bool,
-            static_allowed.to(device=device).bool(),
-        )
-        service_runtime_pressure = _masked_min(utilization, runtime_source_mask, dim=1)
-        device_denom = prev_mask.sum(dim=0).clamp_min(1.0)
-        device_runtime_pressure = (utilization * prev_mask).sum(dim=0) / device_denom
-        pair_runtime_benefit = service_runtime_pressure.view(num_services, 1) - utilization
+        pair_queue_short = runtime_feat[..., 0]
+        pair_real_time_per_complexity = runtime_feat[..., 2]
         topology_coverage = self._deployment_topology_coverage(
             logic_edge_index, prev_deploy_mask, num_services, num_devices, device, dtype
         )
+        parent_child_coverage = 0.5 * (topology_coverage[..., 0] + topology_coverage[..., 1])
         cloud_role = is_cloud.view(1, num_devices).expand(num_services, -1)
         static_allowed_float = static_allowed.to(device=device, dtype=dtype)
         return torch.stack(
             [
                 qk_feature,
-                compute_pressure,
-                mem_pressure,
+                compute_gap,
+                mem_gap,
                 residual_after_place,
                 prev_mask,
                 torch.log1p(current_replica_count).view(num_services, 1).expand(-1, num_devices),
-                torch.log1p(service_edge_replica_count).view(num_services, 1).expand(-1, num_devices),
                 torch.log1p(device_service_count).view(1, num_devices).expand(num_services, -1),
-                service_runtime_pressure.view(num_services, 1).expand(-1, num_devices),
-                device_runtime_pressure.view(1, num_devices).expand(num_services, -1),
-                pair_runtime_benefit,
-                topology_coverage[..., 0],
-                topology_coverage[..., 1],
+                pair_queue_short,
+                pair_real_time_per_complexity,
+                parent_child_coverage,
                 cloud_role,
                 static_allowed_float,
             ],
@@ -1054,6 +1058,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "candidate_feature_names": DEPLOYMENT_CANDIDATE_FEATURE_NAMES,
                 "runtime_pair_feature_names": RUNTIME_PAIR_FEATURE_NAMES,
                 "service_demand_feature_names": SERVICE_DEMAND_FEATURE_NAMES,
+                "device_capability_feature": _debug_tensor(phys_feats, "device_capability_feat"),
+                "device_capability_feature_names": DEVICE_CAPABILITY_FEATURE_NAMES,
                 "final_score": final_scores.detach().cpu(),
                 "policy_prob": policy_prob_matrix.detach().cpu(),
                 "static_mask": static_allowed.detach().cpu(),
@@ -1424,8 +1430,6 @@ class HedgerOffloadingPPO(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.actor = OffloadActor(d_model)
-        self.service_adapter = FeatureAdapter(d_model)
-        self.device_adapter = FeatureAdapter(d_model)
         hidden_dim = max(32, d_model)
         self.offloading_cost_head = CandidateCostHead(
             input_dim=len(OFFLOADING_CANDIDATE_FEATURE_NAMES),
@@ -1433,15 +1437,10 @@ class HedgerOffloadingPPO(nn.Module):
         )
         self.critic = CandidateValueHead(input_dim=len(OFFLOADING_CANDIDATE_FEATURE_NAMES), d_model=d_model)
 
-        adapter_params = (
-            list(self.service_adapter.parameters())
-            + list(self.device_adapter.parameters())
-        )
         encoder_params = list(self.encoder.parameters()) if update_encoder else []
         params_actor = (
             list(self.actor.parameters())
             + list(self.offloading_cost_head.parameters())
-            + adapter_params
             + encoder_params
         )
         self.actor_opt = torch.optim.Adam(params_actor, lr=actor_lr)
@@ -1494,9 +1493,6 @@ class HedgerOffloadingPPO(nn.Module):
         return order
 
     def _adapt_embeddings(self, h_s: torch.Tensor, h_p: torch.Tensor):
-        """Apply task-specific residual adapters to the shared encoder outputs."""
-        h_s = self.service_adapter(h_s)
-        h_p = self.device_adapter(h_p)
         return h_s, h_p
 
     def _effective_offloading_mask(self, static_mask: torch.Tensor) -> torch.Tensor:
@@ -1516,7 +1512,7 @@ class HedgerOffloadingPPO(nn.Module):
         k_embedding = self.actor.k(h_p)
         qk_scores = (q_embedding @ k_embedding.t()) / math.sqrt(q_embedding.size(-1))
         qk_scores = qk_scores / max(self.actor.temperature, 1e-6)
-        qk_feature = _masked_center_tanh(qk_scores, mask)
+        qk_feature = _masked_standardize(qk_scores, mask)
         return q_embedding, k_embedding, qk_scores, qk_feature
 
     @staticmethod
@@ -1540,11 +1536,9 @@ class HedgerOffloadingPPO(nn.Module):
         edge_mask = is_cloud < 0.5
         edge_bw_ref = bandwidth[edge_mask].mean() if edge_mask.any() else bandwidth.mean()
 
-        context = torch.zeros((num_devices, 3), device=device, dtype=dtype)
+        context = torch.zeros((num_devices, 2), device=device, dtype=dtype)
         parent_indices = parents[service_idx]
         if not parent_indices:
-            context[:, 1] = is_cloud
-            context[:, 2] = is_cloud * torch.log1p(edge_bw_ref / bandwidth)
             return context
 
         valid_parent_actions = []
@@ -1560,8 +1554,7 @@ class HedgerOffloadingPPO(nn.Module):
             same_device = sum(1 for action in valid_parent_actions if action == device_idx) / denom
             cross_tier = sum(1 for action in valid_parent_actions if int(role_id[action].item()) != role) / denom
             context[device_idx, 0] = same_device
-            context[device_idx, 1] = cross_tier
-            context[device_idx, 2] = cross_tier * torch.log1p(edge_bw_ref / bandwidth[device_idx])
+            context[device_idx, 1] = cross_tier * torch.log1p(edge_bw_ref / bandwidth[device_idx])
         return context
 
     def _offloading_candidate_row(
@@ -1593,34 +1586,28 @@ class HedgerOffloadingPPO(nn.Module):
             dtype,
         )
         runtime_row = runtime_feat[service_idx]
-        gpu_flops = _feature_vector(phys_feats, "gpu_flops", num_devices, device, dtype)
-        _, is_cloud = _role_tensors(phys_feats, num_devices, device, dtype, self._cloud_index(num_devices))
-        compute_pressure = torch.tanh(
-            demand_feat[service_idx, 2] - torch.log1p(gpu_flops.clamp_min(0.0))
-        )
-        queue_short = runtime_row[..., 1]
-        queue_busy = runtime_row[..., 2]
-        service_time_short = runtime_row[..., 3]
-        utilization = runtime_row[..., 4]
-        confidence = runtime_row[..., 5]
-        queue_best = _masked_min(queue_short.view(1, -1), allowed.view(1, -1), dim=1).squeeze(0)
-        time_best = _masked_min(service_time_short.view(1, -1), allowed.view(1, -1), dim=1).squeeze(0)
-        util_best = _masked_min(utilization.view(1, -1), allowed.view(1, -1), dim=1).squeeze(0)
+        cloud_idx = self._cloud_index(num_devices)
+        device_feat = _device_capability_features(phys_feats, num_devices, device, dtype, cloud_idx)
+        _, is_cloud = _role_tensors(phys_feats, num_devices, device, dtype, cloud_idx)
+        compute_gap = demand_feat[service_idx, 0] - device_feat[:, 0]
+        queue_short = runtime_row[..., 0]
+        queue_busy = runtime_row[..., 1]
+        real_time_per_complexity = runtime_row[..., 2]
+        confidence = runtime_row[..., 3]
+        freshness = runtime_row[..., 4]
+        load_score = queue_short + demand_feat[service_idx, 2] * real_time_per_complexity
         return torch.stack(
             [
                 qk_feature[service_idx],
-                compute_pressure,
+                compute_gap,
                 queue_short,
                 queue_busy,
-                service_time_short,
-                utilization,
-                queue_short - queue_best,
-                service_time_short - time_best,
-                utilization - util_best,
+                real_time_per_complexity,
+                load_score,
                 confidence,
+                freshness,
                 dependency_context[..., 0],
                 dependency_context[..., 1],
-                dependency_context[..., 2],
                 is_cloud,
             ],
             dim=-1,
@@ -1653,7 +1640,6 @@ class HedgerOffloadingPPO(nn.Module):
                 parents,
                 service_idx,
                 unknown_actions,
-                allowed=runtime_feat[service_idx, :, 0] > 0.0,
             )
             for service_idx in range(num_services)
         ]
@@ -1668,9 +1654,7 @@ class HedgerOffloadingPPO(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_services, num_devices = h_s.size(0), h_p.size(0)
         q_embedding, k_embedding, qk_scores, qk_feature = self._qk_components(h_s, h_p, effective_mask)
-        runtime_feat = _runtime_pair_features(
-            logic_feats, num_services, num_devices, h_s.device, h_s.dtype, availability_mask=effective_mask
-        )
+        runtime_feat = _runtime_pair_features(logic_feats, num_services, num_devices, h_s.device, h_s.dtype)
         demand_feat = _service_demand_features(logic_feats, num_services, h_s.device, h_s.dtype)
         return q_embedding, k_embedding, qk_scores, qk_feature, runtime_feat, demand_feat
 
@@ -1916,6 +1900,8 @@ class HedgerOffloadingPPO(nn.Module):
                 "runtime_pair_feature_names": RUNTIME_PAIR_FEATURE_NAMES,
                 "service_demand_feature": demand_feat.detach().cpu(),
                 "service_demand_feature_names": SERVICE_DEMAND_FEATURE_NAMES,
+                "device_capability_feature": _debug_tensor(phys_feats, "device_capability_feat"),
+                "device_capability_feature_names": DEVICE_CAPABILITY_FEATURE_NAMES,
                 "final_score": final_scores.detach().cpu(),
                 "policy_prob": policy_prob_matrix.detach().cpu(),
                 "raw_static_mask": static_mask.detach().cpu(),

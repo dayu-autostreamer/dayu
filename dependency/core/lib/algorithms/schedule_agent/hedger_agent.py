@@ -295,9 +295,11 @@ class HedgerAgent(BaseAgent, abc.ABC):
                 continue
             service = task.get_service(service_name)
             latency = service.get_service_total_time()
+            real_execute_time = service.get_real_execute_time()
             execute_device = service.get_execute_device()
             complexity = self._extract_task_complexity(service)
-            service_feedback.append((service_name, float(complexity), float(latency), execute_device))
+            service_feedback.append((service_name, float(complexity), float(latency), float(real_execute_time),
+                                     execute_device))
             updated_services += 1
             complexity_values.append(float(complexity))
             latency_values.append(float(latency))
@@ -309,13 +311,14 @@ class HedgerAgent(BaseAgent, abc.ABC):
                 deployment_version=deployment_version,
             )
             task_version = self.hedger.state_buffer.get_task_observation_version()
-            for service_name, complexity, latency, execute_device in service_feedback:
+            for service_name, complexity, latency, real_execute_time, execute_device in service_feedback:
                 self.hedger.state_buffer.add_task_complexity(service_name, complexity)
                 if execute_device is not None:
-                    self.hedger.state_buffer.add_task_latency_pair(
+                    self.hedger.state_buffer.add_task_runtime_pair(
                         service_name,
                         execute_device,
-                        latency,
+                        real_execute_time,
+                        complexity,
                         task_version=task_version,
                         deployment_version=deployment_version,
                     )
