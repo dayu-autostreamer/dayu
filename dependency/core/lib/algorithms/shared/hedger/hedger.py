@@ -936,6 +936,14 @@ class Hedger:
         offloading = self._require_mapping(agents_cfg, "offloading")
         reward = self._require_mapping(offloading, "reward")
         ppo = self._build_ppo_update_cfg(offloading)
+        unknown_exploration = offloading.get("unknown_exploration") or {}
+        if not isinstance(unknown_exploration, dict):
+            raise ValueError("Hedger agents.offloading.unknown_exploration must be a mapping when provided.")
+        unknown_exploration_enabled = bool(unknown_exploration.get("enabled", False))
+        unknown_exploration_prob = (
+            float(unknown_exploration.get("prob", 0.0))
+            if unknown_exploration_enabled else 0.0
+        )
         off_latency_cfg = self._parse_latency_reward_cfg(
             reward,
             scope="offloading",
@@ -948,6 +956,7 @@ class Hedger:
             "lamda": float(offloading["lamda"]),
             "clip_eps": float(offloading["clip_eps"]),
             "update_encoder": bool(offloading.get("update_encoder", True)),
+            "unknown_exploration_prob": max(0.0, min(1.0, unknown_exploration_prob)),
             "reward_off_latency_weight": float(reward["latency_weight"]),
             "reward_off_slo_weight": float(reward["slo_weight"]),
             "reward_off_cloud_weight": float(reward["cloud_weight"]),
@@ -2335,6 +2344,10 @@ class Hedger:
                 "offloading_qk_scores", "offloading_qk_features",
                 "offloading_candidate_costs",
                 "offloading_final_scores",
+                "offloading_base_policy_probs",
+                "offloading_unknown_policy_probs",
+                "offloading_unknown_exploration_weights",
+                "offloading_unknown_exploration_eps",
                 "offloading_policy_probs", "offloading_effective_mask",
             ])
         return fieldnames
@@ -2573,6 +2586,18 @@ class Hedger:
                     "offloading_final_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "final_score", service_idx)
                     ),
+                    "offloading_base_policy_probs": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "base_policy_prob", service_idx)
+                    ),
+                    "offloading_unknown_policy_probs": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "unknown_policy_prob", service_idx)
+                    ),
+                    "offloading_unknown_exploration_weights": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "unknown_exploration_weight", service_idx)
+                    ),
+                    "offloading_unknown_exploration_eps": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "unknown_exploration_eps", service_idx)
+                    ),
                     "offloading_policy_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "policy_prob", service_idx)
                     ),
@@ -2634,6 +2659,7 @@ class Hedger:
             lamda=self.offloading_agent_params['lamda'],
             clip_eps=self.offloading_agent_params['clip_eps'],
             update_encoder=self.offloading_agent_params['update_encoder'],
+            unknown_exploration_prob=self.offloading_agent_params['unknown_exploration_prob'],
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
         ).to(self.device)
         self._sync_agent_topology_bindings()
@@ -5188,6 +5214,7 @@ class Hedger:
                         phys_feats=phys_feats_dev,
                         static_mask=static_mask_dev,
                         topo_order=None,
+                        enable_unknown_exploration=self.stage_cfg.update_offloading_policy,
                     )
                     offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
                     self.offloading_plan = offloading_plan
@@ -5285,6 +5312,7 @@ class Hedger:
                         "proposal_actions": aux["proposal_actions"].detach().cpu(),
                         "static_mask": static_mask_dev.cpu(),
                         "topo_order": None,
+                        "unknown_exploration_enabled": bool(self.stage_cfg.update_offloading_policy),
                         "logp": logp.detach().cpu(),
                         "value": value.detach().cpu(),
                         "next_value": float(next_value),

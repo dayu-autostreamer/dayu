@@ -1426,7 +1426,8 @@ class HedgerOffloadingPPO(nn.Module):
     def __init__(self, encoder: TopologyEncoders, d_model=64,
                  actor_lr=3e-4, critic_lr=1e-3, update_encoder: bool = True,
                  gamma=0.99, lamda=0.95, clip_eps=0.2,
-                 cloud_node_idx: int = -1):
+                 cloud_node_idx: int = -1,
+                 unknown_exploration_prob: float = 0.0):
         super().__init__()
         self.encoder = encoder
         self.actor = OffloadActor(d_model)
@@ -1451,6 +1452,7 @@ class HedgerOffloadingPPO(nn.Module):
         self.lamda = lamda
         self.clip_eps = clip_eps
         self.cloud_idx = cloud_node_idx
+        self.unknown_exploration_prob = float(max(0.0, min(1.0, unknown_exploration_prob)))
 
     def _cloud_index(self, width: int) -> int:
         if width <= 0:
@@ -1731,6 +1733,46 @@ class HedgerOffloadingPPO(nn.Module):
             return cloud_idx
         return int(allowed_indices[0].item())
 
+    def _unknown_exploration_probs(
+            self,
+            candidate_row: torch.Tensor,
+            allowed: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        unknown_probs = torch.zeros_like(allowed, dtype=torch.float32)
+        unknown_weight = torch.zeros_like(unknown_probs)
+        if candidate_row.numel() == 0 or not bool(allowed.any().item()):
+            return unknown_probs, unknown_weight
+        confidence_idx = OFFLOADING_CANDIDATE_FEATURE_NAMES.index("runtime_confidence")
+        is_cloud_idx = OFFLOADING_CANDIDATE_FEATURE_NAMES.index("is_cloud")
+        confidence = candidate_row[:, confidence_idx].detach().float().clamp(0.0, 1.0)
+        is_cloud = candidate_row[:, is_cloud_idx].detach().float() > 0.5
+        unknown_weight = (1.0 - confidence).masked_fill(~allowed.bool(), 0.0)
+        unknown_weight = unknown_weight.masked_fill(is_cloud, 0.0)
+        weight_sum = unknown_weight.sum()
+        if float(weight_sum.detach().item()) > 1e-8:
+            unknown_probs = unknown_weight / weight_sum.clamp_min(1e-8)
+        return unknown_probs, unknown_weight
+
+    def _mix_unknown_exploration_probs(
+            self,
+            base_probs: torch.Tensor,
+            candidate_row: torch.Tensor,
+            allowed: torch.Tensor,
+            *,
+            enable_unknown_exploration: bool,
+            deterministic: bool,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        unknown_probs, unknown_weight = self._unknown_exploration_probs(candidate_row, allowed)
+        eps = self.unknown_exploration_prob if enable_unknown_exploration and not deterministic else 0.0
+        if eps <= 0.0 or float(unknown_probs.sum().detach().item()) <= 1e-8:
+            return base_probs, unknown_probs, unknown_weight
+        mixed = (1.0 - eps) * base_probs + eps * unknown_probs.to(device=base_probs.device, dtype=base_probs.dtype)
+        mixed = mixed.masked_fill(~allowed.bool(), 0.0)
+        mixed_sum = mixed.sum()
+        if float(mixed_sum.detach().item()) <= 1e-8:
+            return base_probs, unknown_probs, unknown_weight
+        return mixed / mixed_sum.clamp_min(1e-8), unknown_probs, unknown_weight
+
     def _project_offloading_actions(
             self,
             proposal_actions: torch.Tensor,
@@ -1806,7 +1848,8 @@ class HedgerOffloadingPPO(nn.Module):
     @torch.no_grad()
     def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
                static_mask: torch.Tensor, topo_order: Optional[list] = None,
-               deterministic: bool = False):
+               deterministic: bool = False,
+               enable_unknown_exploration: bool = False):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
@@ -1829,6 +1872,9 @@ class HedgerOffloadingPPO(nn.Module):
             effective_mask,
         )
         policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        base_policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        unknown_policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        unknown_exploration_weight_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         final_scores = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         candidate_costs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         candidate_features_matrix = torch.zeros(
@@ -1861,7 +1907,17 @@ class HedgerOffloadingPPO(nn.Module):
             final_scores[i] = candidate_scores
             effective_mask[i] = allowed
             masked_scores = candidate_scores.masked_fill(~allowed, float('-inf'))
-            probs_i = F.softmax(masked_scores, dim=-1)
+            base_probs_i = F.softmax(masked_scores, dim=-1)
+            probs_i, unknown_probs_i, unknown_weight_i = self._mix_unknown_exploration_probs(
+                base_probs_i,
+                candidate_row,
+                allowed,
+                enable_unknown_exploration=enable_unknown_exploration,
+                deterministic=deterministic,
+            )
+            base_policy_prob_matrix[i] = base_probs_i
+            unknown_policy_prob_matrix[i] = unknown_probs_i
+            unknown_exploration_weight_matrix[i] = unknown_weight_i
             policy_prob_matrix[i] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)
             sampled_action = torch.argmax(probs_i) if deterministic else dist.sample()
@@ -1903,6 +1959,14 @@ class HedgerOffloadingPPO(nn.Module):
                 "device_capability_feature": _debug_tensor(phys_feats, "device_capability_feat"),
                 "device_capability_feature_names": DEVICE_CAPABILITY_FEATURE_NAMES,
                 "final_score": final_scores.detach().cpu(),
+                "base_policy_prob": base_policy_prob_matrix.detach().cpu(),
+                "unknown_policy_prob": unknown_policy_prob_matrix.detach().cpu(),
+                "unknown_exploration_weight": unknown_exploration_weight_matrix.detach().cpu(),
+                "unknown_exploration_eps": torch.full(
+                    (Ms, Np),
+                    fill_value=float(self.unknown_exploration_prob if enable_unknown_exploration and not deterministic else 0.0),
+                    dtype=torch.float32,
+                ),
                 "policy_prob": policy_prob_matrix.detach().cpu(),
                 "raw_static_mask": static_mask.detach().cpu(),
                 "effective_mask": effective_mask.detach().cpu(),
@@ -1912,7 +1976,8 @@ class HedgerOffloadingPPO(nn.Module):
         }
 
     def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
-                 proposal_actions: torch.Tensor, static_mask: torch.Tensor, topo_order: Optional[list] = None):
+                 proposal_actions: torch.Tensor, static_mask: torch.Tensor, topo_order: Optional[list] = None,
+                 enable_unknown_exploration: bool = False):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
@@ -1953,7 +2018,14 @@ class HedgerOffloadingPPO(nn.Module):
                 allowed=allowed,
             )
             scores_i = -self.offloading_cost_head(candidate_row.float())
-            probs_i = F.softmax(scores_i.masked_fill(~allowed, float('-inf')), dim=-1)
+            base_probs_i = F.softmax(scores_i.masked_fill(~allowed, float('-inf')), dim=-1)
+            probs_i, _, _ = self._mix_unknown_exploration_probs(
+                base_probs_i,
+                candidate_row,
+                allowed,
+                enable_unknown_exploration=enable_unknown_exploration,
+                deterministic=False,
+            )
             dist = torch.distributions.Categorical(probs=probs_i)
             a = torch.tensor(proposal_action_list[i], dtype=torch.long, device=h_p.device)
             logp_sum += dist.log_prob(a)
@@ -1989,6 +2061,7 @@ class HedgerOffloadingPPO(nn.Module):
                 "proposal_actions": tr["proposal_actions"].to(device),
                 "static_mask": tr["static_mask"].to(device),
                 "topo_order": tr["topo_order"],
+                "unknown_exploration_enabled": bool(tr.get("unknown_exploration_enabled", False)),
             }
             for tr in transitions
         ]
@@ -2014,7 +2087,8 @@ class HedgerOffloadingPPO(nn.Module):
                     tr = device_transitions[int(j)]
                     lp, ent, val, _ = self.evaluate(tr['logic_edge_index'], tr['logic_feats'],
                                                     tr['phys_edge_index'], tr['phys_feats'],
-                                                    tr['proposal_actions'], tr['static_mask'], tr['topo_order'])
+                                                    tr['proposal_actions'], tr['static_mask'], tr['topo_order'],
+                                                    enable_unknown_exploration=tr["unknown_exploration_enabled"])
                     new_logp_list.append(lp)
                     new_val_list.append(val)
                     ent_list.append(ent)
