@@ -103,8 +103,21 @@ OFFLOADING_CANDIDATE_FEATURE_NAMES = [
     "compute_gap",
     "queue_short",
     "queue_busy",
+    "device_queue_short",
+    "device_queue_busy",
+    "device_runtime_confidence",
     "real_time_per_complexity",
-    "load_score",
+    "runtime_confidence",
+    "runtime_freshness",
+    "parent_same_device",
+    "cross_tier_penalty",
+    "is_cloud",
+]
+
+OFFLOADING_BASE_FEATURE_NAMES = [
+    "qk_feature",
+    "compute_gap",
+    "real_time_per_complexity",
     "runtime_confidence",
     "runtime_freshness",
     "parent_same_device",
@@ -1427,13 +1440,22 @@ class HedgerOffloadingPPO(nn.Module):
                  actor_lr=3e-4, critic_lr=1e-3, update_encoder: bool = True,
                  gamma=0.99, lamda=0.95, clip_eps=0.2,
                  cloud_node_idx: int = -1,
-                 unknown_exploration_prob: float = 0.0):
+                 unknown_exploration_prob: float = 0.0,
+                 pair_queue_short_weight: float = 0.8,
+                 pair_queue_busy_weight: float = 0.45,
+                 device_queue_short_weight: float = 0.45,
+                 device_queue_busy_weight: float = 0.30,
+                 pair_queue_short_threshold: float = 0.25,
+                 pair_queue_busy_threshold: float = 0.15,
+                 device_queue_short_threshold: float = 0.35,
+                 device_queue_busy_threshold: float = 0.25,
+                 max_queue_penalty: float = 3.0):
         super().__init__()
         self.encoder = encoder
         self.actor = OffloadActor(d_model)
         hidden_dim = max(32, d_model)
         self.offloading_cost_head = CandidateCostHead(
-            input_dim=len(OFFLOADING_CANDIDATE_FEATURE_NAMES),
+            input_dim=len(OFFLOADING_BASE_FEATURE_NAMES),
             hidden_dim=hidden_dim,
         )
         self.critic = CandidateValueHead(input_dim=len(OFFLOADING_CANDIDATE_FEATURE_NAMES), d_model=d_model)
@@ -1453,6 +1475,15 @@ class HedgerOffloadingPPO(nn.Module):
         self.clip_eps = clip_eps
         self.cloud_idx = cloud_node_idx
         self.unknown_exploration_prob = float(max(0.0, min(1.0, unknown_exploration_prob)))
+        self.pair_queue_short_weight = float(max(0.0, pair_queue_short_weight))
+        self.pair_queue_busy_weight = float(max(0.0, pair_queue_busy_weight))
+        self.device_queue_short_weight = float(max(0.0, device_queue_short_weight))
+        self.device_queue_busy_weight = float(max(0.0, device_queue_busy_weight))
+        self.pair_queue_short_threshold = float(max(0.0, pair_queue_short_threshold))
+        self.pair_queue_busy_threshold = float(max(0.0, pair_queue_busy_threshold))
+        self.device_queue_short_threshold = float(max(0.0, device_queue_short_threshold))
+        self.device_queue_busy_threshold = float(max(0.0, device_queue_busy_threshold))
+        self.max_queue_penalty = float(max(0.0, max_queue_penalty))
 
     def _cloud_index(self, width: int) -> int:
         if width <= 0:
@@ -1594,18 +1625,22 @@ class HedgerOffloadingPPO(nn.Module):
         compute_gap = demand_feat[service_idx, 0] - device_feat[:, 0]
         queue_short = runtime_row[..., 0]
         queue_busy = runtime_row[..., 1]
+        device_queue_short = runtime_feat[..., 0].max(dim=0).values
+        device_queue_busy = runtime_feat[..., 1].sum(dim=0).clamp(max=1.0)
+        device_runtime_confidence = runtime_feat[..., 3].max(dim=0).values.clamp(0.0, 1.0)
         real_time_per_complexity = runtime_row[..., 2]
         confidence = runtime_row[..., 3]
         freshness = runtime_row[..., 4]
-        load_score = queue_short + demand_feat[service_idx, 2] * real_time_per_complexity
         return torch.stack(
             [
                 qk_feature[service_idx],
                 compute_gap,
                 queue_short,
                 queue_busy,
+                device_queue_short,
+                device_queue_busy,
+                device_runtime_confidence,
                 real_time_per_complexity,
-                load_score,
                 confidence,
                 freshness,
                 dependency_context[..., 0],
@@ -1614,6 +1649,86 @@ class HedgerOffloadingPPO(nn.Module):
             ],
             dim=-1,
         )
+
+    @staticmethod
+    def _offloading_feature(candidate_row: torch.Tensor, name: str) -> torch.Tensor:
+        return candidate_row[..., OFFLOADING_CANDIDATE_FEATURE_NAMES.index(name)]
+
+    def _offloading_base_row(self, candidate_row: torch.Tensor) -> torch.Tensor:
+        indices = [
+            OFFLOADING_CANDIDATE_FEATURE_NAMES.index(name)
+            for name in OFFLOADING_BASE_FEATURE_NAMES
+        ]
+        return candidate_row[..., indices]
+
+    def _offloading_queue_penalty(
+            self,
+            candidate_row: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        pair_queue_short = self._offloading_feature(candidate_row, "queue_short").float()
+        pair_queue_busy = self._offloading_feature(candidate_row, "queue_busy").float()
+        device_queue_short = self._offloading_feature(candidate_row, "device_queue_short").float()
+        device_queue_busy = self._offloading_feature(candidate_row, "device_queue_busy").float()
+        pair_confidence = self._offloading_feature(candidate_row, "runtime_confidence").float().clamp(0.0, 1.0)
+        device_confidence = self._offloading_feature(
+            candidate_row, "device_runtime_confidence"
+        ).float().clamp(0.0, 1.0)
+
+        pair_penalty = pair_confidence * (
+            self.pair_queue_short_weight * F.relu(pair_queue_short - self.pair_queue_short_threshold)
+            + self.pair_queue_busy_weight * F.relu(pair_queue_busy - self.pair_queue_busy_threshold)
+        )
+        device_penalty = device_confidence * (
+            self.device_queue_short_weight * F.relu(device_queue_short - self.device_queue_short_threshold)
+            + self.device_queue_busy_weight * F.relu(device_queue_busy - self.device_queue_busy_threshold)
+        )
+        total_penalty = pair_penalty + device_penalty
+        if self.max_queue_penalty > 0.0:
+            total_penalty = total_penalty.clamp(max=self.max_queue_penalty)
+        return total_penalty, pair_penalty, device_penalty
+
+    @staticmethod
+    def _empty_selected_queue_metrics() -> Dict[str, float]:
+        return {
+            "selected_pair_queue_short": 0.0,
+            "selected_pair_queue_busy": 0.0,
+            "selected_device_queue_short": 0.0,
+            "selected_device_queue_busy": 0.0,
+            "selected_runtime_confidence": 0.0,
+            "selected_device_runtime_confidence": 0.0,
+            "selected_queue_raw_cost": 0.0,
+        }
+
+    def _selected_offloading_queue_metrics(
+            self,
+            candidate_features: torch.Tensor,
+            actions: torch.Tensor,
+    ) -> Dict[str, float]:
+        if candidate_features.numel() == 0 or actions.numel() == 0:
+            return self._empty_selected_queue_metrics()
+        actions = actions.detach().long().to(candidate_features.device)
+        valid = (actions >= 0) & (actions < candidate_features.size(1))
+        if not bool(valid.any().item()):
+            return self._empty_selected_queue_metrics()
+        service_idx = torch.arange(candidate_features.size(0), device=candidate_features.device)[valid]
+        selected = candidate_features[service_idx, actions[valid]].float()
+        pair_queue_short = self._offloading_feature(selected, "queue_short")
+        pair_queue_busy = self._offloading_feature(selected, "queue_busy")
+        device_queue_short = self._offloading_feature(selected, "device_queue_short")
+        device_queue_busy = self._offloading_feature(selected, "device_queue_busy")
+        pair_confidence = self._offloading_feature(selected, "runtime_confidence").clamp(0.0, 1.0)
+        device_confidence = self._offloading_feature(selected, "device_runtime_confidence").clamp(0.0, 1.0)
+        raw_cost = pair_confidence * pair_queue_short + 0.5 * device_confidence * device_queue_short
+
+        return {
+            "selected_pair_queue_short": _scalar_to_float(pair_queue_short.mean()),
+            "selected_pair_queue_busy": _scalar_to_float(pair_queue_busy.mean()),
+            "selected_device_queue_short": _scalar_to_float(device_queue_short.mean()),
+            "selected_device_queue_busy": _scalar_to_float(device_queue_busy.mean()),
+            "selected_runtime_confidence": _scalar_to_float(pair_confidence.mean()),
+            "selected_device_runtime_confidence": _scalar_to_float(device_confidence.mean()),
+            "selected_queue_raw_cost": _scalar_to_float(raw_cost.mean()),
+        }
 
     def _offloading_base_candidate_features(
             self,
@@ -1876,6 +1991,10 @@ class HedgerOffloadingPPO(nn.Module):
         unknown_policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         unknown_exploration_weight_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         final_scores = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        base_scores = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        queue_penalties = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        pair_queue_penalties = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        device_queue_penalties = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         candidate_costs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         candidate_features_matrix = torch.zeros(
             (Ms, Np, len(OFFLOADING_CANDIDATE_FEATURE_NAMES)),
@@ -1900,10 +2019,18 @@ class HedgerOffloadingPPO(nn.Module):
                 proposal_action_list,
                 allowed=allowed,
             )
-            candidate_cost = self.offloading_cost_head(candidate_row.float())
-            candidate_scores = -candidate_cost
+            candidate_cost = self.offloading_cost_head(self._offloading_base_row(candidate_row).float())
+            base_score = -candidate_cost
+            queue_penalty, pair_queue_penalty, device_queue_penalty = self._offloading_queue_penalty(
+                candidate_row.float()
+            )
+            candidate_scores = base_score - queue_penalty
             candidate_features_matrix[i] = candidate_row
             candidate_costs[i] = candidate_cost
+            base_scores[i] = base_score
+            queue_penalties[i] = queue_penalty
+            pair_queue_penalties[i] = pair_queue_penalty
+            device_queue_penalties[i] = device_queue_penalty
             final_scores[i] = candidate_scores
             effective_mask[i] = allowed
             masked_scores = candidate_scores.masked_fill(~allowed, float('-inf'))
@@ -1934,6 +2061,9 @@ class HedgerOffloadingPPO(nn.Module):
             parents,
             topo_order,
         )
+        selected_queue_metrics = self._selected_offloading_queue_metrics(
+            candidate_features_matrix, projected_actions
+        )
 
         value_candidates = self._offloading_base_candidate_features(
             logic_edge_index, logic_feats, phys_feats, qk_feature, runtime_feat
@@ -1943,6 +2073,7 @@ class HedgerOffloadingPPO(nn.Module):
             "proposal_actions": proposal_actions.detach(),
             "projected_actions": projected_actions.detach(),
             **projection_info,
+            **selected_queue_metrics,
             "actor_debug": {
                 "service_embedding": h_s.detach().cpu(),
                 "device_embedding": h_p.detach().cpu(),
@@ -1951,6 +2082,10 @@ class HedgerOffloadingPPO(nn.Module):
                 "qk_score": qk_scores.detach().cpu(),
                 "qk_feature": qk_feature.detach().cpu(),
                 "candidate_cost": candidate_costs.detach().cpu(),
+                "base_score": base_scores.detach().cpu(),
+                "queue_penalty": queue_penalties.detach().cpu(),
+                "pair_queue_penalty": pair_queue_penalties.detach().cpu(),
+                "device_queue_penalty": device_queue_penalties.detach().cpu(),
                 "candidate_feature": candidate_features_matrix.detach().cpu(),
                 "candidate_feature_names": OFFLOADING_CANDIDATE_FEATURE_NAMES,
                 "runtime_pair_feature_names": RUNTIME_PAIR_FEATURE_NAMES,
@@ -2017,7 +2152,9 @@ class HedgerOffloadingPPO(nn.Module):
                 proposal_action_list,
                 allowed=allowed,
             )
-            scores_i = -self.offloading_cost_head(candidate_row.float())
+            base_scores_i = -self.offloading_cost_head(self._offloading_base_row(candidate_row).float())
+            queue_penalty_i, _, _ = self._offloading_queue_penalty(candidate_row.float())
+            scores_i = base_scores_i - queue_penalty_i
             base_probs_i = F.softmax(scores_i.masked_fill(~allowed, float('-inf')), dim=-1)
             probs_i, _, _ = self._mix_unknown_exploration_probs(
                 base_probs_i,
