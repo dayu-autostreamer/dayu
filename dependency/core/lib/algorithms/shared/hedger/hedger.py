@@ -969,6 +969,11 @@ class Hedger:
             "reward_off_latency_transform": off_latency_cfg["transform"],
             "reward_off_latency_normalizer": off_latency_cfg["normalizer"],
             "reward_off_latency_clip": off_latency_cfg["clip"],
+            "score_affinity_score_scale": float(scoring.get("affinity_score_scale", 1.5)),
+            "score_runtime_weight": float(scoring.get("runtime_weight", 0.45)),
+            "score_runtime_clip": float(scoring.get("runtime_clip", 3.0)),
+            "score_planned_load_weight": float(scoring.get("planned_load_weight", 0.65)),
+            "score_planned_load_clip": float(scoring.get("planned_load_clip", 3.0)),
             "score_pair_queue_short_weight": float(scoring.get("pair_queue_short_weight", 0.8)),
             "score_pair_queue_busy_weight": float(scoring.get("pair_queue_busy_weight", 0.45)),
             "score_device_queue_short_weight": float(scoring.get("device_queue_short_weight", 0.45)),
@@ -2367,12 +2372,13 @@ class Hedger:
             "proposal_target", "target", "projected", "projection_reason", "is_cloud",
             "feasible_targets", "feasible_target_count", "parent_targets",
             "target_gpu_flops", "target_bandwidth", "target_role",
-            "target_qk_feature", "target_compute_gap",
+            "target_qk_feature", "target_compute_gap", "target_arrival_rate_short",
             "target_pair_queue_short", "target_pair_queue_busy",
             "target_device_queue_short", "target_device_queue_busy",
             "target_real_time_per_complexity", "target_runtime_confidence", "target_runtime_freshness",
-            "target_cross_tier_penalty", "target_base_score", "target_queue_penalty",
-            "target_pair_queue_penalty", "target_device_queue_penalty", "target_final_score",
+            "target_cross_tier_penalty", "target_affinity_score", "target_runtime_penalty",
+            "target_queue_penalty", "target_pair_queue_penalty", "target_device_queue_penalty",
+            "target_planned_load_penalty", "target_planned_device_load", "target_final_score",
         ]
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
@@ -2384,11 +2390,13 @@ class Hedger:
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
                 "offloading_qk_scores", "offloading_qk_features",
-                "offloading_candidate_costs",
-                "offloading_base_scores",
+                "offloading_affinity_scores",
+                "offloading_runtime_penalties",
                 "offloading_pair_queue_penalties",
                 "offloading_device_queue_penalties",
                 "offloading_queue_penalties",
+                "offloading_planned_load_penalties",
+                "offloading_planned_device_loads",
                 "offloading_final_scores",
                 "offloading_base_policy_probs",
                 "offloading_unknown_policy_probs",
@@ -2573,6 +2581,9 @@ class Hedger:
                 target_compute_gap=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "compute_gap"
                 ),
+                target_arrival_rate_short=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "arrival_rate_short"
+                ),
                 target_pair_queue_short=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "queue_short"
                 ),
@@ -2597,8 +2608,11 @@ class Hedger:
                 target_cross_tier_penalty=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "cross_tier_penalty"
                 ),
-                target_base_score=self._actor_debug_matrix_value(
-                    actor_debug, "base_score", service_idx, target_idx
+                target_affinity_score=self._actor_debug_matrix_value(
+                    actor_debug, "affinity_score", service_idx, target_idx
+                ),
+                target_runtime_penalty=self._actor_debug_matrix_value(
+                    actor_debug, "runtime_penalty", service_idx, target_idx
                 ),
                 target_queue_penalty=self._actor_debug_matrix_value(
                     actor_debug, "queue_penalty", service_idx, target_idx
@@ -2608,6 +2622,12 @@ class Hedger:
                 ),
                 target_device_queue_penalty=self._actor_debug_matrix_value(
                     actor_debug, "device_queue_penalty", service_idx, target_idx
+                ),
+                target_planned_load_penalty=self._actor_debug_matrix_value(
+                    actor_debug, "planned_load_penalty", service_idx, target_idx
+                ),
+                target_planned_device_load=self._actor_debug_matrix_value(
+                    actor_debug, "planned_device_load", service_idx, target_idx
                 ),
                 target_final_score=self._actor_debug_matrix_value(
                     actor_debug, "final_score", service_idx, target_idx
@@ -2650,11 +2670,11 @@ class Hedger:
                     "offloading_qk_features": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "qk_feature", service_idx)
                     ),
-                    "offloading_candidate_costs": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "candidate_cost", service_idx)
+                    "offloading_affinity_scores": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "affinity_score", service_idx)
                     ),
-                    "offloading_base_scores": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "base_score", service_idx)
+                    "offloading_runtime_penalties": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "runtime_penalty", service_idx)
                     ),
                     "offloading_pair_queue_penalties": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_queue_penalty", service_idx)
@@ -2664,6 +2684,12 @@ class Hedger:
                     ),
                     "offloading_queue_penalties": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "queue_penalty", service_idx)
+                    ),
+                    "offloading_planned_load_penalties": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "planned_load_penalty", service_idx)
+                    ),
+                    "offloading_planned_device_loads": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "planned_device_load", service_idx)
                     ),
                     "offloading_final_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "final_score", service_idx)
@@ -2742,6 +2768,11 @@ class Hedger:
             clip_eps=self.offloading_agent_params['clip_eps'],
             update_encoder=self.offloading_agent_params['update_encoder'],
             unknown_exploration_prob=self.offloading_agent_params['unknown_exploration_prob'],
+            affinity_score_scale=self.offloading_agent_params["score_affinity_score_scale"],
+            runtime_weight=self.offloading_agent_params["score_runtime_weight"],
+            runtime_clip=self.offloading_agent_params["score_runtime_clip"],
+            planned_load_weight=self.offloading_agent_params["score_planned_load_weight"],
+            planned_load_clip=self.offloading_agent_params["score_planned_load_clip"],
             pair_queue_short_weight=self.offloading_agent_params["score_pair_queue_short_weight"],
             pair_queue_busy_weight=self.offloading_agent_params["score_pair_queue_busy_weight"],
             device_queue_short_weight=self.offloading_agent_params["score_device_queue_short_weight"],
