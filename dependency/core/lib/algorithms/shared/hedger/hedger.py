@@ -972,17 +972,11 @@ class Hedger:
             "score_affinity_score_scale": float(scoring.get("affinity_score_scale", 1.5)),
             "score_runtime_weight": float(scoring.get("runtime_weight", 0.45)),
             "score_runtime_clip": float(scoring.get("runtime_clip", 3.0)),
-            "score_planned_load_weight": float(scoring.get("planned_load_weight", 0.65)),
+            "score_queue_risk_weight": float(scoring.get("queue_risk_weight", 1.0)),
+            "score_planned_load_risk_weight": float(scoring.get("planned_load_risk_weight", 0.7)),
             "score_planned_load_clip": float(scoring.get("planned_load_clip", 3.0)),
-            "score_pair_queue_short_weight": float(scoring.get("pair_queue_short_weight", 0.8)),
-            "score_pair_queue_busy_weight": float(scoring.get("pair_queue_busy_weight", 0.45)),
-            "score_device_queue_short_weight": float(scoring.get("device_queue_short_weight", 0.45)),
-            "score_device_queue_busy_weight": float(scoring.get("device_queue_busy_weight", 0.30)),
-            "score_pair_queue_short_threshold": float(scoring.get("pair_queue_short_threshold", 0.25)),
-            "score_pair_queue_busy_threshold": float(scoring.get("pair_queue_busy_threshold", 0.15)),
-            "score_device_queue_short_threshold": float(scoring.get("device_queue_short_threshold", 0.35)),
-            "score_device_queue_busy_threshold": float(scoring.get("device_queue_busy_threshold", 0.25)),
-            "score_max_queue_penalty": float(scoring.get("max_queue_penalty", 3.0)),
+            "score_load_clip": float(scoring.get("load_clip", 3.0)),
+            "score_risk_clip": float(scoring.get("risk_clip", 2.0)),
             "ppo": ppo,
         }
 
@@ -2299,14 +2293,15 @@ class Hedger:
             "latency", "latency_cost", "off_latency_term", "slo_violation", "off_slo_term",
             "cloud_fraction", "task_latency_count", "latest_task_latency",
             "off_cloud_term", "off_projection_term", "off_queue_term",
-            "off_queue_cost", "off_queue_raw_cost",
+            "off_queue_cost", "off_queue_risk_cost",
             "policy_logp", "policy_entropy", "value_estimate",
             "proposal_cloud_fraction", "projected_cloud_fraction",
             "offloading_projection_cnt", "offloading_dependency_projection_cnt",
             "offloading_infeasible_projection_cnt", "offloading_projection_cost",
-            "off_selected_pair_queue_short", "off_selected_pair_queue_busy",
-            "off_selected_device_queue_short", "off_selected_device_queue_busy",
-            "off_selected_runtime_confidence", "off_selected_device_runtime_confidence",
+            "off_selected_runtime_ratio", "off_selected_pair_load",
+            "off_selected_device_load", "off_selected_load_pressure",
+            "off_selected_service_time_factor", "off_selected_queue_risk",
+            "off_selected_runtime_confidence",
             "unique_targets", "feasible_targets_mean",
             "offloading_deterministic",
             "feasible_targets_min", "feasible_targets_max",
@@ -2373,12 +2368,11 @@ class Hedger:
             "feasible_targets", "feasible_target_count", "parent_targets",
             "target_gpu_flops", "target_bandwidth", "target_role",
             "target_qk_feature", "target_compute_gap", "target_arrival_rate_short",
-            "target_pair_queue_short", "target_pair_queue_busy",
-            "target_device_queue_short", "target_device_queue_busy",
-            "target_real_time_per_complexity", "target_runtime_confidence", "target_runtime_freshness",
+            "target_runtime_ratio", "target_runtime_confidence", "target_runtime_freshness",
+            "target_pair_load", "target_device_load", "target_service_time_factor",
             "target_cross_tier_penalty", "target_affinity_score", "target_runtime_penalty",
-            "target_queue_penalty", "target_pair_queue_penalty", "target_device_queue_penalty",
-            "target_planned_load_penalty", "target_planned_device_load", "target_final_score",
+            "target_load_pressure", "target_queue_risk",
+            "target_planned_load_risk", "target_planned_device_load", "target_final_score",
         ]
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
@@ -2392,10 +2386,10 @@ class Hedger:
                 "offloading_qk_scores", "offloading_qk_features",
                 "offloading_affinity_scores",
                 "offloading_runtime_penalties",
-                "offloading_pair_queue_penalties",
-                "offloading_device_queue_penalties",
-                "offloading_queue_penalties",
-                "offloading_planned_load_penalties",
+                "offloading_service_time_factors",
+                "offloading_load_pressures",
+                "offloading_queue_risks",
+                "offloading_planned_load_risks",
                 "offloading_planned_device_loads",
                 "offloading_final_scores",
                 "offloading_base_policy_probs",
@@ -2584,26 +2578,23 @@ class Hedger:
                 target_arrival_rate_short=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "arrival_rate_short"
                 ),
-                target_pair_queue_short=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "queue_short"
-                ),
-                target_pair_queue_busy=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "queue_busy"
-                ),
-                target_device_queue_short=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "device_queue_short"
-                ),
-                target_device_queue_busy=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "device_queue_busy"
-                ),
-                target_real_time_per_complexity=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "real_time_per_complexity"
+                target_runtime_ratio=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "runtime_ratio"
                 ),
                 target_runtime_confidence=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "runtime_confidence"
                 ),
                 target_runtime_freshness=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "runtime_freshness"
+                ),
+                target_pair_load=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "pair_load"
+                ),
+                target_device_load=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "device_load"
+                ),
+                target_service_time_factor=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "service_time_factor"
                 ),
                 target_cross_tier_penalty=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "cross_tier_penalty"
@@ -2614,17 +2605,14 @@ class Hedger:
                 target_runtime_penalty=self._actor_debug_matrix_value(
                     actor_debug, "runtime_penalty", service_idx, target_idx
                 ),
-                target_queue_penalty=self._actor_debug_matrix_value(
-                    actor_debug, "queue_penalty", service_idx, target_idx
+                target_load_pressure=self._actor_debug_matrix_value(
+                    actor_debug, "load_pressure", service_idx, target_idx
                 ),
-                target_pair_queue_penalty=self._actor_debug_matrix_value(
-                    actor_debug, "pair_queue_penalty", service_idx, target_idx
+                target_queue_risk=self._actor_debug_matrix_value(
+                    actor_debug, "queue_risk", service_idx, target_idx
                 ),
-                target_device_queue_penalty=self._actor_debug_matrix_value(
-                    actor_debug, "device_queue_penalty", service_idx, target_idx
-                ),
-                target_planned_load_penalty=self._actor_debug_matrix_value(
-                    actor_debug, "planned_load_penalty", service_idx, target_idx
+                target_planned_load_risk=self._actor_debug_matrix_value(
+                    actor_debug, "planned_load_risk", service_idx, target_idx
                 ),
                 target_planned_device_load=self._actor_debug_matrix_value(
                     actor_debug, "planned_device_load", service_idx, target_idx
@@ -2676,17 +2664,17 @@ class Hedger:
                     "offloading_runtime_penalties": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "runtime_penalty", service_idx)
                     ),
-                    "offloading_pair_queue_penalties": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "pair_queue_penalty", service_idx)
+                    "offloading_service_time_factors": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "service_time_factor", service_idx)
                     ),
-                    "offloading_device_queue_penalties": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "device_queue_penalty", service_idx)
+                    "offloading_load_pressures": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "load_pressure", service_idx)
                     ),
-                    "offloading_queue_penalties": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "queue_penalty", service_idx)
+                    "offloading_queue_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "queue_risk", service_idx)
                     ),
-                    "offloading_planned_load_penalties": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "planned_load_penalty", service_idx)
+                    "offloading_planned_load_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "planned_load_risk", service_idx)
                     ),
                     "offloading_planned_device_loads": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "planned_device_load", service_idx)
@@ -2771,17 +2759,11 @@ class Hedger:
             affinity_score_scale=self.offloading_agent_params["score_affinity_score_scale"],
             runtime_weight=self.offloading_agent_params["score_runtime_weight"],
             runtime_clip=self.offloading_agent_params["score_runtime_clip"],
-            planned_load_weight=self.offloading_agent_params["score_planned_load_weight"],
+            queue_risk_weight=self.offloading_agent_params["score_queue_risk_weight"],
+            planned_load_risk_weight=self.offloading_agent_params["score_planned_load_risk_weight"],
             planned_load_clip=self.offloading_agent_params["score_planned_load_clip"],
-            pair_queue_short_weight=self.offloading_agent_params["score_pair_queue_short_weight"],
-            pair_queue_busy_weight=self.offloading_agent_params["score_pair_queue_busy_weight"],
-            device_queue_short_weight=self.offloading_agent_params["score_device_queue_short_weight"],
-            device_queue_busy_weight=self.offloading_agent_params["score_device_queue_busy_weight"],
-            pair_queue_short_threshold=self.offloading_agent_params["score_pair_queue_short_threshold"],
-            pair_queue_busy_threshold=self.offloading_agent_params["score_pair_queue_busy_threshold"],
-            device_queue_short_threshold=self.offloading_agent_params["score_device_queue_short_threshold"],
-            device_queue_busy_threshold=self.offloading_agent_params["score_device_queue_busy_threshold"],
-            max_queue_penalty=self.offloading_agent_params["score_max_queue_penalty"],
+            load_clip=self.offloading_agent_params["score_load_clip"],
+            risk_clip=self.offloading_agent_params["score_risk_clip"],
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
         ).to(self.device)
         self._sync_agent_topology_bindings()
@@ -4506,7 +4488,7 @@ class Hedger:
                         off_projection_term=off_reward_breakdown["off_projection_term"],
                         off_queue_term=off_reward_breakdown["off_queue_term"],
                         off_queue_cost=off_reward_breakdown["off_queue_cost"],
-                        off_queue_raw_cost=off_reward_breakdown["off_queue_raw_cost"],
+                        off_queue_risk_cost=off_reward_breakdown["off_queue_risk_cost"],
                         policy_logp=self._scalar_value(logp),
                         policy_entropy=self._scalar_value(ent),
                         value_estimate=self._scalar_value(value),
@@ -4516,14 +4498,13 @@ class Hedger:
                         offloading_dependency_projection_cnt=aux.get("dependency_projection_cnt", 0),
                         offloading_infeasible_projection_cnt=aux.get("infeasible_projection_cnt", 0),
                         offloading_projection_cost=aux.get("projection_cost", 0.0),
-                        off_selected_pair_queue_short=aux.get("selected_pair_queue_short", 0.0),
-                        off_selected_pair_queue_busy=aux.get("selected_pair_queue_busy", 0.0),
-                        off_selected_device_queue_short=aux.get("selected_device_queue_short", 0.0),
-                        off_selected_device_queue_busy=aux.get("selected_device_queue_busy", 0.0),
+                        off_selected_runtime_ratio=aux.get("selected_runtime_ratio", 0.0),
+                        off_selected_pair_load=aux.get("selected_pair_load", 0.0),
+                        off_selected_device_load=aux.get("selected_device_load", 0.0),
+                        off_selected_load_pressure=aux.get("selected_load_pressure", 0.0),
+                        off_selected_service_time_factor=aux.get("selected_service_time_factor", 0.0),
+                        off_selected_queue_risk=aux.get("selected_queue_risk", 0.0),
                         off_selected_runtime_confidence=aux.get("selected_runtime_confidence", 0.0),
-                        off_selected_device_runtime_confidence=aux.get(
-                            "selected_device_runtime_confidence", 0.0
-                        ),
                         unique_targets=unique_targets,
                         feasible_targets_mean=feasible_targets_mean,
                         offloading_deterministic=int(bool(self.inference_cfg.offloading_deterministic)),
@@ -5281,7 +5262,7 @@ class Hedger:
                                 "off_latency_term", "off_latency_normalizer", "off_latency_clip", "off_latency_transform",
                                 "slo_violation", "off_slo_term", "cloud_fraction", "off_cloud_term",
                                 "off_projection_term",
-                                "off_queue_term", "off_queue_cost", "off_queue_raw_cost",
+                                "off_queue_term", "off_queue_cost", "off_queue_risk_cost",
                                 "off_latency_weight", "off_slo_weight", "off_cloud_weight",
                                 "off_projection_weight", "off_queue_weight", "off_queue_clip",
                                 "policy_logp", "policy_entropy", "value_estimate",
@@ -5289,9 +5270,10 @@ class Hedger:
                                 "proposal_cloud_fraction", "projected_cloud_fraction",
                                 "offloading_projection_cnt", "offloading_dependency_projection_cnt",
                                 "offloading_infeasible_projection_cnt", "offloading_projection_cost",
-                                "off_selected_pair_queue_short", "off_selected_pair_queue_busy",
-                                "off_selected_device_queue_short", "off_selected_device_queue_busy",
-                                "off_selected_runtime_confidence", "off_selected_device_runtime_confidence",
+                                "off_selected_runtime_ratio", "off_selected_pair_load",
+                                "off_selected_device_load", "off_selected_load_pressure",
+                                "off_selected_service_time_factor", "off_selected_queue_risk",
+                                "off_selected_runtime_confidence",
                                 "unique_targets", "feasible_targets_mean", "feasible_targets_min",
                                 "feasible_targets_max", "transition_buffer",
                                 "offloading_plan", *self._state_record_fieldnames()]
@@ -5506,7 +5488,7 @@ class Hedger:
                     off_projection_term=off_reward_breakdown["off_projection_term"],
                     off_queue_term=off_reward_breakdown["off_queue_term"],
                     off_queue_cost=off_reward_breakdown["off_queue_cost"],
-                    off_queue_raw_cost=off_reward_breakdown["off_queue_raw_cost"],
+                    off_queue_risk_cost=off_reward_breakdown["off_queue_risk_cost"],
                     off_latency_weight=self.offloading_agent_params["reward_off_latency_weight"],
                     off_slo_weight=self.offloading_agent_params["reward_off_slo_weight"],
                     off_cloud_weight=self.offloading_agent_params["reward_off_cloud_weight"],
@@ -5523,14 +5505,13 @@ class Hedger:
                     offloading_dependency_projection_cnt=aux.get("dependency_projection_cnt", 0),
                     offloading_infeasible_projection_cnt=aux.get("infeasible_projection_cnt", 0),
                     offloading_projection_cost=aux.get("projection_cost", 0.0),
-                    off_selected_pair_queue_short=aux.get("selected_pair_queue_short", 0.0),
-                    off_selected_pair_queue_busy=aux.get("selected_pair_queue_busy", 0.0),
-                    off_selected_device_queue_short=aux.get("selected_device_queue_short", 0.0),
-                    off_selected_device_queue_busy=aux.get("selected_device_queue_busy", 0.0),
+                    off_selected_runtime_ratio=aux.get("selected_runtime_ratio", 0.0),
+                    off_selected_pair_load=aux.get("selected_pair_load", 0.0),
+                    off_selected_device_load=aux.get("selected_device_load", 0.0),
+                    off_selected_load_pressure=aux.get("selected_load_pressure", 0.0),
+                    off_selected_service_time_factor=aux.get("selected_service_time_factor", 0.0),
+                    off_selected_queue_risk=aux.get("selected_queue_risk", 0.0),
                     off_selected_runtime_confidence=aux.get("selected_runtime_confidence", 0.0),
-                    off_selected_device_runtime_confidence=aux.get(
-                        "selected_device_runtime_confidence", 0.0
-                    ),
                     unique_targets=unique_targets,
                     feasible_targets_mean=feasible_targets_mean,
                     feasible_targets_min=feasible_targets_min,
@@ -5634,9 +5615,9 @@ class Hedger:
         slo_v = float(metrics["slo_violation"])
         cloud_frac = float(metrics["cloud_fraction"])
         projection_cost = float(aux.get("projection_cost", 0.0) or 0.0)
-        queue_raw_cost = max(0.0, float(aux.get("selected_queue_raw_cost", 0.0) or 0.0))
+        queue_risk_cost = max(0.0, float(aux.get("selected_queue_risk_cost", 0.0) or 0.0))
         queue_clip = self.offloading_agent_params.get("reward_off_queue_clip")
-        queue_cost = queue_raw_cost
+        queue_cost = queue_risk_cost
         if queue_clip is not None:
             queue_cost = min(queue_cost, max(0.0, float(queue_clip)))
 
@@ -5657,7 +5638,7 @@ class Hedger:
             "latency_cost": float(latency_cost),
             "off_projection_cost": float(projection_cost),
             "off_queue_cost": float(queue_cost),
-            "off_queue_raw_cost": float(queue_raw_cost),
+            "off_queue_risk_cost": float(queue_risk_cost),
             **terms,
             "reward": self._sum_reward_terms(terms),
         }
