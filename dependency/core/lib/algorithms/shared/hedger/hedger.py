@@ -947,6 +947,14 @@ class Hedger:
             float(unknown_exploration.get("prob", 0.0))
             if unknown_exploration_enabled else 0.0
         )
+        risk_exploration = offloading.get("risk_exploration") or {}
+        if not isinstance(risk_exploration, dict):
+            raise ValueError("Hedger agents.offloading.risk_exploration must be a mapping when provided.")
+        risk_exploration_enabled = bool(risk_exploration.get("enabled", False))
+        risk_exploration_prob = (
+            float(risk_exploration.get("prob", 0.0))
+            if risk_exploration_enabled else 0.0
+        )
         off_latency_cfg = self._parse_latency_reward_cfg(
             reward,
             scope="offloading",
@@ -960,6 +968,9 @@ class Hedger:
             "clip_eps": float(offloading["clip_eps"]),
             "update_encoder": bool(offloading.get("update_encoder", True)),
             "unknown_exploration_prob": max(0.0, min(1.0, unknown_exploration_prob)),
+            "risk_exploration_prob": max(0.0, min(1.0, risk_exploration_prob)),
+            "risk_exploration_temperature": float(risk_exploration.get("temperature", 0.25)),
+            "risk_exploration_min_gap": float(risk_exploration.get("min_risk_gap", 0.05)),
             "reward_off_latency_weight": float(reward["latency_weight"]),
             "reward_off_slo_weight": float(reward["slo_weight"]),
             "reward_off_cloud_weight": float(reward["cloud_weight"]),
@@ -969,14 +980,19 @@ class Hedger:
             "reward_off_latency_transform": off_latency_cfg["transform"],
             "reward_off_latency_normalizer": off_latency_cfg["normalizer"],
             "reward_off_latency_clip": off_latency_cfg["clip"],
-            "score_affinity_score_scale": float(scoring.get("affinity_score_scale", 1.5)),
-            "score_runtime_weight": float(scoring.get("runtime_weight", 0.45)),
+            "score_static_prior_scale": float(scoring.get("static_prior_scale", 0.45)),
+            "score_runtime_weight": float(scoring.get("runtime_weight", 0.35)),
             "score_runtime_clip": float(scoring.get("runtime_clip", 3.0)),
-            "score_queue_risk_weight": float(scoring.get("queue_risk_weight", 1.0)),
-            "score_planned_load_risk_weight": float(scoring.get("planned_load_risk_weight", 0.7)),
+            "score_absolute_queue_weight": float(scoring.get("absolute_queue_weight", 0.35)),
+            "score_relative_queue_weight": float(scoring.get("relative_queue_weight", 1.8)),
+            "score_overload_weight": float(scoring.get("overload_weight", 3.0)),
+            "score_planned_load_weight": float(scoring.get("planned_load_weight", 0.8)),
+            "score_relative_planned_load_weight": float(scoring.get("relative_planned_load_weight", 0.8)),
+            "score_cloud_fallback_penalty": float(scoring.get("cloud_fallback_penalty", 1.2)),
+            "score_cross_tier_weight": float(scoring.get("cross_tier_weight", 0.2)),
             "score_planned_load_clip": float(scoring.get("planned_load_clip", 3.0)),
             "score_load_clip": float(scoring.get("load_clip", 3.0)),
-            "score_risk_clip": float(scoring.get("risk_clip", 2.0)),
+            "score_risk_clip": float(scoring.get("risk_clip", 3.0)),
             "ppo": ppo,
         }
 
@@ -2300,7 +2316,10 @@ class Hedger:
             "offloading_infeasible_projection_cnt", "offloading_projection_cost",
             "off_selected_runtime_ratio", "off_selected_pair_load",
             "off_selected_device_load", "off_selected_load_pressure",
-            "off_selected_service_time_factor", "off_selected_queue_risk",
+            "off_selected_service_time_factor", "off_selected_base_queue_risk",
+            "off_selected_relative_queue_risk", "off_selected_overload_risk",
+            "off_selected_queue_risk_total", "off_selected_planned_load_risk",
+            "off_selected_relative_planned_load_risk", "off_selected_dynamic_risk",
             "off_selected_runtime_confidence",
             "unique_targets", "feasible_targets_mean",
             "offloading_deterministic",
@@ -2370,9 +2389,12 @@ class Hedger:
             "target_qk_feature", "target_compute_gap", "target_arrival_rate_short",
             "target_runtime_ratio", "target_runtime_confidence", "target_runtime_freshness",
             "target_pair_load", "target_device_load", "target_service_time_factor",
-            "target_cross_tier_penalty", "target_affinity_score", "target_runtime_penalty",
-            "target_load_pressure", "target_queue_risk",
-            "target_planned_load_risk", "target_planned_device_load", "target_final_score",
+            "target_cross_tier_penalty", "target_static_prior", "target_runtime_risk",
+            "target_load_pressure", "target_base_queue_risk", "target_relative_queue_risk",
+            "target_overload_risk", "target_queue_risk_total", "target_planned_pressure",
+            "target_planned_load_risk", "target_relative_planned_load_risk",
+            "target_cloud_penalty", "target_cross_tier_penalty_term",
+            "target_dynamic_risk", "target_planned_device_load", "target_final_score",
         ]
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
@@ -2384,18 +2406,29 @@ class Hedger:
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
                 "offloading_qk_scores", "offloading_qk_features",
-                "offloading_affinity_scores",
-                "offloading_runtime_penalties",
+                "offloading_static_priors",
+                "offloading_runtime_risks",
                 "offloading_service_time_factors",
                 "offloading_load_pressures",
-                "offloading_queue_risks",
+                "offloading_base_queue_risks",
+                "offloading_relative_queue_risks",
+                "offloading_overload_risks",
+                "offloading_queue_risk_totals",
+                "offloading_planned_pressures",
                 "offloading_planned_load_risks",
+                "offloading_relative_planned_load_risks",
+                "offloading_cloud_penalties",
+                "offloading_cross_tier_penalty_terms",
+                "offloading_dynamic_risks",
                 "offloading_planned_device_loads",
                 "offloading_final_scores",
                 "offloading_base_policy_probs",
                 "offloading_unknown_policy_probs",
                 "offloading_unknown_exploration_weights",
                 "offloading_unknown_exploration_eps",
+                "offloading_risk_policy_probs",
+                "offloading_risk_exploration_weights",
+                "offloading_risk_exploration_eps",
                 "offloading_policy_probs", "offloading_effective_mask",
             ])
         return fieldnames
@@ -2599,20 +2632,44 @@ class Hedger:
                 target_cross_tier_penalty=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "cross_tier_penalty"
                 ),
-                target_affinity_score=self._actor_debug_matrix_value(
-                    actor_debug, "affinity_score", service_idx, target_idx
+                target_static_prior=self._actor_debug_matrix_value(
+                    actor_debug, "static_prior", service_idx, target_idx
                 ),
-                target_runtime_penalty=self._actor_debug_matrix_value(
-                    actor_debug, "runtime_penalty", service_idx, target_idx
+                target_runtime_risk=self._actor_debug_matrix_value(
+                    actor_debug, "runtime_risk", service_idx, target_idx
                 ),
                 target_load_pressure=self._actor_debug_matrix_value(
                     actor_debug, "load_pressure", service_idx, target_idx
                 ),
-                target_queue_risk=self._actor_debug_matrix_value(
-                    actor_debug, "queue_risk", service_idx, target_idx
+                target_base_queue_risk=self._actor_debug_matrix_value(
+                    actor_debug, "base_queue_risk", service_idx, target_idx
+                ),
+                target_relative_queue_risk=self._actor_debug_matrix_value(
+                    actor_debug, "relative_queue_risk", service_idx, target_idx
+                ),
+                target_overload_risk=self._actor_debug_matrix_value(
+                    actor_debug, "overload_risk", service_idx, target_idx
+                ),
+                target_queue_risk_total=self._actor_debug_matrix_value(
+                    actor_debug, "queue_risk_total", service_idx, target_idx
+                ),
+                target_planned_pressure=self._actor_debug_matrix_value(
+                    actor_debug, "planned_pressure", service_idx, target_idx
                 ),
                 target_planned_load_risk=self._actor_debug_matrix_value(
                     actor_debug, "planned_load_risk", service_idx, target_idx
+                ),
+                target_relative_planned_load_risk=self._actor_debug_matrix_value(
+                    actor_debug, "relative_planned_load_risk", service_idx, target_idx
+                ),
+                target_cloud_penalty=self._actor_debug_matrix_value(
+                    actor_debug, "cloud_penalty", service_idx, target_idx
+                ),
+                target_cross_tier_penalty_term=self._actor_debug_matrix_value(
+                    actor_debug, "cross_tier_penalty_term", service_idx, target_idx
+                ),
+                target_dynamic_risk=self._actor_debug_matrix_value(
+                    actor_debug, "dynamic_risk", service_idx, target_idx
                 ),
                 target_planned_device_load=self._actor_debug_matrix_value(
                     actor_debug, "planned_device_load", service_idx, target_idx
@@ -2658,11 +2715,11 @@ class Hedger:
                     "offloading_qk_features": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "qk_feature", service_idx)
                     ),
-                    "offloading_affinity_scores": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "affinity_score", service_idx)
+                    "offloading_static_priors": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "static_prior", service_idx)
                     ),
-                    "offloading_runtime_penalties": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "runtime_penalty", service_idx)
+                    "offloading_runtime_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "runtime_risk", service_idx)
                     ),
                     "offloading_service_time_factors": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "service_time_factor", service_idx)
@@ -2670,11 +2727,35 @@ class Hedger:
                     "offloading_load_pressures": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "load_pressure", service_idx)
                     ),
-                    "offloading_queue_risks": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "queue_risk", service_idx)
+                    "offloading_base_queue_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "base_queue_risk", service_idx)
+                    ),
+                    "offloading_relative_queue_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "relative_queue_risk", service_idx)
+                    ),
+                    "offloading_overload_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "overload_risk", service_idx)
+                    ),
+                    "offloading_queue_risk_totals": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "queue_risk_total", service_idx)
+                    ),
+                    "offloading_planned_pressures": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "planned_pressure", service_idx)
                     ),
                     "offloading_planned_load_risks": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "planned_load_risk", service_idx)
+                    ),
+                    "offloading_relative_planned_load_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "relative_planned_load_risk", service_idx)
+                    ),
+                    "offloading_cloud_penalties": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "cloud_penalty", service_idx)
+                    ),
+                    "offloading_cross_tier_penalty_terms": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "cross_tier_penalty_term", service_idx)
+                    ),
+                    "offloading_dynamic_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "dynamic_risk", service_idx)
                     ),
                     "offloading_planned_device_loads": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "planned_device_load", service_idx)
@@ -2693,6 +2774,15 @@ class Hedger:
                     ),
                     "offloading_unknown_exploration_eps": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "unknown_exploration_eps", service_idx)
+                    ),
+                    "offloading_risk_policy_probs": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "risk_policy_prob", service_idx)
+                    ),
+                    "offloading_risk_exploration_weights": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "risk_exploration_weight", service_idx)
+                    ),
+                    "offloading_risk_exploration_eps": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "risk_exploration_eps", service_idx)
                     ),
                     "offloading_policy_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "policy_prob", service_idx)
@@ -2756,11 +2846,19 @@ class Hedger:
             clip_eps=self.offloading_agent_params['clip_eps'],
             update_encoder=self.offloading_agent_params['update_encoder'],
             unknown_exploration_prob=self.offloading_agent_params['unknown_exploration_prob'],
-            affinity_score_scale=self.offloading_agent_params["score_affinity_score_scale"],
+            risk_exploration_prob=self.offloading_agent_params["risk_exploration_prob"],
+            risk_exploration_temperature=self.offloading_agent_params["risk_exploration_temperature"],
+            risk_exploration_min_gap=self.offloading_agent_params["risk_exploration_min_gap"],
+            static_prior_scale=self.offloading_agent_params["score_static_prior_scale"],
             runtime_weight=self.offloading_agent_params["score_runtime_weight"],
             runtime_clip=self.offloading_agent_params["score_runtime_clip"],
-            queue_risk_weight=self.offloading_agent_params["score_queue_risk_weight"],
-            planned_load_risk_weight=self.offloading_agent_params["score_planned_load_risk_weight"],
+            absolute_queue_weight=self.offloading_agent_params["score_absolute_queue_weight"],
+            relative_queue_weight=self.offloading_agent_params["score_relative_queue_weight"],
+            overload_weight=self.offloading_agent_params["score_overload_weight"],
+            planned_load_weight=self.offloading_agent_params["score_planned_load_weight"],
+            relative_planned_load_weight=self.offloading_agent_params["score_relative_planned_load_weight"],
+            cloud_fallback_penalty=self.offloading_agent_params["score_cloud_fallback_penalty"],
+            cross_tier_weight=self.offloading_agent_params["score_cross_tier_weight"],
             planned_load_clip=self.offloading_agent_params["score_planned_load_clip"],
             load_clip=self.offloading_agent_params["score_load_clip"],
             risk_clip=self.offloading_agent_params["score_risk_clip"],
@@ -4503,7 +4601,13 @@ class Hedger:
                         off_selected_device_load=aux.get("selected_device_load", 0.0),
                         off_selected_load_pressure=aux.get("selected_load_pressure", 0.0),
                         off_selected_service_time_factor=aux.get("selected_service_time_factor", 0.0),
-                        off_selected_queue_risk=aux.get("selected_queue_risk", 0.0),
+                        off_selected_base_queue_risk=aux.get("selected_base_queue_risk", 0.0),
+                        off_selected_relative_queue_risk=aux.get("selected_relative_queue_risk", 0.0),
+                        off_selected_overload_risk=aux.get("selected_overload_risk", 0.0),
+                        off_selected_queue_risk_total=aux.get("selected_queue_risk_total", 0.0),
+                        off_selected_planned_load_risk=aux.get("selected_planned_load_risk", 0.0),
+                        off_selected_relative_planned_load_risk=aux.get("selected_relative_planned_load_risk", 0.0),
+                        off_selected_dynamic_risk=aux.get("selected_dynamic_risk", 0.0),
                         off_selected_runtime_confidence=aux.get("selected_runtime_confidence", 0.0),
                         unique_targets=unique_targets,
                         feasible_targets_mean=feasible_targets_mean,
@@ -5272,7 +5376,10 @@ class Hedger:
                                 "offloading_infeasible_projection_cnt", "offloading_projection_cost",
                                 "off_selected_runtime_ratio", "off_selected_pair_load",
                                 "off_selected_device_load", "off_selected_load_pressure",
-                                "off_selected_service_time_factor", "off_selected_queue_risk",
+                                "off_selected_service_time_factor", "off_selected_base_queue_risk",
+                                "off_selected_relative_queue_risk", "off_selected_overload_risk",
+                                "off_selected_queue_risk_total", "off_selected_planned_load_risk",
+                                "off_selected_relative_planned_load_risk", "off_selected_dynamic_risk",
                                 "off_selected_runtime_confidence",
                                 "unique_targets", "feasible_targets_mean", "feasible_targets_min",
                                 "feasible_targets_max", "transition_buffer",
@@ -5335,7 +5442,7 @@ class Hedger:
                         phys_feats=phys_feats_dev,
                         static_mask=static_mask_dev,
                         topo_order=None,
-                        enable_unknown_exploration=self.stage_cfg.update_offloading_policy,
+                        enable_exploration=self.stage_cfg.update_offloading_policy,
                     )
                     offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
                     self.offloading_plan = offloading_plan
@@ -5433,7 +5540,7 @@ class Hedger:
                         "proposal_actions": aux["proposal_actions"].detach().cpu(),
                         "static_mask": static_mask_dev.cpu(),
                         "topo_order": None,
-                        "unknown_exploration_enabled": bool(self.stage_cfg.update_offloading_policy),
+                        "exploration_enabled": bool(self.stage_cfg.update_offloading_policy),
                         "logp": logp.detach().cpu(),
                         "value": value.detach().cpu(),
                         "next_value": float(next_value),
@@ -5510,7 +5617,13 @@ class Hedger:
                     off_selected_device_load=aux.get("selected_device_load", 0.0),
                     off_selected_load_pressure=aux.get("selected_load_pressure", 0.0),
                     off_selected_service_time_factor=aux.get("selected_service_time_factor", 0.0),
-                    off_selected_queue_risk=aux.get("selected_queue_risk", 0.0),
+                    off_selected_base_queue_risk=aux.get("selected_base_queue_risk", 0.0),
+                    off_selected_relative_queue_risk=aux.get("selected_relative_queue_risk", 0.0),
+                    off_selected_overload_risk=aux.get("selected_overload_risk", 0.0),
+                    off_selected_queue_risk_total=aux.get("selected_queue_risk_total", 0.0),
+                    off_selected_planned_load_risk=aux.get("selected_planned_load_risk", 0.0),
+                    off_selected_relative_planned_load_risk=aux.get("selected_relative_planned_load_risk", 0.0),
+                    off_selected_dynamic_risk=aux.get("selected_dynamic_risk", 0.0),
                     off_selected_runtime_confidence=aux.get("selected_runtime_confidence", 0.0),
                     unique_targets=unique_targets,
                     feasible_targets_mean=feasible_targets_mean,

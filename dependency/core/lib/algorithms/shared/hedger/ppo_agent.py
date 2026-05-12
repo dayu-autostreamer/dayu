@@ -113,12 +113,10 @@ OFFLOADING_CANDIDATE_FEATURE_NAMES = [
     "is_cloud",
 ]
 
-OFFLOADING_AFFINITY_FEATURE_NAMES = [
+OFFLOADING_STATIC_PRIOR_FEATURE_NAMES = [
     "qk_feature",
     "compute_gap",
     "parent_same_device",
-    "cross_tier_penalty",
-    "is_cloud",
 ]
 
 DEPLOYMENT_CANDIDATE_FEATURE_NAMES = [
@@ -1437,20 +1435,28 @@ class HedgerOffloadingPPO(nn.Module):
                  gamma=0.99, lamda=0.95, clip_eps=0.2,
                  cloud_node_idx: int = -1,
                  unknown_exploration_prob: float = 0.0,
-                 affinity_score_scale: float = 1.5,
+                 risk_exploration_prob: float = 0.0,
+                 risk_exploration_temperature: float = 0.25,
+                 risk_exploration_min_gap: float = 0.05,
+                 static_prior_scale: float = 0.45,
                  runtime_weight: float = 0.45,
                  runtime_clip: float = 3.0,
-                 queue_risk_weight: float = 1.0,
-                 planned_load_risk_weight: float = 0.7,
+                 absolute_queue_weight: float = 0.35,
+                 relative_queue_weight: float = 1.8,
+                 overload_weight: float = 3.0,
+                 planned_load_weight: float = 0.8,
+                 relative_planned_load_weight: float = 0.8,
+                 cloud_fallback_penalty: float = 1.2,
+                 cross_tier_weight: float = 0.2,
                  planned_load_clip: float = 3.0,
                  load_clip: float = 3.0,
-                 risk_clip: float = 2.0):
+                 risk_clip: float = 3.0):
         super().__init__()
         self.encoder = encoder
         self.actor = OffloadActor(d_model)
         hidden_dim = max(32, d_model)
-        self.offloading_affinity_head = CandidateCostHead(
-            input_dim=len(OFFLOADING_AFFINITY_FEATURE_NAMES),
+        self.offloading_static_prior_head = CandidateCostHead(
+            input_dim=len(OFFLOADING_STATIC_PRIOR_FEATURE_NAMES),
             hidden_dim=hidden_dim,
         )
         self.critic = CandidateValueHead(input_dim=len(OFFLOADING_CANDIDATE_FEATURE_NAMES), d_model=d_model)
@@ -1458,7 +1464,7 @@ class HedgerOffloadingPPO(nn.Module):
         encoder_params = list(self.encoder.parameters()) if update_encoder else []
         params_actor = (
             list(self.actor.parameters())
-            + list(self.offloading_affinity_head.parameters())
+            + list(self.offloading_static_prior_head.parameters())
             + encoder_params
         )
         self.actor_opt = torch.optim.Adam(params_actor, lr=actor_lr)
@@ -1470,11 +1476,19 @@ class HedgerOffloadingPPO(nn.Module):
         self.clip_eps = clip_eps
         self.cloud_idx = cloud_node_idx
         self.unknown_exploration_prob = float(max(0.0, min(1.0, unknown_exploration_prob)))
-        self.affinity_score_scale = float(max(0.0, affinity_score_scale))
+        self.risk_exploration_prob = float(max(0.0, min(1.0, risk_exploration_prob)))
+        self.risk_exploration_temperature = float(max(1e-6, risk_exploration_temperature))
+        self.risk_exploration_min_gap = float(max(0.0, risk_exploration_min_gap))
+        self.static_prior_scale = float(max(0.0, static_prior_scale))
         self.runtime_weight = float(max(0.0, runtime_weight))
         self.runtime_clip = float(max(1e-6, runtime_clip))
-        self.queue_risk_weight = float(max(0.0, queue_risk_weight))
-        self.planned_load_risk_weight = float(max(0.0, planned_load_risk_weight))
+        self.absolute_queue_weight = float(max(0.0, absolute_queue_weight))
+        self.relative_queue_weight = float(max(0.0, relative_queue_weight))
+        self.overload_weight = float(max(0.0, overload_weight))
+        self.planned_load_weight = float(max(0.0, planned_load_weight))
+        self.relative_planned_load_weight = float(max(0.0, relative_planned_load_weight))
+        self.cloud_fallback_penalty = float(max(0.0, cloud_fallback_penalty))
+        self.cross_tier_weight = float(max(0.0, cross_tier_weight))
         self.planned_load_clip = float(max(1e-6, planned_load_clip))
         self.load_clip = float(max(1e-6, load_clip))
         self.risk_clip = float(max(1e-6, risk_clip))
@@ -1662,18 +1676,18 @@ class HedgerOffloadingPPO(nn.Module):
     def _offloading_feature(candidate_row: torch.Tensor, name: str) -> torch.Tensor:
         return candidate_row[..., OFFLOADING_CANDIDATE_FEATURE_NAMES.index(name)]
 
-    def _offloading_affinity_row(self, candidate_row: torch.Tensor) -> torch.Tensor:
+    def _offloading_static_prior_row(self, candidate_row: torch.Tensor) -> torch.Tensor:
         indices = [
             OFFLOADING_CANDIDATE_FEATURE_NAMES.index(name)
-            for name in OFFLOADING_AFFINITY_FEATURE_NAMES
+            for name in OFFLOADING_STATIC_PRIOR_FEATURE_NAMES
         ]
         return candidate_row[..., indices]
 
-    def _offloading_affinity_score(self, candidate_row: torch.Tensor) -> torch.Tensor:
-        raw_score = self.offloading_affinity_head(self._offloading_affinity_row(candidate_row).float())
-        return self.affinity_score_scale * torch.tanh(raw_score)
+    def _offloading_static_prior(self, candidate_row: torch.Tensor) -> torch.Tensor:
+        raw_score = self.offloading_static_prior_head(self._offloading_static_prior_row(candidate_row).float())
+        return self.static_prior_scale * torch.tanh(raw_score)
 
-    def _offloading_runtime_penalty(self, candidate_row: torch.Tensor) -> torch.Tensor:
+    def _offloading_runtime_risk(self, candidate_row: torch.Tensor) -> torch.Tensor:
         service_time = self._offloading_feature(candidate_row, "service_time_factor").float().clamp(0.0, 1.0)
         return self.runtime_weight * service_time
 
@@ -1682,14 +1696,14 @@ class HedgerOffloadingPPO(nn.Module):
         device_load = self._offloading_feature(candidate_row, "device_load").float().clamp_min(0.0)
         return (pair_load + device_load).clamp(max=self.load_clip)
 
-    def _offloading_queue_risk(
+    def _offloading_raw_queue_risk(
             self,
             candidate_row: torch.Tensor,
     ) -> torch.Tensor:
         service_time = self._offloading_feature(candidate_row, "service_time_factor").float().clamp(0.0, 1.0)
         load_pressure = self._offloading_load_pressure(candidate_row)
         risk = service_time * torch.log1p(load_pressure)
-        return self.queue_risk_weight * risk.clamp(max=self.risk_clip)
+        return risk.clamp(max=self.risk_clip)
 
     def _offloading_planned_load_risk(
             self,
@@ -1700,7 +1714,80 @@ class HedgerOffloadingPPO(nn.Module):
         load = load.clamp_min(0.0).clamp(max=self.planned_load_clip)
         service_time = self._offloading_feature(candidate_row, "service_time_factor").float().clamp(0.0, 1.0)
         risk = service_time * torch.log1p(load.float())
-        return self.planned_load_risk_weight * risk.clamp(max=self.risk_clip)
+        return self.planned_load_weight * risk.clamp(max=self.risk_clip)
+
+    def _offloading_score_baseline_mask(
+            self,
+            candidate_row: torch.Tensor,
+            allowed: torch.Tensor,
+    ) -> torch.Tensor:
+        allowed = allowed.to(device=candidate_row.device).bool()
+        is_cloud = self._offloading_feature(candidate_row, "is_cloud").float() > 0.5
+        edge_allowed = allowed & ~is_cloud
+        if bool(edge_allowed.any().detach().item()):
+            return edge_allowed
+        if bool(allowed.any().detach().item()):
+            return allowed
+        return torch.ones_like(allowed, dtype=torch.bool, device=candidate_row.device)
+
+    @staticmethod
+    def _masked_min(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        masked = values.masked_fill(~mask.to(device=values.device).bool(), float("inf"))
+        min_value = masked.min()
+        if bool(torch.isfinite(min_value).detach().item()):
+            return min_value
+        return torch.zeros((), dtype=values.dtype, device=values.device)
+
+    def _offloading_relative_queue_risk(
+            self,
+            base_queue_risk: torch.Tensor,
+            candidate_row: torch.Tensor,
+            allowed: torch.Tensor,
+    ) -> torch.Tensor:
+        baseline_mask = self._offloading_score_baseline_mask(candidate_row, allowed)
+        baseline = self._masked_min(base_queue_risk.detach(), baseline_mask)
+        relative = torch.relu(base_queue_risk - baseline)
+        return self.relative_queue_weight * relative.clamp(max=self.risk_clip)
+
+    def _offloading_overload_risk(
+            self,
+            candidate_row: torch.Tensor,
+            load_pressure: torch.Tensor,
+            allowed: torch.Tensor,
+    ) -> torch.Tensor:
+        baseline_mask = self._offloading_score_baseline_mask(candidate_row, allowed)
+        baseline_load = self._masked_min(load_pressure.detach(), baseline_mask)
+        service_time = self._offloading_feature(candidate_row, "service_time_factor").float().clamp(0.0, 1.0)
+        overload = torch.relu(load_pressure - baseline_load)
+        risk = service_time * overload.pow(2)
+        return self.overload_weight * risk.clamp(max=self.risk_clip)
+
+    def _offloading_planned_pressure(
+            self,
+            planned_device_load: torch.Tensor,
+            candidate_row: torch.Tensor,
+    ) -> torch.Tensor:
+        load = planned_device_load.to(device=candidate_row.device, dtype=candidate_row.dtype)
+        return torch.log1p(load.clamp_min(0.0).clamp(max=self.planned_load_clip))
+
+    def _offloading_relative_planned_load_risk(
+            self,
+            planned_pressure: torch.Tensor,
+            candidate_row: torch.Tensor,
+            allowed: torch.Tensor,
+    ) -> torch.Tensor:
+        baseline_mask = self._offloading_score_baseline_mask(candidate_row, allowed)
+        baseline = self._masked_min(planned_pressure.detach(), baseline_mask)
+        relative = torch.relu(planned_pressure - baseline)
+        return self.relative_planned_load_weight * relative.clamp(max=self.risk_clip)
+
+    def _offloading_cloud_penalty(self, candidate_row: torch.Tensor) -> torch.Tensor:
+        is_cloud = self._offloading_feature(candidate_row, "is_cloud").float().clamp(0.0, 1.0)
+        return self.cloud_fallback_penalty * is_cloud
+
+    def _offloading_cross_tier_penalty_term(self, candidate_row: torch.Tensor) -> torch.Tensor:
+        cross_tier = self._offloading_feature(candidate_row, "cross_tier_penalty").float().clamp_min(0.0)
+        return self.cross_tier_weight * cross_tier
 
     def _offloading_planned_load_increment(self, selected_candidate: torch.Tensor) -> torch.Tensor:
         arrival_rate = self._offloading_feature(selected_candidate, "arrival_rate_short").float().clamp_min(0.0)
@@ -1713,24 +1800,61 @@ class HedgerOffloadingPPO(nn.Module):
             self,
             candidate_row: torch.Tensor,
             planned_device_load: torch.Tensor,
+            allowed: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        affinity_score = self._offloading_affinity_score(candidate_row)
-        runtime_penalty = self._offloading_runtime_penalty(candidate_row)
+        static_prior = self._offloading_static_prior(candidate_row)
+        runtime_risk = self._offloading_runtime_risk(candidate_row)
         load_pressure = self._offloading_load_pressure(candidate_row.float())
-        queue_risk = self._offloading_queue_risk(candidate_row.float())
+        raw_queue_risk = self._offloading_raw_queue_risk(candidate_row.float())
+        base_queue_risk = self.absolute_queue_weight * raw_queue_risk
+        relative_queue_risk = self._offloading_relative_queue_risk(
+            raw_queue_risk,
+            candidate_row.float(),
+            allowed,
+        )
+        overload_risk = self._offloading_overload_risk(
+            candidate_row.float(),
+            load_pressure,
+            allowed,
+        )
+        queue_risk_total = base_queue_risk + relative_queue_risk + overload_risk
+        planned_pressure = self._offloading_planned_pressure(planned_device_load, candidate_row.float())
         planned_load_risk = self._offloading_planned_load_risk(
             candidate_row.float(),
             planned_device_load,
         )
+        relative_planned_load_risk = self._offloading_relative_planned_load_risk(
+            planned_pressure,
+            candidate_row.float(),
+            allowed,
+        )
+        cloud_penalty = self._offloading_cloud_penalty(candidate_row.float())
+        cross_tier_penalty_term = self._offloading_cross_tier_penalty_term(candidate_row.float())
         service_time = self._offloading_feature(candidate_row, "service_time_factor").float().clamp(0.0, 1.0)
-        final_score = affinity_score - runtime_penalty - queue_risk - planned_load_risk
+        dynamic_risk = (
+            runtime_risk
+            + queue_risk_total
+            + planned_load_risk
+            + relative_planned_load_risk
+            + cloud_penalty
+            + cross_tier_penalty_term
+        )
+        final_score = static_prior - dynamic_risk
         return {
-            "affinity_score": affinity_score,
-            "runtime_penalty": runtime_penalty,
+            "static_prior": static_prior,
+            "runtime_risk": runtime_risk,
             "service_time_factor": service_time,
             "load_pressure": load_pressure,
-            "queue_risk": queue_risk,
+            "base_queue_risk": base_queue_risk,
+            "relative_queue_risk": relative_queue_risk,
+            "overload_risk": overload_risk,
+            "queue_risk_total": queue_risk_total,
+            "planned_pressure": planned_pressure,
             "planned_load_risk": planned_load_risk,
+            "relative_planned_load_risk": relative_planned_load_risk,
+            "cloud_penalty": cloud_penalty,
+            "cross_tier_penalty_term": cross_tier_penalty_term,
+            "dynamic_risk": dynamic_risk,
             "final_score": final_score,
         }
 
@@ -1742,15 +1866,33 @@ class HedgerOffloadingPPO(nn.Module):
             "selected_device_load": 0.0,
             "selected_load_pressure": 0.0,
             "selected_service_time_factor": 0.0,
-            "selected_queue_risk": 0.0,
+            "selected_base_queue_risk": 0.0,
+            "selected_relative_queue_risk": 0.0,
+            "selected_overload_risk": 0.0,
+            "selected_queue_risk_total": 0.0,
+            "selected_planned_load_risk": 0.0,
+            "selected_relative_planned_load_risk": 0.0,
+            "selected_dynamic_risk": 0.0,
             "selected_runtime_confidence": 0.0,
             "selected_queue_risk_cost": 0.0,
         }
+
+    @staticmethod
+    def _selected_score_mean(
+            matrix: Optional[torch.Tensor],
+            service_idx: torch.Tensor,
+            actions: torch.Tensor,
+    ) -> float:
+        if matrix is None or matrix.numel() == 0 or service_idx.numel() == 0:
+            return 0.0
+        selected = matrix[service_idx, actions].float()
+        return _scalar_to_float(selected.mean())
 
     def _selected_offloading_queue_metrics(
             self,
             candidate_features: torch.Tensor,
             actions: torch.Tensor,
+            score_matrices: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, float]:
         if candidate_features.numel() == 0 or actions.numel() == 0:
             return self._empty_selected_queue_metrics()
@@ -1765,8 +1907,23 @@ class HedgerOffloadingPPO(nn.Module):
         device_load = self._offloading_feature(selected, "device_load")
         service_time = self._offloading_feature(selected, "service_time_factor")
         load_pressure = self._offloading_load_pressure(selected)
-        queue_risk = self._offloading_queue_risk(selected)
         pair_confidence = self._offloading_feature(selected, "runtime_confidence").clamp(0.0, 1.0)
+        score_matrices = score_matrices or {}
+        base_queue_risk = self._selected_score_mean(score_matrices.get("base_queue_risk"), service_idx, actions[valid])
+        relative_queue_risk = self._selected_score_mean(
+            score_matrices.get("relative_queue_risk"), service_idx, actions[valid]
+        )
+        overload_risk = self._selected_score_mean(score_matrices.get("overload_risk"), service_idx, actions[valid])
+        queue_risk_total = self._selected_score_mean(
+            score_matrices.get("queue_risk_total"), service_idx, actions[valid]
+        )
+        planned_load_risk = self._selected_score_mean(
+            score_matrices.get("planned_load_risk"), service_idx, actions[valid]
+        )
+        relative_planned_load_risk = self._selected_score_mean(
+            score_matrices.get("relative_planned_load_risk"), service_idx, actions[valid]
+        )
+        dynamic_risk = self._selected_score_mean(score_matrices.get("dynamic_risk"), service_idx, actions[valid])
 
         return {
             "selected_runtime_ratio": _scalar_to_float(runtime_ratio.mean()),
@@ -1774,9 +1931,15 @@ class HedgerOffloadingPPO(nn.Module):
             "selected_device_load": _scalar_to_float(device_load.mean()),
             "selected_load_pressure": _scalar_to_float(load_pressure.mean()),
             "selected_service_time_factor": _scalar_to_float(service_time.mean()),
-            "selected_queue_risk": _scalar_to_float(queue_risk.mean()),
+            "selected_base_queue_risk": base_queue_risk,
+            "selected_relative_queue_risk": relative_queue_risk,
+            "selected_overload_risk": overload_risk,
+            "selected_queue_risk_total": queue_risk_total,
+            "selected_planned_load_risk": planned_load_risk,
+            "selected_relative_planned_load_risk": relative_planned_load_risk,
+            "selected_dynamic_risk": dynamic_risk,
             "selected_runtime_confidence": _scalar_to_float(pair_confidence.mean()),
-            "selected_queue_risk_cost": _scalar_to_float(queue_risk.mean()),
+            "selected_queue_risk_cost": base_queue_risk + relative_queue_risk + overload_risk,
         }
 
     def _offloading_value_candidate_features(
@@ -1917,25 +2080,76 @@ class HedgerOffloadingPPO(nn.Module):
             unknown_probs = unknown_weight / weight_sum.clamp_min(1e-8)
         return unknown_probs, unknown_weight
 
-    def _mix_unknown_exploration_probs(
+    def _risk_exploration_probs(
+            self,
+            dynamic_risk: torch.Tensor,
+            candidate_row: torch.Tensor,
+            allowed: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        risk_probs = torch.zeros_like(allowed, dtype=torch.float32)
+        risk_weight = torch.zeros_like(risk_probs)
+        if dynamic_risk.numel() == 0 or candidate_row.numel() == 0 or not bool(allowed.any().item()):
+            return risk_probs, risk_weight
+        is_cloud = self._offloading_feature(candidate_row, "is_cloud").detach().float() > 0.5
+        risk_mask = allowed.to(device=dynamic_risk.device).bool() & ~is_cloud.to(device=dynamic_risk.device)
+        if int(risk_mask.sum().detach().item()) < 2:
+            return risk_probs, risk_weight
+        risk = dynamic_risk.detach().float()
+        masked_risk = risk.masked_fill(~risk_mask, float("inf"))
+        min_risk = masked_risk.min()
+        max_risk = risk.masked_fill(~risk_mask, float("-inf")).max()
+        if not bool((torch.isfinite(min_risk) & torch.isfinite(max_risk)).detach().item()):
+            return risk_probs, risk_weight
+        if float((max_risk - min_risk).detach().item()) < self.risk_exploration_min_gap:
+            return risk_probs, risk_weight
+        risk_weight = torch.relu(max_risk - risk).masked_fill(~risk_mask, 0.0)
+        logits = (-risk / self.risk_exploration_temperature).masked_fill(~risk_mask, float("-inf"))
+        risk_probs = F.softmax(logits, dim=-1)
+        risk_probs = risk_probs.masked_fill(~risk_mask, 0.0)
+        if float(risk_probs.sum().detach().item()) <= 1e-8:
+            return torch.zeros_like(risk_probs), risk_weight
+        return risk_probs / risk_probs.sum().clamp_min(1e-8), risk_weight
+
+    def _mix_offloading_exploration_probs(
             self,
             base_probs: torch.Tensor,
             candidate_row: torch.Tensor,
+            score_terms: Dict[str, torch.Tensor],
             allowed: torch.Tensor,
             *,
-            enable_unknown_exploration: bool,
+            enable_exploration: bool,
             deterministic: bool,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         unknown_probs, unknown_weight = self._unknown_exploration_probs(candidate_row, allowed)
-        eps = self.unknown_exploration_prob if enable_unknown_exploration and not deterministic else 0.0
-        if eps <= 0.0 or float(unknown_probs.sum().detach().item()) <= 1e-8:
-            return base_probs, unknown_probs, unknown_weight
-        mixed = (1.0 - eps) * base_probs + eps * unknown_probs.to(device=base_probs.device, dtype=base_probs.dtype)
+        risk_probs, risk_weight = self._risk_exploration_probs(
+            score_terms["dynamic_risk"],
+            candidate_row,
+            allowed,
+        )
+        eps_unknown = self.unknown_exploration_prob if enable_exploration and not deterministic else 0.0
+        eps_risk = self.risk_exploration_prob if enable_exploration and not deterministic else 0.0
+        if float(unknown_probs.sum().detach().item()) <= 1e-8:
+            eps_unknown = 0.0
+        if float(risk_probs.sum().detach().item()) <= 1e-8:
+            eps_risk = 0.0
+        eps_total = eps_unknown + eps_risk
+        if eps_total <= 0.0:
+            return base_probs, unknown_probs, unknown_weight, risk_probs, risk_weight
+        if eps_total >= 0.95:
+            scale = 0.95 / eps_total
+            eps_unknown *= scale
+            eps_risk *= scale
+            eps_total = eps_unknown + eps_risk
+        mixed = (
+            (1.0 - eps_total) * base_probs
+            + eps_unknown * unknown_probs.to(device=base_probs.device, dtype=base_probs.dtype)
+            + eps_risk * risk_probs.to(device=base_probs.device, dtype=base_probs.dtype)
+        )
         mixed = mixed.masked_fill(~allowed.bool(), 0.0)
         mixed_sum = mixed.sum()
         if float(mixed_sum.detach().item()) <= 1e-8:
-            return base_probs, unknown_probs, unknown_weight
-        return mixed / mixed_sum.clamp_min(1e-8), unknown_probs, unknown_weight
+            return base_probs, unknown_probs, unknown_weight, risk_probs, risk_weight
+        return mixed / mixed_sum.clamp_min(1e-8), unknown_probs, unknown_weight, risk_probs, risk_weight
 
     def _project_offloading_actions(
             self,
@@ -2013,7 +2227,7 @@ class HedgerOffloadingPPO(nn.Module):
     def policy(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
                static_mask: torch.Tensor, topo_order: Optional[list] = None,
                deterministic: bool = False,
-               enable_unknown_exploration: bool = False):
+               enable_exploration: bool = False):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
@@ -2039,13 +2253,23 @@ class HedgerOffloadingPPO(nn.Module):
         base_policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         unknown_policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         unknown_exploration_weight_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        risk_policy_prob_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        risk_exploration_weight_matrix = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         final_scores = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
-        affinity_scores = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
-        runtime_penalties = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        static_priors = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        runtime_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         service_time_factors = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         load_pressures = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
-        queue_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        base_queue_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        relative_queue_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        overload_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        queue_risk_totals = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        planned_pressures = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         planned_load_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        relative_planned_load_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        cloud_penalties = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        cross_tier_penalty_terms = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        dynamic_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         planned_device_loads = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         candidate_features_matrix = torch.zeros(
             (Ms, Np, len(OFFLOADING_CANDIDATE_FEATURE_NAMES)),
@@ -2071,30 +2295,41 @@ class HedgerOffloadingPPO(nn.Module):
                 proposal_action_list,
                 allowed=allowed,
             )
-            score_terms = self._score_offloading_candidates(candidate_row, planned_device_load)
+            score_terms = self._score_offloading_candidates(candidate_row, planned_device_load, allowed)
             candidate_scores = score_terms["final_score"]
             candidate_features_matrix[i] = candidate_row
-            affinity_scores[i] = score_terms["affinity_score"]
-            runtime_penalties[i] = score_terms["runtime_penalty"]
+            static_priors[i] = score_terms["static_prior"]
+            runtime_risks[i] = score_terms["runtime_risk"]
             service_time_factors[i] = score_terms["service_time_factor"]
             load_pressures[i] = score_terms["load_pressure"]
-            queue_risks[i] = score_terms["queue_risk"]
+            base_queue_risks[i] = score_terms["base_queue_risk"]
+            relative_queue_risks[i] = score_terms["relative_queue_risk"]
+            overload_risks[i] = score_terms["overload_risk"]
+            queue_risk_totals[i] = score_terms["queue_risk_total"]
+            planned_pressures[i] = score_terms["planned_pressure"]
             planned_load_risks[i] = score_terms["planned_load_risk"]
+            relative_planned_load_risks[i] = score_terms["relative_planned_load_risk"]
+            cloud_penalties[i] = score_terms["cloud_penalty"]
+            cross_tier_penalty_terms[i] = score_terms["cross_tier_penalty_term"]
+            dynamic_risks[i] = score_terms["dynamic_risk"]
             planned_device_loads[i] = planned_device_load
             final_scores[i] = candidate_scores
             effective_mask[i] = allowed
             masked_scores = candidate_scores.masked_fill(~allowed, float('-inf'))
             base_probs_i = F.softmax(masked_scores, dim=-1)
-            probs_i, unknown_probs_i, unknown_weight_i = self._mix_unknown_exploration_probs(
+            probs_i, unknown_probs_i, unknown_weight_i, risk_probs_i, risk_weight_i = self._mix_offloading_exploration_probs(
                 base_probs_i,
                 candidate_row,
+                score_terms,
                 allowed,
-                enable_unknown_exploration=enable_unknown_exploration,
+                enable_exploration=enable_exploration,
                 deterministic=deterministic,
             )
             base_policy_prob_matrix[i] = base_probs_i
             unknown_policy_prob_matrix[i] = unknown_probs_i
             unknown_exploration_weight_matrix[i] = unknown_weight_i
+            risk_policy_prob_matrix[i] = risk_probs_i
+            risk_exploration_weight_matrix[i] = risk_weight_i
             policy_prob_matrix[i] = probs_i
             dist = torch.distributions.Categorical(probs=probs_i)
             sampled_action = torch.argmax(probs_i) if deterministic else dist.sample()
@@ -2122,7 +2357,17 @@ class HedgerOffloadingPPO(nn.Module):
             topo_order,
         )
         selected_queue_metrics = self._selected_offloading_queue_metrics(
-            candidate_features_matrix, projected_actions
+            candidate_features_matrix,
+            projected_actions,
+            score_matrices={
+                "base_queue_risk": base_queue_risks,
+                "relative_queue_risk": relative_queue_risks,
+                "overload_risk": overload_risks,
+                "queue_risk_total": queue_risk_totals,
+                "planned_load_risk": planned_load_risks,
+                "relative_planned_load_risk": relative_planned_load_risks,
+                "dynamic_risk": dynamic_risks,
+            },
         )
 
         value_candidates = self._offloading_value_candidate_features(
@@ -2141,12 +2386,20 @@ class HedgerOffloadingPPO(nn.Module):
                 "k_embedding": k_embedding.detach().cpu(),
                 "qk_score": qk_scores.detach().cpu(),
                 "qk_feature": qk_feature.detach().cpu(),
-                "affinity_score": affinity_scores.detach().cpu(),
-                "runtime_penalty": runtime_penalties.detach().cpu(),
+                "static_prior": static_priors.detach().cpu(),
+                "runtime_risk": runtime_risks.detach().cpu(),
                 "service_time_factor": service_time_factors.detach().cpu(),
                 "load_pressure": load_pressures.detach().cpu(),
-                "queue_risk": queue_risks.detach().cpu(),
+                "base_queue_risk": base_queue_risks.detach().cpu(),
+                "relative_queue_risk": relative_queue_risks.detach().cpu(),
+                "overload_risk": overload_risks.detach().cpu(),
+                "queue_risk_total": queue_risk_totals.detach().cpu(),
+                "planned_pressure": planned_pressures.detach().cpu(),
                 "planned_load_risk": planned_load_risks.detach().cpu(),
+                "relative_planned_load_risk": relative_planned_load_risks.detach().cpu(),
+                "cloud_penalty": cloud_penalties.detach().cpu(),
+                "cross_tier_penalty_term": cross_tier_penalty_terms.detach().cpu(),
+                "dynamic_risk": dynamic_risks.detach().cpu(),
                 "planned_device_load": planned_device_loads.detach().cpu(),
                 "candidate_feature": candidate_features_matrix.detach().cpu(),
                 "candidate_feature_names": OFFLOADING_CANDIDATE_FEATURE_NAMES,
@@ -2161,7 +2414,14 @@ class HedgerOffloadingPPO(nn.Module):
                 "unknown_exploration_weight": unknown_exploration_weight_matrix.detach().cpu(),
                 "unknown_exploration_eps": torch.full(
                     (Ms, Np),
-                    fill_value=float(self.unknown_exploration_prob if enable_unknown_exploration and not deterministic else 0.0),
+                    fill_value=float(self.unknown_exploration_prob if enable_exploration and not deterministic else 0.0),
+                    dtype=torch.float32,
+                ),
+                "risk_policy_prob": risk_policy_prob_matrix.detach().cpu(),
+                "risk_exploration_weight": risk_exploration_weight_matrix.detach().cpu(),
+                "risk_exploration_eps": torch.full(
+                    (Ms, Np),
+                    fill_value=float(self.risk_exploration_prob if enable_exploration and not deterministic else 0.0),
                     dtype=torch.float32,
                 ),
                 "policy_prob": policy_prob_matrix.detach().cpu(),
@@ -2174,7 +2434,7 @@ class HedgerOffloadingPPO(nn.Module):
 
     def evaluate(self, logic_edge_index, logic_feats, phys_edge_index, phys_feats,
                  proposal_actions: torch.Tensor, static_mask: torch.Tensor, topo_order: Optional[list] = None,
-                 enable_unknown_exploration: bool = False):
+                 enable_exploration: bool = False):
         h_s, h_p = self.encoder.encode(logic_edge_index, logic_feats, phys_edge_index, phys_feats)
         h_s, h_p = self._adapt_embeddings(h_s, h_p)
         Ms, Np = h_s.size(0), h_p.size(0)
@@ -2215,16 +2475,19 @@ class HedgerOffloadingPPO(nn.Module):
                 proposal_action_list,
                 allowed=allowed,
             )
-            scores_i = self._score_offloading_candidates(
+            score_terms = self._score_offloading_candidates(
                 candidate_row,
                 planned_device_load,
-            )["final_score"]
+                allowed,
+            )
+            scores_i = score_terms["final_score"]
             base_probs_i = F.softmax(scores_i.masked_fill(~allowed, float('-inf')), dim=-1)
-            probs_i, _, _ = self._mix_unknown_exploration_probs(
+            probs_i, _, _, _, _ = self._mix_offloading_exploration_probs(
                 base_probs_i,
                 candidate_row,
+                score_terms,
                 allowed,
-                enable_unknown_exploration=enable_unknown_exploration,
+                enable_exploration=enable_exploration,
                 deterministic=False,
             )
             dist = torch.distributions.Categorical(probs=probs_i)
@@ -2272,7 +2535,7 @@ class HedgerOffloadingPPO(nn.Module):
                 "proposal_actions": tr["proposal_actions"].to(device),
                 "static_mask": tr["static_mask"].to(device),
                 "topo_order": tr["topo_order"],
-                "unknown_exploration_enabled": bool(tr.get("unknown_exploration_enabled", False)),
+                "exploration_enabled": bool(tr.get("exploration_enabled", False)),
             }
             for tr in transitions
         ]
@@ -2299,7 +2562,7 @@ class HedgerOffloadingPPO(nn.Module):
                     lp, ent, val, _ = self.evaluate(tr['logic_edge_index'], tr['logic_feats'],
                                                     tr['phys_edge_index'], tr['phys_feats'],
                                                     tr['proposal_actions'], tr['static_mask'], tr['topo_order'],
-                                                    enable_unknown_exploration=tr["unknown_exploration_enabled"])
+                                                    enable_exploration=tr["exploration_enabled"])
                     new_logp_list.append(lp)
                     new_val_list.append(val)
                     ent_list.append(ent)
