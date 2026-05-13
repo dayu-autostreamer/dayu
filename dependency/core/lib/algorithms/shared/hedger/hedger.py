@@ -988,6 +988,11 @@ class Hedger:
             "score_overload_weight": float(scoring.get("overload_weight", 3.0)),
             "score_planned_load_weight": float(scoring.get("planned_load_weight", 0.8)),
             "score_relative_planned_load_weight": float(scoring.get("relative_planned_load_weight", 0.8)),
+            "score_offered_load_weight": float(scoring.get("offered_load_weight", 0.45)),
+            "score_offered_load_clip": float(scoring.get("offered_load_clip", 1.0)),
+            "score_weak_replica_weight": float(scoring.get("weak_replica_weight", 1.2)),
+            "score_weak_gap_clip": float(scoring.get("weak_gap_clip", 1.0)),
+            "score_weak_queue_amplifier": float(scoring.get("weak_queue_amplifier", 1.0)),
             "score_cloud_fallback_penalty": float(scoring.get("cloud_fallback_penalty", 1.2)),
             "score_cross_tier_weight": float(scoring.get("cross_tier_weight", 0.2)),
             "score_planned_load_clip": float(scoring.get("planned_load_clip", 3.0)),
@@ -2320,6 +2325,8 @@ class Hedger:
             "off_selected_relative_queue_risk", "off_selected_overload_risk",
             "off_selected_queue_risk_total", "off_selected_planned_load_risk",
             "off_selected_relative_planned_load_risk", "off_selected_dynamic_risk",
+            "off_selected_offered_load_pressure", "off_selected_offered_load_risk",
+            "off_selected_relative_weakness", "off_selected_weak_replica_risk",
             "off_selected_runtime_confidence",
             "unique_targets", "feasible_targets_mean",
             "offloading_deterministic",
@@ -2393,6 +2400,8 @@ class Hedger:
             "target_load_pressure", "target_base_queue_risk", "target_relative_queue_risk",
             "target_overload_risk", "target_queue_risk_total", "target_planned_pressure",
             "target_planned_load_risk", "target_relative_planned_load_risk",
+            "target_offered_load_pressure", "target_offered_load_risk",
+            "target_relative_weakness", "target_weak_replica_risk",
             "target_cloud_penalty", "target_cross_tier_penalty_term",
             "target_dynamic_risk", "target_planned_device_load", "target_final_score",
         ]
@@ -2417,6 +2426,10 @@ class Hedger:
                 "offloading_planned_pressures",
                 "offloading_planned_load_risks",
                 "offloading_relative_planned_load_risks",
+                "offloading_offered_load_pressures",
+                "offloading_offered_load_risks",
+                "offloading_relative_weaknesses",
+                "offloading_weak_replica_risks",
                 "offloading_cloud_penalties",
                 "offloading_cross_tier_penalty_terms",
                 "offloading_dynamic_risks",
@@ -2662,6 +2675,18 @@ class Hedger:
                 target_relative_planned_load_risk=self._actor_debug_matrix_value(
                     actor_debug, "relative_planned_load_risk", service_idx, target_idx
                 ),
+                target_offered_load_pressure=self._actor_debug_matrix_value(
+                    actor_debug, "offered_load_pressure", service_idx, target_idx
+                ),
+                target_offered_load_risk=self._actor_debug_matrix_value(
+                    actor_debug, "offered_load_risk", service_idx, target_idx
+                ),
+                target_relative_weakness=self._actor_debug_matrix_value(
+                    actor_debug, "relative_weakness", service_idx, target_idx
+                ),
+                target_weak_replica_risk=self._actor_debug_matrix_value(
+                    actor_debug, "weak_replica_risk", service_idx, target_idx
+                ),
                 target_cloud_penalty=self._actor_debug_matrix_value(
                     actor_debug, "cloud_penalty", service_idx, target_idx
                 ),
@@ -2747,6 +2772,18 @@ class Hedger:
                     ),
                     "offloading_relative_planned_load_risks": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "relative_planned_load_risk", service_idx)
+                    ),
+                    "offloading_offered_load_pressures": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "offered_load_pressure", service_idx)
+                    ),
+                    "offloading_offered_load_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "offered_load_risk", service_idx)
+                    ),
+                    "offloading_relative_weaknesses": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "relative_weakness", service_idx)
+                    ),
+                    "offloading_weak_replica_risks": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "weak_replica_risk", service_idx)
                     ),
                     "offloading_cloud_penalties": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "cloud_penalty", service_idx)
@@ -2857,6 +2894,11 @@ class Hedger:
             overload_weight=self.offloading_agent_params["score_overload_weight"],
             planned_load_weight=self.offloading_agent_params["score_planned_load_weight"],
             relative_planned_load_weight=self.offloading_agent_params["score_relative_planned_load_weight"],
+            offered_load_weight=self.offloading_agent_params["score_offered_load_weight"],
+            offered_load_clip=self.offloading_agent_params["score_offered_load_clip"],
+            weak_replica_weight=self.offloading_agent_params["score_weak_replica_weight"],
+            weak_gap_clip=self.offloading_agent_params["score_weak_gap_clip"],
+            weak_queue_amplifier=self.offloading_agent_params["score_weak_queue_amplifier"],
             cloud_fallback_penalty=self.offloading_agent_params["score_cloud_fallback_penalty"],
             cross_tier_weight=self.offloading_agent_params["score_cross_tier_weight"],
             planned_load_clip=self.offloading_agent_params["score_planned_load_clip"],
@@ -4608,6 +4650,10 @@ class Hedger:
                         off_selected_planned_load_risk=aux.get("selected_planned_load_risk", 0.0),
                         off_selected_relative_planned_load_risk=aux.get("selected_relative_planned_load_risk", 0.0),
                         off_selected_dynamic_risk=aux.get("selected_dynamic_risk", 0.0),
+                        off_selected_offered_load_pressure=aux.get("selected_offered_load_pressure", 0.0),
+                        off_selected_offered_load_risk=aux.get("selected_offered_load_risk", 0.0),
+                        off_selected_relative_weakness=aux.get("selected_relative_weakness", 0.0),
+                        off_selected_weak_replica_risk=aux.get("selected_weak_replica_risk", 0.0),
                         off_selected_runtime_confidence=aux.get("selected_runtime_confidence", 0.0),
                         unique_targets=unique_targets,
                         feasible_targets_mean=feasible_targets_mean,
@@ -5380,6 +5426,8 @@ class Hedger:
                                 "off_selected_relative_queue_risk", "off_selected_overload_risk",
                                 "off_selected_queue_risk_total", "off_selected_planned_load_risk",
                                 "off_selected_relative_planned_load_risk", "off_selected_dynamic_risk",
+                                "off_selected_offered_load_pressure", "off_selected_offered_load_risk",
+                                "off_selected_relative_weakness", "off_selected_weak_replica_risk",
                                 "off_selected_runtime_confidence",
                                 "unique_targets", "feasible_targets_mean", "feasible_targets_min",
                                 "feasible_targets_max", "transition_buffer",
@@ -5624,6 +5672,10 @@ class Hedger:
                     off_selected_planned_load_risk=aux.get("selected_planned_load_risk", 0.0),
                     off_selected_relative_planned_load_risk=aux.get("selected_relative_planned_load_risk", 0.0),
                     off_selected_dynamic_risk=aux.get("selected_dynamic_risk", 0.0),
+                    off_selected_offered_load_pressure=aux.get("selected_offered_load_pressure", 0.0),
+                    off_selected_offered_load_risk=aux.get("selected_offered_load_risk", 0.0),
+                    off_selected_relative_weakness=aux.get("selected_relative_weakness", 0.0),
+                    off_selected_weak_replica_risk=aux.get("selected_weak_replica_risk", 0.0),
                     off_selected_runtime_confidence=aux.get("selected_runtime_confidence", 0.0),
                     unique_targets=unique_targets,
                     feasible_targets_mean=feasible_targets_mean,

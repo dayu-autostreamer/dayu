@@ -1446,6 +1446,11 @@ class HedgerOffloadingPPO(nn.Module):
                  overload_weight: float = 3.0,
                  planned_load_weight: float = 0.8,
                  relative_planned_load_weight: float = 0.8,
+                 offered_load_weight: float = 0.45,
+                 offered_load_clip: float = 1.0,
+                 weak_replica_weight: float = 1.2,
+                 weak_gap_clip: float = 1.0,
+                 weak_queue_amplifier: float = 1.0,
                  cloud_fallback_penalty: float = 1.2,
                  cross_tier_weight: float = 0.2,
                  planned_load_clip: float = 3.0,
@@ -1487,6 +1492,11 @@ class HedgerOffloadingPPO(nn.Module):
         self.overload_weight = float(max(0.0, overload_weight))
         self.planned_load_weight = float(max(0.0, planned_load_weight))
         self.relative_planned_load_weight = float(max(0.0, relative_planned_load_weight))
+        self.offered_load_weight = float(max(0.0, offered_load_weight))
+        self.offered_load_clip = float(max(1e-6, offered_load_clip))
+        self.weak_replica_weight = float(max(0.0, weak_replica_weight))
+        self.weak_gap_clip = float(max(1e-6, weak_gap_clip))
+        self.weak_queue_amplifier = float(max(0.0, weak_queue_amplifier))
         self.cloud_fallback_penalty = float(max(0.0, cloud_fallback_penalty))
         self.cross_tier_weight = float(max(0.0, cross_tier_weight))
         self.planned_load_clip = float(max(1e-6, planned_load_clip))
@@ -1781,6 +1791,46 @@ class HedgerOffloadingPPO(nn.Module):
         relative = torch.relu(planned_pressure - baseline)
         return self.relative_planned_load_weight * relative.clamp(max=self.risk_clip)
 
+    def _offloading_offered_load_pressure(self, candidate_row: torch.Tensor) -> torch.Tensor:
+        arrival_rate = self._offloading_feature(candidate_row, "arrival_rate_short").float().clamp_min(0.0)
+        arrival_pressure = torch.log1p(arrival_rate).clamp(max=2.0) / 2.0
+        service_time = self._offloading_feature(candidate_row, "service_time_factor").float().clamp(0.0, 1.0)
+        compute_gap = self._offloading_feature(candidate_row, "compute_gap").float()
+        capacity_pressure = torch.sigmoid(compute_gap)
+        pressure = arrival_pressure * service_time * (0.5 + 0.5 * capacity_pressure)
+        return pressure.clamp(max=self.offered_load_clip)
+
+    def _offloading_offered_load_risk(self, offered_load_pressure: torch.Tensor) -> torch.Tensor:
+        return self.offered_load_weight * offered_load_pressure.clamp(max=self.risk_clip)
+
+    def _offloading_relative_weakness(
+            self,
+            candidate_row: torch.Tensor,
+            allowed: torch.Tensor,
+    ) -> torch.Tensor:
+        allowed = allowed.to(device=candidate_row.device).bool()
+        is_cloud = self._offloading_feature(candidate_row, "is_cloud").float() > 0.5
+        edge_allowed = allowed & ~is_cloud
+        weakness = torch.zeros_like(self._offloading_feature(candidate_row, "compute_gap").float())
+        if not bool(edge_allowed.any().detach().item()):
+            return weakness
+        compute_gap = self._offloading_feature(candidate_row, "compute_gap").float()
+        best_gap = self._masked_min(compute_gap.detach(), edge_allowed)
+        relative = torch.relu(compute_gap - best_gap) / self.weak_gap_clip
+        return torch.where(edge_allowed, relative.clamp(max=1.0), weakness)
+
+    def _offloading_weak_replica_risk(
+            self,
+            offered_load_pressure: torch.Tensor,
+            relative_weakness: torch.Tensor,
+            load_pressure: torch.Tensor,
+            planned_pressure: torch.Tensor,
+    ) -> torch.Tensor:
+        load_context = (load_pressure + planned_pressure).clamp_min(0.0).clamp(max=self.load_clip) / self.load_clip
+        amplified_pressure = offered_load_pressure * (1.0 + self.weak_queue_amplifier * load_context)
+        risk = relative_weakness * amplified_pressure
+        return self.weak_replica_weight * risk.clamp(max=self.risk_clip)
+
     def _offloading_cloud_penalty(self, candidate_row: torch.Tensor) -> torch.Tensor:
         is_cloud = self._offloading_feature(candidate_row, "is_cloud").float().clamp(0.0, 1.0)
         return self.cloud_fallback_penalty * is_cloud
@@ -1828,6 +1878,15 @@ class HedgerOffloadingPPO(nn.Module):
             candidate_row.float(),
             allowed,
         )
+        offered_load_pressure = self._offloading_offered_load_pressure(candidate_row.float())
+        offered_load_risk = self._offloading_offered_load_risk(offered_load_pressure)
+        relative_weakness = self._offloading_relative_weakness(candidate_row.float(), allowed)
+        weak_replica_risk = self._offloading_weak_replica_risk(
+            offered_load_pressure,
+            relative_weakness,
+            load_pressure,
+            planned_pressure,
+        )
         cloud_penalty = self._offloading_cloud_penalty(candidate_row.float())
         cross_tier_penalty_term = self._offloading_cross_tier_penalty_term(candidate_row.float())
         service_time = self._offloading_feature(candidate_row, "service_time_factor").float().clamp(0.0, 1.0)
@@ -1836,6 +1895,8 @@ class HedgerOffloadingPPO(nn.Module):
             + queue_risk_total
             + planned_load_risk
             + relative_planned_load_risk
+            + offered_load_risk
+            + weak_replica_risk
             + cloud_penalty
             + cross_tier_penalty_term
         )
@@ -1852,6 +1913,10 @@ class HedgerOffloadingPPO(nn.Module):
             "planned_pressure": planned_pressure,
             "planned_load_risk": planned_load_risk,
             "relative_planned_load_risk": relative_planned_load_risk,
+            "offered_load_pressure": offered_load_pressure,
+            "offered_load_risk": offered_load_risk,
+            "relative_weakness": relative_weakness,
+            "weak_replica_risk": weak_replica_risk,
             "cloud_penalty": cloud_penalty,
             "cross_tier_penalty_term": cross_tier_penalty_term,
             "dynamic_risk": dynamic_risk,
@@ -1872,6 +1937,10 @@ class HedgerOffloadingPPO(nn.Module):
             "selected_queue_risk_total": 0.0,
             "selected_planned_load_risk": 0.0,
             "selected_relative_planned_load_risk": 0.0,
+            "selected_offered_load_pressure": 0.0,
+            "selected_offered_load_risk": 0.0,
+            "selected_relative_weakness": 0.0,
+            "selected_weak_replica_risk": 0.0,
             "selected_dynamic_risk": 0.0,
             "selected_runtime_confidence": 0.0,
             "selected_queue_risk_cost": 0.0,
@@ -1923,6 +1992,18 @@ class HedgerOffloadingPPO(nn.Module):
         relative_planned_load_risk = self._selected_score_mean(
             score_matrices.get("relative_planned_load_risk"), service_idx, actions[valid]
         )
+        offered_load_pressure = self._selected_score_mean(
+            score_matrices.get("offered_load_pressure"), service_idx, actions[valid]
+        )
+        offered_load_risk = self._selected_score_mean(
+            score_matrices.get("offered_load_risk"), service_idx, actions[valid]
+        )
+        relative_weakness = self._selected_score_mean(
+            score_matrices.get("relative_weakness"), service_idx, actions[valid]
+        )
+        weak_replica_risk = self._selected_score_mean(
+            score_matrices.get("weak_replica_risk"), service_idx, actions[valid]
+        )
         dynamic_risk = self._selected_score_mean(score_matrices.get("dynamic_risk"), service_idx, actions[valid])
 
         return {
@@ -1937,6 +2018,10 @@ class HedgerOffloadingPPO(nn.Module):
             "selected_queue_risk_total": queue_risk_total,
             "selected_planned_load_risk": planned_load_risk,
             "selected_relative_planned_load_risk": relative_planned_load_risk,
+            "selected_offered_load_pressure": offered_load_pressure,
+            "selected_offered_load_risk": offered_load_risk,
+            "selected_relative_weakness": relative_weakness,
+            "selected_weak_replica_risk": weak_replica_risk,
             "selected_dynamic_risk": dynamic_risk,
             "selected_runtime_confidence": _scalar_to_float(pair_confidence.mean()),
             "selected_queue_risk_cost": base_queue_risk + relative_queue_risk + overload_risk,
@@ -2267,6 +2352,10 @@ class HedgerOffloadingPPO(nn.Module):
         planned_pressures = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         planned_load_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         relative_planned_load_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        offered_load_pressures = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        offered_load_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        relative_weaknesses = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        weak_replica_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         cloud_penalties = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         cross_tier_penalty_terms = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         dynamic_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
@@ -2309,6 +2398,10 @@ class HedgerOffloadingPPO(nn.Module):
             planned_pressures[i] = score_terms["planned_pressure"]
             planned_load_risks[i] = score_terms["planned_load_risk"]
             relative_planned_load_risks[i] = score_terms["relative_planned_load_risk"]
+            offered_load_pressures[i] = score_terms["offered_load_pressure"]
+            offered_load_risks[i] = score_terms["offered_load_risk"]
+            relative_weaknesses[i] = score_terms["relative_weakness"]
+            weak_replica_risks[i] = score_terms["weak_replica_risk"]
             cloud_penalties[i] = score_terms["cloud_penalty"]
             cross_tier_penalty_terms[i] = score_terms["cross_tier_penalty_term"]
             dynamic_risks[i] = score_terms["dynamic_risk"]
@@ -2366,6 +2459,10 @@ class HedgerOffloadingPPO(nn.Module):
                 "queue_risk_total": queue_risk_totals,
                 "planned_load_risk": planned_load_risks,
                 "relative_planned_load_risk": relative_planned_load_risks,
+                "offered_load_pressure": offered_load_pressures,
+                "offered_load_risk": offered_load_risks,
+                "relative_weakness": relative_weaknesses,
+                "weak_replica_risk": weak_replica_risks,
                 "dynamic_risk": dynamic_risks,
             },
         )
@@ -2397,6 +2494,10 @@ class HedgerOffloadingPPO(nn.Module):
                 "planned_pressure": planned_pressures.detach().cpu(),
                 "planned_load_risk": planned_load_risks.detach().cpu(),
                 "relative_planned_load_risk": relative_planned_load_risks.detach().cpu(),
+                "offered_load_pressure": offered_load_pressures.detach().cpu(),
+                "offered_load_risk": offered_load_risks.detach().cpu(),
+                "relative_weakness": relative_weaknesses.detach().cpu(),
+                "weak_replica_risk": weak_replica_risks.detach().cpu(),
                 "cloud_penalty": cloud_penalties.detach().cpu(),
                 "cross_tier_penalty_term": cross_tier_penalty_terms.detach().cpu(),
                 "dynamic_risk": dynamic_risks.detach().cpu(),
