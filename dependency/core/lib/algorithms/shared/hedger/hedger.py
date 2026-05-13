@@ -993,8 +993,10 @@ class Hedger:
             "score_weak_replica_weight": float(scoring.get("weak_replica_weight", 1.2)),
             "score_weak_gap_clip": float(scoring.get("weak_gap_clip", 1.0)),
             "score_runtime_weak_gap_clip": float(scoring.get("runtime_weak_gap_clip", 0.35)),
-            "score_runtime_weakness_min_evidence": float(scoring.get("runtime_weakness_min_evidence", 0.2)),
+            "score_runtime_weakness_min_confidence": float(scoring.get("runtime_weakness_min_confidence", 0.2)),
+            "score_runtime_recency_floor": float(scoring.get("runtime_recency_floor", 0.7)),
             "score_weak_service_time_weight": float(scoring.get("weak_service_time_weight", 0.5)),
+            "score_weak_capacity_weight": float(scoring.get("weak_capacity_weight", 0.35)),
             "score_weak_queue_amplifier": float(scoring.get("weak_queue_amplifier", 1.0)),
             "score_cloud_fallback_penalty": float(scoring.get("cloud_fallback_penalty", 1.2)),
             "score_cross_tier_weight": float(scoring.get("cross_tier_weight", 0.2)),
@@ -2214,7 +2216,8 @@ class Hedger:
                 "state_runtime_busy_ratio_mean": runtime_means[1],
                 "state_runtime_real_time_per_complexity_mean": runtime_means[2],
                 "state_runtime_confidence_mean": runtime_means[3],
-                "state_runtime_freshness_mean": runtime_means[4],
+                "state_runtime_recency_mean": runtime_means[4],
+                "state_queue_freshness_mean": runtime_means[5],
             })
 
         if self.record_cfg.state_snapshot_debug:
@@ -2240,7 +2243,7 @@ class Hedger:
             "state_runtime_pair_obs_count", "state_queue_pair_obs_count",
             "state_runtime_queue_short_mean", "state_runtime_busy_ratio_mean",
             "state_runtime_real_time_per_complexity_mean", "state_runtime_confidence_mean",
-            "state_runtime_freshness_mean",
+            "state_runtime_recency_mean", "state_queue_freshness_mean",
         ]
 
     @staticmethod
@@ -2322,7 +2325,9 @@ class Hedger:
             "proposal_cloud_fraction", "projected_cloud_fraction",
             "offloading_projection_cnt", "offloading_dependency_projection_cnt",
             "offloading_infeasible_projection_cnt", "offloading_projection_cost",
-            "off_selected_runtime_ratio", "off_selected_pair_load",
+            "off_selected_runtime_ratio", "off_selected_runtime_recency",
+            "off_selected_queue_freshness", "off_selected_speed_evidence",
+            "off_selected_capacity_pressure", "off_selected_pair_load",
             "off_selected_device_load", "off_selected_load_pressure",
             "off_selected_service_time_factor", "off_selected_base_queue_risk",
             "off_selected_relative_queue_risk", "off_selected_overload_risk",
@@ -2399,7 +2404,8 @@ class Hedger:
             "feasible_targets", "feasible_target_count", "parent_targets",
             "target_gpu_flops", "target_bandwidth", "target_role",
             "target_qk_feature", "target_compute_gap", "target_arrival_rate_short",
-            "target_runtime_ratio", "target_runtime_confidence", "target_runtime_freshness",
+            "target_runtime_ratio", "target_runtime_confidence", "target_runtime_recency",
+            "target_queue_freshness", "target_speed_evidence", "target_capacity_pressure",
             "target_pair_load", "target_device_load", "target_service_time_factor",
             "target_cross_tier_penalty", "target_static_prior", "target_runtime_risk",
             "target_load_pressure", "target_base_queue_risk", "target_relative_queue_risk",
@@ -2425,6 +2431,10 @@ class Hedger:
                 "offloading_static_priors",
                 "offloading_runtime_risks",
                 "offloading_service_time_factors",
+                "offloading_runtime_recencies",
+                "offloading_queue_freshnesses",
+                "offloading_speed_evidences",
+                "offloading_capacity_pressures",
                 "offloading_load_pressures",
                 "offloading_base_queue_risks",
                 "offloading_relative_queue_risks",
@@ -2640,8 +2650,17 @@ class Hedger:
                 target_runtime_confidence=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "runtime_confidence"
                 ),
-                target_runtime_freshness=self._actor_debug_candidate_value(
-                    actor_debug, service_idx, target_idx, "runtime_freshness"
+                target_runtime_recency=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "runtime_recency"
+                ),
+                target_queue_freshness=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "queue_freshness"
+                ),
+                target_speed_evidence=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "speed_evidence"
+                ),
+                target_capacity_pressure=self._actor_debug_candidate_value(
+                    actor_debug, service_idx, target_idx, "capacity_pressure"
                 ),
                 target_pair_load=self._actor_debug_candidate_value(
                     actor_debug, service_idx, target_idx, "pair_load"
@@ -2767,6 +2786,18 @@ class Hedger:
                     ),
                     "offloading_service_time_factors": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "service_time_factor", service_idx)
+                    ),
+                    "offloading_runtime_recencies": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "runtime_recency", service_idx)
+                    ),
+                    "offloading_queue_freshnesses": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "queue_freshness", service_idx)
+                    ),
+                    "offloading_speed_evidences": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "speed_evidence", service_idx)
+                    ),
+                    "offloading_capacity_pressures": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "capacity_pressure", service_idx)
                     ),
                     "offloading_load_pressures": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "load_pressure", service_idx)
@@ -2927,8 +2958,10 @@ class Hedger:
             weak_replica_weight=self.offloading_agent_params["score_weak_replica_weight"],
             weak_gap_clip=self.offloading_agent_params["score_weak_gap_clip"],
             runtime_weak_gap_clip=self.offloading_agent_params["score_runtime_weak_gap_clip"],
-            runtime_weakness_min_evidence=self.offloading_agent_params["score_runtime_weakness_min_evidence"],
+            runtime_weakness_min_confidence=self.offloading_agent_params["score_runtime_weakness_min_confidence"],
+            runtime_recency_floor=self.offloading_agent_params["score_runtime_recency_floor"],
             weak_service_time_weight=self.offloading_agent_params["score_weak_service_time_weight"],
+            weak_capacity_weight=self.offloading_agent_params["score_weak_capacity_weight"],
             weak_queue_amplifier=self.offloading_agent_params["score_weak_queue_amplifier"],
             cloud_fallback_penalty=self.offloading_agent_params["score_cloud_fallback_penalty"],
             cross_tier_weight=self.offloading_agent_params["score_cross_tier_weight"],
@@ -3564,23 +3597,23 @@ class Hedger:
         queue_last_t = Hedger._snapshot_pair_tensor(queue_pair_snapshot, "pair_last_t", shape)
         current_task_version = float(runtime_pair_snapshot.get("current_task_version", 0.0) or 0.0)
         monotonic_time = float(runtime_pair_snapshot.get("monotonic_time", 0.0) or 0.0)
-        confidence = torch.clamp(
-            torch.log1p(torch.minimum(runtime_count, queue_count).clamp_min(0.0)) / math.log1p(20.0),
+        runtime_confidence = torch.clamp(
+            torch.log1p(runtime_count.clamp_min(0.0)) / math.log1p(20.0),
             min=0.0,
             max=1.0,
         )
         runtime_age = torch.clamp(current_task_version - runtime_last_task_v, min=0.0)
-        runtime_freshness = torch.where(runtime_count > 0.0, 1.0 / (1.0 + runtime_age), torch.zeros_like(runtime_age))
+        runtime_recency = torch.where(runtime_count > 0.0, 1.0 / (1.0 + runtime_age), torch.zeros_like(runtime_age))
         queue_age = torch.clamp(monotonic_time - queue_last_t, min=0.0)
         queue_freshness = torch.where(queue_count > 0.0, torch.exp(-queue_age / 30.0), torch.zeros_like(queue_age))
-        freshness = torch.minimum(runtime_freshness, queue_freshness)
         return torch.stack(
             [
                 queue_short,
                 queue_busy,
                 real_time_per_complexity,
-                confidence,
-                freshness,
+                runtime_confidence,
+                runtime_recency,
+                queue_freshness,
             ],
             dim=-1,
         )
@@ -4670,6 +4703,10 @@ class Hedger:
                         offloading_infeasible_projection_cnt=aux.get("infeasible_projection_cnt", 0),
                         offloading_projection_cost=aux.get("projection_cost", 0.0),
                         off_selected_runtime_ratio=aux.get("selected_runtime_ratio", 0.0),
+                        off_selected_runtime_recency=aux.get("selected_runtime_recency", 0.0),
+                        off_selected_queue_freshness=aux.get("selected_queue_freshness", 0.0),
+                        off_selected_speed_evidence=aux.get("selected_speed_evidence", 0.0),
+                        off_selected_capacity_pressure=aux.get("selected_capacity_pressure", 0.0),
                         off_selected_pair_load=aux.get("selected_pair_load", 0.0),
                         off_selected_device_load=aux.get("selected_device_load", 0.0),
                         off_selected_load_pressure=aux.get("selected_load_pressure", 0.0),
@@ -5454,7 +5491,9 @@ class Hedger:
                                 "proposal_cloud_fraction", "projected_cloud_fraction",
                                 "offloading_projection_cnt", "offloading_dependency_projection_cnt",
                                 "offloading_infeasible_projection_cnt", "offloading_projection_cost",
-                                "off_selected_runtime_ratio", "off_selected_pair_load",
+                                "off_selected_runtime_ratio", "off_selected_runtime_recency",
+                                "off_selected_queue_freshness", "off_selected_speed_evidence",
+                                "off_selected_capacity_pressure", "off_selected_pair_load",
                                 "off_selected_device_load", "off_selected_load_pressure",
                                 "off_selected_service_time_factor", "off_selected_base_queue_risk",
                                 "off_selected_relative_queue_risk", "off_selected_overload_risk",
@@ -5698,6 +5737,10 @@ class Hedger:
                     offloading_infeasible_projection_cnt=aux.get("infeasible_projection_cnt", 0),
                     offloading_projection_cost=aux.get("projection_cost", 0.0),
                     off_selected_runtime_ratio=aux.get("selected_runtime_ratio", 0.0),
+                    off_selected_runtime_recency=aux.get("selected_runtime_recency", 0.0),
+                    off_selected_queue_freshness=aux.get("selected_queue_freshness", 0.0),
+                    off_selected_speed_evidence=aux.get("selected_speed_evidence", 0.0),
+                    off_selected_capacity_pressure=aux.get("selected_capacity_pressure", 0.0),
                     off_selected_pair_load=aux.get("selected_pair_load", 0.0),
                     off_selected_device_load=aux.get("selected_device_load", 0.0),
                     off_selected_load_pressure=aux.get("selected_load_pressure", 0.0),

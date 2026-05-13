@@ -95,7 +95,8 @@ RUNTIME_PAIR_FEATURE_NAMES = [
     "queue_busy",
     "real_time_per_complexity",
     "runtime_confidence",
-    "runtime_freshness",
+    "runtime_recency",
+    "queue_freshness",
 ]
 
 OFFLOADING_CANDIDATE_FEATURE_NAMES = [
@@ -104,7 +105,10 @@ OFFLOADING_CANDIDATE_FEATURE_NAMES = [
     "arrival_rate_short",
     "runtime_ratio",
     "runtime_confidence",
-    "runtime_freshness",
+    "runtime_recency",
+    "queue_freshness",
+    "speed_evidence",
+    "capacity_pressure",
     "pair_load",
     "device_load",
     "service_time_factor",
@@ -215,12 +219,13 @@ def _runtime_pair_features(
     Build the shared service-device runtime state:
 
     [queue_short, queue_busy, real_time_per_complexity,
-     runtime_confidence, runtime_freshness].
+     runtime_confidence, runtime_recency, queue_freshness].
     """
     existing = logic_feats.get("runtime_pair_feat")
     if isinstance(existing, torch.Tensor) and existing.dim() == 3 \
-            and existing.size(0) == num_services and existing.size(1) == num_devices and existing.size(2) >= 5:
-        return existing[..., :5].to(device=device, dtype=dtype)
+            and existing.size(0) == num_services and existing.size(1) == num_devices \
+            and existing.size(2) >= len(RUNTIME_PAIR_FEATURE_NAMES):
+        return existing[..., :len(RUNTIME_PAIR_FEATURE_NAMES)].to(device=device, dtype=dtype)
     raise ValueError("Hedger state is missing `runtime_pair_feat`; collect state with the current runtime builder.")
 
 
@@ -1451,8 +1456,10 @@ class HedgerOffloadingPPO(nn.Module):
                  weak_replica_weight: float = 1.2,
                  weak_gap_clip: float = 1.0,
                  runtime_weak_gap_clip: float = 0.35,
-                 runtime_weakness_min_evidence: float = 0.2,
+                 runtime_weakness_min_confidence: float = 0.2,
+                 runtime_recency_floor: float = 0.7,
                  weak_service_time_weight: float = 0.5,
+                 weak_capacity_weight: float = 0.35,
                  weak_queue_amplifier: float = 1.0,
                  cloud_fallback_penalty: float = 1.2,
                  cross_tier_weight: float = 0.2,
@@ -1500,8 +1507,10 @@ class HedgerOffloadingPPO(nn.Module):
         self.weak_replica_weight = float(max(0.0, weak_replica_weight))
         self.weak_gap_clip = float(max(1e-6, weak_gap_clip))
         self.runtime_weak_gap_clip = float(max(1e-6, runtime_weak_gap_clip))
-        self.runtime_weakness_min_evidence = float(max(0.0, min(1.0, runtime_weakness_min_evidence)))
+        self.runtime_weakness_min_confidence = float(max(0.0, min(1.0, runtime_weakness_min_confidence)))
+        self.runtime_recency_floor = float(max(0.0, min(1.0, runtime_recency_floor)))
         self.weak_service_time_weight = float(max(0.0, weak_service_time_weight))
+        self.weak_capacity_weight = float(max(0.0, weak_capacity_weight))
         self.weak_queue_amplifier = float(max(0.0, weak_queue_amplifier))
         self.cloud_fallback_penalty = float(max(0.0, cloud_fallback_penalty))
         self.cross_tier_weight = float(max(0.0, cross_tier_weight))
@@ -1650,26 +1659,29 @@ class HedgerOffloadingPPO(nn.Module):
         arrival_rate = demand_feat[service_idx, 2].expand(num_devices)
         queue_short = runtime_row[..., 0]
         queue_busy = runtime_row[..., 1]
-        device_queue_short = runtime_feat[..., 0].max(dim=0).values
-        device_queue_busy = runtime_feat[..., 1].sum(dim=0).clamp(max=1.0)
-        device_runtime_confidence = runtime_feat[..., 3].max(dim=0).values.clamp(0.0, 1.0)
         confidence = runtime_row[..., 3]
-        freshness = runtime_row[..., 4]
+        runtime_recency = runtime_row[..., 4]
+        queue_freshness = runtime_row[..., 5]
         runtime_ratio = runtime_row[..., 2].clamp_min(0.0).clamp(max=self.runtime_clip) / self.runtime_clip
-        runtime_evidence = (confidence * freshness).clamp(0.0, 1.0)
+        speed_evidence = (
+            confidence.clamp(0.0, 1.0)
+            * (self.runtime_recency_floor + (1.0 - self.runtime_recency_floor) * runtime_recency.clamp(0.0, 1.0))
+        ).clamp(0.0, 1.0)
         capability_prior = torch.sigmoid(compute_gap + 4.0)
+        capacity_pressure = capability_prior
         service_time_factor = (
-            runtime_evidence * runtime_ratio
-            + (1.0 - runtime_evidence) * capability_prior
+            speed_evidence * runtime_ratio
+            + (1.0 - speed_evidence) * capability_prior
         ).clamp(0.0, 1.0)
         pair_load = (
-            confidence.clamp(0.0, 1.0)
+            queue_freshness.clamp(0.0, 1.0)
             * (queue_short.clamp_min(0.0) + 0.5 * queue_busy.clamp_min(0.0))
         ).clamp(max=self.load_clip)
-        device_load = (
-            device_runtime_confidence
-            * (device_queue_short.clamp_min(0.0) + 0.5 * device_queue_busy.clamp_min(0.0))
-        ).clamp(max=self.load_clip)
+        device_pair_load = (
+            runtime_feat[..., 5].clamp(0.0, 1.0)
+            * (runtime_feat[..., 0].clamp_min(0.0) + 0.5 * runtime_feat[..., 1].clamp_min(0.0))
+        )
+        device_load = device_pair_load.sum(dim=0).clamp(max=self.load_clip)
         return torch.stack(
             [
                 qk_feature[service_idx],
@@ -1677,7 +1689,10 @@ class HedgerOffloadingPPO(nn.Module):
                 arrival_rate,
                 runtime_ratio,
                 confidence,
-                freshness,
+                runtime_recency,
+                queue_freshness,
+                speed_evidence,
+                capacity_pressure,
                 pair_load,
                 device_load,
                 service_time_factor,
@@ -1801,8 +1816,7 @@ class HedgerOffloadingPPO(nn.Module):
         arrival_rate = self._offloading_feature(candidate_row, "arrival_rate_short").float().clamp_min(0.0)
         arrival_pressure = torch.log1p(arrival_rate).clamp(max=2.0) / 2.0
         service_time = self._offloading_feature(candidate_row, "service_time_factor").float().clamp(0.0, 1.0)
-        compute_gap = self._offloading_feature(candidate_row, "compute_gap").float()
-        capacity_pressure = torch.sigmoid(compute_gap)
+        capacity_pressure = self._offloading_feature(candidate_row, "capacity_pressure").float().clamp(0.0, 1.0)
         pressure = arrival_pressure * service_time * (0.5 + 0.5 * capacity_pressure)
         return pressure.clamp(max=self.offered_load_clip)
 
@@ -1831,9 +1845,8 @@ class HedgerOffloadingPPO(nn.Module):
         compute_relative = torch.where(edge_allowed, compute_relative.clamp(max=1.0), zeros)
 
         runtime_confidence = self._offloading_feature(candidate_row, "runtime_confidence").float().clamp(0.0, 1.0)
-        runtime_freshness = self._offloading_feature(candidate_row, "runtime_freshness").float().clamp(0.0, 1.0)
-        runtime_evidence = (runtime_confidence * runtime_freshness).clamp(0.0, 1.0)
-        runtime_known = edge_allowed & (runtime_evidence >= self.runtime_weakness_min_evidence)
+        speed_evidence = self._offloading_feature(candidate_row, "speed_evidence").float().clamp(0.0, 1.0)
+        runtime_known = edge_allowed & (runtime_confidence >= self.runtime_weakness_min_confidence)
         runtime_relative = zeros
         if bool(runtime_known.any().detach().item()):
             runtime_ratio = self._offloading_feature(candidate_row, "runtime_ratio").float().clamp(0.0, 1.0)
@@ -1841,7 +1854,7 @@ class HedgerOffloadingPPO(nn.Module):
             runtime_gap = torch.relu(runtime_ratio - best_runtime) / self.runtime_weak_gap_clip
             runtime_relative = torch.where(
                 runtime_known,
-                (runtime_gap.clamp(max=1.0) * runtime_evidence).clamp(max=1.0),
+                (runtime_gap.clamp(max=1.0) * speed_evidence).clamp(max=1.0),
                 zeros,
             )
 
@@ -1856,9 +1869,13 @@ class HedgerOffloadingPPO(nn.Module):
             self,
             offered_load_pressure: torch.Tensor,
             service_time_factor: torch.Tensor,
+            capacity_pressure: torch.Tensor,
     ) -> torch.Tensor:
         service_time_pressure = self.weak_service_time_weight * service_time_factor.float().clamp(0.0, 1.0)
-        return torch.maximum(offered_load_pressure, service_time_pressure).clamp(max=self.risk_clip)
+        capacity_pressure = self.weak_capacity_weight * capacity_pressure.float().clamp(0.0, 1.0)
+        return torch.maximum(torch.maximum(offered_load_pressure, service_time_pressure), capacity_pressure).clamp(
+            max=self.risk_clip
+        )
 
     def _offloading_weak_replica_risk(
             self,
@@ -1922,11 +1939,12 @@ class HedgerOffloadingPPO(nn.Module):
         offered_load_pressure = self._offloading_offered_load_pressure(candidate_row.float())
         offered_load_risk = self._offloading_offered_load_risk(offered_load_pressure)
         service_time = self._offloading_feature(candidate_row, "service_time_factor").float().clamp(0.0, 1.0)
+        capacity_pressure = self._offloading_feature(candidate_row, "capacity_pressure").float().clamp(0.0, 1.0)
         weakness_terms = self._offloading_relative_weakness(candidate_row.float(), allowed)
         compute_relative_weakness = weakness_terms["compute_relative_weakness"]
         runtime_relative_weakness = weakness_terms["runtime_relative_weakness"]
         relative_weakness = weakness_terms["relative_weakness"]
-        weak_pressure = self._offloading_weak_pressure(offered_load_pressure, service_time)
+        weak_pressure = self._offloading_weak_pressure(offered_load_pressure, service_time, capacity_pressure)
         weak_replica_risk = self._offloading_weak_replica_risk(
             weak_pressure,
             relative_weakness,
@@ -1975,6 +1993,10 @@ class HedgerOffloadingPPO(nn.Module):
     def _empty_selected_queue_metrics() -> Dict[str, float]:
         return {
             "selected_runtime_ratio": 0.0,
+            "selected_runtime_recency": 0.0,
+            "selected_queue_freshness": 0.0,
+            "selected_speed_evidence": 0.0,
+            "selected_capacity_pressure": 0.0,
             "selected_pair_load": 0.0,
             "selected_device_load": 0.0,
             "selected_load_pressure": 0.0,
@@ -2023,6 +2045,10 @@ class HedgerOffloadingPPO(nn.Module):
         service_idx = torch.arange(candidate_features.size(0), device=candidate_features.device)[valid]
         selected = candidate_features[service_idx, actions[valid]].float()
         runtime_ratio = self._offloading_feature(selected, "runtime_ratio")
+        runtime_recency = self._offloading_feature(selected, "runtime_recency")
+        queue_freshness = self._offloading_feature(selected, "queue_freshness")
+        speed_evidence = self._offloading_feature(selected, "speed_evidence")
+        capacity_pressure = self._offloading_feature(selected, "capacity_pressure")
         pair_load = self._offloading_feature(selected, "pair_load")
         device_load = self._offloading_feature(selected, "device_load")
         service_time = self._offloading_feature(selected, "service_time_factor")
@@ -2068,6 +2094,10 @@ class HedgerOffloadingPPO(nn.Module):
 
         return {
             "selected_runtime_ratio": _scalar_to_float(runtime_ratio.mean()),
+            "selected_runtime_recency": _scalar_to_float(runtime_recency.mean()),
+            "selected_queue_freshness": _scalar_to_float(queue_freshness.mean()),
+            "selected_speed_evidence": _scalar_to_float(speed_evidence.mean()),
+            "selected_capacity_pressure": _scalar_to_float(capacity_pressure.mean()),
             "selected_pair_load": _scalar_to_float(pair_load.mean()),
             "selected_device_load": _scalar_to_float(device_load.mean()),
             "selected_load_pressure": _scalar_to_float(load_pressure.mean()),
@@ -2407,6 +2437,10 @@ class HedgerOffloadingPPO(nn.Module):
         static_priors = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         runtime_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         service_time_factors = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        runtime_recencies = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        queue_freshnesses = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        speed_evidences = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
+        capacity_pressures = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         load_pressures = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         base_queue_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
         relative_queue_risks = torch.zeros((Ms, Np), dtype=torch.float32, device=h_p.device)
@@ -2456,6 +2490,10 @@ class HedgerOffloadingPPO(nn.Module):
             static_priors[i] = score_terms["static_prior"]
             runtime_risks[i] = score_terms["runtime_risk"]
             service_time_factors[i] = score_terms["service_time_factor"]
+            runtime_recencies[i] = self._offloading_feature(candidate_row, "runtime_recency").float()
+            queue_freshnesses[i] = self._offloading_feature(candidate_row, "queue_freshness").float()
+            speed_evidences[i] = self._offloading_feature(candidate_row, "speed_evidence").float()
+            capacity_pressures[i] = self._offloading_feature(candidate_row, "capacity_pressure").float()
             load_pressures[i] = score_terms["load_pressure"]
             base_queue_risks[i] = score_terms["base_queue_risk"]
             relative_queue_risks[i] = score_terms["relative_queue_risk"]
@@ -2558,6 +2596,10 @@ class HedgerOffloadingPPO(nn.Module):
                 "static_prior": static_priors.detach().cpu(),
                 "runtime_risk": runtime_risks.detach().cpu(),
                 "service_time_factor": service_time_factors.detach().cpu(),
+                "runtime_recency": runtime_recencies.detach().cpu(),
+                "queue_freshness": queue_freshnesses.detach().cpu(),
+                "speed_evidence": speed_evidences.detach().cpu(),
+                "capacity_pressure": capacity_pressures.detach().cpu(),
                 "load_pressure": load_pressures.detach().cpu(),
                 "base_queue_risk": base_queue_risks.detach().cpu(),
                 "relative_queue_risk": relative_queue_risks.detach().cpu(),
