@@ -111,6 +111,8 @@ class HedgerTrainingCfg:
     offloading_rollout_len: int
     deployment_batch_size: int
     offloading_batch_size: int
+    deployment_rollout_deterministic: bool = False
+    offloading_rollout_deterministic: bool = False
     deployment_default_warmup: HedgerDeploymentDefaultWarmupCfg = field(
         default_factory=HedgerDeploymentDefaultWarmupCfg
     )
@@ -545,6 +547,8 @@ class Hedger:
             offloading_rollout_len=max(1, int(rollout["offloading"])),
             deployment_batch_size=max(1, int(batch_size["deployment"])),
             offloading_batch_size=max(1, int(batch_size["offloading"])),
+            deployment_rollout_deterministic=bool(training.get("deployment_rollout_deterministic", False)),
+            offloading_rollout_deterministic=bool(training.get("offloading_rollout_deterministic", False)),
             deployment_default_warmup=deployment_default_warmup,
             deployment_dataset=deployment_dataset,
             deployment_collect=deployment_collect,
@@ -1715,6 +1719,9 @@ class Hedger:
             f"global_step={getattr(self, '_global_update_step', 'na')}, "
             f"rollout(dep/off)={getattr(training_cfg, 'deployment_rollout_len', 'na')}/"
             f"{getattr(training_cfg, 'offloading_rollout_len', 'na')}, "
+            f"rollout_deterministic(dep/off)="
+            f"{getattr(training_cfg, 'deployment_rollout_deterministic', 'na')}/"
+            f"{getattr(training_cfg, 'offloading_rollout_deterministic', 'na')}, "
             f"batch(dep/off)={getattr(training_cfg, 'deployment_batch_size', 'na')}/"
             f"{getattr(training_cfg, 'offloading_batch_size', 'na')}, "
             f"state_seq(dep/off)={dep_seq_len}/{off_seq_len}, "
@@ -2387,7 +2394,7 @@ class Hedger:
             *Hedger._decision_common_fieldnames(),
             "raw_nodes", "executed_nodes", "removed_nodes", "added_nodes",
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
-            "capacity_corrected",
+            "capacity_corrected", "deployment_policy_deterministic",
         ]
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
@@ -2423,6 +2430,7 @@ class Hedger:
             "target_weak_pressure",
             "target_cloud_penalty", "target_cross_tier_penalty_term",
             "target_dynamic_risk", "target_planned_device_load", "target_final_score",
+            "offloading_policy_deterministic",
         ]
         if self.record_cfg.decision_candidate_features_debug:
             fieldnames.extend([
@@ -2498,6 +2506,7 @@ class Hedger:
             logic_feats: Dict[str, torch.Tensor],
             phys_feats: Dict[str, torch.Tensor],
             actor_debug: Optional[Dict[str, Any]] = None,
+            policy_deterministic: Optional[bool] = None,
     ) -> None:
         if self.dep_decision_recorder is None or self.physical_topology is None:
             return
@@ -2533,6 +2542,9 @@ class Hedger:
                 executed_edge_replicas=exec_edge_count,
                 cloud_replica=bool(exec_mask[service_idx, cloud_idx].item()),
                 capacity_corrected=bool(not torch.equal(raw_mask[service_idx], exec_mask[service_idx])),
+                deployment_policy_deterministic=(
+                    "" if policy_deterministic is None else int(bool(policy_deterministic))
+                ),
             )
             if self.record_cfg.decision_candidate_features_debug:
                 row.update({
@@ -2589,6 +2601,7 @@ class Hedger:
             proposal_actions: Optional[torch.Tensor] = None,
             projection_reasons: Optional[List[str]] = None,
             actor_debug: Optional[Dict[str, Any]] = None,
+            policy_deterministic: Optional[bool] = None,
     ) -> None:
         if self.off_decision_recorder is None or self.physical_topology is None:
             return
@@ -2745,6 +2758,9 @@ class Hedger:
                 ),
                 target_final_score=self._actor_debug_matrix_value(
                     actor_debug, "final_score", service_idx, target_idx
+                ),
+                offloading_policy_deterministic=(
+                    "" if policy_deterministic is None else int(bool(policy_deterministic))
                 ),
             )
             if self.record_cfg.decision_candidate_features_debug:
@@ -3187,6 +3203,7 @@ class Hedger:
             phys_feats=phys_feats,
             topo_order=None,
             prev_deploy_mask=prev_deploy_mask,
+            deterministic=self.training_cfg.deployment_rollout_deterministic,
         )
         aux["behavior_kind"] = "actor"
         return deploy_mask, logp, ent, value, aux
@@ -3209,6 +3226,7 @@ class Hedger:
                 phys_feats=phys_feats,
                 topo_order=None,
                 prev_deploy_mask=prev_deploy_mask,
+                deterministic=self.training_cfg.deployment_rollout_deterministic,
                 logit_noise_std=cfg.actor_logit_noise_std,
             )
             aux["behavior_kind"] = "actor_noise" if cfg.actor_logit_noise_std > 0.0 else "actor"
@@ -4557,6 +4575,7 @@ class Hedger:
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,
                     actor_debug=aux.get("actor_debug"),
+                    policy_deterministic=self.inference_cfg.deployment_deterministic,
                 )
                 LOGGER.debug(
                     f"[Hedger][Inference][Deployment] step={step}, "
@@ -4809,6 +4828,7 @@ class Hedger:
                     proposal_actions=proposal_actions_cpu,
                     projection_reasons=aux.get("projection_reasons"),
                     actor_debug=aux.get("actor_debug"),
+                    policy_deterministic=self.inference_cfg.offloading_deterministic,
                 )
                 LOGGER.debug(
                     f"[Hedger][Inference][Offloading] step={step}, "
@@ -5138,7 +5158,8 @@ class Hedger:
             f"interval={self._format_log_value(self.deployment_interval, 2)}s, "
             f"rollout={self.training_cfg.deployment_rollout_len}, "
             f"batch={self.training_cfg.deployment_batch_size}, "
-            f"update_policy={self.stage_cfg.update_deployment_policy}"
+            f"update_policy={self.stage_cfg.update_deployment_policy}, "
+            f"rollout_deterministic={self.training_cfg.deployment_rollout_deterministic}"
         )
 
         dep_train_fieldnames = ["step", "epoch", "decision_version", "dep_updates", "dep_reward",
@@ -5160,7 +5181,7 @@ class Hedger:
                                 "cap_relax_cnt", "cap_relax_cost",
                                 "edge_cover_repair_cnt", "edge_cover_repair_cost", "edge_cover_unmet",
                                 "policy_logp", "policy_entropy", "value_estimate", "next_value",
-                                "behavior_kind",
+                                "behavior_kind", "deployment_rollout_deterministic",
                                 "raw_edge_replicas", "edge_replicas", "cloud_replicas",
                                 "cloud_only", "cloud_only_ratio",
                                 "empty_edge_devices", "empty_edge_device_ratio",
@@ -5361,6 +5382,12 @@ class Hedger:
                     "metrics": dict(metrics),
                     "capacity_relax_cnt": int(aux["capacity_relax_cnt"]),
                     "edge_cover_repair_cnt": int(aux.get("edge_cover_repair_cnt", 0)),
+                    "deployment_rollout_deterministic": bool(
+                        self.training_cfg.deployment_rollout_deterministic
+                    ),
+                    "offloading_rollout_deterministic": bool(
+                        self.training_cfg.offloading_rollout_deterministic
+                    ),
                 }
 
                 if self.deployment_dataset_writer is not None \
@@ -5435,6 +5462,9 @@ class Hedger:
                     value_estimate=float(value.detach().cpu().item()),
                     next_value=float(next_value),
                     behavior_kind=aux.get("behavior_kind", "actor"),
+                    deployment_rollout_deterministic=int(
+                        bool(self.training_cfg.deployment_rollout_deterministic)
+                    ),
                     raw_edge_replicas=raw_edge_replicas,
                     edge_replicas=edge_replicas,
                     cloud_replicas=cloud_replicas,
@@ -5478,6 +5508,7 @@ class Hedger:
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,
                     actor_debug=aux.get("actor_debug"),
+                    policy_deterministic=self.training_cfg.deployment_rollout_deterministic,
                 )
                 LOGGER.debug(
                     f"[Hedger][Train][Deployment] step={step}, reward={self._format_log_value(reward)}, "
@@ -5528,6 +5559,7 @@ class Hedger:
             f"rollout={self.training_cfg.offloading_rollout_len}, "
             f"batch={self.training_cfg.offloading_batch_size}, "
             f"update_policy={self.stage_cfg.update_offloading_policy}, "
+            f"rollout_deterministic={self.training_cfg.offloading_rollout_deterministic}, "
             f"rollout_agent={'frozen' if self._frozen_offloading_agent is not None else 'live'}"
         )
 
@@ -5539,7 +5571,7 @@ class Hedger:
                                 "off_latency_weight", "off_slo_weight", "off_cloud_weight",
                                 "off_projection_weight", "off_queue_weight", "off_queue_clip",
                                 "policy_logp", "policy_entropy", "value_estimate",
-                                "next_value",
+                                "next_value", "offloading_rollout_deterministic",
                                 "proposal_cloud_fraction", "projected_cloud_fraction",
                                 "offloading_projection_cnt", "offloading_dependency_projection_cnt",
                                 "offloading_infeasible_projection_cnt", "offloading_projection_cost",
@@ -5618,6 +5650,7 @@ class Hedger:
                         phys_feats=phys_feats_dev,
                         static_mask=static_mask_dev,
                         topo_order=None,
+                        deterministic=self.training_cfg.offloading_rollout_deterministic,
                         enable_exploration=self.stage_cfg.update_offloading_policy,
                     )
                     offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
@@ -5717,6 +5750,7 @@ class Hedger:
                         "static_mask": static_mask_dev.cpu(),
                         "topo_order": None,
                         "exploration_enabled": bool(self.stage_cfg.update_offloading_policy),
+                        "rollout_deterministic": bool(self.training_cfg.offloading_rollout_deterministic),
                         "logp": logp.detach().cpu(),
                         "value": value.detach().cpu(),
                         "next_value": float(next_value),
@@ -5782,6 +5816,9 @@ class Hedger:
                     policy_entropy=float(ent.detach().cpu().item()),
                     value_estimate=float(value.detach().cpu().item()),
                     next_value=float(next_value),
+                    offloading_rollout_deterministic=int(
+                        bool(self.training_cfg.offloading_rollout_deterministic)
+                    ),
                     proposal_cloud_fraction=proposal_cloud_fraction,
                     projected_cloud_fraction=projected_cloud_fraction,
                     offloading_projection_cnt=aux.get("projection_cnt", 0),
@@ -5841,6 +5878,7 @@ class Hedger:
                     proposal_actions=proposal_actions_cpu,
                     projection_reasons=aux.get("projection_reasons"),
                     actor_debug=aux.get("actor_debug"),
+                    policy_deterministic=self.training_cfg.offloading_rollout_deterministic,
                 )
                 LOGGER.debug(
                     f"[Hedger][Train][{log_scope}] step={step}, reward={self._format_log_value(reward)}, "
