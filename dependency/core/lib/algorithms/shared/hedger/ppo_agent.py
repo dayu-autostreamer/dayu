@@ -132,7 +132,10 @@ DEPLOYMENT_CANDIDATE_FEATURE_NAMES = [
     "service_replica_count",
     "device_replica_count",
     "pair_queue_short",
+    "pair_queue_busy",
     "pair_real_time_per_complexity",
+    "pair_runtime_evidence",
+    "pair_queue_freshness",
     "parent_child_coverage",
     "is_cloud",
     "static_allowed",
@@ -597,7 +600,13 @@ class _DeploymentBackbonePPO(nn.Module):
             (residual_mem.view(1, num_devices) - model_mem.view(num_services, 1)).clamp_min(0.0)
         )
         pair_queue_short = runtime_feat[..., 0]
+        pair_queue_busy = runtime_feat[..., 1]
         pair_real_time_per_complexity = runtime_feat[..., 2]
+        pair_runtime_evidence = (
+            runtime_feat[..., 3].clamp(0.0, 1.0)
+            * runtime_feat[..., 4].clamp(0.0, 1.0)
+        )
+        pair_queue_freshness = runtime_feat[..., 5]
         topology_coverage = self._deployment_topology_coverage(
             logic_edge_index, prev_deploy_mask, num_services, num_devices, device, dtype
         )
@@ -614,7 +623,10 @@ class _DeploymentBackbonePPO(nn.Module):
                 torch.log1p(current_replica_count).view(num_services, 1).expand(-1, num_devices),
                 torch.log1p(device_service_count).view(1, num_devices).expand(num_services, -1),
                 pair_queue_short,
+                pair_queue_busy,
                 pair_real_time_per_complexity,
+                pair_runtime_evidence,
+                pair_queue_freshness,
                 parent_child_coverage,
                 cloud_role,
                 static_allowed_float,

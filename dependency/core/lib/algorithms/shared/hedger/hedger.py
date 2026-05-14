@@ -185,6 +185,8 @@ class HedgerLatencyGuardCfg:
 class HedgerDeploymentFeedbackWaitResult:
     ok: bool
     count: int = 0
+    timed_out: bool = False
+    timeout_s: Optional[float] = None
     guard_interrupted: bool = False
     guard_event_seq: int = 0
     guard_stats: Dict[str, Any] = field(default_factory=dict)
@@ -926,6 +928,7 @@ class Hedger:
             "penalty_capacity_relax": float(penalty["capacity_relax"]),
             "penalty_edge_cover_repair": float(penalty.get("edge_cover_repair", 0.0)),
             "penalty_latency_guard_trigger": float(penalty.get("latency_guard_trigger", 0.0)),
+            "penalty_feedback_timeout": float(penalty.get("feedback_timeout", 0.0)),
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
             "min_edge_replicas_per_service": min_edge_replicas,
@@ -1725,6 +1728,7 @@ class Hedger:
             f"dep_cloud_only_weight={dep_params.get('reward_dep_cloud_only_weight', 'na')}, "
             f"edge_cover_repair_weight={dep_params.get('penalty_edge_cover_repair', 'na')}, "
             f"latency_guard_penalty_weight={dep_params.get('penalty_latency_guard_trigger', 'na')}, "
+            f"feedback_timeout_penalty_weight={dep_params.get('penalty_feedback_timeout', 'na')}, "
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"min_edge_replicas_per_service={dep_params.get('min_edge_replicas_per_service', 'na')}, "
@@ -2289,11 +2293,13 @@ class Hedger:
             "dep_change_cost", "dep_latency_cost",
             "dep_offload_term", "dep_latency_term", "dep_slo_term", "dep_change_term",
             "dep_cloud_only_term", "dep_capacity_relax_term", "dep_edge_cover_repair_term",
-            "dep_latency_guard_penalty_term",
+            "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
             "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
             "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95", "e2e_latency_p99",
             "e2e_slo_violation", "feedback_gate_enabled", "feedback_gate_required_samples",
-            "feedback_gate_collected_samples", "feedback_gate_timed_out", "feedback_gate_guard_truncated",
+            "feedback_gate_collected_samples", "feedback_gate_sample_shortfall",
+            "feedback_gate_shortfall_ratio", "feedback_gate_timed_out", "feedback_gate_guard_truncated",
+            "feedback_timeout_penalty_cost",
             "deployment_deterministic",
             "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
             "edge_cover_repair_cost", "edge_cover_unmet", "policy_logp", "policy_entropy",
@@ -2305,7 +2311,7 @@ class Hedger:
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
-            "latency_guard_penalty_weight", "max_edge_replicas_per_device",
+            "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
             "edge_memory_budget_ratio", "min_edge_replicas_per_service", "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -3804,6 +3810,8 @@ class Hedger:
     ) -> Dict[str, Any]:
         required_samples = max(1, int(required_samples))
         actual_count = int(metrics.get("offloading_reward_count", feedback_result.count))
+        sample_shortfall = max(0, required_samples - actual_count)
+        shortfall_ratio = float(sample_shortfall) / float(required_samples)
         guard_stats = feedback_result.guard_stats or {}
         guard_sample_count = int(guard_stats.get("count", 0) or 0)
         guard_bad_count = int(guard_stats.get("bad_count", 0) or 0)
@@ -3819,7 +3827,13 @@ class Hedger:
 
         metrics.update({
             "feedback_required_samples": required_samples,
-            "feedback_sample_shortfall": max(0, required_samples - actual_count),
+            "feedback_sample_shortfall": sample_shortfall,
+            "feedback_shortfall_ratio": shortfall_ratio,
+            "feedback_timed_out": int(bool(feedback_result.timed_out)),
+            "feedback_timeout_s": (
+                0.0 if feedback_result.timeout_s is None else float(feedback_result.timeout_s)
+            ),
+            "feedback_timeout_penalty_cost": shortfall_ratio if feedback_result.timed_out else 0.0,
             "feedback_guard_interrupted": int(bool(feedback_result.guard_interrupted)),
             "latency_guard_trigger_seq": int(feedback_result.guard_event_seq),
             "latency_guard_bad_ratio": guard_bad_ratio,
@@ -3927,6 +3941,8 @@ class Hedger:
             return HedgerDeploymentFeedbackWaitResult(ok=False)
 
         min_samples = max(1, min(int(min_samples), self.state_cfg.deployment_reward_window))
+        start_t = time.monotonic()
+        timeout_s = self.state_cfg.deployment_feedback_timeout_s
         while not self.deployment_thread_stop_event.is_set():
             if allow_guard_truncated:
                 guard_event = self._latency_guard_trigger_event_for_deployment(deployment_version)
@@ -3969,8 +3985,8 @@ class Hedger:
                 reason=f"waiting for deployment feedback samples={min_samples}"
             )
             wait_timeout_s = 5.0
-            if self.state_cfg.deployment_feedback_timeout_s is not None:
-                wait_timeout_s = min(5.0, max(0.5, self.state_cfg.deployment_feedback_timeout_s))
+            if timeout_s is not None:
+                wait_timeout_s = min(5.0, max(0.5, float(timeout_s)))
             count = self.state_buffer.wait_for_offloading_rewards(
                 min_samples,
                 timeout_s=wait_timeout_s,
@@ -3979,10 +3995,24 @@ class Hedger:
             if count >= min_samples:
                 return HedgerDeploymentFeedbackWaitResult(ok=True, count=count)
 
+            if timeout_s is not None and time.monotonic() - start_t >= float(timeout_s):
+                LOGGER.warning(
+                    f"[Hedger][Train][Deployment] Feedback wait timed out: "
+                    f"version={deployment_version}, samples={count}/{min_samples}, "
+                    f"timeout={self._format_log_value(timeout_s, 2)}s. "
+                    "Proceed with available training feedback and apply shortfall penalty."
+                )
+                return HedgerDeploymentFeedbackWaitResult(
+                    ok=True,
+                    count=count,
+                    timed_out=True,
+                    timeout_s=float(timeout_s),
+                )
+
             LOGGER.warning(
                 f"[Hedger][Train][Deployment] Waiting for fresh offloading feedback: "
                 f"version={deployment_version}, samples={count}/{min_samples}, "
-                f"timeout={self._format_log_value(self.state_cfg.deployment_feedback_timeout_s, 2)}s"
+                f"timeout={self._format_log_value(timeout_s, 2)}s"
             )
 
         return HedgerDeploymentFeedbackWaitResult(
@@ -4426,6 +4456,13 @@ class Hedger:
                 aux["empty_edge_device_count"] = empty_edge_devices
                 aux["empty_edge_device_ratio"] = empty_edge_device_ratio
                 metrics["latency_guard_penalty_cost"] = 0.0
+                feedback_required = max(1, int(feedback_gate.get("required", 1) or 1))
+                feedback_count = int(feedback_gate.get("count", 0) or 0)
+                feedback_shortfall = max(0, feedback_required - feedback_count)
+                feedback_shortfall_ratio = float(feedback_shortfall) / float(feedback_required)
+                metrics["feedback_timeout_penalty_cost"] = (
+                    feedback_shortfall_ratio if bool(feedback_gate.get("timed_out", False)) else 0.0
+                )
                 dep_reward_breakdown = self._compute_deployment_reward_breakdown(metrics, aux)
                 dep_reward_estimate = dep_reward_breakdown["reward"]
                 state_record = self._state_record_metrics(state_logic_feats, state_phys_feats, state_debug_record)
@@ -4455,6 +4492,7 @@ class Hedger:
                         dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                         dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
                         dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
+                        dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
                         e2e_latency_count=metrics["e2e_latency_count"],
                         e2e_latency_mean=metrics["e2e_latency_mean"],
                         e2e_latency_latest=metrics["e2e_latency_latest"],
@@ -4464,10 +4502,13 @@ class Hedger:
                         e2e_latency_p99=metrics["e2e_latency_p99"],
                         e2e_slo_violation=metrics["e2e_slo_violation"],
                         feedback_gate_enabled=int(bool(feedback_gate.get("enabled", False))),
-                        feedback_gate_required_samples=int(feedback_gate.get("required", 0) or 0),
-                        feedback_gate_collected_samples=int(feedback_gate.get("count", 0) or 0),
+                        feedback_gate_required_samples=feedback_required,
+                        feedback_gate_collected_samples=feedback_count,
+                        feedback_gate_sample_shortfall=feedback_shortfall,
+                        feedback_gate_shortfall_ratio=feedback_shortfall_ratio,
                         feedback_gate_timed_out=int(bool(feedback_gate.get("timed_out", False))),
                         feedback_gate_guard_truncated=int(bool(feedback_gate.get("guard_truncated", False))),
+                        feedback_timeout_penalty_cost=dep_reward_breakdown["feedback_timeout_penalty_cost"],
                         deployment_deterministic=int(bool(self.inference_cfg.deployment_deterministic)),
                         cap_relax_cnt=aux["capacity_relax_cnt"],
                         cap_relax_cost=aux["capacity_relax_cost"],
@@ -4500,6 +4541,7 @@ class Hedger:
                         cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                         edge_cover_repair_weight=self.deployment_agent_params["penalty_edge_cover_repair"],
                         latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
+                        feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                         edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                         min_edge_replicas_per_service=self.deployment_agent_params["min_edge_replicas_per_service"],
@@ -5104,11 +5146,13 @@ class Hedger:
                                 "dep_latency_cost", "dep_offload_term", "dep_latency_term",
                                 "dep_slo_term", "dep_change_term", "dep_cloud_only_term",
                                 "dep_capacity_relax_term", "dep_edge_cover_repair_term",
-                                "dep_latency_guard_penalty_term",
+                                "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
                                 "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
                                 "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95",
                                 "e2e_latency_p99", "e2e_slo_violation",
                                 "feedback_required_samples", "feedback_sample_shortfall",
+                                "feedback_shortfall_ratio", "feedback_timed_out",
+                                "feedback_timeout_s", "feedback_timeout_penalty_cost",
                                 "feedback_guard_interrupted",
                                 "latency_guard_trigger_seq", "latency_guard_bad_ratio",
                                 "latency_guard_bad_count", "latency_guard_sample_count",
@@ -5129,7 +5173,7 @@ class Hedger:
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
-            "latency_guard_penalty_weight",
+            "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
             "min_edge_replicas_per_service",
             "deployment_default_warmup_enabled",
@@ -5306,6 +5350,8 @@ class Hedger:
                     "next_value": float(next_value),
                     "reward": float(reward),
                     "done": bool(done),
+                    "feedback_timed_out": bool(feedback_result.timed_out),
+                    "feedback_timeout_penalty_cost": float(metrics["feedback_timeout_penalty_cost"]),
                     "feedback_guard_interrupted": bool(feedback_result.guard_interrupted),
                     "latency_guard_penalty_cost": float(metrics["latency_guard_penalty_cost"]),
                     "behavior_kind": str(aux.get("behavior_kind", "actor")),
@@ -5357,6 +5403,7 @@ class Hedger:
                     dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                     dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
                     dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
+                    dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
                     e2e_latency_count=metrics["e2e_latency_count"],
                     e2e_latency_mean=metrics["e2e_latency_mean"],
                     e2e_latency_latest=metrics["e2e_latency_latest"],
@@ -5367,6 +5414,10 @@ class Hedger:
                     e2e_slo_violation=metrics["e2e_slo_violation"],
                     feedback_required_samples=metrics["feedback_required_samples"],
                     feedback_sample_shortfall=metrics["feedback_sample_shortfall"],
+                    feedback_shortfall_ratio=metrics["feedback_shortfall_ratio"],
+                    feedback_timed_out=metrics["feedback_timed_out"],
+                    feedback_timeout_s=metrics["feedback_timeout_s"],
+                    feedback_timeout_penalty_cost=metrics["feedback_timeout_penalty_cost"],
                     feedback_guard_interrupted=metrics["feedback_guard_interrupted"],
                     latency_guard_trigger_seq=metrics["latency_guard_trigger_seq"],
                     latency_guard_bad_ratio=metrics["latency_guard_bad_ratio"],
@@ -5407,6 +5458,7 @@ class Hedger:
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                     edge_cover_repair_weight=self.deployment_agent_params["penalty_edge_cover_repair"],
                     latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
+                    feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                     min_edge_replicas_per_service=self.deployment_agent_params["min_edge_replicas_per_service"],
@@ -5907,6 +5959,7 @@ class Hedger:
         cap_relax_cost = float(aux.get("capacity_relax_cost", 0.0))
         edge_cover_repair_cost = float(aux.get("edge_cover_repair_cost", 0.0))
         latency_guard_penalty_cost = float(metrics.get("latency_guard_penalty_cost", 0.0))
+        feedback_timeout_penalty_cost = float(metrics.get("feedback_timeout_penalty_cost", 0.0))
 
         w_off = float(self.deployment_agent_params["reward_dep_offload_weight"])
         w_lat = float(self.deployment_agent_params.get("reward_dep_latency_weight", 0.0))
@@ -5916,6 +5969,7 @@ class Hedger:
         penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
         penalty_edge_cover_repair = float(self.deployment_agent_params.get("penalty_edge_cover_repair", 0.0))
         penalty_latency_guard = float(self.deployment_agent_params.get("penalty_latency_guard_trigger", 0.0))
+        penalty_feedback_timeout = float(self.deployment_agent_params.get("penalty_feedback_timeout", 0.0))
 
         latency_cost = 0.0
         if latency_count > 0:
@@ -5930,9 +5984,11 @@ class Hedger:
             "dep_capacity_relax_term": -penalty_capacity_relax * cap_relax_cost,
             "dep_edge_cover_repair_term": -penalty_edge_cover_repair * edge_cover_repair_cost,
             "dep_latency_guard_penalty_term": -penalty_latency_guard * latency_guard_penalty_cost,
+            "dep_feedback_timeout_term": -penalty_feedback_timeout * feedback_timeout_penalty_cost,
         }
         return {
             "dep_latency_cost": float(latency_cost),
+            "feedback_timeout_penalty_cost": float(feedback_timeout_penalty_cost),
             **terms,
             "reward": self._sum_reward_terms(terms),
         }
