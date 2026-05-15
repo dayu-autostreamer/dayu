@@ -16,9 +16,9 @@ pod-template:
     - name: SCH_SELECTION_POLICY_PARAMETERS
       value: >
         {
-          'scope': 'selected_edge_nodes',
-          'fixed_value':0,
-          'fixed_type':'position'
+          'scope': 'all_edge_nodes',
+          'fixed_value': 'edgex1',
+          'fixed_type': 'hostname'
         }
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
       value: fixed
@@ -26,11 +26,11 @@ pod-template:
       value: >
         {
           'policy':{
-            'pedestrian-detection':['edge3'],
-            'exposure-identification':['edgexn10'],
-            'vehicle-detection':['edge3'],
-            'category-identification':['edgexn7'],
-            'license-plate-recognition':['edgexn13']
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
+            "exposure-identification": ["edgexn12", "edgexn13"]
           }
         }
     - name: SCH_REDEPLOYMENT_POLICY_NAME
@@ -40,34 +40,34 @@ pod-template:
         {
           'latency_profile': {
             'pedestrian-detection': {
-              'edge3': 0.346751,
-              'edgexn10': 0.272675,
-              'edgexn7': 0.282497,
-              'edgexn13': 0.095160
+              'edge5': 0.350425,
+              'edgexn11': 0.278509,
+              'edgexn12': 0.092299,
+              'edgexn13': 0.110528
             },
             'exposure-identification': {
-              'edge3': 0.149148,
-              'edgexn10': 0.105872,
-              'edgexn7': 0.095304,
-              'edgexn13': 0.031376
+              'edge5': 0.130308,
+              'edgexn11': 0.086194,
+              'edgexn12': 0.025138,
+              'edgexn13': 0.032938
             },
             'vehicle-detection': {
-              'edge3': 0.249442,
-              'edgexn10': 0.190828,
-              'edgexn7': 0.178823,
-              'edgexn13': 0.097174
+              'edge5': 0.253885,
+              'edgexn11': 0.230188,
+              'edgexn12': 0.097858,
+              'edgexn13': 0.179046
             },
             'category-identification': {
-              'edge3': 0.055533,
-              'edgexn10': 0.061447,
-              'edgexn7': 0.046104,
-              'edgexn13': 0.023312
+              'edge5': 0.090873,
+              'edgexn11': 0.077124,
+              'edgexn12': 0.025709,
+              'edgexn13': 0.034075
             },
             'license-plate-recognition': {
-              'edge3': 0.069192,
-              'edgexn10': 0.078106,
-              'edgexn7': 0.077663,
-              'edgexn13': 0.052319
+              'edge5': 0.060042,
+              'edgexn11': 0.068468,
+              'edgexn12': 0.044490,
+              'edgexn13': 0.039395
             }
           },
           'service_importance_weights': {
@@ -81,7 +81,7 @@ pod-template:
             'pedestrian-detection': 1,
             'exposure-identification': 3,
             'vehicle-detection': 1,
-            'category-identification': 1,
+            'category-identification': 2,
             'license-plate-recognition': 2
           },
           'default_service_limit': 2,
@@ -94,41 +94,41 @@ pod-template:
         {
           'configuration':{
             'resolution': '720p',
-            'fps': 10,
+            'fps': 6,
             'encoding': 'mp4v',
-            'buffer_size': 4
+            'buffer_size': 2
           },
           'bandwidth_threshold': 100.0,
           'latency_profile': {
             'pedestrian-detection': {
-              'edge3': 0.346751,
-              'edgexn10': 0.272675,
-              'edgexn7': 0.282497,
-              'edgexn13': 0.095160
+              'edge5': 0.350425,
+              'edgexn11': 0.278509,
+              'edgexn12': 0.092299,
+              'edgexn13': 0.110528
             },
             'exposure-identification': {
-              'edge3': 0.149148,
-              'edgexn10': 0.105872,
-              'edgexn7': 0.095304,
-              'edgexn13': 0.031376
+              'edge5': 0.130308,
+              'edgexn11': 0.086194,
+              'edgexn12': 0.025138,
+              'edgexn13': 0.032938
             },
             'vehicle-detection': {
-              'edge3': 0.249442,
-              'edgexn10': 0.190828,
-              'edgexn7': 0.178823,
-              'edgexn13': 0.097174
+              'edge5': 0.253885,
+              'edgexn11': 0.230188,
+              'edgexn12': 0.097858,
+              'edgexn13': 0.179046
             },
             'category-identification': {
-              'edge3': 0.055533,
-              'edgexn10': 0.061447,
-              'edgexn7': 0.046104,
-              'edgexn13': 0.023312
+              'edge5': 0.090873,
+              'edgexn11': 0.077124,
+              'edgexn12': 0.025709,
+              'edgexn13': 0.034075
             },
             'license-plate-recognition': {
-              'edge3': 0.069192,
-              'edgexn10': 0.078106,
-              'edgexn7': 0.077663,
-              'edgexn13': 0.052319
+              'edge5': 0.060042,
+              'edgexn11': 0.068468,
+              'edgexn12': 0.044490,
+              'edgexn13': 0.039395
             }
           },
           'service_importance_weights': {

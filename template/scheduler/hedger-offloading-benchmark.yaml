@@ -14,17 +14,7 @@ pod-template:
           'profile':'offloading_benchmark',
           'overrides':{
             'device':'cuda:1',
-            'timing':{
-              'deployment_interval_s': 60.0,
-              'offloading_interval_s': 1.0
-            },
-            'latency_guard':{
-              'enabled': True,
-              'latency_threshold_s': 8.0,
-              'window_size':12,
-              'min_samples':5,
-              'trigger_violation_ratio': 0.4
-            }
+            'record': {'actor_snapshot_debug': True, 'decision_actor_debug': True}
           }
         }
     - name: SCH_SCENARIO_RETRIEVAL_NAME
@@ -49,10 +39,10 @@ pod-template:
         {
           'deployment':{
             "vehicle-detection": ["edge5"],
-            "pedestrian-detection": ["edge5","edgexn11"],
-            "category-identification": ["edgexn8", "edgexn12"],
-            "license-plate-recognition": ["edgexn8", "edgexn11"],
-            "exposure-identification": ["edgexn11", "edgexn12"]
+            "pedestrian-detection": ["edge5"],
+            "category-identification": ["edgexn8"],
+            "license-plate-recognition": ["edgexn11", "edgexn12"],
+            "exposure-identification": ["edgexn11", "edgexn12", "edgexn8"]
           }
         }
     - name: SCH_REDEPLOYMENT_POLICY_NAME
@@ -62,10 +52,10 @@ pod-template:
         {
           'deployment':{
             "vehicle-detection": ["edge5"],
-            "pedestrian-detection": ["edge5","edgexn11"],
-            "category-identification": ["edgexn8", "edgexn12"],
-            "license-plate-recognition": ["edgexn8", "edgexn11"],
-            "exposure-identification": ["edgexn11", "edgexn12"]
+            "pedestrian-detection": ["edge5"],
+            "category-identification": ["edgexn8"],
+            "license-plate-recognition": ["edgexn11", "edgexn12"],
+            "exposure-identification": ["edgexn11", "edgexn12", "edgexn8"]
           }
         }
     - name: SCH_AGENT_NAME
@@ -80,11 +70,11 @@ pod-template:
             'buffer_size': 4
           },
           'offloading':{
-            'pedestrian-detection':'edgexn11',
+            'pedestrian-detection':'edge5',
             'exposure-identification':'edgexn12',
             'vehicle-detection':'edge5',
-            'category-identification':'edgexn12',
-            'license-plate-recognition':'edgexn8'
+            'category-identification':'edgexn8',
+            'license-plate-recognition':'edgexn11'
           }
         }
 port-open:

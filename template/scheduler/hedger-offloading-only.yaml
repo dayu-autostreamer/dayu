@@ -5,12 +5,12 @@ pod-template:
   env:
     - name: SCH_CONFIG_EXTRACTION_NAME
       value: hedger
-    # Typical flow: offloading_warmup -> deployment_adaptation -> joint_finetune -> inference.
+    # Typical flow: offloading_warmup -> deployment_collect -> deployment_offline -> deployment_online -> joint_finetune -> inference.
     - name: SCH_CONFIG_EXTRACTION_PARAMETERS
       value: >
         {
           'config':'hedger_config.yaml',
-          'profile':'deployment_adaptation',
+          'profile':'deployment_online',
           'overrides':{
             'device':'cuda:1',
             'training':{
@@ -48,11 +48,11 @@ pod-template:
             'checkpoint':{
               'load':{
                 'enabled': True,
-                'from_stage':'offloading_warmup',
+                'from_stage':'deployment_offline',
                 'which':'final',
                 'restore':{
                   'encoder': True,
-                  'deployment_agent': False,
+                  'deployment_agent': True,
                   'offloading_agent': True,
                   'optimizer': False
                 },

@@ -1,0 +1,88 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: deepva
+    - name: SCH_CONFIG_EXTRACTION_PARAMETERS
+      value: >
+        {
+          'num_services':5,
+          'num_devices':4,
+          'device_service_limits':'2,4,2,2',
+          'device_list':'edge5,edgexn11,edgexn12,edgexn13'
+        }
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'scope': 'all_edge_nodes',
+          'fixed_value': 'edgex1',
+          'fixed_type': 'hostname'
+        }
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'policy':{
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
+            "exposure-identification": ["edgexn12", "edgexn13"]
+          }
+        }
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: deepva
+    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'redeployment_interval':60
+        }
+    - name: SCH_AGENT_NAME
+      value: deepva
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'configuration':{
+            'resolution': '720p',
+            'fps': 6,
+            'encoding': 'mp4v',
+            'buffer_size': 2
+          },
+          'mode':'train',
+          'model_dir':'model_deepva_1',
+          'load_model':False,
+          'load_model_episode':0,
+          'redeployment_interval':90,
+          'reward_collection_window':45,
+          'learning_rate':0.003,
+          'gamma':0.95,
+          'epsilon_start':1.0,
+          'epsilon_end':0.05,
+          'epsilon_decay':0.96,
+          'target_update_freq':5,
+          'hidden_dim':128,
+          'replay_buffer_size':5000,
+          'batch_size':32,
+          'update_interval':1,
+          'update_after':15,
+          'save_interval':10,
+          'total_steps':100
+        }
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/deepva/'
+
