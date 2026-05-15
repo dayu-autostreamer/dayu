@@ -1705,6 +1705,64 @@ def test_hedger_ensure_started_is_one_shot(monkeypatch):
 
 
 @pytest.mark.unit
+def test_deployment_offline_autostarts_after_initial_deployment_registration():
+    logical_topology, physical_topology = build_test_topologies()
+    calls = []
+
+    hedger = Hedger.__new__(Hedger)
+    hedger.mode = "train"
+    hedger.stage_cfg = HedgerTrainingStageCfg(
+        name="deployment_offline",
+        run_deployment_worker=False,
+        update_deployment_policy=True,
+        run_offloading_worker=False,
+        update_offloading_policy=False,
+        deployment_train_mode="offline",
+    )
+    hedger.logical_topology = logical_topology
+    hedger.physical_topology = physical_topology
+    hedger.state_cfg = types.SimpleNamespace(max_buffer_size=16)
+    hedger.state_buffer = None
+    hedger.initial_deployment_plan = None
+    hedger.device = torch.device("cpu")
+    hedger.ensure_started = lambda reason: calls.append(reason) or True
+
+    hedger.register_state_buffer()
+    assert calls == []
+
+    hedger.register_initial_deployment({"svc-a": ["edge-a"], "svc-b": ["edge-b"]})
+    assert calls == ["deployment offline initial deployment registration"]
+
+
+@pytest.mark.unit
+def test_non_offline_training_does_not_autostart_on_initial_deployment_registration():
+    logical_topology, physical_topology = build_test_topologies()
+    calls = []
+
+    hedger = Hedger.__new__(Hedger)
+    hedger.mode = "train"
+    hedger.stage_cfg = HedgerTrainingStageCfg(
+        name="offloading_warmup",
+        run_deployment_worker=False,
+        update_deployment_policy=False,
+        run_offloading_worker=True,
+        update_offloading_policy=True,
+    )
+    hedger.logical_topology = logical_topology
+    hedger.physical_topology = physical_topology
+    hedger.state_cfg = types.SimpleNamespace(max_buffer_size=16)
+    hedger.state_buffer = None
+    hedger.initial_deployment_plan = None
+    hedger.device = torch.device("cpu")
+    hedger.ensure_started = lambda reason: calls.append(reason) or True
+
+    hedger.register_state_buffer()
+    hedger.register_initial_deployment({"svc-a": ["edge-a"], "svc-b": ["edge-b"]})
+
+    assert calls == []
+
+
+@pytest.mark.unit
 def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
     calls = []
     buffer = types.SimpleNamespace(

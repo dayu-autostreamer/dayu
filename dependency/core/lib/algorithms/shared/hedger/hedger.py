@@ -379,6 +379,11 @@ class Hedger:
 
         if self.mode == "inference":
             self.ensure_started("inference initialization")
+        elif self.stage_cfg is not None and self.stage_cfg.deployment_train_mode == "offline":
+            LOGGER.info(
+                "[Hedger][Lifecycle] Deployment offline training will start once topology, "
+                "state buffer, and initial deployment are registered."
+            )
         else:
             LOGGER.info("[Hedger][Lifecycle] Training start is deferred until the first task update arrives.")
 
@@ -426,6 +431,27 @@ class Hedger:
             self._run_thread.start()
         LOGGER.info(f"[Hedger][Lifecycle] Background worker started: mode={self.mode}, reason={reason}")
         return True
+
+    def _maybe_autostart_deployment_offline(self, reason: str) -> bool:
+        if self.mode != "train" or self.stage_cfg is None:
+            return False
+        if self.stage_cfg.deployment_train_mode != "offline":
+            return False
+        if self.initial_deployment_plan is None:
+            LOGGER.debug(
+                f"[Hedger][Lifecycle] Deployment offline autostart waits for initial deployment: "
+                f"reason={reason}"
+            )
+            return False
+        if not self._ready_for_run:
+            LOGGER.debug(
+                f"[Hedger][Lifecycle] Deployment offline autostart waits for topology/state buffer: "
+                f"reason={reason}, logical_ready={self.logical_topology is not None}, "
+                f"physical_ready={self.physical_topology is not None}, "
+                f"state_buffer_ready={self.state_buffer is not None}"
+            )
+            return False
+        return self.ensure_started(reason)
 
     @staticmethod
     def _require_mapping(config: dict, key: str) -> dict:
@@ -3021,6 +3047,7 @@ class Hedger:
 
     def register_state_buffer(self):
         if self.state_buffer:
+            self._maybe_autostart_deployment_offline("deployment offline state buffer already registered")
             return
 
         assert self.logical_topology, "Logical topology must be registered before registering state buffer."
@@ -3033,12 +3060,14 @@ class Hedger:
             f"[Hedger][StateBuffer] Registered state buffer: capacity={self.state_cfg.max_buffer_size}, "
             f"fixed_lan_bandwidth={self.state_buffer.fixed_lan_bandwidth_mbps:.2f}Mbps"
         )
+        self._maybe_autostart_deployment_offline("deployment offline state buffer registration")
 
     def register_initial_deployment(self, deployment_plan):
         assert self.logical_topology, "Logical topology must be registered before registering initial deployment."
         assert self.physical_topology, "Physical topology must be registered before registering initial deployment."
 
         if self.initial_deployment_plan is not None:
+            self._maybe_autostart_deployment_offline("deployment offline initial deployment already registered")
             return
         self.initial_deployment_plan = copy.deepcopy(deployment_plan)
         self.deployment_plan = copy.deepcopy(deployment_plan)
@@ -3053,6 +3082,7 @@ class Hedger:
             f"[Hedger][Deployment] Registered initial deployment: "
             f"{self._summarize_deployment_plan(self.initial_deployment_plan)}"
         )
+        self._maybe_autostart_deployment_offline("deployment offline initial deployment registration")
         LOGGER.debug(f"[Hedger][Deployment] Initial deployment detail: {self.initial_deployment_plan}")
 
     def get_offloading_plan(self):
