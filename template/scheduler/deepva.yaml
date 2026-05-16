@@ -8,6 +8,7 @@ pod-template:
     - name: SCH_CONFIG_EXTRACTION_PARAMETERS
       value: >
         {
+          'service_list':'vehicle-detection,pedestrian-detection,category-identification,license-plate-recognition,exposure-identification',
           'num_services':5,
           'num_devices':4,
           'device_service_limits':'2,4,2,2',
@@ -50,6 +51,20 @@ pod-template:
         }
     - name: SCH_AGENT_NAME
       value: deepva
+    # DeepVA uses this single scheduler YAML for both training and inference.
+    #
+    # Training:
+    #   mode='train'
+    #   load_model=False for training from scratch, or True to continue from a checkpoint.
+    #   epsilon_start/epsilon_end/epsilon_decay control epsilon-greedy exploration.
+    #
+    # Inference / benchmark:
+    #   mode='inference'
+    #   load_model=True
+    #   load_model_episode=<saved episode, e.g. 120>
+    #   epsilon_start=0.0
+    #   epsilon_end=0.0
+    #   epsilon_decay=1.0
     - name: SCH_AGENT_PARAMETERS
       value: >
         {
@@ -63,21 +78,49 @@ pod-template:
           'model_dir':'model_deepva_1',
           'load_model':False,
           'load_model_episode':0,
-          'redeployment_interval':90,
-          'reward_collection_window':45,
-          'learning_rate':0.003,
+          'redeployment_interval':60,
+          'reward_collection_window':30,
+          'learning_rate':0.001,
           'gamma':0.95,
           'epsilon_start':1.0,
-          'epsilon_end':0.05,
-          'epsilon_decay':0.96,
-          'target_update_freq':5,
+          'epsilon_end':0.08,
+          'epsilon_decay':0.985,
+          'target_update_freq':10,
           'hidden_dim':128,
-          'replay_buffer_size':5000,
+          'replay_buffer_size':10000,
           'batch_size':32,
           'update_interval':1,
-          'update_after':15,
-          'save_interval':10,
-          'total_steps':100
+          'update_after':10,
+          'save_interval':20,
+          'total_steps':120,
+          'min_replicas_per_service':1,
+          'max_replicas_per_service':2,
+          'replica_score_threshold':0.0,
+          'latency_slo_s':3.0,
+          'latency_clip':3.0,
+          'latency_weight':0.45,
+          'slo_weight':0.65,
+          'queue_weight':0.10,
+          'cloud_weight':0.05,
+          'change_weight':0.03,
+          'memory_weight':0.45,
+          'normalizers':{
+            'complexity':20.0,
+            'arrival_rate':5.0,
+            'model_flops':200.0,
+            'model_memory':8.0,
+            'gpu_flops':10000.0,
+            'mem_available':16.0,
+            'queue_length':10.0,
+            'runtime':3.0,
+            'bandwidth':100.0,
+            'delay':3.0
+          },
+          'record':{
+            'enabled':True,
+            'delay_window_size':30,
+            'runtime_alpha':0.25
+          }
         }
 port-open:
   pos: cloud
@@ -85,4 +128,3 @@ port-open:
 file-mount:
   - pos: cloud
     path: 'scheduler/deepva/'
-
