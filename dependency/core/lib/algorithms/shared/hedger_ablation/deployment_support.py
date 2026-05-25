@@ -12,7 +12,7 @@ __all__ = ("HedgerHeuristicDeploymentMixin",)
 
 class HedgerHeuristicDeploymentMixin:
     def _edge_count_target(self) -> int:
-        return max(1, int(self.deployment_agent_params.get("min_edge_replicas_per_service", 1) or 1))
+        return max(1, int(self.deployment_agent_params.get("max_required_edge_replicas", 1) or 1))
 
     def _max_edge_replicas_per_device(self) -> Optional[int]:
         value = self.deployment_agent_params.get("max_edge_replicas_per_device")

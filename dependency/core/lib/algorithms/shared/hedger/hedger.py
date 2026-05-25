@@ -103,6 +103,15 @@ class HedgerDeploymentOfflineRLCfg:
 
 
 @dataclass(frozen=True)
+class HedgerDeploymentEventTriggerCfg:
+    enabled: bool = False
+    min_interval_s: float = 20.0
+    cooldown_s: float = 30.0
+    queue_pressure_threshold: float = 0.70
+    singleton_pressure_threshold: float = 0.45
+
+
+@dataclass(frozen=True)
 class HedgerTrainingCfg:
     stage: str
     total_updates: int
@@ -263,6 +272,7 @@ class Hedger:
         self.inference_cfg = self._build_inference_cfg(config)
         self.record_cfg = self._build_record_cfg(config)
         self.latency_guard_cfg = self._build_latency_guard_cfg(config)
+        self.deployment_event_trigger_cfg = self._build_deployment_event_trigger_cfg(config)
         self.checkpoint_cfg = self._build_checkpoint_cfg(config)
 
         agents_cfg = self._require_mapping(config, "agents")
@@ -272,6 +282,7 @@ class Hedger:
         self.deployment_thread_stop_event = threading.Event()
         self.offloading_thread_stop_event = threading.Event()
         self._latency_guard_trigger_event = threading.Event()
+        self._deployment_event_trigger_event = threading.Event()
 
         self.physical_topology = None
         self.logical_topology = None
@@ -354,6 +365,8 @@ class Hedger:
         self._pending_deployment_force_serve = False
         self._pending_deployment_reason = None
         self._last_deployment_served_monotonic = 0.0
+        self._last_deployment_event_trigger_monotonic = 0.0
+        self._last_deployment_event_trigger_record: Dict[str, Any] = {}
         self._last_redeployment_throttle_log_t = 0.0
         self._frozen_offloading_agent = None
         self._latency_guard_samples = deque(maxlen=self.latency_guard_cfg.window_size)
@@ -742,6 +755,21 @@ class Hedger:
             clear_latency_window_on_recovery=bool(guard.get("clear_latency_window_on_recovery", True)),
         )
 
+    def _build_deployment_event_trigger_cfg(self, config: dict) -> HedgerDeploymentEventTriggerCfg:
+        event = config.get("deployment_event_trigger") or {}
+        if not isinstance(event, dict):
+            raise ValueError("Hedger deployment_event_trigger must be a mapping when provided.")
+        return HedgerDeploymentEventTriggerCfg(
+            enabled=bool(event.get("enabled", False)),
+            min_interval_s=max(0.0, float(event.get("min_interval_s", 20.0))),
+            cooldown_s=max(0.0, float(event.get("cooldown_s", 30.0))),
+            queue_pressure_threshold=min(1.0, max(0.0, float(event.get("queue_pressure_threshold", 0.70)))),
+            singleton_pressure_threshold=min(
+                1.0,
+                max(0.0, float(event.get("singleton_pressure_threshold", 0.45))),
+            ),
+        )
+
     def _build_checkpoint_cfg(self, config: dict) -> HedgerCheckpointCfg:
         checkpoint = self._require_mapping(config, "checkpoint")
         load_cfg = checkpoint.get("load") or {}
@@ -921,6 +949,9 @@ class Hedger:
         constraints = deployment.get("constraints") or {}
         if not isinstance(constraints, dict):
             raise ValueError("Hedger config `agents.deployment.constraints` must be a mapping when provided.")
+        redundancy = deployment.get("redundancy") or {}
+        if not isinstance(redundancy, dict):
+            raise ValueError("Hedger config `agents.deployment.redundancy` must be a mapping when provided.")
         max_edge_replicas = constraints.get("max_edge_replicas_per_device")
         if max_edge_replicas is not None:
             max_edge_replicas = int(max_edge_replicas)
@@ -929,11 +960,20 @@ class Hedger:
         edge_memory_budget_ratio = float(constraints.get("edge_memory_budget_ratio", 1.0))
         if not math.isfinite(edge_memory_budget_ratio) or not (0.0 < edge_memory_budget_ratio <= 1.0):
             raise ValueError("Hedger config `agents.deployment.constraints.edge_memory_budget_ratio` must be in (0, 1].")
-        min_edge_replicas = int(constraints.get("min_edge_replicas_per_service", 0) or 0)
-        if min_edge_replicas < 0:
+        max_required_edge_replicas = int(redundancy.get("max_required_edge_replicas", 2) or 2)
+        if max_required_edge_replicas < 1:
             raise ValueError(
-                "Hedger config `agents.deployment.constraints.min_edge_replicas_per_service` must be >= 0."
+                "Hedger config `agents.deployment.redundancy.max_required_edge_replicas` must be >= 1."
             )
+        pressure_threshold = float(redundancy.get("pressure_threshold", 0.60))
+        if not math.isfinite(pressure_threshold) or not (0.0 <= pressure_threshold <= 1.0):
+            raise ValueError("Hedger config `agents.deployment.redundancy.pressure_threshold` must be in [0, 1].")
+        pressure_temperature = float(redundancy.get("pressure_temperature", 0.15))
+        if not math.isfinite(pressure_temperature) or pressure_temperature <= 0.0:
+            raise ValueError("Hedger config `agents.deployment.redundancy.pressure_temperature` must be > 0.")
+        queue_normalizer = float(redundancy.get("queue_normalizer", 8.0))
+        if not math.isfinite(queue_normalizer) or queue_normalizer <= 0.0:
+            raise ValueError("Hedger config `agents.deployment.redundancy.queue_normalizer` must be > 0.")
         dep_latency_cfg = self._parse_latency_reward_cfg(
             reward,
             scope="deployment",
@@ -959,9 +999,14 @@ class Hedger:
             "penalty_edge_cover_repair": float(penalty.get("edge_cover_repair", 0.0)),
             "penalty_latency_guard_trigger": float(penalty.get("latency_guard_trigger", 0.0)),
             "penalty_feedback_timeout": float(penalty.get("feedback_timeout", 0.0)),
+            "reward_dep_under_replica_weight": float(redundancy.get("under_replica_weight", 0.0)),
+            "reward_dep_singleton_hotspot_weight": float(redundancy.get("singleton_hotspot_weight", 0.0)),
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
-            "min_edge_replicas_per_service": min_edge_replicas,
+            "max_required_edge_replicas": max_required_edge_replicas,
+            "pressure_threshold": pressure_threshold,
+            "pressure_temperature": pressure_temperature,
+            "queue_normalizer": queue_normalizer,
             "ppo": ppo,
         }
 
@@ -1534,10 +1579,12 @@ class Hedger:
         consecutive monitor updates, the guard can recover even if no new task
         completions arrive.
         """
-        if not self._latency_guard_enabled() or not self.latency_guard_cfg.queue_recovery_enabled:
+        guard_queue_enabled = self._latency_guard_enabled() and self.latency_guard_cfg.queue_recovery_enabled
+        deployment_event_enabled = self._deployment_event_trigger_cfg_enabled()
+        if not guard_queue_enabled and not deployment_event_enabled:
             return self._empty_latency_guard_stats()
         if not isinstance(queue_lengths, dict):
-            return self.latency_guard_status()
+            return self.latency_guard_status() if guard_queue_enabled else self._empty_latency_guard_stats()
 
         normalized = {}
         for service_name, value in queue_lengths.items():
@@ -1546,7 +1593,7 @@ class Hedger:
             except (TypeError, ValueError):
                 continue
         if not normalized:
-            return self.latency_guard_status()
+            return self.latency_guard_status() if guard_queue_enabled else self._empty_latency_guard_stats()
 
         recovered = False
         now = time.monotonic()
@@ -1555,7 +1602,7 @@ class Hedger:
                 "values": normalized,
                 "ts": now,
             }
-            if self._latency_guard_active:
+            if guard_queue_enabled and self._latency_guard_active:
                 queue_stats = self._latency_guard_queue_stats_locked(now)
                 activated_t = getattr(self, "_latency_guard_activated_t", 0.0)
                 pause_elapsed = (
@@ -1592,19 +1639,116 @@ class Hedger:
                         time.monotonic() + self.latency_guard_cfg.task_feedback_quarantine_s
                     )
                     recovered = True
-            self._latency_guard_last_stats = self._compute_latency_guard_stats_locked()
-            stats = copy.deepcopy(self._latency_guard_last_stats)
+            if guard_queue_enabled:
+                self._latency_guard_last_stats = self._compute_latency_guard_stats_locked()
+                stats = copy.deepcopy(self._latency_guard_last_stats)
+            else:
+                stats = self._empty_latency_guard_stats()
 
-        if recovered:
-            self._handle_latency_guard_recovered(
-                stats,
-                task_version=None,
-                deployment_version=None,
-                reason="queue_drain",
-            )
-        else:
-            self._log_latency_guard_if_active(stats)
+        if guard_queue_enabled:
+            if recovered:
+                self._handle_latency_guard_recovered(
+                    stats,
+                    task_version=None,
+                    deployment_version=None,
+                    reason="queue_drain",
+                )
+            else:
+                self._log_latency_guard_if_active(stats)
+        if deployment_event_enabled:
+            self._deployment_event_trigger_event.set()
         return stats
+
+    def _deployment_event_trigger_cfg_enabled(self) -> bool:
+        cfg = getattr(self, "deployment_event_trigger_cfg", HedgerDeploymentEventTriggerCfg())
+        return bool(cfg.enabled)
+
+    def _deployment_event_trigger_status(self) -> Dict[str, Any]:
+        cfg = getattr(self, "deployment_event_trigger_cfg", HedgerDeploymentEventTriggerCfg())
+        if not cfg.enabled:
+            return {"triggered": False, "reason": ""}
+        now = time.monotonic()
+        if now - float(getattr(self, "_last_deployment_event_trigger_monotonic", 0.0)) < cfg.cooldown_s:
+            return {"triggered": False, "reason": "cooldown"}
+        last_served_t = float(getattr(self, "_last_deployment_served_monotonic", 0.0))
+        if last_served_t > 0.0 and now - last_served_t < cfg.min_interval_s:
+            return {"triggered": False, "reason": "min_interval"}
+
+        queue_normalizer = max(1e-6, float(self.deployment_agent_params.get("queue_normalizer", 8.0)))
+        with self._latency_guard_lock:
+            observations = copy.deepcopy(getattr(self, "_latency_guard_queue_observations", {}))
+
+        max_queue = 0.0
+        singleton_pressure = 0.0
+        singleton_service = ""
+        singleton_device = ""
+        with self._data_lock:
+            deploy_mask = self.cur_deploy_mask.detach().clone().cpu() if self.cur_deploy_mask is not None else None
+
+        for device_name, record in observations.items():
+            if not isinstance(record, dict):
+                continue
+            try:
+                ts = float(record.get("ts", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if now - ts > self.latency_guard_cfg.queue_recovery_stale_timeout_s:
+                continue
+            values = record.get("values") or {}
+            if not isinstance(values, dict):
+                continue
+            for service_name, value in values.items():
+                try:
+                    queue_length = max(0.0, float(value))
+                except (TypeError, ValueError):
+                    continue
+                max_queue = max(max_queue, queue_length)
+                if deploy_mask is None or self.logical_topology is None or self.physical_topology is None:
+                    continue
+                try:
+                    service_idx = self.logical_topology.index(str(service_name))
+                    device_idx = self.physical_topology.index(str(device_name))
+                except ValueError:
+                    continue
+                cloud_idx = self.physical_topology.cloud_idx
+                if device_idx == cloud_idx or device_idx < 0 or device_idx >= deploy_mask.size(1):
+                    continue
+                if service_idx < 0 or service_idx >= deploy_mask.size(0):
+                    continue
+                if not bool(deploy_mask[service_idx, device_idx].item()):
+                    continue
+                edge_count = int(deploy_mask[service_idx, :cloud_idx].bool().sum().item()) if cloud_idx > 0 else 0
+                if edge_count <= 1:
+                    pressure = queue_length / queue_normalizer
+                    if pressure > singleton_pressure:
+                        singleton_pressure = pressure
+                        singleton_service = str(service_name)
+                        singleton_device = str(device_name)
+
+        queue_pressure = max_queue / queue_normalizer
+        status = {
+            "triggered": False,
+            "reason": "",
+            "queue_pressure": float(queue_pressure),
+            "singleton_pressure": float(singleton_pressure),
+            "max_queue": float(max_queue),
+            "singleton_service": singleton_service,
+            "singleton_device": singleton_device,
+        }
+        if singleton_pressure >= cfg.singleton_pressure_threshold:
+            status["triggered"] = True
+            status["reason"] = "event_singleton_hotspot"
+        elif queue_pressure >= cfg.queue_pressure_threshold:
+            status["triggered"] = True
+            status["reason"] = "event_queue_pressure"
+        return status
+
+    def _mark_deployment_event_triggered(self, status: Dict[str, Any]) -> None:
+        if not status.get("triggered"):
+            return
+        self._last_deployment_event_trigger_monotonic = time.monotonic()
+        self._last_deployment_event_trigger_record = copy.deepcopy(status)
+        self._deployment_event_trigger_event.clear()
 
     def _handle_latency_guard_triggered(
             self,
@@ -1764,7 +1908,8 @@ class Hedger:
             f"feedback_timeout_penalty_weight={dep_params.get('penalty_feedback_timeout', 'na')}, "
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
-            f"min_edge_replicas_per_service={dep_params.get('min_edge_replicas_per_service', 'na')}, "
+            f"max_required_edge_replicas={dep_params.get('max_required_edge_replicas', 'na')}, "
+            f"pressure_threshold={dep_params.get('pressure_threshold', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -2047,6 +2192,22 @@ class Hedger:
         }
 
     @staticmethod
+    def _actor_debug_vector_value(
+            actor_debug: Optional[Dict[str, Any]],
+            key: str,
+            service_idx: int,
+    ) -> float:
+        if not isinstance(actor_debug, dict):
+            return 0.0
+        value = actor_debug.get(key)
+        if not isinstance(value, torch.Tensor) or value.numel() == 0:
+            return 0.0
+        value = value.detach().float().cpu()
+        if value.dim() != 1 or service_idx < 0 or service_idx >= value.size(0):
+            return 0.0
+        return float(value[service_idx].item())
+
+    @staticmethod
     def _actor_debug_matrix_value(
             actor_debug: Optional[Dict[str, Any]],
             key: str,
@@ -2326,16 +2487,22 @@ class Hedger:
             "dep_change_cost", "dep_latency_cost",
             "dep_offload_term", "dep_latency_term", "dep_slo_term", "dep_change_term",
             "dep_cloud_only_term", "dep_capacity_relax_term", "dep_edge_cover_repair_term",
+            "dep_under_replica_term", "dep_singleton_hotspot_term",
             "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
+            "under_replicated_risk_cost", "singleton_hotspot_cost",
+            "executed_under_replicated_risk_cost", "executed_singleton_hotspot_cost",
             "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
             "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95", "e2e_latency_p99",
             "e2e_slo_violation", "feedback_gate_enabled", "feedback_gate_required_samples",
             "feedback_gate_collected_samples", "feedback_gate_sample_shortfall",
             "feedback_gate_shortfall_ratio", "feedback_gate_timed_out", "feedback_gate_guard_truncated",
-            "feedback_timeout_penalty_cost",
+            "feedback_timeout_penalty_cost", "deployment_event_triggered",
+            "deployment_event_reason", "deployment_event_queue_pressure",
+            "deployment_event_singleton_pressure", "deployment_event_max_queue",
             "deployment_deterministic",
             "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
-            "edge_cover_repair_cost", "edge_cover_unmet", "policy_logp", "policy_entropy",
+            "edge_cover_repair_cost", "edge_cover_unmet", "redundancy_repair_cnt",
+            "redundancy_repair_cost", "redundancy_unmet", "policy_logp", "policy_entropy",
             "value_estimate", "raw_edge_replicas", "edge_replicas", "cloud_replicas",
             "cloud_only", "cloud_only_ratio", "empty_edge_devices", "empty_edge_device_ratio",
             "raw_deployment_plan", "deployment_plan", "active_deployment_plan",
@@ -2344,8 +2511,10 @@ class Hedger:
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
+            "under_replica_weight", "singleton_hotspot_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
-            "edge_memory_budget_ratio", "min_edge_replicas_per_service", "loaded_checkpoint",
+            "edge_memory_budget_ratio", "max_required_edge_replicas", "pressure_threshold",
+            "pressure_temperature", "queue_normalizer", "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
             insert_at = fieldnames.index("latency_guard_active")
@@ -2420,6 +2589,9 @@ class Hedger:
             *Hedger._decision_common_fieldnames(),
             "raw_nodes", "executed_nodes", "removed_nodes", "added_nodes",
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
+            "service_pressure", "edge_feasible_count", "soft_required_edge_replicas",
+            "required_edge_replicas", "replica_need_prob", "under_replicated_gap",
+            "under_replicated_risk", "singleton_hotspot_risk",
             "capacity_corrected", "deployment_policy_deterministic",
         ]
         if self.record_cfg.decision_candidate_features_debug:
@@ -2432,7 +2604,10 @@ class Hedger:
             fieldnames.extend([
                 "deployment_qk_scores", "deployment_qk_features",
                 "deployment_candidate_costs", "deployment_final_scores",
-                "deployment_policy_probs", "deployment_static_mask",
+                "deployment_policy_probs", "deployment_replica_need_probs",
+                "deployment_service_pressure", "deployment_required_edge_replicas",
+                "deployment_under_replicated_risks", "deployment_singleton_hotspot_risks",
+                "deployment_static_mask",
             ])
         return fieldnames
 
@@ -2567,6 +2742,24 @@ class Hedger:
                 raw_edge_replicas=raw_edge_count,
                 executed_edge_replicas=exec_edge_count,
                 cloud_replica=bool(exec_mask[service_idx, cloud_idx].item()),
+                service_pressure=self._actor_debug_vector_value(actor_debug, "service_pressure", service_idx),
+                edge_feasible_count=self._actor_debug_vector_value(actor_debug, "edge_feasible_count", service_idx),
+                soft_required_edge_replicas=self._actor_debug_vector_value(
+                    actor_debug, "soft_required_edge_replicas", service_idx
+                ),
+                required_edge_replicas=self._actor_debug_vector_value(
+                    actor_debug, "required_edge_replicas", service_idx
+                ),
+                replica_need_prob=self._actor_debug_vector_value(actor_debug, "replica_need_prob", service_idx),
+                under_replicated_gap=self._actor_debug_vector_value(
+                    actor_debug, "under_replicated_gap", service_idx
+                ),
+                under_replicated_risk=self._actor_debug_vector_value(
+                    actor_debug, "under_replicated_risk", service_idx
+                ),
+                singleton_hotspot_risk=self._actor_debug_vector_value(
+                    actor_debug, "singleton_hotspot_risk", service_idx
+                ),
                 capacity_corrected=bool(not torch.equal(raw_mask[service_idx], exec_mask[service_idx])),
                 deployment_policy_deterministic=(
                     "" if policy_deterministic is None else int(bool(policy_deterministic))
@@ -2609,6 +2802,21 @@ class Hedger:
                     ),
                     "deployment_policy_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "policy_prob", service_idx)
+                    ),
+                    "deployment_replica_need_probs": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "replica_need_prob", service_idx)
+                    ),
+                    "deployment_service_pressure": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "service_pressure", service_idx)
+                    ),
+                    "deployment_required_edge_replicas": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "required_edge_replicas", service_idx)
+                    ),
+                    "deployment_under_replicated_risks": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "under_replicated_risk", service_idx)
+                    ),
+                    "deployment_singleton_hotspot_risks": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "singleton_hotspot_risk", service_idx)
                     ),
                     "deployment_static_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "static_mask", service_idx)
@@ -3331,11 +3539,17 @@ class Hedger:
             edge_cover_repair_cnt,
             edge_cover_repair_cost,
             edge_cover_unmet,
+            redundancy_repair_cnt,
+            redundancy_repair_cost,
+            redundancy_unmet,
+            risk_metrics,
+            _executed_redundancy_ctx,
         ) = self.deployment_agent._project_deployment_mask(
             raw_mask,
             raw_probs=raw_probs,
             logic_feats=logic_feats,
             phys_feats=phys_feats,
+            logic_edge_index=logic_edge_index,
             prev_deploy_mask=prev_deploy_mask,
             static_allowed=static_allowed,
         )
@@ -3354,6 +3568,10 @@ class Hedger:
             "edge_cover_repair_cnt": edge_cover_repair_cnt,
             "edge_cover_repair_cost": edge_cover_repair_cost,
             "edge_cover_unmet": edge_cover_unmet,
+            "redundancy_repair_cnt": redundancy_repair_cnt,
+            "redundancy_repair_cost": redundancy_repair_cost,
+            "redundancy_unmet": redundancy_unmet,
+            **risk_metrics,
             "raw_deploy_mask": raw_mask,
             "behavior_kind": behavior_kind,
         }
@@ -3379,7 +3597,7 @@ class Hedger:
         """Sleep for the deployment cadence, but wake on a new latency-guard trigger."""
         interval_s = max(0.0, float(interval_s))
         if interval_s <= 0.0:
-            return time.time(), "interval", int(last_guard_trigger_seq)
+            return time.time(), "interval", int(last_guard_trigger_seq), {"triggered": False, "reason": "interval"}
 
         now = time.time()
         target_t = now + interval_s if last_tick <= 0 else last_tick + interval_s
@@ -3395,18 +3613,39 @@ class Hedger:
                     f"for latency guard trigger: seq={current_seq}, "
                     f"configured_interval={self._format_log_value(interval_s, 2)}s."
                 )
-                return time.time(), "latency_guard_trigger", int(current_seq)
+                return time.time(), "latency_guard_trigger", int(current_seq), {
+                    "triggered": True,
+                    "reason": "latency_guard_trigger",
+                    "queue_pressure": 0.0,
+                    "singleton_pressure": 0.0,
+                    "max_queue": 0.0,
+                }
+
+            event_status = self._deployment_event_trigger_status()
+            if bool(event_status.get("triggered", False)):
+                self._mark_deployment_event_triggered(event_status)
+                LOGGER.warning(
+                    f"[Hedger][DeploymentEvent] Wake deployment decision immediately: "
+                    f"reason={event_status.get('reason')}, "
+                    f"queue_pressure={self._format_log_value(event_status.get('queue_pressure', 0.0))}, "
+                    f"singleton_pressure={self._format_log_value(event_status.get('singleton_pressure', 0.0))}, "
+                    f"configured_interval={self._format_log_value(interval_s, 2)}s."
+                )
+                return time.time(), str(event_status.get("reason") or "event_trigger"), current_seq, event_status
 
             remaining_s = target_t - time.time()
             if remaining_s <= 0.0:
-                return time.time(), "interval", last_guard_trigger_seq
+                return time.time(), "interval", last_guard_trigger_seq, {"triggered": False, "reason": "interval"}
 
-            self._latency_guard_trigger_event.wait(timeout=min(remaining_s, poll_s))
+            wait_s = min(remaining_s, poll_s)
+            self._latency_guard_trigger_event.wait(timeout=wait_s)
             if self._latency_guard_trigger_event.is_set() and \
                     self._latency_guard_trigger_seq_value() <= last_guard_trigger_seq:
                 self._latency_guard_trigger_event.clear()
+            if self._deployment_event_trigger_event.is_set():
+                self._deployment_event_trigger_event.clear()
 
-        return time.time(), "stop", last_guard_trigger_seq
+        return time.time(), "stop", last_guard_trigger_seq, {"triggered": False, "reason": "stop"}
 
     def _wait_for_initial_inference_task_feedback(self, worker_name: str, stop_event: threading.Event) -> int:
         cfg = self.inference_cfg
@@ -4426,11 +4665,13 @@ class Hedger:
         logic_feats, phys_feats, _, _, state_debug = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
         last_guard_trigger_seq = self._latency_guard_trigger_seq_value()
         next_decision_reason = "startup"
+        next_event_status: Dict[str, Any] = {"triggered": False, "reason": "startup"}
 
         step = 0
         while not self.deployment_thread_stop_event.is_set():
             try:
                 current_decision_reason = next_decision_reason
+                current_event_status = next_event_status
                 state_logic_feats = logic_feats
                 state_phys_feats = phys_feats
                 state_debug_record = state_debug
@@ -4459,7 +4700,11 @@ class Hedger:
                 with self._data_lock:
                     self.pending_deployment_plan = deploy_plan
                     self.pending_deploy_mask = deploy_mask.detach().cpu()
-                    self._pending_deployment_force_serve = current_decision_reason == "latency_guard_trigger"
+                    self._pending_deployment_force_serve = current_decision_reason in {
+                        "latency_guard_trigger",
+                        "event_queue_pressure",
+                        "event_singleton_hotspot",
+                    }
                     self._pending_deployment_reason = current_decision_reason
                     decision_version = self._mark_deployment_decision_pending()
                 if not self._wait_for_inference_deployment_served(decision_version):
@@ -4468,6 +4713,7 @@ class Hedger:
                     deployment_time_ticket,
                     next_decision_reason,
                     last_guard_trigger_seq,
+                    next_event_status,
                 ) = self._sleep_until_next_inference_deployment_decision(
                     deployment_time_ticket,
                     self.deployment_interval,
@@ -4475,7 +4721,7 @@ class Hedger:
                 )
 
                 served_version = self.get_active_deployment_version()
-                if next_decision_reason != "latency_guard_trigger":
+                if next_decision_reason not in {"latency_guard_trigger", "event_queue_pressure", "event_singleton_hotspot"}:
                     feedback_gate = self._wait_for_inference_deployment_feedback_samples(served_version)
                 else:
                     feedback_gate = {
@@ -4539,8 +4785,18 @@ class Hedger:
                         dep_cloud_only_term=dep_reward_breakdown["dep_cloud_only_term"],
                         dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                         dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
+                        dep_under_replica_term=dep_reward_breakdown["dep_under_replica_term"],
+                        dep_singleton_hotspot_term=dep_reward_breakdown["dep_singleton_hotspot_term"],
                         dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
                         dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
+                        under_replicated_risk_cost=dep_reward_breakdown["under_replicated_risk_cost"],
+                        singleton_hotspot_cost=dep_reward_breakdown["singleton_hotspot_cost"],
+                        executed_under_replicated_risk_cost=(
+                            dep_reward_breakdown["executed_under_replicated_risk_cost"]
+                        ),
+                        executed_singleton_hotspot_cost=(
+                            dep_reward_breakdown["executed_singleton_hotspot_cost"]
+                        ),
                         e2e_latency_count=metrics["e2e_latency_count"],
                         e2e_latency_mean=metrics["e2e_latency_mean"],
                         e2e_latency_latest=metrics["e2e_latency_latest"],
@@ -4557,12 +4813,22 @@ class Hedger:
                         feedback_gate_timed_out=int(bool(feedback_gate.get("timed_out", False))),
                         feedback_gate_guard_truncated=int(bool(feedback_gate.get("guard_truncated", False))),
                         feedback_timeout_penalty_cost=dep_reward_breakdown["feedback_timeout_penalty_cost"],
+                        deployment_event_triggered=int(bool(current_event_status.get("triggered", False))),
+                        deployment_event_reason=current_event_status.get("reason", ""),
+                        deployment_event_queue_pressure=float(current_event_status.get("queue_pressure", 0.0) or 0.0),
+                        deployment_event_singleton_pressure=float(
+                            current_event_status.get("singleton_pressure", 0.0) or 0.0
+                        ),
+                        deployment_event_max_queue=float(current_event_status.get("max_queue", 0.0) or 0.0),
                         deployment_deterministic=int(bool(self.inference_cfg.deployment_deterministic)),
                         cap_relax_cnt=aux["capacity_relax_cnt"],
                         cap_relax_cost=aux["capacity_relax_cost"],
                         edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
                         edge_cover_repair_cost=aux.get("edge_cover_repair_cost", 0.0),
                         edge_cover_unmet=aux.get("edge_cover_unmet", 0),
+                        redundancy_repair_cnt=aux.get("redundancy_repair_cnt", 0),
+                        redundancy_repair_cost=aux.get("redundancy_repair_cost", 0.0),
+                        redundancy_unmet=aux.get("redundancy_unmet", 0),
                         policy_logp=self._scalar_value(logp),
                         policy_entropy=self._scalar_value(ent),
                         value_estimate=self._scalar_value(value),
@@ -4588,11 +4854,16 @@ class Hedger:
                         dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
                         cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                         edge_cover_repair_weight=self.deployment_agent_params["penalty_edge_cover_repair"],
+                        under_replica_weight=self.deployment_agent_params["reward_dep_under_replica_weight"],
+                        singleton_hotspot_weight=self.deployment_agent_params["reward_dep_singleton_hotspot_weight"],
                         latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                         feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                         edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
-                        min_edge_replicas_per_service=self.deployment_agent_params["min_edge_replicas_per_service"],
+                        max_required_edge_replicas=self.deployment_agent_params["max_required_edge_replicas"],
+                        pressure_threshold=self.deployment_agent_params["pressure_threshold"],
+                        pressure_temperature=self.deployment_agent_params["pressure_temperature"],
+                        queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
                     if self.record_cfg.actor_snapshot_debug:
@@ -5193,11 +5464,15 @@ class Hedger:
         )
 
         dep_train_fieldnames = ["step", "epoch", "decision_version", "dep_updates", "dep_reward",
+                                "decision_reason",
                                 "avg_off_reward", "off_reward_std", "off_reward_count", "dep_change_cost",
                                 "dep_latency_cost", "dep_offload_term", "dep_latency_term",
                                 "dep_slo_term", "dep_change_term", "dep_cloud_only_term",
                                 "dep_capacity_relax_term", "dep_edge_cover_repair_term",
+                                "dep_under_replica_term", "dep_singleton_hotspot_term",
                                 "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
+                                "under_replicated_risk_cost", "singleton_hotspot_cost",
+                                "executed_under_replicated_risk_cost", "executed_singleton_hotspot_cost",
                                 "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
                                 "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95",
                                 "e2e_latency_p99", "e2e_slo_violation",
@@ -5208,8 +5483,12 @@ class Hedger:
                                 "latency_guard_trigger_seq", "latency_guard_bad_ratio",
                                 "latency_guard_bad_count", "latency_guard_sample_count",
                                 "latency_guard_max_queue", "latency_guard_penalty_cost",
+                                "deployment_event_triggered", "deployment_event_reason",
+                                "deployment_event_queue_pressure", "deployment_event_singleton_pressure",
+                                "deployment_event_max_queue",
                                 "cap_relax_cnt", "cap_relax_cost",
                                 "edge_cover_repair_cnt", "edge_cover_repair_cost", "edge_cover_unmet",
+                                "redundancy_repair_cnt", "redundancy_repair_cost", "redundancy_unmet",
                                 "policy_logp", "policy_entropy", "value_estimate", "next_value",
                                 "behavior_kind", "deployment_rollout_deterministic",
                                 "raw_edge_replicas", "edge_replicas", "cloud_replicas",
@@ -5224,9 +5503,10 @@ class Hedger:
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
+            "under_replica_weight", "singleton_hotspot_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
-            "min_edge_replicas_per_service",
+            "max_required_edge_replicas", "pressure_threshold", "pressure_temperature", "queue_normalizer",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
             "deployment_default_warmup_min_feedback_samples",
@@ -5261,6 +5541,9 @@ class Hedger:
 
         prev_deploy_mask = copy.deepcopy(self.cur_deploy_mask)
         logic_feats, phys_feats, _, _, state_debug = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+        last_guard_trigger_seq = self._latency_guard_trigger_seq_value()
+        next_decision_reason = "startup"
+        next_event_status: Dict[str, Any] = {"triggered": False, "reason": "startup"}
 
         while not self.deployment_thread_stop_event.is_set():
             try:
@@ -5271,6 +5554,8 @@ class Hedger:
                     )
                     continue
 
+                current_decision_reason = next_decision_reason
+                current_event_status = next_event_status
                 # Move features onto the active device.
                 state_logic_feats = logic_feats
                 state_phys_feats = phys_feats
@@ -5293,6 +5578,12 @@ class Hedger:
                 with self._data_lock:
                     self.pending_deployment_plan = deploy_plan
                     self.pending_deploy_mask = deploy_mask.detach().cpu()
+                    self._pending_deployment_force_serve = current_decision_reason in {
+                        "latency_guard_trigger",
+                        "event_queue_pressure",
+                        "event_singleton_hotspot",
+                    }
+                    self._pending_deployment_reason = current_decision_reason
                     decision_version = self._mark_deployment_decision_pending()
 
                 if not self._wait_for_deployment_decision_served(decision_version, abort_on_guard=False):
@@ -5308,6 +5599,14 @@ class Hedger:
                     break
 
                 if feedback_result.guard_interrupted:
+                    next_decision_reason = "latency_guard_trigger"
+                    next_event_status = {
+                        "triggered": True,
+                        "reason": "latency_guard_trigger",
+                        "queue_pressure": 0.0,
+                        "singleton_pressure": 0.0,
+                        "max_queue": 0.0,
+                    }
                     LOGGER.warning(
                         f"[Hedger][Train][Deployment] decision_version={decision_version} "
                         f"triggered latency guard before a full active deployment interval; "
@@ -5319,10 +5618,18 @@ class Hedger:
                         f"has version-matched fresh feedback; start active deployment interval."
                     )
 
-                    self._sleep_until_next_tick(
+                    (
+                        _deployment_time_ticket,
+                        interval_end_reason,
+                        last_guard_trigger_seq,
+                        interval_event_status,
+                    ) = self._sleep_until_next_inference_deployment_decision(
                         0,
                         self.deployment_interval,
+                        last_guard_trigger_seq,
                     )
+                    next_decision_reason = interval_end_reason
+                    next_event_status = interval_event_status
                     feedback_result = self._wait_for_deployment_feedback_samples_result(
                         min_feedback_required,
                         deployment_version=decision_version,
@@ -5340,6 +5647,16 @@ class Hedger:
                     feedback_result,
                     min_feedback_required,
                 )
+                event_status_record = next_event_status if next_event_status.get("triggered") else current_event_status
+                metrics.update({
+                    "deployment_event_triggered": int(bool(event_status_record.get("triggered", False))),
+                    "deployment_event_reason": str(event_status_record.get("reason", "") or ""),
+                    "deployment_event_queue_pressure": float(event_status_record.get("queue_pressure", 0.0) or 0.0),
+                    "deployment_event_singleton_pressure": float(
+                        event_status_record.get("singleton_pressure", 0.0) or 0.0
+                    ),
+                    "deployment_event_max_queue": float(event_status_record.get("max_queue", 0.0) or 0.0),
+                })
                 new_logic_feats_dev = {k: v.to(self.device) for k, v in new_logic_feats.items()}
                 new_phys_feats_dev = {k: v.to(self.device) for k, v in new_phys_feats.items()}
                 with self._model_lock, torch.no_grad():
@@ -5405,6 +5722,12 @@ class Hedger:
                     "feedback_timeout_penalty_cost": float(metrics["feedback_timeout_penalty_cost"]),
                     "feedback_guard_interrupted": bool(feedback_result.guard_interrupted),
                     "latency_guard_penalty_cost": float(metrics["latency_guard_penalty_cost"]),
+                    "deployment_event_triggered": bool(metrics.get("deployment_event_triggered", 0)),
+                    "deployment_event_reason": str(metrics.get("deployment_event_reason", "")),
+                    "deployment_event_queue_pressure": float(metrics.get("deployment_event_queue_pressure", 0.0)),
+                    "deployment_event_singleton_pressure": float(
+                        metrics.get("deployment_event_singleton_pressure", 0.0)
+                    ),
                     "behavior_kind": str(aux.get("behavior_kind", "actor")),
                     "decision_version": int(decision_version),
                     "feedback_count": int(feedback_result.count),
@@ -5447,6 +5770,7 @@ class Hedger:
                     decision_version=decision_version,
                     dep_updates=self._deployment_update_steps,
                     dep_reward=reward,
+                    decision_reason=current_decision_reason,
                     avg_off_reward=metrics["avg_offloading_reward"],
                     off_reward_std=metrics["offloading_reward_std"],
                     off_reward_count=metrics["offloading_reward_count"],
@@ -5459,8 +5783,18 @@ class Hedger:
                     dep_cloud_only_term=dep_reward_breakdown["dep_cloud_only_term"],
                     dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                     dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
+                    dep_under_replica_term=dep_reward_breakdown["dep_under_replica_term"],
+                    dep_singleton_hotspot_term=dep_reward_breakdown["dep_singleton_hotspot_term"],
                     dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
                     dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
+                    under_replicated_risk_cost=dep_reward_breakdown["under_replicated_risk_cost"],
+                    singleton_hotspot_cost=dep_reward_breakdown["singleton_hotspot_cost"],
+                    executed_under_replicated_risk_cost=(
+                        dep_reward_breakdown["executed_under_replicated_risk_cost"]
+                    ),
+                    executed_singleton_hotspot_cost=(
+                        dep_reward_breakdown["executed_singleton_hotspot_cost"]
+                    ),
                     e2e_latency_count=metrics["e2e_latency_count"],
                     e2e_latency_mean=metrics["e2e_latency_mean"],
                     e2e_latency_latest=metrics["e2e_latency_latest"],
@@ -5482,11 +5816,19 @@ class Hedger:
                     latency_guard_sample_count=metrics["latency_guard_sample_count"],
                     latency_guard_max_queue=metrics["latency_guard_max_queue"],
                     latency_guard_penalty_cost=metrics["latency_guard_penalty_cost"],
+                    deployment_event_triggered=metrics.get("deployment_event_triggered", 0),
+                    deployment_event_reason=metrics.get("deployment_event_reason", ""),
+                    deployment_event_queue_pressure=metrics.get("deployment_event_queue_pressure", 0.0),
+                    deployment_event_singleton_pressure=metrics.get("deployment_event_singleton_pressure", 0.0),
+                    deployment_event_max_queue=metrics.get("deployment_event_max_queue", 0.0),
                     cap_relax_cnt=aux["capacity_relax_cnt"],
                     cap_relax_cost=aux["capacity_relax_cost"],
                     edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
                     edge_cover_repair_cost=aux.get("edge_cover_repair_cost", 0.0),
                     edge_cover_unmet=aux.get("edge_cover_unmet", 0),
+                    redundancy_repair_cnt=aux.get("redundancy_repair_cnt", 0),
+                    redundancy_repair_cost=aux.get("redundancy_repair_cost", 0.0),
+                    redundancy_unmet=aux.get("redundancy_unmet", 0),
                     policy_logp=float(logp.detach().cpu().item()),
                     policy_entropy=float(ent.detach().cpu().item()),
                     value_estimate=float(value.detach().cpu().item()),
@@ -5517,11 +5859,16 @@ class Hedger:
                     dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                     edge_cover_repair_weight=self.deployment_agent_params["penalty_edge_cover_repair"],
+                    under_replica_weight=self.deployment_agent_params["reward_dep_under_replica_weight"],
+                    singleton_hotspot_weight=self.deployment_agent_params["reward_dep_singleton_hotspot_weight"],
                     latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                     feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
-                    min_edge_replicas_per_service=self.deployment_agent_params["min_edge_replicas_per_service"],
+                    max_required_edge_replicas=self.deployment_agent_params["max_required_edge_replicas"],
+                    pressure_threshold=self.deployment_agent_params["pressure_threshold"],
+                    pressure_temperature=self.deployment_agent_params["pressure_temperature"],
+                    queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
                     deployment_default_warmup_min_feedback_samples=(
@@ -6026,6 +6373,8 @@ class Hedger:
         cloud_only_ratio = float(aux.get("cloud_only_ratio", 0.0))
         cap_relax_cost = float(aux.get("capacity_relax_cost", 0.0))
         edge_cover_repair_cost = float(aux.get("edge_cover_repair_cost", 0.0))
+        under_replicated_risk_cost = float(aux.get("under_replicated_risk_cost", 0.0))
+        singleton_hotspot_cost = float(aux.get("singleton_hotspot_cost", 0.0))
         latency_guard_penalty_cost = float(metrics.get("latency_guard_penalty_cost", 0.0))
         feedback_timeout_penalty_cost = float(metrics.get("feedback_timeout_penalty_cost", 0.0))
 
@@ -6036,6 +6385,8 @@ class Hedger:
         w_cloud_only = float(self.deployment_agent_params.get("reward_dep_cloud_only_weight", 0.0))
         penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
         penalty_edge_cover_repair = float(self.deployment_agent_params.get("penalty_edge_cover_repair", 0.0))
+        w_under_replica = float(self.deployment_agent_params.get("reward_dep_under_replica_weight", 0.0))
+        w_singleton_hotspot = float(self.deployment_agent_params.get("reward_dep_singleton_hotspot_weight", 0.0))
         penalty_latency_guard = float(self.deployment_agent_params.get("penalty_latency_guard_trigger", 0.0))
         penalty_feedback_timeout = float(self.deployment_agent_params.get("penalty_feedback_timeout", 0.0))
 
@@ -6051,12 +6402,18 @@ class Hedger:
             "dep_cloud_only_term": -w_cloud_only * cloud_only_ratio,
             "dep_capacity_relax_term": -penalty_capacity_relax * cap_relax_cost,
             "dep_edge_cover_repair_term": -penalty_edge_cover_repair * edge_cover_repair_cost,
+            "dep_under_replica_term": -w_under_replica * under_replicated_risk_cost,
+            "dep_singleton_hotspot_term": -w_singleton_hotspot * singleton_hotspot_cost,
             "dep_latency_guard_penalty_term": -penalty_latency_guard * latency_guard_penalty_cost,
             "dep_feedback_timeout_term": -penalty_feedback_timeout * feedback_timeout_penalty_cost,
         }
         return {
             "dep_latency_cost": float(latency_cost),
             "feedback_timeout_penalty_cost": float(feedback_timeout_penalty_cost),
+            "under_replicated_risk_cost": float(under_replicated_risk_cost),
+            "singleton_hotspot_cost": float(singleton_hotspot_cost),
+            "executed_under_replicated_risk_cost": float(aux.get("executed_under_replicated_risk_cost", 0.0)),
+            "executed_singleton_hotspot_cost": float(aux.get("executed_singleton_hotspot_cost", 0.0)),
             **terms,
             "reward": self._sum_reward_terms(terms),
         }

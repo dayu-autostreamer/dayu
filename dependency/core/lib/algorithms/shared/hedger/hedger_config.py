@@ -22,9 +22,13 @@ class DeploymentConstraintCfg:
     # Fraction of computed available edge memory used as deployment budget.
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
     edge_memory_budget_ratio: float = 1.0
-    # Best-effort minimum number of edge replicas retained per service after
-    # deployment projection. 0 disables the repair and preserves legacy behavior.
-    min_edge_replicas_per_service: int = 0
+    # Demand-aware best-effort edge redundancy. The first edge replica is a
+    # generic coverage repair; extra edge replicas are requested only when the
+    # service pressure computed from state exceeds the threshold.
+    max_required_edge_replicas: int = 2
+    pressure_threshold: float = 0.60
+    pressure_temperature: float = 0.15
+    queue_normalizer: float = 8.0
 
 
 class PhysicalTopology:

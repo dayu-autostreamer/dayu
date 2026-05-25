@@ -95,9 +95,52 @@ class DeploymentTransitionDataset:
         batch_size = max(1, int(batch_size))
         if not self.transitions:
             return []
-        if len(self.transitions) >= batch_size:
-            return random.sample(self.transitions, batch_size)
-        return [random.choice(self.transitions) for _ in range(batch_size)]
+        bad_bucket = [tr for tr in self.transitions if _is_bad_transition(tr)]
+        normal_bucket = [tr for tr in self.transitions if not _is_bad_transition(tr)]
+        bad_target = int(round(batch_size * 0.4)) if bad_bucket else 0
+        bad_target = min(batch_size, bad_target)
+        normal_target = batch_size - bad_target
+        batch: List[dict] = []
+        batch.extend(_sample_from_bucket(bad_bucket, bad_target))
+        batch.extend(_sample_from_bucket(normal_bucket, normal_target))
+        if len(batch) < batch_size:
+            batch.extend(_sample_from_bucket(self.transitions, batch_size - len(batch)))
+        random.shuffle(batch)
+        return batch
+
+
+def _sample_from_bucket(bucket: List[dict], count: int) -> List[dict]:
+    count = max(0, int(count))
+    if count <= 0 or not bucket:
+        return []
+    if len(bucket) >= count:
+        return random.sample(bucket, count)
+    return [random.choice(bucket) for _ in range(count)]
+
+
+def _is_bad_transition(transition: dict) -> bool:
+    if not isinstance(transition, dict):
+        return False
+    if transition.get("feedback_guard_interrupted") or transition.get("deployment_event_triggered"):
+        return True
+    metrics = transition.get("metrics") or {}
+    reward_breakdown = transition.get("reward_breakdown") or {}
+    try:
+        if float(metrics.get("e2e_slo_violation", 0.0) or 0.0) >= 0.5:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        if float(reward_breakdown.get("under_replicated_risk_cost", 0.0) or 0.0) >= 0.15:
+            return True
+    except (TypeError, ValueError):
+        pass
+    try:
+        if float(reward_breakdown.get("singleton_hotspot_cost", 0.0) or 0.0) >= 0.10:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
 
 
 def _detach_transition(value):

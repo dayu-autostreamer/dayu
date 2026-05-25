@@ -112,7 +112,10 @@ def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
             "penalty_capacity_relax": 4.0,
             "max_edge_replicas_per_device": 2,
             "edge_memory_budget_ratio": 0.75,
-            "min_edge_replicas_per_service": 1,
+            "max_required_edge_replicas": 2,
+            "pressure_threshold": 0.7,
+            "pressure_temperature": 0.2,
+            "queue_normalizer": 6.0,
         },
     )
 
@@ -129,7 +132,10 @@ def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
     assert dep_cfg.penalty_capacity_relax == pytest.approx(4.0)
     assert dep_cfg.max_edge_replicas_per_device == 2
     assert dep_cfg.edge_memory_budget_ratio == pytest.approx(0.75)
-    assert dep_cfg.min_edge_replicas_per_service == 1
+    assert dep_cfg.max_required_edge_replicas == 2
+    assert dep_cfg.pressure_threshold == pytest.approx(0.7)
+    assert dep_cfg.pressure_temperature == pytest.approx(0.2)
+    assert dep_cfg.queue_normalizer == pytest.approx(6.0)
     assert not hasattr(dep_cfg, "enforce_capacity")
     assert not hasattr(dep_cfg, "min_edge_replicas")
 
@@ -380,7 +386,7 @@ def test_deployment_projection_uses_edge_memory_budget_ratio(monkeypatch):
 
 
 @pytest.mark.unit
-def test_deployment_projection_repairs_min_edge_replica_when_capacity_available(monkeypatch):
+def test_deployment_projection_repairs_edge_coverage_when_capacity_available():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], dtype=torch.float32),
@@ -390,46 +396,61 @@ def test_deployment_projection_repairs_min_edge_replica_when_capacity_available(
         d_model=2,
         update_encoder=False,
         cloud_node_idx=2,
-        constraint_cfg=DeploymentConstraintCfg(min_edge_replicas_per_service=1),
+        constraint_cfg=DeploymentConstraintCfg(),
     )
-    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
-
-    def fake_forward(self, h_s, h_p, mask=None):
-        service_id = int(round(float(h_s[0, 0].item())))
-        edge_probs = [[0.4, 0.9, 0.05], [0.8, 0.1, 0.05]]
-        probs = torch.tensor([edge_probs[service_id]], dtype=torch.float32, device=h_s.device)
-        if mask is not None:
-            probs = torch.where(mask, probs, torch.zeros_like(probs))
-        return probs
-
-    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
-    monkeypatch.setattr(torch, "rand_like", lambda x: torch.full_like(x, 0.95))
 
     logic_edge_index = torch.empty((2, 0), dtype=torch.long)
-    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
-    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
+    logic_feats = {
+        "model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32),
+        "service_demand_feat": torch.zeros((2, 4), dtype=torch.float32),
+        "runtime_pair_feat": torch.zeros((2, 3, 6), dtype=torch.float32),
+    }
     phys_feats = {
         "mem_capacity": torch.tensor([10.0, 10.0, 100.0], dtype=torch.float32),
         "mem_util_seq": torch.zeros((3, 1), dtype=torch.float32),
     }
-
-    deploy_mask, _, _, _, aux = agent.policy(
-        logic_edge_index=logic_edge_index,
-        logic_feats=logic_feats,
-        phys_edge_index=phys_edge_index,
-        phys_feats=phys_feats,
+    static_allowed = torch.ones((2, 3), dtype=torch.bool)
+    raw_mask = torch.tensor(
+        [[False, False, True], [False, False, True]],
+        dtype=torch.bool,
+    )
+    raw_probs = torch.tensor(
+        [[0.4, 0.9, 1.0], [0.8, 0.1, 1.0]],
+        dtype=torch.float32,
     )
 
-    assert aux["raw_deploy_mask"][:, :2].sum().item() == 0
+    (
+        deploy_mask,
+        _capacity_relax_cnt,
+        _capacity_relax_cost,
+        edge_cover_repair_cnt,
+        edge_cover_repair_cost,
+        edge_cover_unmet,
+        redundancy_repair_cnt,
+        _redundancy_repair_cost,
+        redundancy_unmet,
+        _risk_metrics,
+        _executed_redundancy_ctx,
+    ) = agent._project_deployment_mask(
+        raw_mask,
+        raw_probs=raw_probs,
+        logic_edge_index=logic_edge_index,
+        logic_feats=logic_feats,
+        phys_feats=phys_feats,
+        static_allowed=static_allowed,
+    )
+
     assert deploy_mask[:, 2].tolist() == [True, True]
     assert deploy_mask[:, :2].tolist() == [[False, True], [True, False]]
-    assert aux["edge_cover_repair_cnt"] == 2
-    assert aux["edge_cover_repair_cost"] == pytest.approx((-math.log(0.9) - math.log(0.8)) / 2.0)
-    assert aux["edge_cover_unmet"] == 0
+    assert edge_cover_repair_cnt == 2
+    assert edge_cover_repair_cost == pytest.approx((-math.log(0.9) - math.log(0.8)) / 2.0)
+    assert edge_cover_unmet == 0
+    assert redundancy_repair_cnt == 0
+    assert redundancy_unmet == 0
 
 
 @pytest.mark.unit
-def test_deployment_projection_respects_min_edge_repair_capacity(monkeypatch):
+def test_deployment_projection_respects_edge_coverage_capacity():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -441,43 +462,57 @@ def test_deployment_projection_respects_min_edge_repair_capacity(monkeypatch):
         cloud_node_idx=1,
         constraint_cfg=DeploymentConstraintCfg(
             max_edge_replicas_per_device=1,
-            min_edge_replicas_per_service=1,
         ),
     )
-    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
-
-    def fake_forward(self, h_s, h_p, mask=None):
-        service_id = int(round(float(h_s[0, 0].item())))
-        edge_probs = [0.9, 0.8]
-        probs = torch.tensor([[edge_probs[service_id], 0.05]], dtype=torch.float32, device=h_s.device)
-        if mask is not None:
-            probs = torch.where(mask, probs, torch.zeros_like(probs))
-        return probs
-
-    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
-    monkeypatch.setattr(torch, "rand_like", lambda x: torch.full_like(x, 0.95))
 
     logic_edge_index = torch.empty((2, 0), dtype=torch.long)
-    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
-    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
+    logic_feats = {
+        "model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32),
+        "service_demand_feat": torch.zeros((2, 4), dtype=torch.float32),
+        "runtime_pair_feat": torch.zeros((2, 2, 6), dtype=torch.float32),
+    }
     phys_feats = {
         "mem_capacity": torch.tensor([10.0, 100.0], dtype=torch.float32),
         "mem_util_seq": torch.zeros((2, 1), dtype=torch.float32),
     }
-
-    deploy_mask, _, _, _, aux = agent.policy(
-        logic_edge_index=logic_edge_index,
-        logic_feats=logic_feats,
-        phys_edge_index=phys_edge_index,
-        phys_feats=phys_feats,
+    static_allowed = torch.ones((2, 2), dtype=torch.bool)
+    raw_mask = torch.tensor(
+        [[False, True], [False, True]],
+        dtype=torch.bool,
+    )
+    raw_probs = torch.tensor(
+        [[0.9, 1.0], [0.8, 1.0]],
+        dtype=torch.float32,
     )
 
-    assert aux["raw_deploy_mask"][:, 0].tolist() == [False, False]
+    (
+        deploy_mask,
+        _capacity_relax_cnt,
+        _capacity_relax_cost,
+        edge_cover_repair_cnt,
+        edge_cover_repair_cost,
+        edge_cover_unmet,
+        redundancy_repair_cnt,
+        _redundancy_repair_cost,
+        redundancy_unmet,
+        _risk_metrics,
+        _executed_redundancy_ctx,
+    ) = agent._project_deployment_mask(
+        raw_mask,
+        raw_probs=raw_probs,
+        logic_edge_index=logic_edge_index,
+        logic_feats=logic_feats,
+        phys_feats=phys_feats,
+        static_allowed=static_allowed,
+    )
+
     assert deploy_mask[:, 0].tolist() == [True, False]
     assert deploy_mask[:, 1].tolist() == [True, True]
-    assert aux["edge_cover_repair_cnt"] == 1
-    assert aux["edge_cover_repair_cost"] == pytest.approx(-math.log(0.9) / 2.0)
-    assert aux["edge_cover_unmet"] == 1
+    assert edge_cover_repair_cnt == 1
+    assert edge_cover_repair_cost == pytest.approx(-math.log(0.9) / 2.0)
+    assert edge_cover_unmet == 1
+    assert redundancy_repair_cnt == 0
+    assert redundancy_unmet == 0
 
 
 @pytest.mark.unit
