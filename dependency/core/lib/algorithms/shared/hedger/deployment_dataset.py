@@ -121,26 +121,42 @@ def _sample_from_bucket(bucket: List[dict], count: int) -> List[dict]:
 def _is_bad_transition(transition: dict) -> bool:
     if not isinstance(transition, dict):
         return False
-    if transition.get("feedback_guard_interrupted") or transition.get("deployment_event_triggered"):
-        return True
     metrics = transition.get("metrics") or {}
     reward_breakdown = transition.get("reward_breakdown") or {}
-    try:
-        if float(metrics.get("e2e_slo_violation", 0.0) or 0.0) >= 0.5:
-            return True
-    except (TypeError, ValueError):
-        pass
-    try:
-        if float(reward_breakdown.get("under_replicated_risk_cost", 0.0) or 0.0) >= 0.15:
-            return True
-    except (TypeError, ValueError):
-        pass
-    try:
-        if float(reward_breakdown.get("singleton_hotspot_cost", 0.0) or 0.0) >= 0.10:
-            return True
-    except (TypeError, ValueError):
-        pass
+
+    if (
+            _truthy(transition.get("feedback_guard_interrupted"))
+            or _truthy(metrics.get("feedback_guard_interrupted"))
+    ):
+        return True
+    if _as_float(metrics.get("e2e_slo_violation"), 0.0) >= 0.5:
+        return True
+    if _as_float(reward_breakdown.get("under_replicated_risk_cost"), 0.0) >= 0.15:
+        return True
+    if _as_float(reward_breakdown.get("singleton_hotspot_cost"), 0.0) >= 0.10:
+        return True
     return False
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 0:
+            return False
+        return bool(value.detach().cpu().reshape(-1)[0].item())
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 0:
+            return float(default)
+        value = value.detach().cpu().reshape(-1)[0].item()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _detach_transition(value):
