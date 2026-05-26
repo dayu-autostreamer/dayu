@@ -108,7 +108,7 @@ class HedgerDeploymentEventTriggerCfg:
     min_interval_s: float = 20.0
     cooldown_s: float = 30.0
     queue_pressure_threshold: float = 0.70
-    singleton_pressure_threshold: float = 0.45
+    hotspot_pressure_threshold: float = 0.45
 
 
 @dataclass(frozen=True)
@@ -764,9 +764,9 @@ class Hedger:
             min_interval_s=max(0.0, float(event.get("min_interval_s", 20.0))),
             cooldown_s=max(0.0, float(event.get("cooldown_s", 30.0))),
             queue_pressure_threshold=min(1.0, max(0.0, float(event.get("queue_pressure_threshold", 0.70)))),
-            singleton_pressure_threshold=min(
+            hotspot_pressure_threshold=min(
                 1.0,
-                max(0.0, float(event.get("singleton_pressure_threshold", 0.45))),
+                max(0.0, float(event.get("hotspot_pressure_threshold", 0.45))),
             ),
         )
 
@@ -949,9 +949,9 @@ class Hedger:
         constraints = deployment.get("constraints") or {}
         if not isinstance(constraints, dict):
             raise ValueError("Hedger config `agents.deployment.constraints` must be a mapping when provided.")
-        redundancy = deployment.get("redundancy") or {}
-        if not isinstance(redundancy, dict):
-            raise ValueError("Hedger config `agents.deployment.redundancy` must be a mapping when provided.")
+        hotspot = deployment.get("hotspot") or {}
+        if not isinstance(hotspot, dict):
+            raise ValueError("Hedger config `agents.deployment.hotspot` must be a mapping when provided.")
         max_edge_replicas = constraints.get("max_edge_replicas_per_device")
         if max_edge_replicas is not None:
             max_edge_replicas = int(max_edge_replicas)
@@ -960,20 +960,15 @@ class Hedger:
         edge_memory_budget_ratio = float(constraints.get("edge_memory_budget_ratio", 1.0))
         if not math.isfinite(edge_memory_budget_ratio) or not (0.0 < edge_memory_budget_ratio <= 1.0):
             raise ValueError("Hedger config `agents.deployment.constraints.edge_memory_budget_ratio` must be in (0, 1].")
-        max_required_edge_replicas = int(redundancy.get("max_required_edge_replicas", 2) or 2)
-        if max_required_edge_replicas < 1:
-            raise ValueError(
-                "Hedger config `agents.deployment.redundancy.max_required_edge_replicas` must be >= 1."
-            )
-        pressure_threshold = float(redundancy.get("pressure_threshold", 0.60))
-        if not math.isfinite(pressure_threshold) or not (0.0 <= pressure_threshold <= 1.0):
-            raise ValueError("Hedger config `agents.deployment.redundancy.pressure_threshold` must be in [0, 1].")
-        pressure_temperature = float(redundancy.get("pressure_temperature", 0.15))
-        if not math.isfinite(pressure_temperature) or pressure_temperature <= 0.0:
-            raise ValueError("Hedger config `agents.deployment.redundancy.pressure_temperature` must be > 0.")
-        queue_normalizer = float(redundancy.get("queue_normalizer", 8.0))
+        queue_normalizer = float(hotspot.get("queue_normalizer", 8.0))
         if not math.isfinite(queue_normalizer) or queue_normalizer <= 0.0:
-            raise ValueError("Hedger config `agents.deployment.redundancy.queue_normalizer` must be > 0.")
+            raise ValueError("Hedger config `agents.deployment.hotspot.queue_normalizer` must be > 0.")
+        hotspot_repair_threshold = float(hotspot.get("repair_threshold", 0.35))
+        if not math.isfinite(hotspot_repair_threshold) or not (0.0 <= hotspot_repair_threshold <= 1.0):
+            raise ValueError("Hedger config `agents.deployment.hotspot.repair_threshold` must be in [0, 1].")
+        hotspot_keep_penalty_scale = float(hotspot.get("keep_penalty_scale", 2.0))
+        if not math.isfinite(hotspot_keep_penalty_scale) or hotspot_keep_penalty_scale < 0.0:
+            raise ValueError("Hedger config `agents.deployment.hotspot.keep_penalty_scale` must be >= 0.")
         dep_latency_cfg = self._parse_latency_reward_cfg(
             reward,
             scope="deployment",
@@ -999,14 +994,12 @@ class Hedger:
             "penalty_edge_cover_repair": float(penalty.get("edge_cover_repair", 0.0)),
             "penalty_latency_guard_trigger": float(penalty.get("latency_guard_trigger", 0.0)),
             "penalty_feedback_timeout": float(penalty.get("feedback_timeout", 0.0)),
-            "reward_dep_under_replica_weight": float(redundancy.get("under_replica_weight", 0.0)),
-            "reward_dep_singleton_hotspot_weight": float(redundancy.get("singleton_hotspot_weight", 0.0)),
+            "reward_dep_hotspot_weight": float(hotspot.get("hotspot_weight", 0.0)),
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
-            "max_required_edge_replicas": max_required_edge_replicas,
-            "pressure_threshold": pressure_threshold,
-            "pressure_temperature": pressure_temperature,
             "queue_normalizer": queue_normalizer,
+            "hotspot_repair_threshold": hotspot_repair_threshold,
+            "hotspot_keep_penalty_scale": hotspot_keep_penalty_scale,
             "ppo": ppo,
         }
 
@@ -1679,9 +1672,9 @@ class Hedger:
             observations = copy.deepcopy(getattr(self, "_latency_guard_queue_observations", {}))
 
         max_queue = 0.0
-        singleton_pressure = 0.0
-        singleton_service = ""
-        singleton_device = ""
+        hotspot_pressure = 0.0
+        hotspot_service = ""
+        hotspot_device = ""
         with self._data_lock:
             deploy_mask = self.cur_deploy_mask.detach().clone().cpu() if self.cur_deploy_mask is not None else None
 
@@ -1717,27 +1710,25 @@ class Hedger:
                     continue
                 if not bool(deploy_mask[service_idx, device_idx].item()):
                     continue
-                edge_count = int(deploy_mask[service_idx, :cloud_idx].bool().sum().item()) if cloud_idx > 0 else 0
-                if edge_count <= 1:
-                    pressure = queue_length / queue_normalizer
-                    if pressure > singleton_pressure:
-                        singleton_pressure = pressure
-                        singleton_service = str(service_name)
-                        singleton_device = str(device_name)
+                pressure = queue_length / queue_normalizer
+                if pressure > hotspot_pressure:
+                    hotspot_pressure = pressure
+                    hotspot_service = str(service_name)
+                    hotspot_device = str(device_name)
 
         queue_pressure = max_queue / queue_normalizer
         status = {
             "triggered": False,
             "reason": "",
             "queue_pressure": float(queue_pressure),
-            "singleton_pressure": float(singleton_pressure),
+            "hotspot_pressure": float(hotspot_pressure),
             "max_queue": float(max_queue),
-            "singleton_service": singleton_service,
-            "singleton_device": singleton_device,
+            "hotspot_service": hotspot_service,
+            "hotspot_device": hotspot_device,
         }
-        if singleton_pressure >= cfg.singleton_pressure_threshold:
+        if hotspot_pressure >= cfg.hotspot_pressure_threshold:
             status["triggered"] = True
-            status["reason"] = "event_singleton_hotspot"
+            status["reason"] = "event_pair_hotspot"
         elif queue_pressure >= cfg.queue_pressure_threshold:
             status["triggered"] = True
             status["reason"] = "event_queue_pressure"
@@ -1908,8 +1899,8 @@ class Hedger:
             f"feedback_timeout_penalty_weight={dep_params.get('penalty_feedback_timeout', 'na')}, "
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
-            f"max_required_edge_replicas={dep_params.get('max_required_edge_replicas', 'na')}, "
-            f"pressure_threshold={dep_params.get('pressure_threshold', 'na')}, "
+            f"hotspot_weight={dep_params.get('reward_dep_hotspot_weight', 'na')}, "
+            f"hotspot_repair_threshold={dep_params.get('hotspot_repair_threshold', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -2207,6 +2198,24 @@ class Hedger:
             return 0.0
         return float(value[service_idx].item())
 
+    def _actor_debug_device_vector_map(
+            self,
+            actor_debug: Optional[Dict[str, Any]],
+            key: str,
+    ) -> Dict[str, float]:
+        if not isinstance(actor_debug, dict):
+            return {}
+        value = actor_debug.get(key)
+        if not isinstance(value, torch.Tensor) or value.numel() == 0:
+            return {}
+        value = value.detach().float().cpu()
+        if value.dim() != 1:
+            return {}
+        return {
+            self._device_name(device_idx): float(value[device_idx].item())
+            for device_idx in range(value.size(0))
+        }
+
     @staticmethod
     def _actor_debug_matrix_value(
             actor_debug: Optional[Dict[str, Any]],
@@ -2487,10 +2496,9 @@ class Hedger:
             "dep_change_cost", "dep_latency_cost",
             "dep_offload_term", "dep_latency_term", "dep_slo_term", "dep_change_term",
             "dep_cloud_only_term", "dep_capacity_relax_term", "dep_edge_cover_repair_term",
-            "dep_under_replica_term", "dep_singleton_hotspot_term",
+            "dep_hotspot_term",
             "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
-            "under_replicated_risk_cost", "singleton_hotspot_cost",
-            "executed_under_replicated_risk_cost", "executed_singleton_hotspot_cost",
+            "active_pair_hotspot_cost", "executed_active_pair_hotspot_cost",
             "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
             "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95", "e2e_latency_p99",
             "e2e_slo_violation", "feedback_gate_enabled", "feedback_gate_required_samples",
@@ -2498,11 +2506,11 @@ class Hedger:
             "feedback_gate_shortfall_ratio", "feedback_gate_timed_out", "feedback_gate_guard_truncated",
             "feedback_timeout_penalty_cost", "deployment_event_triggered",
             "deployment_event_reason", "deployment_event_queue_pressure",
-            "deployment_event_singleton_pressure", "deployment_event_max_queue",
+            "deployment_event_hotspot_pressure", "deployment_event_max_queue",
             "deployment_deterministic",
             "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
-            "edge_cover_repair_cost", "edge_cover_unmet", "redundancy_repair_cnt",
-            "redundancy_repair_cost", "redundancy_unmet", "policy_logp", "policy_entropy",
+            "edge_cover_repair_cost", "edge_cover_unmet", "hotspot_repair_cnt",
+            "hotspot_repair_cost", "hotspot_unmet", "policy_logp", "policy_entropy",
             "value_estimate", "raw_edge_replicas", "edge_replicas", "cloud_replicas",
             "cloud_only", "cloud_only_ratio", "empty_edge_devices", "empty_edge_device_ratio",
             "raw_deployment_plan", "deployment_plan", "active_deployment_plan",
@@ -2511,10 +2519,10 @@ class Hedger:
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
-            "under_replica_weight", "singleton_hotspot_weight",
+            "hotspot_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
-            "edge_memory_budget_ratio", "max_required_edge_replicas", "pressure_threshold",
-            "pressure_temperature", "queue_normalizer", "loaded_checkpoint",
+            "edge_memory_budget_ratio", "hotspot_repair_threshold", "hotspot_keep_penalty_scale",
+            "queue_normalizer", "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
             insert_at = fieldnames.index("latency_guard_active")
@@ -2589,9 +2597,8 @@ class Hedger:
             *Hedger._decision_common_fieldnames(),
             "raw_nodes", "executed_nodes", "removed_nodes", "added_nodes",
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
-            "service_pressure", "edge_feasible_count", "soft_required_edge_replicas",
-            "required_edge_replicas", "replica_need_prob", "under_replicated_gap",
-            "under_replicated_risk", "singleton_hotspot_risk",
+            "service_pressure", "edge_feasible_count", "edge_replica_count",
+            "device_replica_count", "active_pair_hotspot",
             "capacity_corrected", "deployment_policy_deterministic",
         ]
         if self.record_cfg.decision_candidate_features_debug:
@@ -2603,10 +2610,10 @@ class Hedger:
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
                 "deployment_qk_scores", "deployment_qk_features",
-                "deployment_candidate_costs", "deployment_final_scores",
-                "deployment_policy_probs", "deployment_replica_need_probs",
-                "deployment_service_pressure", "deployment_required_edge_replicas",
-                "deployment_under_replicated_risks", "deployment_singleton_hotspot_risks",
+                "deployment_pair_adjustments", "deployment_final_scores",
+                "deployment_policy_probs", "deployment_service_pressure",
+                "deployment_edge_replica_counts", "deployment_device_replica_counts",
+                "deployment_active_pair_hotspots",
                 "deployment_static_mask",
             ])
         return fieldnames
@@ -2744,21 +2751,12 @@ class Hedger:
                 cloud_replica=bool(exec_mask[service_idx, cloud_idx].item()),
                 service_pressure=self._actor_debug_vector_value(actor_debug, "service_pressure", service_idx),
                 edge_feasible_count=self._actor_debug_vector_value(actor_debug, "edge_feasible_count", service_idx),
-                soft_required_edge_replicas=self._actor_debug_vector_value(
-                    actor_debug, "soft_required_edge_replicas", service_idx
+                edge_replica_count=self._actor_debug_vector_value(actor_debug, "edge_replica_count", service_idx),
+                device_replica_count=self._json_for_record(
+                    self._actor_debug_device_vector_map(actor_debug, "device_replica_count")
                 ),
-                required_edge_replicas=self._actor_debug_vector_value(
-                    actor_debug, "required_edge_replicas", service_idx
-                ),
-                replica_need_prob=self._actor_debug_vector_value(actor_debug, "replica_need_prob", service_idx),
-                under_replicated_gap=self._actor_debug_vector_value(
-                    actor_debug, "under_replicated_gap", service_idx
-                ),
-                under_replicated_risk=self._actor_debug_vector_value(
-                    actor_debug, "under_replicated_risk", service_idx
-                ),
-                singleton_hotspot_risk=self._actor_debug_vector_value(
-                    actor_debug, "singleton_hotspot_risk", service_idx
+                active_pair_hotspot=self._json_for_record(
+                    self._actor_debug_row_map(actor_debug, "active_pair_hotspot", service_idx)
                 ),
                 capacity_corrected=bool(not torch.equal(raw_mask[service_idx], exec_mask[service_idx])),
                 deployment_policy_deterministic=(
@@ -2794,8 +2792,8 @@ class Hedger:
                     "deployment_qk_features": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "qk_feature", service_idx)
                     ),
-                    "deployment_candidate_costs": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "candidate_cost", service_idx)
+                    "deployment_pair_adjustments": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "pair_adjustment", service_idx)
                     ),
                     "deployment_final_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "final_score", service_idx)
@@ -2803,20 +2801,17 @@ class Hedger:
                     "deployment_policy_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "policy_prob", service_idx)
                     ),
-                    "deployment_replica_need_probs": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "replica_need_prob", service_idx)
-                    ),
                     "deployment_service_pressure": self._json_for_record(
                         self._actor_debug_vector_value(actor_debug, "service_pressure", service_idx)
                     ),
-                    "deployment_required_edge_replicas": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "required_edge_replicas", service_idx)
+                    "deployment_edge_replica_counts": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "edge_replica_count", service_idx)
                     ),
-                    "deployment_under_replicated_risks": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "under_replicated_risk", service_idx)
+                    "deployment_device_replica_counts": self._json_for_record(
+                        self._actor_debug_device_vector_map(actor_debug, "device_replica_count")
                     ),
-                    "deployment_singleton_hotspot_risks": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "singleton_hotspot_risk", service_idx)
+                    "deployment_active_pair_hotspots": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "active_pair_hotspot", service_idx)
                     ),
                     "deployment_static_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "static_mask", service_idx)
@@ -3539,11 +3534,11 @@ class Hedger:
             edge_cover_repair_cnt,
             edge_cover_repair_cost,
             edge_cover_unmet,
-            redundancy_repair_cnt,
-            redundancy_repair_cost,
-            redundancy_unmet,
+            hotspot_repair_cnt,
+            hotspot_repair_cost,
+            hotspot_unmet,
             risk_metrics,
-            _executed_redundancy_ctx,
+            _executed_pair_ctx,
         ) = self.deployment_agent._project_deployment_mask(
             raw_mask,
             raw_probs=raw_probs,
@@ -3568,9 +3563,9 @@ class Hedger:
             "edge_cover_repair_cnt": edge_cover_repair_cnt,
             "edge_cover_repair_cost": edge_cover_repair_cost,
             "edge_cover_unmet": edge_cover_unmet,
-            "redundancy_repair_cnt": redundancy_repair_cnt,
-            "redundancy_repair_cost": redundancy_repair_cost,
-            "redundancy_unmet": redundancy_unmet,
+            "hotspot_repair_cnt": hotspot_repair_cnt,
+            "hotspot_repair_cost": hotspot_repair_cost,
+            "hotspot_unmet": hotspot_unmet,
             **risk_metrics,
             "raw_deploy_mask": raw_mask,
             "behavior_kind": behavior_kind,
@@ -3617,7 +3612,7 @@ class Hedger:
                     "triggered": True,
                     "reason": "latency_guard_trigger",
                     "queue_pressure": 0.0,
-                    "singleton_pressure": 0.0,
+                    "hotspot_pressure": 0.0,
                     "max_queue": 0.0,
                 }
 
@@ -3628,7 +3623,7 @@ class Hedger:
                     f"[Hedger][DeploymentEvent] Wake deployment decision immediately: "
                     f"reason={event_status.get('reason')}, "
                     f"queue_pressure={self._format_log_value(event_status.get('queue_pressure', 0.0))}, "
-                    f"singleton_pressure={self._format_log_value(event_status.get('singleton_pressure', 0.0))}, "
+                    f"hotspot_pressure={self._format_log_value(event_status.get('hotspot_pressure', 0.0))}, "
                     f"configured_interval={self._format_log_value(interval_s, 2)}s."
                 )
                 return time.time(), str(event_status.get("reason") or "event_trigger"), current_seq, event_status
@@ -4703,7 +4698,7 @@ class Hedger:
                     self._pending_deployment_force_serve = current_decision_reason in {
                         "latency_guard_trigger",
                         "event_queue_pressure",
-                        "event_singleton_hotspot",
+                        "event_pair_hotspot",
                     }
                     self._pending_deployment_reason = current_decision_reason
                     decision_version = self._mark_deployment_decision_pending()
@@ -4721,7 +4716,7 @@ class Hedger:
                 )
 
                 served_version = self.get_active_deployment_version()
-                if next_decision_reason not in {"latency_guard_trigger", "event_queue_pressure", "event_singleton_hotspot"}:
+                if next_decision_reason not in {"latency_guard_trigger", "event_queue_pressure", "event_pair_hotspot"}:
                     feedback_gate = self._wait_for_inference_deployment_feedback_samples(served_version)
                 else:
                     feedback_gate = {
@@ -4785,17 +4780,12 @@ class Hedger:
                         dep_cloud_only_term=dep_reward_breakdown["dep_cloud_only_term"],
                         dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                         dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
-                        dep_under_replica_term=dep_reward_breakdown["dep_under_replica_term"],
-                        dep_singleton_hotspot_term=dep_reward_breakdown["dep_singleton_hotspot_term"],
+                        dep_hotspot_term=dep_reward_breakdown["dep_hotspot_term"],
                         dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
                         dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
-                        under_replicated_risk_cost=dep_reward_breakdown["under_replicated_risk_cost"],
-                        singleton_hotspot_cost=dep_reward_breakdown["singleton_hotspot_cost"],
-                        executed_under_replicated_risk_cost=(
-                            dep_reward_breakdown["executed_under_replicated_risk_cost"]
-                        ),
-                        executed_singleton_hotspot_cost=(
-                            dep_reward_breakdown["executed_singleton_hotspot_cost"]
+                        active_pair_hotspot_cost=dep_reward_breakdown["active_pair_hotspot_cost"],
+                        executed_active_pair_hotspot_cost=(
+                            dep_reward_breakdown["executed_active_pair_hotspot_cost"]
                         ),
                         e2e_latency_count=metrics["e2e_latency_count"],
                         e2e_latency_mean=metrics["e2e_latency_mean"],
@@ -4816,8 +4806,8 @@ class Hedger:
                         deployment_event_triggered=int(bool(current_event_status.get("triggered", False))),
                         deployment_event_reason=current_event_status.get("reason", ""),
                         deployment_event_queue_pressure=float(current_event_status.get("queue_pressure", 0.0) or 0.0),
-                        deployment_event_singleton_pressure=float(
-                            current_event_status.get("singleton_pressure", 0.0) or 0.0
+                        deployment_event_hotspot_pressure=float(
+                            current_event_status.get("hotspot_pressure", 0.0) or 0.0
                         ),
                         deployment_event_max_queue=float(current_event_status.get("max_queue", 0.0) or 0.0),
                         deployment_deterministic=int(bool(self.inference_cfg.deployment_deterministic)),
@@ -4826,9 +4816,9 @@ class Hedger:
                         edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
                         edge_cover_repair_cost=aux.get("edge_cover_repair_cost", 0.0),
                         edge_cover_unmet=aux.get("edge_cover_unmet", 0),
-                        redundancy_repair_cnt=aux.get("redundancy_repair_cnt", 0),
-                        redundancy_repair_cost=aux.get("redundancy_repair_cost", 0.0),
-                        redundancy_unmet=aux.get("redundancy_unmet", 0),
+                        hotspot_repair_cnt=aux.get("hotspot_repair_cnt", 0),
+                        hotspot_repair_cost=aux.get("hotspot_repair_cost", 0.0),
+                        hotspot_unmet=aux.get("hotspot_unmet", 0),
                         policy_logp=self._scalar_value(logp),
                         policy_entropy=self._scalar_value(ent),
                         value_estimate=self._scalar_value(value),
@@ -4854,15 +4844,13 @@ class Hedger:
                         dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
                         cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                         edge_cover_repair_weight=self.deployment_agent_params["penalty_edge_cover_repair"],
-                        under_replica_weight=self.deployment_agent_params["reward_dep_under_replica_weight"],
-                        singleton_hotspot_weight=self.deployment_agent_params["reward_dep_singleton_hotspot_weight"],
+                        hotspot_weight=self.deployment_agent_params["reward_dep_hotspot_weight"],
                         latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                         feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                         edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
-                        max_required_edge_replicas=self.deployment_agent_params["max_required_edge_replicas"],
-                        pressure_threshold=self.deployment_agent_params["pressure_threshold"],
-                        pressure_temperature=self.deployment_agent_params["pressure_temperature"],
+                        hotspot_repair_threshold=self.deployment_agent_params["hotspot_repair_threshold"],
+                        hotspot_keep_penalty_scale=self.deployment_agent_params["hotspot_keep_penalty_scale"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
@@ -5469,10 +5457,9 @@ class Hedger:
                                 "dep_latency_cost", "dep_offload_term", "dep_latency_term",
                                 "dep_slo_term", "dep_change_term", "dep_cloud_only_term",
                                 "dep_capacity_relax_term", "dep_edge_cover_repair_term",
-                                "dep_under_replica_term", "dep_singleton_hotspot_term",
+                                "dep_hotspot_term",
                                 "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
-                                "under_replicated_risk_cost", "singleton_hotspot_cost",
-                                "executed_under_replicated_risk_cost", "executed_singleton_hotspot_cost",
+                                "active_pair_hotspot_cost", "executed_active_pair_hotspot_cost",
                                 "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
                                 "e2e_latency_p50", "e2e_latency_p90", "e2e_latency_p95",
                                 "e2e_latency_p99", "e2e_slo_violation",
@@ -5484,11 +5471,11 @@ class Hedger:
                                 "latency_guard_bad_count", "latency_guard_sample_count",
                                 "latency_guard_max_queue", "latency_guard_penalty_cost",
                                 "deployment_event_triggered", "deployment_event_reason",
-                                "deployment_event_queue_pressure", "deployment_event_singleton_pressure",
+                                "deployment_event_queue_pressure", "deployment_event_hotspot_pressure",
                                 "deployment_event_max_queue",
                                 "cap_relax_cnt", "cap_relax_cost",
                                 "edge_cover_repair_cnt", "edge_cover_repair_cost", "edge_cover_unmet",
-                                "redundancy_repair_cnt", "redundancy_repair_cost", "redundancy_unmet",
+                                "hotspot_repair_cnt", "hotspot_repair_cost", "hotspot_unmet",
                                 "policy_logp", "policy_entropy", "value_estimate", "next_value",
                                 "behavior_kind", "deployment_rollout_deterministic",
                                 "raw_edge_replicas", "edge_replicas", "cloud_replicas",
@@ -5503,10 +5490,10 @@ class Hedger:
             "dep_offload_weight", "dep_latency_weight", "dep_latency_transform",
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
-            "under_replica_weight", "singleton_hotspot_weight",
+            "hotspot_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
-            "max_required_edge_replicas", "pressure_threshold", "pressure_temperature", "queue_normalizer",
+            "hotspot_repair_threshold", "hotspot_keep_penalty_scale", "queue_normalizer",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
             "deployment_default_warmup_min_feedback_samples",
@@ -5581,7 +5568,7 @@ class Hedger:
                     self._pending_deployment_force_serve = current_decision_reason in {
                         "latency_guard_trigger",
                         "event_queue_pressure",
-                        "event_singleton_hotspot",
+                        "event_pair_hotspot",
                     }
                     self._pending_deployment_reason = current_decision_reason
                     decision_version = self._mark_deployment_decision_pending()
@@ -5604,7 +5591,7 @@ class Hedger:
                         "triggered": True,
                         "reason": "latency_guard_trigger",
                         "queue_pressure": 0.0,
-                        "singleton_pressure": 0.0,
+                        "hotspot_pressure": 0.0,
                         "max_queue": 0.0,
                     }
                     LOGGER.warning(
@@ -5652,8 +5639,8 @@ class Hedger:
                     "deployment_event_triggered": int(bool(event_status_record.get("triggered", False))),
                     "deployment_event_reason": str(event_status_record.get("reason", "") or ""),
                     "deployment_event_queue_pressure": float(event_status_record.get("queue_pressure", 0.0) or 0.0),
-                    "deployment_event_singleton_pressure": float(
-                        event_status_record.get("singleton_pressure", 0.0) or 0.0
+                    "deployment_event_hotspot_pressure": float(
+                        event_status_record.get("hotspot_pressure", 0.0) or 0.0
                     ),
                     "deployment_event_max_queue": float(event_status_record.get("max_queue", 0.0) or 0.0),
                 })
@@ -5725,8 +5712,8 @@ class Hedger:
                     "deployment_event_triggered": bool(metrics.get("deployment_event_triggered", 0)),
                     "deployment_event_reason": str(metrics.get("deployment_event_reason", "")),
                     "deployment_event_queue_pressure": float(metrics.get("deployment_event_queue_pressure", 0.0)),
-                    "deployment_event_singleton_pressure": float(
-                        metrics.get("deployment_event_singleton_pressure", 0.0)
+                    "deployment_event_hotspot_pressure": float(
+                        metrics.get("deployment_event_hotspot_pressure", 0.0)
                     ),
                     "behavior_kind": str(aux.get("behavior_kind", "actor")),
                     "decision_version": int(decision_version),
@@ -5783,17 +5770,12 @@ class Hedger:
                     dep_cloud_only_term=dep_reward_breakdown["dep_cloud_only_term"],
                     dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                     dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
-                    dep_under_replica_term=dep_reward_breakdown["dep_under_replica_term"],
-                    dep_singleton_hotspot_term=dep_reward_breakdown["dep_singleton_hotspot_term"],
+                    dep_hotspot_term=dep_reward_breakdown["dep_hotspot_term"],
                     dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
                     dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
-                    under_replicated_risk_cost=dep_reward_breakdown["under_replicated_risk_cost"],
-                    singleton_hotspot_cost=dep_reward_breakdown["singleton_hotspot_cost"],
-                    executed_under_replicated_risk_cost=(
-                        dep_reward_breakdown["executed_under_replicated_risk_cost"]
-                    ),
-                    executed_singleton_hotspot_cost=(
-                        dep_reward_breakdown["executed_singleton_hotspot_cost"]
+                    active_pair_hotspot_cost=dep_reward_breakdown["active_pair_hotspot_cost"],
+                    executed_active_pair_hotspot_cost=(
+                        dep_reward_breakdown["executed_active_pair_hotspot_cost"]
                     ),
                     e2e_latency_count=metrics["e2e_latency_count"],
                     e2e_latency_mean=metrics["e2e_latency_mean"],
@@ -5819,16 +5801,16 @@ class Hedger:
                     deployment_event_triggered=metrics.get("deployment_event_triggered", 0),
                     deployment_event_reason=metrics.get("deployment_event_reason", ""),
                     deployment_event_queue_pressure=metrics.get("deployment_event_queue_pressure", 0.0),
-                    deployment_event_singleton_pressure=metrics.get("deployment_event_singleton_pressure", 0.0),
+                    deployment_event_hotspot_pressure=metrics.get("deployment_event_hotspot_pressure", 0.0),
                     deployment_event_max_queue=metrics.get("deployment_event_max_queue", 0.0),
                     cap_relax_cnt=aux["capacity_relax_cnt"],
                     cap_relax_cost=aux["capacity_relax_cost"],
                     edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
                     edge_cover_repair_cost=aux.get("edge_cover_repair_cost", 0.0),
                     edge_cover_unmet=aux.get("edge_cover_unmet", 0),
-                    redundancy_repair_cnt=aux.get("redundancy_repair_cnt", 0),
-                    redundancy_repair_cost=aux.get("redundancy_repair_cost", 0.0),
-                    redundancy_unmet=aux.get("redundancy_unmet", 0),
+                    hotspot_repair_cnt=aux.get("hotspot_repair_cnt", 0),
+                    hotspot_repair_cost=aux.get("hotspot_repair_cost", 0.0),
+                    hotspot_unmet=aux.get("hotspot_unmet", 0),
                     policy_logp=float(logp.detach().cpu().item()),
                     policy_entropy=float(ent.detach().cpu().item()),
                     value_estimate=float(value.detach().cpu().item()),
@@ -5859,15 +5841,13 @@ class Hedger:
                     dep_cloud_only_weight=self.deployment_agent_params["reward_dep_cloud_only_weight"],
                     cap_relax_weight=self.deployment_agent_params["penalty_capacity_relax"],
                     edge_cover_repair_weight=self.deployment_agent_params["penalty_edge_cover_repair"],
-                    under_replica_weight=self.deployment_agent_params["reward_dep_under_replica_weight"],
-                    singleton_hotspot_weight=self.deployment_agent_params["reward_dep_singleton_hotspot_weight"],
+                    hotspot_weight=self.deployment_agent_params["reward_dep_hotspot_weight"],
                     latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                     feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
-                    max_required_edge_replicas=self.deployment_agent_params["max_required_edge_replicas"],
-                    pressure_threshold=self.deployment_agent_params["pressure_threshold"],
-                    pressure_temperature=self.deployment_agent_params["pressure_temperature"],
+                    hotspot_repair_threshold=self.deployment_agent_params["hotspot_repair_threshold"],
+                    hotspot_keep_penalty_scale=self.deployment_agent_params["hotspot_keep_penalty_scale"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
@@ -6373,8 +6353,7 @@ class Hedger:
         cloud_only_ratio = float(aux.get("cloud_only_ratio", 0.0))
         cap_relax_cost = float(aux.get("capacity_relax_cost", 0.0))
         edge_cover_repair_cost = float(aux.get("edge_cover_repair_cost", 0.0))
-        under_replicated_risk_cost = float(aux.get("under_replicated_risk_cost", 0.0))
-        singleton_hotspot_cost = float(aux.get("singleton_hotspot_cost", 0.0))
+        active_pair_hotspot_cost = float(aux.get("executed_active_pair_hotspot_cost", aux.get("active_pair_hotspot_cost", 0.0)))
         latency_guard_penalty_cost = float(metrics.get("latency_guard_penalty_cost", 0.0))
         feedback_timeout_penalty_cost = float(metrics.get("feedback_timeout_penalty_cost", 0.0))
 
@@ -6385,8 +6364,7 @@ class Hedger:
         w_cloud_only = float(self.deployment_agent_params.get("reward_dep_cloud_only_weight", 0.0))
         penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
         penalty_edge_cover_repair = float(self.deployment_agent_params.get("penalty_edge_cover_repair", 0.0))
-        w_under_replica = float(self.deployment_agent_params.get("reward_dep_under_replica_weight", 0.0))
-        w_singleton_hotspot = float(self.deployment_agent_params.get("reward_dep_singleton_hotspot_weight", 0.0))
+        w_hotspot = float(self.deployment_agent_params.get("reward_dep_hotspot_weight", 0.0))
         penalty_latency_guard = float(self.deployment_agent_params.get("penalty_latency_guard_trigger", 0.0))
         penalty_feedback_timeout = float(self.deployment_agent_params.get("penalty_feedback_timeout", 0.0))
 
@@ -6402,18 +6380,15 @@ class Hedger:
             "dep_cloud_only_term": -w_cloud_only * cloud_only_ratio,
             "dep_capacity_relax_term": -penalty_capacity_relax * cap_relax_cost,
             "dep_edge_cover_repair_term": -penalty_edge_cover_repair * edge_cover_repair_cost,
-            "dep_under_replica_term": -w_under_replica * under_replicated_risk_cost,
-            "dep_singleton_hotspot_term": -w_singleton_hotspot * singleton_hotspot_cost,
+            "dep_hotspot_term": -w_hotspot * active_pair_hotspot_cost,
             "dep_latency_guard_penalty_term": -penalty_latency_guard * latency_guard_penalty_cost,
             "dep_feedback_timeout_term": -penalty_feedback_timeout * feedback_timeout_penalty_cost,
         }
         return {
             "dep_latency_cost": float(latency_cost),
             "feedback_timeout_penalty_cost": float(feedback_timeout_penalty_cost),
-            "under_replicated_risk_cost": float(under_replicated_risk_cost),
-            "singleton_hotspot_cost": float(singleton_hotspot_cost),
-            "executed_under_replicated_risk_cost": float(aux.get("executed_under_replicated_risk_cost", 0.0)),
-            "executed_singleton_hotspot_cost": float(aux.get("executed_singleton_hotspot_cost", 0.0)),
+            "active_pair_hotspot_cost": float(aux.get("active_pair_hotspot_cost", 0.0)),
+            "executed_active_pair_hotspot_cost": float(aux.get("executed_active_pair_hotspot_cost", 0.0)),
             **terms,
             "reward": self._sum_reward_terms(terms),
         }

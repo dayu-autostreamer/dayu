@@ -131,9 +131,11 @@ def _is_bad_transition(transition: dict) -> bool:
         return True
     if _as_float(metrics.get("e2e_slo_violation"), 0.0) >= 0.5:
         return True
-    if _as_float(reward_breakdown.get("under_replicated_risk_cost"), 0.0) >= 0.15:
-        return True
-    if _as_float(reward_breakdown.get("singleton_hotspot_cost"), 0.0) >= 0.10:
+    hotspot_cost = max(
+        _as_float(reward_breakdown.get("active_pair_hotspot_cost"), 0.0),
+        _as_float(reward_breakdown.get("executed_active_pair_hotspot_cost"), 0.0),
+    )
+    if hotspot_cost >= 0.15:
         return True
     return False
 

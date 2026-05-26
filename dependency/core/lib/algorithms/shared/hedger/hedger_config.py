@@ -22,13 +22,12 @@ class DeploymentConstraintCfg:
     # Fraction of computed available edge memory used as deployment budget.
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
     edge_memory_budget_ratio: float = 1.0
-    # Demand-aware best-effort edge redundancy. The first edge replica is a
-    # generic coverage repair; extra edge replicas are requested only when the
-    # service pressure computed from state exceeds the threshold.
-    max_required_edge_replicas: int = 2
-    pressure_threshold: float = 0.60
-    pressure_temperature: float = 0.15
+    # Pair-centric hotspot handling. Deployment keeps generic edge coverage,
+    # and only repairs active edge pairs whose observed queue/runtime pressure
+    # makes the current placement a hotspot.
     queue_normalizer: float = 8.0
+    hotspot_repair_threshold: float = 0.35
+    hotspot_keep_penalty_scale: float = 2.0
 
 
 class PhysicalTopology:
