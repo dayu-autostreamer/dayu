@@ -77,12 +77,22 @@ class HedgerDeploymentDatasetCfg:
 
 @dataclass(frozen=True)
 class HedgerDeploymentCollectCfg:
-    keep_prob: float = 0.35
-    actor_prob: float = 0.35
-    perturb_prob: float = 0.30
+    keep_prob: float = 0.75
+    actor_prob: float = 0.0
+    perturb_prob: float = 0.25
     actor_logit_noise_std: float = 0.25
-    perturb_edge_prob: float = 0.08
-    max_perturb_flips: int = 4
+    safe_add_prob: float = 0.65
+    safe_swap_prob: float = 0.30
+    safe_remove_prob: float = 0.05
+    max_perturb_flips: int = 1
+    max_action_attempts: int = 6
+    reset_on_bad_streak: bool = True
+    bad_streak_threshold: int = 2
+    reset_to_anchor_prob: float = 1.0
+    max_queue_pressure: float = 0.65
+    max_hotspot_cost: float = 0.08
+    max_capacity_relax_cost: float = 0.15
+    allow_remove_last_edge_replica: bool = False
 
 
 @dataclass(frozen=True)
@@ -337,6 +347,11 @@ class Hedger:
         self._deployment_collected_transition_count = 0
         self._deployment_last_online_update_transition_count = 0
         self._deployment_last_collect_checkpoint_step = 0
+        self._deployment_collect_anchor_mask: Optional[torch.Tensor] = None
+        self._deployment_collect_bad_streak = 0
+        self._deployment_collect_good_count = 0
+        self._deployment_collect_bad_count = 0
+        self._deployment_collect_last_quality = "unknown"
         self._init_deployment_dataset_runtime()
 
         self.dep_recorder = None
@@ -540,20 +555,40 @@ class Hedger:
         collect_cfg = training.get("deployment_collect") or {}
         if not isinstance(collect_cfg, dict):
             raise ValueError("Hedger config `training.deployment_collect` must be a mapping when provided.")
-        keep_prob = max(0.0, float(collect_cfg.get("keep_prob", 0.35)))
-        actor_prob = max(0.0, float(collect_cfg.get("actor_prob", 0.35)))
-        perturb_prob = max(0.0, float(collect_cfg.get("perturb_prob", 0.30)))
+        keep_prob = max(0.0, float(collect_cfg.get("keep_prob", 0.75)))
+        actor_prob = max(0.0, float(collect_cfg.get("actor_prob", 0.0)))
+        perturb_prob = max(0.0, float(collect_cfg.get("perturb_prob", 0.25)))
         total_prob = keep_prob + actor_prob + perturb_prob
         if total_prob <= 0.0:
             keep_prob, actor_prob, perturb_prob = 1.0, 0.0, 0.0
             total_prob = 1.0
+        safe_add_prob = max(0.0, float(collect_cfg.get("safe_add_prob", 0.65)))
+        safe_swap_prob = max(0.0, float(collect_cfg.get("safe_swap_prob", 0.30)))
+        safe_remove_prob = max(0.0, float(collect_cfg.get("safe_remove_prob", 0.05)))
+        safe_total_prob = safe_add_prob + safe_swap_prob + safe_remove_prob
+        if safe_total_prob <= 0.0:
+            safe_add_prob, safe_swap_prob, safe_remove_prob = 1.0, 0.0, 0.0
+            safe_total_prob = 1.0
         deployment_collect = HedgerDeploymentCollectCfg(
             keep_prob=keep_prob / total_prob,
             actor_prob=actor_prob / total_prob,
             perturb_prob=perturb_prob / total_prob,
             actor_logit_noise_std=max(0.0, float(collect_cfg.get("actor_logit_noise_std", 0.25))),
-            perturb_edge_prob=min(1.0, max(0.0, float(collect_cfg.get("perturb_edge_prob", 0.08)))),
-            max_perturb_flips=max(1, int(collect_cfg.get("max_perturb_flips", 4))),
+            safe_add_prob=safe_add_prob / safe_total_prob,
+            safe_swap_prob=safe_swap_prob / safe_total_prob,
+            safe_remove_prob=safe_remove_prob / safe_total_prob,
+            max_perturb_flips=max(1, int(collect_cfg.get("max_perturb_flips", 1))),
+            max_action_attempts=max(1, int(collect_cfg.get("max_action_attempts", 6))),
+            reset_on_bad_streak=bool(collect_cfg.get("reset_on_bad_streak", True)),
+            bad_streak_threshold=max(1, int(collect_cfg.get("bad_streak_threshold", 2))),
+            reset_to_anchor_prob=min(
+                1.0,
+                max(0.0, float(collect_cfg.get("reset_to_anchor_prob", 1.0))),
+            ),
+            max_queue_pressure=max(0.0, float(collect_cfg.get("max_queue_pressure", 0.65))),
+            max_hotspot_cost=max(0.0, float(collect_cfg.get("max_hotspot_cost", 0.08))),
+            max_capacity_relax_cost=max(0.0, float(collect_cfg.get("max_capacity_relax_cost", 0.15))),
+            allow_remove_last_edge_replica=bool(collect_cfg.get("allow_remove_last_edge_replica", False)),
         )
 
         offline_rl_cfg = training.get("deployment_offline_rl") or {}
@@ -2599,6 +2634,10 @@ class Hedger:
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
             "service_pressure", "edge_feasible_count", "edge_replica_count",
             "device_replica_count", "active_pair_hotspot",
+            "collect_behavior", "collect_operation",
+            "collect_selected_service", "collect_selected_device",
+            "collect_removed_service", "collect_removed_device",
+            "collect_candidate_queue_pressure", "collect_candidate_hotspot_cost",
             "capacity_corrected", "deployment_policy_deterministic",
         ]
         if self.record_cfg.decision_candidate_features_debug:
@@ -2714,6 +2753,7 @@ class Hedger:
             logic_feats: Dict[str, torch.Tensor],
             phys_feats: Dict[str, torch.Tensor],
             actor_debug: Optional[Dict[str, Any]] = None,
+            collect_debug: Optional[Dict[str, Any]] = None,
             policy_deterministic: Optional[bool] = None,
     ) -> None:
         if self.dep_decision_recorder is None or self.physical_topology is None:
@@ -2722,6 +2762,11 @@ class Hedger:
         cloud_idx = self.physical_topology.cloud_idx
         raw_mask = raw_deploy_mask.detach().cpu().bool()
         exec_mask = exec_deploy_mask.detach().cpu().bool()
+        collect_debug = collect_debug if isinstance(collect_debug, dict) else {}
+        selected_service_idx = int(collect_debug.get("collect_selected_service_idx", -1) or -1)
+        selected_device_idx = int(collect_debug.get("collect_selected_device_idx", -1) or -1)
+        removed_service_idx = int(collect_debug.get("collect_removed_service_idx", -1) or -1)
+        removed_device_idx = int(collect_debug.get("collect_removed_device_idx", -1) or -1)
         for service_idx in range(raw_mask.size(0)):
             raw_nodes = self._device_names_from_mask(raw_mask[service_idx])
             executed_nodes = self._device_names_from_mask(exec_mask[service_idx])
@@ -2757,6 +2802,30 @@ class Hedger:
                 ),
                 active_pair_hotspot=self._json_for_record(
                     self._actor_debug_row_map(actor_debug, "active_pair_hotspot", service_idx)
+                ),
+                collect_behavior=collect_debug.get("collect_behavior", ""),
+                collect_operation=collect_debug.get("collect_operation", ""),
+                collect_selected_service=(
+                    self._service_name(selected_service_idx) if selected_service_idx >= 0 else ""
+                ),
+                collect_selected_device=(
+                    self._device_name(selected_device_idx) if selected_device_idx >= 0 else ""
+                ),
+                collect_removed_service=(
+                    self._service_name(removed_service_idx) if removed_service_idx >= 0 else ""
+                ),
+                collect_removed_device=(
+                    self._device_name(removed_device_idx) if removed_device_idx >= 0 else ""
+                ),
+                collect_candidate_queue_pressure=self._actor_debug_vector_value(
+                    collect_debug,
+                    "collect_candidate_queue_pressure_by_service",
+                    service_idx,
+                ),
+                collect_candidate_hotspot_cost=self._actor_debug_vector_value(
+                    collect_debug,
+                    "collect_candidate_hotspot_by_service",
+                    service_idx,
                 ),
                 capacity_corrected=bool(not torch.equal(raw_mask[service_idx], exec_mask[service_idx])),
                 deployment_policy_deterministic=(
@@ -3412,6 +3481,51 @@ class Hedger:
     def _current_offloading_rollout_agent(self):
         return self._frozen_offloading_agent if self._frozen_offloading_agent is not None else self.offloading_agent
 
+    def _ensure_deployment_collect_anchor(
+            self,
+            prev_deploy_mask: Optional[torch.Tensor],
+            static_allowed: torch.Tensor,
+    ) -> torch.Tensor:
+        if self._deployment_collect_anchor_mask is None:
+            if prev_deploy_mask is None:
+                anchor = self._current_deploy_mask()
+            else:
+                anchor = prev_deploy_mask.detach().clone().cpu().bool()
+            self._deployment_collect_anchor_mask = anchor
+
+        anchor = self._deployment_collect_anchor_mask.detach().clone().to(self.device).bool()
+        if tuple(anchor.shape) != tuple(static_allowed.shape):
+            anchor = self._current_deploy_mask().to(self.device).bool()
+            self._deployment_collect_anchor_mask = anchor.detach().cpu()
+        anchor = torch.where(static_allowed.bool(), anchor, torch.zeros_like(anchor))
+        anchor[:, self.physical_topology.cloud_idx] = True
+        return anchor
+
+    def _deployment_collect_base_mask(
+            self,
+            prev_deploy_mask: Optional[torch.Tensor],
+            static_allowed: torch.Tensor,
+    ) -> Tuple[torch.Tensor, bool, bool]:
+        cfg = self.training_cfg.deployment_collect
+        anchor = self._ensure_deployment_collect_anchor(prev_deploy_mask, static_allowed)
+        should_reset = (
+            cfg.reset_on_bad_streak
+            and self._deployment_collect_bad_streak >= cfg.bad_streak_threshold
+            and random.random() <= cfg.reset_to_anchor_prob
+        )
+        if should_reset:
+            return anchor, True, True
+
+        if prev_deploy_mask is None:
+            base = anchor
+            anchor_used = True
+        else:
+            base = prev_deploy_mask.detach().clone().to(self.device).bool()
+            anchor_used = False
+        base = torch.where(static_allowed.bool(), base, torch.zeros_like(base))
+        base[:, self.physical_topology.cloud_idx] = True
+        return base, anchor_used, False
+
     def _sample_deployment_action_for_training(
             self,
             logic_edge_index: torch.Tensor,
@@ -3450,79 +3564,147 @@ class Hedger:
             prev_deploy_mask: Optional[torch.Tensor],
     ):
         cfg = self.training_cfg.deployment_collect
-        roll = random.random()
-        if roll < cfg.actor_prob:
-            deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
+        static_allowed = self.deployment_agent._static_allowed_mask(phys_feats, logic_feats)
+        base_mask, anchor_used, reset_triggered = self._deployment_collect_base_mask(
+            prev_deploy_mask,
+            static_allowed,
+        )
+        reject_reasons: List[str] = []
+        attempts = max(1, int(cfg.max_action_attempts))
+
+        for attempt_idx in range(attempts):
+            roll = random.random()
+            collect_debug = {
+                "collect_anchor_used": int(anchor_used),
+                "collect_reset_triggered": int(reset_triggered),
+                "collect_bad_streak_before": int(self._deployment_collect_bad_streak),
+            }
+            if roll < cfg.actor_prob:
+                deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
+                    logic_edge_index=logic_edge_index,
+                    logic_feats=logic_feats,
+                    phys_edge_index=phys_edge_index,
+                    phys_feats=phys_feats,
+                    topo_order=None,
+                    prev_deploy_mask=prev_deploy_mask,
+                    deterministic=self.training_cfg.deployment_rollout_deterministic,
+                    logit_noise_std=cfg.actor_logit_noise_std,
+                )
+                collect_debug.update({
+                    "collect_behavior": "actor",
+                    "collect_operation": "actor_noise" if cfg.actor_logit_noise_std > 0.0 else "actor",
+                })
+            elif roll < cfg.actor_prob + cfg.perturb_prob:
+                raw_mask, collect_debug = self._sample_safe_collect_edit(
+                    logic_edge_index=logic_edge_index,
+                    logic_feats=logic_feats,
+                    phys_feats=phys_feats,
+                    static_allowed=static_allowed,
+                    base_mask=base_mask,
+                    collect_debug=collect_debug,
+                )
+                deploy_mask, logp, ent, value, aux = self._finalize_collect_raw_mask(
+                    logic_edge_index=logic_edge_index,
+                    logic_feats=logic_feats,
+                    phys_edge_index=phys_edge_index,
+                    phys_feats=phys_feats,
+                    prev_deploy_mask=prev_deploy_mask,
+                    static_allowed=static_allowed,
+                    raw_mask=raw_mask,
+                    behavior_kind=str(collect_debug.get("collect_operation", "safe_edit")),
+                )
+            else:
+                raw_mask = base_mask.detach().clone()
+                collect_debug.update({
+                    "collect_behavior": "keep",
+                    "collect_operation": "anchor_reset" if reset_triggered else "keep",
+                })
+                deploy_mask, logp, ent, value, aux = self._finalize_collect_raw_mask(
+                    logic_edge_index=logic_edge_index,
+                    logic_feats=logic_feats,
+                    phys_edge_index=phys_edge_index,
+                    phys_feats=phys_feats,
+                    prev_deploy_mask=prev_deploy_mask,
+                    static_allowed=static_allowed,
+                    raw_mask=raw_mask,
+                    behavior_kind=str(collect_debug["collect_operation"]),
+                )
+
+            risk_debug = self._deployment_collect_candidate_risk(
                 logic_edge_index=logic_edge_index,
                 logic_feats=logic_feats,
-                phys_edge_index=phys_edge_index,
                 phys_feats=phys_feats,
-                topo_order=None,
-                prev_deploy_mask=prev_deploy_mask,
-                deterministic=self.training_cfg.deployment_rollout_deterministic,
-                logit_noise_std=cfg.actor_logit_noise_std,
+                static_allowed=static_allowed,
+                base_mask=base_mask,
+                raw_mask=aux["raw_deploy_mask"],
+                deploy_mask=deploy_mask,
+                capacity_relax_cost=float(aux.get("capacity_relax_cost", 0.0)),
+                edge_cover_unmet=int(aux.get("edge_cover_unmet", 0)),
             )
-            aux["behavior_kind"] = "actor_noise" if cfg.actor_logit_noise_std > 0.0 else "actor"
-            return deploy_mask, logp, ent, value, aux
-        if roll < cfg.actor_prob + cfg.perturb_prob:
-            return self._sample_projected_mask_behavior(
-                logic_edge_index,
-                logic_feats,
-                phys_edge_index,
-                phys_feats,
-                prev_deploy_mask,
-                behavior_kind="safe_perturb",
-                perturb=True,
-            )
-        return self._sample_projected_mask_behavior(
-            logic_edge_index,
-            logic_feats,
-            phys_edge_index,
-            phys_feats,
-            prev_deploy_mask,
-            behavior_kind="keep",
-            perturb=False,
-        )
+            collect_debug.update(risk_debug)
+            accepted, reason = self._deployment_collect_candidate_accepted(collect_debug)
+            if accepted:
+                aux.update(collect_debug)
+                aux.update({
+                    "collect_attempts": attempt_idx + 1,
+                    "collect_reject_cnt": len(reject_reasons),
+                    "collect_reject_reasons": ";".join(reject_reasons),
+                    "behavior_kind": str(collect_debug.get("collect_operation", aux.get("behavior_kind", "collect"))),
+                })
+                return deploy_mask, logp, ent, value, aux
+            reject_reasons.append(reason)
 
-    def _sample_projected_mask_behavior(
+        raw_mask = base_mask.detach().clone()
+        fallback_operation = "fallback_anchor" if anchor_used or reset_triggered else "fallback_keep"
+        deploy_mask, logp, ent, value, aux = self._finalize_collect_raw_mask(
+            logic_edge_index=logic_edge_index,
+            logic_feats=logic_feats,
+            phys_edge_index=phys_edge_index,
+            phys_feats=phys_feats,
+            prev_deploy_mask=prev_deploy_mask,
+            static_allowed=static_allowed,
+            raw_mask=raw_mask,
+            behavior_kind=fallback_operation,
+        )
+        collect_debug = {
+            "collect_behavior": "fallback",
+            "collect_operation": fallback_operation,
+            "collect_anchor_used": int(anchor_used or reset_triggered),
+            "collect_reset_triggered": int(reset_triggered),
+            "collect_bad_streak_before": int(self._deployment_collect_bad_streak),
+            "collect_attempts": attempts,
+            "collect_reject_cnt": len(reject_reasons),
+            "collect_reject_reasons": ";".join(reject_reasons),
+        }
+        collect_debug.update(self._deployment_collect_candidate_risk(
+            logic_edge_index=logic_edge_index,
+            logic_feats=logic_feats,
+            phys_feats=phys_feats,
+            static_allowed=static_allowed,
+            base_mask=base_mask,
+            raw_mask=aux["raw_deploy_mask"],
+            deploy_mask=deploy_mask,
+            capacity_relax_cost=float(aux.get("capacity_relax_cost", 0.0)),
+            edge_cover_unmet=int(aux.get("edge_cover_unmet", 0)),
+        ))
+        aux.update(collect_debug)
+        aux["behavior_kind"] = fallback_operation
+        return deploy_mask, logp, ent, value, aux
+
+    def _finalize_collect_raw_mask(
             self,
             logic_edge_index: torch.Tensor,
             logic_feats: Dict[str, torch.Tensor],
             phys_edge_index: torch.Tensor,
             phys_feats: Dict[str, torch.Tensor],
             prev_deploy_mask: Optional[torch.Tensor],
+            static_allowed: torch.Tensor,
+            raw_mask: torch.Tensor,
             behavior_kind: str,
-            perturb: bool,
     ):
-        static_allowed = self.deployment_agent._static_allowed_mask(phys_feats, logic_feats)
-        num_services, num_devices = static_allowed.shape
         cloud_idx = self.physical_topology.cloud_idx
-        if prev_deploy_mask is None:
-            raw_mask = torch.zeros((num_services, num_devices), dtype=torch.bool, device=self.device)
-            raw_mask[:, cloud_idx] = True
-        else:
-            raw_mask = prev_deploy_mask.detach().clone().to(self.device).bool()
-            raw_mask[:, cloud_idx] = True
-
-        if perturb:
-            cfg = self.training_cfg.deployment_collect
-            candidates = []
-            for service_idx in range(num_services):
-                for device_idx in range(num_devices):
-                    if device_idx == cloud_idx:
-                        continue
-                    if bool(static_allowed[service_idx, device_idx].item()):
-                        candidates.append((service_idx, device_idx))
-            random.shuffle(candidates)
-            flips = 0
-            for service_idx, device_idx in candidates:
-                if flips >= cfg.max_perturb_flips:
-                    break
-                if random.random() > cfg.perturb_edge_prob:
-                    continue
-                raw_mask[service_idx, device_idx] = ~raw_mask[service_idx, device_idx]
-                flips += 1
-
+        raw_mask = torch.where(static_allowed.bool(), raw_mask.bool(), torch.zeros_like(raw_mask.bool()))
+        raw_mask[:, cloud_idx] = True
         raw_probs = torch.full(raw_mask.shape, 0.15, dtype=torch.float32, device=self.device)
         raw_probs = torch.where(raw_mask, torch.full_like(raw_probs, 0.85), raw_probs)
         raw_probs = torch.where(static_allowed, raw_probs, torch.zeros_like(raw_probs))
@@ -3570,6 +3752,476 @@ class Hedger:
             "raw_deploy_mask": raw_mask,
             "behavior_kind": behavior_kind,
         }
+
+    def _sample_safe_collect_edit(
+            self,
+            logic_edge_index: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            static_allowed: torch.Tensor,
+            base_mask: torch.Tensor,
+            collect_debug: Dict[str, Any],
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        raw_mask = base_mask.detach().clone().bool()
+        collect_debug = dict(collect_debug)
+        collect_debug["collect_behavior"] = "safe_edit"
+
+        for operation in self._deployment_collect_operation_order():
+            edited_mask, operation_debug = self._try_deployment_collect_operation(
+                operation=operation,
+                logic_edge_index=logic_edge_index,
+                logic_feats=logic_feats,
+                phys_feats=phys_feats,
+                static_allowed=static_allowed,
+                base_mask=raw_mask,
+            )
+            if edited_mask is None:
+                continue
+            collect_debug.update(operation_debug)
+            return edited_mask, collect_debug
+
+        collect_debug.update({
+            "collect_operation": "safe_edit_noop",
+            "collect_selected_service_idx": -1,
+            "collect_selected_device_idx": -1,
+            "collect_removed_service_idx": -1,
+            "collect_removed_device_idx": -1,
+        })
+        return raw_mask, collect_debug
+
+    def _deployment_collect_operation_order(self) -> List[str]:
+        cfg = self.training_cfg.deployment_collect
+        roll = random.random()
+        if roll < cfg.safe_add_prob:
+            first = "safe_add"
+        elif roll < cfg.safe_add_prob + cfg.safe_swap_prob:
+            first = "safe_swap"
+        else:
+            first = "safe_remove"
+        order = [first]
+        for operation in ("safe_add", "safe_swap", "safe_remove"):
+            if operation not in order:
+                order.append(operation)
+        return order
+
+    def _try_deployment_collect_operation(
+            self,
+            operation: str,
+            logic_edge_index: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            static_allowed: torch.Tensor,
+            base_mask: torch.Tensor,
+    ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
+        cloud_idx = self.physical_topology.cloud_idx
+        if cloud_idx <= 0:
+            return None, {}
+
+        pair_ctx = self.deployment_agent._deployment_pair_context(
+            logic_edge_index,
+            logic_feats,
+            static_allowed,
+            deploy_mask=base_mask,
+        )
+        pressure_matrix = self._deployment_collect_pair_pressure_matrix(
+            logic_feats,
+            static_allowed,
+            base_mask.device,
+        )
+        quality_matrix = self._deployment_collect_pair_quality_matrix(
+            logic_feats,
+            phys_feats,
+            static_allowed,
+            pressure_matrix,
+        )
+        service_pressure = pair_ctx["service_pressure"].detach().float()
+        active_hotspot = pair_ctx["active_pair_hotspot"].detach().float()
+        edge_counts = base_mask[:, :cloud_idx].float().sum(dim=1)
+        feasible_counts = static_allowed[:, :cloud_idx].float().sum(dim=1)
+
+        candidates: List[Tuple[float, int, int, int]] = []
+        if operation == "safe_add":
+            for service_idx in range(base_mask.size(0)):
+                feasible_target = min(2.0, float(feasible_counts[service_idx].item()))
+                current_edges = float(edge_counts[service_idx].item())
+                if current_edges >= feasible_target or feasible_target <= 0.0:
+                    continue
+                if current_edges > 0.0 and float(service_pressure[service_idx].item()) < 0.40:
+                    continue
+                for device_idx in range(cloud_idx):
+                    if bool(base_mask[service_idx, device_idx].item()):
+                        continue
+                    if not self._deployment_collect_pair_capacity_ok(
+                            base_mask,
+                            service_idx,
+                            device_idx,
+                            logic_feats,
+                            phys_feats,
+                            static_allowed,
+                    ):
+                        continue
+                    score = (
+                        float(quality_matrix[service_idx, device_idx].item())
+                        + 1.5 * float(service_pressure[service_idx].item())
+                        + 0.30 * max(0.0, feasible_target - current_edges)
+                    )
+                    candidates.append((score, service_idx, device_idx, -1))
+            if not candidates:
+                return None, {}
+            _, service_idx, device_idx, _ = max(candidates)
+            raw_mask = base_mask.detach().clone()
+            raw_mask[service_idx, device_idx] = True
+            return raw_mask, {
+                "collect_operation": "safe_add",
+                "collect_selected_service_idx": int(service_idx),
+                "collect_selected_device_idx": int(device_idx),
+                "collect_removed_service_idx": -1,
+                "collect_removed_device_idx": -1,
+            }
+
+        if operation == "safe_swap":
+            for service_idx in range(base_mask.size(0)):
+                for source_device in range(cloud_idx):
+                    if not bool(base_mask[service_idx, source_device].item()):
+                        continue
+                    current_quality = float(quality_matrix[service_idx, source_device].item())
+                    current_pressure = float(pressure_matrix[service_idx, source_device].item())
+                    current_hotspot = float(active_hotspot[service_idx, source_device].item())
+                    current_risk = current_pressure + current_hotspot - 0.25 * current_quality
+                    for target_device in range(cloud_idx):
+                        if target_device == source_device:
+                            continue
+                        if bool(base_mask[service_idx, target_device].item()):
+                            continue
+                        trial_mask = base_mask.detach().clone()
+                        trial_mask[service_idx, source_device] = False
+                        if not self._deployment_collect_pair_capacity_ok(
+                                trial_mask,
+                                service_idx,
+                                target_device,
+                                logic_feats,
+                                phys_feats,
+                                static_allowed,
+                        ):
+                            continue
+                        target_quality = float(quality_matrix[service_idx, target_device].item())
+                        target_pressure = float(pressure_matrix[service_idx, target_device].item())
+                        improvement = target_quality - current_quality + current_risk - target_pressure
+                        if improvement <= 0.0 and current_pressure < 0.10 and current_hotspot < 0.01:
+                            continue
+                        candidates.append((improvement, service_idx, target_device, source_device))
+            if not candidates:
+                return None, {}
+            _, service_idx, target_device, source_device = max(candidates)
+            raw_mask = base_mask.detach().clone()
+            raw_mask[service_idx, source_device] = False
+            raw_mask[service_idx, target_device] = True
+            return raw_mask, {
+                "collect_operation": "safe_swap",
+                "collect_selected_service_idx": int(service_idx),
+                "collect_selected_device_idx": int(target_device),
+                "collect_removed_service_idx": int(service_idx),
+                "collect_removed_device_idx": int(source_device),
+            }
+
+        if operation == "safe_remove":
+            for service_idx in range(base_mask.size(0)):
+                current_edges = int(edge_counts[service_idx].item())
+                if current_edges <= 1 and not self.training_cfg.deployment_collect.allow_remove_last_edge_replica:
+                    continue
+                if float(service_pressure[service_idx].item()) >= 0.60 and current_edges <= 2:
+                    continue
+                for device_idx in range(cloud_idx):
+                    if not bool(base_mask[service_idx, device_idx].item()):
+                        continue
+                    score = (
+                        1.0 - float(service_pressure[service_idx].item())
+                        + float(pressure_matrix[service_idx, device_idx].item())
+                        - 0.20 * float(quality_matrix[service_idx, device_idx].item())
+                    )
+                    candidates.append((score, service_idx, -1, device_idx))
+            if not candidates:
+                return None, {}
+            _, service_idx, _, source_device = max(candidates)
+            raw_mask = base_mask.detach().clone()
+            raw_mask[service_idx, source_device] = False
+            raw_mask[:, cloud_idx] = True
+            return raw_mask, {
+                "collect_operation": "safe_remove",
+                "collect_selected_service_idx": -1,
+                "collect_selected_device_idx": -1,
+                "collect_removed_service_idx": int(service_idx),
+                "collect_removed_device_idx": int(source_device),
+            }
+
+        return None, {}
+
+    def _deployment_collect_pair_capacity_ok(
+            self,
+            base_mask: torch.Tensor,
+            service_idx: int,
+            device_idx: int,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            static_allowed: torch.Tensor,
+    ) -> bool:
+        cloud_idx = self.physical_topology.cloud_idx
+        if device_idx < 0 or device_idx >= cloud_idx:
+            return False
+        if not bool(static_allowed[service_idx, device_idx].item()):
+            return False
+
+        candidate = base_mask.detach().clone().bool()
+        candidate[service_idx, device_idx] = True
+        model_mem = logic_feats["model_mem"].float().to(candidate.device)
+        residual = self.deployment_agent._initial_residual_mem(
+            phys_feats,
+            logic_feats,
+            None,
+        ).to(candidate.device).float()
+        max_edge_replicas = self.deployment_agent._max_edge_replicas_per_device()
+
+        selected = candidate[:, device_idx].bool()
+        if max_edge_replicas is not None and int(selected.sum().item()) > int(max_edge_replicas):
+            return False
+        used_mem = float(model_mem[selected].sum().item()) if selected.any() else 0.0
+        return used_mem <= float(residual[device_idx].item()) + 1e-6
+
+    def _deployment_collect_pair_pressure_matrix(
+            self,
+            logic_feats: Dict[str, torch.Tensor],
+            static_allowed: torch.Tensor,
+            device: torch.device,
+    ) -> torch.Tensor:
+        num_services, num_devices = static_allowed.shape
+        dtype = torch.float32
+        queue_normalizer = max(1e-6, float(self.deployment_agent_params.get("queue_normalizer", 8.0)))
+        pressure = torch.zeros((num_services, num_devices), dtype=dtype, device=device)
+
+        runtime_feat = logic_feats.get("runtime_pair_feat")
+        if isinstance(runtime_feat, torch.Tensor) and runtime_feat.dim() == 3 and runtime_feat.size(-1) >= 6:
+            runtime_feat = runtime_feat.to(device=device, dtype=dtype)
+            runtime_queue = (
+                runtime_feat[..., 0].clamp_min(0.0)
+                + 0.5 * runtime_feat[..., 1].clamp_min(0.0)
+            ) * torch.maximum(runtime_feat[..., 5].clamp(0.0, 1.0), torch.full_like(runtime_feat[..., 5], 0.25))
+            pressure = torch.maximum(pressure, (runtime_queue / queue_normalizer).clamp(0.0, 1.0))
+
+        guard_pressure = torch.zeros_like(pressure)
+        now = time.monotonic()
+        with self._latency_guard_lock:
+            observations = copy.deepcopy(getattr(self, "_latency_guard_queue_observations", {}))
+        for device_name, record in observations.items():
+            if not isinstance(record, dict):
+                continue
+            try:
+                ts = float(record.get("ts", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if now - ts > self.latency_guard_cfg.queue_recovery_stale_timeout_s:
+                continue
+            values = record.get("values") or {}
+            if not isinstance(values, dict):
+                continue
+            try:
+                device_idx = self.physical_topology.index(str(device_name))
+            except ValueError:
+                continue
+            if device_idx < 0 or device_idx >= num_devices:
+                continue
+            for service_name, value in values.items():
+                try:
+                    service_idx = self.logical_topology.index(str(service_name))
+                    queue_length = max(0.0, float(value))
+                except (TypeError, ValueError):
+                    continue
+                if service_idx < 0 or service_idx >= num_services:
+                    continue
+                guard_pressure[service_idx, device_idx] = max(
+                    float(guard_pressure[service_idx, device_idx].item()),
+                    min(queue_length / queue_normalizer, 1.0),
+                )
+
+        pressure = torch.maximum(pressure, guard_pressure)
+        pressure = torch.where(static_allowed.to(device=device).bool(), pressure, torch.zeros_like(pressure))
+        return pressure
+
+    def _deployment_collect_pair_quality_matrix(
+            self,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            static_allowed: torch.Tensor,
+            pressure_matrix: torch.Tensor,
+    ) -> torch.Tensor:
+        num_services, num_devices = static_allowed.shape
+        device = pressure_matrix.device
+        dtype = torch.float32
+        cloud_idx = self.physical_topology.cloud_idx
+        device_cap = phys_feats.get("device_capability_feat")
+        if isinstance(device_cap, torch.Tensor) and device_cap.dim() == 2 and device_cap.size(0) == num_devices \
+                and device_cap.size(1) >= 3:
+            relative_compute = device_cap[:, 2].to(device=device, dtype=dtype)
+        else:
+            gpu_flops = phys_feats.get("gpu_flops")
+            if isinstance(gpu_flops, torch.Tensor) and gpu_flops.numel() == num_devices:
+                gpu_flops = gpu_flops.to(device=device, dtype=dtype)
+                relative_compute = gpu_flops / gpu_flops.max().clamp_min(1e-6)
+            else:
+                relative_compute = torch.zeros((num_devices,), device=device, dtype=dtype)
+
+        runtime_feat = logic_feats.get("runtime_pair_feat")
+        runtime_conf = torch.zeros((num_services, num_devices), device=device, dtype=dtype)
+        runtime_time_norm = torch.zeros_like(runtime_conf)
+        if isinstance(runtime_feat, torch.Tensor) and runtime_feat.dim() == 3 and runtime_feat.size(-1) >= 6:
+            runtime_feat = runtime_feat.to(device=device, dtype=dtype)
+            runtime_conf = (
+                runtime_feat[..., 3].clamp(0.0, 1.0)
+                * runtime_feat[..., 4].clamp(0.0, 1.0)
+            )
+            runtime_time = runtime_feat[..., 2].clamp_min(0.0)
+            valid_time = runtime_time.masked_select(static_allowed.to(device=device).bool())
+            if valid_time.numel() > 0:
+                runtime_time_norm = runtime_time / valid_time.max().clamp_min(1e-6)
+
+        quality = (
+            relative_compute.view(1, num_devices).expand(num_services, -1)
+            + 0.25 * runtime_conf
+            - 0.75 * pressure_matrix
+            - 0.20 * runtime_time_norm
+        )
+        quality = torch.where(
+            static_allowed.to(device=device).bool(),
+            quality,
+            torch.full_like(quality, -1e6),
+        )
+        if 0 <= cloud_idx < num_devices:
+            quality[:, cloud_idx] = -1e6
+        return quality
+
+    def _deployment_collect_candidate_risk(
+            self,
+            logic_edge_index: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            static_allowed: torch.Tensor,
+            base_mask: torch.Tensor,
+            raw_mask: torch.Tensor,
+            deploy_mask: torch.Tensor,
+            capacity_relax_cost: float,
+            edge_cover_unmet: int,
+    ) -> Dict[str, Any]:
+        cfg = self.training_cfg.deployment_collect
+        cloud_idx = self.physical_topology.cloud_idx
+        pressure_matrix = self._deployment_collect_pair_pressure_matrix(
+            logic_feats,
+            static_allowed,
+            deploy_mask.device,
+        )
+        selected_edge = deploy_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros(
+            (deploy_mask.size(0), 0),
+            dtype=torch.bool,
+            device=deploy_mask.device,
+        )
+        edge_pressure = pressure_matrix[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(selected_edge.float())
+        masked_pressure = torch.where(selected_edge, edge_pressure, torch.zeros_like(edge_pressure))
+        service_queue_pressure = masked_pressure.max(dim=1).values if masked_pressure.numel() else torch.zeros(
+            (deploy_mask.size(0),),
+            device=deploy_mask.device,
+        )
+        candidate_queue_pressure = float(service_queue_pressure.max().detach().cpu().item()) \
+            if service_queue_pressure.numel() else 0.0
+
+        pair_ctx = self.deployment_agent._deployment_pair_context(
+            logic_edge_index,
+            logic_feats,
+            static_allowed,
+            deploy_mask=deploy_mask,
+        )
+        active_hotspot = pair_ctx["active_pair_hotspot"].to(device=deploy_mask.device).float()
+        edge_hotspot = active_hotspot[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
+        service_hotspot = edge_hotspot.max(dim=1).values if edge_hotspot.numel() else torch.zeros(
+            (deploy_mask.size(0),),
+            device=deploy_mask.device,
+        )
+        candidate_hotspot = float(service_hotspot.max().detach().cpu().item()) if service_hotspot.numel() else 0.0
+
+        raw_edge = raw_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
+        base_edge = base_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
+        exec_edge = deploy_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
+        raw_change_count = int(torch.logical_xor(raw_edge, base_edge).sum().item()) if raw_edge.numel() else 0
+        exec_change_count = int(torch.logical_xor(exec_edge, base_edge).sum().item()) if exec_edge.numel() else 0
+
+        feasible_edge = static_allowed[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
+        raw_removed_last = False
+        if feasible_edge.numel():
+            base_counts = base_edge.float().sum(dim=1)
+            raw_counts = raw_edge.float().sum(dim=1)
+            feasible_counts = feasible_edge.float().sum(dim=1)
+            raw_removed_last = bool(((base_counts > 0.0) & (raw_counts <= 0.0) & (feasible_counts > 0.0)).any().item())
+
+        reasons = []
+        if edge_cover_unmet > 0:
+            reasons.append("edge_cover_unmet")
+        if capacity_relax_cost > cfg.max_capacity_relax_cost:
+            reasons.append("capacity_relax")
+        if candidate_queue_pressure > cfg.max_queue_pressure:
+            reasons.append("queue_pressure")
+        if candidate_hotspot > cfg.max_hotspot_cost:
+            reasons.append("hotspot")
+        if raw_removed_last and not cfg.allow_remove_last_edge_replica:
+            reasons.append("removed_last_edge")
+        raw_change_limit = max(1, cfg.max_perturb_flips) * 2
+        if raw_change_count > raw_change_limit:
+            reasons.append("too_many_raw_changes")
+
+        normalized_risks = [
+            capacity_relax_cost / max(cfg.max_capacity_relax_cost, 1e-6),
+            candidate_queue_pressure / max(cfg.max_queue_pressure, 1e-6),
+            candidate_hotspot / max(cfg.max_hotspot_cost, 1e-6),
+            1.0 if edge_cover_unmet > 0 else 0.0,
+            1.0 if raw_removed_last and not cfg.allow_remove_last_edge_replica else 0.0,
+            1.0 if raw_change_count > raw_change_limit else 0.5 * raw_change_count / float(raw_change_limit),
+        ]
+        return {
+            "collect_candidate_queue_pressure": candidate_queue_pressure,
+            "collect_candidate_hotspot_cost": candidate_hotspot,
+            "collect_predicted_risk": float(max(normalized_risks)),
+            "collect_raw_change_count": raw_change_count,
+            "collect_exec_change_count": exec_change_count,
+            "collect_removed_last_edge": int(raw_removed_last),
+            "collect_reject_reason": ",".join(reasons),
+            "collect_candidate_queue_pressure_by_service": service_queue_pressure.detach().cpu(),
+            "collect_candidate_hotspot_by_service": service_hotspot.detach().cpu(),
+        }
+
+    @staticmethod
+    def _deployment_collect_candidate_accepted(collect_debug: Dict[str, Any]) -> Tuple[bool, str]:
+        reason = str(collect_debug.get("collect_reject_reason", "") or "")
+        if reason:
+            return False, reason
+        return True, ""
+
+    def _deployment_collect_quality_bucket(self, metrics: Dict[str, Any], feedback_result) -> str:
+        guard_interrupted = bool(getattr(feedback_result, "guard_interrupted", False)) \
+            or bool(metrics.get("feedback_guard_interrupted", False))
+        slo_violation = float(metrics.get("e2e_slo_violation", 0.0) or 0.0)
+        p95 = float(metrics.get("e2e_latency_p95", 0.0) or 0.0)
+        max_queue = float(metrics.get("latency_guard_max_queue", 0.0) or 0.0)
+        if guard_interrupted or slo_violation >= 0.80 or p95 >= 12.0 or max_queue >= 16.0:
+            return "bad"
+        if slo_violation <= 0.40 and p95 <= 6.0:
+            return "good"
+        return "mid"
+
+    def _update_deployment_collect_quality(self, quality_bucket: str) -> None:
+        if quality_bucket == "bad":
+            self._deployment_collect_bad_streak += 1
+            self._deployment_collect_bad_count += 1
+        else:
+            self._deployment_collect_bad_streak = 0
+            if quality_bucket == "good":
+                self._deployment_collect_good_count += 1
+        self._deployment_collect_last_quality = str(quality_bucket)
 
     def _sleep_until_next_tick(self, last_tick: float, interval_s: float) -> float:
         """Sleep long enough to preserve the target loop cadence."""
@@ -5477,7 +6129,15 @@ class Hedger:
                                 "edge_cover_repair_cnt", "edge_cover_repair_cost", "edge_cover_unmet",
                                 "hotspot_repair_cnt", "hotspot_repair_cost", "hotspot_unmet",
                                 "policy_logp", "policy_entropy", "value_estimate", "next_value",
-                                "behavior_kind", "deployment_rollout_deterministic",
+                                "behavior_kind",
+                                "collect_behavior", "collect_operation", "collect_attempts",
+                                "collect_reject_cnt", "collect_reject_reasons",
+                                "collect_reset_triggered", "collect_bad_streak",
+                                "collect_quality_bucket", "collect_anchor_used",
+                                "collect_predicted_risk", "collect_candidate_queue_pressure",
+                                "collect_candidate_hotspot_cost", "collect_raw_change_count",
+                                "collect_exec_change_count",
+                                "deployment_rollout_deterministic",
                                 "raw_edge_replicas", "edge_replicas", "cloud_replicas",
                                 "cloud_only", "cloud_only_ratio",
                                 "empty_edge_devices", "empty_edge_device_ratio",
@@ -5684,6 +6344,13 @@ class Hedger:
                     phys_feats = new_phys_feats
                     prev_deploy_mask = self._current_deploy_mask()
                     continue
+                collect_quality_bucket = self._deployment_collect_quality_bucket(metrics, feedback_result)
+                if self.stage_cfg.deployment_train_mode == "collect":
+                    self._update_deployment_collect_quality(collect_quality_bucket)
+                aux["collect_quality_bucket"] = collect_quality_bucket
+                aux["collect_bad_streak"] = int(self._deployment_collect_bad_streak)
+                aux["collect_good_count"] = int(self._deployment_collect_good_count)
+                aux["collect_bad_count"] = int(self._deployment_collect_bad_count)
 
                 # Keep transition payloads on CPU to avoid cross-thread device issues.
                 # Offline/online deployment learning is trained on the executed
@@ -5722,6 +6389,22 @@ class Hedger:
                     "metrics": dict(metrics),
                     "capacity_relax_cnt": int(aux["capacity_relax_cnt"]),
                     "edge_cover_repair_cnt": int(aux.get("edge_cover_repair_cnt", 0)),
+                    "collect_behavior": str(aux.get("collect_behavior", aux.get("behavior_kind", ""))),
+                    "collect_operation": str(aux.get("collect_operation", aux.get("behavior_kind", ""))),
+                    "collect_quality_bucket": str(aux.get("collect_quality_bucket", "")),
+                    "collect_predicted_risk": float(aux.get("collect_predicted_risk", 0.0)),
+                    "collect_reject_cnt": int(aux.get("collect_reject_cnt", 0)),
+                    "collect_reset_triggered": int(aux.get("collect_reset_triggered", 0)),
+                    "collect_anchor_used": int(aux.get("collect_anchor_used", 0)),
+                    "collect_bad_streak": int(aux.get("collect_bad_streak", 0)),
+                    "collect_candidate_queue_pressure": float(
+                        aux.get("collect_candidate_queue_pressure", 0.0)
+                    ),
+                    "collect_candidate_hotspot_cost": float(
+                        aux.get("collect_candidate_hotspot_cost", 0.0)
+                    ),
+                    "collect_raw_change_count": int(aux.get("collect_raw_change_count", 0)),
+                    "collect_exec_change_count": int(aux.get("collect_exec_change_count", 0)),
                     "deployment_rollout_deterministic": bool(
                         self.training_cfg.deployment_rollout_deterministic
                     ),
@@ -5816,6 +6499,20 @@ class Hedger:
                     value_estimate=float(value.detach().cpu().item()),
                     next_value=float(next_value),
                     behavior_kind=aux.get("behavior_kind", "actor"),
+                    collect_behavior=aux.get("collect_behavior", aux.get("behavior_kind", "")),
+                    collect_operation=aux.get("collect_operation", aux.get("behavior_kind", "")),
+                    collect_attempts=aux.get("collect_attempts", 1),
+                    collect_reject_cnt=aux.get("collect_reject_cnt", 0),
+                    collect_reject_reasons=aux.get("collect_reject_reasons", ""),
+                    collect_reset_triggered=aux.get("collect_reset_triggered", 0),
+                    collect_bad_streak=aux.get("collect_bad_streak", 0),
+                    collect_quality_bucket=aux.get("collect_quality_bucket", ""),
+                    collect_anchor_used=aux.get("collect_anchor_used", 0),
+                    collect_predicted_risk=aux.get("collect_predicted_risk", 0.0),
+                    collect_candidate_queue_pressure=aux.get("collect_candidate_queue_pressure", 0.0),
+                    collect_candidate_hotspot_cost=aux.get("collect_candidate_hotspot_cost", 0.0),
+                    collect_raw_change_count=aux.get("collect_raw_change_count", 0),
+                    collect_exec_change_count=aux.get("collect_exec_change_count", 0),
                     deployment_rollout_deterministic=int(
                         bool(self.training_cfg.deployment_rollout_deterministic)
                     ),
@@ -5865,6 +6562,7 @@ class Hedger:
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,
                     actor_debug=aux.get("actor_debug"),
+                    collect_debug=aux,
                     policy_deterministic=self.training_cfg.deployment_rollout_deterministic,
                 )
                 LOGGER.debug(

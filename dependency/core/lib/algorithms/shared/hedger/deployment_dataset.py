@@ -121,6 +121,9 @@ def _sample_from_bucket(bucket: List[dict], count: int) -> List[dict]:
 def _is_bad_transition(transition: dict) -> bool:
     if not isinstance(transition, dict):
         return False
+    quality_bucket = str(transition.get("collect_quality_bucket", "") or "").strip().lower()
+    if quality_bucket == "bad":
+        return True
     metrics = transition.get("metrics") or {}
     reward_breakdown = transition.get("reward_breakdown") or {}
 
@@ -129,13 +132,20 @@ def _is_bad_transition(transition: dict) -> bool:
             or _truthy(metrics.get("feedback_guard_interrupted"))
     ):
         return True
-    if _as_float(metrics.get("e2e_slo_violation"), 0.0) >= 0.5:
+    if _as_float(metrics.get("e2e_slo_violation"), 0.0) >= 0.8:
+        return True
+    if _as_float(metrics.get("e2e_latency_p95"), 0.0) >= 12.0:
+        return True
+    if _as_float(metrics.get("latency_guard_max_queue"), 0.0) >= 16.0:
+        return True
+    if _as_float(transition.get("collect_candidate_queue_pressure"), 0.0) >= 0.65:
         return True
     hotspot_cost = max(
         _as_float(reward_breakdown.get("active_pair_hotspot_cost"), 0.0),
         _as_float(reward_breakdown.get("executed_active_pair_hotspot_cost"), 0.0),
+        _as_float(transition.get("collect_candidate_hotspot_cost"), 0.0),
     )
-    if hotspot_cost >= 0.15:
+    if hotspot_cost >= 0.08:
         return True
     return False
 
