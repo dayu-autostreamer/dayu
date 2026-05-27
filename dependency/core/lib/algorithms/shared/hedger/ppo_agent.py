@@ -1007,9 +1007,11 @@ class _DeploymentBackbonePPO(nn.Module):
         keep_logits = torch.where(invalid, torch.full_like(keep_logits, -20.0), keep_logits)
         remove_logits = torch.where(invalid, torch.full_like(remove_logits, 20.0), remove_logits)
         if cloud_idx >= 0:
-            add_logits[:, cloud_idx] = 20.0
-            keep_logits[:, cloud_idx] = 20.0
-            remove_logits[:, cloud_idx] = -20.0
+            device_ids = torch.arange(static_allowed.size(1), device=h_s.device)
+            cloud_mask = device_ids.view(1, -1).eq(cloud_idx).expand_as(static_allowed)
+            add_logits = torch.where(cloud_mask, torch.full_like(add_logits, 20.0), add_logits)
+            keep_logits = torch.where(cloud_mask, torch.full_like(keep_logits, 20.0), keep_logits)
+            remove_logits = torch.where(cloud_mask, torch.full_like(remove_logits, -20.0), remove_logits)
         safety_prior = torch.zeros_like(add_logits)
         pair_ctx.update(delta_ctx)
         pair_ctx["base_score"] = qk_feature
@@ -1084,7 +1086,7 @@ class _DeploymentBackbonePPO(nn.Module):
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         num_services, num_devices = add_logits.shape
         cloud_idx = self._cloud_index(num_devices)
-        edge_allowed = static_allowed.to(device=add_logits.device).bool()
+        edge_allowed = static_allowed.to(device=add_logits.device).bool().clone()
         if cloud_idx >= 0:
             edge_allowed[:, cloud_idx] = False
         if prev_deploy_mask is None:
@@ -1137,7 +1139,7 @@ class _DeploymentBackbonePPO(nn.Module):
         cloud_idx = self._cloud_index(num_devices)
         if topo_order is None:
             topo_order = list(range(num_services))
-        edge_allowed = static_allowed.to(device=add_logits.device).bool()
+        edge_allowed = static_allowed.to(device=add_logits.device).bool().clone()
         if cloud_idx >= 0:
             edge_allowed[:, cloud_idx] = False
         target_edge = target_mask.to(device=add_logits.device).bool() & edge_allowed
@@ -1500,7 +1502,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             delta_debug["add_prob"],
         ).float()
         if cloud_idx >= 0:
-            raw_probs[:, cloud_idx] = 1.0
+            device_ids = torch.arange(Np, device=h_s.device)
+            cloud_mask = device_ids.view(1, -1).eq(cloud_idx).expand_as(raw_probs)
+            raw_probs = torch.where(cloud_mask, torch.ones_like(raw_probs), raw_probs)
         (
             deploy_mask,
             capacity_relax_cnt,
@@ -1726,9 +1730,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         add_prob = torch.where(static_allowed, torch.sigmoid(add_logits), torch.zeros_like(add_logits)).float()
         keep_prob = torch.where(static_allowed, torch.sigmoid(keep_logits), torch.zeros_like(keep_logits)).float()
         remove_prob = torch.where(static_allowed, torch.sigmoid(remove_logits), torch.ones_like(remove_logits)).float()
-        add_prob[:, cloud_idx] = 1.0
-        keep_prob[:, cloud_idx] = 1.0
-        remove_prob[:, cloud_idx] = 0.0
+        if cloud_idx >= 0:
+            device_ids = torch.arange(Np, device=h_s.device)
+            cloud_mask = device_ids.view(1, -1).eq(cloud_idx).expand_as(static_allowed)
+            add_prob = torch.where(cloud_mask, torch.ones_like(add_prob), add_prob)
+            keep_prob = torch.where(cloud_mask, torch.ones_like(keep_prob), keep_prob)
+            remove_prob = torch.where(cloud_mask, torch.zeros_like(remove_prob), remove_prob)
         logp_sum, ent_sum, positive_logp, negative_logp, positive_mask_t, negative_mask_t = (
             self._deployment_delta_logp_entropy(
                 add_logits,
@@ -2049,7 +2056,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     )
                 else:
                     low_conf_positive_mask = torch.zeros_like(positive_mask)
-            _logp, ent, value, policy_aux = self.evaluate(
+            _logp, ent, _actor_value, policy_aux = self.evaluate(
                 logic_edge_index,
                 logic_feats,
                 phys_edge_index,
@@ -2060,6 +2067,16 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 return_policy=True,
                 positive_mask=positive_mask,
                 negative_mask=negative_mask,
+            )
+            _, _, critic_value = self.evaluate(
+                logic_edge_index,
+                logic_feats,
+                phys_edge_index,
+                phys_feats,
+                deploy_mask,
+                prev_deploy_mask=prev_deploy_mask,
+                topo_order=tr.get("topo_order"),
+                return_policy=False,
             )
             raw_removed_mask = raw_removed_mask.to(device=policy_aux["policy_prob"].device).bool()
             raw_removed_probs = policy_aux["policy_prob"].clamp(1e-6, 1.0 - 1e-6)
@@ -2085,7 +2102,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                         )
                     )
             targets.append(reward + self.gamma * next_value * (0.0 if done else 1.0))
-            values.append(value.squeeze())
+            values.append(critic_value.squeeze())
             positive_logps.append(policy_aux["positive_logp"])
             negative_logps.append(policy_aux["negative_logp"])
             raw_removed_logps.append(raw_removed_logp)
@@ -2136,11 +2153,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         actor_objective_loss = actor_loss + negative_loss + raw_removed_negative_loss - float(entropy_coef) * entropy
 
         # Keep the deployment actor update behavior-cloning/AWAC driven.
-        # The critic is fit in a separate step so value gradients do not move
-        # the Bernoulli deployment policy through shared candidate features.
+        # Actor and critic use separate forward graphs so optimizer steps cannot
+        # invalidate masks or tensors saved for the other backward pass.
         self.actor_opt.zero_grad()
         self.critic_opt.zero_grad()
-        critic_loss.backward(retain_graph=True)
+        critic_loss.backward()
         critic_grad_norm = _parameters_grad_norm(self.critic.parameters())
         self.critic_opt.step()
 
