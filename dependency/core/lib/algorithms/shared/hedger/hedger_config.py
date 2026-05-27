@@ -22,44 +22,15 @@ class DeploymentConstraintCfg:
     # Fraction of computed available edge memory used as deployment budget.
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
     edge_memory_budget_ratio: float = 1.0
-    # Pair-centric hotspot handling. Deployment keeps generic edge coverage,
-    # and uses safety-aware Bernoulli decoding to avoid cloud-only or singleton
-    # hotspot placements when feasible edge replicas exist.
+    # Delta-Bernoulli deployment policy. The actor edits the current deployment
+    # mask with add/keep/remove decisions instead of regenerating a full mask.
     queue_normalizer: float = 8.0
-    decode_edge_threshold: float = 0.50
-    decode_safety_logit_scale: float = 1.5
-    decode_negative_queue_threshold: float = 0.65
-    decode_negative_hotspot_threshold: float = 0.08
-    effective_quality_floor: float = -0.10
-    effective_quality_temperature: float = 0.25
-    effective_freedom_scale: float = 1.0
-    effective_coverage_gain_threshold: float = -0.10
-    effective_marginal_gain_threshold: float = 0.05
-    effective_keep_gain_threshold: float = -0.20
-    effective_raw_keep_bonus: float = 0.15
-    effective_inertia_bonus: float = 0.15
-    effective_min_confidence_for_effective: float = 0.25
-    effective_runtime_unknown_penalty: float = 0.80
-    effective_runtime_stale_penalty: float = 0.45
-    effective_weak_runtime_penalty: float = 0.75
-    effective_queue_risk_weight: float = 1.0
-    effective_memory_risk_weight: float = 0.50
-    effective_device_load_risk_weight: float = 0.35
-    effective_hotspot_risk_weight: float = 1.0
-    effective_recovery_quality_floor: float = -0.60
-    effective_coverage_recovery_threshold: float = -0.80
-    effective_low_confidence_positive_weight: float = 0.35
-    effective_capability_confidence_floor: float = 0.08
-    effective_unknown_recovery_penalty: float = 0.20
-    effective_stale_recovery_penalty: float = 0.15
-    safety_queue_weight: float = 1.0
-    safety_runtime_weight: float = 1.4
-    safety_compute_weight: float = 0.20
-    safety_confidence_weight: float = 0.20
-    safety_memory_weight: float = 0.45
-    safety_device_load_weight: float = 0.35
-    safety_inertia_weight: float = 0.05
-    safety_hotspot_weight: float = 1.0
+    delta_add_threshold: float = 0.55
+    delta_keep_threshold: float = 0.30
+    delta_remove_threshold: float = 0.60
+    delta_change_logit_bias: float = -0.20
+    delta_negative_queue_threshold: float = 0.65
+    delta_negative_hotspot_threshold: float = 0.08
 
 
 class PhysicalTopology:
