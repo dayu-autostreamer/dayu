@@ -1029,6 +1029,9 @@ class Hedger:
         decode_safety = bernoulli_decode.get("safety") or {}
         if not isinstance(decode_safety, dict):
             raise ValueError("Hedger config `agents.deployment.bernoulli_decode.safety` must be a mapping when provided.")
+        effective_option = deployment.get("effective_option") or {}
+        if not isinstance(effective_option, dict):
+            raise ValueError("Hedger config `agents.deployment.effective_option` must be a mapping when provided.")
         max_edge_replicas = constraints.get("max_edge_replicas_per_device")
         if max_edge_replicas is not None:
             max_edge_replicas = int(max_edge_replicas)
@@ -1050,11 +1053,6 @@ class Hedger:
                 raise ValueError(f"Hedger config `agents.deployment.bernoulli_decode.{name}` must be finite.")
             return value
 
-        decode_coverage_gain_threshold = _decode_float("coverage_gain_threshold", -0.05)
-        decode_prune_gain_threshold = _decode_float("prune_gain_threshold", -0.10)
-        decode_add_gain_threshold = _decode_float("add_gain_threshold", 0.15)
-        decode_redundancy_pressure_scale = max(0.0, _decode_float("redundancy_pressure_scale", 1.0))
-        decode_redundancy_decay = max(0.0, _decode_float("redundancy_decay", 0.70))
         decode_safety_logit_scale = max(0.0, _decode_float("safety_logit_scale", 1.5))
         decode_negative_queue_threshold = float(bernoulli_decode.get("negative_queue_threshold", 0.65))
         if not math.isfinite(decode_negative_queue_threshold) or not (0.0 <= decode_negative_queue_threshold <= 1.0):
@@ -1071,6 +1069,16 @@ class Hedger:
             value = float(decode_safety.get(name, default))
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"Hedger config `agents.deployment.bernoulli_decode.safety.{name}` must be >= 0.")
+            return value
+
+        def _effective_float(name: str, default: float, *, min_value: Optional[float] = None) -> float:
+            value = float(effective_option.get(name, default))
+            if not math.isfinite(value):
+                raise ValueError(f"Hedger config `agents.deployment.effective_option.{name}` must be finite.")
+            if min_value is not None and value < min_value:
+                raise ValueError(
+                    f"Hedger config `agents.deployment.effective_option.{name}` must be >= {min_value}."
+                )
             return value
 
         dep_latency_cfg = self._parse_latency_reward_cfg(
@@ -1099,18 +1107,35 @@ class Hedger:
             "penalty_latency_guard_trigger": float(penalty.get("latency_guard_trigger", 0.0)),
             "penalty_feedback_timeout": float(penalty.get("feedback_timeout", 0.0)),
             "reward_dep_hotspot_weight": float(hotspot.get("hotspot_weight", 0.0)),
+            "reward_dep_effective_freedom_weight": float(reward.get("effective_freedom_weight", 0.0)),
+            "reward_dep_weak_option_weight": float(reward.get("weak_option_weight", 0.0)),
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
             "queue_normalizer": queue_normalizer,
             "decode_edge_threshold": decode_edge_threshold,
-            "decode_coverage_gain_threshold": decode_coverage_gain_threshold,
-            "decode_prune_gain_threshold": decode_prune_gain_threshold,
-            "decode_add_gain_threshold": decode_add_gain_threshold,
-            "decode_redundancy_pressure_scale": decode_redundancy_pressure_scale,
-            "decode_redundancy_decay": decode_redundancy_decay,
             "decode_safety_logit_scale": decode_safety_logit_scale,
             "decode_negative_queue_threshold": decode_negative_queue_threshold,
             "decode_negative_hotspot_threshold": decode_negative_hotspot_threshold,
+            "effective_quality_floor": _effective_float("quality_floor", -0.10),
+            "effective_quality_temperature": _effective_float("quality_temperature", 0.25, min_value=1e-6),
+            "effective_freedom_scale": _effective_float("freedom_scale", 1.0, min_value=0.0),
+            "effective_coverage_gain_threshold": _effective_float("coverage_gain_threshold", -0.10),
+            "effective_marginal_gain_threshold": _effective_float("marginal_gain_threshold", 0.05),
+            "effective_keep_gain_threshold": _effective_float("keep_gain_threshold", -0.20),
+            "effective_raw_keep_bonus": _effective_float("raw_keep_bonus", 0.15, min_value=0.0),
+            "effective_inertia_bonus": _effective_float("inertia_bonus", 0.15, min_value=0.0),
+            "effective_min_confidence_for_effective": _effective_float(
+                "min_confidence_for_effective",
+                0.25,
+                min_value=0.0,
+            ),
+            "effective_runtime_unknown_penalty": _effective_float("runtime_unknown_penalty", 0.80, min_value=0.0),
+            "effective_runtime_stale_penalty": _effective_float("runtime_stale_penalty", 0.45, min_value=0.0),
+            "effective_weak_runtime_penalty": _effective_float("weak_runtime_penalty", 0.75, min_value=0.0),
+            "effective_queue_risk_weight": _effective_float("queue_risk_weight", 1.0, min_value=0.0),
+            "effective_memory_risk_weight": _effective_float("memory_risk_weight", 0.50, min_value=0.0),
+            "effective_device_load_risk_weight": _effective_float("device_load_risk_weight", 0.35, min_value=0.0),
+            "effective_hotspot_risk_weight": _effective_float("hotspot_risk_weight", 1.0, min_value=0.0),
             "safety_queue_weight": _safety_weight("queue_weight", 1.0),
             "safety_runtime_weight": _safety_weight("runtime_weight", 1.4),
             "safety_compute_weight": _safety_weight("compute_weight", 0.20),
@@ -2093,8 +2118,8 @@ class Hedger:
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"hotspot_weight={dep_params.get('reward_dep_hotspot_weight', 'na')}, "
             f"decode_edge_threshold={dep_params.get('decode_edge_threshold', 'na')}, "
-            f"decode_add_gain_threshold={dep_params.get('decode_add_gain_threshold', 'na')}, "
-            f"decode_prune_gain_threshold={dep_params.get('decode_prune_gain_threshold', 'na')}, "
+            f"effective_quality_floor={dep_params.get('effective_quality_floor', 'na')}, "
+            f"effective_freedom_scale={dep_params.get('effective_freedom_scale', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -2691,6 +2716,7 @@ class Hedger:
             "dep_offload_term", "dep_latency_term", "dep_slo_term", "dep_change_term",
             "dep_cloud_only_term", "dep_capacity_relax_term", "dep_edge_cover_repair_term",
             "dep_hotspot_term",
+            "dep_effective_freedom_term", "dep_weak_option_term",
             "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
             "active_pair_hotspot_cost", "executed_active_pair_hotspot_cost",
             "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
@@ -2711,7 +2737,10 @@ class Hedger:
             "value_estimate", "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
             "raw_zero_edge_services", "decoded_zero_edge_services",
             "decode_added_cnt", "decode_marginal_add_cnt", "decode_pruned_cnt",
-            "decode_overselected_services", "capacity_removed_cnt",
+            "decode_effective_added_cnt", "decode_low_quality_pruned_cnt",
+            "decode_overselected_services", "capacity_removed_cnt", "projection_effective_removed_cnt",
+            "effective_edge_options_mean", "effective_edge_options_min", "desired_option_mass_mean",
+            "option_shortage_cost", "selected_weak_option_cost", "selected_unknown_option_cost",
             "cloud_only", "cloud_only_ratio", "empty_edge_devices", "empty_edge_device_ratio",
             "raw_deployment_plan", "deployment_plan", "active_deployment_plan",
             *self._state_record_fieldnames(),
@@ -2721,10 +2750,16 @@ class Hedger:
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "hotspot_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
-            "edge_memory_budget_ratio", "decode_edge_threshold", "decode_coverage_gain_threshold",
-            "decode_prune_gain_threshold", "decode_add_gain_threshold", "decode_redundancy_pressure_scale",
-            "decode_redundancy_decay", "decode_safety_logit_scale",
+            "edge_memory_budget_ratio", "decode_edge_threshold", "decode_safety_logit_scale",
             "decode_negative_queue_threshold", "decode_negative_hotspot_threshold",
+            "effective_quality_floor", "effective_quality_temperature", "effective_freedom_scale",
+            "effective_coverage_gain_threshold", "effective_marginal_gain_threshold",
+            "effective_keep_gain_threshold", "effective_raw_keep_bonus", "effective_inertia_bonus",
+            "effective_min_confidence_for_effective", "effective_runtime_unknown_penalty",
+            "effective_runtime_stale_penalty", "effective_weak_runtime_penalty",
+            "effective_queue_risk_weight", "effective_memory_risk_weight",
+            "effective_device_load_risk_weight", "effective_hotspot_risk_weight",
+            "effective_freedom_weight", "weak_option_weight",
             "queue_normalizer", "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -2801,8 +2836,9 @@ class Hedger:
             "raw_nodes", "executed_nodes", "removed_nodes", "added_nodes",
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
             "raw_zero_edge", "decoded_zero_edge", "decode_added_nodes", "decode_pruned_nodes",
-            "decode_added_reason", "capacity_removed_nodes",
+            "decode_added_reason", "decode_pruned_reason", "capacity_removed_nodes",
             "service_pressure", "edge_feasible_count", "edge_replica_count",
+            "desired_option_mass", "effective_edge_options", "option_shortage",
             "device_replica_count", "active_pair_hotspot",
             "collect_behavior", "collect_operation",
             "collect_selected_service", "collect_selected_device",
@@ -2822,6 +2858,11 @@ class Hedger:
                 "deployment_pair_adjustments", "deployment_base_scores", "deployment_centered_scores",
                 "deployment_final_scores", "deployment_decode_scores", "deployment_decode_marginal_gain",
                 "deployment_safety_prior",
+                "deployment_effective_option_score", "deployment_pair_quality",
+                "deployment_queue_pressure", "deployment_runtime_unknown_risk",
+                "deployment_runtime_stale_risk", "deployment_runtime_relative_weakness",
+                "deployment_desired_option_mass", "deployment_effective_edge_options",
+                "deployment_option_shortage", "deployment_projection_removed_reason",
                 "deployment_policy_probs", "deployment_raw_threshold_nodes",
                 "deployment_decoded_nodes", "deployment_positive_mask", "deployment_negative_mask",
                 "deployment_service_pressure",
@@ -3052,8 +3093,36 @@ class Hedger:
                 capacity_removed_indices = torch.nonzero(capacity_removed_row, as_tuple=False).flatten().tolist()
             else:
                 capacity_removed_indices = []
-            reason_code = int(self._actor_debug_vector_value(actor_debug, "decode_added_reason", service_idx) or 0)
-            reason_name = {1: "coverage_gain", 3: "marginal_gain"}.get(reason_code, "")
+            added_reason_tensor = actor_debug.get("decode_added_reason")
+            if isinstance(added_reason_tensor, torch.Tensor) and added_reason_tensor.dim() == 2 \
+                    and added_reason_tensor.size(0) > service_idx:
+                added_reason_row = added_reason_tensor[service_idx].detach().cpu().long()
+                added_reason_codes = [
+                    int(added_reason_row[idx].item()) for idx in decode_added_indices
+                    if 0 <= idx < added_reason_row.numel()
+                ]
+            else:
+                added_reason_codes = []
+            pruned_reason_tensor = actor_debug.get("decode_pruned_reason")
+            if isinstance(pruned_reason_tensor, torch.Tensor) and pruned_reason_tensor.dim() == 2 \
+                    and pruned_reason_tensor.size(0) > service_idx:
+                pruned_reason_row = pruned_reason_tensor[service_idx].detach().cpu().long()
+                pruned_reason_codes = [
+                    int(pruned_reason_row[idx].item()) for idx in decode_pruned_indices
+                    if 0 <= idx < pruned_reason_row.numel()
+                ]
+            else:
+                pruned_reason_codes = []
+            reason_names = [
+                {1: "coverage_gain", 3: "marginal_gain"}.get(code, "")
+                for code in added_reason_codes
+                if code > 0
+            ]
+            pruned_reason_names = [
+                {1: "low_quality", 2: "risk"}.get(code, "")
+                for code in pruned_reason_codes
+                if code > 0
+            ]
             edge_feasible_count = self._actor_debug_vector_value(actor_debug, "edge_feasible_count", service_idx)
             row = dict(
                 step=step,
@@ -3079,13 +3148,21 @@ class Hedger:
                 decoded_zero_edge=int(decoded_edge_count <= 0 and edge_feasible_count > 0.0),
                 decode_added_nodes=self._json_for_record(self._device_names_from_indices(decode_added_indices)),
                 decode_pruned_nodes=self._json_for_record(self._device_names_from_indices(decode_pruned_indices)),
-                decode_added_reason=reason_name,
+                decode_added_reason=self._json_for_record(reason_names),
+                decode_pruned_reason=self._json_for_record(pruned_reason_names),
                 capacity_removed_nodes=self._json_for_record(
                     self._device_names_from_indices(capacity_removed_indices)
                 ),
                 service_pressure=self._actor_debug_vector_value(actor_debug, "service_pressure", service_idx),
                 edge_feasible_count=edge_feasible_count,
                 edge_replica_count=self._actor_debug_vector_value(actor_debug, "edge_replica_count", service_idx),
+                desired_option_mass=self._actor_debug_vector_value(actor_debug, "desired_option_mass", service_idx),
+                effective_edge_options=self._actor_debug_vector_value(
+                    actor_debug,
+                    "effective_option_count",
+                    service_idx,
+                ),
+                option_shortage=self._actor_debug_vector_value(actor_debug, "option_shortage", service_idx),
                 device_replica_count=self._json_for_record(
                     self._actor_debug_device_vector_map(actor_debug, "device_replica_count")
                 ),
@@ -3170,6 +3247,36 @@ class Hedger:
                     ),
                     "deployment_safety_prior": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "safety_prior", service_idx)
+                    ),
+                    "deployment_effective_option_score": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "effective_option_score", service_idx)
+                    ),
+                    "deployment_pair_quality": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "effective_option_score", service_idx)
+                    ),
+                    "deployment_queue_pressure": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "queue_pressure", service_idx)
+                    ),
+                    "deployment_runtime_unknown_risk": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "runtime_unknown_risk", service_idx)
+                    ),
+                    "deployment_runtime_stale_risk": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "runtime_stale_risk", service_idx)
+                    ),
+                    "deployment_runtime_relative_weakness": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "runtime_relative_weakness", service_idx)
+                    ),
+                    "deployment_desired_option_mass": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "desired_option_mass", service_idx)
+                    ),
+                    "deployment_effective_edge_options": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "effective_option_count", service_idx)
+                    ),
+                    "deployment_option_shortage": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "option_shortage", service_idx)
+                    ),
+                    "deployment_projection_removed_reason": self._json_for_record(
+                        self._device_names_from_indices(capacity_removed_indices)
                     ),
                     "deployment_policy_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "policy_prob", service_idx)
@@ -5767,6 +5874,8 @@ class Hedger:
                         dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                         dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
                         dep_hotspot_term=dep_reward_breakdown["dep_hotspot_term"],
+                        dep_effective_freedom_term=dep_reward_breakdown["dep_effective_freedom_term"],
+                        dep_weak_option_term=dep_reward_breakdown["dep_weak_option_term"],
                         dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
                         dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
                         active_pair_hotspot_cost=dep_reward_breakdown["active_pair_hotspot_cost"],
@@ -5834,9 +5943,18 @@ class Hedger:
                         decoded_zero_edge_services=aux.get("decoded_zero_edge_services", 0),
                         decode_added_cnt=aux.get("decode_added_cnt", 0),
                         decode_marginal_add_cnt=aux.get("decode_marginal_add_cnt", 0),
+                        decode_effective_added_cnt=aux.get("decode_effective_added_cnt", 0),
                         decode_pruned_cnt=aux.get("decode_pruned_cnt", 0),
+                        decode_low_quality_pruned_cnt=aux.get("decode_low_quality_pruned_cnt", 0),
                         decode_overselected_services=aux.get("decode_overselected_services", 0),
                         capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
+                        projection_effective_removed_cnt=aux.get("projection_effective_removed_cnt", 0),
+                        effective_edge_options_mean=aux.get("effective_edge_options_mean", 0.0),
+                        effective_edge_options_min=aux.get("effective_edge_options_min", 0.0),
+                        desired_option_mass_mean=aux.get("desired_option_mass_mean", 0.0),
+                        option_shortage_cost=aux.get("option_shortage_cost", 0.0),
+                        selected_weak_option_cost=aux.get("selected_weak_option_cost", 0.0),
+                        selected_unknown_option_cost=aux.get("selected_unknown_option_cost", 0.0),
                         cloud_only=cloud_only,
                         cloud_only_ratio=cloud_only_ratio,
                         empty_edge_devices=empty_edge_devices,
@@ -5862,20 +5980,41 @@ class Hedger:
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                         edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                         decode_edge_threshold=self.deployment_agent_params["decode_edge_threshold"],
-                        decode_coverage_gain_threshold=(
-                            self.deployment_agent_params["decode_coverage_gain_threshold"]
-                        ),
-                        decode_prune_gain_threshold=self.deployment_agent_params["decode_prune_gain_threshold"],
-                        decode_add_gain_threshold=self.deployment_agent_params["decode_add_gain_threshold"],
-                        decode_redundancy_pressure_scale=(
-                            self.deployment_agent_params["decode_redundancy_pressure_scale"]
-                        ),
-                        decode_redundancy_decay=self.deployment_agent_params["decode_redundancy_decay"],
                         decode_safety_logit_scale=self.deployment_agent_params["decode_safety_logit_scale"],
                         decode_negative_queue_threshold=self.deployment_agent_params["decode_negative_queue_threshold"],
                         decode_negative_hotspot_threshold=(
                             self.deployment_agent_params["decode_negative_hotspot_threshold"]
                         ),
+                        effective_quality_floor=self.deployment_agent_params["effective_quality_floor"],
+                        effective_quality_temperature=self.deployment_agent_params["effective_quality_temperature"],
+                        effective_freedom_scale=self.deployment_agent_params["effective_freedom_scale"],
+                        effective_coverage_gain_threshold=(
+                            self.deployment_agent_params["effective_coverage_gain_threshold"]
+                        ),
+                        effective_marginal_gain_threshold=(
+                            self.deployment_agent_params["effective_marginal_gain_threshold"]
+                        ),
+                        effective_keep_gain_threshold=self.deployment_agent_params["effective_keep_gain_threshold"],
+                        effective_raw_keep_bonus=self.deployment_agent_params["effective_raw_keep_bonus"],
+                        effective_inertia_bonus=self.deployment_agent_params["effective_inertia_bonus"],
+                        effective_min_confidence_for_effective=(
+                            self.deployment_agent_params["effective_min_confidence_for_effective"]
+                        ),
+                        effective_runtime_unknown_penalty=(
+                            self.deployment_agent_params["effective_runtime_unknown_penalty"]
+                        ),
+                        effective_runtime_stale_penalty=(
+                            self.deployment_agent_params["effective_runtime_stale_penalty"]
+                        ),
+                        effective_weak_runtime_penalty=self.deployment_agent_params["effective_weak_runtime_penalty"],
+                        effective_queue_risk_weight=self.deployment_agent_params["effective_queue_risk_weight"],
+                        effective_memory_risk_weight=self.deployment_agent_params["effective_memory_risk_weight"],
+                        effective_device_load_risk_weight=(
+                            self.deployment_agent_params["effective_device_load_risk_weight"]
+                        ),
+                        effective_hotspot_risk_weight=self.deployment_agent_params["effective_hotspot_risk_weight"],
+                        effective_freedom_weight=self.deployment_agent_params["reward_dep_effective_freedom_weight"],
+                        weak_option_weight=self.deployment_agent_params["reward_dep_weak_option_weight"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
@@ -6490,6 +6629,7 @@ class Hedger:
                                 "dep_slo_term", "dep_change_term", "dep_cloud_only_term",
                                 "dep_capacity_relax_term", "dep_edge_cover_repair_term",
                                 "dep_hotspot_term",
+                                "dep_effective_freedom_term", "dep_weak_option_term",
                                 "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
                                 "active_pair_hotspot_cost", "executed_active_pair_hotspot_cost",
                                 "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
@@ -6521,7 +6661,12 @@ class Hedger:
                                 "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
                                 "raw_zero_edge_services", "decoded_zero_edge_services",
                                 "decode_added_cnt", "decode_marginal_add_cnt", "decode_pruned_cnt",
+                                "decode_effective_added_cnt", "decode_low_quality_pruned_cnt",
                                 "decode_overselected_services", "capacity_removed_cnt",
+                                "projection_effective_removed_cnt",
+                                "effective_edge_options_mean", "effective_edge_options_min",
+                                "desired_option_mass_mean", "option_shortage_cost",
+                                "selected_weak_option_cost", "selected_unknown_option_cost",
                                 "cloud_only", "cloud_only_ratio",
                                 "empty_edge_devices", "empty_edge_device_ratio",
                                 "transition_buffer", "dataset_transitions",
@@ -6536,11 +6681,16 @@ class Hedger:
             "hotspot_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
-            "decode_edge_threshold", "decode_coverage_gain_threshold",
-            "decode_prune_gain_threshold", "decode_add_gain_threshold",
-            "decode_redundancy_pressure_scale", "decode_redundancy_decay",
-            "decode_safety_logit_scale", "decode_negative_queue_threshold",
+            "decode_edge_threshold", "decode_safety_logit_scale", "decode_negative_queue_threshold",
             "decode_negative_hotspot_threshold", "queue_normalizer",
+            "effective_quality_floor", "effective_quality_temperature", "effective_freedom_scale",
+            "effective_coverage_gain_threshold", "effective_marginal_gain_threshold",
+            "effective_keep_gain_threshold", "effective_raw_keep_bonus", "effective_inertia_bonus",
+            "effective_min_confidence_for_effective", "effective_runtime_unknown_penalty",
+            "effective_runtime_stale_penalty", "effective_weak_runtime_penalty",
+            "effective_queue_risk_weight", "effective_memory_risk_weight",
+            "effective_device_load_risk_weight", "effective_hotspot_risk_weight",
+            "effective_freedom_weight", "weak_option_weight",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
             "deployment_default_warmup_min_feedback_samples",
@@ -6850,6 +7000,8 @@ class Hedger:
                     dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                     dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
                     dep_hotspot_term=dep_reward_breakdown["dep_hotspot_term"],
+                    dep_effective_freedom_term=dep_reward_breakdown["dep_effective_freedom_term"],
+                    dep_weak_option_term=dep_reward_breakdown["dep_weak_option_term"],
                     dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
                     dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
                     active_pair_hotspot_cost=dep_reward_breakdown["active_pair_hotspot_cost"],
@@ -6920,9 +7072,18 @@ class Hedger:
                     decoded_zero_edge_services=aux.get("decoded_zero_edge_services", 0),
                     decode_added_cnt=aux.get("decode_added_cnt", 0),
                     decode_marginal_add_cnt=aux.get("decode_marginal_add_cnt", 0),
+                    decode_effective_added_cnt=aux.get("decode_effective_added_cnt", 0),
                     decode_pruned_cnt=aux.get("decode_pruned_cnt", 0),
+                    decode_low_quality_pruned_cnt=aux.get("decode_low_quality_pruned_cnt", 0),
                     decode_overselected_services=aux.get("decode_overselected_services", 0),
                     capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
+                    projection_effective_removed_cnt=aux.get("projection_effective_removed_cnt", 0),
+                    effective_edge_options_mean=aux.get("effective_edge_options_mean", 0.0),
+                    effective_edge_options_min=aux.get("effective_edge_options_min", 0.0),
+                    desired_option_mass_mean=aux.get("desired_option_mass_mean", 0.0),
+                    option_shortage_cost=aux.get("option_shortage_cost", 0.0),
+                    selected_weak_option_cost=aux.get("selected_weak_option_cost", 0.0),
+                    selected_unknown_option_cost=aux.get("selected_unknown_option_cost", 0.0),
                     cloud_only=cloud_only,
                     cloud_only_ratio=cloud_only_ratio,
                     empty_edge_devices=empty_edge_devices,
@@ -6948,18 +7109,41 @@ class Hedger:
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                     decode_edge_threshold=self.deployment_agent_params["decode_edge_threshold"],
-                    decode_coverage_gain_threshold=self.deployment_agent_params["decode_coverage_gain_threshold"],
-                    decode_prune_gain_threshold=self.deployment_agent_params["decode_prune_gain_threshold"],
-                    decode_add_gain_threshold=self.deployment_agent_params["decode_add_gain_threshold"],
-                    decode_redundancy_pressure_scale=(
-                        self.deployment_agent_params["decode_redundancy_pressure_scale"]
-                    ),
-                    decode_redundancy_decay=self.deployment_agent_params["decode_redundancy_decay"],
                     decode_safety_logit_scale=self.deployment_agent_params["decode_safety_logit_scale"],
                     decode_negative_queue_threshold=self.deployment_agent_params["decode_negative_queue_threshold"],
                     decode_negative_hotspot_threshold=(
                         self.deployment_agent_params["decode_negative_hotspot_threshold"]
                     ),
+                    effective_quality_floor=self.deployment_agent_params["effective_quality_floor"],
+                    effective_quality_temperature=self.deployment_agent_params["effective_quality_temperature"],
+                    effective_freedom_scale=self.deployment_agent_params["effective_freedom_scale"],
+                    effective_coverage_gain_threshold=(
+                        self.deployment_agent_params["effective_coverage_gain_threshold"]
+                    ),
+                    effective_marginal_gain_threshold=(
+                        self.deployment_agent_params["effective_marginal_gain_threshold"]
+                    ),
+                    effective_keep_gain_threshold=self.deployment_agent_params["effective_keep_gain_threshold"],
+                    effective_raw_keep_bonus=self.deployment_agent_params["effective_raw_keep_bonus"],
+                    effective_inertia_bonus=self.deployment_agent_params["effective_inertia_bonus"],
+                    effective_min_confidence_for_effective=(
+                        self.deployment_agent_params["effective_min_confidence_for_effective"]
+                    ),
+                    effective_runtime_unknown_penalty=(
+                        self.deployment_agent_params["effective_runtime_unknown_penalty"]
+                    ),
+                    effective_runtime_stale_penalty=(
+                        self.deployment_agent_params["effective_runtime_stale_penalty"]
+                    ),
+                    effective_weak_runtime_penalty=self.deployment_agent_params["effective_weak_runtime_penalty"],
+                    effective_queue_risk_weight=self.deployment_agent_params["effective_queue_risk_weight"],
+                    effective_memory_risk_weight=self.deployment_agent_params["effective_memory_risk_weight"],
+                    effective_device_load_risk_weight=(
+                        self.deployment_agent_params["effective_device_load_risk_weight"]
+                    ),
+                    effective_hotspot_risk_weight=self.deployment_agent_params["effective_hotspot_risk_weight"],
+                    effective_freedom_weight=self.deployment_agent_params["reward_dep_effective_freedom_weight"],
+                    weak_option_weight=self.deployment_agent_params["reward_dep_weak_option_weight"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
@@ -7468,6 +7652,8 @@ class Hedger:
         cap_relax_cost = float(aux.get("capacity_relax_cost", 0.0))
         edge_cover_repair_cost = float(aux.get("edge_cover_repair_cost", 0.0))
         active_pair_hotspot_cost = float(aux.get("executed_active_pair_hotspot_cost", aux.get("active_pair_hotspot_cost", 0.0)))
+        option_shortage_cost = float(aux.get("option_shortage_cost", 0.0))
+        selected_weak_option_cost = float(aux.get("selected_weak_option_cost", 0.0))
         latency_guard_penalty_cost = float(metrics.get("latency_guard_penalty_cost", 0.0))
         feedback_timeout_penalty_cost = float(metrics.get("feedback_timeout_penalty_cost", 0.0))
 
@@ -7479,6 +7665,8 @@ class Hedger:
         penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
         penalty_edge_cover_repair = float(self.deployment_agent_params.get("penalty_edge_cover_repair", 0.0))
         w_hotspot = float(self.deployment_agent_params.get("reward_dep_hotspot_weight", 0.0))
+        w_effective_freedom = float(self.deployment_agent_params.get("reward_dep_effective_freedom_weight", 0.0))
+        w_weak_option = float(self.deployment_agent_params.get("reward_dep_weak_option_weight", 0.0))
         penalty_latency_guard = float(self.deployment_agent_params.get("penalty_latency_guard_trigger", 0.0))
         penalty_feedback_timeout = float(self.deployment_agent_params.get("penalty_feedback_timeout", 0.0))
 
@@ -7495,6 +7683,8 @@ class Hedger:
             "dep_capacity_relax_term": -penalty_capacity_relax * cap_relax_cost,
             "dep_edge_cover_repair_term": -penalty_edge_cover_repair * edge_cover_repair_cost,
             "dep_hotspot_term": -w_hotspot * active_pair_hotspot_cost,
+            "dep_effective_freedom_term": -w_effective_freedom * option_shortage_cost,
+            "dep_weak_option_term": -w_weak_option * selected_weak_option_cost,
             "dep_latency_guard_penalty_term": -penalty_latency_guard * latency_guard_penalty_cost,
             "dep_feedback_timeout_term": -penalty_feedback_timeout * feedback_timeout_penalty_cost,
         }
@@ -7503,6 +7693,8 @@ class Hedger:
             "feedback_timeout_penalty_cost": float(feedback_timeout_penalty_cost),
             "active_pair_hotspot_cost": float(aux.get("active_pair_hotspot_cost", 0.0)),
             "executed_active_pair_hotspot_cost": float(aux.get("executed_active_pair_hotspot_cost", 0.0)),
+            "option_shortage_cost": float(option_shortage_cost),
+            "selected_weak_option_cost": float(selected_weak_option_cost),
             **terms,
             "reward": self._sum_reward_terms(terms),
         }
