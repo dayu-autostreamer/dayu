@@ -23,11 +23,22 @@ class DeploymentConstraintCfg:
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
     edge_memory_budget_ratio: float = 1.0
     # Pair-centric hotspot handling. Deployment keeps generic edge coverage,
-    # and only repairs active edge pairs whose observed queue/runtime pressure
-    # makes the current placement a hotspot.
+    # and uses safety-aware Bernoulli decoding to avoid cloud-only or singleton
+    # hotspot placements when feasible edge replicas exist.
     queue_normalizer: float = 8.0
-    hotspot_repair_threshold: float = 0.35
-    hotspot_keep_penalty_scale: float = 2.0
+    decode_edge_threshold: float = 0.35
+    decode_high_pressure_threshold: float = 0.55
+    decode_high_pressure_min_edges: int = 2
+    decode_negative_queue_threshold: float = 0.65
+    decode_negative_hotspot_threshold: float = 0.08
+    safety_queue_weight: float = 1.0
+    safety_runtime_weight: float = 0.8
+    safety_compute_weight: float = 0.35
+    safety_confidence_weight: float = 0.25
+    safety_memory_weight: float = 0.4
+    safety_device_load_weight: float = 0.3
+    safety_inertia_weight: float = 0.2
+    safety_hotspot_weight: float = 0.8
 
 
 class PhysicalTopology:
