@@ -123,6 +123,9 @@ class HedgerDeploymentEventTriggerCfg:
     cooldown_s: float = 30.0
     queue_pressure_threshold: float = 0.70
     hotspot_pressure_threshold: float = 0.45
+    inference_warmup_grace_s: float = 45.0
+    inference_min_feedback_samples: int = 5
+    inference_require_feedback_before_trigger: bool = True
 
 
 @dataclass(frozen=True)
@@ -386,6 +389,7 @@ class Hedger:
         self._last_deployment_served_monotonic = 0.0
         self._last_deployment_event_trigger_monotonic = 0.0
         self._last_deployment_event_trigger_record: Dict[str, Any] = {}
+        self._last_deployment_event_suppressed_record: Dict[str, Any] = {}
         self._last_redeployment_throttle_log_t = 0.0
         self._frozen_offloading_agent = None
         self._latency_guard_samples = deque(maxlen=self.latency_guard_cfg.window_size)
@@ -806,6 +810,17 @@ class Hedger:
             hotspot_pressure_threshold=min(
                 1.0,
                 max(0.0, float(event.get("hotspot_pressure_threshold", 0.45))),
+            ),
+            inference_warmup_grace_s=max(
+                0.0,
+                float(event.get("inference_warmup_grace_s", 45.0)),
+            ),
+            inference_min_feedback_samples=max(
+                0,
+                int(event.get("inference_min_feedback_samples", 5)),
+            ),
+            inference_require_feedback_before_trigger=bool(
+                event.get("inference_require_feedback_before_trigger", True)
             ),
         )
 
@@ -1744,6 +1759,43 @@ class Hedger:
         cfg = getattr(self, "deployment_event_trigger_cfg", HedgerDeploymentEventTriggerCfg())
         return bool(cfg.enabled)
 
+    @staticmethod
+    def _deployment_event_suppression_defaults() -> Dict[str, Any]:
+        return {
+            "deployment_event_suppressed": False,
+            "deployment_event_suppress_reason": "",
+            "deployment_event_suppressed_event_reason": "",
+            "deployment_event_warmup_remaining_s": 0.0,
+            "deployment_event_feedback_count": 0,
+            "deployment_event_feedback_required": 0,
+        }
+
+    def _record_deployment_event_suppressed(self, status: Dict[str, Any]) -> None:
+        self._last_deployment_event_suppressed_record = copy.deepcopy(status)
+
+    def _consume_deployment_event_suppressed_record(self) -> Dict[str, Any]:
+        record = copy.deepcopy(getattr(self, "_last_deployment_event_suppressed_record", {}) or {})
+        self._last_deployment_event_suppressed_record = {}
+        return record
+
+    def _deployment_event_wait_status(self, reason: str) -> Dict[str, Any]:
+        status = {
+            "triggered": False,
+            "reason": reason,
+            "queue_pressure": 0.0,
+            "hotspot_pressure": 0.0,
+            "max_queue": 0.0,
+            "hotspot_service": "",
+            "hotspot_device": "",
+            **self._deployment_event_suppression_defaults(),
+        }
+        suppressed = self._consume_deployment_event_suppressed_record()
+        if suppressed:
+            status.update(suppressed)
+            status["triggered"] = False
+            status["reason"] = reason
+        return status
+
     def _deployment_event_trigger_status(self) -> Dict[str, Any]:
         cfg = getattr(self, "deployment_event_trigger_cfg", HedgerDeploymentEventTriggerCfg())
         if not cfg.enabled:
@@ -1813,6 +1865,7 @@ class Hedger:
             "max_queue": float(max_queue),
             "hotspot_service": hotspot_service,
             "hotspot_device": hotspot_device,
+            **self._deployment_event_suppression_defaults(),
         }
         if hotspot_pressure >= cfg.hotspot_pressure_threshold:
             status["triggered"] = True
@@ -1820,6 +1873,40 @@ class Hedger:
         elif queue_pressure >= cfg.queue_pressure_threshold:
             status["triggered"] = True
             status["reason"] = "event_queue_pressure"
+        if not status["triggered"] or self.mode != "inference":
+            return status
+
+        served_version = self.get_active_deployment_version()
+        feedback_required = max(0, int(cfg.inference_min_feedback_samples))
+        feedback_count = self._deployment_feedback_count(served_version)
+        warmup_remaining_s = 0.0
+        if last_served_t > 0.0 and cfg.inference_warmup_grace_s > 0.0:
+            warmup_remaining_s = max(0.0, cfg.inference_warmup_grace_s - (now - last_served_t))
+
+        suppress_reason = ""
+        if warmup_remaining_s > 0.0:
+            suppress_reason = "inference_warmup_grace"
+        elif (
+                cfg.inference_require_feedback_before_trigger
+                and feedback_required > 0
+                and feedback_count < feedback_required
+        ):
+            suppress_reason = "inference_feedback_shortfall"
+
+        if suppress_reason:
+            suppressed_status = copy.deepcopy(status)
+            suppressed_status.update({
+                "triggered": False,
+                "reason": suppress_reason,
+                "deployment_event_suppressed": True,
+                "deployment_event_suppress_reason": suppress_reason,
+                "deployment_event_suppressed_event_reason": str(status.get("reason", "") or ""),
+                "deployment_event_warmup_remaining_s": float(warmup_remaining_s),
+                "deployment_event_feedback_count": int(feedback_count),
+                "deployment_event_feedback_required": int(feedback_required),
+            })
+            self._record_deployment_event_suppressed(suppressed_status)
+            return suppressed_status
         return status
 
     def _mark_deployment_event_triggered(self, status: Dict[str, Any]) -> None:
@@ -1827,6 +1914,7 @@ class Hedger:
             return
         self._last_deployment_event_trigger_monotonic = time.monotonic()
         self._last_deployment_event_trigger_record = copy.deepcopy(status)
+        self._last_deployment_event_suppressed_record = {}
         self._deployment_event_trigger_event.clear()
 
     def _handle_latency_guard_triggered(
@@ -2596,6 +2684,9 @@ class Hedger:
             "feedback_timeout_penalty_cost", "deployment_event_triggered",
             "deployment_event_reason", "deployment_event_queue_pressure",
             "deployment_event_hotspot_pressure", "deployment_event_max_queue",
+            "deployment_event_suppressed", "deployment_event_suppress_reason",
+            "deployment_event_suppressed_event_reason", "deployment_event_warmup_remaining_s",
+            "deployment_event_feedback_count", "deployment_event_feedback_required",
             "deployment_deterministic",
             "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
             "edge_cover_repair_cost", "edge_cover_unmet", "hotspot_repair_cnt",
@@ -4428,7 +4519,7 @@ class Hedger:
         """Sleep for the deployment cadence, but wake on a new latency-guard trigger."""
         interval_s = max(0.0, float(interval_s))
         if interval_s <= 0.0:
-            return time.time(), "interval", int(last_guard_trigger_seq), {"triggered": False, "reason": "interval"}
+            return time.time(), "interval", int(last_guard_trigger_seq), self._deployment_event_wait_status("interval")
 
         now = time.time()
         target_t = now + interval_s if last_tick <= 0 else last_tick + interval_s
@@ -4450,6 +4541,7 @@ class Hedger:
                     "queue_pressure": 0.0,
                     "hotspot_pressure": 0.0,
                     "max_queue": 0.0,
+                    **self._deployment_event_suppression_defaults(),
                 }
 
             event_status = self._deployment_event_trigger_status()
@@ -4466,7 +4558,7 @@ class Hedger:
 
             remaining_s = target_t - time.time()
             if remaining_s <= 0.0:
-                return time.time(), "interval", last_guard_trigger_seq, {"triggered": False, "reason": "interval"}
+                return time.time(), "interval", last_guard_trigger_seq, self._deployment_event_wait_status("interval")
 
             wait_s = min(remaining_s, poll_s)
             self._latency_guard_trigger_event.wait(timeout=wait_s)
@@ -4476,7 +4568,7 @@ class Hedger:
             if self._deployment_event_trigger_event.is_set():
                 self._deployment_event_trigger_event.clear()
 
-        return time.time(), "stop", last_guard_trigger_seq, {"triggered": False, "reason": "stop"}
+        return time.time(), "stop", last_guard_trigger_seq, self._deployment_event_wait_status("stop")
 
     def _wait_for_initial_inference_task_feedback(self, worker_name: str, stop_event: threading.Event) -> int:
         cfg = self.inference_cfg
@@ -5646,6 +5738,24 @@ class Hedger:
                             current_event_status.get("hotspot_pressure", 0.0) or 0.0
                         ),
                         deployment_event_max_queue=float(current_event_status.get("max_queue", 0.0) or 0.0),
+                        deployment_event_suppressed=int(bool(
+                            current_event_status.get("deployment_event_suppressed", False)
+                        )),
+                        deployment_event_suppress_reason=str(
+                            current_event_status.get("deployment_event_suppress_reason", "") or ""
+                        ),
+                        deployment_event_suppressed_event_reason=str(
+                            current_event_status.get("deployment_event_suppressed_event_reason", "") or ""
+                        ),
+                        deployment_event_warmup_remaining_s=float(
+                            current_event_status.get("deployment_event_warmup_remaining_s", 0.0) or 0.0
+                        ),
+                        deployment_event_feedback_count=int(
+                            current_event_status.get("deployment_event_feedback_count", 0) or 0
+                        ),
+                        deployment_event_feedback_required=int(
+                            current_event_status.get("deployment_event_feedback_required", 0) or 0
+                        ),
                         deployment_deterministic=int(bool(self.inference_cfg.deployment_deterministic)),
                         cap_relax_cnt=aux["capacity_relax_cnt"],
                         cap_relax_cost=aux["capacity_relax_cost"],
