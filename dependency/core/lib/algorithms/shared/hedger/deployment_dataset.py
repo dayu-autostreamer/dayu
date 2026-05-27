@@ -95,10 +95,18 @@ class DeploymentTransitionDataset:
         batch_size = max(1, int(batch_size))
         if not self.transitions:
             return []
-        bad_bucket = [tr for tr in self.transitions if _is_bad_transition(tr)]
-        normal_bucket = [tr for tr in self.transitions if not _is_bad_transition(tr)]
-        bad_target = int(round(batch_size * 0.4)) if bad_bucket else 0
-        bad_target = min(batch_size, bad_target)
+        bad_bucket = [tr for tr in self.transitions if transition_quality_bucket(tr) == "bad"]
+        normal_bucket = [tr for tr in self.transitions if transition_quality_bucket(tr) != "bad"]
+        if bad_bucket:
+            bad_ratio = len(bad_bucket) / max(1, len(self.transitions))
+            bad_target_ratio = min(0.30, bad_ratio * 2.5)
+            bad_target = max(1, int(round(batch_size * bad_target_ratio)))
+        else:
+            bad_target = 0
+        if normal_bucket:
+            bad_target = min(batch_size - 1, bad_target)
+        else:
+            bad_target = min(batch_size, bad_target)
         normal_target = batch_size - bad_target
         batch: List[dict] = []
         batch.extend(_sample_from_bucket(bad_bucket, bad_target))
@@ -107,6 +115,53 @@ class DeploymentTransitionDataset:
             batch.extend(_sample_from_bucket(self.transitions, batch_size - len(batch)))
         random.shuffle(batch)
         return batch
+
+
+def transition_quality_bucket(transition: dict) -> str:
+    if not isinstance(transition, dict):
+        return "unknown"
+    quality_bucket = str(transition.get("collect_quality_bucket", "") or "").strip().lower()
+    if quality_bucket in {"good", "mid", "bad"}:
+        return quality_bucket
+    return "bad" if _is_bad_transition(transition) else "unknown"
+
+
+def summarize_transition_quality(transitions: List[dict]) -> Dict[str, float]:
+    count = len(transitions)
+    buckets = {"good": 0, "mid": 0, "bad": 0, "unknown": 0}
+    rewards = []
+    slo_values = []
+    p95_values = []
+    risk_values = []
+    queue_values = []
+    hotspot_values = []
+    guard_count = 0
+    for tr in transitions:
+        bucket = transition_quality_bucket(tr)
+        buckets[bucket] = buckets.get(bucket, 0) + 1
+        rewards.append(_as_float(tr.get("reward"), 0.0))
+        metrics = tr.get("metrics") or {}
+        slo_values.append(_as_float(metrics.get("e2e_slo_violation"), 0.0))
+        p95_values.append(_as_float(metrics.get("e2e_latency_p95"), 0.0))
+        risk_values.append(_as_float(tr.get("collect_predicted_risk"), 0.0))
+        queue_values.append(_as_float(tr.get("collect_candidate_queue_pressure"), 0.0))
+        hotspot_values.append(_as_float(tr.get("collect_candidate_hotspot_cost"), 0.0))
+        if _truthy(tr.get("feedback_guard_interrupted")) or _truthy(metrics.get("feedback_guard_interrupted")):
+            guard_count += 1
+    return {
+        "offline_batch_good": float(buckets.get("good", 0)),
+        "offline_batch_mid": float(buckets.get("mid", 0)),
+        "offline_batch_bad": float(buckets.get("bad", 0)),
+        "offline_batch_unknown": float(buckets.get("unknown", 0)),
+        "offline_batch_bad_ratio": float(buckets.get("bad", 0)) / max(1, count),
+        "offline_batch_reward_mean": _mean_or_zero(rewards),
+        "offline_batch_slo_violation_mean": _mean_or_zero(slo_values),
+        "offline_batch_latency_p95_mean": _mean_or_zero(p95_values),
+        "offline_batch_guard_interrupted": float(guard_count),
+        "offline_batch_collect_risk_mean": _mean_or_zero(risk_values),
+        "offline_batch_queue_pressure_mean": _mean_or_zero(queue_values),
+        "offline_batch_hotspot_cost_mean": _mean_or_zero(hotspot_values),
+    }
 
 
 def _sample_from_bucket(bucket: List[dict], count: int) -> List[dict]:
@@ -148,6 +203,12 @@ def _is_bad_transition(transition: dict) -> bool:
     if hotspot_cost >= 0.08:
         return True
     return False
+
+
+def _mean_or_zero(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
 
 
 def _truthy(value) -> bool:

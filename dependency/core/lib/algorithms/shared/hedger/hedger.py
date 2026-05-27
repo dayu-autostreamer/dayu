@@ -25,7 +25,11 @@ from .ppo_agent import (
 from .hedger_config import from_partial_dict, DeploymentConstraintCfg, LogicalTopology, \
     PhysicalTopology
 from .state_buffer import StateBuffer, BufferWaitCfg
-from .deployment_dataset import DeploymentTransitionDataset, DeploymentTransitionWriter
+from .deployment_dataset import (
+    DeploymentTransitionDataset,
+    DeploymentTransitionWriter,
+    summarize_transition_quality,
+)
 
 __all__ = ('Hedger',)
 
@@ -888,8 +892,8 @@ class Hedger:
         return os.path.join(self._checkpoint_stage_dir("inference"), filename)
 
     @staticmethod
-    def _ppo_update_fieldnames() -> List[str]:
-        return [
+    def _ppo_update_fieldnames(include_offline_batch: bool = False) -> List[str]:
+        fieldnames = [
             "agent", "update", "epoch", "used", "remaining",
             "samples", "epochs", "batch_size", "minibatches",
             "reward_mean", "reward_std", "reward_min", "reward_max",
@@ -900,6 +904,15 @@ class Hedger:
             "clip_fraction", "ratio_mean", "ratio_std",
             "actor_grad_norm", "critic_grad_norm",
         ]
+        if include_offline_batch:
+            fieldnames.extend([
+                "offline_batch_good", "offline_batch_mid", "offline_batch_bad", "offline_batch_unknown",
+                "offline_batch_bad_ratio", "offline_batch_reward_mean",
+                "offline_batch_slo_violation_mean", "offline_batch_latency_p95_mean",
+                "offline_batch_guard_interrupted", "offline_batch_collect_risk_mean",
+                "offline_batch_queue_pressure_mean", "offline_batch_hotspot_cost_mean",
+            ])
+        return fieldnames
 
     def _record_ppo_update(
             self,
@@ -2744,6 +2757,74 @@ class Hedger:
         indices = torch.nonzero(mask_row.detach().cpu().bool(), as_tuple=False).flatten().tolist()
         return self._device_names_from_indices(indices)
 
+    @staticmethod
+    def _cpu_tensor_dict(feats: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        return {
+            key: value.detach().cpu() if isinstance(value, torch.Tensor) else value
+            for key, value in feats.items()
+        }
+
+    def _deployment_decision_debug_fallback(
+            self,
+            logic_edge_index: Optional[torch.Tensor],
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            exec_deploy_mask: torch.Tensor,
+            actor_debug: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(actor_debug, dict):
+            debug: Dict[str, Any] = {}
+        else:
+            debug = dict(actor_debug)
+
+        required_keys = {
+            "service_pressure",
+            "edge_feasible_count",
+            "edge_replica_count",
+            "device_replica_count",
+            "active_pair_hotspot",
+            "static_mask",
+        }
+        if all(isinstance(debug.get(key), torch.Tensor) and debug[key].numel() > 0 for key in required_keys):
+            return debug
+        if self.deployment_agent is None:
+            return debug
+
+        try:
+            with torch.no_grad():
+                logic_feats_cpu = self._cpu_tensor_dict(logic_feats)
+                phys_feats_cpu = self._cpu_tensor_dict(phys_feats)
+                edge_index_cpu = (
+                    logic_edge_index.detach().cpu()
+                    if isinstance(logic_edge_index, torch.Tensor)
+                    else logic_edge_index
+                )
+                deploy_mask_cpu = exec_deploy_mask.detach().cpu().bool()
+                static_allowed = self.deployment_agent._static_allowed_mask(
+                    phys_feats_cpu,
+                    logic_feats_cpu,
+                ).detach().cpu().bool()
+                pair_ctx = self.deployment_agent._deployment_pair_context(
+                    edge_index_cpu,
+                    logic_feats_cpu,
+                    static_allowed,
+                    deploy_mask=deploy_mask_cpu,
+                )
+                for key in (
+                        "service_pressure",
+                        "edge_feasible_count",
+                        "edge_replica_count",
+                        "device_replica_count",
+                        "active_pair_hotspot",
+                ):
+                    if not isinstance(debug.get(key), torch.Tensor) or debug[key].numel() == 0:
+                        debug[key] = pair_ctx[key].detach().cpu()
+                if not isinstance(debug.get("static_mask"), torch.Tensor) or debug["static_mask"].numel() == 0:
+                    debug["static_mask"] = static_allowed.detach().cpu()
+        except Exception as exc:
+            LOGGER.debug(f"[Hedger][Record] Failed to build deployment decision debug fallback: {exc}")
+        return debug
+
     def _log_deployment_decisions(
             self,
             *,
@@ -2752,6 +2833,7 @@ class Hedger:
             exec_deploy_mask: torch.Tensor,
             logic_feats: Dict[str, torch.Tensor],
             phys_feats: Dict[str, torch.Tensor],
+            logic_edge_index: Optional[torch.Tensor] = None,
             actor_debug: Optional[Dict[str, Any]] = None,
             collect_debug: Optional[Dict[str, Any]] = None,
             policy_deterministic: Optional[bool] = None,
@@ -2762,6 +2844,13 @@ class Hedger:
         cloud_idx = self.physical_topology.cloud_idx
         raw_mask = raw_deploy_mask.detach().cpu().bool()
         exec_mask = exec_deploy_mask.detach().cpu().bool()
+        actor_debug = self._deployment_decision_debug_fallback(
+            logic_edge_index,
+            logic_feats,
+            phys_feats,
+            exec_mask,
+            actor_debug,
+        )
         collect_debug = collect_debug if isinstance(collect_debug, dict) else {}
         selected_service_idx = int(collect_debug.get("collect_selected_service_idx", -1) or -1)
         selected_device_idx = int(collect_debug.get("collect_selected_device_idx", -1) or -1)
@@ -5515,6 +5604,7 @@ class Hedger:
                     exec_deploy_mask=exec_deploy_mask,
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,
+                    logic_edge_index=logic_edge_index,
                     actor_debug=aux.get("actor_debug"),
                     policy_deterministic=self.inference_cfg.deployment_deterministic,
                 )
@@ -5847,12 +5937,13 @@ class Hedger:
             offloading_thread = threading.Thread(target=self.train_offloading_agent, daemon=True)
             offloading_thread.start()
 
-        update_fieldnames = self._ppo_update_fieldnames()
         if self.stage_cfg.update_deployment_policy:
             self.dep_update_recorder = Recorder(
                 self._stage_log_path("deployment_ppo_updates.csv"),
                 fmt="csv",
-                fieldnames=update_fieldnames,
+                fieldnames=self._ppo_update_fieldnames(
+                    include_offline_batch=self.stage_cfg.deployment_train_mode == "online"
+                ),
                 overwrite=True,
                 flush_every=1,
             )
@@ -5860,7 +5951,7 @@ class Hedger:
             self.off_update_recorder = Recorder(
                 self._stage_log_path("offloading_ppo_updates.csv"),
                 fmt="csv",
-                fieldnames=update_fieldnames,
+                fieldnames=self._ppo_update_fieldnames(),
                 overwrite=True,
                 flush_every=1,
             )
@@ -5941,12 +6032,15 @@ class Hedger:
                         if new_online >= self.training_cfg.deployment_offline_rl.online_min_new_transitions:
                             dep_transitions = self._sample_deployment_online_replay_batch()
                             if dep_transitions:
+                                batch_quality = summarize_transition_quality(dep_transitions)
                                 with self._model_lock:
                                     dep_ppo_stats = self.deployment_agent.offline_update(
                                         dep_transitions,
                                         batch_size=len(dep_transitions),
                                         **self._deployment_offline_update_kwargs(),
                                     )
+                                if dep_ppo_stats is not None:
+                                    dep_ppo_stats.update(batch_quality)
                                 with self._data_lock:
                                     dep_remaining = len(self.deployment_transitions)
                                 self._deployment_last_online_update_transition_count = (
@@ -5968,6 +6062,8 @@ class Hedger:
                                     f"online_buffer={dep_remaining}, offline_samples="
                                     f"{len(self.deployment_offline_dataset) if self.deployment_offline_dataset else 0}, "
                                     f"reward_mean={self._format_log_value(dep_ppo_stats.get('reward_mean', 0.0))}, "
+                                    f"batch_bad_ratio="
+                                    f"{self._format_log_value(dep_ppo_stats.get('offline_batch_bad_ratio', 0.0))}, "
                                     f"policy_loss={self._format_log_value(dep_ppo_stats.get('policy_loss', 0.0))}, "
                                     f"value_loss={self._format_log_value(dep_ppo_stats.get('value_loss', 0.0))}, "
                                     f"adv_mean={self._format_log_value(dep_ppo_stats.get('adv_mean', 0.0))}"
@@ -6561,6 +6657,7 @@ class Hedger:
                     exec_deploy_mask=exec_deploy_mask,
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,
+                    logic_edge_index=logic_edge_index,
                     actor_debug=aux.get("actor_debug"),
                     collect_debug=aux,
                     policy_deterministic=self.training_cfg.deployment_rollout_deterministic,
@@ -7151,19 +7248,22 @@ class Hedger:
         self.dep_update_recorder = Recorder(
             self._stage_log_path("deployment_offline_updates.csv"),
             fmt="csv",
-            fieldnames=self._ppo_update_fieldnames(),
+            fieldnames=self._ppo_update_fieldnames(include_offline_batch=True),
             overwrite=True,
             flush_every=1,
         )
         try:
             while self._epoch < self.training_cfg.total_updates:
                 batch = dataset.sample(self.training_cfg.deployment_offline_rl.batch_size)
+                batch_quality = summarize_transition_quality(batch)
                 with self._model_lock:
                     stats = self.deployment_agent.offline_update(
                         batch,
                         batch_size=len(batch),
                         **self._deployment_offline_update_kwargs(),
                     )
+                if stats is not None:
+                    stats.update(batch_quality)
                 self._deployment_update_steps += 1
                 self._epoch += 1
                 self._global_update_step += 1
@@ -7178,6 +7278,7 @@ class Hedger:
                 LOGGER.info(
                     f"[Hedger][Train][DeploymentOffline] update={self._deployment_update_steps}, "
                     f"reward_mean={self._format_log_value(stats.get('reward_mean', 0.0))}, "
+                    f"batch_bad_ratio={self._format_log_value(stats.get('offline_batch_bad_ratio', 0.0))}, "
                     f"policy_loss={self._format_log_value(stats.get('policy_loss', 0.0))}, "
                     f"value_loss={self._format_log_value(stats.get('value_loss', 0.0))}, "
                     f"adv_mean={self._format_log_value(stats.get('adv_mean', 0.0))}"
