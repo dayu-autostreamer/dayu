@@ -46,6 +46,12 @@ class DeploymentConstraintCfg:
     effective_memory_risk_weight: float = 0.50
     effective_device_load_risk_weight: float = 0.35
     effective_hotspot_risk_weight: float = 1.0
+    effective_recovery_quality_floor: float = -0.60
+    effective_coverage_recovery_threshold: float = -0.80
+    effective_low_confidence_positive_weight: float = 0.35
+    effective_capability_confidence_floor: float = 0.08
+    effective_unknown_recovery_penalty: float = 0.20
+    effective_stale_recovery_penalty: float = 0.15
     safety_queue_weight: float = 1.0
     safety_runtime_weight: float = 1.4
     safety_compute_weight: float = 0.20
