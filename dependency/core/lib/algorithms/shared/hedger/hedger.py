@@ -108,6 +108,7 @@ class HedgerDeploymentOfflineRLCfg:
     max_advantage_weight: float = 20.0
     actor_bc_coef: float = 1.0
     negative_bc_coef: float = 0.2
+    raw_removed_negative_coef: float = 0.0
     value_coef: float = 0.5
     entropy_coef: float = 0.0
     bootstrap_current_value: bool = True
@@ -613,6 +614,7 @@ class Hedger:
             max_advantage_weight=max(1.0, float(offline_rl_cfg.get("max_advantage_weight", 20.0))),
             actor_bc_coef=max(0.0, float(offline_rl_cfg.get("actor_bc_coef", 1.0))),
             negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.2))),
+            raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.0))),
             value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.5))),
             entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
             bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", True)),
@@ -918,9 +920,12 @@ class Hedger:
             "policy_loss", "value_loss", "entropy", "entropy_coef", "value_coef", "approx_kl",
             "clip_fraction", "ratio_mean", "ratio_std",
             "actor_grad_norm", "critic_grad_norm",
-            "negative_loss", "actor_positive_weight_mean", "actor_negative_weight_mean",
-            "actor_positive_samples", "actor_negative_samples", "bad_actor_masked",
-            "positive_logp_mean", "negative_logp_mean",
+            "negative_loss", "raw_removed_negative_loss",
+            "actor_positive_weight_mean", "actor_negative_weight_mean",
+            "actor_raw_removed_weight_mean",
+            "actor_positive_samples", "actor_negative_samples", "actor_raw_removed_samples",
+            "bad_actor_masked",
+            "positive_logp_mean", "negative_logp_mean", "raw_removed_logp_mean",
         ]
         if include_offline_batch:
             fieldnames.extend([
@@ -1035,15 +1040,22 @@ class Hedger:
         queue_normalizer = float(hotspot.get("queue_normalizer", 8.0))
         if not math.isfinite(queue_normalizer) or queue_normalizer <= 0.0:
             raise ValueError("Hedger config `agents.deployment.hotspot.queue_normalizer` must be > 0.")
-        decode_edge_threshold = float(bernoulli_decode.get("edge_threshold", 0.35))
+        decode_edge_threshold = float(bernoulli_decode.get("edge_threshold", 0.50))
         if not math.isfinite(decode_edge_threshold) or not (0.0 <= decode_edge_threshold <= 1.0):
             raise ValueError("Hedger config `agents.deployment.bernoulli_decode.edge_threshold` must be in [0, 1].")
-        decode_high_pressure_threshold = float(bernoulli_decode.get("high_pressure_threshold", 0.55))
-        if not math.isfinite(decode_high_pressure_threshold) or not (0.0 <= decode_high_pressure_threshold <= 1.0):
-            raise ValueError(
-                "Hedger config `agents.deployment.bernoulli_decode.high_pressure_threshold` must be in [0, 1]."
-            )
-        decode_high_pressure_min_edges = max(1, int(bernoulli_decode.get("high_pressure_min_edges", 2)))
+
+        def _decode_float(name: str, default: float) -> float:
+            value = float(bernoulli_decode.get(name, default))
+            if not math.isfinite(value):
+                raise ValueError(f"Hedger config `agents.deployment.bernoulli_decode.{name}` must be finite.")
+            return value
+
+        decode_coverage_gain_threshold = _decode_float("coverage_gain_threshold", -0.05)
+        decode_prune_gain_threshold = _decode_float("prune_gain_threshold", -0.10)
+        decode_add_gain_threshold = _decode_float("add_gain_threshold", 0.15)
+        decode_redundancy_pressure_scale = max(0.0, _decode_float("redundancy_pressure_scale", 1.0))
+        decode_redundancy_decay = max(0.0, _decode_float("redundancy_decay", 0.70))
+        decode_safety_logit_scale = max(0.0, _decode_float("safety_logit_scale", 1.5))
         decode_negative_queue_threshold = float(bernoulli_decode.get("negative_queue_threshold", 0.65))
         if not math.isfinite(decode_negative_queue_threshold) or not (0.0 <= decode_negative_queue_threshold <= 1.0):
             raise ValueError(
@@ -1091,18 +1103,22 @@ class Hedger:
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
             "queue_normalizer": queue_normalizer,
             "decode_edge_threshold": decode_edge_threshold,
-            "decode_high_pressure_threshold": decode_high_pressure_threshold,
-            "decode_high_pressure_min_edges": decode_high_pressure_min_edges,
+            "decode_coverage_gain_threshold": decode_coverage_gain_threshold,
+            "decode_prune_gain_threshold": decode_prune_gain_threshold,
+            "decode_add_gain_threshold": decode_add_gain_threshold,
+            "decode_redundancy_pressure_scale": decode_redundancy_pressure_scale,
+            "decode_redundancy_decay": decode_redundancy_decay,
+            "decode_safety_logit_scale": decode_safety_logit_scale,
             "decode_negative_queue_threshold": decode_negative_queue_threshold,
             "decode_negative_hotspot_threshold": decode_negative_hotspot_threshold,
             "safety_queue_weight": _safety_weight("queue_weight", 1.0),
-            "safety_runtime_weight": _safety_weight("runtime_weight", 0.8),
-            "safety_compute_weight": _safety_weight("compute_weight", 0.35),
-            "safety_confidence_weight": _safety_weight("confidence_weight", 0.25),
-            "safety_memory_weight": _safety_weight("memory_weight", 0.4),
-            "safety_device_load_weight": _safety_weight("device_load_weight", 0.3),
-            "safety_inertia_weight": _safety_weight("inertia_weight", 0.2),
-            "safety_hotspot_weight": _safety_weight("hotspot_weight", 0.8),
+            "safety_runtime_weight": _safety_weight("runtime_weight", 1.4),
+            "safety_compute_weight": _safety_weight("compute_weight", 0.20),
+            "safety_confidence_weight": _safety_weight("confidence_weight", 0.20),
+            "safety_memory_weight": _safety_weight("memory_weight", 0.45),
+            "safety_device_load_weight": _safety_weight("device_load_weight", 0.35),
+            "safety_inertia_weight": _safety_weight("inertia_weight", 0.05),
+            "safety_hotspot_weight": _safety_weight("hotspot_weight", 1.0),
             "ppo": ppo,
         }
 
@@ -2077,7 +2093,8 @@ class Hedger:
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"hotspot_weight={dep_params.get('reward_dep_hotspot_weight', 'na')}, "
             f"decode_edge_threshold={dep_params.get('decode_edge_threshold', 'na')}, "
-            f"decode_high_pressure_threshold={dep_params.get('decode_high_pressure_threshold', 'na')}, "
+            f"decode_add_gain_threshold={dep_params.get('decode_add_gain_threshold', 'na')}, "
+            f"decode_prune_gain_threshold={dep_params.get('decode_prune_gain_threshold', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -2691,9 +2708,10 @@ class Hedger:
             "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
             "edge_cover_repair_cost", "edge_cover_unmet", "hotspot_repair_cnt",
             "hotspot_repair_cost", "hotspot_unmet", "policy_logp", "policy_entropy",
-            "value_estimate", "raw_edge_replicas", "edge_replicas", "cloud_replicas",
+            "value_estimate", "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
             "raw_zero_edge_services", "decoded_zero_edge_services",
-            "decode_added_cnt", "decode_high_pressure_add_cnt",
+            "decode_added_cnt", "decode_marginal_add_cnt", "decode_pruned_cnt",
+            "decode_overselected_services", "capacity_removed_cnt",
             "cloud_only", "cloud_only_ratio", "empty_edge_devices", "empty_edge_device_ratio",
             "raw_deployment_plan", "deployment_plan", "active_deployment_plan",
             *self._state_record_fieldnames(),
@@ -2703,8 +2721,10 @@ class Hedger:
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "hotspot_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
-            "edge_memory_budget_ratio", "decode_edge_threshold", "decode_high_pressure_threshold",
-            "decode_high_pressure_min_edges", "decode_negative_queue_threshold", "decode_negative_hotspot_threshold",
+            "edge_memory_budget_ratio", "decode_edge_threshold", "decode_coverage_gain_threshold",
+            "decode_prune_gain_threshold", "decode_add_gain_threshold", "decode_redundancy_pressure_scale",
+            "decode_redundancy_decay", "decode_safety_logit_scale",
+            "decode_negative_queue_threshold", "decode_negative_hotspot_threshold",
             "queue_normalizer", "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -2780,7 +2800,8 @@ class Hedger:
             *Hedger._decision_common_fieldnames(),
             "raw_nodes", "executed_nodes", "removed_nodes", "added_nodes",
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
-            "raw_zero_edge", "decoded_zero_edge", "decode_added_nodes", "decode_added_reason",
+            "raw_zero_edge", "decoded_zero_edge", "decode_added_nodes", "decode_pruned_nodes",
+            "decode_added_reason", "capacity_removed_nodes",
             "service_pressure", "edge_feasible_count", "edge_replica_count",
             "device_replica_count", "active_pair_hotspot",
             "collect_behavior", "collect_operation",
@@ -2798,8 +2819,9 @@ class Hedger:
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
                 "deployment_qk_scores", "deployment_qk_features",
-                "deployment_pair_adjustments", "deployment_final_scores",
-                "deployment_decode_scores", "deployment_safety_prior",
+                "deployment_pair_adjustments", "deployment_base_scores", "deployment_centered_scores",
+                "deployment_final_scores", "deployment_decode_scores", "deployment_decode_marginal_gain",
+                "deployment_safety_prior",
                 "deployment_policy_probs", "deployment_raw_threshold_nodes",
                 "deployment_decoded_nodes", "deployment_positive_mask", "deployment_negative_mask",
                 "deployment_service_pressure",
@@ -3016,8 +3038,22 @@ class Hedger:
                 decode_added_indices = torch.nonzero(decode_added_row, as_tuple=False).flatten().tolist()
             else:
                 decode_added_indices = []
+            decode_pruned_tensor = actor_debug.get("decode_pruned_mask")
+            if isinstance(decode_pruned_tensor, torch.Tensor) and decode_pruned_tensor.dim() == 2 \
+                    and decode_pruned_tensor.size(0) > service_idx:
+                decode_pruned_row = decode_pruned_tensor[service_idx].detach().cpu().bool()
+                decode_pruned_indices = torch.nonzero(decode_pruned_row, as_tuple=False).flatten().tolist()
+            else:
+                decode_pruned_indices = []
+            capacity_removed_tensor = actor_debug.get("capacity_removed_mask")
+            if isinstance(capacity_removed_tensor, torch.Tensor) and capacity_removed_tensor.dim() == 2 \
+                    and capacity_removed_tensor.size(0) > service_idx:
+                capacity_removed_row = capacity_removed_tensor[service_idx].detach().cpu().bool()
+                capacity_removed_indices = torch.nonzero(capacity_removed_row, as_tuple=False).flatten().tolist()
+            else:
+                capacity_removed_indices = []
             reason_code = int(self._actor_debug_vector_value(actor_debug, "decode_added_reason", service_idx) or 0)
-            reason_name = {1: "edge_cover_decode", 2: "high_pressure_decode"}.get(reason_code, "")
+            reason_name = {1: "coverage_gain", 3: "marginal_gain"}.get(reason_code, "")
             edge_feasible_count = self._actor_debug_vector_value(actor_debug, "edge_feasible_count", service_idx)
             row = dict(
                 step=step,
@@ -3042,7 +3078,11 @@ class Hedger:
                 raw_zero_edge=int(raw_edge_count <= 0 and edge_feasible_count > 0.0),
                 decoded_zero_edge=int(decoded_edge_count <= 0 and edge_feasible_count > 0.0),
                 decode_added_nodes=self._json_for_record(self._device_names_from_indices(decode_added_indices)),
+                decode_pruned_nodes=self._json_for_record(self._device_names_from_indices(decode_pruned_indices)),
                 decode_added_reason=reason_name,
+                capacity_removed_nodes=self._json_for_record(
+                    self._device_names_from_indices(capacity_removed_indices)
+                ),
                 service_pressure=self._actor_debug_vector_value(actor_debug, "service_pressure", service_idx),
                 edge_feasible_count=edge_feasible_count,
                 edge_replica_count=self._actor_debug_vector_value(actor_debug, "edge_replica_count", service_idx),
@@ -3113,11 +3153,20 @@ class Hedger:
                     "deployment_pair_adjustments": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_adjustment", service_idx)
                     ),
+                    "deployment_base_scores": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "base_score", service_idx)
+                    ),
+                    "deployment_centered_scores": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "centered_score", service_idx)
+                    ),
                     "deployment_final_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "final_score", service_idx)
                     ),
                     "deployment_decode_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "decode_score", service_idx)
+                    ),
+                    "deployment_decode_marginal_gain": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "decode_marginal_gain", service_idx)
                     ),
                     "deployment_safety_prior": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "safety_prior", service_idx)
@@ -3996,6 +4045,7 @@ class Hedger:
             hotspot_unmet,
             risk_metrics,
             _executed_pair_ctx,
+            capacity_removed_mask,
         ) = self.deployment_agent._project_deployment_mask(
             raw_mask,
             raw_probs=raw_probs,
@@ -4025,6 +4075,9 @@ class Hedger:
             "hotspot_unmet": hotspot_unmet,
             **risk_metrics,
             "raw_deploy_mask": raw_mask,
+            "capacity_removed_mask": capacity_removed_mask,
+            "capacity_removed_cnt": int(capacity_removed_mask[:, :cloud_idx].sum().detach().cpu().item())
+            if cloud_idx > 0 else 0,
             "behavior_kind": behavior_kind,
         }
 
@@ -5661,6 +5714,11 @@ class Hedger:
                 )
                 cloud_idx = self.physical_topology.cloud_idx
                 raw_edge_replicas = int(raw_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+                decoded_mask_aux = aux.get("decoded_deploy_mask")
+                decoded_edge_replicas = (
+                    int(decoded_mask_aux.detach().cpu().bool()[:, :cloud_idx].sum().item())
+                    if isinstance(decoded_mask_aux, torch.Tensor) and cloud_idx > 0 else raw_edge_replicas
+                )
                 edge_replicas = int(exec_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
                 cloud_replicas = int(exec_deploy_mask[:, cloud_idx].sum().item())
                 layout_metrics = self._deployment_layout_metrics(exec_deploy_mask)
@@ -5769,12 +5827,16 @@ class Hedger:
                         policy_entropy=self._scalar_value(ent),
                         value_estimate=self._scalar_value(value),
                         raw_edge_replicas=raw_edge_replicas,
+                        decoded_edge_replicas=decoded_edge_replicas,
                         edge_replicas=edge_replicas,
                         cloud_replicas=cloud_replicas,
                         raw_zero_edge_services=aux.get("raw_zero_edge_services", 0),
                         decoded_zero_edge_services=aux.get("decoded_zero_edge_services", 0),
                         decode_added_cnt=aux.get("decode_added_cnt", 0),
-                        decode_high_pressure_add_cnt=aux.get("decode_high_pressure_add_cnt", 0),
+                        decode_marginal_add_cnt=aux.get("decode_marginal_add_cnt", 0),
+                        decode_pruned_cnt=aux.get("decode_pruned_cnt", 0),
+                        decode_overselected_services=aux.get("decode_overselected_services", 0),
+                        capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
                         cloud_only=cloud_only,
                         cloud_only_ratio=cloud_only_ratio,
                         empty_edge_devices=empty_edge_devices,
@@ -5800,8 +5862,16 @@ class Hedger:
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                         edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                         decode_edge_threshold=self.deployment_agent_params["decode_edge_threshold"],
-                        decode_high_pressure_threshold=self.deployment_agent_params["decode_high_pressure_threshold"],
-                        decode_high_pressure_min_edges=self.deployment_agent_params["decode_high_pressure_min_edges"],
+                        decode_coverage_gain_threshold=(
+                            self.deployment_agent_params["decode_coverage_gain_threshold"]
+                        ),
+                        decode_prune_gain_threshold=self.deployment_agent_params["decode_prune_gain_threshold"],
+                        decode_add_gain_threshold=self.deployment_agent_params["decode_add_gain_threshold"],
+                        decode_redundancy_pressure_scale=(
+                            self.deployment_agent_params["decode_redundancy_pressure_scale"]
+                        ),
+                        decode_redundancy_decay=self.deployment_agent_params["decode_redundancy_decay"],
+                        decode_safety_logit_scale=self.deployment_agent_params["decode_safety_logit_scale"],
                         decode_negative_queue_threshold=self.deployment_agent_params["decode_negative_queue_threshold"],
                         decode_negative_hotspot_threshold=(
                             self.deployment_agent_params["decode_negative_hotspot_threshold"]
@@ -6448,9 +6518,10 @@ class Hedger:
                                 "collect_candidate_hotspot_cost", "collect_raw_change_count",
                                 "collect_exec_change_count",
                                 "deployment_rollout_deterministic",
-                                "raw_edge_replicas", "edge_replicas", "cloud_replicas",
+                                "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
                                 "raw_zero_edge_services", "decoded_zero_edge_services",
-                                "decode_added_cnt", "decode_high_pressure_add_cnt",
+                                "decode_added_cnt", "decode_marginal_add_cnt", "decode_pruned_cnt",
+                                "decode_overselected_services", "capacity_removed_cnt",
                                 "cloud_only", "cloud_only_ratio",
                                 "empty_edge_devices", "empty_edge_device_ratio",
                                 "transition_buffer", "dataset_transitions",
@@ -6465,8 +6536,10 @@ class Hedger:
             "hotspot_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
-            "decode_edge_threshold", "decode_high_pressure_threshold",
-            "decode_high_pressure_min_edges", "decode_negative_queue_threshold",
+            "decode_edge_threshold", "decode_coverage_gain_threshold",
+            "decode_prune_gain_threshold", "decode_add_gain_threshold",
+            "decode_redundancy_pressure_scale", "decode_redundancy_decay",
+            "decode_safety_logit_scale", "decode_negative_queue_threshold",
             "decode_negative_hotspot_threshold", "queue_normalizer",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
@@ -6638,6 +6711,11 @@ class Hedger:
                 exec_deploy_mask = deploy_mask.detach().cpu().bool()
                 raw_deploy_plan = self._map_deployment_mask_to_deployment_plan(raw_deploy_mask)
                 raw_edge_replicas = int(raw_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
+                decoded_mask_aux = aux.get("decoded_deploy_mask")
+                decoded_edge_replicas = (
+                    int(decoded_mask_aux.detach().cpu().bool()[:, :cloud_idx].sum().item())
+                    if isinstance(decoded_mask_aux, torch.Tensor) and cloud_idx > 0 else raw_edge_replicas
+                )
                 edge_replicas = int(exec_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
                 cloud_replicas = int(exec_deploy_mask[:, cloud_idx].sum().item())
                 layout_metrics = self._deployment_layout_metrics(exec_deploy_mask)
@@ -6679,6 +6757,10 @@ class Hedger:
                     "next_phys_feats": {k: v.cpu() for k, v in new_phys_feats_dev.items()},
                     "deploy_mask": deploy_mask.detach().cpu(),
                     "raw_deploy_mask": aux["raw_deploy_mask"].detach().cpu(),
+                    "positive_mask": aux.get("positive_mask", deploy_mask).detach().cpu()
+                    if isinstance(aux.get("positive_mask"), torch.Tensor) else deploy_mask.detach().cpu(),
+                    "negative_mask": aux.get("negative_mask", torch.zeros_like(deploy_mask)).detach().cpu()
+                    if isinstance(aux.get("negative_mask"), torch.Tensor) else torch.zeros_like(deploy_mask).detach().cpu(),
                     "topo_order": None,  # Recomputed during evaluation if needed.
                     "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
                     "logp": logp.detach().cpu(),
@@ -6831,12 +6913,16 @@ class Hedger:
                         bool(self.training_cfg.deployment_rollout_deterministic)
                     ),
                     raw_edge_replicas=raw_edge_replicas,
+                    decoded_edge_replicas=decoded_edge_replicas,
                     edge_replicas=edge_replicas,
                     cloud_replicas=cloud_replicas,
                     raw_zero_edge_services=aux.get("raw_zero_edge_services", 0),
                     decoded_zero_edge_services=aux.get("decoded_zero_edge_services", 0),
                     decode_added_cnt=aux.get("decode_added_cnt", 0),
-                    decode_high_pressure_add_cnt=aux.get("decode_high_pressure_add_cnt", 0),
+                    decode_marginal_add_cnt=aux.get("decode_marginal_add_cnt", 0),
+                    decode_pruned_cnt=aux.get("decode_pruned_cnt", 0),
+                    decode_overselected_services=aux.get("decode_overselected_services", 0),
+                    capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
                     cloud_only=cloud_only,
                     cloud_only_ratio=cloud_only_ratio,
                     empty_edge_devices=empty_edge_devices,
@@ -6862,8 +6948,14 @@ class Hedger:
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                     decode_edge_threshold=self.deployment_agent_params["decode_edge_threshold"],
-                    decode_high_pressure_threshold=self.deployment_agent_params["decode_high_pressure_threshold"],
-                    decode_high_pressure_min_edges=self.deployment_agent_params["decode_high_pressure_min_edges"],
+                    decode_coverage_gain_threshold=self.deployment_agent_params["decode_coverage_gain_threshold"],
+                    decode_prune_gain_threshold=self.deployment_agent_params["decode_prune_gain_threshold"],
+                    decode_add_gain_threshold=self.deployment_agent_params["decode_add_gain_threshold"],
+                    decode_redundancy_pressure_scale=(
+                        self.deployment_agent_params["decode_redundancy_pressure_scale"]
+                    ),
+                    decode_redundancy_decay=self.deployment_agent_params["decode_redundancy_decay"],
+                    decode_safety_logit_scale=self.deployment_agent_params["decode_safety_logit_scale"],
                     decode_negative_queue_threshold=self.deployment_agent_params["decode_negative_queue_threshold"],
                     decode_negative_hotspot_threshold=(
                         self.deployment_agent_params["decode_negative_hotspot_threshold"]
@@ -7427,6 +7519,7 @@ class Hedger:
             "max_advantage_weight": cfg.max_advantage_weight,
             "actor_bc_coef": cfg.actor_bc_coef,
             "negative_bc_coef": cfg.negative_bc_coef,
+            "raw_removed_negative_coef": cfg.raw_removed_negative_coef,
             "value_coef": cfg.value_coef,
             "entropy_coef": cfg.entropy_coef,
             "bootstrap_current_value": cfg.bootstrap_current_value,

@@ -439,20 +439,46 @@ class _DeploymentBackbonePPO(nn.Module):
         return max(value, 1e-6)
 
     def _decode_edge_threshold(self) -> float:
-        value = float(getattr(self.cfg, "decode_edge_threshold", 0.35))
+        value = float(getattr(self.cfg, "decode_edge_threshold", 0.50))
         if not math.isfinite(value):
-            value = 0.35
+            value = 0.50
         return min(max(value, 0.0), 1.0)
 
-    def _decode_high_pressure_threshold(self) -> float:
-        value = float(getattr(self.cfg, "decode_high_pressure_threshold", 0.55))
+    def _decode_coverage_gain_threshold(self) -> float:
+        value = float(getattr(self.cfg, "decode_coverage_gain_threshold", -0.05))
         if not math.isfinite(value):
-            value = 0.55
-        return min(max(value, 0.0), 1.0)
+            value = -0.05
+        return value
 
-    def _decode_high_pressure_min_edges(self) -> int:
-        value = int(getattr(self.cfg, "decode_high_pressure_min_edges", 2))
-        return max(1, value)
+    def _decode_prune_gain_threshold(self) -> float:
+        value = float(getattr(self.cfg, "decode_prune_gain_threshold", -0.10))
+        if not math.isfinite(value):
+            value = -0.10
+        return value
+
+    def _decode_add_gain_threshold(self) -> float:
+        value = float(getattr(self.cfg, "decode_add_gain_threshold", 0.15))
+        if not math.isfinite(value):
+            value = 0.15
+        return value
+
+    def _decode_redundancy_pressure_scale(self) -> float:
+        value = float(getattr(self.cfg, "decode_redundancy_pressure_scale", 1.0))
+        if not math.isfinite(value):
+            value = 1.0
+        return max(0.0, value)
+
+    def _decode_redundancy_decay(self) -> float:
+        value = float(getattr(self.cfg, "decode_redundancy_decay", 0.70))
+        if not math.isfinite(value):
+            value = 0.70
+        return max(0.0, value)
+
+    def _decode_safety_logit_scale(self) -> float:
+        value = float(getattr(self.cfg, "decode_safety_logit_scale", 1.5))
+        if not math.isfinite(value):
+            value = 1.5
+        return max(0.0, value)
 
     def _decode_negative_queue_threshold(self) -> float:
         value = float(getattr(self.cfg, "decode_negative_queue_threshold", 0.65))
@@ -808,18 +834,33 @@ class _DeploymentBackbonePPO(nn.Module):
             runtime_feat[..., 3].clamp(0.0, 1.0)
             * runtime_feat[..., 4].clamp(0.0, 1.0)
         )
-        runtime_known_cost = runtime_feat[..., 2].clamp_min(0.0) * runtime_confidence
+        runtime_cost = runtime_feat[..., 2].clamp_min(0.0)
         if edge_width > 0:
             edge_allowed = static_allowed[:, :edge_width].bool()
-            edge_runtime = torch.where(edge_allowed, runtime_known_cost[:, :edge_width], torch.zeros_like(runtime_known_cost[:, :edge_width]))
-            runtime_den = edge_runtime.max(dim=1, keepdim=True).values.clamp_min(1e-6)
+            edge_runtime = runtime_cost[:, :edge_width]
+            edge_confidence = runtime_confidence[:, :edge_width]
+            known_edge = edge_allowed & (edge_confidence > 0.05) & (edge_runtime > 1e-6)
+            inf_runtime = torch.full_like(edge_runtime, float("inf"))
+            best_runtime = torch.where(known_edge, edge_runtime, inf_runtime).min(dim=1, keepdim=True).values
+            has_known = torch.isfinite(best_runtime)
+            runtime_ratio = edge_runtime / best_runtime.clamp_min(1e-6)
+            relative_penalty = (torch.log(runtime_ratio.clamp_min(1.0)) / math.log(4.0)).clamp(0.0, 1.0)
+            unknown_penalty = (0.25 * (1.0 - edge_confidence)).clamp(0.0, 0.25)
             runtime_penalty_edge = torch.where(
-                runtime_den > 1e-6,
-                edge_runtime / runtime_den,
-                torch.zeros_like(edge_runtime),
-            ).clamp(0.0, 1.0)
+                known_edge & has_known,
+                relative_penalty,
+                unknown_penalty,
+            )
+            runtime_penalty_edge = torch.where(
+                edge_allowed,
+                runtime_penalty_edge,
+                torch.zeros_like(runtime_penalty_edge),
+            )
+            runtime_penalty = torch.zeros_like(runtime_cost)
+            runtime_penalty[:, :edge_width] = runtime_penalty_edge
         else:
             runtime_penalty_edge = torch.zeros((num_services, 0), device=device, dtype=dtype)
+            runtime_penalty = torch.zeros_like(runtime_cost)
 
         compute_bonus = _unit_standardize(device_feat[:, 2]).view(1, num_devices).expand(num_services, -1) - 0.5
         model_log_mem = demand_feat[:, 3].view(num_services, 1)
@@ -850,7 +891,7 @@ class _DeploymentBackbonePPO(nn.Module):
 
         return safety_prior, {
             "queue_pressure": queue_pressure,
-            "runtime_penalty": runtime_known_cost,
+            "runtime_penalty": runtime_penalty,
             "memory_cost": memory_cost,
             "runtime_confidence": runtime_confidence,
             "device_load_norm": device_load_norm,
@@ -894,9 +935,25 @@ class _DeploymentBackbonePPO(nn.Module):
             prev_deploy_mask=prev_deploy_mask,
         )
         safety_prior = safety_prior.to(device=h_s.device, dtype=pair_adjustment.dtype)
-        final_scores = qk_feature + pair_adjustment + safety_prior
-        decode_scores = _safe_logit(torch.sigmoid(final_scores)) + safety_prior
+        base_scores = qk_feature + pair_adjustment
+        centered_scores = base_scores.clone()
+        cloud_idx = self._cloud_index(static_allowed.size(1))
+        edge_width = max(0, cloud_idx)
+        if edge_width > 0:
+            edge_allowed = static_allowed[:, :edge_width].bool()
+            edge_base = base_scores[:, :edge_width]
+            edge_count = edge_allowed.float().sum(dim=1, keepdim=True).clamp_min(1.0)
+            edge_mean = torch.where(edge_allowed, edge_base, torch.zeros_like(edge_base)).sum(
+                dim=1,
+                keepdim=True,
+            ) / edge_count
+            centered_edge = torch.where(edge_allowed, edge_base - edge_mean, edge_base)
+            centered_scores[:, :edge_width] = centered_edge
+        final_scores = centered_scores + self._decode_safety_logit_scale() * safety_prior
+        decode_scores = final_scores + safety_prior
         pair_ctx.update(safety_ctx)
+        pair_ctx["base_score"] = base_scores
+        pair_ctx["centered_score"] = centered_scores
         return (
             q_embedding,
             k_embedding,
@@ -1016,66 +1073,106 @@ class _DeploymentBackbonePPO(nn.Module):
         cloud_idx = self._cloud_index(num_devices)
         edge_width = max(0, cloud_idx)
         added_mask = torch.zeros_like(decoded, dtype=torch.bool)
+        pruned_mask = torch.zeros_like(decoded, dtype=torch.bool)
         reason_code = torch.zeros((num_services,), device=decoded.device, dtype=torch.long)
         raw_zero = torch.zeros((num_services,), device=decoded.device, dtype=torch.bool)
+        overselected = torch.zeros((num_services,), device=decoded.device, dtype=torch.bool)
+        marginal_gain = torch.zeros_like(decode_scores, dtype=torch.float32)
 
         if edge_width <= 0:
             return decoded, {
                 "raw_zero_edge_services": torch.tensor(0, device=decoded.device),
                 "decoded_zero_edge_services": torch.tensor(num_services, device=decoded.device),
                 "decode_added_cnt": torch.tensor(0, device=decoded.device),
-                "decode_high_pressure_add_cnt": torch.tensor(0, device=decoded.device),
+                "decode_marginal_add_cnt": torch.tensor(0, device=decoded.device),
+                "decode_pruned_cnt": torch.tensor(0, device=decoded.device),
+                "decode_overselected_services": torch.tensor(0, device=decoded.device),
                 "decode_added_mask": added_mask,
+                "decode_pruned_mask": pruned_mask,
                 "decode_added_reason": reason_code,
+                "decode_marginal_gain": marginal_gain,
                 "raw_threshold_mask": raw_deploy_mask.bool(),
                 "decoded_mask": decoded,
             }
 
         edge_allowed = static_allowed[:, :edge_width].bool()
-        high_pressure_add_cnt = 0
+        prune_threshold = self._decode_prune_gain_threshold()
+        add_threshold = self._decode_add_gain_threshold()
+        coverage_threshold = self._decode_coverage_gain_threshold()
+        pressure_scale = self._decode_redundancy_pressure_scale()
+        redundancy_decay = self._decode_redundancy_decay()
+        marginal_add_cnt = 0
         for service_idx in range(num_services):
             if not bool(edge_allowed[service_idx].any().item()):
                 continue
-            edge_count = int(decoded[service_idx, :edge_width].sum().item())
-            if edge_count <= 0:
-                raw_zero[service_idx] = True
-                candidates = torch.where(
-                    edge_allowed[service_idx] & ~decoded[service_idx, :edge_width],
-                    decode_scores[service_idx, :edge_width],
-                    torch.full((edge_width,), -1.0e9, device=decoded.device, dtype=decode_scores.dtype),
-                )
-                best_device = int(candidates.argmax().item())
-                if float(candidates[best_device].item()) > -1.0e8:
-                    decoded[service_idx, best_device] = True
-                    added_mask[service_idx, best_device] = True
-                    reason_code[service_idx] = 1
-                    edge_count += 1
+            pressure = float(service_pressure[service_idx].clamp(0.0, 1.0).item())
+            scores = decode_scores[service_idx, :edge_width].float()
+            first_replica_bonus = pressure_scale * pressure
+            marginal_gain[service_idx, :edge_width] = torch.where(
+                edge_allowed[service_idx],
+                scores + first_replica_bonus,
+                torch.zeros_like(scores),
+            )
 
-            required_edges = self._decode_high_pressure_min_edges() \
-                if float(service_pressure[service_idx].item()) >= self._decode_high_pressure_threshold() else 1
-            while edge_count < required_edges:
-                candidates = torch.where(
+            raw_edge_count = int(raw_deploy_mask[service_idx, :edge_width].sum().item())
+            if raw_edge_count <= 0:
+                raw_zero[service_idx] = True
+
+            selected_devices = torch.nonzero(
+                decoded[service_idx, :edge_width] & edge_allowed[service_idx],
+                as_tuple=False,
+            ).flatten().tolist()
+            kept_selected = torch.zeros((edge_width,), device=decoded.device, dtype=torch.bool)
+            selected_devices.sort(key=lambda idx: float(scores[idx].item()), reverse=True)
+            for rank, device_idx in enumerate(selected_devices):
+                bonus = pressure_scale * pressure * math.exp(-redundancy_decay * float(rank))
+                gain = float(scores[device_idx].item()) + bonus
+                if gain >= prune_threshold:
+                    kept_selected[device_idx] = True
+                else:
+                    decoded[service_idx, device_idx] = False
+                    pruned_mask[service_idx, device_idx] = True
+
+            edge_count = int(kept_selected.sum().item())
+            if len(selected_devices) > edge_count:
+                overselected[service_idx] = True
+
+            # Add only replicas whose marginal utility remains useful. The first
+            # edge replica uses a gentler coverage threshold; additional replicas
+            # must clear the stricter add threshold and receive a decaying
+            # pressure bonus.
+            while True:
+                threshold = coverage_threshold if edge_count <= 0 else add_threshold
+                bonus = pressure_scale * pressure * math.exp(-redundancy_decay * float(edge_count))
+                gains = torch.where(
                     edge_allowed[service_idx] & ~decoded[service_idx, :edge_width],
-                    decode_scores[service_idx, :edge_width],
-                    torch.full((edge_width,), -1.0e9, device=decoded.device, dtype=decode_scores.dtype),
+                    scores + bonus,
+                    torch.full((edge_width,), -1.0e9, device=decoded.device, dtype=scores.dtype),
                 )
-                best_device = int(candidates.argmax().item())
-                if float(candidates[best_device].item()) <= -1.0e8:
+                best_device = int(gains.argmax().item())
+                best_gain = float(gains[best_device].item())
+                if best_gain < threshold or best_gain <= -1.0e8:
                     break
                 decoded[service_idx, best_device] = True
                 added_mask[service_idx, best_device] = True
-                reason_code[service_idx] = 2
-                high_pressure_add_cnt += 1
+                reason_code[service_idx] = 1 if edge_count <= 0 else 3
+                marginal_add_cnt += 1
                 edge_count += 1
+                if edge_count >= int(edge_allowed[service_idx].sum().item()):
+                    break
 
         decoded_zero = ((decoded[:, :edge_width].sum(dim=1) <= 0) & edge_allowed.any(dim=1)).sum()
         return decoded, {
             "raw_zero_edge_services": raw_zero.sum(),
             "decoded_zero_edge_services": decoded_zero,
             "decode_added_cnt": added_mask[:, :edge_width].sum(),
-            "decode_high_pressure_add_cnt": torch.tensor(high_pressure_add_cnt, device=decoded.device),
+            "decode_marginal_add_cnt": torch.tensor(marginal_add_cnt, device=decoded.device),
+            "decode_pruned_cnt": pruned_mask[:, :edge_width].sum(),
+            "decode_overselected_services": overselected.sum(),
             "decode_added_mask": added_mask,
+            "decode_pruned_mask": pruned_mask,
             "decode_added_reason": reason_code,
+            "decode_marginal_gain": marginal_gain,
             "raw_threshold_mask": raw_deploy_mask.bool(),
             "decoded_mask": decoded,
         }
@@ -1091,7 +1188,10 @@ class _DeploymentBackbonePPO(nn.Module):
             static_allowed: Optional[torch.Tensor] = None,
             decode_scores: Optional[torch.Tensor] = None,
             safety_prior: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, int, float, int, float, int, int, float, int, Dict[str, float], Dict[str, torch.Tensor]]:
+    ) -> Tuple[
+        torch.Tensor, int, float, int, float, int, int, float, int,
+        Dict[str, float], Dict[str, torch.Tensor], torch.Tensor,
+    ]:
         """
         Project a sampled deployment mask back into memory-feasible space.
 
@@ -1132,6 +1232,7 @@ class _DeploymentBackbonePPO(nn.Module):
         max_edge_replicas = self._max_edge_replicas_per_device()
         capacity_relax_cnt = 0
         capacity_relax_cost = 0.0
+        capacity_removed_mask = torch.zeros_like(corrected, dtype=torch.bool)
         num_services = max(1, int(model_mem.numel()))
 
         if prev_deploy_mask is None:
@@ -1166,6 +1267,7 @@ class _DeploymentBackbonePPO(nn.Module):
             for service_idx in selected:
                 if service_idx not in keep:
                     corrected[service_idx, device_idx] = False
+                    capacity_removed_mask[service_idx, device_idx] = True
                     capacity_relax_cnt += 1
                     prob = float(raw_probs[service_idx, device_idx].item())
                     prob = min(max(prob, 1e-6), 1.0 - 1e-6)
@@ -1223,6 +1325,7 @@ class _DeploymentBackbonePPO(nn.Module):
             hotspot_unmet,
             risk_metrics,
             exec_risk_ctx,
+            capacity_removed_mask,
         )
 
     def _repair_edge_cover_and_hotspots(
@@ -1363,9 +1466,7 @@ class _DeploymentBackbonePPO(nn.Module):
         )
         active_hotspot = pair_ctx["active_pair_hotspot"].detach()
         service_pressure = pair_ctx["service_pressure"].detach()
-        high_pressure_threshold = self._decode_high_pressure_threshold()
         hotspot_threshold = self._decode_negative_hotspot_threshold()
-        min_hot_edges = self._decode_high_pressure_min_edges()
         hotspot_order = []
         for service_idx in range(corrected.size(0)):
             row = active_hotspot[service_idx, :cloud_idx]
@@ -1373,18 +1474,19 @@ class _DeploymentBackbonePPO(nn.Module):
                 continue
             worst_value, worst_device = row.max(dim=0)
             current_edges = int(corrected[service_idx, :cloud_idx].sum().item())
-            needs_more_edges = (
-                float(service_pressure[service_idx].item()) >= high_pressure_threshold
-                and current_edges < min_hot_edges
-            )
             is_singleton_hotspot = current_edges == 1 and float(worst_value.item()) >= hotspot_threshold
-            if not needs_more_edges and not is_singleton_hotspot:
+            if not is_singleton_hotspot:
                 continue
             if current_edges <= 0:
                 continue
-            hotspot_order.append((-float(worst_value.item()), int(service_idx), int(worst_device.item())))
+            hotspot_order.append((
+                -float(worst_value.item()),
+                -float(service_pressure[service_idx].item()),
+                int(service_idx),
+                int(worst_device.item()),
+            ))
 
-        for _, service_idx, worst_device in sorted(hotspot_order):
+        for _, _, service_idx, worst_device in sorted(hotspot_order):
             if not bool(corrected[service_idx, worst_device].item()):
                 continue
             service_mem = float(model_mem[service_idx].item())
@@ -1609,6 +1711,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             hotspot_unmet,
             risk_metrics,
             executed_pair_ctx,
+            capacity_removed_mask,
         ) = self._project_deployment_mask(
             decoded_deploy_mask,
             raw_probs=raw_probs,
@@ -1620,6 +1723,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             decode_scores=decode_scores,
             safety_prior=safety_prior,
         )
+        negative_action_mask = (
+            (raw_deploy_mask | decoded_deploy_mask) & ~deploy_mask & static_allowed.bool()
+        )
+        if cloud_idx >= 0:
+            negative_action_mask[:, cloud_idx] = False
         (
             logp_sum,
             ent_sum,
@@ -1632,6 +1740,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             deploy_mask,
             static_allowed,
             topo_order=topo_order,
+            positive_mask=deploy_mask,
+            negative_mask=negative_action_mask,
         )
         value = self.critic(h_s, h_p, candidate_features, static_allowed)
         return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {
@@ -1646,12 +1756,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             **risk_metrics,
             "raw_deploy_mask": raw_deploy_mask,
             "decoded_deploy_mask": decoded_deploy_mask,
+            "positive_mask": positive_mask,
+            "negative_mask": negative_mask,
             "raw_zero_edge_services": int(decode_debug["raw_zero_edge_services"].detach().cpu().item()),
             "decoded_zero_edge_services": int(decode_debug["decoded_zero_edge_services"].detach().cpu().item()),
             "decode_added_cnt": int(decode_debug["decode_added_cnt"].detach().cpu().item()),
-            "decode_high_pressure_add_cnt": int(
-                decode_debug["decode_high_pressure_add_cnt"].detach().cpu().item()
+            "decode_marginal_add_cnt": int(decode_debug["decode_marginal_add_cnt"].detach().cpu().item()),
+            "decode_pruned_cnt": int(decode_debug["decode_pruned_cnt"].detach().cpu().item()),
+            "decode_overselected_services": int(
+                decode_debug["decode_overselected_services"].detach().cpu().item()
             ),
+            "capacity_removed_mask": capacity_removed_mask,
+            "capacity_removed_cnt": int(capacity_removed_mask.detach()[:, :cloud_idx].sum().cpu().item())
+            if cloud_idx > 0 else 0,
             "actor_debug": {
                 "service_embedding": h_s.detach().cpu(),
                 "device_embedding": h_p.detach().cpu(),
@@ -1660,8 +1777,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "qk_score": qk_scores.detach().cpu(),
                 "qk_feature": qk_feature.detach().cpu(),
                 "pair_adjustment": pair_adjustment.detach().cpu(),
+                "base_score": pair_ctx["base_score"].detach().cpu(),
+                "centered_score": pair_ctx["centered_score"].detach().cpu(),
                 "safety_prior": safety_prior.detach().cpu(),
                 "decode_score": decode_scores.detach().cpu(),
+                "decode_marginal_gain": decode_debug["decode_marginal_gain"].detach().cpu(),
                 "candidate_feature": candidate_features.detach().cpu(),
                 "candidate_feature_names": DEPLOYMENT_CANDIDATE_FEATURE_NAMES,
                 "service_pressure": pair_ctx["service_pressure"].detach().cpu(),
@@ -1680,7 +1800,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "raw_threshold_mask": decode_debug["raw_threshold_mask"].detach().cpu(),
                 "decoded_mask": decode_debug["decoded_mask"].detach().cpu(),
                 "decode_added_mask": decode_debug["decode_added_mask"].detach().cpu(),
+                "decode_pruned_mask": decode_debug["decode_pruned_mask"].detach().cpu(),
                 "decode_added_reason": decode_debug["decode_added_reason"].detach().cpu(),
+                "capacity_removed_mask": capacity_removed_mask.detach().cpu(),
                 "positive_mask": positive_mask.detach().cpu(),
                 "negative_mask": negative_mask.detach().cpu(),
             },
@@ -1790,6 +1912,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "phys_edge_index": tr["phys_edge_index"].to(device),
                 "phys_feats": _move_tensor_dict_to_device(tr["phys_feats"], device),
                 "deploy_mask": tr["deploy_mask"].to(device),
+                "positive_mask": tr["positive_mask"].to(device) if tr.get("positive_mask") is not None else None,
+                "negative_mask": tr["negative_mask"].to(device) if tr.get("negative_mask") is not None else None,
                 "prev_deploy_mask": (
                     tr["prev_deploy_mask"].to(device) if tr.get("prev_deploy_mask") is not None else None
                 ),
@@ -1825,6 +1949,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                         tr['deploy_mask'],
                         prev_deploy_mask=tr['prev_deploy_mask'],
                         topo_order=tr['topo_order'],
+                        positive_mask=tr.get("positive_mask"),
+                        negative_mask=tr.get("negative_mask"),
                     )
                     new_logp_list.append(lp)
                     new_val_list.append(val)
@@ -1894,9 +2020,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
     def _deployment_offline_actor_masks(
             self,
             deploy_mask: torch.Tensor,
+            raw_deploy_mask: Optional[torch.Tensor],
             policy_aux: Dict[str, torch.Tensor],
             quality_bucket: str,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         static_allowed = policy_aux["static_allowed"].bool()
         num_devices = static_allowed.size(1)
         cloud_idx = self._cloud_index(num_devices)
@@ -1904,6 +2031,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         if cloud_idx >= 0:
             edge_allowed[:, cloud_idx] = False
         selected = deploy_mask.to(device=edge_allowed.device).bool() & edge_allowed
+        if raw_deploy_mask is None:
+            raw_selected = selected
+        else:
+            raw_selected = raw_deploy_mask.to(device=edge_allowed.device).bool() & edge_allowed
+        raw_removed = raw_selected & ~selected
         queue_pressure = policy_aux.get("queue_pressure")
         hotspot = policy_aux.get("active_pair_hotspot")
         if not isinstance(queue_pressure, torch.Tensor):
@@ -1920,10 +2052,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             negative_mask = selected & risky
             if not bool(negative_mask.any().item()):
                 negative_mask = selected
-            return positive_mask, negative_mask
+            return positive_mask, negative_mask, raw_removed
         positive_mask = selected
         negative_mask = (~selected) & risky
-        return positive_mask, negative_mask
+        return positive_mask, negative_mask, raw_removed
 
     def offline_update(
             self,
@@ -1935,6 +2067,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             max_advantage_weight: float = 20.0,
             actor_bc_coef: float = 1.0,
             negative_bc_coef: float = 0.2,
+            raw_removed_negative_coef: float = 0.0,
             value_coef: float = 0.5,
             entropy_coef: float = 0.0,
             bootstrap_current_value: bool = True,
@@ -1943,8 +2076,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         Offline/replay update for deployment macro-transitions.
 
         This is an AWAC-style actor-critic step: fit the critic to one-step
-        bootstrapped returns, then improve the Bernoulli deployment actor by
-        advantage-weighted log-likelihood of the actually executed placement.
+        bootstrapped returns, clone useful executed edge replicas, and suppress
+        raw Bernoulli replicas that decode/projection removed.
         """
         if not transitions:
             return None
@@ -1958,12 +2091,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         values = []
         positive_logps = []
         negative_logps = []
+        raw_removed_logps = []
         entropies = []
         targets = []
         rewards = []
         quality_values = []
         positive_counts = []
         negative_counts = []
+        raw_removed_counts = []
         for tr in batch:
             logic_edge_index = tr["logic_edge_index"].to(device)
             logic_feats = _move_tensor_dict_to_device(tr["logic_feats"], device)
@@ -1974,6 +2109,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             )
             action_key = "raw_deploy_mask" if target_name == "raw" else "deploy_mask"
             deploy_mask = tr.get(action_key, tr["deploy_mask"]).to(device).bool()
+            raw_deploy_mask = tr.get("raw_deploy_mask")
+            raw_deploy_mask = raw_deploy_mask.to(device).bool() if raw_deploy_mask is not None else None
             quality_bucket = transition_quality_bucket(tr)
             with torch.no_grad():
                 _, _, _, probe_aux = self.evaluate(
@@ -1986,8 +2123,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     topo_order=tr.get("topo_order"),
                     return_policy=True,
                 )
-                positive_mask, negative_mask = self._deployment_offline_actor_masks(
+                positive_mask, negative_mask, raw_removed_mask = self._deployment_offline_actor_masks(
                     deploy_mask,
+                    raw_deploy_mask,
                     probe_aux,
                     quality_bucket,
                 )
@@ -2003,6 +2141,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 positive_mask=positive_mask,
                 negative_mask=negative_mask,
             )
+            raw_removed_mask = raw_removed_mask.to(device=policy_aux["policy_prob"].device).bool()
+            raw_removed_probs = policy_aux["policy_prob"].clamp(1e-6, 1.0 - 1e-6)
+            if bool(raw_removed_mask.any().item()):
+                raw_removed_logp = torch.log1p(-raw_removed_probs).masked_select(raw_removed_mask).sum()
+            else:
+                raw_removed_logp = torch.tensor(0.0, device=device)
 
             reward = float(tr["reward"])
             rewards.append(reward)
@@ -2024,14 +2168,17 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             values.append(value.squeeze())
             positive_logps.append(policy_aux["positive_logp"])
             negative_logps.append(policy_aux["negative_logp"])
+            raw_removed_logps.append(raw_removed_logp)
             entropies.append(ent)
             quality_values.append(quality_bucket)
             positive_counts.append(float(policy_aux["positive_mask"].float().sum().detach().cpu().item()))
             negative_counts.append(float(policy_aux["negative_mask"].float().sum().detach().cpu().item()))
+            raw_removed_counts.append(float(raw_removed_mask.float().sum().detach().cpu().item()))
 
         value_t = torch.stack(values).float()
         positive_logp_t = torch.stack(positive_logps).float()
         negative_logp_t = torch.stack(negative_logps).float()
+        raw_removed_logp_t = torch.stack(raw_removed_logps).float()
         ent_t = torch.stack(entropies).float()
         target_t = torch.tensor(targets, device=device, dtype=torch.float32)
         adv_t = target_t.detach() - value_t.detach()
@@ -2051,13 +2198,21 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             torch.ones_like(bad_mask),
             torch.full_like(bad_mask, 0.25),
         )
+        raw_removed_weight = torch.where(
+            bad_mask > 0.5,
+            torch.ones_like(bad_mask),
+            torch.full_like(bad_mask, 0.75),
+        )
 
         actor_loss = -(positive_weight * positive_logp_t).mean() * float(actor_bc_coef)
         negative_loss = -(negative_weight * negative_logp_t).mean() * float(negative_bc_coef)
+        raw_removed_negative_loss = (
+            -(raw_removed_weight * raw_removed_logp_t).mean() * float(raw_removed_negative_coef)
+        )
         value_loss = F.mse_loss(value_t, target_t)
         entropy = ent_t.mean()
         critic_loss = float(value_coef) * value_loss
-        actor_objective_loss = actor_loss + negative_loss - float(entropy_coef) * entropy
+        actor_objective_loss = actor_loss + negative_loss + raw_removed_negative_loss - float(entropy_coef) * entropy
 
         # Keep the deployment actor update behavior-cloning/AWAC driven.
         # The critic is fit in a separate step so value gradients do not move
@@ -2094,6 +2249,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "done_fraction": _mean_or_zero([1.0 if bool(tr.get("done", False)) else 0.0 for tr in batch]),
             "policy_loss": _scalar_to_float(actor_loss.detach()),
             "negative_loss": _scalar_to_float(negative_loss.detach()),
+            "raw_removed_negative_loss": _scalar_to_float(raw_removed_negative_loss.detach()),
             "value_loss": _scalar_to_float(value_loss.detach()),
             "entropy": _scalar_to_float(entropy.detach()),
             "entropy_coef": float(entropy_coef),
@@ -2106,11 +2262,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "critic_grad_norm": float(critic_grad_norm),
             "actor_positive_weight_mean": _scalar_to_float(positive_weight.detach().mean()),
             "actor_negative_weight_mean": _scalar_to_float(negative_weight.detach().mean()),
+            "actor_raw_removed_weight_mean": _scalar_to_float(raw_removed_weight.detach().mean()),
             "actor_positive_samples": _mean_or_zero(positive_counts),
             "actor_negative_samples": _mean_or_zero(negative_counts),
+            "actor_raw_removed_samples": _mean_or_zero(raw_removed_counts),
             "bad_actor_masked": _scalar_to_float(bad_mask.detach().mean()),
             "positive_logp_mean": _scalar_to_float(positive_logp_t.detach().mean()),
             "negative_logp_mean": _scalar_to_float(negative_logp_t.detach().mean()),
+            "raw_removed_logp_mean": _scalar_to_float(raw_removed_logp_t.detach().mean()),
         }
 
 

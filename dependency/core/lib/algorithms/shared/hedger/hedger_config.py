@@ -26,19 +26,23 @@ class DeploymentConstraintCfg:
     # and uses safety-aware Bernoulli decoding to avoid cloud-only or singleton
     # hotspot placements when feasible edge replicas exist.
     queue_normalizer: float = 8.0
-    decode_edge_threshold: float = 0.35
-    decode_high_pressure_threshold: float = 0.55
-    decode_high_pressure_min_edges: int = 2
+    decode_edge_threshold: float = 0.50
+    decode_coverage_gain_threshold: float = -0.05
+    decode_prune_gain_threshold: float = -0.10
+    decode_add_gain_threshold: float = 0.15
+    decode_redundancy_pressure_scale: float = 1.0
+    decode_redundancy_decay: float = 0.70
+    decode_safety_logit_scale: float = 1.5
     decode_negative_queue_threshold: float = 0.65
     decode_negative_hotspot_threshold: float = 0.08
     safety_queue_weight: float = 1.0
-    safety_runtime_weight: float = 0.8
-    safety_compute_weight: float = 0.35
-    safety_confidence_weight: float = 0.25
-    safety_memory_weight: float = 0.4
-    safety_device_load_weight: float = 0.3
-    safety_inertia_weight: float = 0.2
-    safety_hotspot_weight: float = 0.8
+    safety_runtime_weight: float = 1.4
+    safety_compute_weight: float = 0.20
+    safety_confidence_weight: float = 0.20
+    safety_memory_weight: float = 0.45
+    safety_device_load_weight: float = 0.35
+    safety_inertia_weight: float = 0.05
+    safety_hotspot_weight: float = 1.0
 
 
 class PhysicalTopology:
