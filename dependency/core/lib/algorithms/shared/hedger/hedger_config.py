@@ -22,25 +22,27 @@ class DeploymentConstraintCfg:
     # Fraction of computed available edge memory used as deployment budget.
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
     edge_memory_budget_ratio: float = 1.0
-    # Delta-Bernoulli deployment policy. The actor edits the current deployment
-    # mask with add/keep/remove decisions instead of regenerating a full mask.
+    # Pair-wise Bernoulli option-set policy. The actor proposes a full
+    # service-device edge option set, then a constraint-aware decoder selects a
+    # feasible set of useful options for offloading.
     queue_normalizer: float = 8.0
-    delta_add_threshold: float = 0.55
-    delta_keep_threshold: float = 0.30
-    delta_remove_threshold: float = 0.60
-    delta_change_logit_bias: float = -0.20
-    delta_negative_queue_threshold: float = 0.65
-    delta_negative_hotspot_threshold: float = 0.08
-    # Quality gates for the delta deployment policy. They are generic
-    # service-device signals, not service/device-name rules.
+    select_threshold: float = 0.45
+    negative_queue_threshold: float = 0.65
+    negative_hotspot_threshold: float = 0.08
+    pressure_threshold: float = 0.35
+    pressure_temperature: float = 0.20
+    max_option_mass: float = 2.5
+    unknown_probe_mass: float = 0.25
+    unknown_probe_penalty: float = 0.35
+    known_bad_penalty: float = 1.0
+    option_mass_tolerance: float = 0.05
+    # Generic option-quality gates. They are service/device-name agnostic.
     effective_score_threshold: float = 0.05
-    recovery_score_threshold: float = -0.05
     force_remove_score_threshold: float = 0.0
     stale_negative_threshold: float = 0.80
     low_confidence_threshold: float = 0.25
     relative_weak_negative_threshold: float = 0.50
     weak_risk_negative_threshold: float = 0.35
-    allow_low_confidence_positive_for_coverage: bool = True
 
 
 class PhysicalTopology:
