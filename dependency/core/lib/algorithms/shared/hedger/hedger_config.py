@@ -31,6 +31,16 @@ class DeploymentConstraintCfg:
     delta_change_logit_bias: float = -0.20
     delta_negative_queue_threshold: float = 0.65
     delta_negative_hotspot_threshold: float = 0.08
+    # Quality gates for the delta deployment policy. They are generic
+    # service-device signals, not service/device-name rules.
+    effective_score_threshold: float = 0.05
+    recovery_score_threshold: float = -0.05
+    force_remove_score_threshold: float = 0.0
+    stale_negative_threshold: float = 0.80
+    low_confidence_threshold: float = 0.25
+    relative_weak_negative_threshold: float = 0.50
+    weak_risk_negative_threshold: float = 0.35
+    allow_low_confidence_positive_for_coverage: bool = True
 
 
 class PhysicalTopology:
