@@ -932,10 +932,7 @@ class Hedger:
             "negative_loss", "raw_removed_negative_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean",
-            "actor_positive_samples", "actor_low_confidence_positive_samples",
-            "actor_negative_samples", "actor_raw_removed_samples",
-            "actor_low_quality_selected_samples", "actor_stale_negative_samples",
-            "actor_forced_remove_samples",
+            "actor_positive_samples", "actor_negative_samples", "actor_raw_removed_samples",
             "bad_actor_masked",
             "positive_logp_mean", "negative_logp_mean", "raw_removed_logp_mean",
         ]
@@ -1035,9 +1032,9 @@ class Hedger:
         hotspot = deployment.get("hotspot") or {}
         if not isinstance(hotspot, dict):
             raise ValueError("Hedger config `agents.deployment.hotspot` must be a mapping when provided.")
-        option_set = deployment.get("option_set") or {}
-        if not isinstance(option_set, dict):
-            raise ValueError("Hedger config `agents.deployment.option_set` must be a mapping when provided.")
+        matrix_policy = deployment.get("matrix_policy") or {}
+        if not isinstance(matrix_policy, dict):
+            raise ValueError("Hedger config `agents.deployment.matrix_policy` must be a mapping when provided.")
         max_edge_replicas = constraints.get("max_edge_replicas_per_device")
         if max_edge_replicas is not None:
             max_edge_replicas = int(max_edge_replicas)
@@ -1049,14 +1046,13 @@ class Hedger:
         queue_normalizer = float(hotspot.get("queue_normalizer", 8.0))
         if not math.isfinite(queue_normalizer) or queue_normalizer <= 0.0:
             raise ValueError("Hedger config `agents.deployment.hotspot.queue_normalizer` must be > 0.")
-        def _option_float(name: str, default: float, *, probability: bool = False) -> float:
-            value = float(option_set.get(name, default))
+        def _matrix_float(name: str, default: float, *, probability: bool = False) -> float:
+            value = float(matrix_policy.get(name, default))
             if not math.isfinite(value):
-                raise ValueError(f"Hedger config `agents.deployment.option_set.{name}` must be finite.")
+                raise ValueError(f"Hedger config `agents.deployment.matrix_policy.{name}` must be finite.")
             if probability and not (0.0 <= value <= 1.0):
-                raise ValueError(f"Hedger config `agents.deployment.option_set.{name}` must be in [0, 1].")
+                raise ValueError(f"Hedger config `agents.deployment.matrix_policy.{name}` must be in [0, 1].")
             return value
-
         dep_latency_cfg = self._parse_latency_reward_cfg(
             reward,
             scope="deployment",
@@ -1083,29 +1079,12 @@ class Hedger:
             "penalty_latency_guard_trigger": float(penalty.get("latency_guard_trigger", 0.0)),
             "penalty_feedback_timeout": float(penalty.get("feedback_timeout", 0.0)),
             "reward_dep_hotspot_weight": float(hotspot.get("hotspot_weight", 0.0)),
-            "reward_dep_effective_freedom_weight": float(reward.get("effective_freedom_weight", 0.0)),
-            "reward_dep_weak_option_weight": float(reward.get("weak_option_weight", 0.0)),
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
             "queue_normalizer": queue_normalizer,
-            "select_threshold": _option_float("select_threshold", 0.45, probability=True),
-            "negative_queue_threshold": _option_float("negative_queue_threshold", 0.65, probability=True),
-            "negative_hotspot_threshold": _option_float("negative_hotspot_threshold", 0.08, probability=True),
-            "pressure_threshold": _option_float("pressure_threshold", 0.35, probability=True),
-            "pressure_temperature": max(1e-3, _option_float("pressure_temperature", 0.20)),
-            "max_option_mass": max(1.0, _option_float("max_option_mass", 2.5)),
-            "unknown_probe_mass": _option_float("unknown_probe_mass", 0.25, probability=True),
-            "unknown_probe_penalty": _option_float("unknown_probe_penalty", 0.35),
-            "known_bad_penalty": _option_float("known_bad_penalty", 1.0),
-            "option_mass_tolerance": max(0.0, _option_float("option_mass_tolerance", 0.05)),
-            "effective_score_threshold": _option_float("effective_score_threshold", 0.05),
-            "force_remove_score_threshold": _option_float("force_remove_score_threshold", 0.0),
-            "stale_negative_threshold": _option_float("stale_negative_threshold", 0.80, probability=True),
-            "low_confidence_threshold": _option_float("low_confidence_threshold", 0.25, probability=True),
-            "relative_weak_negative_threshold": _option_float(
-                "relative_weak_negative_threshold", 0.50, probability=True
-            ),
-            "weak_risk_negative_threshold": _option_float("weak_risk_negative_threshold", 0.35, probability=True),
+            "select_threshold": _matrix_float("select_threshold", 0.45, probability=True),
+            "negative_queue_threshold": _matrix_float("negative_queue_threshold", 0.65, probability=True),
+            "negative_hotspot_threshold": _matrix_float("negative_hotspot_threshold", 0.08, probability=True),
             "ppo": ppo,
         }
 
@@ -2104,8 +2083,6 @@ class Hedger:
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"hotspot_weight={dep_params.get('reward_dep_hotspot_weight', 'na')}, "
             f"select_threshold={dep_params.get('select_threshold', 'na')}, "
-            f"max_option_mass={dep_params.get('max_option_mass', 'na')}, "
-            f"unknown_probe_mass={dep_params.get('unknown_probe_mass', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -2702,7 +2679,6 @@ class Hedger:
             "dep_offload_term", "dep_latency_term", "dep_slo_term", "dep_change_term",
             "dep_cloud_only_term", "dep_capacity_relax_term", "dep_edge_cover_repair_term",
             "dep_hotspot_term",
-            "dep_effective_freedom_term", "dep_weak_option_term",
             "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
             "active_pair_hotspot_cost", "executed_active_pair_hotspot_cost",
             "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
@@ -2724,14 +2700,11 @@ class Hedger:
             "hotspot_repair_cost", "hotspot_unmet", "policy_logp", "policy_entropy",
             "value_estimate", "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
             "raw_zero_edge_services", "decoded_zero_edge_services",
-            "option_added_cnt", "option_kept_cnt", "option_removed_cnt",
+            "matrix_added_cnt", "matrix_kept_cnt", "matrix_removed_cnt",
             "decode_added_cnt", "decode_pruned_cnt",
-            "decode_effective_added_cnt", "decode_low_quality_pruned_cnt",
-            "decode_overselected_services", "capacity_removed_cnt", "projection_effective_removed_cnt",
-            "effective_edge_options_mean", "effective_edge_options_min", "desired_option_mass_mean",
-            "option_shortage_cost", "selected_weak_option_cost", "selected_unknown_option_cost",
-            "selected_low_confidence_option_cost", "selected_low_quality_option_cost",
-            "selected_stale_option_cost", "known_bad_pruned_cnt", "option_blocked_cnt",
+            "capacity_removed_cnt", "selected_queue_pressure_cost", "selected_runtime_risk_cost",
+            "selected_unknown_option_cost", "selected_stale_option_cost",
+            "selected_runtime_weakness_cost",
             "cloud_only", "cloud_only_ratio", "empty_edge_devices", "empty_edge_device_ratio",
             "raw_deployment_plan", "deployment_plan", "active_deployment_plan",
             *self._state_record_fieldnames(),
@@ -2743,13 +2716,6 @@ class Hedger:
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
             "edge_memory_budget_ratio", "select_threshold",
             "negative_queue_threshold", "negative_hotspot_threshold",
-            "pressure_threshold", "pressure_temperature", "max_option_mass",
-            "unknown_probe_mass", "unknown_probe_penalty", "known_bad_penalty",
-            "option_mass_tolerance",
-            "effective_score_threshold", "force_remove_score_threshold",
-            "stale_negative_threshold", "low_confidence_threshold",
-            "relative_weak_negative_threshold", "weak_risk_negative_threshold",
-            "effective_freedom_weight", "weak_option_weight",
             "queue_normalizer", "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -2825,13 +2791,10 @@ class Hedger:
             *Hedger._decision_common_fieldnames(),
             "raw_nodes", "executed_nodes", "removed_nodes", "added_nodes",
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
-            "raw_zero_edge", "decoded_zero_edge", "option_added_nodes", "option_kept_nodes",
-            "option_removed_nodes", "decode_added_nodes", "decode_pruned_nodes",
+            "raw_zero_edge", "decoded_zero_edge", "matrix_added_nodes", "matrix_kept_nodes",
+            "matrix_removed_nodes", "decode_added_nodes", "decode_pruned_nodes",
             "decode_added_reason", "decode_pruned_reason", "capacity_removed_nodes",
             "service_pressure", "edge_feasible_count", "edge_replica_count",
-            "desired_option_mass", "effective_edge_options", "option_shortage",
-            "unknown_probe_used", "all_edge_candidates_low_confidence",
-            "known_bad_pruned_nodes", "option_blocked_nodes",
             "device_replica_count", "active_pair_hotspot",
             "collect_behavior", "collect_operation",
             "collect_selected_service", "collect_selected_device",
@@ -2853,18 +2816,9 @@ class Hedger:
                 "deployment_select_probs", "deployment_decode_scores",
                 "deployment_safety_prior",
                 "deployment_static_option_score", "deployment_runtime_risk_score",
-                "deployment_option_quality_score", "deployment_option_mass_contribution",
-                "deployment_option_set_utility", "deployment_evidence_confidence",
-                "deployment_effective_option_score", "deployment_pair_quality",
-                "deployment_effective_score_deficit", "deployment_effective_option_mask",
-                "deployment_known_good_mask", "deployment_known_bad_mask",
-                "deployment_unknown_probe_mask", "deployment_stale_low_confidence_mask",
-                "deployment_runtime_weak_mask", "deployment_high_weak_risk_mask",
-                "deployment_low_confidence_option_mask",
+                "deployment_pair_quality", "deployment_evidence_confidence",
                 "deployment_queue_pressure", "deployment_runtime_unknown_risk",
                 "deployment_runtime_stale_risk", "deployment_runtime_relative_weakness",
-                "deployment_desired_option_mass", "deployment_effective_edge_options",
-                "deployment_option_shortage", "deployment_projection_removed_reason",
                 "deployment_policy_probs", "deployment_raw_threshold_nodes",
                 "deployment_decoded_nodes", "deployment_positive_mask", "deployment_negative_mask",
                 "deployment_service_pressure",
@@ -3088,33 +3042,33 @@ class Hedger:
                 decode_pruned_indices = torch.nonzero(decode_pruned_row, as_tuple=False).flatten().tolist()
             else:
                 decode_pruned_indices = []
-            option_added_tensor = actor_debug.get("option_added_mask")
-            if isinstance(option_added_tensor, torch.Tensor) and option_added_tensor.dim() == 2 \
-                    and option_added_tensor.size(0) > service_idx:
-                option_added_indices = torch.nonzero(
-                    option_added_tensor[service_idx].detach().cpu().bool(),
+            matrix_added_tensor = actor_debug.get("matrix_added_mask")
+            if isinstance(matrix_added_tensor, torch.Tensor) and matrix_added_tensor.dim() == 2 \
+                    and matrix_added_tensor.size(0) > service_idx:
+                matrix_added_indices = torch.nonzero(
+                    matrix_added_tensor[service_idx].detach().cpu().bool(),
                     as_tuple=False,
                 ).flatten().tolist()
             else:
-                option_added_indices = []
-            option_kept_tensor = actor_debug.get("option_kept_mask")
-            if isinstance(option_kept_tensor, torch.Tensor) and option_kept_tensor.dim() == 2 \
-                    and option_kept_tensor.size(0) > service_idx:
-                option_kept_indices = torch.nonzero(
-                    option_kept_tensor[service_idx].detach().cpu().bool(),
+                matrix_added_indices = []
+            matrix_kept_tensor = actor_debug.get("matrix_kept_mask")
+            if isinstance(matrix_kept_tensor, torch.Tensor) and matrix_kept_tensor.dim() == 2 \
+                    and matrix_kept_tensor.size(0) > service_idx:
+                matrix_kept_indices = torch.nonzero(
+                    matrix_kept_tensor[service_idx].detach().cpu().bool(),
                     as_tuple=False,
                 ).flatten().tolist()
             else:
-                option_kept_indices = []
-            option_removed_tensor = actor_debug.get("option_removed_mask")
-            if isinstance(option_removed_tensor, torch.Tensor) and option_removed_tensor.dim() == 2 \
-                    and option_removed_tensor.size(0) > service_idx:
-                option_removed_indices = torch.nonzero(
-                    option_removed_tensor[service_idx].detach().cpu().bool(),
+                matrix_kept_indices = []
+            matrix_removed_tensor = actor_debug.get("matrix_removed_mask")
+            if isinstance(matrix_removed_tensor, torch.Tensor) and matrix_removed_tensor.dim() == 2 \
+                    and matrix_removed_tensor.size(0) > service_idx:
+                matrix_removed_indices = torch.nonzero(
+                    matrix_removed_tensor[service_idx].detach().cpu().bool(),
                     as_tuple=False,
                 ).flatten().tolist()
             else:
-                option_removed_indices = []
+                matrix_removed_indices = []
             capacity_removed_tensor = actor_debug.get("capacity_removed_mask")
             if isinstance(capacity_removed_tensor, torch.Tensor) and capacity_removed_tensor.dim() == 2 \
                     and capacity_removed_tensor.size(0) > service_idx:
@@ -3122,24 +3076,6 @@ class Hedger:
                 capacity_removed_indices = torch.nonzero(capacity_removed_row, as_tuple=False).flatten().tolist()
             else:
                 capacity_removed_indices = []
-            known_bad_pruned_tensor = actor_debug.get("known_bad_pruned_mask")
-            if isinstance(known_bad_pruned_tensor, torch.Tensor) and known_bad_pruned_tensor.dim() == 2 \
-                    and known_bad_pruned_tensor.size(0) > service_idx:
-                known_bad_pruned_indices = torch.nonzero(
-                    known_bad_pruned_tensor[service_idx].detach().cpu().bool(),
-                    as_tuple=False,
-                ).flatten().tolist()
-            else:
-                known_bad_pruned_indices = []
-            option_blocked_tensor = actor_debug.get("option_blocked_mask")
-            if isinstance(option_blocked_tensor, torch.Tensor) and option_blocked_tensor.dim() == 2 \
-                    and option_blocked_tensor.size(0) > service_idx:
-                option_blocked_indices = torch.nonzero(
-                    option_blocked_tensor[service_idx].detach().cpu().bool(),
-                    as_tuple=False,
-                ).flatten().tolist()
-            else:
-                option_blocked_indices = []
             added_reason_tensor = actor_debug.get("decode_added_reason")
             if isinstance(added_reason_tensor, torch.Tensor) and added_reason_tensor.dim() == 2 \
                     and added_reason_tensor.size(0) > service_idx:
@@ -3162,34 +3098,17 @@ class Hedger:
                 pruned_reason_codes = []
             reason_names = [
                 {
-                    2: "actor_known_good",
-                    3: "option_shortage",
-                    4: "unknown_probe",
+                    1: "bernoulli_sample",
                 }.get(code, "")
                 for code in added_reason_codes
                 if code > 0
             ]
             pruned_reason_names = [
-                {1: "known_bad"}.get(code, "")
+                {1: "matrix_removed"}.get(code, "")
                 for code in pruned_reason_codes
                 if code > 0
             ]
             edge_feasible_count = self._actor_debug_vector_value(actor_debug, "edge_feasible_count", service_idx)
-            unknown_probe_used = any(code == 4 for code in added_reason_codes)
-            all_candidates_low_confidence = False
-            runtime_conf_row = actor_debug.get("runtime_confidence")
-            static_mask_row = actor_debug.get("static_mask")
-            if isinstance(runtime_conf_row, torch.Tensor) and runtime_conf_row.dim() == 2 \
-                    and runtime_conf_row.size(0) > service_idx \
-                    and isinstance(static_mask_row, torch.Tensor) and static_mask_row.dim() == 2 \
-                    and static_mask_row.size(0) > service_idx and cloud_idx > 0:
-                allowed_edge = static_mask_row[service_idx, :cloud_idx].detach().cpu().bool()
-                conf_edge = runtime_conf_row[service_idx, :cloud_idx].detach().cpu().float()
-                if bool(allowed_edge.any().item()):
-                    min_conf = float(self.deployment_agent_params.get("low_confidence_threshold", 0.25))
-                    all_candidates_low_confidence = not bool(
-                        (conf_edge >= min_conf).masked_select(allowed_edge).any().item()
-                    )
             row = dict(
                 step=step,
                 epoch=self._epoch,
@@ -3212,9 +3131,9 @@ class Hedger:
                 cloud_replica=bool(exec_mask[service_idx, cloud_idx].item()),
                 raw_zero_edge=int(raw_edge_count <= 0 and edge_feasible_count > 0.0),
                 decoded_zero_edge=int(decoded_edge_count <= 0 and edge_feasible_count > 0.0),
-                option_added_nodes=self._json_for_record(self._device_names_from_indices(option_added_indices)),
-                option_kept_nodes=self._json_for_record(self._device_names_from_indices(option_kept_indices)),
-                option_removed_nodes=self._json_for_record(self._device_names_from_indices(option_removed_indices)),
+                matrix_added_nodes=self._json_for_record(self._device_names_from_indices(matrix_added_indices)),
+                matrix_kept_nodes=self._json_for_record(self._device_names_from_indices(matrix_kept_indices)),
+                matrix_removed_nodes=self._json_for_record(self._device_names_from_indices(matrix_removed_indices)),
                 decode_added_nodes=self._json_for_record(self._device_names_from_indices(decode_added_indices)),
                 decode_pruned_nodes=self._json_for_record(self._device_names_from_indices(decode_pruned_indices)),
                 decode_added_reason=self._json_for_record(reason_names),
@@ -3225,21 +3144,6 @@ class Hedger:
                 service_pressure=self._actor_debug_vector_value(actor_debug, "service_pressure", service_idx),
                 edge_feasible_count=edge_feasible_count,
                 edge_replica_count=self._actor_debug_vector_value(actor_debug, "edge_replica_count", service_idx),
-                desired_option_mass=self._actor_debug_vector_value(actor_debug, "desired_option_mass", service_idx),
-                effective_edge_options=self._actor_debug_vector_value(
-                    actor_debug,
-                    "effective_option_count",
-                    service_idx,
-                ),
-                option_shortage=self._actor_debug_vector_value(actor_debug, "option_shortage", service_idx),
-                unknown_probe_used=int(bool(unknown_probe_used)),
-                all_edge_candidates_low_confidence=int(bool(all_candidates_low_confidence)),
-                known_bad_pruned_nodes=self._json_for_record(
-                    self._device_names_from_indices(known_bad_pruned_indices)
-                ),
-                option_blocked_nodes=self._json_for_record(
-                    self._device_names_from_indices(option_blocked_indices)
-                ),
                 device_replica_count=self._json_for_record(
                     self._actor_debug_device_vector_map(actor_debug, "device_replica_count")
                 ),
@@ -3334,50 +3238,11 @@ class Hedger:
                     "deployment_runtime_risk_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "runtime_risk_score", service_idx)
                     ),
-                    "deployment_option_quality_score": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "option_quality_score", service_idx)
-                    ),
-                    "deployment_option_mass_contribution": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "option_mass_contribution", service_idx)
-                    ),
-                    "deployment_option_set_utility": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "option_set_utility", service_idx)
-                    ),
                     "deployment_evidence_confidence": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "evidence_confidence", service_idx)
                     ),
-                    "deployment_effective_option_score": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "effective_option_score", service_idx)
-                    ),
                     "deployment_pair_quality": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "effective_option_score", service_idx)
-                    ),
-                    "deployment_effective_score_deficit": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "effective_score_deficit", service_idx)
-                    ),
-                    "deployment_effective_option_mask": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "effective_option_mask", service_idx)
-                    ),
-                    "deployment_known_good_mask": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "known_good_mask", service_idx)
-                    ),
-                    "deployment_known_bad_mask": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "known_bad_mask", service_idx)
-                    ),
-                    "deployment_unknown_probe_mask": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "unknown_probe_mask", service_idx)
-                    ),
-                    "deployment_stale_low_confidence_mask": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "stale_low_confidence_mask", service_idx)
-                    ),
-                    "deployment_runtime_weak_mask": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "runtime_weak_mask", service_idx)
-                    ),
-                    "deployment_high_weak_risk_mask": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "high_weak_risk_mask", service_idx)
-                    ),
-                    "deployment_low_confidence_option_mask": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "low_confidence_option_mask", service_idx)
+                        self._actor_debug_row_map(actor_debug, "pair_quality_score", service_idx)
                     ),
                     "deployment_queue_pressure": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "queue_pressure", service_idx)
@@ -3390,18 +3255,6 @@ class Hedger:
                     ),
                     "deployment_runtime_relative_weakness": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "runtime_relative_weakness", service_idx)
-                    ),
-                    "deployment_desired_option_mass": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "desired_option_mass", service_idx)
-                    ),
-                    "deployment_effective_edge_options": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "effective_option_count", service_idx)
-                    ),
-                    "deployment_option_shortage": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "option_shortage", service_idx)
-                    ),
-                    "deployment_projection_removed_reason": self._json_for_record(
-                        self._device_names_from_indices(capacity_removed_indices)
                     ),
                     "deployment_policy_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "policy_prob", service_idx)
@@ -6007,8 +5860,6 @@ class Hedger:
                         dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                         dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
                         dep_hotspot_term=dep_reward_breakdown["dep_hotspot_term"],
-                        dep_effective_freedom_term=dep_reward_breakdown["dep_effective_freedom_term"],
-                        dep_weak_option_term=dep_reward_breakdown["dep_weak_option_term"],
                         dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
                         dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
                         active_pair_hotspot_cost=dep_reward_breakdown["active_pair_hotspot_cost"],
@@ -6081,27 +5932,17 @@ class Hedger:
                         cloud_replicas=cloud_replicas,
                         raw_zero_edge_services=aux.get("raw_zero_edge_services", 0),
                         decoded_zero_edge_services=aux.get("decoded_zero_edge_services", 0),
-                        option_added_cnt=aux.get("option_added_cnt", 0),
-                        option_kept_cnt=aux.get("option_kept_cnt", 0),
-                        option_removed_cnt=aux.get("option_removed_cnt", 0),
+                        matrix_added_cnt=aux.get("matrix_added_cnt", 0),
+                        matrix_kept_cnt=aux.get("matrix_kept_cnt", 0),
+                        matrix_removed_cnt=aux.get("matrix_removed_cnt", 0),
                         decode_added_cnt=aux.get("decode_added_cnt", 0),
-                        decode_effective_added_cnt=aux.get("decode_effective_added_cnt", 0),
                         decode_pruned_cnt=aux.get("decode_pruned_cnt", 0),
-                        decode_low_quality_pruned_cnt=aux.get("decode_low_quality_pruned_cnt", 0),
-                        decode_overselected_services=aux.get("decode_overselected_services", 0),
                         capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
-                        projection_effective_removed_cnt=aux.get("projection_effective_removed_cnt", 0),
-                        effective_edge_options_mean=aux.get("effective_edge_options_mean", 0.0),
-                        effective_edge_options_min=aux.get("effective_edge_options_min", 0.0),
-                        desired_option_mass_mean=aux.get("desired_option_mass_mean", 0.0),
-                        option_shortage_cost=aux.get("option_shortage_cost", 0.0),
-                        selected_weak_option_cost=aux.get("selected_weak_option_cost", 0.0),
+                        selected_queue_pressure_cost=aux.get("selected_queue_pressure_cost", 0.0),
+                        selected_runtime_risk_cost=aux.get("selected_runtime_risk_cost", 0.0),
                         selected_unknown_option_cost=aux.get("selected_unknown_option_cost", 0.0),
-                        selected_low_confidence_option_cost=aux.get("selected_low_confidence_option_cost", 0.0),
-                        selected_low_quality_option_cost=aux.get("selected_low_quality_option_cost", 0.0),
                         selected_stale_option_cost=aux.get("selected_stale_option_cost", 0.0),
-                        known_bad_pruned_cnt=aux.get("known_bad_pruned_cnt", 0),
-                        option_blocked_cnt=aux.get("option_blocked_cnt", 0),
+                        selected_runtime_weakness_cost=aux.get("selected_runtime_weakness_cost", 0.0),
                         cloud_only=cloud_only,
                         cloud_only_ratio=cloud_only_ratio,
                         empty_edge_devices=empty_edge_devices,
@@ -6129,23 +5970,6 @@ class Hedger:
                         select_threshold=self.deployment_agent_params["select_threshold"],
                         negative_queue_threshold=self.deployment_agent_params["negative_queue_threshold"],
                         negative_hotspot_threshold=self.deployment_agent_params["negative_hotspot_threshold"],
-                        pressure_threshold=self.deployment_agent_params["pressure_threshold"],
-                        pressure_temperature=self.deployment_agent_params["pressure_temperature"],
-                        max_option_mass=self.deployment_agent_params["max_option_mass"],
-                        unknown_probe_mass=self.deployment_agent_params["unknown_probe_mass"],
-                        unknown_probe_penalty=self.deployment_agent_params["unknown_probe_penalty"],
-                        known_bad_penalty=self.deployment_agent_params["known_bad_penalty"],
-                        option_mass_tolerance=self.deployment_agent_params["option_mass_tolerance"],
-                        effective_score_threshold=self.deployment_agent_params["effective_score_threshold"],
-                        force_remove_score_threshold=self.deployment_agent_params["force_remove_score_threshold"],
-                        stale_negative_threshold=self.deployment_agent_params["stale_negative_threshold"],
-                        low_confidence_threshold=self.deployment_agent_params["low_confidence_threshold"],
-                        relative_weak_negative_threshold=(
-                            self.deployment_agent_params["relative_weak_negative_threshold"]
-                        ),
-                        weak_risk_negative_threshold=self.deployment_agent_params["weak_risk_negative_threshold"],
-                        effective_freedom_weight=self.deployment_agent_params["reward_dep_effective_freedom_weight"],
-                        weak_option_weight=self.deployment_agent_params["reward_dep_weak_option_weight"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
@@ -6760,7 +6584,6 @@ class Hedger:
                                 "dep_slo_term", "dep_change_term", "dep_cloud_only_term",
                                 "dep_capacity_relax_term", "dep_edge_cover_repair_term",
                                 "dep_hotspot_term",
-                                "dep_effective_freedom_term", "dep_weak_option_term",
                                 "dep_latency_guard_penalty_term", "dep_feedback_timeout_term",
                                 "active_pair_hotspot_cost", "executed_active_pair_hotspot_cost",
                                 "e2e_latency_count", "e2e_latency_mean", "e2e_latency_latest",
@@ -6793,17 +6616,11 @@ class Hedger:
                                 "deployment_rollout_deterministic",
                                 "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
                                 "raw_zero_edge_services", "decoded_zero_edge_services",
-                                "option_added_cnt", "option_kept_cnt", "option_removed_cnt",
+                                "matrix_added_cnt", "matrix_kept_cnt", "matrix_removed_cnt",
                                 "decode_added_cnt", "decode_pruned_cnt",
-                                "decode_effective_added_cnt", "decode_low_quality_pruned_cnt",
-                                "decode_overselected_services", "capacity_removed_cnt",
-                                "projection_effective_removed_cnt",
-                                "effective_edge_options_mean", "effective_edge_options_min",
-                                "desired_option_mass_mean", "option_shortage_cost",
-                                "selected_weak_option_cost", "selected_unknown_option_cost",
-                                "selected_low_confidence_option_cost", "selected_low_quality_option_cost",
-                                "selected_stale_option_cost", "known_bad_pruned_cnt",
-                                "option_blocked_cnt",
+                                "capacity_removed_cnt", "selected_queue_pressure_cost",
+                                "selected_runtime_risk_cost", "selected_unknown_option_cost",
+                                "selected_stale_option_cost", "selected_runtime_weakness_cost",
                                 "cloud_only", "cloud_only_ratio",
                                 "empty_edge_devices", "empty_edge_device_ratio",
                                 "transition_buffer", "dataset_transitions",
@@ -6819,13 +6636,7 @@ class Hedger:
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
             "select_threshold", "negative_queue_threshold", "negative_hotspot_threshold",
-            "pressure_threshold", "pressure_temperature", "max_option_mass",
-            "unknown_probe_mass", "unknown_probe_penalty", "known_bad_penalty",
-            "option_mass_tolerance", "queue_normalizer",
-            "effective_score_threshold", "force_remove_score_threshold",
-            "stale_negative_threshold", "low_confidence_threshold",
-            "relative_weak_negative_threshold", "weak_risk_negative_threshold",
-            "effective_freedom_weight", "weak_option_weight",
+            "queue_normalizer",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
             "deployment_default_warmup_min_feedback_samples",
@@ -7144,8 +6955,6 @@ class Hedger:
                     dep_capacity_relax_term=dep_reward_breakdown["dep_capacity_relax_term"],
                     dep_edge_cover_repair_term=dep_reward_breakdown["dep_edge_cover_repair_term"],
                     dep_hotspot_term=dep_reward_breakdown["dep_hotspot_term"],
-                    dep_effective_freedom_term=dep_reward_breakdown["dep_effective_freedom_term"],
-                    dep_weak_option_term=dep_reward_breakdown["dep_weak_option_term"],
                     dep_latency_guard_penalty_term=dep_reward_breakdown["dep_latency_guard_penalty_term"],
                     dep_feedback_timeout_term=dep_reward_breakdown["dep_feedback_timeout_term"],
                     active_pair_hotspot_cost=dep_reward_breakdown["active_pair_hotspot_cost"],
@@ -7217,27 +7026,17 @@ class Hedger:
                     cloud_replicas=cloud_replicas,
                     raw_zero_edge_services=aux.get("raw_zero_edge_services", 0),
                     decoded_zero_edge_services=aux.get("decoded_zero_edge_services", 0),
-                    option_added_cnt=aux.get("option_added_cnt", 0),
-                    option_kept_cnt=aux.get("option_kept_cnt", 0),
-                    option_removed_cnt=aux.get("option_removed_cnt", 0),
+                    matrix_added_cnt=aux.get("matrix_added_cnt", 0),
+                    matrix_kept_cnt=aux.get("matrix_kept_cnt", 0),
+                    matrix_removed_cnt=aux.get("matrix_removed_cnt", 0),
                     decode_added_cnt=aux.get("decode_added_cnt", 0),
-                    decode_effective_added_cnt=aux.get("decode_effective_added_cnt", 0),
                     decode_pruned_cnt=aux.get("decode_pruned_cnt", 0),
-                    decode_low_quality_pruned_cnt=aux.get("decode_low_quality_pruned_cnt", 0),
-                    decode_overselected_services=aux.get("decode_overselected_services", 0),
                     capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
-                    projection_effective_removed_cnt=aux.get("projection_effective_removed_cnt", 0),
-                    effective_edge_options_mean=aux.get("effective_edge_options_mean", 0.0),
-                    effective_edge_options_min=aux.get("effective_edge_options_min", 0.0),
-                    desired_option_mass_mean=aux.get("desired_option_mass_mean", 0.0),
-                    option_shortage_cost=aux.get("option_shortage_cost", 0.0),
-                    selected_weak_option_cost=aux.get("selected_weak_option_cost", 0.0),
+                    selected_queue_pressure_cost=aux.get("selected_queue_pressure_cost", 0.0),
+                    selected_runtime_risk_cost=aux.get("selected_runtime_risk_cost", 0.0),
                     selected_unknown_option_cost=aux.get("selected_unknown_option_cost", 0.0),
-                    selected_low_confidence_option_cost=aux.get("selected_low_confidence_option_cost", 0.0),
-                    selected_low_quality_option_cost=aux.get("selected_low_quality_option_cost", 0.0),
                     selected_stale_option_cost=aux.get("selected_stale_option_cost", 0.0),
-                    known_bad_pruned_cnt=aux.get("known_bad_pruned_cnt", 0),
-                    option_blocked_cnt=aux.get("option_blocked_cnt", 0),
+                    selected_runtime_weakness_cost=aux.get("selected_runtime_weakness_cost", 0.0),
                     cloud_only=cloud_only,
                     cloud_only_ratio=cloud_only_ratio,
                     empty_edge_devices=empty_edge_devices,
@@ -7265,21 +7064,6 @@ class Hedger:
                     select_threshold=self.deployment_agent_params["select_threshold"],
                     negative_queue_threshold=self.deployment_agent_params["negative_queue_threshold"],
                     negative_hotspot_threshold=self.deployment_agent_params["negative_hotspot_threshold"],
-                    pressure_threshold=self.deployment_agent_params["pressure_threshold"],
-                    pressure_temperature=self.deployment_agent_params["pressure_temperature"],
-                    max_option_mass=self.deployment_agent_params["max_option_mass"],
-                    unknown_probe_mass=self.deployment_agent_params["unknown_probe_mass"],
-                    unknown_probe_penalty=self.deployment_agent_params["unknown_probe_penalty"],
-                    known_bad_penalty=self.deployment_agent_params["known_bad_penalty"],
-                    option_mass_tolerance=self.deployment_agent_params["option_mass_tolerance"],
-                    effective_score_threshold=self.deployment_agent_params["effective_score_threshold"],
-                    force_remove_score_threshold=self.deployment_agent_params["force_remove_score_threshold"],
-                    stale_negative_threshold=self.deployment_agent_params["stale_negative_threshold"],
-                    low_confidence_threshold=self.deployment_agent_params["low_confidence_threshold"],
-                    relative_weak_negative_threshold=self.deployment_agent_params["relative_weak_negative_threshold"],
-                    weak_risk_negative_threshold=self.deployment_agent_params["weak_risk_negative_threshold"],
-                    effective_freedom_weight=self.deployment_agent_params["reward_dep_effective_freedom_weight"],
-                    weak_option_weight=self.deployment_agent_params["reward_dep_weak_option_weight"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
@@ -7788,8 +7572,6 @@ class Hedger:
         cap_relax_cost = float(aux.get("capacity_relax_cost", 0.0))
         edge_cover_repair_cost = float(aux.get("edge_cover_repair_cost", 0.0))
         active_pair_hotspot_cost = float(aux.get("executed_active_pair_hotspot_cost", aux.get("active_pair_hotspot_cost", 0.0)))
-        option_shortage_cost = float(aux.get("option_shortage_cost", 0.0))
-        selected_weak_option_cost = float(aux.get("selected_weak_option_cost", 0.0))
         latency_guard_penalty_cost = float(metrics.get("latency_guard_penalty_cost", 0.0))
         feedback_timeout_penalty_cost = float(metrics.get("feedback_timeout_penalty_cost", 0.0))
 
@@ -7801,8 +7583,6 @@ class Hedger:
         penalty_capacity_relax = float(self.deployment_agent_params["penalty_capacity_relax"])
         penalty_edge_cover_repair = float(self.deployment_agent_params.get("penalty_edge_cover_repair", 0.0))
         w_hotspot = float(self.deployment_agent_params.get("reward_dep_hotspot_weight", 0.0))
-        w_effective_freedom = float(self.deployment_agent_params.get("reward_dep_effective_freedom_weight", 0.0))
-        w_weak_option = float(self.deployment_agent_params.get("reward_dep_weak_option_weight", 0.0))
         penalty_latency_guard = float(self.deployment_agent_params.get("penalty_latency_guard_trigger", 0.0))
         penalty_feedback_timeout = float(self.deployment_agent_params.get("penalty_feedback_timeout", 0.0))
 
@@ -7819,8 +7599,6 @@ class Hedger:
             "dep_capacity_relax_term": -penalty_capacity_relax * cap_relax_cost,
             "dep_edge_cover_repair_term": -penalty_edge_cover_repair * edge_cover_repair_cost,
             "dep_hotspot_term": -w_hotspot * active_pair_hotspot_cost,
-            "dep_effective_freedom_term": -w_effective_freedom * option_shortage_cost,
-            "dep_weak_option_term": -w_weak_option * selected_weak_option_cost,
             "dep_latency_guard_penalty_term": -penalty_latency_guard * latency_guard_penalty_cost,
             "dep_feedback_timeout_term": -penalty_feedback_timeout * feedback_timeout_penalty_cost,
         }
@@ -7829,8 +7607,6 @@ class Hedger:
             "feedback_timeout_penalty_cost": float(feedback_timeout_penalty_cost),
             "active_pair_hotspot_cost": float(aux.get("active_pair_hotspot_cost", 0.0)),
             "executed_active_pair_hotspot_cost": float(aux.get("executed_active_pair_hotspot_cost", 0.0)),
-            "option_shortage_cost": float(option_shortage_cost),
-            "selected_weak_option_cost": float(selected_weak_option_cost),
             **terms,
             "reward": self._sum_reward_terms(terms),
         }

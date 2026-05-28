@@ -147,14 +147,6 @@ DEPLOYMENT_CANDIDATE_FEATURE_NAMES = [
     "edge_replica_count",
     "device_replica_count",
     "pair_memory_cost",
-    "option_quality_score",
-    "option_mass_contribution",
-    "desired_option_mass",
-    "option_shortage",
-    "weak_option_risk",
-    "known_good_signal",
-    "known_bad_signal",
-    "unknown_probe_signal",
     "static_allowed",
     "active_pair_hotspot",
 ]
@@ -341,7 +333,7 @@ class CandidateCostHead(nn.Module):
         return self.net(candidate_features).squeeze(-1)
 
 
-class DeploymentOptionHead(nn.Module):
+class DeploymentMatrixHead(nn.Module):
     """Predict a Bernoulli selection logit for a service-device deployment option."""
 
     def __init__(self, input_dim: int, hidden_dim: int):
@@ -420,7 +412,7 @@ class _DeploymentBackbonePPO(nn.Module):
         self.encoder = encoder
         self.actor = DeploymentActor(d_model)
         hidden_dim = max(32, d_model)
-        self.deployment_option_head = DeploymentOptionHead(
+        self.deployment_matrix_head = DeploymentMatrixHead(
             input_dim=len(DEPLOYMENT_CANDIDATE_FEATURE_NAMES),
             hidden_dim=hidden_dim,
         )
@@ -441,7 +433,7 @@ class _DeploymentBackbonePPO(nn.Module):
 
     def _rebuild_actor_optimizer(self):
         params_actor = list(self.actor.parameters())
-        params_actor.extend(list(self.deployment_option_head.parameters()))
+        params_actor.extend(list(self.deployment_matrix_head.parameters()))
         if self._update_encoder:
             params_actor.extend(list(self.encoder.parameters()))
         self.actor_opt = torch.optim.Adam(params_actor, lr=self._actor_lr)
@@ -492,84 +484,6 @@ class _DeploymentBackbonePPO(nn.Module):
         value = float(getattr(self.cfg, "negative_hotspot_threshold", 0.08))
         if not math.isfinite(value):
             value = 0.08
-        return min(max(value, 0.0), 1.0)
-
-    def _pressure_threshold(self) -> float:
-        value = float(getattr(self.cfg, "pressure_threshold", 0.35))
-        if not math.isfinite(value):
-            value = 0.35
-        return value
-
-    def _pressure_temperature(self) -> float:
-        value = float(getattr(self.cfg, "pressure_temperature", 0.20))
-        if not math.isfinite(value) or value <= 0.0:
-            value = 0.20
-        return max(value, 1e-6)
-
-    def _max_option_mass(self) -> float:
-        value = float(getattr(self.cfg, "max_option_mass", 2.5))
-        if not math.isfinite(value):
-            value = 2.5
-        return max(1.0, value)
-
-    def _unknown_probe_mass(self) -> float:
-        value = float(getattr(self.cfg, "unknown_probe_mass", 0.25))
-        if not math.isfinite(value):
-            value = 0.25
-        return min(max(value, 0.0), 1.0)
-
-    def _unknown_probe_penalty(self) -> float:
-        value = float(getattr(self.cfg, "unknown_probe_penalty", 0.35))
-        if not math.isfinite(value):
-            value = 0.35
-        return max(0.0, value)
-
-    def _known_bad_penalty(self) -> float:
-        value = float(getattr(self.cfg, "known_bad_penalty", 1.0))
-        if not math.isfinite(value):
-            value = 1.0
-        return max(0.0, value)
-
-    def _option_mass_tolerance(self) -> float:
-        value = float(getattr(self.cfg, "option_mass_tolerance", 0.05))
-        if not math.isfinite(value):
-            value = 0.05
-        return max(0.0, value)
-
-    def _effective_score_threshold(self) -> float:
-        value = float(getattr(self.cfg, "effective_score_threshold", 0.05))
-        if not math.isfinite(value):
-            value = 0.05
-        return value
-
-    def _force_remove_score_threshold(self) -> float:
-        value = float(getattr(self.cfg, "force_remove_score_threshold", 0.0))
-        if not math.isfinite(value):
-            value = 0.0
-        return value
-
-    def _stale_negative_threshold(self) -> float:
-        value = float(getattr(self.cfg, "stale_negative_threshold", 0.80))
-        if not math.isfinite(value):
-            value = 0.80
-        return min(max(value, 0.0), 1.0)
-
-    def _low_confidence_threshold(self) -> float:
-        value = float(getattr(self.cfg, "low_confidence_threshold", 0.25))
-        if not math.isfinite(value):
-            value = 0.25
-        return min(max(value, 0.0), 1.0)
-
-    def _relative_weak_negative_threshold(self) -> float:
-        value = float(getattr(self.cfg, "relative_weak_negative_threshold", 0.50))
-        if not math.isfinite(value):
-            value = 0.50
-        return min(max(value, 0.0), 1.0)
-
-    def _weak_risk_negative_threshold(self) -> float:
-        value = float(getattr(self.cfg, "weak_risk_negative_threshold", 0.35))
-        if not math.isfinite(value):
-            value = 0.35
         return min(max(value, 0.0), 1.0)
 
     def _safety_weight(self, name: str, default: float) -> float:
@@ -804,7 +718,7 @@ class _DeploymentBackbonePPO(nn.Module):
             "runtime_pressure": runtime_pressure,
         }
 
-    def _deployment_option_context(
+    def _deployment_runtime_context(
             self,
             logic_feats: Dict[str, torch.Tensor],
             phys_feats: Dict[str, torch.Tensor],
@@ -813,6 +727,12 @@ class _DeploymentBackbonePPO(nn.Module):
             pair_ctx: Dict[str, torch.Tensor],
             prev_deploy_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
+        """Runtime and feasibility context for the deployment Bernoulli actor.
+
+        This deliberately stays close to the observable state.  The deployment
+        actor outputs a service-device 0/1 matrix; this context should inform
+        that matrix, not run another option-set policy beside it.
+        """
         num_services, num_devices = static_allowed.shape
         device = static_allowed.device
         dtype = torch.float32
@@ -872,7 +792,7 @@ class _DeploymentBackbonePPO(nn.Module):
             device_load_norm[:, :edge_width] = device_load_norm_edge.view(1, edge_width).expand(num_services, -1)
 
         active_hotspot = pair_ctx["active_pair_hotspot"].to(device=device, dtype=dtype)
-        weak_option_risk = torch.clamp(
+        runtime_risk_score = torch.clamp(
             0.30 * runtime_unknown
             + 0.25 * runtime_stale
             + 0.35 * runtime_relative_weakness
@@ -882,7 +802,7 @@ class _DeploymentBackbonePPO(nn.Module):
             max=1.0,
         )
         static_allowed_f = static_allowed.to(device=device, dtype=dtype)
-        option_strength = torch.clamp(
+        pair_quality_score = torch.clamp(
             static_allowed_f
             * (runtime_confidence + 0.25 * (1.0 - runtime_relative_weakness))
             * (1.0 - 0.5 * queue_pressure)
@@ -891,91 +811,7 @@ class _DeploymentBackbonePPO(nn.Module):
             max=1.0,
         )
         if cloud_idx >= 0:
-            option_strength[:, cloud_idx] = 0.0
-
-        option_quality_score = option_strength - weak_option_risk
-        low_confidence_option_mask = (runtime_confidence < self._low_confidence_threshold()) & static_allowed.bool()
-        known_option_mask = (runtime_confidence >= self._low_confidence_threshold()) & static_allowed.bool()
-        unknown_probe_mask = (~known_option_mask) & static_allowed.bool()
-        stale_low_confidence_mask = (
-            (runtime_stale >= self._stale_negative_threshold())
-            & low_confidence_option_mask
-        )
-        runtime_weak_mask = (
-            runtime_relative_weakness >= self._relative_weak_negative_threshold()
-        ) & static_allowed.bool()
-        high_weak_risk_mask = (
-            weak_option_risk >= self._weak_risk_negative_threshold()
-        ) & static_allowed.bool()
-        known_bad_mask = (
-            known_option_mask
-            & (
-                (option_quality_score < self._force_remove_score_threshold())
-                | runtime_weak_mask
-                | high_weak_risk_mask
-            )
-        )
-        known_good_mask = (
-            known_option_mask
-            & (option_quality_score >= self._effective_score_threshold())
-            & ~known_bad_mask
-        )
-        if cloud_idx >= 0:
-            low_confidence_option_mask[:, cloud_idx] = False
-            stale_low_confidence_mask[:, cloud_idx] = False
-            runtime_weak_mask[:, cloud_idx] = False
-            high_weak_risk_mask[:, cloud_idx] = False
-            known_option_mask[:, cloud_idx] = False
-            unknown_probe_mask[:, cloud_idx] = False
-            known_bad_mask[:, cloud_idx] = False
-            known_good_mask[:, cloud_idx] = False
-
-        edge_feasible_count = pair_ctx["edge_feasible_count"].to(device=device, dtype=dtype)
-        service_pressure = pair_ctx["service_pressure"].to(device=device, dtype=dtype)
-        pressure_factor = torch.sigmoid(
-            (service_pressure - self._pressure_threshold()) / self._pressure_temperature()
-        )
-        max_mass = torch.minimum(
-            edge_feasible_count.clamp_min(0.0),
-            torch.full_like(edge_feasible_count, self._max_option_mass()),
-        )
-        base_mass = torch.where(edge_feasible_count > 0.0, torch.ones_like(service_pressure), torch.zeros_like(service_pressure))
-        desired_option_mass = torch.where(
-            max_mass > base_mass,
-            base_mass + pressure_factor * (max_mass - base_mass),
-            base_mass,
-        )
-        option_mass_contribution = torch.zeros_like(option_quality_score)
-        option_mass_contribution = torch.where(
-            known_good_mask,
-            option_strength.clamp(0.0, 1.0),
-            option_mass_contribution,
-        )
-        option_mass_contribution = torch.where(
-            unknown_probe_mask,
-            torch.full_like(option_mass_contribution, self._unknown_probe_mass()),
-            option_mass_contribution,
-        )
-        if edge_width > 0:
-            selected_edge = prev_mask[:, :edge_width]
-            selected_option_mass = (
-                selected_edge
-                * option_mass_contribution[:, :edge_width].to(dtype=dtype)
-            ).sum(dim=1)
-        else:
-            selected_option_mass = torch.zeros((num_services,), device=device, dtype=dtype)
-        option_shortage = (desired_option_mass - selected_option_mass).clamp_min(0.0)
-        probe_penalty = self._unknown_probe_penalty() * unknown_probe_mask.to(dtype=dtype)
-        known_bad_penalty = self._known_bad_penalty() * known_bad_mask.to(dtype=dtype)
-        option_set_utility = (
-            option_quality_score
-            + 0.35 * service_pressure.view(num_services, 1)
-            + 0.15 * prev_mask
-            - probe_penalty
-            - known_bad_penalty
-            - 0.25 * pair_memory_cost
-            - 0.20 * device_load_norm
-        )
+            pair_quality_score[:, cloud_idx] = 0.0
 
         return {
             "runtime_per_complexity": runtime_per_complexity,
@@ -987,30 +823,12 @@ class _DeploymentBackbonePPO(nn.Module):
             "runtime_relative_weakness": runtime_relative_weakness,
             "pair_memory_cost": pair_memory_cost,
             "device_load_norm": device_load_norm,
-            "option_strength": option_strength,
-            "option_shortage": option_shortage,
-            "weak_option_risk": weak_option_risk,
-            "option_quality_score": option_quality_score,
-            "option_mass_contribution": option_mass_contribution,
-            "option_set_utility": option_set_utility,
-            "known_option_mask": known_option_mask,
-            "known_good_mask": known_good_mask,
-            "known_bad_mask": known_bad_mask,
-            "unknown_probe_mask": unknown_probe_mask,
+            "pair_quality_score": pair_quality_score,
             "runtime_unknown_risk": runtime_unknown,
             "runtime_stale_risk": runtime_stale,
-            "effective_option_score": option_quality_score,
             "static_option_score": qk_feature.to(device=device, dtype=dtype),
-            "runtime_risk_score": weak_option_risk,
+            "runtime_risk_score": runtime_risk_score,
             "evidence_confidence": runtime_confidence,
-            "effective_option_mask": known_good_mask,
-            "low_confidence_option_mask": low_confidence_option_mask,
-            "stale_low_confidence_mask": stale_low_confidence_mask,
-            "runtime_weak_mask": runtime_weak_mask,
-            "high_weak_risk_mask": high_weak_risk_mask,
-            "effective_score_deficit": (self._effective_score_threshold() - option_quality_score).clamp_min(0.0),
-            "desired_option_mass": desired_option_mass,
-            "effective_option_count": selected_option_mass,
         }
 
     def _deployment_candidate_features(
@@ -1067,14 +885,6 @@ class _DeploymentBackbonePPO(nn.Module):
                 torch.log1p(edge_replica_count).view(num_services, 1).expand(-1, num_devices),
                 torch.log1p(device_service_count).view(1, num_devices).expand(num_services, -1),
                 option_ctx["pair_memory_cost"].to(device=device, dtype=dtype),
-                option_ctx["option_quality_score"].to(device=device, dtype=dtype),
-                option_ctx["option_mass_contribution"].to(device=device, dtype=dtype),
-                option_ctx["desired_option_mass"].view(num_services, 1).expand(-1, num_devices).to(device=device, dtype=dtype),
-                option_ctx["option_shortage"].view(num_services, 1).expand(-1, num_devices).to(device=device, dtype=dtype),
-                option_ctx["weak_option_risk"].to(device=device, dtype=dtype),
-                option_ctx["known_good_mask"].to(device=device, dtype=dtype),
-                option_ctx["known_bad_mask"].to(device=device, dtype=dtype),
-                option_ctx["unknown_probe_mask"].to(device=device, dtype=dtype),
                 static_allowed_float,
                 active_pair_hotspot,
             ],
@@ -1101,7 +911,7 @@ class _DeploymentBackbonePPO(nn.Module):
             static_allowed,
             deploy_mask=prev_deploy_mask,
         )
-        option_ctx = self._deployment_option_context(
+        option_ctx = self._deployment_runtime_context(
             logic_feats,
             phys_feats,
             qk_feature,
@@ -1119,33 +929,34 @@ class _DeploymentBackbonePPO(nn.Module):
             option_ctx,
             prev_deploy_mask=prev_deploy_mask,
         )
-        pair_adjustment = self.deployment_option_head(candidate_features.float())
+        pair_adjustment = self.deployment_matrix_head(candidate_features.float())
         static_f = static_allowed.to(device=h_s.device, dtype=pair_adjustment.dtype)
         if prev_deploy_mask is None:
             prev_mask = torch.zeros_like(static_f)
         else:
             prev_mask = prev_deploy_mask.to(device=h_s.device, dtype=pair_adjustment.dtype)
-        weak_risk = option_ctx["weak_option_risk"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         queue_pressure = option_ctx["queue_pressure"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         memory_cost = option_ctx["pair_memory_cost"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         runtime_conf = option_ctx["runtime_confidence"].to(device=h_s.device, dtype=pair_adjustment.dtype)
-        option_quality = option_ctx["option_quality_score"].to(device=h_s.device, dtype=pair_adjustment.dtype)
-        unknown_probe = option_ctx["unknown_probe_mask"].to(device=h_s.device, dtype=pair_adjustment.dtype)
-        known_bad = option_ctx["known_bad_mask"].to(device=h_s.device, dtype=pair_adjustment.dtype)
-        option_shortage = option_ctx["option_shortage"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        runtime_unknown = option_ctx["runtime_unknown"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        runtime_stale = option_ctx["runtime_stale"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        runtime_weakness = option_ctx["runtime_relative_weakness"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        device_load = option_ctx["device_load_norm"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        pair_quality = option_ctx["pair_quality_score"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        service_pressure = pair_ctx["service_pressure"].to(device=h_s.device, dtype=pair_adjustment.dtype).view(-1, 1)
         select_logits = (
             pair_adjustment
             + 0.35 * qk_feature
-            + option_quality
-            + 0.30 * option_shortage.view(-1, 1)
-            + 0.15 * pair_ctx["service_pressure"].to(device=h_s.device, dtype=pair_adjustment.dtype).view(-1, 1)
+            + 0.35 * pair_quality
+            + 0.15 * service_pressure
             + 0.20 * runtime_conf
             + 0.20 * prev_mask
-            - self._unknown_probe_penalty() * unknown_probe
-            - self._known_bad_penalty() * known_bad
-            - 0.30 * weak_risk
-            - 0.10 * queue_pressure
+            - 0.15 * runtime_unknown
+            - 0.20 * runtime_stale
+            - 0.20 * runtime_weakness
+            - 0.15 * queue_pressure
             - 0.20 * memory_cost
+            - 0.10 * device_load
         )
         cloud_idx = self._cloud_index(static_allowed.size(1))
         invalid = ~static_allowed.bool()
@@ -1155,9 +966,12 @@ class _DeploymentBackbonePPO(nn.Module):
             cloud_mask = device_ids.view(1, -1).eq(cloud_idx).expand_as(static_allowed)
             select_logits = torch.where(cloud_mask, torch.full_like(select_logits, 20.0), select_logits)
         safety_prior = (
-            option_ctx["option_quality_score"].to(device=h_s.device, dtype=pair_adjustment.dtype)
-            - option_ctx["known_bad_mask"].to(device=h_s.device, dtype=pair_adjustment.dtype)
-            - self._unknown_probe_penalty() * option_ctx["unknown_probe_mask"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+            0.35 * pair_quality
+            + 0.20 * runtime_conf
+            + 0.10 * service_pressure
+            - 0.20 * runtime_weakness
+            - 0.15 * queue_pressure
+            - 0.20 * memory_cost
         )
         pair_ctx.update(option_ctx)
         pair_ctx["base_score"] = qk_feature
@@ -1216,13 +1030,12 @@ class _DeploymentBackbonePPO(nn.Module):
         return deploy_mask
 
     @torch.no_grad()
-    def _sample_option_set_deployment_mask(
+    def _sample_deployment_bernoulli_mask(
             self,
             select_logits: torch.Tensor,
             static_allowed: torch.Tensor,
             prev_deploy_mask: Optional[torch.Tensor],
             deterministic: bool,
-            option_ctx: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         num_services, num_devices = select_logits.shape
         cloud_idx = self._cloud_index(num_devices)
@@ -1235,125 +1048,36 @@ class _DeploymentBackbonePPO(nn.Module):
             prev_edge = prev_deploy_mask.to(device=select_logits.device).bool() & edge_allowed
 
         select_prob = torch.sigmoid(select_logits).clamp(1e-6, 1.0 - 1e-6)
-        if option_ctx is None:
-            known_good_mask = edge_allowed.clone()
-            known_bad_mask = torch.zeros_like(edge_allowed)
-            unknown_probe_mask = torch.zeros_like(edge_allowed)
-            option_mass = edge_allowed.to(dtype=torch.float32)
-            desired_mass = torch.where(
-                edge_allowed.any(dim=1),
-                torch.ones((num_services,), device=select_logits.device, dtype=torch.float32),
-                torch.zeros((num_services,), device=select_logits.device, dtype=torch.float32),
-            )
-            option_utility = select_logits.float()
-        else:
-            known_good_mask = option_ctx.get("known_good_mask", edge_allowed)
-            known_bad_mask = option_ctx.get("known_bad_mask", torch.zeros_like(edge_allowed))
-            unknown_probe_mask = option_ctx.get("unknown_probe_mask", torch.zeros_like(edge_allowed))
-            option_mass = option_ctx.get("option_mass_contribution", edge_allowed.to(dtype=torch.float32))
-            desired_mass = option_ctx.get(
-                "desired_option_mass",
-                torch.ones((num_services,), device=select_logits.device, dtype=torch.float32),
-            )
-            option_utility = option_ctx.get("option_set_utility", select_logits.float())
-            known_good_mask = known_good_mask.to(device=select_logits.device).bool() & edge_allowed
-            known_bad_mask = known_bad_mask.to(device=select_logits.device).bool() & edge_allowed
-            unknown_probe_mask = unknown_probe_mask.to(device=select_logits.device).bool() & edge_allowed
-            option_mass = option_mass.to(device=select_logits.device, dtype=torch.float32) * edge_allowed.float()
-            desired_mass = desired_mass.to(device=select_logits.device, dtype=torch.float32)
-            option_utility = option_utility.to(device=select_logits.device, dtype=torch.float32)
-        candidate_mask = (known_good_mask | unknown_probe_mask) & ~known_bad_mask & edge_allowed
 
         if deterministic:
             raw_bits = select_prob >= self._select_threshold()
         else:
             raw_bits = torch.rand_like(select_prob) < select_prob
 
-        pre_quality_raw_mask = raw_bits & edge_allowed
-        pre_quality_added_mask = pre_quality_raw_mask & ~prev_edge
-        pre_quality_kept_mask = pre_quality_raw_mask & prev_edge
-        pre_quality_deploy_mask = torch.zeros(
+        selected_edge = raw_bits & edge_allowed
+        deploy_mask = torch.zeros(
             (num_services, num_devices),
             device=select_logits.device,
             dtype=torch.bool,
         )
-        pre_quality_deploy_mask[:, :] = pre_quality_raw_mask
+        deploy_mask[:, :] = selected_edge
         if cloud_idx >= 0:
-            pre_quality_deploy_mask[:, cloud_idx] = True
-
-        option_blocked_mask = pre_quality_added_mask & ~candidate_mask
-        selected_edge = pre_quality_raw_mask & candidate_mask
-        decode_added_reason = torch.zeros_like(select_logits, dtype=torch.long)
-        decode_pruned_reason = torch.zeros_like(select_logits, dtype=torch.long)
-        decode_added_reason = torch.where(
-            selected_edge & ~prev_edge & known_good_mask,
-            torch.full_like(decode_added_reason, 2),
-            decode_added_reason,
-        )
-        decode_added_reason = torch.where(
-            selected_edge & ~prev_edge & unknown_probe_mask,
-            torch.full_like(decode_added_reason, 4),
-            decode_added_reason,
-        )
-        known_bad_pruned_mask = pre_quality_raw_mask & known_bad_mask
-        decode_pruned_reason = torch.where(
-            known_bad_pruned_mask,
-            torch.full_like(decode_pruned_reason, 1),
-            decode_pruned_reason,
-        )
-
-        mass = (selected_edge.float() * option_mass).sum(dim=1)
-        tolerance = self._option_mass_tolerance()
-        request_mask = candidate_mask & ~selected_edge
-        shortage = desired_mass - mass
-        utility = option_utility + select_logits.float() + select_prob.float()
-        flat_candidates = []
-        for service_idx in range(num_services):
-            if float(shortage[service_idx].item()) <= tolerance:
-                continue
-            devices = torch.nonzero(request_mask[service_idx], as_tuple=False).flatten().tolist()
-            for device_idx in devices:
-                gain = float(option_mass[service_idx, device_idx].item())
-                if gain <= 0.0:
-                    continue
-                flat_candidates.append((
-                    float(utility[service_idx, device_idx].item()),
-                    service_idx,
-                    device_idx,
-                    gain,
-                ))
-        flat_candidates.sort(key=lambda item: item[0], reverse=True)
-        for score, service_idx, device_idx, gain in flat_candidates:
-            if float(desired_mass[service_idx].item() - mass[service_idx].item()) <= tolerance:
-                continue
-            selected_edge[service_idx, device_idx] = True
-            mass[service_idx] = mass[service_idx] + gain
-            decode_added_reason[service_idx, device_idx] = 3 if bool(known_good_mask[service_idx, device_idx].item()) else 4
+            deploy_mask[:, cloud_idx] = True
 
         added_mask = selected_edge & ~prev_edge
         kept_mask = selected_edge & prev_edge
         removed_mask = prev_edge & edge_allowed & ~selected_edge
-        deploy_mask = torch.zeros((num_services, num_devices), device=select_logits.device, dtype=torch.bool)
-        deploy_mask[:, :] = selected_edge
-        if cloud_idx >= 0:
-            deploy_mask[:, cloud_idx] = True
         return deploy_mask, {
-            "option_added_mask": added_mask,
-            "option_kept_mask": kept_mask,
-            "option_removed_mask": removed_mask,
-            "pre_quality_raw_mask": pre_quality_deploy_mask,
-            "pre_quality_added_mask": pre_quality_added_mask,
-            "pre_quality_kept_mask": pre_quality_kept_mask,
-            "known_good_mask": known_good_mask,
-            "known_bad_mask": known_bad_mask,
-            "unknown_probe_mask": unknown_probe_mask,
-            "known_bad_pruned_mask": known_bad_pruned_mask,
-            "option_blocked_mask": option_blocked_mask,
-            "quality_add_mask": candidate_mask,
+            "matrix_added_mask": added_mask,
+            "matrix_kept_mask": kept_mask,
+            "matrix_removed_mask": removed_mask,
+            "pre_quality_raw_mask": deploy_mask.clone(),
+            "pre_quality_added_mask": added_mask,
+            "pre_quality_kept_mask": kept_mask,
             "decode_added_mask": added_mask,
             "decode_pruned_mask": removed_mask,
-            "decode_added_reason": decode_added_reason,
-            "decode_pruned_reason": decode_pruned_reason,
+            "decode_added_reason": torch.zeros_like(select_logits, dtype=torch.long),
+            "decode_pruned_reason": torch.zeros_like(select_logits, dtype=torch.long),
             "select_prob": select_prob,
         }
 
@@ -1424,7 +1148,7 @@ class _DeploymentBackbonePPO(nn.Module):
         torch.Tensor, int, float, int, float, int, int, float, int,
         Dict[str, float], Dict[str, torch.Tensor], torch.Tensor,
     ]:
-        """Project a delta proposal to static, memory, and per-device feasibility."""
+        """Apply only feasibility correction to the actor's 0/1 deployment matrix."""
         corrected = self._enforce_cloud_replica(raw_deploy_mask.bool())
         if static_allowed is None:
             static_allowed = self._static_allowed_mask(phys_feats, logic_feats)
@@ -1442,7 +1166,7 @@ class _DeploymentBackbonePPO(nn.Module):
                 static_allowed,
                 deploy_mask=prev_deploy_mask,
             )
-            option_ctx = self._deployment_option_context(
+            option_ctx = self._deployment_runtime_context(
                 logic_feats,
                 phys_feats,
                 qk_hint,
@@ -1450,15 +1174,12 @@ class _DeploymentBackbonePPO(nn.Module):
                 pair_ctx_hint,
                 prev_deploy_mask=prev_deploy_mask,
             )
-        option_mass = option_ctx["option_mass_contribution"].to(device=corrected.device, dtype=torch.float32)
-        weak_option_risk = option_ctx["weak_option_risk"].to(device=corrected.device, dtype=torch.float32)
-        option_quality_score = option_ctx["option_quality_score"].to(device=corrected.device, dtype=torch.float32)
-        known_good_mask = option_ctx["known_good_mask"].to(device=corrected.device).bool()
-        known_bad_mask = option_ctx["known_bad_mask"].to(device=corrected.device).bool()
-        option_set_utility = option_ctx["option_set_utility"].to(device=corrected.device, dtype=torch.float32)
+        queue_pressure = option_ctx["queue_pressure"].to(device=corrected.device, dtype=torch.float32)
+        runtime_risk_score = option_ctx["runtime_risk_score"].to(device=corrected.device, dtype=torch.float32)
+        runtime_unknown_risk = option_ctx["runtime_unknown_risk"].to(device=corrected.device, dtype=torch.float32)
         runtime_stale_risk = option_ctx["runtime_stale_risk"].to(device=corrected.device, dtype=torch.float32)
         runtime_relative_weakness = option_ctx["runtime_relative_weakness"].to(device=corrected.device, dtype=torch.float32)
-        effective_score_deficit = option_ctx["effective_score_deficit"].to(device=corrected.device, dtype=torch.float32)
+        pair_memory_cost = option_ctx["pair_memory_cost"].to(device=corrected.device, dtype=torch.float32)
         residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)
         model_mem = logic_feats["model_mem"].float()
         cloud_idx = self._cloud_index(corrected.size(1))
@@ -1480,10 +1201,10 @@ class _DeploymentBackbonePPO(nn.Module):
         )["service_pressure"].to(device=corrected.device, dtype=torch.float32)
         retention_scores = (
             decode_scores
-            + service_pressure_for_retention.view(-1, 1) * option_set_utility
+            + 0.25 * service_pressure_for_retention.view(-1, 1)
             + 0.35 * prev_edge_mask.to(device=corrected.device, dtype=torch.float32)
-            - weak_option_risk
-            - 2.0 * known_bad_mask.to(device=corrected.device, dtype=torch.float32)
+            - 0.35 * runtime_risk_score
+            - 0.25 * pair_memory_cost
         )
 
         for device_idx in range(corrected.size(1)):
@@ -1541,58 +1262,31 @@ class _DeploymentBackbonePPO(nn.Module):
         edge_slice = slice(0, max(0, cloud_idx))
         executed_edge = corrected[:, edge_slice].float() if cloud_idx > 0 \
             else torch.zeros((corrected.size(0), 0), device=corrected.device)
-        effective_edge_options = (
-            executed_edge * option_mass[:, edge_slice].to(device=corrected.device, dtype=torch.float32)
-        ).sum(dim=1) if cloud_idx > 0 \
-            else torch.zeros((corrected.size(0),), device=corrected.device)
-        desired_option_mass = option_ctx["desired_option_mass"].to(device=corrected.device, dtype=torch.float32)
-        option_shortage = (desired_option_mass - effective_edge_options).clamp_min(0.0)
-        service_pressure = raw_risk_ctx["service_pressure"].to(device=corrected.device, dtype=torch.float32)
-        option_shortage_cost = (service_pressure * option_shortage).mean() if option_shortage.numel() > 0 \
-            else torch.zeros((), device=corrected.device)
-        selected_quality_remove_cost = (
-            executed_edge * known_bad_mask[:, edge_slice].to(device=corrected.device, dtype=torch.float32)
-        ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
-        selected_score_deficit_cost = (
-            executed_edge * effective_score_deficit[:, edge_slice]
-        ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
         selected_stale_option_cost = (
             executed_edge * runtime_stale_risk[:, edge_slice]
         ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
         selected_runtime_weakness_cost = (
             executed_edge * runtime_relative_weakness[:, edge_slice]
         ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
-        selected_weak_option_cost = (
-            selected_score_deficit_cost
-            + 0.35 * selected_quality_remove_cost
-            + 0.25 * selected_stale_option_cost
-            + 0.25 * selected_runtime_weakness_cost
-        )
+        selected_queue_pressure_cost = (
+            executed_edge * queue_pressure[:, edge_slice]
+        ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
+        selected_runtime_risk_cost = (
+            executed_edge * runtime_risk_score[:, edge_slice]
+        ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
         selected_unknown_option_cost = (
-            executed_edge * option_ctx["runtime_unknown_risk"].to(device=corrected.device, dtype=torch.float32)[:, edge_slice]
+            executed_edge * runtime_unknown_risk[:, edge_slice]
         ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
-        selected_low_confidence_option_cost = (
-            executed_edge * option_ctx["low_confidence_option_mask"].to(device=corrected.device, dtype=torch.float32)[:, edge_slice]
-        ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
-        projection_effective_removed_cnt = (
-            capacity_removed_mask[:, edge_slice].float()
-            * known_good_mask[:, edge_slice].to(device=corrected.device, dtype=torch.float32)
-        ).sum() if cloud_idx > 0 else torch.zeros((), device=corrected.device)
         risk_metrics = {
             "active_pair_hotspot_cost": _scalar_to_float(raw_risk_ctx["active_pair_hotspot_cost"]),
             "executed_active_pair_hotspot_cost": _scalar_to_float(exec_risk_ctx["active_pair_hotspot_cost"]),
             "service_pressure_mean": _scalar_to_float(raw_risk_ctx["service_pressure"].mean()),
             "service_pressure_max": _scalar_to_float(raw_risk_ctx["service_pressure"].max()),
-            "effective_edge_options_mean": _scalar_to_float(effective_edge_options.mean()) if effective_edge_options.numel() else 0.0,
-            "effective_edge_options_min": _scalar_to_float(effective_edge_options.min()) if effective_edge_options.numel() else 0.0,
-            "desired_option_mass_mean": _scalar_to_float(desired_option_mass.mean()) if desired_option_mass.numel() else 0.0,
-            "option_shortage_cost": _scalar_to_float(option_shortage_cost),
-            "selected_weak_option_cost": _scalar_to_float(selected_weak_option_cost),
+            "selected_queue_pressure_cost": _scalar_to_float(selected_queue_pressure_cost),
+            "selected_runtime_risk_cost": _scalar_to_float(selected_runtime_risk_cost),
             "selected_unknown_option_cost": _scalar_to_float(selected_unknown_option_cost),
-            "selected_low_confidence_option_cost": _scalar_to_float(selected_low_confidence_option_cost),
-            "selected_low_quality_option_cost": _scalar_to_float(selected_quality_remove_cost),
             "selected_stale_option_cost": _scalar_to_float(selected_stale_option_cost),
-            "projection_effective_removed_cnt": int(projection_effective_removed_cnt.detach().cpu().item()),
+            "selected_runtime_weakness_cost": _scalar_to_float(selected_runtime_weakness_cost),
         }
         return (
             corrected,
@@ -1714,12 +1408,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             pair_ctx["select_logit"] = select_logits
             pair_ctx["select_prob"] = torch.sigmoid(select_logits)
 
-        decoded_deploy_mask, option_debug = self._sample_option_set_deployment_mask(
+        decoded_deploy_mask, option_debug = self._sample_deployment_bernoulli_mask(
             select_logits=select_logits,
             static_allowed=static_allowed,
             prev_deploy_mask=prev_deploy_mask,
             deterministic=deterministic,
-            option_ctx=pair_ctx,
         )
         raw_deploy_mask = option_debug["pre_quality_raw_mask"].to(device=h_s.device).bool()
         raw_probs = torch.sigmoid(select_logits).float()
@@ -1752,18 +1445,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             safety_prior=safety_prior,
             option_ctx=pair_ctx,
         )
-        edge_slice = slice(0, max(0, cloud_idx))
-        if cloud_idx > 0:
-            executed_option_count = (
-                deploy_mask[:, edge_slice].float()
-                * pair_ctx["option_mass_contribution"].to(device=deploy_mask.device, dtype=torch.float32)[:, edge_slice]
-            ).sum(dim=1)
-        else:
-            executed_option_count = torch.zeros((Ms,), device=deploy_mask.device, dtype=torch.float32)
-        executed_option_shortage = (
-            pair_ctx["desired_option_mass"].to(device=deploy_mask.device, dtype=torch.float32)
-            - executed_option_count
-        ).clamp_min(0.0)
         negative_action_mask = raw_deploy_mask & ~deploy_mask & static_allowed.bool()
         if cloud_idx >= 0:
             negative_action_mask[:, cloud_idx] = False
@@ -1786,20 +1467,15 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             negative_mask=negative_action_mask,
         )
         value = self.critic(h_s, h_p, candidate_features, static_allowed)
-        zero_float = torch.zeros_like(select_logits, dtype=torch.float32)
         raw_zero = ((raw_deploy_mask[:, :cloud_idx].sum(dim=1) <= 0) & static_allowed[:, :cloud_idx].any(dim=1)).sum() \
             if cloud_idx > 0 else torch.tensor(0, device=h_s.device)
         decoded_zero = ((decoded_deploy_mask[:, :cloud_idx].sum(dim=1) <= 0) & static_allowed[:, :cloud_idx].any(dim=1)).sum() \
             if cloud_idx > 0 else torch.tensor(0, device=h_s.device)
-        option_added_cnt = int(option_debug["option_added_mask"].detach()[:, :cloud_idx].sum().cpu().item()) \
+        matrix_added_cnt = int(option_debug["matrix_added_mask"].detach()[:, :cloud_idx].sum().cpu().item()) \
             if cloud_idx > 0 else 0
-        option_kept_cnt = int(option_debug["option_kept_mask"].detach()[:, :cloud_idx].sum().cpu().item()) \
+        matrix_kept_cnt = int(option_debug["matrix_kept_mask"].detach()[:, :cloud_idx].sum().cpu().item()) \
             if cloud_idx > 0 else 0
-        option_removed_cnt = int(option_debug["option_removed_mask"].detach()[:, :cloud_idx].sum().cpu().item()) \
-            if cloud_idx > 0 else 0
-        known_bad_pruned_cnt = int(option_debug["known_bad_pruned_mask"].detach()[:, :cloud_idx].sum().cpu().item()) \
-            if cloud_idx > 0 else 0
-        option_blocked_cnt = int(option_debug["option_blocked_mask"].detach()[:, :cloud_idx].sum().cpu().item()) \
+        matrix_removed_cnt = int(option_debug["matrix_removed_mask"].detach()[:, :cloud_idx].sum().cpu().item()) \
             if cloud_idx > 0 else 0
         return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {
             "capacity_relax_cnt": capacity_relax_cnt,
@@ -1817,16 +1493,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "negative_mask": negative_mask,
             "raw_zero_edge_services": int(raw_zero.detach().cpu().item()),
             "decoded_zero_edge_services": int(decoded_zero.detach().cpu().item()),
-            "option_added_cnt": option_added_cnt,
-            "option_kept_cnt": option_kept_cnt,
-            "option_removed_cnt": option_removed_cnt,
-            "decode_added_cnt": option_added_cnt,
-            "decode_effective_added_cnt": option_added_cnt,
-            "decode_pruned_cnt": option_removed_cnt,
-            "decode_low_quality_pruned_cnt": known_bad_pruned_cnt,
-            "known_bad_pruned_cnt": known_bad_pruned_cnt,
-            "option_blocked_cnt": option_blocked_cnt,
-            "decode_overselected_services": 0,
+            "matrix_added_cnt": matrix_added_cnt,
+            "matrix_kept_cnt": matrix_kept_cnt,
+            "matrix_removed_cnt": matrix_removed_cnt,
+            "decode_added_cnt": matrix_added_cnt,
+            "decode_pruned_cnt": matrix_removed_cnt,
             "capacity_removed_mask": capacity_removed_mask,
             "capacity_removed_cnt": int(capacity_removed_mask.detach()[:, :cloud_idx].sum().cpu().item())
             if cloud_idx > 0 else 0,
@@ -1846,21 +1517,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "decode_score": select_logits.detach().cpu(),
                 "static_option_score": pair_ctx["static_option_score"].detach().cpu(),
                 "runtime_risk_score": pair_ctx["runtime_risk_score"].detach().cpu(),
-                "option_quality_score": pair_ctx["option_quality_score"].detach().cpu(),
-                "option_mass_contribution": pair_ctx["option_mass_contribution"].detach().cpu(),
-                "option_set_utility": pair_ctx["option_set_utility"].detach().cpu(),
+                "pair_quality_score": pair_ctx["pair_quality_score"].detach().cpu(),
                 "evidence_confidence": pair_ctx["evidence_confidence"].detach().cpu(),
-                "effective_option_score": pair_ctx["effective_option_score"].detach().cpu(),
-                "effective_score_deficit": pair_ctx["effective_score_deficit"].detach().cpu(),
-                "option_strength": pair_ctx["option_strength"].detach().cpu(),
-                "effective_option_mask": pair_ctx["effective_option_mask"].detach().cpu(),
-                "known_good_mask": pair_ctx["known_good_mask"].detach().cpu(),
-                "known_bad_mask": pair_ctx["known_bad_mask"].detach().cpu(),
-                "unknown_probe_mask": pair_ctx["unknown_probe_mask"].detach().cpu(),
-                "stale_low_confidence_mask": pair_ctx["stale_low_confidence_mask"].detach().cpu(),
-                "runtime_weak_mask": pair_ctx["runtime_weak_mask"].detach().cpu(),
-                "high_weak_risk_mask": pair_ctx["high_weak_risk_mask"].detach().cpu(),
-                "low_confidence_option_mask": pair_ctx["low_confidence_option_mask"].detach().cpu(),
                 "runtime_unknown_risk": pair_ctx["runtime_unknown_risk"].detach().cpu(),
                 "runtime_stale_risk": pair_ctx["runtime_stale_risk"].detach().cpu(),
                 "runtime_relative_weakness": pair_ctx["runtime_relative_weakness"].detach().cpu(),
@@ -1868,10 +1526,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "runtime_recency": pair_ctx["runtime_recency"].detach().cpu(),
                 "runtime_unknown": pair_ctx["runtime_unknown"].detach().cpu(),
                 "runtime_stale": pair_ctx["runtime_stale"].detach().cpu(),
-                "weak_option_risk": pair_ctx["weak_option_risk"].detach().cpu(),
-                "desired_option_mass": pair_ctx["desired_option_mass"].detach().cpu(),
-                "effective_option_count": executed_option_count.detach().cpu(),
-                "option_shortage": executed_option_shortage.detach().cpu(),
                 "queue_pressure": pair_ctx["queue_pressure"].detach().cpu(),
                 "candidate_feature": candidate_features.detach().cpu(),
                 "candidate_feature_names": DEPLOYMENT_CANDIDATE_FEATURE_NAMES,
@@ -1890,11 +1544,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "static_mask": static_allowed.detach().cpu(),
                 "raw_threshold_mask": raw_deploy_mask.detach().cpu(),
                 "decoded_mask": decoded_deploy_mask.detach().cpu(),
-                "option_added_mask": option_debug["option_added_mask"].detach().cpu(),
-                "option_kept_mask": option_debug["option_kept_mask"].detach().cpu(),
-                "option_removed_mask": option_debug["option_removed_mask"].detach().cpu(),
-                "known_bad_pruned_mask": option_debug["known_bad_pruned_mask"].detach().cpu(),
-                "option_blocked_mask": option_debug["option_blocked_mask"].detach().cpu(),
+                "matrix_added_mask": option_debug["matrix_added_mask"].detach().cpu(),
+                "matrix_kept_mask": option_debug["matrix_kept_mask"].detach().cpu(),
+                "matrix_removed_mask": option_debug["matrix_removed_mask"].detach().cpu(),
                 "decode_added_mask": option_debug["decode_added_mask"].detach().cpu(),
                 "decode_pruned_mask": option_debug["decode_pruned_mask"].detach().cpu(),
                 "decode_added_reason": option_debug["decode_added_reason"].detach().cpu(),
@@ -1987,30 +1639,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "active_pair_hotspot": pair_ctx["active_pair_hotspot"],
                 "static_option_score": pair_ctx["static_option_score"],
                 "runtime_risk_score": pair_ctx["runtime_risk_score"],
-                "option_quality_score": pair_ctx["option_quality_score"],
-                "option_mass_contribution": pair_ctx["option_mass_contribution"],
-                "option_set_utility": pair_ctx["option_set_utility"],
+                "pair_quality_score": pair_ctx["pair_quality_score"],
                 "evidence_confidence": pair_ctx["evidence_confidence"],
-                "effective_option_score": pair_ctx["effective_option_score"],
-                "effective_score_deficit": pair_ctx["effective_score_deficit"],
-                "option_strength": pair_ctx["option_strength"],
-                "effective_option_mask": pair_ctx["effective_option_mask"],
-                "known_good_mask": pair_ctx["known_good_mask"],
-                "known_bad_mask": pair_ctx["known_bad_mask"],
-                "unknown_probe_mask": pair_ctx["unknown_probe_mask"],
-                "stale_low_confidence_mask": pair_ctx["stale_low_confidence_mask"],
-                "runtime_weak_mask": pair_ctx["runtime_weak_mask"],
-                "high_weak_risk_mask": pair_ctx["high_weak_risk_mask"],
-                "low_confidence_option_mask": pair_ctx["low_confidence_option_mask"],
                 "runtime_unknown_risk": pair_ctx["runtime_unknown_risk"],
                 "runtime_stale_risk": pair_ctx["runtime_stale_risk"],
                 "runtime_unknown": pair_ctx["runtime_unknown"],
                 "runtime_stale": pair_ctx["runtime_stale"],
                 "runtime_recency": pair_ctx["runtime_recency"],
                 "runtime_relative_weakness": pair_ctx["runtime_relative_weakness"],
-                "weak_option_risk": pair_ctx["weak_option_risk"],
-                "desired_option_mass": pair_ctx["desired_option_mass"],
-                "option_shortage": pair_ctx["option_shortage"],
             }
         return logp_sum, ent_sum, value.squeeze(0)
 
@@ -2162,59 +1798,29 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         raw_removed = raw_selected & ~selected
         queue_pressure = policy_aux.get("queue_pressure")
         hotspot = policy_aux.get("active_pair_hotspot")
-        known_good_mask = policy_aux.get("known_good_mask")
-        known_bad_mask = policy_aux.get("known_bad_mask")
-        unknown_probe_mask = policy_aux.get("unknown_probe_mask")
-        stale_low_confidence_mask = policy_aux.get("stale_low_confidence_mask")
-        runtime_weak_mask = policy_aux.get("runtime_weak_mask")
-        weak_option_risk = policy_aux.get("weak_option_risk")
+        runtime_risk = policy_aux.get("runtime_risk_score")
         if not isinstance(queue_pressure, torch.Tensor):
             queue_pressure = torch.zeros_like(static_allowed, dtype=torch.float32)
         if not isinstance(hotspot, torch.Tensor):
             hotspot = torch.zeros_like(static_allowed, dtype=torch.float32)
-        if not isinstance(known_good_mask, torch.Tensor):
-            known_good_mask = selected
-        else:
-            known_good_mask = known_good_mask.to(device=edge_allowed.device).bool()
-        if not isinstance(known_bad_mask, torch.Tensor):
-            known_bad_mask = torch.zeros_like(selected)
-        else:
-            known_bad_mask = known_bad_mask.to(device=edge_allowed.device).bool()
-        if not isinstance(unknown_probe_mask, torch.Tensor):
-            unknown_probe_mask = torch.zeros_like(selected)
-        else:
-            unknown_probe_mask = unknown_probe_mask.to(device=edge_allowed.device).bool()
-        if not isinstance(stale_low_confidence_mask, torch.Tensor):
-            stale_low_confidence_mask = torch.zeros_like(selected)
-        else:
-            stale_low_confidence_mask = stale_low_confidence_mask.to(device=edge_allowed.device).bool()
-        if not isinstance(runtime_weak_mask, torch.Tensor):
-            runtime_weak_mask = torch.zeros_like(selected)
-        else:
-            runtime_weak_mask = runtime_weak_mask.to(device=edge_allowed.device).bool()
-        if not isinstance(weak_option_risk, torch.Tensor):
-            weak_option_risk = torch.zeros_like(static_allowed, dtype=torch.float32)
-        weak_option_risk = weak_option_risk.to(device=edge_allowed.device)
+        if not isinstance(runtime_risk, torch.Tensor):
+            runtime_risk = torch.zeros_like(static_allowed, dtype=torch.float32)
         risky = (
             (queue_pressure.to(device=edge_allowed.device) >= self._negative_queue_threshold())
             | (hotspot.to(device=edge_allowed.device) >= self._negative_hotspot_threshold())
-            | (weak_option_risk >= self._weak_risk_negative_threshold())
-            | known_bad_mask
-            | stale_low_confidence_mask
-            | runtime_weak_mask
+            | (runtime_risk.to(device=edge_allowed.device) >= 0.70)
         ) & edge_allowed
         quality = str(quality_bucket or "unknown").strip().lower()
         if quality == "bad":
             positive_mask = torch.zeros_like(selected)
-            negative_mask = selected & (risky | unknown_probe_mask)
+            negative_mask = selected & risky
             if not bool(negative_mask.any().item()):
                 negative_mask = selected & edge_allowed
             return positive_mask, negative_mask, raw_removed
-        positive_mask = selected & known_good_mask & ~risky
+        positive_mask = selected & ~risky
         negative_mask = (
             (selected & risky)
-            | (selected & known_bad_mask)
-            | (raw_removed & (known_bad_mask | risky))
+            | raw_removed
             | ((~selected) & risky)
         ) & edge_allowed
         return positive_mask, negative_mask, raw_removed
@@ -2259,12 +1865,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         rewards = []
         quality_values = []
         positive_counts = []
-        low_conf_positive_counts = []
         negative_counts = []
         raw_removed_counts = []
-        low_quality_selected_counts = []
-        stale_negative_counts = []
-        forced_remove_counts = []
         for tr in batch:
             logic_edge_index = tr["logic_edge_index"].to(device)
             logic_feats = _move_tensor_dict_to_device(tr["logic_feats"], device)
@@ -2295,33 +1897,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     probe_aux,
                     quality_bucket,
                 )
-                low_conf_mask_probe = probe_aux.get("low_confidence_option_mask")
-                if isinstance(low_conf_mask_probe, torch.Tensor):
-                    low_conf_positive_mask = (
-                        positive_mask
-                        & low_conf_mask_probe.to(device=positive_mask.device).bool()
-                    )
-                else:
-                    low_conf_positive_mask = torch.zeros_like(positive_mask)
-                known_bad_probe = probe_aux.get("known_bad_mask")
-                stale_probe = probe_aux.get("stale_low_confidence_mask")
-                runtime_weak_probe = probe_aux.get("runtime_weak_mask")
-                if isinstance(known_bad_probe, torch.Tensor):
-                    low_quality_selected_mask = (
-                        deploy_mask
-                        & known_bad_probe.to(device=positive_mask.device).bool()
-                        & probe_aux["static_allowed"].to(device=positive_mask.device).bool()
-                    )
-                else:
-                    low_quality_selected_mask = torch.zeros_like(positive_mask)
-                if isinstance(stale_probe, torch.Tensor):
-                    stale_negative_mask = negative_mask & stale_probe.to(device=positive_mask.device).bool()
-                else:
-                    stale_negative_mask = torch.zeros_like(positive_mask)
-                if isinstance(runtime_weak_probe, torch.Tensor):
-                    forced_remove_mask = negative_mask & runtime_weak_probe.to(device=positive_mask.device).bool()
-                else:
-                    forced_remove_mask = torch.zeros_like(positive_mask)
             _logp, ent, _actor_value, policy_aux = self.evaluate(
                 logic_edge_index,
                 logic_feats,
@@ -2375,12 +1950,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             entropies.append(ent)
             quality_values.append(quality_bucket)
             positive_counts.append(float(policy_aux["positive_mask"].float().sum().detach().cpu().item()))
-            low_conf_positive_counts.append(float(low_conf_positive_mask.float().sum().detach().cpu().item()))
             negative_counts.append(float(policy_aux["negative_mask"].float().sum().detach().cpu().item()))
             raw_removed_counts.append(float(raw_removed_mask.float().sum().detach().cpu().item()))
-            low_quality_selected_counts.append(float(low_quality_selected_mask.float().sum().detach().cpu().item()))
-            stale_negative_counts.append(float(stale_negative_mask.float().sum().detach().cpu().item()))
-            forced_remove_counts.append(float(forced_remove_mask.float().sum().detach().cpu().item()))
 
         value_t = torch.stack(values).float()
         positive_logp_t = torch.stack(positive_logps).float()
@@ -2471,12 +2042,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_negative_weight_mean": _scalar_to_float(negative_weight.detach().mean()),
             "actor_raw_removed_weight_mean": _scalar_to_float(raw_removed_weight.detach().mean()),
             "actor_positive_samples": _mean_or_zero(positive_counts),
-            "actor_low_confidence_positive_samples": _mean_or_zero(low_conf_positive_counts),
             "actor_negative_samples": _mean_or_zero(negative_counts),
             "actor_raw_removed_samples": _mean_or_zero(raw_removed_counts),
-            "actor_low_quality_selected_samples": _mean_or_zero(low_quality_selected_counts),
-            "actor_stale_negative_samples": _mean_or_zero(stale_negative_counts),
-            "actor_forced_remove_samples": _mean_or_zero(forced_remove_counts),
             "bad_actor_masked": _scalar_to_float(bad_mask.detach().mean()),
             "positive_logp_mean": _scalar_to_float(positive_logp_t.detach().mean()),
             "negative_logp_mean": _scalar_to_float(negative_logp_t.detach().mean()),

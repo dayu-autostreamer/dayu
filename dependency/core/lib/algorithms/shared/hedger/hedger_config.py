@@ -22,27 +22,13 @@ class DeploymentConstraintCfg:
     # Fraction of computed available edge memory used as deployment budget.
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
     edge_memory_budget_ratio: float = 1.0
-    # Pair-wise Bernoulli option-set policy. The actor proposes a full
-    # service-device edge option set, then a constraint-aware decoder selects a
-    # feasible set of useful options for offloading.
+    # Pair-wise Bernoulli matrix policy. The actor proposes the service-device
+    # edge replica matrix directly; projection only corrects memory/count
+    # infeasibility.
     queue_normalizer: float = 8.0
     select_threshold: float = 0.45
     negative_queue_threshold: float = 0.65
     negative_hotspot_threshold: float = 0.08
-    pressure_threshold: float = 0.35
-    pressure_temperature: float = 0.20
-    max_option_mass: float = 2.5
-    unknown_probe_mass: float = 0.25
-    unknown_probe_penalty: float = 0.35
-    known_bad_penalty: float = 1.0
-    option_mass_tolerance: float = 0.05
-    # Generic option-quality gates. They are service/device-name agnostic.
-    effective_score_threshold: float = 0.05
-    force_remove_score_threshold: float = 0.0
-    stale_negative_threshold: float = 0.80
-    low_confidence_threshold: float = 0.25
-    relative_weak_negative_threshold: float = 0.50
-    weak_risk_negative_threshold: float = 0.35
 
 
 class PhysicalTopology:
