@@ -95,6 +95,8 @@ class HedgerDeploymentCollectCfg:
     reset_to_anchor_prob: float = 1.0
     max_queue_pressure: float = 0.65
     max_hotspot_cost: float = 0.08
+    max_runtime_risk: float = 0.65
+    min_pair_quality: float = 0.15
     max_capacity_relax_cost: float = 0.15
     allow_remove_last_edge_replica: bool = False
 
@@ -599,6 +601,8 @@ class Hedger:
             ),
             max_queue_pressure=max(0.0, float(collect_cfg.get("max_queue_pressure", 0.65))),
             max_hotspot_cost=max(0.0, float(collect_cfg.get("max_hotspot_cost", 0.08))),
+            max_runtime_risk=max(0.0, float(collect_cfg.get("max_runtime_risk", 0.65))),
+            min_pair_quality=max(0.0, float(collect_cfg.get("min_pair_quality", 0.15))),
             max_capacity_relax_cost=max(0.0, float(collect_cfg.get("max_capacity_relax_cost", 0.15))),
             allow_remove_last_edge_replica=bool(collect_cfg.get("allow_remove_last_edge_replica", False)),
         )
@@ -933,6 +937,9 @@ class Hedger:
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean",
             "actor_positive_samples", "actor_negative_samples", "actor_raw_removed_samples",
+            "actor_selected_risky_samples", "actor_selected_low_quality_samples",
+            "actor_selected_runtime_risky_samples", "actor_selected_unknown_samples",
+            "actor_selected_stale_samples",
             "bad_actor_masked",
             "positive_logp_mean", "negative_logp_mean", "raw_removed_logp_mean",
         ]
@@ -943,6 +950,7 @@ class Hedger:
                 "offline_batch_slo_violation_mean", "offline_batch_latency_p95_mean",
                 "offline_batch_guard_interrupted", "offline_batch_collect_risk_mean",
                 "offline_batch_queue_pressure_mean", "offline_batch_hotspot_cost_mean",
+                "offline_batch_runtime_risk_mean", "offline_batch_min_pair_quality_mean",
             ])
         return fieldnames
 
@@ -1082,9 +1090,17 @@ class Hedger:
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
             "queue_normalizer": queue_normalizer,
-            "select_threshold": _matrix_float("select_threshold", 0.45, probability=True),
+            "select_threshold": _matrix_float("select_threshold", 0.55, probability=True),
             "negative_queue_threshold": _matrix_float("negative_queue_threshold", 0.65, probability=True),
             "negative_hotspot_threshold": _matrix_float("negative_hotspot_threshold", 0.08, probability=True),
+            "negative_runtime_risk_threshold": _matrix_float(
+                "negative_runtime_risk_threshold",
+                0.50,
+                probability=True,
+            ),
+            "negative_unknown_threshold": _matrix_float("negative_unknown_threshold", 0.50, probability=True),
+            "negative_stale_threshold": _matrix_float("negative_stale_threshold", 0.85, probability=True),
+            "positive_quality_threshold": _matrix_float("positive_quality_threshold", 0.30, probability=True),
             "ppo": ppo,
         }
 
@@ -2083,6 +2099,8 @@ class Hedger:
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"hotspot_weight={dep_params.get('reward_dep_hotspot_weight', 'na')}, "
             f"select_threshold={dep_params.get('select_threshold', 'na')}, "
+            f"negative_runtime_risk_threshold={dep_params.get('negative_runtime_risk_threshold', 'na')}, "
+            f"positive_quality_threshold={dep_params.get('positive_quality_threshold', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
         )
 
@@ -2716,6 +2734,8 @@ class Hedger:
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
             "edge_memory_budget_ratio", "select_threshold",
             "negative_queue_threshold", "negative_hotspot_threshold",
+            "negative_runtime_risk_threshold", "negative_unknown_threshold",
+            "negative_stale_threshold", "positive_quality_threshold",
             "queue_normalizer", "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -2800,6 +2820,7 @@ class Hedger:
             "collect_selected_service", "collect_selected_device",
             "collect_removed_service", "collect_removed_device",
             "collect_candidate_queue_pressure", "collect_candidate_hotspot_cost",
+            "collect_candidate_runtime_risk", "collect_candidate_min_pair_quality",
             "capacity_corrected", "deployment_policy_deterministic",
         ]
         if self.record_cfg.decision_candidate_features_debug:
@@ -3174,6 +3195,8 @@ class Hedger:
                     "collect_candidate_hotspot_by_service",
                     service_idx,
                 ),
+                collect_candidate_runtime_risk=collect_debug.get("collect_candidate_runtime_risk", ""),
+                collect_candidate_min_pair_quality=collect_debug.get("collect_candidate_min_pair_quality", ""),
                 capacity_corrected=bool(not torch.equal(raw_mask[service_idx], exec_mask[service_idx])),
                 deployment_policy_deterministic=(
                     "" if policy_deterministic is None else int(bool(policy_deterministic))
@@ -4485,12 +4508,15 @@ class Hedger:
         runtime_feat = logic_feats.get("runtime_pair_feat")
         runtime_conf = torch.zeros((num_services, num_devices), device=device, dtype=dtype)
         runtime_time_norm = torch.zeros_like(runtime_conf)
+        runtime_unknown = torch.zeros_like(runtime_conf)
+        runtime_stale = torch.zeros_like(runtime_conf)
         if isinstance(runtime_feat, torch.Tensor) and runtime_feat.dim() == 3 and runtime_feat.size(-1) >= 6:
             runtime_feat = runtime_feat.to(device=device, dtype=dtype)
-            runtime_conf = (
-                runtime_feat[..., 3].clamp(0.0, 1.0)
-                * runtime_feat[..., 4].clamp(0.0, 1.0)
-            )
+            observed_conf = runtime_feat[..., 3].clamp(0.0, 1.0)
+            recency = runtime_feat[..., 4].clamp(0.0, 1.0)
+            runtime_conf = observed_conf * recency
+            runtime_unknown = (1.0 - observed_conf).clamp(0.0, 1.0)
+            runtime_stale = (1.0 - recency).clamp(0.0, 1.0)
             runtime_time = runtime_feat[..., 2].clamp_min(0.0)
             valid_time = runtime_time.masked_select(static_allowed.to(device=device).bool())
             if valid_time.numel() > 0:
@@ -4498,8 +4524,10 @@ class Hedger:
 
         quality = (
             relative_compute.view(1, num_devices).expand(num_services, -1)
-            + 0.25 * runtime_conf
+            + 0.35 * runtime_conf
             - 0.75 * pressure_matrix
+            - 0.35 * runtime_unknown
+            - 0.20 * runtime_stale
             - 0.20 * runtime_time_norm
         )
         quality = torch.where(
@@ -4550,6 +4578,14 @@ class Hedger:
             static_allowed,
             deploy_mask=deploy_mask,
         )
+        option_ctx = self.deployment_agent._deployment_runtime_context(
+            logic_feats,
+            phys_feats,
+            torch.zeros_like(static_allowed, dtype=torch.float32, device=deploy_mask.device),
+            static_allowed,
+            pair_ctx,
+            prev_deploy_mask=base_mask,
+        )
         active_hotspot = pair_ctx["active_pair_hotspot"].to(device=deploy_mask.device).float()
         edge_hotspot = active_hotspot[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
         service_hotspot = edge_hotspot.max(dim=1).values if edge_hotspot.numel() else torch.zeros(
@@ -4557,6 +4593,20 @@ class Hedger:
             device=deploy_mask.device,
         )
         candidate_hotspot = float(service_hotspot.max().detach().cpu().item()) if service_hotspot.numel() else 0.0
+        runtime_risk = option_ctx["runtime_risk_score"].to(device=deploy_mask.device).float()
+        pair_quality = option_ctx["pair_quality_score"].to(device=deploy_mask.device).float()
+        edge_runtime_risk = runtime_risk[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
+        edge_pair_quality = pair_quality[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
+        selected_runtime_risk = torch.where(selected_edge, edge_runtime_risk, torch.zeros_like(edge_runtime_risk))
+        candidate_runtime_risk = float(selected_runtime_risk.max().detach().cpu().item()) \
+            if selected_runtime_risk.numel() else 0.0
+        has_selected_edge = bool(selected_edge.any().item()) if selected_edge.numel() else False
+        if has_selected_edge:
+            selected_quality = edge_pair_quality.masked_select(selected_edge)
+            candidate_min_pair_quality = float(selected_quality.min().detach().cpu().item()) \
+                if selected_quality.numel() else 0.0
+        else:
+            candidate_min_pair_quality = 0.0
 
         raw_edge = raw_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
         base_edge = base_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
@@ -4581,6 +4631,10 @@ class Hedger:
             reasons.append("queue_pressure")
         if candidate_hotspot > cfg.max_hotspot_cost:
             reasons.append("hotspot")
+        if candidate_runtime_risk > cfg.max_runtime_risk:
+            reasons.append("runtime_risk")
+        if has_selected_edge and candidate_min_pair_quality < cfg.min_pair_quality:
+            reasons.append("pair_quality")
         if raw_removed_last and not cfg.allow_remove_last_edge_replica:
             reasons.append("removed_last_edge")
         raw_change_limit = max(1, cfg.max_perturb_flips) * 2
@@ -4591,6 +4645,9 @@ class Hedger:
             capacity_relax_cost / max(cfg.max_capacity_relax_cost, 1e-6),
             candidate_queue_pressure / max(cfg.max_queue_pressure, 1e-6),
             candidate_hotspot / max(cfg.max_hotspot_cost, 1e-6),
+            candidate_runtime_risk / max(cfg.max_runtime_risk, 1e-6),
+            max(0.0, cfg.min_pair_quality - candidate_min_pair_quality) / max(cfg.min_pair_quality, 1e-6)
+            if has_selected_edge else 0.0,
             1.0 if edge_cover_unmet > 0 else 0.0,
             1.0 if raw_removed_last and not cfg.allow_remove_last_edge_replica else 0.0,
             1.0 if raw_change_count > raw_change_limit else 0.5 * raw_change_count / float(raw_change_limit),
@@ -4598,6 +4655,8 @@ class Hedger:
         return {
             "collect_candidate_queue_pressure": candidate_queue_pressure,
             "collect_candidate_hotspot_cost": candidate_hotspot,
+            "collect_candidate_runtime_risk": candidate_runtime_risk,
+            "collect_candidate_min_pair_quality": candidate_min_pair_quality,
             "collect_predicted_risk": float(max(normalized_risks)),
             "collect_raw_change_count": raw_change_count,
             "collect_exec_change_count": exec_change_count,
@@ -5970,6 +6029,12 @@ class Hedger:
                         select_threshold=self.deployment_agent_params["select_threshold"],
                         negative_queue_threshold=self.deployment_agent_params["negative_queue_threshold"],
                         negative_hotspot_threshold=self.deployment_agent_params["negative_hotspot_threshold"],
+                        negative_runtime_risk_threshold=(
+                            self.deployment_agent_params["negative_runtime_risk_threshold"]
+                        ),
+                        negative_unknown_threshold=self.deployment_agent_params["negative_unknown_threshold"],
+                        negative_stale_threshold=self.deployment_agent_params["negative_stale_threshold"],
+                        positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
@@ -6611,7 +6676,8 @@ class Hedger:
                                 "collect_reset_triggered", "collect_bad_streak",
                                 "collect_quality_bucket", "collect_anchor_used",
                                 "collect_predicted_risk", "collect_candidate_queue_pressure",
-                                "collect_candidate_hotspot_cost", "collect_raw_change_count",
+                                "collect_candidate_hotspot_cost", "collect_candidate_runtime_risk",
+                                "collect_candidate_min_pair_quality", "collect_raw_change_count",
                                 "collect_exec_change_count",
                                 "deployment_rollout_deterministic",
                                 "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
@@ -6636,6 +6702,8 @@ class Hedger:
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
             "select_threshold", "negative_queue_threshold", "negative_hotspot_threshold",
+            "negative_runtime_risk_threshold", "negative_unknown_threshold",
+            "negative_stale_threshold", "positive_quality_threshold",
             "queue_normalizer",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
@@ -6904,6 +6972,12 @@ class Hedger:
                     "collect_candidate_hotspot_cost": float(
                         aux.get("collect_candidate_hotspot_cost", 0.0)
                     ),
+                    "collect_candidate_runtime_risk": float(
+                        aux.get("collect_candidate_runtime_risk", 0.0)
+                    ),
+                    "collect_candidate_min_pair_quality": float(
+                        aux.get("collect_candidate_min_pair_quality", 0.0)
+                    ),
                     "collect_raw_change_count": int(aux.get("collect_raw_change_count", 0)),
                     "collect_exec_change_count": int(aux.get("collect_exec_change_count", 0)),
                     "deployment_rollout_deterministic": bool(
@@ -7015,6 +7089,8 @@ class Hedger:
                     collect_predicted_risk=aux.get("collect_predicted_risk", 0.0),
                     collect_candidate_queue_pressure=aux.get("collect_candidate_queue_pressure", 0.0),
                     collect_candidate_hotspot_cost=aux.get("collect_candidate_hotspot_cost", 0.0),
+                    collect_candidate_runtime_risk=aux.get("collect_candidate_runtime_risk", 0.0),
+                    collect_candidate_min_pair_quality=aux.get("collect_candidate_min_pair_quality", 0.0),
                     collect_raw_change_count=aux.get("collect_raw_change_count", 0),
                     collect_exec_change_count=aux.get("collect_exec_change_count", 0),
                     deployment_rollout_deterministic=int(
@@ -7064,6 +7140,12 @@ class Hedger:
                     select_threshold=self.deployment_agent_params["select_threshold"],
                     negative_queue_threshold=self.deployment_agent_params["negative_queue_threshold"],
                     negative_hotspot_threshold=self.deployment_agent_params["negative_hotspot_threshold"],
+                    negative_runtime_risk_threshold=(
+                        self.deployment_agent_params["negative_runtime_risk_threshold"]
+                    ),
+                    negative_unknown_threshold=self.deployment_agent_params["negative_unknown_threshold"],
+                    negative_stale_threshold=self.deployment_agent_params["negative_stale_threshold"],
+                    positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,

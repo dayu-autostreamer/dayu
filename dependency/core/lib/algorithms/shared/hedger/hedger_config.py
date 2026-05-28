@@ -26,9 +26,13 @@ class DeploymentConstraintCfg:
     # edge replica matrix directly; projection only corrects memory/count
     # infeasibility.
     queue_normalizer: float = 8.0
-    select_threshold: float = 0.45
+    select_threshold: float = 0.55
     negative_queue_threshold: float = 0.65
     negative_hotspot_threshold: float = 0.08
+    negative_runtime_risk_threshold: float = 0.50
+    negative_unknown_threshold: float = 0.50
+    negative_stale_threshold: float = 0.85
+    positive_quality_threshold: float = 0.30
 
 
 class PhysicalTopology:

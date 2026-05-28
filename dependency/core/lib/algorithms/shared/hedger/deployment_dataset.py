@@ -135,6 +135,8 @@ def summarize_transition_quality(transitions: List[dict]) -> Dict[str, float]:
     risk_values = []
     queue_values = []
     hotspot_values = []
+    runtime_risk_values = []
+    min_quality_values = []
     guard_count = 0
     for tr in transitions:
         bucket = transition_quality_bucket(tr)
@@ -146,6 +148,8 @@ def summarize_transition_quality(transitions: List[dict]) -> Dict[str, float]:
         risk_values.append(_as_float(tr.get("collect_predicted_risk"), 0.0))
         queue_values.append(_as_float(tr.get("collect_candidate_queue_pressure"), 0.0))
         hotspot_values.append(_as_float(tr.get("collect_candidate_hotspot_cost"), 0.0))
+        runtime_risk_values.append(_as_float(tr.get("collect_candidate_runtime_risk"), 0.0))
+        min_quality_values.append(_as_float(tr.get("collect_candidate_min_pair_quality"), 0.0))
         if _truthy(tr.get("feedback_guard_interrupted")) or _truthy(metrics.get("feedback_guard_interrupted")):
             guard_count += 1
     return {
@@ -161,6 +165,8 @@ def summarize_transition_quality(transitions: List[dict]) -> Dict[str, float]:
         "offline_batch_collect_risk_mean": _mean_or_zero(risk_values),
         "offline_batch_queue_pressure_mean": _mean_or_zero(queue_values),
         "offline_batch_hotspot_cost_mean": _mean_or_zero(hotspot_values),
+        "offline_batch_runtime_risk_mean": _mean_or_zero(runtime_risk_values),
+        "offline_batch_min_pair_quality_mean": _mean_or_zero(min_quality_values),
     }
 
 
@@ -194,6 +200,11 @@ def _is_bad_transition(transition: dict) -> bool:
     if _as_float(metrics.get("latency_guard_max_queue"), 0.0) >= 16.0:
         return True
     if _as_float(transition.get("collect_candidate_queue_pressure"), 0.0) >= 0.65:
+        return True
+    if _as_float(transition.get("collect_candidate_runtime_risk"), 0.0) >= 0.65:
+        return True
+    min_quality = transition.get("collect_candidate_min_pair_quality")
+    if min_quality is not None and _as_float(min_quality, 1.0) < 0.15:
         return True
     hotspot_cost = max(
         _as_float(reward_breakdown.get("active_pair_hotspot_cost"), 0.0),

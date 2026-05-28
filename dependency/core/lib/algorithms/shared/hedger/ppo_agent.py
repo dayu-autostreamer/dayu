@@ -469,9 +469,9 @@ class _DeploymentBackbonePPO(nn.Module):
         return max(value, 1e-6)
 
     def _select_threshold(self) -> float:
-        value = float(getattr(self.cfg, "select_threshold", 0.45))
+        value = float(getattr(self.cfg, "select_threshold", 0.55))
         if not math.isfinite(value):
-            value = 0.45
+            value = 0.55
         return min(max(value, 0.0), 1.0)
 
     def _negative_queue_threshold(self) -> float:
@@ -484,6 +484,30 @@ class _DeploymentBackbonePPO(nn.Module):
         value = float(getattr(self.cfg, "negative_hotspot_threshold", 0.08))
         if not math.isfinite(value):
             value = 0.08
+        return min(max(value, 0.0), 1.0)
+
+    def _negative_runtime_risk_threshold(self) -> float:
+        value = float(getattr(self.cfg, "negative_runtime_risk_threshold", 0.50))
+        if not math.isfinite(value):
+            value = 0.50
+        return min(max(value, 0.0), 1.0)
+
+    def _negative_unknown_threshold(self) -> float:
+        value = float(getattr(self.cfg, "negative_unknown_threshold", 0.50))
+        if not math.isfinite(value):
+            value = 0.50
+        return min(max(value, 0.0), 1.0)
+
+    def _negative_stale_threshold(self) -> float:
+        value = float(getattr(self.cfg, "negative_stale_threshold", 0.85))
+        if not math.isfinite(value):
+            value = 0.85
+        return min(max(value, 0.0), 1.0)
+
+    def _positive_quality_threshold(self) -> float:
+        value = float(getattr(self.cfg, "positive_quality_threshold", 0.30))
+        if not math.isfinite(value):
+            value = 0.30
         return min(max(value, 0.0), 1.0)
 
     def _safety_weight(self, name: str, default: float) -> float:
@@ -943,20 +967,22 @@ class _DeploymentBackbonePPO(nn.Module):
         runtime_weakness = option_ctx["runtime_relative_weakness"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         device_load = option_ctx["device_load_norm"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         pair_quality = option_ctx["pair_quality_score"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        active_hotspot = pair_ctx["active_pair_hotspot"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         service_pressure = pair_ctx["service_pressure"].to(device=h_s.device, dtype=pair_adjustment.dtype).view(-1, 1)
         select_logits = (
             pair_adjustment
             + 0.35 * qk_feature
-            + 0.35 * pair_quality
+            + 0.45 * pair_quality
             + 0.15 * service_pressure
-            + 0.20 * runtime_conf
+            + 0.25 * runtime_conf
             + 0.20 * prev_mask
-            - 0.15 * runtime_unknown
-            - 0.20 * runtime_stale
-            - 0.20 * runtime_weakness
-            - 0.15 * queue_pressure
+            - 0.35 * runtime_unknown
+            - 0.30 * runtime_stale
+            - 0.25 * runtime_weakness
+            - 0.20 * queue_pressure
             - 0.20 * memory_cost
             - 0.10 * device_load
+            - 0.20 * active_hotspot
         )
         cloud_idx = self._cloud_index(static_allowed.size(1))
         invalid = ~static_allowed.bool()
@@ -970,8 +996,11 @@ class _DeploymentBackbonePPO(nn.Module):
             + 0.20 * runtime_conf
             + 0.10 * service_pressure
             - 0.20 * runtime_weakness
+            - 0.25 * runtime_unknown
+            - 0.20 * runtime_stale
             - 0.15 * queue_pressure
             - 0.20 * memory_cost
+            - 0.20 * active_hotspot
         )
         pair_ctx.update(option_ctx)
         pair_ctx["base_score"] = qk_feature
@@ -1783,7 +1812,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             raw_deploy_mask: Optional[torch.Tensor],
             policy_aux: Dict[str, torch.Tensor],
             quality_bucket: str,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
         static_allowed = policy_aux["static_allowed"].bool()
         num_devices = static_allowed.size(1)
         cloud_idx = self._cloud_index(num_devices)
@@ -1799,31 +1828,64 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         queue_pressure = policy_aux.get("queue_pressure")
         hotspot = policy_aux.get("active_pair_hotspot")
         runtime_risk = policy_aux.get("runtime_risk_score")
+        runtime_unknown = policy_aux.get("runtime_unknown_risk")
+        runtime_stale = policy_aux.get("runtime_stale_risk")
+        pair_quality = policy_aux.get("pair_quality_score")
         if not isinstance(queue_pressure, torch.Tensor):
             queue_pressure = torch.zeros_like(static_allowed, dtype=torch.float32)
         if not isinstance(hotspot, torch.Tensor):
             hotspot = torch.zeros_like(static_allowed, dtype=torch.float32)
         if not isinstance(runtime_risk, torch.Tensor):
             runtime_risk = torch.zeros_like(static_allowed, dtype=torch.float32)
+        if not isinstance(runtime_unknown, torch.Tensor):
+            runtime_unknown = torch.zeros_like(static_allowed, dtype=torch.float32)
+        if not isinstance(runtime_stale, torch.Tensor):
+            runtime_stale = torch.zeros_like(static_allowed, dtype=torch.float32)
+        if not isinstance(pair_quality, torch.Tensor):
+            pair_quality = torch.ones_like(static_allowed, dtype=torch.float32)
+
+        queue_pressure = queue_pressure.to(device=edge_allowed.device, dtype=torch.float32)
+        hotspot = hotspot.to(device=edge_allowed.device, dtype=torch.float32)
+        runtime_risk = runtime_risk.to(device=edge_allowed.device, dtype=torch.float32)
+        runtime_unknown = runtime_unknown.to(device=edge_allowed.device, dtype=torch.float32)
+        runtime_stale = runtime_stale.to(device=edge_allowed.device, dtype=torch.float32)
+        pair_quality = pair_quality.to(device=edge_allowed.device, dtype=torch.float32)
+
+        queue_risky = queue_pressure >= self._negative_queue_threshold()
+        hotspot_risky = hotspot >= self._negative_hotspot_threshold()
+        runtime_risky = runtime_risk >= self._negative_runtime_risk_threshold()
+        unknown_risky = runtime_unknown >= self._negative_unknown_threshold()
+        stale_risky = runtime_stale >= self._negative_stale_threshold()
+        low_quality = pair_quality < self._positive_quality_threshold()
         risky = (
-            (queue_pressure.to(device=edge_allowed.device) >= self._negative_queue_threshold())
-            | (hotspot.to(device=edge_allowed.device) >= self._negative_hotspot_threshold())
-            | (runtime_risk.to(device=edge_allowed.device) >= 0.70)
+            queue_risky
+            | hotspot_risky
+            | runtime_risky
+            | unknown_risky
+            | stale_risky
+            | low_quality
         ) & edge_allowed
+        debug_counts = {
+            "actor_selected_risky_samples": float((selected & risky).float().sum().detach().cpu().item()),
+            "actor_selected_low_quality_samples": float((selected & low_quality & edge_allowed).float().sum().detach().cpu().item()),
+            "actor_selected_runtime_risky_samples": float((selected & runtime_risky & edge_allowed).float().sum().detach().cpu().item()),
+            "actor_selected_unknown_samples": float((selected & unknown_risky & edge_allowed).float().sum().detach().cpu().item()),
+            "actor_selected_stale_samples": float((selected & stale_risky & edge_allowed).float().sum().detach().cpu().item()),
+        }
         quality = str(quality_bucket or "unknown").strip().lower()
         if quality == "bad":
             positive_mask = torch.zeros_like(selected)
-            negative_mask = selected & risky
+            negative_mask = (selected & risky) | raw_removed
             if not bool(negative_mask.any().item()):
                 negative_mask = selected & edge_allowed
-            return positive_mask, negative_mask, raw_removed
+            return positive_mask, negative_mask, raw_removed, debug_counts
         positive_mask = selected & ~risky
         negative_mask = (
             (selected & risky)
             | raw_removed
             | ((~selected) & risky)
         ) & edge_allowed
-        return positive_mask, negative_mask, raw_removed
+        return positive_mask, negative_mask, raw_removed, debug_counts
 
     def offline_update(
             self,
@@ -1867,6 +1929,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         positive_counts = []
         negative_counts = []
         raw_removed_counts = []
+        selected_risky_counts = []
+        selected_low_quality_counts = []
+        selected_runtime_risky_counts = []
+        selected_unknown_counts = []
+        selected_stale_counts = []
         for tr in batch:
             logic_edge_index = tr["logic_edge_index"].to(device)
             logic_feats = _move_tensor_dict_to_device(tr["logic_feats"], device)
@@ -1891,7 +1958,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     topo_order=tr.get("topo_order"),
                     return_policy=True,
                 )
-                positive_mask, negative_mask, raw_removed_mask = self._deployment_offline_actor_masks(
+                positive_mask, negative_mask, raw_removed_mask, mask_debug = self._deployment_offline_actor_masks(
                     deploy_mask,
                     raw_deploy_mask,
                     probe_aux,
@@ -1952,6 +2019,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             positive_counts.append(float(policy_aux["positive_mask"].float().sum().detach().cpu().item()))
             negative_counts.append(float(policy_aux["negative_mask"].float().sum().detach().cpu().item()))
             raw_removed_counts.append(float(raw_removed_mask.float().sum().detach().cpu().item()))
+            selected_risky_counts.append(float(mask_debug.get("actor_selected_risky_samples", 0.0)))
+            selected_low_quality_counts.append(float(mask_debug.get("actor_selected_low_quality_samples", 0.0)))
+            selected_runtime_risky_counts.append(float(mask_debug.get("actor_selected_runtime_risky_samples", 0.0)))
+            selected_unknown_counts.append(float(mask_debug.get("actor_selected_unknown_samples", 0.0)))
+            selected_stale_counts.append(float(mask_debug.get("actor_selected_stale_samples", 0.0)))
 
         value_t = torch.stack(values).float()
         positive_logp_t = torch.stack(positive_logps).float()
@@ -2044,6 +2116,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_positive_samples": _mean_or_zero(positive_counts),
             "actor_negative_samples": _mean_or_zero(negative_counts),
             "actor_raw_removed_samples": _mean_or_zero(raw_removed_counts),
+            "actor_selected_risky_samples": _mean_or_zero(selected_risky_counts),
+            "actor_selected_low_quality_samples": _mean_or_zero(selected_low_quality_counts),
+            "actor_selected_runtime_risky_samples": _mean_or_zero(selected_runtime_risky_counts),
+            "actor_selected_unknown_samples": _mean_or_zero(selected_unknown_counts),
+            "actor_selected_stale_samples": _mean_or_zero(selected_stale_counts),
             "bad_actor_masked": _scalar_to_float(bad_mask.detach().mean()),
             "positive_logp_mean": _scalar_to_float(positive_logp_t.detach().mean()),
             "negative_logp_mean": _scalar_to_float(negative_logp_t.detach().mean()),
