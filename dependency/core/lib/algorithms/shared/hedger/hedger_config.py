@@ -33,6 +33,20 @@ class DeploymentConstraintCfg:
     negative_unknown_threshold: float = 0.50
     negative_stale_threshold: float = 0.85
     positive_quality_threshold: float = 0.30
+    pair_adjustment_scale: float = 0.80
+    qk_weight: float = 0.20
+    quality_weight: float = 0.90
+    confidence_weight: float = 0.20
+    service_pressure_weight: float = 0.10
+    inertia_weight: float = 0.15
+    unknown_penalty: float = 0.90
+    stale_penalty: float = 0.75
+    runtime_risk_penalty: float = 0.60
+    low_quality_penalty: float = 1.20
+    queue_penalty: float = 0.25
+    memory_penalty: float = 0.25
+    device_load_penalty: float = 0.10
+    hotspot_penalty: float = 0.35
 
 
 class PhysicalTopology:

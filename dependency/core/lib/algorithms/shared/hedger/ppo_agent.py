@@ -143,6 +143,10 @@ DEPLOYMENT_CANDIDATE_FEATURE_NAMES = [
     "runtime_unknown",
     "runtime_stale",
     "runtime_relative_weakness",
+    "pair_quality",
+    "runtime_risk",
+    "evidence_untrusted",
+    "low_quality_gap",
     "current_replica",
     "edge_replica_count",
     "device_replica_count",
@@ -510,7 +514,7 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.30
         return min(max(value, 0.0), 1.0)
 
-    def _safety_weight(self, name: str, default: float) -> float:
+    def _matrix_policy_weight(self, name: str, default: float) -> float:
         value = float(getattr(self.cfg, name, default))
         if not math.isfinite(value):
             value = default
@@ -815,27 +819,33 @@ class _DeploymentBackbonePPO(nn.Module):
         if edge_width > 0:
             device_load_norm[:, :edge_width] = device_load_norm_edge.view(1, edge_width).expand(num_services, -1)
 
-        active_hotspot = pair_ctx["active_pair_hotspot"].to(device=device, dtype=dtype)
-        runtime_risk_score = torch.clamp(
-            0.30 * runtime_unknown
-            + 0.25 * runtime_stale
-            + 0.35 * runtime_relative_weakness
-            + 0.50 * queue_pressure
-            + active_hotspot,
-            min=0.0,
-            max=1.0,
-        )
         static_allowed_f = static_allowed.to(device=device, dtype=dtype)
         pair_quality_score = torch.clamp(
             static_allowed_f
-            * (runtime_confidence + 0.25 * (1.0 - runtime_relative_weakness))
-            * (1.0 - 0.5 * queue_pressure)
-            * (1.0 - 0.5 * pair_memory_cost),
+            * runtime_confidence
+            * (1.0 - runtime_relative_weakness).clamp(0.0, 1.0)
+            * (1.0 - queue_pressure).clamp(0.0, 1.0)
+            * (1.0 - pair_memory_cost).clamp(0.0, 1.0),
             min=0.0,
             max=1.0,
         )
         if cloud_idx >= 0:
             pair_quality_score[:, cloud_idx] = 0.0
+        evidence_untrusted = torch.maximum(runtime_unknown, runtime_stale)
+        quality_threshold = max(self._positive_quality_threshold(), 1e-6)
+        low_quality_gap = ((quality_threshold - pair_quality_score) / quality_threshold).clamp(0.0, 1.0)
+
+        active_hotspot = pair_ctx["active_pair_hotspot"].to(device=device, dtype=dtype)
+        runtime_risk_score = torch.clamp(
+            0.45 * runtime_unknown
+            + 0.35 * runtime_stale
+            + 0.35 * runtime_relative_weakness
+            + 0.50 * queue_pressure
+            + 0.30 * low_quality_gap
+            + active_hotspot,
+            min=0.0,
+            max=1.0,
+        )
 
         return {
             "runtime_per_complexity": runtime_per_complexity,
@@ -853,6 +863,8 @@ class _DeploymentBackbonePPO(nn.Module):
             "static_option_score": qk_feature.to(device=device, dtype=dtype),
             "runtime_risk_score": runtime_risk_score,
             "evidence_confidence": runtime_confidence,
+            "evidence_untrusted": evidence_untrusted,
+            "low_quality_gap": low_quality_gap,
         }
 
     def _deployment_candidate_features(
@@ -905,6 +917,10 @@ class _DeploymentBackbonePPO(nn.Module):
                 option_ctx["runtime_unknown"].to(device=device, dtype=dtype),
                 option_ctx["runtime_stale"].to(device=device, dtype=dtype),
                 option_ctx["runtime_relative_weakness"].to(device=device, dtype=dtype),
+                option_ctx["pair_quality_score"].to(device=device, dtype=dtype),
+                option_ctx["runtime_risk_score"].to(device=device, dtype=dtype),
+                option_ctx["evidence_untrusted"].to(device=device, dtype=dtype),
+                option_ctx["low_quality_gap"].to(device=device, dtype=dtype),
                 prev_mask,
                 torch.log1p(edge_replica_count).view(num_services, 1).expand(-1, num_devices),
                 torch.log1p(device_service_count).view(1, num_devices).expand(num_services, -1),
@@ -964,25 +980,42 @@ class _DeploymentBackbonePPO(nn.Module):
         runtime_conf = option_ctx["runtime_confidence"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         runtime_unknown = option_ctx["runtime_unknown"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         runtime_stale = option_ctx["runtime_stale"].to(device=h_s.device, dtype=pair_adjustment.dtype)
-        runtime_weakness = option_ctx["runtime_relative_weakness"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        runtime_risk = option_ctx["runtime_risk_score"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         device_load = option_ctx["device_load_norm"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         pair_quality = option_ctx["pair_quality_score"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        evidence_untrusted = option_ctx["evidence_untrusted"].to(device=h_s.device, dtype=pair_adjustment.dtype)
+        low_quality_gap = option_ctx["low_quality_gap"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         active_hotspot = pair_ctx["active_pair_hotspot"].to(device=h_s.device, dtype=pair_adjustment.dtype)
         service_pressure = pair_ctx["service_pressure"].to(device=h_s.device, dtype=pair_adjustment.dtype).view(-1, 1)
+        pair_adjustment_term = self._matrix_policy_weight("pair_adjustment_scale", 0.80) * pair_adjustment
+        qk_term = self._matrix_policy_weight("qk_weight", 0.20) * qk_feature
+        quality_term = self._matrix_policy_weight("quality_weight", 0.90) * pair_quality
+        confidence_term = self._matrix_policy_weight("confidence_weight", 0.20) * runtime_conf
+        service_pressure_term = self._matrix_policy_weight("service_pressure_weight", 0.10) * service_pressure
+        inertia_term = self._matrix_policy_weight("inertia_weight", 0.15) * prev_mask
+        unknown_penalty_term = self._matrix_policy_weight("unknown_penalty", 0.90) * runtime_unknown
+        stale_penalty_term = self._matrix_policy_weight("stale_penalty", 0.75) * runtime_stale
+        runtime_risk_penalty_term = self._matrix_policy_weight("runtime_risk_penalty", 0.60) * runtime_risk
+        low_quality_penalty_term = self._matrix_policy_weight("low_quality_penalty", 1.20) * low_quality_gap
+        queue_penalty_term = self._matrix_policy_weight("queue_penalty", 0.25) * queue_pressure
+        memory_penalty_term = self._matrix_policy_weight("memory_penalty", 0.25) * memory_cost
+        device_load_penalty_term = self._matrix_policy_weight("device_load_penalty", 0.10) * device_load
+        hotspot_penalty_term = self._matrix_policy_weight("hotspot_penalty", 0.35) * active_hotspot
         select_logits = (
-            pair_adjustment
-            + 0.35 * qk_feature
-            + 0.45 * pair_quality
-            + 0.15 * service_pressure
-            + 0.25 * runtime_conf
-            + 0.20 * prev_mask
-            - 0.35 * runtime_unknown
-            - 0.30 * runtime_stale
-            - 0.25 * runtime_weakness
-            - 0.20 * queue_pressure
-            - 0.20 * memory_cost
-            - 0.10 * device_load
-            - 0.20 * active_hotspot
+            pair_adjustment_term
+            + qk_term
+            + quality_term
+            + confidence_term
+            + service_pressure_term
+            + inertia_term
+            - unknown_penalty_term
+            - stale_penalty_term
+            - runtime_risk_penalty_term
+            - low_quality_penalty_term
+            - queue_penalty_term
+            - memory_penalty_term
+            - device_load_penalty_term
+            - hotspot_penalty_term
         )
         cloud_idx = self._cloud_index(static_allowed.size(1))
         invalid = ~static_allowed.bool()
@@ -992,21 +1025,41 @@ class _DeploymentBackbonePPO(nn.Module):
             cloud_mask = device_ids.view(1, -1).eq(cloud_idx).expand_as(static_allowed)
             select_logits = torch.where(cloud_mask, torch.full_like(select_logits, 20.0), select_logits)
         safety_prior = (
-            0.35 * pair_quality
-            + 0.20 * runtime_conf
-            + 0.10 * service_pressure
-            - 0.20 * runtime_weakness
-            - 0.25 * runtime_unknown
-            - 0.20 * runtime_stale
-            - 0.15 * queue_pressure
-            - 0.20 * memory_cost
-            - 0.20 * active_hotspot
+            qk_term
+            + quality_term
+            + confidence_term
+            + service_pressure_term
+            + inertia_term
+            - unknown_penalty_term
+            - stale_penalty_term
+            - runtime_risk_penalty_term
+            - low_quality_penalty_term
+            - queue_penalty_term
+            - memory_penalty_term
+            - device_load_penalty_term
+            - hotspot_penalty_term
         )
         pair_ctx.update(option_ctx)
         pair_ctx["base_score"] = qk_feature
         pair_ctx["centered_score"] = select_logits
         pair_ctx["select_logit"] = select_logits
         pair_ctx["select_prob"] = torch.sigmoid(select_logits)
+        pair_ctx["evidence_untrusted"] = evidence_untrusted
+        pair_ctx["low_quality_gap"] = low_quality_gap
+        pair_ctx["qk_term"] = qk_term
+        pair_ctx["pair_adjustment_term"] = pair_adjustment_term
+        pair_ctx["quality_term"] = quality_term
+        pair_ctx["confidence_term"] = confidence_term
+        pair_ctx["service_pressure_term"] = service_pressure_term
+        pair_ctx["inertia_term"] = inertia_term
+        pair_ctx["unknown_penalty_term"] = unknown_penalty_term
+        pair_ctx["stale_penalty_term"] = stale_penalty_term
+        pair_ctx["runtime_risk_penalty_term"] = runtime_risk_penalty_term
+        pair_ctx["low_quality_penalty_term"] = low_quality_penalty_term
+        pair_ctx["queue_penalty_term"] = queue_penalty_term
+        pair_ctx["memory_penalty_term"] = memory_penalty_term
+        pair_ctx["device_load_penalty_term"] = device_load_penalty_term
+        pair_ctx["hotspot_penalty_term"] = hotspot_penalty_term
         return (
             q_embedding,
             k_embedding,
@@ -1208,7 +1261,9 @@ class _DeploymentBackbonePPO(nn.Module):
         runtime_unknown_risk = option_ctx["runtime_unknown_risk"].to(device=corrected.device, dtype=torch.float32)
         runtime_stale_risk = option_ctx["runtime_stale_risk"].to(device=corrected.device, dtype=torch.float32)
         runtime_relative_weakness = option_ctx["runtime_relative_weakness"].to(device=corrected.device, dtype=torch.float32)
-        pair_memory_cost = option_ctx["pair_memory_cost"].to(device=corrected.device, dtype=torch.float32)
+        pair_quality = option_ctx["pair_quality_score"].to(device=corrected.device, dtype=torch.float32)
+        evidence_untrusted = option_ctx["evidence_untrusted"].to(device=corrected.device, dtype=torch.float32)
+        low_quality_gap = option_ctx["low_quality_gap"].to(device=corrected.device, dtype=torch.float32)
         residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask)
         model_mem = logic_feats["model_mem"].float()
         cloud_idx = self._cloud_index(corrected.size(1))
@@ -1222,19 +1277,7 @@ class _DeploymentBackbonePPO(nn.Module):
             prev_edge_mask = torch.zeros_like(corrected)
         else:
             prev_edge_mask = prev_deploy_mask.bool()
-        service_pressure_for_retention = self._deployment_pair_context(
-            logic_edge_index,
-            logic_feats,
-            static_allowed,
-            deploy_mask=prev_deploy_mask,
-        )["service_pressure"].to(device=corrected.device, dtype=torch.float32)
-        retention_scores = (
-            decode_scores
-            + 0.25 * service_pressure_for_retention.view(-1, 1)
-            + 0.35 * prev_edge_mask.to(device=corrected.device, dtype=torch.float32)
-            - 0.35 * runtime_risk_score
-            - 0.25 * pair_memory_cost
-        )
+        retention_scores = decode_scores
 
         for device_idx in range(corrected.size(1)):
             if device_idx == cloud_idx:
@@ -1306,6 +1349,24 @@ class _DeploymentBackbonePPO(nn.Module):
         selected_unknown_option_cost = (
             executed_edge * runtime_unknown_risk[:, edge_slice]
         ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
+        selected_low_quality_option_cost = (
+            executed_edge * low_quality_gap[:, edge_slice]
+        ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
+        selected_evidence_untrusted_cost = (
+            executed_edge * evidence_untrusted[:, edge_slice]
+        ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
+        selected_risky_pair_count = (
+            executed_edge
+            * (
+                (runtime_risk_score[:, edge_slice] >= self._negative_runtime_risk_threshold())
+                | (runtime_unknown_risk[:, edge_slice] >= self._negative_unknown_threshold())
+                | (runtime_stale_risk[:, edge_slice] >= self._negative_stale_threshold())
+                | (pair_quality[:, edge_slice] < self._positive_quality_threshold())
+            ).float()
+        ).sum() if cloud_idx > 0 else torch.zeros((), device=corrected.device)
+        selected_low_quality_pair_count = (
+            executed_edge * (pair_quality[:, edge_slice] < self._positive_quality_threshold()).float()
+        ).sum() if cloud_idx > 0 else torch.zeros((), device=corrected.device)
         risk_metrics = {
             "active_pair_hotspot_cost": _scalar_to_float(raw_risk_ctx["active_pair_hotspot_cost"]),
             "executed_active_pair_hotspot_cost": _scalar_to_float(exec_risk_ctx["active_pair_hotspot_cost"]),
@@ -1316,6 +1377,10 @@ class _DeploymentBackbonePPO(nn.Module):
             "selected_unknown_option_cost": _scalar_to_float(selected_unknown_option_cost),
             "selected_stale_option_cost": _scalar_to_float(selected_stale_option_cost),
             "selected_runtime_weakness_cost": _scalar_to_float(selected_runtime_weakness_cost),
+            "selected_low_quality_option_cost": _scalar_to_float(selected_low_quality_option_cost),
+            "selected_evidence_untrusted_cost": _scalar_to_float(selected_evidence_untrusted_cost),
+            "selected_risky_pair_count": _scalar_to_float(selected_risky_pair_count),
+            "selected_low_quality_pair_count": _scalar_to_float(selected_low_quality_pair_count),
         }
         return (
             corrected,
@@ -1548,6 +1613,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "runtime_risk_score": pair_ctx["runtime_risk_score"].detach().cpu(),
                 "pair_quality_score": pair_ctx["pair_quality_score"].detach().cpu(),
                 "evidence_confidence": pair_ctx["evidence_confidence"].detach().cpu(),
+                "evidence_untrusted": pair_ctx["evidence_untrusted"].detach().cpu(),
+                "low_quality_gap": pair_ctx["low_quality_gap"].detach().cpu(),
                 "runtime_unknown_risk": pair_ctx["runtime_unknown_risk"].detach().cpu(),
                 "runtime_stale_risk": pair_ctx["runtime_stale_risk"].detach().cpu(),
                 "runtime_relative_weakness": pair_ctx["runtime_relative_weakness"].detach().cpu(),
@@ -1569,6 +1636,20 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "device_capability_feature": _debug_tensor(phys_feats, "device_capability_feat"),
                 "device_capability_feature_names": DEVICE_CAPABILITY_FEATURE_NAMES,
                 "final_score": select_logits.detach().cpu(),
+                "qk_term": pair_ctx["qk_term"].detach().cpu(),
+                "pair_adjustment_term": pair_ctx["pair_adjustment_term"].detach().cpu(),
+                "quality_term": pair_ctx["quality_term"].detach().cpu(),
+                "confidence_term": pair_ctx["confidence_term"].detach().cpu(),
+                "service_pressure_term": pair_ctx["service_pressure_term"].detach().cpu(),
+                "inertia_term": pair_ctx["inertia_term"].detach().cpu(),
+                "unknown_penalty_term": pair_ctx["unknown_penalty_term"].detach().cpu(),
+                "stale_penalty_term": pair_ctx["stale_penalty_term"].detach().cpu(),
+                "runtime_risk_penalty_term": pair_ctx["runtime_risk_penalty_term"].detach().cpu(),
+                "low_quality_penalty_term": pair_ctx["low_quality_penalty_term"].detach().cpu(),
+                "queue_penalty_term": pair_ctx["queue_penalty_term"].detach().cpu(),
+                "memory_penalty_term": pair_ctx["memory_penalty_term"].detach().cpu(),
+                "device_load_penalty_term": pair_ctx["device_load_penalty_term"].detach().cpu(),
+                "hotspot_penalty_term": pair_ctx["hotspot_penalty_term"].detach().cpu(),
                 "policy_prob": option_debug["select_prob"].detach().cpu(),
                 "static_mask": static_allowed.detach().cpu(),
                 "raw_threshold_mask": raw_deploy_mask.detach().cpu(),
@@ -1670,6 +1751,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "runtime_risk_score": pair_ctx["runtime_risk_score"],
                 "pair_quality_score": pair_ctx["pair_quality_score"],
                 "evidence_confidence": pair_ctx["evidence_confidence"],
+                "evidence_untrusted": pair_ctx["evidence_untrusted"],
+                "low_quality_gap": pair_ctx["low_quality_gap"],
                 "runtime_unknown_risk": pair_ctx["runtime_unknown_risk"],
                 "runtime_stale_risk": pair_ctx["runtime_stale_risk"],
                 "runtime_unknown": pair_ctx["runtime_unknown"],
@@ -1875,16 +1958,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality = str(quality_bucket or "unknown").strip().lower()
         if quality == "bad":
             positive_mask = torch.zeros_like(selected)
-            negative_mask = (selected & risky) | raw_removed
+            negative_mask = selected & risky
             if not bool(negative_mask.any().item()):
                 negative_mask = selected & edge_allowed
             return positive_mask, negative_mask, raw_removed, debug_counts
         positive_mask = selected & ~risky
-        negative_mask = (
-            (selected & risky)
-            | raw_removed
-            | ((~selected) & risky)
-        ) & edge_allowed
+        negative_mask = (selected & risky) & edge_allowed
         return positive_mask, negative_mask, raw_removed, debug_counts
 
     def offline_update(
