@@ -1885,8 +1885,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         Offline/replay update for deployment macro-transitions.
 
         This is an AWAC-style actor-critic step: fit the critic to one-step
-        bootstrapped returns, clone useful executed edge replicas, and suppress
-        raw Bernoulli replicas that decode/projection removed.
+        bootstrapped returns and calibrate every feasible edge Bernoulli bit
+        with pair-wise positive/negative BCE targets.
         """
         if not transitions:
             return None
@@ -1906,6 +1906,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         targets = []
         rewards = []
         quality_values = []
+        select_logits_for_bce = []
+        positive_masks_for_bce = []
+        negative_masks_for_bce = []
+        raw_removed_masks_for_bce = []
+        unselected_negative_masks_for_bce = []
         positive_counts = []
         negative_counts = []
         raw_removed_counts = []
@@ -1998,6 +2003,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             cloud_idx = self._cloud_index(edge_allowed_t.size(1))
             if cloud_idx >= 0:
                 edge_allowed_t[:, cloud_idx] = False
+            select_logits_for_bce.append(raw_removed_logits)
+            positive_masks_for_bce.append(positive_mask_t.detach())
+            negative_masks_for_bce.append(negative_mask_t.detach())
+            raw_removed_masks_for_bce.append((raw_removed_mask & edge_allowed_t).detach())
+            unselected_negative_masks_for_bce.append((unselected_negative_mask & edge_allowed_t).detach())
             if bool(raw_removed_mask.any().item()):
                 raw_removed_logp = (
                     torch.log1p(-raw_removed_probs).masked_select(raw_removed_mask).sum()
@@ -2031,10 +2041,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     )
             targets.append(reward + self.gamma * next_value * (0.0 if done else 1.0))
             values.append(critic_value.squeeze())
-            positive_logps.append(policy_aux["positive_logp"])
-            negative_logps.append(policy_aux["negative_logp"])
-            raw_removed_logps.append(raw_removed_logp)
-            unselected_negative_logps.append(unselected_negative_logp)
+            positive_logps.append(policy_aux["positive_logp"].detach())
+            negative_logps.append(policy_aux["negative_logp"].detach())
+            raw_removed_logps.append(raw_removed_logp.detach())
+            unselected_negative_logps.append(unselected_negative_logp.detach())
             entropies.append(ent)
             quality_values.append(quality_bucket)
             positive_counts.append(float(policy_aux["positive_mask"].float().sum().detach().cpu().item()))
@@ -2111,59 +2121,63 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             torch.ones_like(bad_mask),
         )
 
-        positive_active = torch.tensor(
-            [1.0 if count > 0.0 else 0.0 for count in positive_counts],
-            device=device,
-            dtype=torch.float32,
-        )
-        negative_active = torch.tensor(
-            [1.0 if count > 0.0 else 0.0 for count in negative_counts],
-            device=device,
-            dtype=torch.float32,
-        )
-        raw_removed_active = torch.tensor(
-            [1.0 if count > 0.0 else 0.0 for count in raw_removed_counts],
-            device=device,
-            dtype=torch.float32,
-        )
-        unselected_negative_active = torch.tensor(
-            [1.0 if count > 0.0 else 0.0 for count in unselected_negative_counts],
-            device=device,
-            dtype=torch.float32,
-        )
-        positive_loss_weight = positive_weight * positive_active
-        negative_loss_weight = negative_weight * negative_active
-        raw_removed_loss_weight = raw_removed_weight * raw_removed_active
-        unselected_negative_loss_weight = unselected_negative_weight * unselected_negative_active
+        def pair_bce_loss(
+                masks: List[torch.Tensor],
+                weights: torch.Tensor,
+                positive_target: bool,
+                coef: float,
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
+            if select_logits_for_bce:
+                numerator = select_logits_for_bce[0].sum() * 0.0
+            else:
+                numerator = torch.zeros((), device=device, dtype=torch.float32, requires_grad=True)
+            denominator = torch.zeros((), device=device, dtype=torch.float32)
+            for logits, mask, transition_weight in zip(select_logits_for_bce, masks, weights):
+                if not bool(mask.any().item()):
+                    continue
+                mask_f = mask.to(device=logits.device, dtype=torch.float32)
+                pair_loss = F.softplus(-logits) if positive_target else F.softplus(logits)
+                pair_weight = mask_f * transition_weight.to(device=logits.device, dtype=torch.float32)
+                numerator = numerator + (pair_loss * pair_weight).sum()
+                denominator = denominator + pair_weight.sum()
+            loss = numerator / denominator.clamp_min(1.0)
+            return loss * float(coef), denominator.detach()
 
-        actor_loss = (
-            -(positive_loss_weight * positive_logp_t).sum()
-            / positive_loss_weight.sum().clamp_min(1.0)
-            * float(actor_bc_coef)
+        actor_loss, positive_pair_weight_sum = pair_bce_loss(
+            positive_masks_for_bce,
+            positive_weight,
+            positive_target=True,
+            coef=float(actor_bc_coef),
         )
-        negative_loss = (
-            -(negative_loss_weight * negative_logp_t).sum()
-            / negative_loss_weight.sum().clamp_min(1.0)
-            * float(negative_bc_coef)
+        negative_loss, negative_pair_weight_sum = pair_bce_loss(
+            negative_masks_for_bce,
+            negative_weight,
+            positive_target=False,
+            coef=float(negative_bc_coef),
         )
-        raw_removed_negative_loss = (
-            -(raw_removed_loss_weight * raw_removed_logp_t).sum()
-            / raw_removed_loss_weight.sum().clamp_min(1.0)
-            * float(raw_removed_negative_coef)
+        raw_removed_negative_loss, raw_removed_pair_weight_sum = pair_bce_loss(
+            raw_removed_masks_for_bce,
+            raw_removed_weight,
+            positive_target=False,
+            coef=float(raw_removed_negative_coef),
         )
-        unselected_negative_loss = (
-            -(unselected_negative_loss_weight * unselected_negative_logp_t).sum()
-            / unselected_negative_loss_weight.sum().clamp_min(1.0)
-            * float(unselected_negative_coef)
+        unselected_negative_loss, unselected_negative_pair_weight_sum = pair_bce_loss(
+            unselected_negative_masks_for_bce,
+            unselected_negative_weight,
+            positive_target=False,
+            coef=float(unselected_negative_coef),
         )
         value_loss = F.mse_loss(value_t, target_t)
         entropy = ent_t.mean()
         critic_loss = float(value_coef) * value_loss
-        actor_objective_loss = (
+        actor_pair_bce_loss = (
             actor_loss
             + negative_loss
             + raw_removed_negative_loss
             + unselected_negative_loss
+        )
+        actor_objective_loss = (
+            actor_pair_bce_loss
             - float(entropy_coef) * entropy
         )
 
@@ -2201,6 +2215,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "last_value": float(targets[-1] if targets else 0.0),
             "done_fraction": _mean_or_zero([1.0 if bool(tr.get("done", False)) else 0.0 for tr in batch]),
             "policy_loss": _scalar_to_float(actor_loss.detach()),
+            "actor_pair_bce_loss": _scalar_to_float(actor_pair_bce_loss.detach()),
             "negative_loss": _scalar_to_float(negative_loss.detach()),
             "raw_removed_negative_loss": _scalar_to_float(raw_removed_negative_loss.detach()),
             "unselected_negative_loss": _scalar_to_float(unselected_negative_loss.detach()),
@@ -2220,6 +2235,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_unselected_negative_weight_mean": _scalar_to_float(
                 unselected_negative_weight.detach().mean()
             ),
+            "positive_pair_weight_sum": _scalar_to_float(positive_pair_weight_sum),
+            "negative_pair_weight_sum": _scalar_to_float(negative_pair_weight_sum),
+            "raw_removed_pair_weight_sum": _scalar_to_float(raw_removed_pair_weight_sum),
+            "unselected_negative_pair_weight_sum": _scalar_to_float(unselected_negative_pair_weight_sum),
             "actor_positive_samples": _mean_or_zero(positive_counts),
             "actor_negative_samples": _mean_or_zero(negative_counts),
             "actor_raw_removed_samples": _mean_or_zero(raw_removed_counts),
