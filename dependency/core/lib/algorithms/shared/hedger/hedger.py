@@ -952,6 +952,8 @@ class Hedger:
             "actor_selected_stale_samples",
             "bad_actor_masked",
             "positive_logp_mean", "negative_logp_mean", "raw_removed_logp_mean",
+            "positive_prob_mean", "negative_prob_mean", "raw_removed_prob_mean",
+            "positive_logit_mean", "negative_logit_mean", "raw_removed_logit_mean",
         ]
         if include_offline_batch:
             fieldnames.extend([
@@ -1104,7 +1106,6 @@ class Hedger:
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
             "queue_normalizer": queue_normalizer,
-            "select_threshold": _matrix_float("select_threshold", 0.55, probability=True),
             "negative_queue_threshold": _matrix_float("negative_queue_threshold", 0.65, probability=True),
             "negative_hotspot_threshold": _matrix_float("negative_hotspot_threshold", 0.08, probability=True),
             "negative_runtime_risk_threshold": _matrix_float(
@@ -1115,20 +1116,6 @@ class Hedger:
             "negative_unknown_threshold": _matrix_float("negative_unknown_threshold", 0.50, probability=True),
             "negative_stale_threshold": _matrix_float("negative_stale_threshold", 0.85, probability=True),
             "positive_quality_threshold": _matrix_float("positive_quality_threshold", 0.30, probability=True),
-            "pair_adjustment_scale": _matrix_float("pair_adjustment_scale", 0.80),
-            "qk_weight": _matrix_float("qk_weight", 0.20),
-            "quality_weight": _matrix_float("quality_weight", 0.90),
-            "confidence_weight": _matrix_float("confidence_weight", 0.20),
-            "service_pressure_weight": _matrix_float("service_pressure_weight", 0.10),
-            "inertia_weight": _matrix_float("inertia_weight", 0.15),
-            "unknown_penalty": _matrix_float("unknown_penalty", 0.90),
-            "stale_penalty": _matrix_float("stale_penalty", 0.75),
-            "runtime_risk_penalty": _matrix_float("runtime_risk_penalty", 0.60),
-            "low_quality_penalty": _matrix_float("low_quality_penalty", 1.20),
-            "queue_penalty": _matrix_float("queue_penalty", 0.25),
-            "memory_penalty": _matrix_float("memory_penalty", 0.25),
-            "device_load_penalty": _matrix_float("device_load_penalty", 0.10),
-            "hotspot_penalty": _matrix_float("hotspot_penalty", 0.35),
             "ppo": ppo,
         }
 
@@ -2126,7 +2113,7 @@ class Hedger:
             f"max_edge_replicas_per_device={dep_params.get('max_edge_replicas_per_device', 'na')}, "
             f"edge_memory_budget_ratio={dep_params.get('edge_memory_budget_ratio', 'na')}, "
             f"hotspot_weight={dep_params.get('reward_dep_hotspot_weight', 'na')}, "
-            f"select_threshold={dep_params.get('select_threshold', 'na')}, "
+            "bernoulli_mode_boundary=0.5, "
             f"negative_runtime_risk_threshold={dep_params.get('negative_runtime_risk_threshold', 'na')}, "
             f"positive_quality_threshold={dep_params.get('positive_quality_threshold', 'na')}, "
             f"latency_guard={getattr(latency_guard_cfg, 'enabled', False)}"
@@ -2764,7 +2751,7 @@ class Hedger:
             "hotspot_weight", "runtime_risk_weight", "unknown_option_weight",
             "stale_option_weight", "low_quality_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
-            "edge_memory_budget_ratio", "select_threshold",
+            "edge_memory_budget_ratio", "bernoulli_mode_boundary",
             "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
             "negative_stale_threshold", "positive_quality_threshold",
@@ -2874,23 +2861,15 @@ class Hedger:
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
                 "deployment_qk_scores", "deployment_qk_features",
-                "deployment_pair_adjustments", "deployment_base_scores", "deployment_centered_scores",
+                "deployment_matrix_logits_raw", "deployment_base_scores", "deployment_centered_scores",
                 "deployment_final_scores", "deployment_select_logits",
                 "deployment_select_probs", "deployment_decode_scores",
-                "deployment_safety_prior",
                 "deployment_static_option_score", "deployment_runtime_risk_score",
                 "deployment_pair_quality", "deployment_evidence_confidence",
                 "deployment_evidence_untrusted", "deployment_low_quality_gap",
                 "deployment_queue_pressure", "deployment_runtime_unknown_risk",
                 "deployment_runtime_stale_risk", "deployment_runtime_relative_weakness",
-                "deployment_qk_term", "deployment_pair_adjustment_term",
-                "deployment_quality_term", "deployment_confidence_term",
-                "deployment_service_pressure_term", "deployment_inertia_term",
-                "deployment_unknown_penalty_term", "deployment_stale_penalty_term",
-                "deployment_runtime_risk_penalty_term", "deployment_low_quality_penalty_term",
-                "deployment_queue_penalty_term", "deployment_memory_penalty_term",
-                "deployment_device_load_penalty_term", "deployment_hotspot_penalty_term",
-                "deployment_policy_probs", "deployment_raw_threshold_nodes",
+                "deployment_policy_probs", "deployment_raw_mode_nodes",
                 "deployment_decoded_nodes", "deployment_positive_mask", "deployment_negative_mask",
                 "deployment_service_pressure",
                 "deployment_edge_replica_counts", "deployment_device_replica_counts",
@@ -3299,8 +3278,8 @@ class Hedger:
                     "deployment_qk_features": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "qk_feature", service_idx)
                     ),
-                    "deployment_pair_adjustments": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "pair_adjustment", service_idx)
+                    "deployment_matrix_logits_raw": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "matrix_logit_raw", service_idx)
                     ),
                     "deployment_base_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "base_score", service_idx)
@@ -3319,9 +3298,6 @@ class Hedger:
                     ),
                     "deployment_decode_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "decode_score", service_idx)
-                    ),
-                    "deployment_safety_prior": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "safety_prior", service_idx)
                     ),
                     "deployment_static_option_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "static_option_score", service_idx)
@@ -3353,59 +3329,17 @@ class Hedger:
                     "deployment_runtime_relative_weakness": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "runtime_relative_weakness", service_idx)
                     ),
-                    "deployment_qk_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "qk_term", service_idx)
-                    ),
-                    "deployment_pair_adjustment_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "pair_adjustment_term", service_idx)
-                    ),
-                    "deployment_quality_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "quality_term", service_idx)
-                    ),
-                    "deployment_confidence_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "confidence_term", service_idx)
-                    ),
-                    "deployment_service_pressure_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "service_pressure_term", service_idx)
-                    ),
-                    "deployment_inertia_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "inertia_term", service_idx)
-                    ),
-                    "deployment_unknown_penalty_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "unknown_penalty_term", service_idx)
-                    ),
-                    "deployment_stale_penalty_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "stale_penalty_term", service_idx)
-                    ),
-                    "deployment_runtime_risk_penalty_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "runtime_risk_penalty_term", service_idx)
-                    ),
-                    "deployment_low_quality_penalty_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "low_quality_penalty_term", service_idx)
-                    ),
-                    "deployment_queue_penalty_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "queue_penalty_term", service_idx)
-                    ),
-                    "deployment_memory_penalty_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "memory_penalty_term", service_idx)
-                    ),
-                    "deployment_device_load_penalty_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "device_load_penalty_term", service_idx)
-                    ),
-                    "deployment_hotspot_penalty_term": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "hotspot_penalty_term", service_idx)
-                    ),
                     "deployment_policy_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "policy_prob", service_idx)
                     ),
-                    "deployment_raw_threshold_nodes": self._json_for_record(
+                    "deployment_raw_mode_nodes": self._json_for_record(
                         self._device_names_from_indices(
                             torch.nonzero(
-                                actor_debug.get("raw_threshold_mask", torch.zeros_like(exec_mask))[service_idx]
+                                actor_debug.get("raw_mode_mask", torch.zeros_like(exec_mask))[service_idx]
                                 .detach().cpu().bool(),
                                 as_tuple=False,
                             ).flatten().tolist()
-                        ) if isinstance(actor_debug.get("raw_threshold_mask"), torch.Tensor) else []
+                        ) if isinstance(actor_debug.get("raw_mode_mask"), torch.Tensor) else []
                     ),
                     "deployment_decoded_nodes": self._json_for_record(
                         self._device_names_from_indices(
@@ -6273,7 +6207,7 @@ class Hedger:
                         feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                         edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
-                        select_threshold=self.deployment_agent_params["select_threshold"],
+                        bernoulli_mode_boundary=0.5,
                         negative_queue_threshold=self.deployment_agent_params["negative_queue_threshold"],
                         negative_hotspot_threshold=self.deployment_agent_params["negative_hotspot_threshold"],
                         negative_runtime_risk_threshold=(
@@ -6964,7 +6898,7 @@ class Hedger:
             "stale_option_weight", "low_quality_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
-            "select_threshold", "negative_queue_threshold", "negative_hotspot_threshold",
+            "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
             "negative_stale_threshold", "positive_quality_threshold",
             "queue_normalizer",
@@ -7448,7 +7382,7 @@ class Hedger:
                     feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
-                    select_threshold=self.deployment_agent_params["select_threshold"],
+                    bernoulli_mode_boundary=0.5,
                     negative_queue_threshold=self.deployment_agent_params["negative_queue_threshold"],
                     negative_hotspot_threshold=self.deployment_agent_params["negative_hotspot_threshold"],
                     negative_runtime_risk_threshold=(
