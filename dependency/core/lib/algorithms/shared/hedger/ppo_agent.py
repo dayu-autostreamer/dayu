@@ -140,12 +140,10 @@ DEPLOYMENT_CANDIDATE_FEATURE_NAMES = [
     "queue_pressure",
     "runtime_confidence",
     "runtime_recency",
-    "runtime_unknown",
-    "runtime_stale",
     "runtime_relative_weakness",
+    "static_quality",
     "pair_quality",
     "runtime_risk",
-    "evidence_untrusted",
     "low_quality_gap",
     "current_replica",
     "edge_replica_count",
@@ -503,9 +501,9 @@ class _DeploymentBackbonePPO(nn.Module):
         return min(max(value, 0.0), 1.0)
 
     def _positive_quality_threshold(self) -> float:
-        value = float(getattr(self.cfg, "positive_quality_threshold", 0.30))
+        value = float(getattr(self.cfg, "positive_quality_threshold", 0.20))
         if not math.isfinite(value):
-            value = 0.30
+            value = 0.20
         return min(max(value, 0.0), 1.0)
 
     def _scale_edge_memory_budget(self, budget: torch.Tensor) -> torch.Tensor:
@@ -808,28 +806,40 @@ class _DeploymentBackbonePPO(nn.Module):
             device_load_norm[:, :edge_width] = device_load_norm_edge.view(1, edge_width).expand(num_services, -1)
 
         static_allowed_f = static_allowed.to(device=device, dtype=dtype)
-        pair_quality_score = torch.clamp(
+        memory_fit = (1.0 - pair_memory_cost).clamp(0.0, 1.0)
+        static_quality_score = torch.clamp(
+            static_allowed_f * torch.sigmoid(qk_feature.to(device=device, dtype=dtype)) * memory_fit,
+            min=0.0,
+            max=1.0,
+        )
+        observed_quality_score = torch.clamp(
             static_allowed_f
-            * runtime_confidence
             * (1.0 - runtime_relative_weakness).clamp(0.0, 1.0)
             * (1.0 - queue_pressure).clamp(0.0, 1.0)
-            * (1.0 - pair_memory_cost).clamp(0.0, 1.0),
+            * memory_fit,
+            min=0.0,
+            max=1.0,
+        )
+        pair_quality_score = torch.clamp(
+            runtime_confidence * observed_quality_score
+            + (1.0 - runtime_confidence) * static_quality_score,
             min=0.0,
             max=1.0,
         )
         if cloud_idx >= 0:
-            pair_quality_score[:, cloud_idx] = 0.0
+            device_ids = torch.arange(num_devices, device=device)
+            cloud_mask = device_ids.view(1, -1).eq(cloud_idx).expand(num_services, -1)
+            static_quality_score = torch.where(cloud_mask, torch.zeros_like(static_quality_score), static_quality_score)
+            pair_quality_score = torch.where(cloud_mask, torch.zeros_like(pair_quality_score), pair_quality_score)
         evidence_untrusted = torch.maximum(runtime_unknown, runtime_stale)
         quality_threshold = max(self._positive_quality_threshold(), 1e-6)
         low_quality_gap = ((quality_threshold - pair_quality_score) / quality_threshold).clamp(0.0, 1.0)
 
         active_hotspot = pair_ctx["active_pair_hotspot"].to(device=device, dtype=dtype)
         runtime_risk_score = torch.clamp(
-            0.45 * runtime_unknown
-            + 0.35 * runtime_stale
-            + 0.35 * runtime_relative_weakness
+            0.55 * runtime_confidence * runtime_relative_weakness
             + 0.50 * queue_pressure
-            + 0.30 * low_quality_gap
+            + 0.20 * runtime_confidence * low_quality_gap
             + active_hotspot,
             min=0.0,
             max=1.0,
@@ -845,6 +855,8 @@ class _DeploymentBackbonePPO(nn.Module):
             "runtime_relative_weakness": runtime_relative_weakness,
             "pair_memory_cost": pair_memory_cost,
             "device_load_norm": device_load_norm,
+            "static_quality_score": static_quality_score,
+            "observed_quality_score": observed_quality_score,
             "pair_quality_score": pair_quality_score,
             "runtime_unknown_risk": runtime_unknown,
             "runtime_stale_risk": runtime_stale,
@@ -902,12 +914,10 @@ class _DeploymentBackbonePPO(nn.Module):
                 option_ctx["queue_pressure"].to(device=device, dtype=dtype),
                 option_ctx["runtime_confidence"].to(device=device, dtype=dtype),
                 option_ctx["runtime_recency"].to(device=device, dtype=dtype),
-                option_ctx["runtime_unknown"].to(device=device, dtype=dtype),
-                option_ctx["runtime_stale"].to(device=device, dtype=dtype),
                 option_ctx["runtime_relative_weakness"].to(device=device, dtype=dtype),
+                option_ctx["static_quality_score"].to(device=device, dtype=dtype),
                 option_ctx["pair_quality_score"].to(device=device, dtype=dtype),
                 option_ctx["runtime_risk_score"].to(device=device, dtype=dtype),
-                option_ctx["evidence_untrusted"].to(device=device, dtype=dtype),
                 option_ctx["low_quality_gap"].to(device=device, dtype=dtype),
                 prev_mask,
                 torch.log1p(edge_replica_count).view(num_services, 1).expand(-1, num_devices),
@@ -1272,8 +1282,6 @@ class _DeploymentBackbonePPO(nn.Module):
             executed_edge
             * (
                 (runtime_risk_score[:, edge_slice] >= self._negative_runtime_risk_threshold())
-                | (runtime_unknown_risk[:, edge_slice] >= self._negative_unknown_threshold())
-                | (runtime_stale_risk[:, edge_slice] >= self._negative_stale_threshold())
                 | (pair_quality[:, edge_slice] < self._positive_quality_threshold())
             ).float()
         ).sum() if cloud_idx > 0 else torch.zeros((), device=corrected.device)
@@ -1519,6 +1527,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "select_prob": torch.sigmoid(select_logits).detach().cpu(),
                 "decode_score": select_logits.detach().cpu(),
                 "static_option_score": pair_ctx["static_option_score"].detach().cpu(),
+                "static_quality_score": pair_ctx["static_quality_score"].detach().cpu(),
+                "observed_quality_score": pair_ctx["observed_quality_score"].detach().cpu(),
                 "runtime_risk_score": pair_ctx["runtime_risk_score"].detach().cpu(),
                 "pair_quality_score": pair_ctx["pair_quality_score"].detach().cpu(),
                 "evidence_confidence": pair_ctx["evidence_confidence"].detach().cpu(),
@@ -1640,6 +1650,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "queue_pressure": pair_ctx["queue_pressure"],
                 "active_pair_hotspot": pair_ctx["active_pair_hotspot"],
                 "static_option_score": pair_ctx["static_option_score"],
+                "static_quality_score": pair_ctx["static_quality_score"],
+                "observed_quality_score": pair_ctx["observed_quality_score"],
                 "runtime_risk_score": pair_ctx["runtime_risk_score"],
                 "pair_quality_score": pair_ctx["pair_quality_score"],
                 "evidence_confidence": pair_ctx["evidence_confidence"],
@@ -1833,12 +1845,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         stale_risky = runtime_stale >= self._negative_stale_threshold()
         low_quality = pair_quality < self._positive_quality_threshold()
         severe_risky = (queue_risky | hotspot_risky | runtime_risky) & edge_allowed
-        diagnostic_risky = (
-            severe_risky
-            | unknown_risky
-            | stale_risky
-            | low_quality
-        ) & edge_allowed
+        diagnostic_risky = (severe_risky | low_quality) & edge_allowed
         debug_counts = {
             "actor_selected_risky_samples": float((selected & diagnostic_risky).float().sum().detach().cpu().item()),
             "actor_selected_low_quality_samples": float((selected & low_quality & edge_allowed).float().sum().detach().cpu().item()),
@@ -1856,10 +1863,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             return positive_mask, negative_mask, raw_removed, unselected_negative_mask, debug_counts
 
         # Good/mid transitions should calibrate the whole Bernoulli matrix, not
-        # only clone selected ones. Selected, high-quality pairs are positives;
-        # selected risky/low-quality pairs are strong negatives; feasible but
-        # unselected pairs are weak negatives so the shared matrix head does not
-        # drift into selecting every edge pair at inference time.
+        # only clone selected ones.  Unknown or stale runtime evidence is a
+        # confidence signal, not a negative label: without fresh evidence the
+        # quality path falls back to static suitability instead of teaching the
+        # actor to delete the edge option and starve future evidence.
         positive_mask = selected & ~severe_risky & ~low_quality
         negative_mask = (selected & (severe_risky | low_quality)) & edge_allowed
         unselected_negative_mask = edge_allowed & ~selected & ~raw_removed

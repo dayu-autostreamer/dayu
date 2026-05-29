@@ -25,13 +25,15 @@ class DeploymentConstraintCfg:
     # Pair-wise Bernoulli matrix policy. The actor proposes the service-device
     # edge replica matrix directly; deterministic inference uses the Bernoulli
     # mode (logit > 0), and projection only corrects memory/count infeasibility.
+    # Unknown/stale runtime evidence is diagnostic only; state quality falls
+    # back to static suitability when fresh runtime evidence is missing.
     queue_normalizer: float = 8.0
     negative_queue_threshold: float = 0.65
     negative_hotspot_threshold: float = 0.08
     negative_runtime_risk_threshold: float = 0.50
     negative_unknown_threshold: float = 0.50
     negative_stale_threshold: float = 0.85
-    positive_quality_threshold: float = 0.30
+    positive_quality_threshold: float = 0.20
 
 
 class PhysicalTopology:

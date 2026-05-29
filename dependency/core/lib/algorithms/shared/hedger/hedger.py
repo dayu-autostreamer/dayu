@@ -96,7 +96,7 @@ class HedgerDeploymentCollectCfg:
     max_queue_pressure: float = 0.65
     max_hotspot_cost: float = 0.08
     max_runtime_risk: float = 0.65
-    min_pair_quality: float = 0.15
+    min_pair_quality: float = 0.20
     max_queue_pressure_increase: float = 0.15
     max_hotspot_cost_increase: float = 0.04
     max_runtime_risk_increase: float = 0.20
@@ -608,7 +608,7 @@ class Hedger:
             max_queue_pressure=max(0.0, float(collect_cfg.get("max_queue_pressure", 0.65))),
             max_hotspot_cost=max(0.0, float(collect_cfg.get("max_hotspot_cost", 0.08))),
             max_runtime_risk=max(0.0, float(collect_cfg.get("max_runtime_risk", 0.65))),
-            min_pair_quality=max(0.0, float(collect_cfg.get("min_pair_quality", 0.15))),
+            min_pair_quality=max(0.0, float(collect_cfg.get("min_pair_quality", 0.20))),
             max_queue_pressure_increase=max(0.0, float(collect_cfg.get("max_queue_pressure_increase", 0.15))),
             max_hotspot_cost_increase=max(0.0, float(collect_cfg.get("max_hotspot_cost_increase", 0.04))),
             max_runtime_risk_increase=max(0.0, float(collect_cfg.get("max_runtime_risk_increase", 0.20))),
@@ -1126,7 +1126,7 @@ class Hedger:
             ),
             "negative_unknown_threshold": _matrix_float("negative_unknown_threshold", 0.50, probability=True),
             "negative_stale_threshold": _matrix_float("negative_stale_threshold", 0.85, probability=True),
-            "positive_quality_threshold": _matrix_float("positive_quality_threshold", 0.30, probability=True),
+            "positive_quality_threshold": _matrix_float("positive_quality_threshold", 0.20, probability=True),
             "ppo": ppo,
         }
 
@@ -2875,7 +2875,8 @@ class Hedger:
                 "deployment_matrix_logits_raw", "deployment_base_scores", "deployment_centered_scores",
                 "deployment_final_scores", "deployment_select_logits",
                 "deployment_select_probs", "deployment_decode_scores",
-                "deployment_static_option_score", "deployment_runtime_risk_score",
+                "deployment_static_option_score", "deployment_static_quality_score",
+                "deployment_observed_quality_score", "deployment_runtime_risk_score",
                 "deployment_pair_quality", "deployment_evidence_confidence",
                 "deployment_evidence_untrusted", "deployment_low_quality_gap",
                 "deployment_queue_pressure", "deployment_runtime_unknown_risk",
@@ -3312,6 +3313,12 @@ class Hedger:
                     ),
                     "deployment_static_option_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "static_option_score", service_idx)
+                    ),
+                    "deployment_static_quality_score": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "static_quality_score", service_idx)
+                    ),
+                    "deployment_observed_quality_score": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "observed_quality_score", service_idx)
                     ),
                     "deployment_runtime_risk_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "runtime_risk_score", service_idx)
