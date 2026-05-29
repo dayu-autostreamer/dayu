@@ -97,8 +97,13 @@ class HedgerDeploymentCollectCfg:
     max_hotspot_cost: float = 0.08
     max_runtime_risk: float = 0.65
     min_pair_quality: float = 0.15
+    max_queue_pressure_increase: float = 0.15
+    max_hotspot_cost_increase: float = 0.04
+    max_runtime_risk_increase: float = 0.20
+    max_pair_quality_drop: float = 0.10
     max_capacity_relax_cost: float = 0.15
     allow_remove_last_edge_replica: bool = False
+    fallback_to_best_candidate: bool = True
 
 
 @dataclass(frozen=True)
@@ -603,8 +608,13 @@ class Hedger:
             max_hotspot_cost=max(0.0, float(collect_cfg.get("max_hotspot_cost", 0.08))),
             max_runtime_risk=max(0.0, float(collect_cfg.get("max_runtime_risk", 0.65))),
             min_pair_quality=max(0.0, float(collect_cfg.get("min_pair_quality", 0.15))),
+            max_queue_pressure_increase=max(0.0, float(collect_cfg.get("max_queue_pressure_increase", 0.15))),
+            max_hotspot_cost_increase=max(0.0, float(collect_cfg.get("max_hotspot_cost_increase", 0.04))),
+            max_runtime_risk_increase=max(0.0, float(collect_cfg.get("max_runtime_risk_increase", 0.20))),
+            max_pair_quality_drop=max(0.0, float(collect_cfg.get("max_pair_quality_drop", 0.10))),
             max_capacity_relax_cost=max(0.0, float(collect_cfg.get("max_capacity_relax_cost", 0.15))),
             allow_remove_last_edge_replica=bool(collect_cfg.get("allow_remove_last_edge_replica", False)),
+            fallback_to_best_candidate=bool(collect_cfg.get("fallback_to_best_candidate", True)),
         )
 
         offline_rl_cfg = training.get("deployment_offline_rl") or {}
@@ -2839,10 +2849,20 @@ class Hedger:
             "service_pressure", "edge_feasible_count", "edge_replica_count",
             "device_replica_count", "active_pair_hotspot",
             "collect_behavior", "collect_operation",
+            "collect_fallback_selected_best",
             "collect_selected_service", "collect_selected_device",
             "collect_removed_service", "collect_removed_device",
+            "collect_base_queue_pressure", "collect_base_hotspot_cost",
+            "collect_base_runtime_risk", "collect_base_min_pair_quality",
             "collect_candidate_queue_pressure", "collect_candidate_hotspot_cost",
             "collect_candidate_runtime_risk", "collect_candidate_min_pair_quality",
+            "collect_delta_queue_pressure", "collect_delta_hotspot_cost",
+            "collect_delta_runtime_risk", "collect_delta_min_pair_quality",
+            "collect_new_edge_count", "collect_removed_edge_count",
+            "collect_new_edge_runtime_risk", "collect_new_edge_min_pair_quality",
+            "collect_base_low_quality_count", "collect_candidate_low_quality_count",
+            "collect_delta_low_quality_count", "collect_base_risky_pair_count",
+            "collect_candidate_risky_pair_count",
             "capacity_corrected", "deployment_policy_deterministic",
         ]
         if self.record_cfg.decision_candidate_features_debug:
@@ -3203,6 +3223,7 @@ class Hedger:
                 ),
                 collect_behavior=collect_debug.get("collect_behavior", ""),
                 collect_operation=collect_debug.get("collect_operation", ""),
+                collect_fallback_selected_best=collect_debug.get("collect_fallback_selected_best", ""),
                 collect_selected_service=(
                     self._service_name(selected_service_idx) if selected_service_idx >= 0 else ""
                 ),
@@ -3215,6 +3236,10 @@ class Hedger:
                 collect_removed_device=(
                     self._device_name(removed_device_idx) if removed_device_idx >= 0 else ""
                 ),
+                collect_base_queue_pressure=collect_debug.get("collect_base_queue_pressure", ""),
+                collect_base_hotspot_cost=collect_debug.get("collect_base_hotspot_cost", ""),
+                collect_base_runtime_risk=collect_debug.get("collect_base_runtime_risk", ""),
+                collect_base_min_pair_quality=collect_debug.get("collect_base_min_pair_quality", ""),
                 collect_candidate_queue_pressure=self._actor_debug_vector_value(
                     collect_debug,
                     "collect_candidate_queue_pressure_by_service",
@@ -3227,6 +3252,19 @@ class Hedger:
                 ),
                 collect_candidate_runtime_risk=collect_debug.get("collect_candidate_runtime_risk", ""),
                 collect_candidate_min_pair_quality=collect_debug.get("collect_candidate_min_pair_quality", ""),
+                collect_delta_queue_pressure=collect_debug.get("collect_delta_queue_pressure", ""),
+                collect_delta_hotspot_cost=collect_debug.get("collect_delta_hotspot_cost", ""),
+                collect_delta_runtime_risk=collect_debug.get("collect_delta_runtime_risk", ""),
+                collect_delta_min_pair_quality=collect_debug.get("collect_delta_min_pair_quality", ""),
+                collect_new_edge_count=collect_debug.get("collect_new_edge_count", ""),
+                collect_removed_edge_count=collect_debug.get("collect_removed_edge_count", ""),
+                collect_new_edge_runtime_risk=collect_debug.get("collect_new_edge_runtime_risk", ""),
+                collect_new_edge_min_pair_quality=collect_debug.get("collect_new_edge_min_pair_quality", ""),
+                collect_base_low_quality_count=collect_debug.get("collect_base_low_quality_count", ""),
+                collect_candidate_low_quality_count=collect_debug.get("collect_candidate_low_quality_count", ""),
+                collect_delta_low_quality_count=collect_debug.get("collect_delta_low_quality_count", ""),
+                collect_base_risky_pair_count=collect_debug.get("collect_base_risky_pair_count", ""),
+                collect_candidate_risky_pair_count=collect_debug.get("collect_candidate_risky_pair_count", ""),
                 capacity_corrected=bool(not torch.equal(raw_mask[service_idx], exec_mask[service_idx])),
                 deployment_policy_deterministic=(
                     "" if policy_deterministic is None else int(bool(policy_deterministic))
@@ -4081,6 +4119,8 @@ class Hedger:
         )
         reject_reasons: List[str] = []
         attempts = max(1, int(cfg.max_action_attempts))
+        best_soft_candidate = None
+        best_soft_score = float("inf")
 
         for attempt_idx in range(attempts):
             roll = random.random()
@@ -4159,10 +4199,47 @@ class Hedger:
                     "collect_attempts": attempt_idx + 1,
                     "collect_reject_cnt": len(reject_reasons),
                     "collect_reject_reasons": ";".join(reject_reasons),
+                    "collect_fallback_selected_best": 0,
                     "behavior_kind": str(collect_debug.get("collect_operation", aux.get("behavior_kind", "collect"))),
                 })
                 return deploy_mask, logp, ent, value, aux
+            hard_reason = str(collect_debug.get("collect_hard_reject_reason", "") or "")
+            if not hard_reason and cfg.fallback_to_best_candidate:
+                candidate_score_raw = collect_debug.get("collect_predicted_risk", float("inf"))
+                candidate_score = float(candidate_score_raw) if candidate_score_raw is not None else float("inf")
+                quality_gain = float(collect_debug.get("collect_delta_min_pair_quality", 0.0) or 0.0)
+                risk_drop = max(0.0, -float(collect_debug.get("collect_delta_runtime_risk", 0.0) or 0.0))
+                queue_drop = max(0.0, -float(collect_debug.get("collect_delta_queue_pressure", 0.0) or 0.0))
+                hotspot_drop = max(0.0, -float(collect_debug.get("collect_delta_hotspot_cost", 0.0) or 0.0))
+                adjusted_score = candidate_score - 0.25 * (max(0.0, quality_gain) + risk_drop + queue_drop + hotspot_drop)
+                if adjusted_score < best_soft_score:
+                    best_soft_score = adjusted_score
+                    best_soft_candidate = (
+                        deploy_mask,
+                        logp,
+                        ent,
+                        value,
+                        dict(aux),
+                        dict(collect_debug),
+                    )
             reject_reasons.append(reason)
+
+        if best_soft_candidate is not None:
+            deploy_mask, logp, ent, value, aux, collect_debug = best_soft_candidate
+            collect_debug = dict(collect_debug)
+            collect_debug["collect_behavior"] = "best_soft_fallback"
+            collect_debug["collect_operation"] = "best_" + str(
+                collect_debug.get("collect_operation", "soft_candidate")
+            )
+            collect_debug["collect_fallback_selected_best"] = 1
+            aux.update(collect_debug)
+            aux.update({
+                "collect_attempts": attempts,
+                "collect_reject_cnt": len(reject_reasons),
+                "collect_reject_reasons": ";".join(reject_reasons),
+                "behavior_kind": str(collect_debug.get("collect_operation", "best_soft_fallback")),
+            })
+            return deploy_mask, logp, ent, value, aux
 
         raw_mask = base_mask.detach().clone()
         fallback_operation = "fallback_anchor" if anchor_used or reset_triggered else "fallback_keep"
@@ -4185,6 +4262,7 @@ class Hedger:
             "collect_attempts": attempts,
             "collect_reject_cnt": len(reject_reasons),
             "collect_reject_reasons": ";".join(reject_reasons),
+            "collect_fallback_selected_best": 0,
         }
         collect_debug.update(self._deployment_collect_candidate_risk(
             logic_edge_index=logic_edge_index,
@@ -4631,66 +4709,125 @@ class Hedger:
     ) -> Dict[str, Any]:
         cfg = self.training_cfg.deployment_collect
         cloud_idx = self.physical_topology.cloud_idx
+        device = deploy_mask.device
         pressure_matrix = self._deployment_collect_pair_pressure_matrix(
             logic_feats,
             static_allowed,
-            deploy_mask.device,
+            device,
         )
-        selected_edge = deploy_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros(
-            (deploy_mask.size(0), 0),
-            dtype=torch.bool,
-            device=deploy_mask.device,
-        )
-        edge_pressure = pressure_matrix[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(selected_edge.float())
-        masked_pressure = torch.where(selected_edge, edge_pressure, torch.zeros_like(edge_pressure))
-        service_queue_pressure = masked_pressure.max(dim=1).values if masked_pressure.numel() else torch.zeros(
-            (deploy_mask.size(0),),
-            device=deploy_mask.device,
-        )
-        candidate_queue_pressure = float(service_queue_pressure.max().detach().cpu().item()) \
-            if service_queue_pressure.numel() else 0.0
+        num_services = deploy_mask.size(0)
 
-        pair_ctx = self.deployment_agent._deployment_pair_context(
-            logic_edge_index,
-            logic_feats,
-            static_allowed,
-            deploy_mask=deploy_mask,
-        )
-        option_ctx = self.deployment_agent._deployment_runtime_context(
-            logic_feats,
-            phys_feats,
-            torch.zeros_like(static_allowed, dtype=torch.float32, device=deploy_mask.device),
-            static_allowed,
-            pair_ctx,
-            prev_deploy_mask=base_mask,
-        )
-        active_hotspot = pair_ctx["active_pair_hotspot"].to(device=deploy_mask.device).float()
-        edge_hotspot = active_hotspot[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
-        service_hotspot = edge_hotspot.max(dim=1).values if edge_hotspot.numel() else torch.zeros(
-            (deploy_mask.size(0),),
-            device=deploy_mask.device,
-        )
-        candidate_hotspot = float(service_hotspot.max().detach().cpu().item()) if service_hotspot.numel() else 0.0
-        runtime_risk = option_ctx["runtime_risk_score"].to(device=deploy_mask.device).float()
-        pair_quality = option_ctx["pair_quality_score"].to(device=deploy_mask.device).float()
-        edge_runtime_risk = runtime_risk[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
-        edge_pair_quality = pair_quality[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
-        selected_runtime_risk = torch.where(selected_edge, edge_runtime_risk, torch.zeros_like(edge_runtime_risk))
-        candidate_runtime_risk = float(selected_runtime_risk.max().detach().cpu().item()) \
-            if selected_runtime_risk.numel() else 0.0
-        has_selected_edge = bool(selected_edge.any().item()) if selected_edge.numel() else False
-        if has_selected_edge:
-            selected_quality = edge_pair_quality.masked_select(selected_edge)
-            candidate_min_pair_quality = float(selected_quality.min().detach().cpu().item()) \
-                if selected_quality.numel() else 0.0
-        else:
-            candidate_min_pair_quality = 0.0
+        def _edge_mask(mask: torch.Tensor) -> torch.Tensor:
+            if cloud_idx <= 0:
+                return torch.zeros((num_services, 0), dtype=torch.bool, device=device)
+            return mask[:, :cloud_idx].bool()
 
+        def _plan_metrics(mask: torch.Tensor) -> Dict[str, Any]:
+            selected_edge = _edge_mask(mask)
+            edge_pressure = pressure_matrix[:, :cloud_idx] if cloud_idx > 0 \
+                else torch.zeros_like(selected_edge.float())
+            masked_pressure = torch.where(selected_edge, edge_pressure, torch.zeros_like(edge_pressure))
+            service_queue_pressure = masked_pressure.max(dim=1).values if masked_pressure.numel() else torch.zeros(
+                (num_services,),
+                device=device,
+            )
+            queue_pressure = float(service_queue_pressure.max().detach().cpu().item()) \
+                if service_queue_pressure.numel() else 0.0
+
+            pair_ctx = self.deployment_agent._deployment_pair_context(
+                logic_edge_index,
+                logic_feats,
+                static_allowed,
+                deploy_mask=mask,
+            )
+            option_ctx = self.deployment_agent._deployment_runtime_context(
+                logic_feats,
+                phys_feats,
+                torch.zeros_like(static_allowed, dtype=torch.float32, device=device),
+                static_allowed,
+                pair_ctx,
+                prev_deploy_mask=base_mask,
+            )
+            active_hotspot = pair_ctx["active_pair_hotspot"].to(device=device).float()
+            edge_hotspot = active_hotspot[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
+            service_hotspot = edge_hotspot.max(dim=1).values if edge_hotspot.numel() else torch.zeros(
+                (num_services,),
+                device=device,
+            )
+            hotspot = float(service_hotspot.max().detach().cpu().item()) if service_hotspot.numel() else 0.0
+            runtime_risk = option_ctx["runtime_risk_score"].to(device=device).float()
+            pair_quality = option_ctx["pair_quality_score"].to(device=device).float()
+            edge_runtime_risk = runtime_risk[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
+            edge_pair_quality = pair_quality[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
+            selected_risk_values = edge_runtime_risk.masked_select(selected_edge) if selected_edge.numel() \
+                else torch.zeros((0,), device=device)
+            selected_quality_values = edge_pair_quality.masked_select(selected_edge) if selected_edge.numel() \
+                else torch.zeros((0,), device=device)
+            runtime_risk_max = float(selected_risk_values.max().detach().cpu().item()) \
+                if selected_risk_values.numel() else 0.0
+            min_pair_quality = float(selected_quality_values.min().detach().cpu().item()) \
+                if selected_quality_values.numel() else 0.0
+            min_pair_quality_for_delta = min_pair_quality if selected_quality_values.numel() else 1.0
+            low_quality_count = int((selected_quality_values < cfg.min_pair_quality).sum().detach().cpu().item()) \
+                if selected_quality_values.numel() else 0
+            risky_pair_count = int((selected_risk_values > cfg.max_runtime_risk).sum().detach().cpu().item()) \
+                if selected_risk_values.numel() else 0
+            return {
+                "edge_mask": selected_edge,
+                "service_queue_pressure": service_queue_pressure,
+                "queue_pressure": queue_pressure,
+                "service_hotspot": service_hotspot,
+                "hotspot": hotspot,
+                "edge_runtime_risk": edge_runtime_risk,
+                "edge_pair_quality": edge_pair_quality,
+                "runtime_risk": runtime_risk_max,
+                "min_pair_quality": min_pair_quality,
+                "min_pair_quality_for_delta": min_pair_quality_for_delta,
+                "low_quality_count": low_quality_count,
+                "risky_pair_count": risky_pair_count,
+            }
+
+        base_metrics = _plan_metrics(base_mask.bool())
+        candidate_metrics = _plan_metrics(deploy_mask.bool())
+        service_queue_pressure = candidate_metrics["service_queue_pressure"]
+        service_hotspot = candidate_metrics["service_hotspot"]
+        candidate_queue_pressure = float(candidate_metrics["queue_pressure"])
+        candidate_hotspot = float(candidate_metrics["hotspot"])
+        candidate_runtime_risk = float(candidate_metrics["runtime_risk"])
+        candidate_min_pair_quality = float(candidate_metrics["min_pair_quality"])
+        base_queue_pressure = float(base_metrics["queue_pressure"])
+        base_hotspot = float(base_metrics["hotspot"])
+        base_runtime_risk = float(base_metrics["runtime_risk"])
+        base_min_pair_quality = float(base_metrics["min_pair_quality"])
+        delta_queue_pressure = candidate_queue_pressure - base_queue_pressure
+        delta_hotspot = candidate_hotspot - base_hotspot
+        delta_runtime_risk = candidate_runtime_risk - base_runtime_risk
+        delta_min_pair_quality = (
+            float(candidate_metrics["min_pair_quality_for_delta"])
+            - float(base_metrics["min_pair_quality_for_delta"])
+        )
+        delta_low_quality_count = int(candidate_metrics["low_quality_count"] - base_metrics["low_quality_count"])
+
+        selected_edge = candidate_metrics["edge_mask"]
         raw_edge = raw_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
         base_edge = base_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
         exec_edge = deploy_mask[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
         raw_change_count = int(torch.logical_xor(raw_edge, base_edge).sum().item()) if raw_edge.numel() else 0
         exec_change_count = int(torch.logical_xor(exec_edge, base_edge).sum().item()) if exec_edge.numel() else 0
+        new_edge = exec_edge & ~base_edge
+        removed_edge = base_edge & ~exec_edge
+        new_edge_count = int(new_edge.sum().detach().cpu().item()) if new_edge.numel() else 0
+        removed_edge_count = int(removed_edge.sum().detach().cpu().item()) if removed_edge.numel() else 0
+        if new_edge_count > 0:
+            new_edge_runtime = candidate_metrics["edge_runtime_risk"].masked_select(new_edge)
+            new_edge_quality = candidate_metrics["edge_pair_quality"].masked_select(new_edge)
+            new_edge_runtime_risk = float(new_edge_runtime.max().detach().cpu().item()) \
+                if new_edge_runtime.numel() else 0.0
+            new_edge_min_pair_quality = float(new_edge_quality.min().detach().cpu().item()) \
+                if new_edge_quality.numel() else 0.0
+        else:
+            new_edge_runtime_risk = 0.0
+            new_edge_min_pair_quality = 1.0
 
         feasible_edge = static_allowed[:, :cloud_idx].bool() if cloud_idx > 0 else torch.zeros_like(selected_edge)
         raw_removed_last = False
@@ -4700,46 +4837,66 @@ class Hedger:
             feasible_counts = feasible_edge.float().sum(dim=1)
             raw_removed_last = bool(((base_counts > 0.0) & (raw_counts <= 0.0) & (feasible_counts > 0.0)).any().item())
 
-        reasons = []
+        hard_reasons = []
+        soft_reasons = []
         if edge_cover_unmet > 0:
-            reasons.append("edge_cover_unmet")
+            hard_reasons.append("edge_cover_unmet")
         if capacity_relax_cost > cfg.max_capacity_relax_cost:
-            reasons.append("capacity_relax")
-        if candidate_queue_pressure > cfg.max_queue_pressure:
-            reasons.append("queue_pressure")
-        if candidate_hotspot > cfg.max_hotspot_cost:
-            reasons.append("hotspot")
-        if candidate_runtime_risk > cfg.max_runtime_risk:
-            reasons.append("runtime_risk")
-        if has_selected_edge and candidate_min_pair_quality < cfg.min_pair_quality:
-            reasons.append("pair_quality")
+            hard_reasons.append("capacity_relax")
+        if delta_queue_pressure > cfg.max_queue_pressure_increase and candidate_queue_pressure > cfg.max_queue_pressure:
+            soft_reasons.append("queue_pressure")
+        if delta_hotspot > cfg.max_hotspot_cost_increase and candidate_hotspot > cfg.max_hotspot_cost:
+            soft_reasons.append("hotspot")
+        if delta_runtime_risk > cfg.max_runtime_risk_increase and candidate_runtime_risk > cfg.max_runtime_risk:
+            soft_reasons.append("runtime_risk")
+        if delta_min_pair_quality < -cfg.max_pair_quality_drop and candidate_min_pair_quality < cfg.min_pair_quality:
+            soft_reasons.append("pair_quality")
         if raw_removed_last and not cfg.allow_remove_last_edge_replica:
-            reasons.append("removed_last_edge")
+            hard_reasons.append("removed_last_edge")
         raw_change_limit = max(1, cfg.max_perturb_flips) * 2
         if raw_change_count > raw_change_limit:
-            reasons.append("too_many_raw_changes")
+            hard_reasons.append("too_many_raw_changes")
+        reasons = [*hard_reasons, *soft_reasons]
 
         normalized_risks = [
             capacity_relax_cost / max(cfg.max_capacity_relax_cost, 1e-6),
-            candidate_queue_pressure / max(cfg.max_queue_pressure, 1e-6),
-            candidate_hotspot / max(cfg.max_hotspot_cost, 1e-6),
-            candidate_runtime_risk / max(cfg.max_runtime_risk, 1e-6),
-            max(0.0, cfg.min_pair_quality - candidate_min_pair_quality) / max(cfg.min_pair_quality, 1e-6)
-            if has_selected_edge else 0.0,
+            max(0.0, delta_queue_pressure) / max(cfg.max_queue_pressure_increase, 1e-6),
+            max(0.0, delta_hotspot) / max(cfg.max_hotspot_cost_increase, 1e-6),
+            max(0.0, delta_runtime_risk) / max(cfg.max_runtime_risk_increase, 1e-6),
+            max(0.0, -delta_min_pair_quality) / max(cfg.max_pair_quality_drop, 1e-6),
             1.0 if edge_cover_unmet > 0 else 0.0,
             1.0 if raw_removed_last and not cfg.allow_remove_last_edge_replica else 0.0,
             1.0 if raw_change_count > raw_change_limit else 0.5 * raw_change_count / float(raw_change_limit),
         ]
         return {
+            "collect_base_queue_pressure": base_queue_pressure,
+            "collect_base_hotspot_cost": base_hotspot,
+            "collect_base_runtime_risk": base_runtime_risk,
+            "collect_base_min_pair_quality": base_min_pair_quality,
             "collect_candidate_queue_pressure": candidate_queue_pressure,
             "collect_candidate_hotspot_cost": candidate_hotspot,
             "collect_candidate_runtime_risk": candidate_runtime_risk,
             "collect_candidate_min_pair_quality": candidate_min_pair_quality,
+            "collect_delta_queue_pressure": delta_queue_pressure,
+            "collect_delta_hotspot_cost": delta_hotspot,
+            "collect_delta_runtime_risk": delta_runtime_risk,
+            "collect_delta_min_pair_quality": delta_min_pair_quality,
+            "collect_new_edge_count": new_edge_count,
+            "collect_removed_edge_count": removed_edge_count,
+            "collect_new_edge_runtime_risk": new_edge_runtime_risk,
+            "collect_new_edge_min_pair_quality": new_edge_min_pair_quality,
+            "collect_base_low_quality_count": int(base_metrics["low_quality_count"]),
+            "collect_candidate_low_quality_count": int(candidate_metrics["low_quality_count"]),
+            "collect_delta_low_quality_count": delta_low_quality_count,
+            "collect_base_risky_pair_count": int(base_metrics["risky_pair_count"]),
+            "collect_candidate_risky_pair_count": int(candidate_metrics["risky_pair_count"]),
             "collect_predicted_risk": float(max(normalized_risks)),
             "collect_raw_change_count": raw_change_count,
             "collect_exec_change_count": exec_change_count,
             "collect_removed_last_edge": int(raw_removed_last),
             "collect_reject_reason": ",".join(reasons),
+            "collect_hard_reject_reason": ",".join(hard_reasons),
+            "collect_soft_reject_reason": ",".join(soft_reasons),
             "collect_candidate_queue_pressure_by_service": service_queue_pressure.detach().cpu(),
             "collect_candidate_hotspot_by_service": service_hotspot.detach().cpu(),
         }
@@ -6767,10 +6924,21 @@ class Hedger:
                                 "collect_reject_cnt", "collect_reject_reasons",
                                 "collect_reset_triggered", "collect_bad_streak",
                                 "collect_quality_bucket", "collect_anchor_used",
-                                "collect_predicted_risk", "collect_candidate_queue_pressure",
+                                "collect_fallback_selected_best",
+                                "collect_predicted_risk",
+                                "collect_base_queue_pressure", "collect_base_hotspot_cost",
+                                "collect_base_runtime_risk", "collect_base_min_pair_quality",
+                                "collect_candidate_queue_pressure",
                                 "collect_candidate_hotspot_cost", "collect_candidate_runtime_risk",
-                                "collect_candidate_min_pair_quality", "collect_raw_change_count",
-                                "collect_exec_change_count",
+                                "collect_candidate_min_pair_quality",
+                                "collect_delta_queue_pressure", "collect_delta_hotspot_cost",
+                                "collect_delta_runtime_risk", "collect_delta_min_pair_quality",
+                                "collect_new_edge_count", "collect_removed_edge_count",
+                                "collect_new_edge_runtime_risk", "collect_new_edge_min_pair_quality",
+                                "collect_base_low_quality_count", "collect_candidate_low_quality_count",
+                                "collect_delta_low_quality_count", "collect_base_risky_pair_count",
+                                "collect_candidate_risky_pair_count",
+                                "collect_raw_change_count", "collect_exec_change_count",
                                 "deployment_rollout_deterministic",
                                 "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
                                 "raw_zero_edge_services", "decoded_zero_edge_services",
@@ -7061,6 +7229,7 @@ class Hedger:
                     "collect_reset_triggered": int(aux.get("collect_reset_triggered", 0)),
                     "collect_anchor_used": int(aux.get("collect_anchor_used", 0)),
                     "collect_bad_streak": int(aux.get("collect_bad_streak", 0)),
+                    "collect_fallback_selected_best": int(aux.get("collect_fallback_selected_best", 0)),
                     "collect_candidate_queue_pressure": float(
                         aux.get("collect_candidate_queue_pressure", 0.0)
                     ),
@@ -7073,6 +7242,23 @@ class Hedger:
                     "collect_candidate_min_pair_quality": float(
                         aux.get("collect_candidate_min_pair_quality", 0.0)
                     ),
+                    "collect_base_queue_pressure": float(aux.get("collect_base_queue_pressure", 0.0)),
+                    "collect_base_hotspot_cost": float(aux.get("collect_base_hotspot_cost", 0.0)),
+                    "collect_base_runtime_risk": float(aux.get("collect_base_runtime_risk", 0.0)),
+                    "collect_base_min_pair_quality": float(aux.get("collect_base_min_pair_quality", 0.0)),
+                    "collect_delta_queue_pressure": float(aux.get("collect_delta_queue_pressure", 0.0)),
+                    "collect_delta_hotspot_cost": float(aux.get("collect_delta_hotspot_cost", 0.0)),
+                    "collect_delta_runtime_risk": float(aux.get("collect_delta_runtime_risk", 0.0)),
+                    "collect_delta_min_pair_quality": float(aux.get("collect_delta_min_pair_quality", 0.0)),
+                    "collect_new_edge_count": int(aux.get("collect_new_edge_count", 0)),
+                    "collect_removed_edge_count": int(aux.get("collect_removed_edge_count", 0)),
+                    "collect_new_edge_runtime_risk": float(aux.get("collect_new_edge_runtime_risk", 0.0)),
+                    "collect_new_edge_min_pair_quality": float(aux.get("collect_new_edge_min_pair_quality", 0.0)),
+                    "collect_base_low_quality_count": int(aux.get("collect_base_low_quality_count", 0)),
+                    "collect_candidate_low_quality_count": int(aux.get("collect_candidate_low_quality_count", 0)),
+                    "collect_delta_low_quality_count": int(aux.get("collect_delta_low_quality_count", 0)),
+                    "collect_base_risky_pair_count": int(aux.get("collect_base_risky_pair_count", 0)),
+                    "collect_candidate_risky_pair_count": int(aux.get("collect_candidate_risky_pair_count", 0)),
                     "collect_raw_change_count": int(aux.get("collect_raw_change_count", 0)),
                     "collect_exec_change_count": int(aux.get("collect_exec_change_count", 0)),
                     "deployment_rollout_deterministic": bool(
@@ -7185,11 +7371,29 @@ class Hedger:
                     collect_bad_streak=aux.get("collect_bad_streak", 0),
                     collect_quality_bucket=aux.get("collect_quality_bucket", ""),
                     collect_anchor_used=aux.get("collect_anchor_used", 0),
+                    collect_fallback_selected_best=aux.get("collect_fallback_selected_best", 0),
                     collect_predicted_risk=aux.get("collect_predicted_risk", 0.0),
+                    collect_base_queue_pressure=aux.get("collect_base_queue_pressure", 0.0),
+                    collect_base_hotspot_cost=aux.get("collect_base_hotspot_cost", 0.0),
+                    collect_base_runtime_risk=aux.get("collect_base_runtime_risk", 0.0),
+                    collect_base_min_pair_quality=aux.get("collect_base_min_pair_quality", 0.0),
                     collect_candidate_queue_pressure=aux.get("collect_candidate_queue_pressure", 0.0),
                     collect_candidate_hotspot_cost=aux.get("collect_candidate_hotspot_cost", 0.0),
                     collect_candidate_runtime_risk=aux.get("collect_candidate_runtime_risk", 0.0),
                     collect_candidate_min_pair_quality=aux.get("collect_candidate_min_pair_quality", 0.0),
+                    collect_delta_queue_pressure=aux.get("collect_delta_queue_pressure", 0.0),
+                    collect_delta_hotspot_cost=aux.get("collect_delta_hotspot_cost", 0.0),
+                    collect_delta_runtime_risk=aux.get("collect_delta_runtime_risk", 0.0),
+                    collect_delta_min_pair_quality=aux.get("collect_delta_min_pair_quality", 0.0),
+                    collect_new_edge_count=aux.get("collect_new_edge_count", 0),
+                    collect_removed_edge_count=aux.get("collect_removed_edge_count", 0),
+                    collect_new_edge_runtime_risk=aux.get("collect_new_edge_runtime_risk", 0.0),
+                    collect_new_edge_min_pair_quality=aux.get("collect_new_edge_min_pair_quality", 0.0),
+                    collect_base_low_quality_count=aux.get("collect_base_low_quality_count", 0),
+                    collect_candidate_low_quality_count=aux.get("collect_candidate_low_quality_count", 0),
+                    collect_delta_low_quality_count=aux.get("collect_delta_low_quality_count", 0),
+                    collect_base_risky_pair_count=aux.get("collect_base_risky_pair_count", 0),
+                    collect_candidate_risky_pair_count=aux.get("collect_candidate_risky_pair_count", 0),
                     collect_raw_change_count=aux.get("collect_raw_change_count", 0),
                     collect_exec_change_count=aux.get("collect_exec_change_count", 0),
                     deployment_rollout_deterministic=int(
