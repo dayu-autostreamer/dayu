@@ -116,6 +116,7 @@ class HedgerDeploymentOfflineRLCfg:
     actor_bc_coef: float = 1.0
     negative_bc_coef: float = 0.2
     raw_removed_negative_coef: float = 0.0
+    unselected_negative_coef: float = 0.0
     value_coef: float = 0.5
     entropy_coef: float = 0.0
     bootstrap_current_value: bool = True
@@ -632,6 +633,7 @@ class Hedger:
             actor_bc_coef=max(0.0, float(offline_rl_cfg.get("actor_bc_coef", 1.0))),
             negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.2))),
             raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.0))),
+            unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.0))),
             value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.5))),
             entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
             bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", True)),
@@ -943,17 +945,23 @@ class Hedger:
             "policy_loss", "value_loss", "entropy", "entropy_coef", "value_coef", "approx_kl",
             "clip_fraction", "ratio_mean", "ratio_std",
             "actor_grad_norm", "critic_grad_norm",
-            "negative_loss", "raw_removed_negative_loss",
+            "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
-            "actor_raw_removed_weight_mean",
+            "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
             "actor_positive_samples", "actor_negative_samples", "actor_raw_removed_samples",
+            "actor_unselected_negative_samples",
             "actor_selected_risky_samples", "actor_selected_low_quality_samples",
             "actor_selected_runtime_risky_samples", "actor_selected_unknown_samples",
             "actor_selected_stale_samples",
             "bad_actor_masked",
             "positive_logp_mean", "negative_logp_mean", "raw_removed_logp_mean",
+            "unselected_negative_logp_mean",
             "positive_prob_mean", "negative_prob_mean", "raw_removed_prob_mean",
+            "unselected_negative_prob_mean",
             "positive_logit_mean", "negative_logit_mean", "raw_removed_logit_mean",
+            "unselected_negative_logit_mean",
+            "edge_prob_mean", "edge_prob_std", "edge_logit_mean", "edge_logit_std",
+            "raw_mode_edge_density",
         ]
         if include_offline_batch:
             fieldnames.extend([
@@ -7967,6 +7975,7 @@ class Hedger:
             "actor_bc_coef": cfg.actor_bc_coef,
             "negative_bc_coef": cfg.negative_bc_coef,
             "raw_removed_negative_coef": cfg.raw_removed_negative_coef,
+            "unselected_negative_coef": cfg.unselected_negative_coef,
             "value_coef": cfg.value_coef,
             "entropy_coef": cfg.entropy_coef,
             "bootstrap_current_value": cfg.bootstrap_current_value,
