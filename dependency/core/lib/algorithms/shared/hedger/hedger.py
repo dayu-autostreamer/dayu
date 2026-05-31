@@ -130,6 +130,7 @@ class HedgerDeploymentOfflineRLCfg:
     ranking_logit_margin: float = 0.15
     top_quality_tolerance: float = 0.05
     coverage_pressure_floor: float = 0.35
+    option_quality_ratio: float = 0.65
     offline_replay_ratio: float = 0.5
     online_replay_capacity: int = 512
     online_min_new_transitions: int = 1
@@ -660,6 +661,10 @@ class Hedger:
                 1.0,
                 max(0.0, float(offline_rl_cfg.get("coverage_pressure_floor", 0.35))),
             ),
+            option_quality_ratio=min(
+                1.0,
+                max(0.0, float(offline_rl_cfg.get("option_quality_ratio", 0.65))),
+            ),
             offline_replay_ratio=min(1.0, max(0.0, float(offline_rl_cfg.get("offline_replay_ratio", 0.5)))),
             online_replay_capacity=max(1, int(offline_rl_cfg.get("online_replay_capacity", 512))),
             online_min_new_transitions=max(1, int(offline_rl_cfg.get("online_min_new_transitions", 1))),
@@ -997,11 +1002,15 @@ class Hedger:
             "expected_memory_overage_mean", "expected_memory_overage_max",
             "top_quality_prob_mean", "non_top_prob_mean",
             "top_quality_logit_mean", "non_top_logit_mean", "top_quality_logit_gap_mean",
+            "effective_option_prob_mean", "effective_option_logit_mean",
+            "effective_option_logit_gap_mean", "effective_option_candidate_count_mean",
+            "effective_option_floor_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
+            "option_quality_ratio",
         ]
         if include_offline_batch:
             fieldnames.extend([
@@ -1164,6 +1173,9 @@ class Hedger:
             "negative_unknown_threshold": _matrix_float("negative_unknown_threshold", 0.50, probability=True),
             "negative_stale_threshold": _matrix_float("negative_stale_threshold", 0.85, probability=True),
             "positive_quality_threshold": _matrix_float("positive_quality_threshold", 0.20, probability=True),
+            "option_quality_ratio": _matrix_float("option_quality_ratio", 0.65, probability=True),
+            "option_quality_tolerance": _matrix_float("option_quality_tolerance", 0.12),
+            "option_pressure_floor": _matrix_float("option_pressure_floor", 0.20, probability=True),
             "ppo": ppo,
         }
 
@@ -2794,6 +2806,9 @@ class Hedger:
             "expected_memory_overage_max",
             "top_quality_prob_mean", "non_top_prob_mean",
             "top_quality_logit_mean", "non_top_logit_mean", "top_quality_logit_gap_mean",
+            "effective_option_prob_mean", "effective_option_logit_mean",
+            "effective_option_logit_gap_mean", "effective_option_candidate_count_mean",
+            "effective_option_floor_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
             "capacity_removed_cnt", "selected_queue_pressure_cost", "selected_runtime_risk_cost",
@@ -2813,6 +2828,7 @@ class Hedger:
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
+            "option_quality_ratio",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
             "edge_memory_budget_ratio", "bernoulli_mode_boundary",
             "negative_queue_threshold", "negative_hotspot_threshold",
@@ -2945,6 +2961,8 @@ class Hedger:
                 "deployment_runtime_stale_risk", "deployment_runtime_relative_weakness",
                 "deployment_policy_probs", "deployment_raw_mode_nodes",
                 "deployment_decoded_nodes", "deployment_positive_mask", "deployment_negative_mask",
+                "deployment_effective_option_mask", "deployment_top_quality_option_mask",
+                "deployment_risky_option_mask", "deployment_effective_option_floor",
                 "deployment_service_pressure",
                 "deployment_edge_replica_counts", "deployment_device_replica_counts",
                 "deployment_active_pair_hotspots",
@@ -3455,6 +3473,18 @@ class Hedger:
                     ),
                     "deployment_negative_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "negative_mask", service_idx)
+                    ),
+                    "deployment_effective_option_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "effective_option_mask", service_idx)
+                    ),
+                    "deployment_top_quality_option_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "top_quality_option_mask", service_idx)
+                    ),
+                    "deployment_risky_option_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "risky_option_mask", service_idx)
+                    ),
+                    "deployment_effective_option_floor": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "effective_option_floor", service_idx)
                     ),
                     "deployment_service_pressure": self._json_for_record(
                         self._actor_debug_vector_value(actor_debug, "service_pressure", service_idx)
@@ -6289,13 +6319,18 @@ class Hedger:
                         expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
                         expected_memory_overage_max=aux.get("expected_memory_overage_max", 0.0),
                         top_quality_prob_mean=aux.get("top_quality_prob_mean", 0.0),
+                        effective_option_prob_mean=aux.get("effective_option_prob_mean", 0.0),
                         non_top_prob_mean=aux.get("non_top_prob_mean", 0.0),
                         top_quality_logit_mean=aux.get("top_quality_logit_mean", 0.0),
+                        effective_option_logit_mean=aux.get("effective_option_logit_mean", 0.0),
                         non_top_logit_mean=aux.get("non_top_logit_mean", 0.0),
                         top_quality_logit_gap_mean=aux.get("top_quality_logit_gap_mean", 0.0),
+                        effective_option_logit_gap_mean=aux.get("effective_option_logit_gap_mean", 0.0),
                         top_quality_candidate_count_mean=aux.get("top_quality_candidate_count_mean", 0.0),
+                        effective_option_candidate_count_mean=aux.get("effective_option_candidate_count_mean", 0.0),
                         non_top_candidate_count_mean=aux.get("non_top_candidate_count_mean", 0.0),
                         quality_gap_top_second_mean=aux.get("quality_gap_top_second_mean", 0.0),
+                        effective_option_floor_mean=aux.get("effective_option_floor_mean", 0.0),
                         per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                         per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
                         capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
@@ -6342,6 +6377,7 @@ class Hedger:
                         ranking_logit_margin=offline_rl_record_cfg.ranking_logit_margin,
                         top_quality_tolerance=offline_rl_record_cfg.top_quality_tolerance,
                         coverage_pressure_floor=offline_rl_record_cfg.coverage_pressure_floor,
+                        option_quality_ratio=offline_rl_record_cfg.option_quality_ratio,
                         latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                         feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
@@ -7053,6 +7089,7 @@ class Hedger:
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
+            "option_quality_ratio",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
             "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
@@ -7515,13 +7552,18 @@ class Hedger:
                     expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
                     expected_memory_overage_max=aux.get("expected_memory_overage_max", 0.0),
                     top_quality_prob_mean=aux.get("top_quality_prob_mean", 0.0),
+                    effective_option_prob_mean=aux.get("effective_option_prob_mean", 0.0),
                     non_top_prob_mean=aux.get("non_top_prob_mean", 0.0),
                     top_quality_logit_mean=aux.get("top_quality_logit_mean", 0.0),
+                    effective_option_logit_mean=aux.get("effective_option_logit_mean", 0.0),
                     non_top_logit_mean=aux.get("non_top_logit_mean", 0.0),
                     top_quality_logit_gap_mean=aux.get("top_quality_logit_gap_mean", 0.0),
+                    effective_option_logit_gap_mean=aux.get("effective_option_logit_gap_mean", 0.0),
                     top_quality_candidate_count_mean=aux.get("top_quality_candidate_count_mean", 0.0),
+                    effective_option_candidate_count_mean=aux.get("effective_option_candidate_count_mean", 0.0),
                     non_top_candidate_count_mean=aux.get("non_top_candidate_count_mean", 0.0),
                     quality_gap_top_second_mean=aux.get("quality_gap_top_second_mean", 0.0),
+                    effective_option_floor_mean=aux.get("effective_option_floor_mean", 0.0),
                     per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                     per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
                     capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
@@ -7570,6 +7612,7 @@ class Hedger:
                     ranking_logit_margin=self.training_cfg.deployment_offline_rl.ranking_logit_margin,
                     top_quality_tolerance=self.training_cfg.deployment_offline_rl.top_quality_tolerance,
                     coverage_pressure_floor=self.training_cfg.deployment_offline_rl.coverage_pressure_floor,
+                    option_quality_ratio=self.training_cfg.deployment_offline_rl.option_quality_ratio,
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                     bernoulli_mode_boundary=0.5,
@@ -8171,6 +8214,7 @@ class Hedger:
             "ranking_logit_margin": cfg.ranking_logit_margin,
             "top_quality_tolerance": cfg.top_quality_tolerance,
             "coverage_pressure_floor": cfg.coverage_pressure_floor,
+            "option_quality_ratio": cfg.option_quality_ratio,
         }
 
     def _sample_deployment_online_replay_batch(self) -> List[dict]:

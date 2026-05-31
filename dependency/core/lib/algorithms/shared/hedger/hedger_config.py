@@ -34,6 +34,12 @@ class DeploymentConstraintCfg:
     negative_unknown_threshold: float = 0.50
     negative_stale_threshold: float = 0.85
     positive_quality_threshold: float = 0.20
+    # Effective-option labels used by deployment offline calibration.  They
+    # define which feasible edge pairs are trained as useful alternatives, not
+    # an inference-time rule that adds replicas.
+    option_quality_ratio: float = 0.65
+    option_quality_tolerance: float = 0.12
+    option_pressure_floor: float = 0.20
 
 
 class PhysicalTopology:
