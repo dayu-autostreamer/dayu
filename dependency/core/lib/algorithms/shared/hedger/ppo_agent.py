@@ -1137,6 +1137,137 @@ class _DeploymentBackbonePPO(nn.Module):
             negative_mask_t,
         )
 
+    def _deployment_plan_level_terms(
+            self,
+            select_logits: torch.Tensor,
+            static_allowed: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            policy_ctx: Dict[str, torch.Tensor],
+            prev_deploy_mask: Optional[torch.Tensor] = None,
+            *,
+            plan_min_quality_mass: float = 0.35,
+            plan_pressure_floor: float = 0.35,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Differentiable set-level deployment diagnostics/losses.
+
+        The Bernoulli matrix remains the actor output and deterministic
+        inference still uses p > 0.5. These terms train the probabilities as a
+        service-level option set: high-pressure services should have low
+        no-edge probability and useful expected quality mass, while memory is
+        treated as a soft training signal before the hard projection layer.
+        """
+        device = select_logits.device
+        dtype = torch.float32
+        static_allowed = static_allowed.to(device=device).bool()
+        num_services, num_devices = static_allowed.shape
+        cloud_idx = self._cloud_index(num_devices)
+        edge_allowed = static_allowed.clone()
+        if cloud_idx >= 0:
+            edge_allowed[:, cloud_idx] = False
+
+        select_prob = torch.sigmoid(select_logits).clamp(1e-6, 1.0 - 1e-6)
+        edge_prob = torch.where(edge_allowed, select_prob, torch.zeros_like(select_prob))
+        has_edge = edge_allowed.any(dim=1)
+        has_edge_f = has_edge.to(dtype=dtype)
+
+        service_pressure = policy_ctx.get("service_pressure")
+        if not isinstance(service_pressure, torch.Tensor):
+            service_pressure = torch.zeros((num_services,), device=device, dtype=dtype)
+        service_pressure = service_pressure.to(device=device, dtype=dtype).view(num_services).clamp(0.0, 1.0)
+        pressure_floor = torch.full_like(service_pressure, float(plan_pressure_floor))
+        pressure_weight = torch.where(
+            has_edge,
+            torch.maximum(service_pressure, pressure_floor),
+            torch.zeros_like(service_pressure),
+        )
+
+        one_minus_edge = torch.where(edge_allowed, (1.0 - edge_prob).clamp(1e-6, 1.0), torch.ones_like(edge_prob))
+        no_edge_prob = one_minus_edge.prod(dim=1)
+        cloud_only_loss = (
+            pressure_weight * no_edge_prob
+        ).sum() / pressure_weight.sum().clamp_min(1.0)
+
+        pair_quality = policy_ctx.get("pair_quality_score")
+        if not isinstance(pair_quality, torch.Tensor):
+            pair_quality = torch.ones_like(select_logits, dtype=dtype)
+        pair_quality = pair_quality.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        expected_quality_mass = (edge_prob * pair_quality).sum(dim=1)
+        target_quality_mass = float(plan_min_quality_mass) * pressure_weight
+        quality_gap = F.relu(target_quality_mass - expected_quality_mass)
+        quality_loss = (
+            quality_gap * has_edge_f
+        ).sum() / has_edge_f.sum().clamp_min(1.0)
+
+        expected_edge_count = edge_prob.sum(dim=1)
+        edge_count_loss = (
+            expected_edge_count * has_edge_f
+        ).sum() / has_edge_f.sum().clamp_min(1.0)
+
+        model_mem = logic_feats.get("model_mem")
+        if not isinstance(model_mem, torch.Tensor):
+            model_mem = torch.zeros((num_services,), device=device, dtype=dtype)
+        model_mem = model_mem.to(device=device, dtype=dtype).view(num_services)
+        residual_mem = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask).to(
+            device=device,
+            dtype=dtype,
+        )
+        expected_device_mem = (edge_prob * model_mem.view(num_services, 1)).sum(dim=0)
+        edge_device = torch.ones((num_devices,), device=device, dtype=torch.bool)
+        if cloud_idx >= 0:
+            edge_device[cloud_idx] = False
+        if bool(edge_device.any().item()):
+            memory_overage = F.relu(expected_device_mem - residual_mem) / residual_mem.clamp_min(1e-3)
+            memory_loss = memory_overage.masked_select(edge_device).mean()
+            memory_overage_mean = memory_overage.masked_select(edge_device).mean()
+            memory_overage_max = memory_overage.masked_select(edge_device).max()
+        else:
+            zero = select_logits.sum() * 0.0
+            memory_loss = zero
+            memory_overage_mean = zero
+            memory_overage_max = zero
+
+        if bool(edge_allowed.any().item()):
+            edge_probs = select_prob.masked_select(edge_allowed)
+            edge_logits = select_logits.masked_select(edge_allowed)
+            edge_prob_mean = edge_probs.mean()
+            edge_prob_std = edge_probs.std(unbiased=False)
+            edge_logit_mean = edge_logits.mean()
+            edge_logit_std = edge_logits.std(unbiased=False)
+            prob_above_05_ratio = (edge_probs > 0.5).to(dtype=dtype).mean()
+        else:
+            zero = select_logits.sum() * 0.0
+            edge_prob_mean = zero
+            edge_prob_std = zero
+            edge_logit_mean = zero
+            edge_logit_std = zero
+            prob_above_05_ratio = zero
+
+        feasible_no_edge = no_edge_prob.masked_select(has_edge) if bool(has_edge.any().item()) else None
+        feasible_edge_count = expected_edge_count.masked_select(has_edge) if bool(has_edge.any().item()) else None
+        feasible_quality = expected_quality_mass.masked_select(has_edge) if bool(has_edge.any().item()) else None
+        zero = select_logits.sum() * 0.0
+        return {
+            "plan_cloud_only_loss": cloud_only_loss,
+            "plan_quality_loss": quality_loss,
+            "plan_memory_loss": memory_loss,
+            "plan_edge_count_loss": edge_count_loss,
+            "edge_policy_prob_mean": edge_prob_mean,
+            "edge_policy_prob_std": edge_prob_std,
+            "edge_policy_logit_mean": edge_logit_mean,
+            "edge_policy_logit_std": edge_logit_std,
+            "prob_above_05_ratio": prob_above_05_ratio,
+            "service_no_edge_prob_mean": feasible_no_edge.mean() if feasible_no_edge is not None else zero,
+            "service_no_edge_prob_max": feasible_no_edge.max() if feasible_no_edge is not None else zero,
+            "expected_edge_count_mean": feasible_edge_count.mean() if feasible_edge_count is not None else zero,
+            "expected_edge_count_max": feasible_edge_count.max() if feasible_edge_count is not None else zero,
+            "expected_quality_mass_mean": feasible_quality.mean() if feasible_quality is not None else zero,
+            "expected_quality_mass_min": feasible_quality.min() if feasible_quality is not None else zero,
+            "expected_memory_overage_mean": memory_overage_mean,
+            "expected_memory_overage_max": memory_overage_max,
+        }
+
     @torch.no_grad()
     def _project_deployment_mask(
             self,
@@ -1489,6 +1620,15 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             if cloud_idx > 0 else 0
         matrix_removed_cnt = int(option_debug["matrix_removed_mask"].detach()[:, :cloud_idx].sum().cpu().item()) \
             if cloud_idx > 0 else 0
+        plan_terms = self._deployment_plan_level_terms(
+            select_logits,
+            static_allowed,
+            logic_feats,
+            phys_feats,
+            pair_ctx,
+            prev_deploy_mask=prev_deploy_mask,
+        )
+        plan_metrics = {key: _scalar_to_float(value) for key, value in plan_terms.items()}
         return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {
             "capacity_relax_cnt": capacity_relax_cnt,
             "capacity_relax_cost": capacity_relax_cost,
@@ -1510,6 +1650,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "matrix_removed_cnt": matrix_removed_cnt,
             "decode_added_cnt": matrix_added_cnt,
             "decode_pruned_cnt": matrix_removed_cnt,
+            **plan_metrics,
             "capacity_removed_mask": capacity_removed_mask,
             "capacity_removed_cnt": int(capacity_removed_mask.detach()[:, :cloud_idx].sum().cpu().item())
             if cloud_idx > 0 else 0,
@@ -1862,14 +2003,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             unselected_negative_mask = torch.zeros_like(selected)
             return positive_mask, negative_mask, raw_removed, unselected_negative_mask, debug_counts
 
-        # Good/mid transitions should calibrate the whole Bernoulli matrix, not
-        # only clone selected ones.  Unknown or stale runtime evidence is a
-        # confidence signal, not a negative label: without fresh evidence the
-        # quality path falls back to static suitability instead of teaching the
-        # actor to delete the edge option and starve future evidence.
+        # Good/mid transitions clone selected safe options and suppress only
+        # explicitly bad options.  Ordinary unselected feasible pairs are not
+        # negative labels: treating every missing edge as a negative was the
+        # main source of the global logit bias that kept all probabilities just
+        # below the p=0.5 Bernoulli mode boundary.
         positive_mask = selected & ~severe_risky & ~low_quality
         negative_mask = (selected & (severe_risky | low_quality)) & edge_allowed
-        unselected_negative_mask = edge_allowed & ~selected & ~raw_removed
+        unselected_negative_mask = (edge_allowed & ~selected & ~raw_removed & diagnostic_risky)
         return positive_mask, negative_mask, raw_removed, unselected_negative_mask, debug_counts
 
     def offline_update(
@@ -1887,13 +2028,20 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             value_coef: float = 0.5,
             entropy_coef: float = 0.0,
             bootstrap_current_value: bool = True,
+            plan_cloud_only_coef: float = 0.70,
+            plan_quality_coef: float = 0.50,
+            plan_memory_coef: float = 0.25,
+            plan_edge_count_coef: float = 0.02,
+            plan_min_quality_mass: float = 0.35,
+            plan_pressure_floor: float = 0.35,
     ):
         """
         Offline/replay update for deployment macro-transitions.
 
         This is an AWAC-style actor-critic step: fit the critic to one-step
-        bootstrapped returns and calibrate every feasible edge Bernoulli bit
-        with pair-wise positive/negative BCE targets.
+        bootstrapped returns, calibrate selected risky/safe edge Bernoulli
+        bits, and add differentiable plan-level losses so useful edge options
+        cross the p=0.5 deterministic mode boundary without rule-based repair.
         """
         if not transitions:
             return None
@@ -1940,6 +2088,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         edge_logit_means = []
         edge_logit_stds = []
         raw_mode_edge_densities = []
+        plan_cloud_only_losses = []
+        plan_quality_losses = []
+        plan_memory_losses = []
+        plan_edge_count_losses = []
+        service_no_edge_prob_means = []
+        service_no_edge_prob_maxes = []
+        expected_edge_count_means = []
+        expected_edge_count_maxes = []
+        expected_quality_mass_means = []
+        expected_quality_mass_mins = []
+        expected_memory_overage_means = []
+        expected_memory_overage_maxes = []
+        prob_above_05_ratios = []
         for tr in batch:
             logic_edge_index = tr["logic_edge_index"].to(device)
             logic_feats = _move_tensor_dict_to_device(tr["logic_feats"], device)
@@ -1997,6 +2158,16 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 prev_deploy_mask=prev_deploy_mask,
                 topo_order=tr.get("topo_order"),
                 return_policy=False,
+            )
+            plan_terms = self._deployment_plan_level_terms(
+                policy_aux["select_logit"],
+                policy_aux["static_allowed"],
+                logic_feats,
+                phys_feats,
+                policy_aux,
+                prev_deploy_mask=prev_deploy_mask,
+                plan_min_quality_mass=float(plan_min_quality_mass),
+                plan_pressure_floor=float(plan_pressure_floor),
             )
             raw_removed_mask = raw_removed_mask.to(device=policy_aux["policy_prob"].device).bool()
             unselected_negative_mask = unselected_negative_mask.to(
@@ -2092,6 +2263,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     _scalar_to_float(((raw_removed_logits > 0.0) & edge_allowed_t).float().sum()
                                      / edge_allowed_t.float().sum().clamp_min(1.0))
                 )
+            plan_cloud_only_losses.append(plan_terms["plan_cloud_only_loss"])
+            plan_quality_losses.append(plan_terms["plan_quality_loss"])
+            plan_memory_losses.append(plan_terms["plan_memory_loss"])
+            plan_edge_count_losses.append(plan_terms["plan_edge_count_loss"])
+            service_no_edge_prob_means.append(_scalar_to_float(plan_terms["service_no_edge_prob_mean"]))
+            service_no_edge_prob_maxes.append(_scalar_to_float(plan_terms["service_no_edge_prob_max"]))
+            expected_edge_count_means.append(_scalar_to_float(plan_terms["expected_edge_count_mean"]))
+            expected_edge_count_maxes.append(_scalar_to_float(plan_terms["expected_edge_count_max"]))
+            expected_quality_mass_means.append(_scalar_to_float(plan_terms["expected_quality_mass_mean"]))
+            expected_quality_mass_mins.append(_scalar_to_float(plan_terms["expected_quality_mass_min"]))
+            expected_memory_overage_means.append(_scalar_to_float(plan_terms["expected_memory_overage_mean"]))
+            expected_memory_overage_maxes.append(_scalar_to_float(plan_terms["expected_memory_overage_max"]))
+            prob_above_05_ratios.append(_scalar_to_float(plan_terms["prob_above_05_ratio"]))
 
         value_t = torch.stack(values).float()
         positive_logp_t = torch.stack(positive_logps).float()
@@ -2099,6 +2283,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         raw_removed_logp_t = torch.stack(raw_removed_logps).float()
         unselected_negative_logp_t = torch.stack(unselected_negative_logps).float()
         ent_t = torch.stack(entropies).float()
+        plan_cloud_only_loss_t = torch.stack(plan_cloud_only_losses).float()
+        plan_quality_loss_t = torch.stack(plan_quality_losses).float()
+        plan_memory_loss_t = torch.stack(plan_memory_losses).float()
+        plan_edge_count_loss_t = torch.stack(plan_edge_count_losses).float()
         target_t = torch.tensor(targets, device=device, dtype=torch.float32)
         adv_t = target_t.detach() - value_t.detach()
         temp = max(1e-6, float(advantage_temperature))
@@ -2183,8 +2371,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             + raw_removed_negative_loss
             + unselected_negative_loss
         )
+        plan_cloud_only_loss = plan_cloud_only_loss_t.mean() * float(plan_cloud_only_coef)
+        plan_quality_loss = plan_quality_loss_t.mean() * float(plan_quality_coef)
+        plan_memory_loss = plan_memory_loss_t.mean() * float(plan_memory_coef)
+        plan_edge_count_loss = plan_edge_count_loss_t.mean() * float(plan_edge_count_coef)
+        plan_loss = (
+            plan_cloud_only_loss
+            + plan_quality_loss
+            + plan_memory_loss
+            + plan_edge_count_loss
+        )
         actor_objective_loss = (
             actor_pair_bce_loss
+            + plan_loss
             - float(entropy_coef) * entropy
         )
 
@@ -2226,6 +2425,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "negative_loss": _scalar_to_float(negative_loss.detach()),
             "raw_removed_negative_loss": _scalar_to_float(raw_removed_negative_loss.detach()),
             "unselected_negative_loss": _scalar_to_float(unselected_negative_loss.detach()),
+            "plan_cloud_only_loss": _scalar_to_float(plan_cloud_only_loss.detach()),
+            "plan_quality_loss": _scalar_to_float(plan_quality_loss.detach()),
+            "plan_memory_loss": _scalar_to_float(plan_memory_loss.detach()),
+            "plan_edge_count_loss": _scalar_to_float(plan_edge_count_loss.detach()),
+            "plan_loss": _scalar_to_float(plan_loss.detach()),
             "value_loss": _scalar_to_float(value_loss.detach()),
             "entropy": _scalar_to_float(entropy.detach()),
             "entropy_coef": float(entropy_coef),
@@ -2274,7 +2478,25 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "edge_prob_std": _mean_or_zero(edge_prob_stds),
             "edge_logit_mean": _mean_or_zero(edge_logit_means),
             "edge_logit_std": _mean_or_zero(edge_logit_stds),
+            "prob_above_05_ratio": _mean_or_zero(prob_above_05_ratios),
             "raw_mode_edge_density": _mean_or_zero(raw_mode_edge_densities),
+            "logit_margin_mean": (
+                _mean_or_zero(positive_logit_means) - _mean_or_zero(negative_logit_means)
+            ),
+            "service_no_edge_prob_mean": _mean_or_zero(service_no_edge_prob_means),
+            "service_no_edge_prob_max": _mean_or_zero(service_no_edge_prob_maxes),
+            "expected_edge_count_mean": _mean_or_zero(expected_edge_count_means),
+            "expected_edge_count_max": _mean_or_zero(expected_edge_count_maxes),
+            "expected_quality_mass_mean": _mean_or_zero(expected_quality_mass_means),
+            "expected_quality_mass_min": _mean_or_zero(expected_quality_mass_mins),
+            "expected_memory_overage_mean": _mean_or_zero(expected_memory_overage_means),
+            "expected_memory_overage_max": _mean_or_zero(expected_memory_overage_maxes),
+            "plan_cloud_only_coef": float(plan_cloud_only_coef),
+            "plan_quality_coef": float(plan_quality_coef),
+            "plan_memory_coef": float(plan_memory_coef),
+            "plan_edge_count_coef": float(plan_edge_count_coef),
+            "plan_min_quality_mass": float(plan_min_quality_mass),
+            "plan_pressure_floor": float(plan_pressure_floor),
         }
 
 
