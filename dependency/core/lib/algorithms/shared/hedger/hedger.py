@@ -120,13 +120,11 @@ class HedgerDeploymentOfflineRLCfg:
     value_coef: float = 0.5
     entropy_coef: float = 0.0
     bootstrap_current_value: bool = True
-    service_gate_margin_coef: float = 0.45
     coverage_margin_coef: float = 0.85
     quality_margin_coef: float = 0.55
     ranking_margin_coef: float = 0.45
     memory_margin_coef: float = 0.18
     positive_logit_margin: float = 0.25
-    service_gate_logit_margin: float = 0.10
     negative_logit_margin: float = 0.20
     coverage_logit_margin: float = 0.20
     ranking_logit_margin: float = 0.15
@@ -649,13 +647,11 @@ class Hedger:
             value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.5))),
             entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
             bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", True)),
-            service_gate_margin_coef=max(0.0, float(offline_rl_cfg.get("service_gate_margin_coef", 0.45))),
             coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.85))),
             quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.55))),
             ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.45))),
             memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.18))),
             positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 0.25))),
-            service_gate_logit_margin=max(0.0, float(offline_rl_cfg.get("service_gate_logit_margin", 0.10))),
             negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.20))),
             coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.20))),
             ranking_logit_margin=max(0.0, float(offline_rl_cfg.get("ranking_logit_margin", 0.15))),
@@ -974,7 +970,7 @@ class Hedger:
             "clip_fraction", "ratio_mean", "ratio_std",
             "actor_grad_norm", "critic_grad_norm",
             "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
-            "service_gate_margin_loss", "coverage_margin_loss", "quality_margin_loss", "ranking_margin_loss",
+            "coverage_margin_loss", "quality_margin_loss", "ranking_margin_loss",
             "memory_margin_loss", "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
@@ -993,7 +989,7 @@ class Hedger:
             "positive_logit_mean", "negative_logit_mean", "raw_removed_logit_mean",
             "unselected_negative_logit_mean",
             "edge_prob_mean", "edge_prob_std", "edge_logit_mean", "edge_logit_std",
-            "service_gate_prob_mean", "service_gate_logit_mean", "pair_centered_logit_std",
+            "pair_centered_logit_std",
             "prob_above_05_ratio", "raw_mode_edge_density", "logit_margin_mean",
             "service_no_edge_prob_mean", "service_no_edge_prob_max",
             "expected_edge_count_mean", "expected_edge_count_max",
@@ -1003,8 +999,8 @@ class Hedger:
             "top_quality_logit_mean", "non_top_logit_mean", "top_quality_logit_gap_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
-            "service_gate_margin_coef", "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
-            "positive_logit_margin", "service_gate_logit_margin", "negative_logit_margin", "coverage_logit_margin",
+            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
+            "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
         ]
         if include_offline_batch:
@@ -2790,7 +2786,7 @@ class Hedger:
             "decode_added_cnt", "decode_pruned_cnt",
             "edge_policy_prob_mean", "edge_policy_prob_std",
             "edge_policy_logit_mean", "edge_policy_logit_std",
-            "service_gate_prob_mean", "service_gate_logit_mean", "pair_centered_logit_std",
+            "pair_centered_logit_std",
             "prob_above_05_ratio", "service_no_edge_prob_mean",
             "service_no_edge_prob_max", "expected_edge_count_mean",
             "expected_edge_count_max", "expected_quality_mass_mean",
@@ -2814,8 +2810,8 @@ class Hedger:
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "hotspot_weight", "runtime_risk_weight", "unknown_option_weight",
             "stale_option_weight", "low_quality_weight",
-            "service_gate_margin_coef", "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
-            "positive_logit_margin", "service_gate_logit_margin", "negative_logit_margin", "coverage_logit_margin",
+            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
+            "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
             "edge_memory_budget_ratio", "bernoulli_mode_boundary",
@@ -2933,8 +2929,7 @@ class Hedger:
         if self.record_cfg.decision_actor_debug:
             fieldnames.extend([
                 "deployment_qk_scores", "deployment_qk_features",
-                "deployment_matrix_logits_raw", "deployment_service_gate_features",
-                "deployment_service_gate_logit", "deployment_service_gate_prob",
+                "deployment_matrix_logits_raw", "deployment_service_context_features",
                 "deployment_pair_rank_logits", "deployment_pair_centered_logits",
                 "deployment_base_scores", "deployment_centered_scores",
                 "deployment_final_scores", "deployment_select_logits",
@@ -3360,14 +3355,8 @@ class Hedger:
                     "deployment_matrix_logits_raw": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "matrix_logit_raw", service_idx)
                     ),
-                    "deployment_service_gate_features": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "service_gate_feature", service_idx)
-                    ),
-                    "deployment_service_gate_logit": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "service_gate_logit", service_idx)
-                    ),
-                    "deployment_service_gate_prob": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "service_gate_prob", service_idx)
+                    "deployment_service_context_features": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "service_context_feature", service_idx)
                     ),
                     "deployment_pair_rank_logits": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_rank_logit_raw", service_idx)
@@ -6289,8 +6278,6 @@ class Hedger:
                         edge_policy_prob_std=aux.get("edge_policy_prob_std", 0.0),
                         edge_policy_logit_mean=aux.get("edge_policy_logit_mean", 0.0),
                         edge_policy_logit_std=aux.get("edge_policy_logit_std", 0.0),
-                        service_gate_prob_mean=aux.get("service_gate_prob_mean", 0.0),
-                        service_gate_logit_mean=aux.get("service_gate_logit_mean", 0.0),
                         pair_centered_logit_std=aux.get("pair_centered_logit_std", 0.0),
                         prob_above_05_ratio=aux.get("prob_above_05_ratio", 0.0),
                         service_no_edge_prob_mean=aux.get("service_no_edge_prob_mean", 0.0),
@@ -6345,13 +6332,11 @@ class Hedger:
                         unknown_option_weight=self.deployment_agent_params["reward_dep_unknown_option_weight"],
                         stale_option_weight=self.deployment_agent_params["reward_dep_stale_option_weight"],
                         low_quality_weight=self.deployment_agent_params["reward_dep_low_quality_weight"],
-                        service_gate_margin_coef=offline_rl_record_cfg.service_gate_margin_coef,
                         coverage_margin_coef=offline_rl_record_cfg.coverage_margin_coef,
                         quality_margin_coef=offline_rl_record_cfg.quality_margin_coef,
                         ranking_margin_coef=offline_rl_record_cfg.ranking_margin_coef,
                         memory_margin_coef=offline_rl_record_cfg.memory_margin_coef,
                         positive_logit_margin=offline_rl_record_cfg.positive_logit_margin,
-                        service_gate_logit_margin=offline_rl_record_cfg.service_gate_logit_margin,
                         negative_logit_margin=offline_rl_record_cfg.negative_logit_margin,
                         coverage_logit_margin=offline_rl_record_cfg.coverage_logit_margin,
                         ranking_logit_margin=offline_rl_record_cfg.ranking_logit_margin,
@@ -7034,7 +7019,7 @@ class Hedger:
                                 "decode_added_cnt", "decode_pruned_cnt",
                                 "edge_policy_prob_mean", "edge_policy_prob_std",
                                 "edge_policy_logit_mean", "edge_policy_logit_std",
-                                "service_gate_prob_mean", "service_gate_logit_mean", "pair_centered_logit_std",
+                                "pair_centered_logit_std",
                                 "prob_above_05_ratio", "service_no_edge_prob_mean",
                                 "service_no_edge_prob_max", "expected_edge_count_mean",
                                 "expected_edge_count_max", "expected_quality_mass_mean",
@@ -7065,8 +7050,8 @@ class Hedger:
             "hotspot_weight", "runtime_risk_weight", "unknown_option_weight",
             "stale_option_weight", "low_quality_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
-            "service_gate_margin_coef", "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
-            "positive_logit_margin", "service_gate_logit_margin", "negative_logit_margin", "coverage_logit_margin",
+            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
+            "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
             "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
@@ -7519,8 +7504,6 @@ class Hedger:
                     edge_policy_prob_std=aux.get("edge_policy_prob_std", 0.0),
                     edge_policy_logit_mean=aux.get("edge_policy_logit_mean", 0.0),
                     edge_policy_logit_std=aux.get("edge_policy_logit_std", 0.0),
-                    service_gate_prob_mean=aux.get("service_gate_prob_mean", 0.0),
-                    service_gate_logit_mean=aux.get("service_gate_logit_mean", 0.0),
                     pair_centered_logit_std=aux.get("pair_centered_logit_std", 0.0),
                     prob_above_05_ratio=aux.get("prob_above_05_ratio", 0.0),
                     service_no_edge_prob_mean=aux.get("service_no_edge_prob_mean", 0.0),
@@ -7577,13 +7560,11 @@ class Hedger:
                     low_quality_weight=self.deployment_agent_params["reward_dep_low_quality_weight"],
                     latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                     feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
-                    service_gate_margin_coef=self.training_cfg.deployment_offline_rl.service_gate_margin_coef,
                     coverage_margin_coef=self.training_cfg.deployment_offline_rl.coverage_margin_coef,
                     quality_margin_coef=self.training_cfg.deployment_offline_rl.quality_margin_coef,
                     ranking_margin_coef=self.training_cfg.deployment_offline_rl.ranking_margin_coef,
                     memory_margin_coef=self.training_cfg.deployment_offline_rl.memory_margin_coef,
                     positive_logit_margin=self.training_cfg.deployment_offline_rl.positive_logit_margin,
-                    service_gate_logit_margin=self.training_cfg.deployment_offline_rl.service_gate_logit_margin,
                     negative_logit_margin=self.training_cfg.deployment_offline_rl.negative_logit_margin,
                     coverage_logit_margin=self.training_cfg.deployment_offline_rl.coverage_logit_margin,
                     ranking_logit_margin=self.training_cfg.deployment_offline_rl.ranking_logit_margin,
@@ -8180,13 +8161,11 @@ class Hedger:
             "value_coef": cfg.value_coef,
             "entropy_coef": cfg.entropy_coef,
             "bootstrap_current_value": cfg.bootstrap_current_value,
-            "service_gate_margin_coef": cfg.service_gate_margin_coef,
             "coverage_margin_coef": cfg.coverage_margin_coef,
             "quality_margin_coef": cfg.quality_margin_coef,
             "ranking_margin_coef": cfg.ranking_margin_coef,
             "memory_margin_coef": cfg.memory_margin_coef,
             "positive_logit_margin": cfg.positive_logit_margin,
-            "service_gate_logit_margin": cfg.service_gate_logit_margin,
             "negative_logit_margin": cfg.negative_logit_margin,
             "coverage_logit_margin": cfg.coverage_logit_margin,
             "ranking_logit_margin": cfg.ranking_logit_margin,
