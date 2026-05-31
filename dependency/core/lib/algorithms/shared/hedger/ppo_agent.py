@@ -1148,7 +1148,8 @@ class _DeploymentBackbonePPO(nn.Module):
             *,
             positive_logit_margin: float = 0.25,
             coverage_logit_margin: float = 0.20,
-            quality_temperature: float = 0.35,
+            ranking_logit_margin: float = 0.15,
+            top_quality_tolerance: float = 0.05,
             coverage_pressure_floor: float = 0.35,
     ) -> Dict[str, torch.Tensor]:
         """
@@ -1194,28 +1195,43 @@ class _DeploymentBackbonePPO(nn.Module):
         expected_quality_mass = (edge_prob * pair_quality).sum(dim=1)
 
         quality_threshold = float(self._positive_quality_threshold())
-        coverage_score = select_logits.masked_fill(~edge_allowed, -1.0e6).max(dim=1).values
+        quality_advantage = (pair_quality - quality_threshold).clamp_min(0.0).masked_fill(~edge_allowed, 0.0)
+        quality_eligible = edge_allowed & (quality_advantage > 0.0)
+        eligible_service = quality_eligible.any(dim=1)
+        best_quality = pair_quality.masked_fill(~quality_eligible, -1.0).max(dim=1).values
+        top_tolerance = max(0.0, float(top_quality_tolerance))
+        top_quality_mask = (
+            quality_eligible
+            & (pair_quality >= (best_quality.view(num_services, 1) - top_tolerance))
+        )
+        effective_pressure_weight = pressure_weight * eligible_service.to(dtype=dtype)
+
+        coverage_score = select_logits.masked_fill(~top_quality_mask, -1.0e6).max(dim=1).values
         coverage_margin_loss = (
             F.softplus(float(coverage_logit_margin) - coverage_score)
-            * pressure_weight
-        ).sum() / pressure_weight.sum().clamp_min(1.0)
+            * effective_pressure_weight
+        ).sum() / effective_pressure_weight.sum().clamp_min(1.0)
 
-        quality_tau = max(1.0e-3, float(quality_temperature))
-        quality_advantage = (pair_quality - quality_threshold).clamp_min(0.0).masked_fill(~edge_allowed, 0.0)
-        quality_weight_logits = (pair_quality / quality_tau).masked_fill(~edge_allowed, -1.0e6)
-        quality_soft_weights = torch.softmax(quality_weight_logits, dim=1) * edge_allowed.to(dtype=dtype)
-        quality_soft_weights = quality_soft_weights * (quality_advantage > 0.0).to(dtype=dtype)
-        quality_weight_sum = quality_soft_weights.sum(dim=1, keepdim=True).clamp_min(1.0e-6)
-        quality_soft_weights = quality_soft_weights / quality_weight_sum
-        quality_transition_weight = pressure_weight.view(num_services, 1)
+        top_quality_weights = top_quality_mask.to(dtype=dtype)
+        quality_transition_weight = effective_pressure_weight.view(num_services, 1)
         quality_margin_den = (
-            quality_soft_weights * quality_transition_weight
+            top_quality_weights * quality_transition_weight
         ).sum().clamp_min(1.0)
         quality_margin_loss = (
             F.softplus(float(positive_logit_margin) - select_logits)
-            * quality_soft_weights
+            * top_quality_weights
             * quality_transition_weight
         ).sum() / quality_margin_den
+
+        non_top_mask = edge_allowed & ~top_quality_mask & eligible_service.view(num_services, 1)
+        best_top_logit = select_logits.masked_fill(~top_quality_mask, -1.0e6).max(dim=1).values
+        quality_gap = (best_quality.view(num_services, 1) - pair_quality).clamp_min(0.0)
+        ranking_weights = non_top_mask.to(dtype=dtype) * quality_gap.clamp(max=1.0) * quality_transition_weight
+        ranking_den = ranking_weights.sum().clamp_min(1.0)
+        ranking_margin_loss = (
+            F.softplus(float(ranking_logit_margin) - best_top_logit.view(num_services, 1) + select_logits)
+            * ranking_weights
+        ).sum() / ranking_den
 
         expected_edge_count = edge_prob.sum(dim=1)
 
@@ -1261,10 +1277,29 @@ class _DeploymentBackbonePPO(nn.Module):
         feasible_no_edge = no_edge_prob.masked_select(has_edge) if bool(has_edge.any().item()) else None
         feasible_edge_count = expected_edge_count.masked_select(has_edge) if bool(has_edge.any().item()) else None
         feasible_quality = expected_quality_mass.masked_select(has_edge) if bool(has_edge.any().item()) else None
+        top_quality_probs = select_prob.masked_select(top_quality_mask)
+        non_top_probs = select_prob.masked_select(non_top_mask)
+        if bool(has_edge.any().item()):
+            masked_prob = select_prob.masked_fill(~edge_allowed, 0.0)
+            service_prob_mean = masked_prob.sum(dim=1) / edge_allowed.to(dtype=dtype).sum(dim=1).clamp_min(1.0)
+            centered_prob = torch.where(edge_allowed, select_prob - service_prob_mean.view(num_services, 1), torch.zeros_like(select_prob))
+            per_service_prob_std = torch.sqrt(
+                (centered_prob.pow(2).sum(dim=1) / edge_allowed.to(dtype=dtype).sum(dim=1).clamp_min(1.0)).clamp_min(0.0)
+            ).masked_select(has_edge)
+            per_service_prob_range = (
+                select_prob.masked_fill(~edge_allowed, -1.0).max(dim=1).values
+                - select_prob.masked_fill(~edge_allowed, 2.0).min(dim=1).values
+            ).masked_select(has_edge)
+        else:
+            per_service_prob_std = None
+            per_service_prob_range = None
+        top_quality_logit = select_logits.masked_select(top_quality_mask)
+        non_top_logit = select_logits.masked_select(non_top_mask)
         zero = select_logits.sum() * 0.0
         return {
             "coverage_margin_loss": coverage_margin_loss,
             "quality_margin_loss": quality_margin_loss,
+            "ranking_margin_loss": ranking_margin_loss,
             "memory_margin_loss": memory_loss,
             "edge_policy_prob_mean": edge_prob_mean,
             "edge_policy_prob_std": edge_prob_std,
@@ -1279,6 +1314,20 @@ class _DeploymentBackbonePPO(nn.Module):
             "expected_quality_mass_min": feasible_quality.min() if feasible_quality is not None else zero,
             "expected_memory_overage_mean": memory_overage_mean,
             "expected_memory_overage_max": memory_overage_max,
+            "top_quality_prob_mean": top_quality_probs.mean() if bool(top_quality_probs.numel()) else zero,
+            "non_top_prob_mean": non_top_probs.mean() if bool(non_top_probs.numel()) else zero,
+            "top_quality_logit_mean": top_quality_logit.mean() if bool(top_quality_logit.numel()) else zero,
+            "non_top_logit_mean": non_top_logit.mean() if bool(non_top_logit.numel()) else zero,
+            "top_quality_logit_gap_mean": (
+                top_quality_logit.mean() - non_top_logit.mean()
+                if bool(top_quality_logit.numel()) and bool(non_top_logit.numel()) else zero
+            ),
+            "per_service_prob_std_mean": (
+                per_service_prob_std.mean() if per_service_prob_std is not None else zero
+            ),
+            "per_service_prob_range_mean": (
+                per_service_prob_range.mean() if per_service_prob_range is not None else zero
+            ),
         }
 
     @torch.no_grad()
@@ -1953,6 +2002,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             raw_deploy_mask: Optional[torch.Tensor],
             policy_aux: Dict[str, torch.Tensor],
             quality_bucket: str,
+            top_quality_tolerance: float = 0.05,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
         static_allowed = policy_aux["static_allowed"].bool()
         num_devices = static_allowed.size(1)
@@ -2000,6 +2050,23 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         low_quality = pair_quality < self._positive_quality_threshold()
         severe_risky = (queue_risky | hotspot_risky | runtime_risky) & edge_allowed
         diagnostic_risky = (severe_risky | low_quality) & edge_allowed
+        quality_threshold = float(self._positive_quality_threshold())
+        quality_eligible = edge_allowed & (pair_quality >= quality_threshold) & ~severe_risky
+        best_quality = pair_quality.masked_fill(~quality_eligible, -1.0).max(dim=1).values
+        top_quality_mask = (
+            quality_eligible
+            & (
+                pair_quality
+                >= (best_quality.view(best_quality.size(0), 1) - max(0.0, float(top_quality_tolerance)))
+            )
+        )
+        service_has_top = top_quality_mask.any(dim=1)
+        selected_safe = selected & quality_eligible
+        selected_best_quality = pair_quality.masked_fill(~selected_safe, -1.0).max(dim=1).values
+        selected_best_mask = (
+            selected_safe
+            & (pair_quality >= (selected_best_quality.view(selected_best_quality.size(0), 1) - 1.0e-6))
+        )
         debug_counts = {
             "actor_selected_risky_samples": float((selected & diagnostic_risky).float().sum().detach().cpu().item()),
             "actor_selected_low_quality_samples": float((selected & low_quality & edge_allowed).float().sum().detach().cpu().item()),
@@ -2016,14 +2083,31 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             unselected_negative_mask = torch.zeros_like(selected)
             return positive_mask, negative_mask, raw_removed, unselected_negative_mask, debug_counts
 
-        # Good/mid transitions clone selected safe options and suppress only
-        # explicitly bad options.  Ordinary unselected feasible pairs are not
-        # negative labels: treating every missing edge as a negative was the
-        # main source of the global logit bias that kept all probabilities just
-        # below the p=0.5 Bernoulli mode boundary.
-        positive_mask = selected & ~severe_risky & ~low_quality
+        # Good/mid transitions clone only service-local effective options.  A
+        # selected replica is positive when it is both safe and near the best
+        # available quality for that service; if a collected transition selected
+        # only non-top safe replicas, keep the best selected one as a weak
+        # positive rather than cloning every safe edge bit.
+        positive_mask = selected_safe & top_quality_mask
+        missing_positive_service = selected_safe.any(dim=1) & ~positive_mask.any(dim=1)
+        positive_mask = positive_mask | (
+            selected_best_mask & missing_positive_service.view(missing_positive_service.size(0), 1)
+        )
         negative_mask = (selected & (severe_risky | low_quality)) & edge_allowed
-        unselected_negative_mask = (edge_allowed & ~selected & ~raw_removed & diagnostic_risky)
+        service_has_effective_positive = positive_mask.any(dim=1) | service_has_top
+        non_top_unselected = (
+            edge_allowed
+            & ~selected
+            & ~raw_removed
+            & service_has_effective_positive.view(service_has_effective_positive.size(0), 1)
+            & ~top_quality_mask
+        )
+        unselected_negative_mask = (
+            edge_allowed
+            & ~selected
+            & ~raw_removed
+            & (diagnostic_risky | non_top_unselected)
+        )
         return positive_mask, negative_mask, raw_removed, unselected_negative_mask, debug_counts
 
     def offline_update(
@@ -2043,11 +2127,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             bootstrap_current_value: bool = True,
             coverage_margin_coef: float = 0.85,
             quality_margin_coef: float = 0.55,
+            ranking_margin_coef: float = 0.45,
             memory_margin_coef: float = 0.18,
             positive_logit_margin: float = 0.25,
             negative_logit_margin: float = 0.20,
             coverage_logit_margin: float = 0.20,
-            quality_temperature: float = 0.35,
+            ranking_logit_margin: float = 0.15,
+            top_quality_tolerance: float = 0.05,
             coverage_pressure_floor: float = 0.35,
     ):
         """
@@ -2105,6 +2191,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         raw_mode_edge_densities = []
         coverage_margin_losses = []
         quality_margin_losses = []
+        ranking_margin_losses = []
         memory_margin_losses = []
         service_no_edge_prob_means = []
         service_no_edge_prob_maxes = []
@@ -2114,6 +2201,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         expected_quality_mass_mins = []
         expected_memory_overage_means = []
         expected_memory_overage_maxes = []
+        top_quality_prob_means = []
+        non_top_prob_means = []
+        top_quality_logit_means = []
+        non_top_logit_means = []
+        top_quality_logit_gap_means = []
+        per_service_prob_std_means = []
+        per_service_prob_range_means = []
         prob_above_05_ratios = []
         for tr in batch:
             logic_edge_index = tr["logic_edge_index"].to(device)
@@ -2150,6 +2244,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     raw_deploy_mask,
                     probe_aux,
                     quality_bucket,
+                    top_quality_tolerance=float(top_quality_tolerance),
                 )
             _logp, ent, _actor_value, policy_aux = self.evaluate(
                 logic_edge_index,
@@ -2182,7 +2277,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 prev_deploy_mask=prev_deploy_mask,
                 positive_logit_margin=float(positive_logit_margin),
                 coverage_logit_margin=float(coverage_logit_margin),
-                quality_temperature=float(quality_temperature),
+                ranking_logit_margin=float(ranking_logit_margin),
+                top_quality_tolerance=float(top_quality_tolerance),
                 coverage_pressure_floor=float(coverage_pressure_floor),
             )
             raw_removed_mask = raw_removed_mask.to(device=policy_aux["policy_prob"].device).bool()
@@ -2281,6 +2377,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 )
             coverage_margin_losses.append(plan_terms["coverage_margin_loss"])
             quality_margin_losses.append(plan_terms["quality_margin_loss"])
+            ranking_margin_losses.append(plan_terms["ranking_margin_loss"])
             memory_margin_losses.append(plan_terms["memory_margin_loss"])
             service_no_edge_prob_means.append(_scalar_to_float(plan_terms["service_no_edge_prob_mean"]))
             service_no_edge_prob_maxes.append(_scalar_to_float(plan_terms["service_no_edge_prob_max"]))
@@ -2290,6 +2387,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             expected_quality_mass_mins.append(_scalar_to_float(plan_terms["expected_quality_mass_min"]))
             expected_memory_overage_means.append(_scalar_to_float(plan_terms["expected_memory_overage_mean"]))
             expected_memory_overage_maxes.append(_scalar_to_float(plan_terms["expected_memory_overage_max"]))
+            top_quality_prob_means.append(_scalar_to_float(plan_terms["top_quality_prob_mean"]))
+            non_top_prob_means.append(_scalar_to_float(plan_terms["non_top_prob_mean"]))
+            top_quality_logit_means.append(_scalar_to_float(plan_terms["top_quality_logit_mean"]))
+            non_top_logit_means.append(_scalar_to_float(plan_terms["non_top_logit_mean"]))
+            top_quality_logit_gap_means.append(_scalar_to_float(plan_terms["top_quality_logit_gap_mean"]))
+            per_service_prob_std_means.append(_scalar_to_float(plan_terms["per_service_prob_std_mean"]))
+            per_service_prob_range_means.append(_scalar_to_float(plan_terms["per_service_prob_range_mean"]))
             prob_above_05_ratios.append(_scalar_to_float(plan_terms["prob_above_05_ratio"]))
 
         value_t = torch.stack(values).float()
@@ -2300,6 +2404,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         ent_t = torch.stack(entropies).float()
         coverage_margin_loss_t = torch.stack(coverage_margin_losses).float()
         quality_margin_loss_t = torch.stack(quality_margin_losses).float()
+        ranking_margin_loss_t = torch.stack(ranking_margin_losses).float()
         memory_margin_loss_t = torch.stack(memory_margin_losses).float()
         target_t = torch.tensor(targets, device=device, dtype=torch.float32)
         adv_t = target_t.detach() - value_t.detach()
@@ -2390,8 +2495,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         )
         coverage_margin_loss = coverage_margin_loss_t.mean() * float(coverage_margin_coef)
         quality_margin_loss = quality_margin_loss_t.mean() * float(quality_margin_coef)
+        ranking_margin_loss = ranking_margin_loss_t.mean() * float(ranking_margin_coef)
         memory_margin_loss = memory_margin_loss_t.mean() * float(memory_margin_coef)
-        margin_loss = coverage_margin_loss + quality_margin_loss + memory_margin_loss
+        margin_loss = coverage_margin_loss + quality_margin_loss + ranking_margin_loss + memory_margin_loss
         actor_objective_loss = (
             actor_pair_bce_loss
             + margin_loss
@@ -2438,6 +2544,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "unselected_negative_loss": _scalar_to_float(unselected_negative_loss.detach()),
             "coverage_margin_loss": _scalar_to_float(coverage_margin_loss.detach()),
             "quality_margin_loss": _scalar_to_float(quality_margin_loss.detach()),
+            "ranking_margin_loss": _scalar_to_float(ranking_margin_loss.detach()),
             "memory_margin_loss": _scalar_to_float(memory_margin_loss.detach()),
             "margin_loss": _scalar_to_float(margin_loss.detach()),
             "value_loss": _scalar_to_float(value_loss.detach()),
@@ -2501,13 +2608,22 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "expected_quality_mass_min": _mean_or_zero(expected_quality_mass_mins),
             "expected_memory_overage_mean": _mean_or_zero(expected_memory_overage_means),
             "expected_memory_overage_max": _mean_or_zero(expected_memory_overage_maxes),
+            "top_quality_prob_mean": _mean_or_zero(top_quality_prob_means),
+            "non_top_prob_mean": _mean_or_zero(non_top_prob_means),
+            "top_quality_logit_mean": _mean_or_zero(top_quality_logit_means),
+            "non_top_logit_mean": _mean_or_zero(non_top_logit_means),
+            "top_quality_logit_gap_mean": _mean_or_zero(top_quality_logit_gap_means),
+            "per_service_prob_std_mean": _mean_or_zero(per_service_prob_std_means),
+            "per_service_prob_range_mean": _mean_or_zero(per_service_prob_range_means),
             "coverage_margin_coef": float(coverage_margin_coef),
             "quality_margin_coef": float(quality_margin_coef),
+            "ranking_margin_coef": float(ranking_margin_coef),
             "memory_margin_coef": float(memory_margin_coef),
             "positive_logit_margin": float(positive_logit_margin),
             "negative_logit_margin": float(negative_logit_margin),
             "coverage_logit_margin": float(coverage_logit_margin),
-            "quality_temperature": float(quality_temperature),
+            "ranking_logit_margin": float(ranking_logit_margin),
+            "top_quality_tolerance": float(top_quality_tolerance),
             "coverage_pressure_floor": float(coverage_pressure_floor),
         }
 
