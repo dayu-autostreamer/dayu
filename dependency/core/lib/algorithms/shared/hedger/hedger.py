@@ -114,6 +114,7 @@ class HedgerDeploymentOfflineRLCfg:
     min_advantage_weight: float = 0.0
     max_advantage_weight: float = 20.0
     actor_bc_coef: float = 1.0
+    executed_aux_positive_coef: float = 0.20
     negative_bc_coef: float = 0.2
     raw_removed_negative_coef: float = 0.0
     unselected_negative_coef: float = 0.0
@@ -642,6 +643,7 @@ class Hedger:
             min_advantage_weight=max(0.0, float(offline_rl_cfg.get("min_advantage_weight", 0.0))),
             max_advantage_weight=max(1.0, float(offline_rl_cfg.get("max_advantage_weight", 20.0))),
             actor_bc_coef=max(0.0, float(offline_rl_cfg.get("actor_bc_coef", 1.0))),
+            executed_aux_positive_coef=max(0.0, float(offline_rl_cfg.get("executed_aux_positive_coef", 0.20))),
             negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.2))),
             raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.0))),
             unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.0))),
@@ -971,27 +973,32 @@ class Hedger:
             "return_mean", "return_std", "adv_mean", "adv_std",
             "last_value", "done_fraction",
             "policy_loss", "actor_pair_bce_loss",
-            "value_loss", "entropy", "entropy_coef", "value_coef", "approx_kl",
+            "value_loss", "entropy", "entropy_coef", "executed_aux_positive_coef",
+            "value_coef", "approx_kl",
             "clip_fraction", "ratio_mean", "ratio_std",
             "actor_grad_norm", "critic_grad_norm",
-            "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
+            "aux_positive_loss", "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
             "coverage_margin_loss", "quality_margin_loss", "ranking_margin_loss",
             "memory_margin_loss", "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
-            "positive_pair_weight_sum", "negative_pair_weight_sum",
+            "positive_pair_weight_sum", "aux_positive_pair_weight_sum", "negative_pair_weight_sum",
             "raw_removed_pair_weight_sum", "unselected_negative_pair_weight_sum",
-            "actor_positive_samples", "actor_negative_samples", "actor_raw_removed_samples",
+            "actor_positive_samples", "actor_aux_positive_samples",
+            "actor_negative_samples", "actor_raw_removed_samples",
             "actor_unselected_negative_samples",
             "actor_selected_risky_samples", "actor_selected_low_quality_samples",
             "actor_selected_runtime_risky_samples", "actor_selected_unknown_samples",
             "actor_selected_stale_samples",
             "bad_actor_masked",
-            "positive_logp_mean", "negative_logp_mean", "raw_removed_logp_mean",
+            "positive_logp_mean", "aux_positive_logp_mean",
+            "negative_logp_mean", "raw_removed_logp_mean",
             "unselected_negative_logp_mean",
-            "positive_prob_mean", "negative_prob_mean", "raw_removed_prob_mean",
+            "positive_prob_mean", "aux_positive_prob_mean",
+            "negative_prob_mean", "raw_removed_prob_mean",
             "unselected_negative_prob_mean",
-            "positive_logit_mean", "negative_logit_mean", "raw_removed_logit_mean",
+            "positive_logit_mean", "aux_positive_logit_mean",
+            "negative_logit_mean", "raw_removed_logit_mean",
             "unselected_negative_logit_mean",
             "edge_prob_mean", "edge_prob_std", "edge_logit_mean", "edge_logit_std",
             "pair_centered_logit_std",
@@ -1000,6 +1007,8 @@ class Hedger:
             "expected_edge_count_mean", "expected_edge_count_max",
             "expected_quality_mass_mean", "expected_quality_mass_min",
             "expected_memory_overage_mean", "expected_memory_overage_max",
+            "decoder_target_edge_count_mean", "decoder_target_quality_mass_mean",
+            "decoder_target_prob_mean", "decoder_target_raw_overlap", "decoder_target_objective",
             "top_quality_prob_mean", "non_top_prob_mean",
             "top_quality_logit_mean", "non_top_logit_mean", "top_quality_logit_gap_mean",
             "effective_option_prob_mean", "effective_option_logit_mean",
@@ -1176,6 +1185,22 @@ class Hedger:
             "option_quality_ratio": _matrix_float("option_quality_ratio", 0.65, probability=True),
             "option_quality_tolerance": _matrix_float("option_quality_tolerance", 0.12),
             "option_pressure_floor": _matrix_float("option_pressure_floor", 0.20, probability=True),
+            "decoder_actor_weight": _matrix_float("decoder_actor_weight", 0.55),
+            "decoder_quality_weight": _matrix_float("decoder_quality_weight", 1.25),
+            "decoder_freedom_weight": _matrix_float("decoder_freedom_weight", 1.0),
+            "decoder_inertia_weight": _matrix_float("decoder_inertia_weight", 0.15),
+            "decoder_raw_bonus": _matrix_float("decoder_raw_bonus", 0.05),
+            "decoder_memory_weight": _matrix_float("decoder_memory_weight", 0.45),
+            "decoder_runtime_risk_weight": _matrix_float("decoder_runtime_risk_weight", 0.55),
+            "decoder_unknown_weight": _matrix_float("decoder_unknown_weight", 0.25),
+            "decoder_stale_weight": _matrix_float("decoder_stale_weight", 0.20),
+            "decoder_queue_weight": _matrix_float("decoder_queue_weight", 0.35),
+            "decoder_hotspot_weight": _matrix_float("decoder_hotspot_weight", 0.35),
+            "decoder_change_weight": _matrix_float("decoder_change_weight", 0.10),
+            "decoder_min_gain": _matrix_float("decoder_min_gain", 0.0),
+            "decoder_coverage_gain_floor": _matrix_float("decoder_coverage_gain_floor", -0.05),
+            "decoder_local_swap_passes": max(0, int(matrix_policy.get("decoder_local_swap_passes", 2))),
+            "decoder_local_swap_min_gain": max(0.0, _matrix_float("decoder_local_swap_min_gain", 0.02)),
             "ppo": ppo,
         }
 
@@ -2492,6 +2517,20 @@ class Hedger:
         }
 
     @staticmethod
+    def _actor_debug_scalar_value(
+            actor_debug: Optional[Dict[str, Any]],
+            key: str,
+    ) -> float:
+        if not isinstance(actor_debug, dict):
+            return 0.0
+        value = actor_debug.get(key)
+        if isinstance(value, torch.Tensor) and value.numel() == 1:
+            return float(value.detach().float().cpu().item())
+        if isinstance(value, (int, float)):
+            return float(value)
+        return 0.0
+
+    @staticmethod
     def _actor_debug_matrix_value(
             actor_debug: Optional[Dict[str, Any]],
             key: str,
@@ -2804,6 +2843,8 @@ class Hedger:
             "expected_edge_count_max", "expected_quality_mass_mean",
             "expected_quality_mass_min", "expected_memory_overage_mean",
             "expected_memory_overage_max",
+            "decoder_target_edge_count_mean", "decoder_target_quality_mass_mean",
+            "decoder_target_prob_mean", "decoder_target_raw_overlap", "decoder_target_objective",
             "top_quality_prob_mean", "non_top_prob_mean",
             "top_quality_logit_mean", "non_top_logit_mean", "top_quality_logit_gap_mean",
             "effective_option_prob_mean", "effective_option_logit_mean",
@@ -2834,7 +2875,12 @@ class Hedger:
             "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
             "negative_stale_threshold", "positive_quality_threshold",
-            "queue_normalizer", "loaded_checkpoint",
+            "queue_normalizer",
+            "decoder_actor_weight", "decoder_quality_weight", "decoder_freedom_weight",
+            "decoder_memory_weight", "decoder_runtime_risk_weight",
+            "decoder_unknown_weight", "decoder_stale_weight", "decoder_min_gain",
+            "decoder_local_swap_passes",
+            "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
             insert_at = fieldnames.index("latency_guard_active")
@@ -2961,6 +3007,10 @@ class Hedger:
                 "deployment_runtime_stale_risk", "deployment_runtime_relative_weakness",
                 "deployment_policy_probs", "deployment_raw_mode_nodes",
                 "deployment_decoded_nodes", "deployment_positive_mask", "deployment_negative_mask",
+                "deployment_decoder_target_nodes", "deployment_decoder_utility",
+                "deployment_decoder_marginal_gain", "deployment_decoder_quality_mass",
+                "deployment_decoder_device_mem_used", "deployment_decoder_device_count",
+                "deployment_decoder_objective",
                 "deployment_effective_option_mask", "deployment_top_quality_option_mask",
                 "deployment_risky_option_mask", "deployment_effective_option_floor",
                 "deployment_service_pressure",
@@ -3241,12 +3291,13 @@ class Hedger:
             reason_names = [
                 {
                     1: "bernoulli_sample",
+                    2: "global_decoder_added",
                 }.get(code, "")
                 for code in added_reason_codes
                 if code > 0
             ]
             pruned_reason_names = [
-                {1: "matrix_removed"}.get(code, "")
+                {1: "matrix_removed", 2: "global_decoder_pruned"}.get(code, "")
                 for code in pruned_reason_codes
                 if code > 0
             ]
@@ -3467,6 +3518,33 @@ class Hedger:
                         self._device_names_from_indices(
                             torch.nonzero(decoded_row, as_tuple=False).flatten().tolist()
                         )
+                    ),
+                    "deployment_decoder_target_nodes": self._json_for_record(
+                        self._device_names_from_indices(
+                            torch.nonzero(
+                                actor_debug.get("decoder_target_mask", torch.zeros_like(exec_mask))[service_idx]
+                                .detach().cpu().bool(),
+                                as_tuple=False,
+                            ).flatten().tolist()
+                        ) if isinstance(actor_debug.get("decoder_target_mask"), torch.Tensor) else []
+                    ),
+                    "deployment_decoder_utility": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "decoder_utility", service_idx)
+                    ),
+                    "deployment_decoder_marginal_gain": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "decoder_marginal_gain", service_idx)
+                    ),
+                    "deployment_decoder_quality_mass": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "decoder_quality_mass", service_idx)
+                    ),
+                    "deployment_decoder_device_mem_used": self._json_for_record(
+                        self._actor_debug_device_vector_map(actor_debug, "decoder_device_mem_used")
+                    ),
+                    "deployment_decoder_device_count": self._json_for_record(
+                        self._actor_debug_device_vector_map(actor_debug, "decoder_device_count")
+                    ),
+                    "deployment_decoder_objective": self._json_for_record(
+                        self._actor_debug_scalar_value(actor_debug, "decoder_objective")
                     ),
                     "deployment_positive_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "positive_mask", service_idx)
@@ -6318,6 +6396,11 @@ class Hedger:
                         expected_quality_mass_min=aux.get("expected_quality_mass_min", 0.0),
                         expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
                         expected_memory_overage_max=aux.get("expected_memory_overage_max", 0.0),
+                        decoder_target_edge_count_mean=aux.get("decoder_target_edge_count_mean", 0.0),
+                        decoder_target_quality_mass_mean=aux.get("decoder_target_quality_mass_mean", 0.0),
+                        decoder_target_prob_mean=aux.get("decoder_target_prob_mean", 0.0),
+                        decoder_target_raw_overlap=aux.get("decoder_target_raw_overlap", 0.0),
+                        decoder_target_objective=aux.get("decoder_target_objective", 0.0),
                         top_quality_prob_mean=aux.get("top_quality_prob_mean", 0.0),
                         effective_option_prob_mean=aux.get("effective_option_prob_mean", 0.0),
                         non_top_prob_mean=aux.get("non_top_prob_mean", 0.0),
@@ -6392,6 +6475,15 @@ class Hedger:
                         negative_stale_threshold=self.deployment_agent_params["negative_stale_threshold"],
                         positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
+                        decoder_actor_weight=self.deployment_agent_params["decoder_actor_weight"],
+                        decoder_quality_weight=self.deployment_agent_params["decoder_quality_weight"],
+                        decoder_freedom_weight=self.deployment_agent_params["decoder_freedom_weight"],
+                        decoder_memory_weight=self.deployment_agent_params["decoder_memory_weight"],
+                        decoder_runtime_risk_weight=self.deployment_agent_params["decoder_runtime_risk_weight"],
+                        decoder_unknown_weight=self.deployment_agent_params["decoder_unknown_weight"],
+                        decoder_stale_weight=self.deployment_agent_params["decoder_stale_weight"],
+                        decoder_min_gain=self.deployment_agent_params["decoder_min_gain"],
+                        decoder_local_swap_passes=self.deployment_agent_params["decoder_local_swap_passes"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
                     if self.record_cfg.actor_snapshot_debug:
@@ -7061,9 +7153,15 @@ class Hedger:
                                 "expected_edge_count_max", "expected_quality_mass_mean",
                                 "expected_quality_mass_min", "expected_memory_overage_mean",
                                 "expected_memory_overage_max",
+                                "decoder_target_edge_count_mean", "decoder_target_quality_mass_mean",
+                                "decoder_target_prob_mean", "decoder_target_raw_overlap",
+                                "decoder_target_objective",
                                 "top_quality_prob_mean", "non_top_prob_mean",
                                 "top_quality_logit_mean", "non_top_logit_mean",
                                 "top_quality_logit_gap_mean",
+                                "effective_option_prob_mean", "effective_option_logit_mean",
+                                "effective_option_logit_gap_mean", "effective_option_candidate_count_mean",
+                                "effective_option_floor_mean",
                                 "top_quality_candidate_count_mean", "non_top_candidate_count_mean",
                                 "quality_gap_top_second_mean",
                                 "per_service_prob_std_mean", "per_service_prob_range_mean",
@@ -7095,6 +7193,10 @@ class Hedger:
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
             "negative_stale_threshold", "positive_quality_threshold",
             "queue_normalizer",
+            "decoder_actor_weight", "decoder_quality_weight", "decoder_freedom_weight",
+            "decoder_memory_weight", "decoder_runtime_risk_weight",
+            "decoder_unknown_weight", "decoder_stale_weight", "decoder_min_gain",
+            "decoder_local_swap_passes",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
             "deployment_default_warmup_min_feedback_samples",
@@ -7551,6 +7653,11 @@ class Hedger:
                     expected_quality_mass_min=aux.get("expected_quality_mass_min", 0.0),
                     expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
                     expected_memory_overage_max=aux.get("expected_memory_overage_max", 0.0),
+                    decoder_target_edge_count_mean=aux.get("decoder_target_edge_count_mean", 0.0),
+                    decoder_target_quality_mass_mean=aux.get("decoder_target_quality_mass_mean", 0.0),
+                    decoder_target_prob_mean=aux.get("decoder_target_prob_mean", 0.0),
+                    decoder_target_raw_overlap=aux.get("decoder_target_raw_overlap", 0.0),
+                    decoder_target_objective=aux.get("decoder_target_objective", 0.0),
                     top_quality_prob_mean=aux.get("top_quality_prob_mean", 0.0),
                     effective_option_prob_mean=aux.get("effective_option_prob_mean", 0.0),
                     non_top_prob_mean=aux.get("non_top_prob_mean", 0.0),
@@ -7625,6 +7732,15 @@ class Hedger:
                     negative_stale_threshold=self.deployment_agent_params["negative_stale_threshold"],
                     positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
+                    decoder_actor_weight=self.deployment_agent_params["decoder_actor_weight"],
+                    decoder_quality_weight=self.deployment_agent_params["decoder_quality_weight"],
+                    decoder_freedom_weight=self.deployment_agent_params["decoder_freedom_weight"],
+                    decoder_memory_weight=self.deployment_agent_params["decoder_memory_weight"],
+                    decoder_runtime_risk_weight=self.deployment_agent_params["decoder_runtime_risk_weight"],
+                    decoder_unknown_weight=self.deployment_agent_params["decoder_unknown_weight"],
+                    decoder_stale_weight=self.deployment_agent_params["decoder_stale_weight"],
+                    decoder_min_gain=self.deployment_agent_params["decoder_min_gain"],
+                    decoder_local_swap_passes=self.deployment_agent_params["decoder_local_swap_passes"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
                     deployment_default_warmup_min_feedback_samples=(
@@ -8198,6 +8314,7 @@ class Hedger:
             "min_advantage_weight": cfg.min_advantage_weight,
             "max_advantage_weight": cfg.max_advantage_weight,
             "actor_bc_coef": cfg.actor_bc_coef,
+            "executed_aux_positive_coef": cfg.executed_aux_positive_coef,
             "negative_bc_coef": cfg.negative_bc_coef,
             "raw_removed_negative_coef": cfg.raw_removed_negative_coef,
             "unselected_negative_coef": cfg.unselected_negative_coef,
