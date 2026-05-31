@@ -120,12 +120,14 @@ class HedgerDeploymentOfflineRLCfg:
     value_coef: float = 0.5
     entropy_coef: float = 0.0
     bootstrap_current_value: bool = True
-    plan_cloud_only_coef: float = 0.70
-    plan_quality_coef: float = 0.50
-    plan_memory_coef: float = 0.25
-    plan_edge_count_coef: float = 0.02
-    plan_min_quality_mass: float = 0.35
-    plan_pressure_floor: float = 0.35
+    coverage_margin_coef: float = 0.85
+    quality_margin_coef: float = 0.55
+    memory_margin_coef: float = 0.18
+    positive_logit_margin: float = 0.25
+    negative_logit_margin: float = 0.20
+    coverage_logit_margin: float = 0.20
+    quality_temperature: float = 0.35
+    coverage_pressure_floor: float = 0.35
     offline_replay_ratio: float = 0.5
     online_replay_capacity: int = 512
     online_min_new_transitions: int = 1
@@ -643,12 +645,17 @@ class Hedger:
             value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.5))),
             entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
             bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", True)),
-            plan_cloud_only_coef=max(0.0, float(offline_rl_cfg.get("plan_cloud_only_coef", 0.70))),
-            plan_quality_coef=max(0.0, float(offline_rl_cfg.get("plan_quality_coef", 0.50))),
-            plan_memory_coef=max(0.0, float(offline_rl_cfg.get("plan_memory_coef", 0.25))),
-            plan_edge_count_coef=max(0.0, float(offline_rl_cfg.get("plan_edge_count_coef", 0.02))),
-            plan_min_quality_mass=max(0.0, float(offline_rl_cfg.get("plan_min_quality_mass", 0.35))),
-            plan_pressure_floor=min(1.0, max(0.0, float(offline_rl_cfg.get("plan_pressure_floor", 0.35)))),
+            coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.85))),
+            quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.55))),
+            memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.18))),
+            positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 0.25))),
+            negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.20))),
+            coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.20))),
+            quality_temperature=max(1e-3, float(offline_rl_cfg.get("quality_temperature", 0.35))),
+            coverage_pressure_floor=min(
+                1.0,
+                max(0.0, float(offline_rl_cfg.get("coverage_pressure_floor", 0.35))),
+            ),
             offline_replay_ratio=min(1.0, max(0.0, float(offline_rl_cfg.get("offline_replay_ratio", 0.5)))),
             online_replay_capacity=max(1, int(offline_rl_cfg.get("online_replay_capacity", 512))),
             online_min_new_transitions=max(1, int(offline_rl_cfg.get("online_min_new_transitions", 1))),
@@ -959,8 +966,7 @@ class Hedger:
             "clip_fraction", "ratio_mean", "ratio_std",
             "actor_grad_norm", "critic_grad_norm",
             "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
-            "plan_cloud_only_loss", "plan_quality_loss", "plan_memory_loss", "plan_edge_count_loss",
-            "plan_loss",
+            "coverage_margin_loss", "quality_margin_loss", "memory_margin_loss", "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
             "positive_pair_weight_sum", "negative_pair_weight_sum",
@@ -983,8 +989,9 @@ class Hedger:
             "expected_edge_count_mean", "expected_edge_count_max",
             "expected_quality_mass_mean", "expected_quality_mass_min",
             "expected_memory_overage_mean", "expected_memory_overage_max",
-            "plan_cloud_only_coef", "plan_quality_coef", "plan_memory_coef",
-            "plan_edge_count_coef", "plan_min_quality_mass", "plan_pressure_floor",
+            "coverage_margin_coef", "quality_margin_coef", "memory_margin_coef",
+            "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
+            "quality_temperature", "coverage_pressure_floor",
         ]
         if include_offline_batch:
             fieldnames.extend([
@@ -2788,8 +2795,9 @@ class Hedger:
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "hotspot_weight", "runtime_risk_weight", "unknown_option_weight",
             "stale_option_weight", "low_quality_weight",
-            "plan_cloud_only_coef", "plan_quality_coef", "plan_memory_coef",
-            "plan_edge_count_coef", "plan_min_quality_mass", "plan_pressure_floor",
+            "coverage_margin_coef", "quality_margin_coef", "memory_margin_coef",
+            "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
+            "quality_temperature", "coverage_pressure_floor",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
             "edge_memory_budget_ratio", "bernoulli_mode_boundary",
             "negative_queue_threshold", "negative_hotspot_threshold",
@@ -6269,12 +6277,14 @@ class Hedger:
                         unknown_option_weight=self.deployment_agent_params["reward_dep_unknown_option_weight"],
                         stale_option_weight=self.deployment_agent_params["reward_dep_stale_option_weight"],
                         low_quality_weight=self.deployment_agent_params["reward_dep_low_quality_weight"],
-                        plan_cloud_only_coef=offline_rl_record_cfg.plan_cloud_only_coef,
-                        plan_quality_coef=offline_rl_record_cfg.plan_quality_coef,
-                        plan_memory_coef=offline_rl_record_cfg.plan_memory_coef,
-                        plan_edge_count_coef=offline_rl_record_cfg.plan_edge_count_coef,
-                        plan_min_quality_mass=offline_rl_record_cfg.plan_min_quality_mass,
-                        plan_pressure_floor=offline_rl_record_cfg.plan_pressure_floor,
+                        coverage_margin_coef=offline_rl_record_cfg.coverage_margin_coef,
+                        quality_margin_coef=offline_rl_record_cfg.quality_margin_coef,
+                        memory_margin_coef=offline_rl_record_cfg.memory_margin_coef,
+                        positive_logit_margin=offline_rl_record_cfg.positive_logit_margin,
+                        negative_logit_margin=offline_rl_record_cfg.negative_logit_margin,
+                        coverage_logit_margin=offline_rl_record_cfg.coverage_logit_margin,
+                        quality_temperature=offline_rl_record_cfg.quality_temperature,
+                        coverage_pressure_floor=offline_rl_record_cfg.coverage_pressure_floor,
                         latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                         feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
@@ -6976,8 +6986,9 @@ class Hedger:
             "hotspot_weight", "runtime_risk_weight", "unknown_option_weight",
             "stale_option_weight", "low_quality_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
-            "plan_cloud_only_coef", "plan_quality_coef", "plan_memory_coef",
-            "plan_edge_count_coef", "plan_min_quality_mass", "plan_pressure_floor",
+            "coverage_margin_coef", "quality_margin_coef", "memory_margin_coef",
+            "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
+            "quality_temperature", "coverage_pressure_floor",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
             "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
@@ -7474,12 +7485,14 @@ class Hedger:
                     low_quality_weight=self.deployment_agent_params["reward_dep_low_quality_weight"],
                     latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                     feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
-                    plan_cloud_only_coef=self.training_cfg.deployment_offline_rl.plan_cloud_only_coef,
-                    plan_quality_coef=self.training_cfg.deployment_offline_rl.plan_quality_coef,
-                    plan_memory_coef=self.training_cfg.deployment_offline_rl.plan_memory_coef,
-                    plan_edge_count_coef=self.training_cfg.deployment_offline_rl.plan_edge_count_coef,
-                    plan_min_quality_mass=self.training_cfg.deployment_offline_rl.plan_min_quality_mass,
-                    plan_pressure_floor=self.training_cfg.deployment_offline_rl.plan_pressure_floor,
+                    coverage_margin_coef=self.training_cfg.deployment_offline_rl.coverage_margin_coef,
+                    quality_margin_coef=self.training_cfg.deployment_offline_rl.quality_margin_coef,
+                    memory_margin_coef=self.training_cfg.deployment_offline_rl.memory_margin_coef,
+                    positive_logit_margin=self.training_cfg.deployment_offline_rl.positive_logit_margin,
+                    negative_logit_margin=self.training_cfg.deployment_offline_rl.negative_logit_margin,
+                    coverage_logit_margin=self.training_cfg.deployment_offline_rl.coverage_logit_margin,
+                    quality_temperature=self.training_cfg.deployment_offline_rl.quality_temperature,
+                    coverage_pressure_floor=self.training_cfg.deployment_offline_rl.coverage_pressure_floor,
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
                     bernoulli_mode_boundary=0.5,
@@ -8071,12 +8084,14 @@ class Hedger:
             "value_coef": cfg.value_coef,
             "entropy_coef": cfg.entropy_coef,
             "bootstrap_current_value": cfg.bootstrap_current_value,
-            "plan_cloud_only_coef": cfg.plan_cloud_only_coef,
-            "plan_quality_coef": cfg.plan_quality_coef,
-            "plan_memory_coef": cfg.plan_memory_coef,
-            "plan_edge_count_coef": cfg.plan_edge_count_coef,
-            "plan_min_quality_mass": cfg.plan_min_quality_mass,
-            "plan_pressure_floor": cfg.plan_pressure_floor,
+            "coverage_margin_coef": cfg.coverage_margin_coef,
+            "quality_margin_coef": cfg.quality_margin_coef,
+            "memory_margin_coef": cfg.memory_margin_coef,
+            "positive_logit_margin": cfg.positive_logit_margin,
+            "negative_logit_margin": cfg.negative_logit_margin,
+            "coverage_logit_margin": cfg.coverage_logit_margin,
+            "quality_temperature": cfg.quality_temperature,
+            "coverage_pressure_floor": cfg.coverage_pressure_floor,
         }
 
     def _sample_deployment_online_replay_batch(self) -> List[dict]:
