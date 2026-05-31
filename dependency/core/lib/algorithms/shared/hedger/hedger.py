@@ -2802,6 +2802,11 @@ class Hedger:
             fieldnames.insert(insert_at, "state_deployment_actor_snapshot")
         return fieldnames
 
+    def _deployment_offline_rl_record_cfg(self) -> HedgerDeploymentOfflineRLCfg:
+        if self.training_cfg is not None:
+            return self.training_cfg.deployment_offline_rl
+        return HedgerDeploymentOfflineRLCfg()
+
     def _inference_offloading_fieldnames(self) -> List[str]:
         fieldnames = [
             "step", "epoch", "served_deployment_version", "interval_s",
@@ -6113,6 +6118,7 @@ class Hedger:
                 with self._data_lock:
                     active_deployment_plan = copy.deepcopy(self.deployment_plan)
                 if self.dep_recorder is not None:
+                    offline_rl_record_cfg = self._deployment_offline_rl_record_cfg()
                     row = dict(
                         step=step,
                         epoch=self._epoch,
@@ -6263,12 +6269,12 @@ class Hedger:
                         unknown_option_weight=self.deployment_agent_params["reward_dep_unknown_option_weight"],
                         stale_option_weight=self.deployment_agent_params["reward_dep_stale_option_weight"],
                         low_quality_weight=self.deployment_agent_params["reward_dep_low_quality_weight"],
-                        plan_cloud_only_coef=self.training_cfg.deployment_offline_rl.plan_cloud_only_coef,
-                        plan_quality_coef=self.training_cfg.deployment_offline_rl.plan_quality_coef,
-                        plan_memory_coef=self.training_cfg.deployment_offline_rl.plan_memory_coef,
-                        plan_edge_count_coef=self.training_cfg.deployment_offline_rl.plan_edge_count_coef,
-                        plan_min_quality_mass=self.training_cfg.deployment_offline_rl.plan_min_quality_mass,
-                        plan_pressure_floor=self.training_cfg.deployment_offline_rl.plan_pressure_floor,
+                        plan_cloud_only_coef=offline_rl_record_cfg.plan_cloud_only_coef,
+                        plan_quality_coef=offline_rl_record_cfg.plan_quality_coef,
+                        plan_memory_coef=offline_rl_record_cfg.plan_memory_coef,
+                        plan_edge_count_coef=offline_rl_record_cfg.plan_edge_count_coef,
+                        plan_min_quality_mass=offline_rl_record_cfg.plan_min_quality_mass,
+                        plan_pressure_floor=offline_rl_record_cfg.plan_pressure_floor,
                         latency_guard_penalty_weight=self.deployment_agent_params["penalty_latency_guard_trigger"],
                         feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
