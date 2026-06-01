@@ -1462,6 +1462,14 @@ class _DeploymentBackbonePPO(nn.Module):
         has_effective_candidate = option_masks["has_effective_candidate"]
 
         select_prob = torch.sigmoid(select_logits).clamp(1e-6, 1.0 - 1e-6)
+        service_need_logit = policy_ctx.get("service_need_logit")
+        if isinstance(service_need_logit, torch.Tensor) and service_need_logit.dim() == 1 \
+                and service_need_logit.size(0) == num_services:
+            service_need_for_pair = service_need_logit.to(device=device, dtype=dtype).view(num_services, 1)
+            pair_suppression_logits = select_logits - service_need_for_pair + service_need_for_pair.detach()
+        else:
+            pair_suppression_logits = select_logits
+        pair_suppression_prob = torch.sigmoid(pair_suppression_logits).clamp(1e-6, 1.0 - 1e-6)
         edge_prob = torch.where(edge_allowed, select_prob, torch.zeros_like(select_prob))
         has_edge = edge_allowed.any(dim=1)
 
@@ -1502,7 +1510,7 @@ class _DeploymentBackbonePPO(nn.Module):
         ).view(num_services, 1)
         ranking_den = ranking_weights.sum().clamp_min(1.0)
         ranking_margin_loss = (
-            F.softplus(select_logits + float(ranking_logit_margin)) * ranking_weights
+            F.softplus(pair_suppression_logits + float(ranking_logit_margin)) * ranking_weights
         ).sum() / ranking_den
 
         expected_edge_count = edge_prob.sum(dim=1)
@@ -1580,7 +1588,7 @@ class _DeploymentBackbonePPO(nn.Module):
         ).detach()
         non_effective_option_den = non_effective_option_weight.sum().clamp_min(1.0)
         non_effective_option_loss = (
-            edge_prob * non_effective_option_weight
+            pair_suppression_prob * non_effective_option_weight
         ).sum() / non_effective_option_den
         non_effective_option_probs = select_prob.masked_select(non_effective_option_mask)
         non_effective_selection_cost = (
@@ -2538,6 +2546,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         rewards = []
         quality_values = []
         select_logits_for_bce = []
+        pair_negative_logits_for_bce = []
         positive_masks_for_bce = []
         negative_masks_for_bce = []
         aux_positive_masks_for_bce = []
@@ -2576,6 +2585,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         non_effective_option_losses = []
         service_need_losses = []
         cardinality_losses = []
+        service_need_prob_means = []
+        service_activation_target_means = []
         pair_centered_logit_stds = []
         service_no_edge_prob_means = []
         service_no_edge_prob_maxes = []
@@ -2691,6 +2702,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             ).bool()
             raw_removed_probs = policy_aux["policy_prob"].clamp(1e-6, 1.0 - 1e-6)
             raw_removed_logits = policy_aux["select_logit"].to(device=raw_removed_probs.device, dtype=torch.float32)
+            service_logits = policy_aux["service_need_logit"].to(
+                device=raw_removed_logits.device,
+                dtype=torch.float32,
+            )
+            pair_negative_logits = raw_removed_logits - service_logits.view(-1, 1) + service_logits.detach().view(-1, 1)
             positive_mask_t = policy_aux["positive_mask"].to(device=raw_removed_probs.device).bool()
             negative_mask_t = policy_aux["negative_mask"].to(device=raw_removed_probs.device).bool()
             aux_positive_mask_t = aux_positive_mask.to(device=raw_removed_probs.device).bool()
@@ -2699,42 +2715,75 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             if cloud_idx >= 0:
                 edge_allowed_t[:, cloud_idx] = False
             select_logits_for_bce.append(raw_removed_logits)
+            pair_negative_logits_for_bce.append(pair_negative_logits)
             positive_masks_for_bce.append(positive_mask_t.detach())
             negative_masks_for_bce.append(negative_mask_t.detach())
             aux_positive_masks_for_bce.append((aux_positive_mask_t & edge_allowed_t & ~positive_mask_t).detach())
             raw_removed_masks_for_bce.append((raw_removed_mask & edge_allowed_t).detach())
             unselected_negative_masks_for_bce.append((unselected_negative_mask & edge_allowed_t).detach())
 
-            service_logits = policy_aux["service_need_logit"].to(
-                device=raw_removed_logits.device,
-                dtype=torch.float32,
+            option_masks_for_loss = self._deployment_effective_option_masks(
+                policy_aux["static_allowed"],
+                policy_aux,
+                top_quality_tolerance=float(top_quality_tolerance),
+                option_quality_ratio=option_quality_ratio,
+                coverage_pressure_floor=float(coverage_pressure_floor),
             )
-            service_positive = (positive_mask_t | aux_positive_mask_t).any(dim=1)
-            service_negative = negative_mask_t.any(dim=1) & ~service_positive
-            service_label_mask = (service_positive | service_negative) & edge_allowed_t.any(dim=1)
+            service_label_mask = edge_allowed_t.any(dim=1)
             if bool(service_label_mask.any().item()):
-                service_target = service_positive.to(dtype=torch.float32)
+                service_target = (
+                    option_masks_for_loss["has_effective_candidate"].to(
+                        device=raw_removed_logits.device,
+                        dtype=torch.float32,
+                    )
+                )
+                service_weight = torch.maximum(
+                    option_masks_for_loss["pressure_weight"].to(
+                        device=raw_removed_logits.device,
+                        dtype=torch.float32,
+                    ),
+                    torch.full_like(service_target, 0.25),
+                )
                 service_loss = F.binary_cross_entropy_with_logits(
                     service_logits,
                     service_target,
                     reduction="none",
                 )
                 service_need_losses.append(
-                    service_loss.masked_select(service_label_mask).mean()
+                    (service_loss * service_weight).masked_select(service_label_mask).sum()
+                    / service_weight.masked_select(service_label_mask).sum().clamp_min(1.0)
                 )
-                target_count = (positive_mask_t | aux_positive_mask_t).to(dtype=torch.float32).sum(dim=1)
-                expected_count = (raw_removed_probs * edge_allowed_t.to(dtype=torch.float32)).sum(dim=1)
+                effective_mask_f = option_masks_for_loss["effective_option_mask"].to(
+                    device=raw_removed_logits.device,
+                    dtype=torch.float32,
+                )
+                effective_count = effective_mask_f.sum(dim=1)
+                desired_count = torch.minimum(
+                    effective_count,
+                    1.0 + service_weight.clamp(0.0, 1.0) * (effective_count - 1.0).clamp_min(0.0),
+                )
+                expected_count = (raw_removed_probs * effective_mask_f).sum(dim=1)
                 cardinality_losses.append(
-                    F.smooth_l1_loss(
-                        expected_count.masked_select(service_label_mask),
-                        target_count.masked_select(service_label_mask),
-                        reduction="mean",
+                    (
+                        F.smooth_l1_loss(expected_count, desired_count, reduction="none")
+                        * service_weight
+                    ).masked_select(service_label_mask).sum()
+                    / service_weight.masked_select(service_label_mask).sum().clamp_min(1.0)
+                )
+                service_need_prob_means.append(
+                    _scalar_to_float(
+                        torch.sigmoid(service_logits).masked_select(service_label_mask).mean()
                     )
+                )
+                service_activation_target_means.append(
+                    _scalar_to_float(service_target.masked_select(service_label_mask).mean())
                 )
             else:
                 zero_loss = raw_removed_logits.sum() * 0.0
                 service_need_losses.append(zero_loss)
                 cardinality_losses.append(zero_loss)
+                service_need_prob_means.append(0.0)
+                service_activation_target_means.append(0.0)
 
             if bool(raw_removed_mask.any().item()):
                 raw_removed_logp = (
@@ -2921,13 +2970,15 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 weights: torch.Tensor,
                 positive_target: bool,
                 coef: float,
+                logits_list: Optional[List[torch.Tensor]] = None,
         ) -> Tuple[torch.Tensor, torch.Tensor]:
-            if select_logits_for_bce:
-                numerator = select_logits_for_bce[0].sum() * 0.0
+            source_logits = logits_list if logits_list is not None else select_logits_for_bce
+            if source_logits:
+                numerator = source_logits[0].sum() * 0.0
             else:
                 numerator = torch.zeros((), device=device, dtype=torch.float32, requires_grad=True)
             denominator = torch.zeros((), device=device, dtype=torch.float32)
-            for logits, mask, transition_weight in zip(select_logits_for_bce, masks, weights):
+            for logits, mask, transition_weight in zip(source_logits, masks, weights):
                 if not bool(mask.any().item()):
                     continue
                 mask_f = mask.to(device=logits.device, dtype=torch.float32)
@@ -2952,6 +3003,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             negative_weight,
             positive_target=False,
             coef=float(negative_bc_coef),
+            logits_list=pair_negative_logits_for_bce,
         )
         aux_positive_loss, aux_positive_pair_weight_sum = pair_bce_loss(
             aux_positive_masks_for_bce,
@@ -2964,12 +3016,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             raw_removed_weight,
             positive_target=False,
             coef=float(raw_removed_negative_coef),
+            logits_list=pair_negative_logits_for_bce,
         )
         unselected_negative_loss, unselected_negative_pair_weight_sum = pair_bce_loss(
             unselected_negative_masks_for_bce,
             unselected_negative_weight,
             positive_target=False,
             coef=float(unselected_negative_coef),
+            logits_list=pair_negative_logits_for_bce,
         )
         value_loss = F.mse_loss(value_t, target_t)
         entropy = ent_t.mean()
@@ -3052,6 +3106,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "non_effective_option_loss": _scalar_to_float(non_effective_option_loss.detach()),
             "service_need_loss": _scalar_to_float(service_need_loss.detach()),
             "cardinality_loss": _scalar_to_float(cardinality_loss.detach()),
+            "service_need_prob_mean": _mean_or_zero(service_need_prob_means),
+            "service_activation_target_mean": _mean_or_zero(service_activation_target_means),
             "margin_loss": _scalar_to_float(margin_loss.detach()),
             "value_loss": _scalar_to_float(value_loss.detach()),
             "entropy": _scalar_to_float(entropy.detach()),

@@ -990,6 +990,7 @@ class Hedger:
             "coverage_margin_loss", "quality_margin_loss", "ranking_margin_loss",
             "memory_margin_loss", "effective_option_mass_loss", "non_effective_option_loss",
             "service_need_loss", "cardinality_loss",
+            "service_need_prob_mean", "service_activation_target_mean",
             "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
