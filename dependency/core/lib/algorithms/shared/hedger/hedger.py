@@ -129,6 +129,7 @@ class HedgerDeploymentOfflineRLCfg:
     memory_margin_coef: float = 0.18
     effective_option_mass_coef: float = 0.25
     non_effective_option_coef: float = 0.25
+    soft_target_bc_coef: float = 0.85
     positive_logit_margin: float = 0.35
     negative_logit_margin: float = 0.25
     coverage_logit_margin: float = 0.30
@@ -662,6 +663,7 @@ class Hedger:
             memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.18))),
             effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.0))),
             non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.0))),
+            soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.85))),
             positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 0.25))),
             negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.20))),
             coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.20))),
@@ -981,8 +983,9 @@ class Hedger:
             "value_old_mean", "value_old_std", "value_new_mean",
             "return_mean", "return_std", "adv_mean", "adv_std",
             "last_value", "done_fraction",
-            "policy_loss", "actor_pair_bce_loss",
-            "value_loss", "entropy", "entropy_coef", "executed_aux_positive_coef",
+            "policy_loss", "actor_pair_bce_loss", "soft_target_loss",
+            "value_loss", "entropy", "entropy_coef",
+            "executed_aux_positive_coef",
             "value_coef", "approx_kl",
             "clip_fraction", "ratio_mean", "ratio_std",
             "actor_grad_norm", "critic_grad_norm",
@@ -993,7 +996,8 @@ class Hedger:
             "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
-            "positive_pair_weight_sum", "aux_positive_pair_weight_sum", "negative_pair_weight_sum",
+            "positive_pair_weight_sum", "soft_target_pair_weight_sum",
+            "aux_positive_pair_weight_sum", "negative_pair_weight_sum",
             "raw_removed_pair_weight_sum", "unselected_negative_pair_weight_sum",
             "actor_positive_samples", "actor_aux_positive_samples",
             "actor_negative_samples", "actor_raw_removed_samples",
@@ -1028,12 +1032,15 @@ class Hedger:
             "effective_option_prob_mean", "effective_option_logit_mean",
             "effective_option_logit_gap_mean", "effective_option_candidate_count_mean",
             "effective_option_floor_mean",
+            "soft_target_mean", "soft_target_positive_count_mean",
+            "soft_target_weight_mean", "soft_target_gap_mean",
+            "soft_target_positive_prob_mean", "soft_target_negative_prob_mean",
             "contrast_margin_gap_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
-            "effective_option_mass_coef", "non_effective_option_coef",
+            "effective_option_mass_coef", "non_effective_option_coef", "soft_target_bc_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
@@ -1203,6 +1210,12 @@ class Hedger:
             "option_quality_ratio": _matrix_float("option_quality_ratio", 0.65, probability=True),
             "option_quality_tolerance": _matrix_float("option_quality_tolerance", 0.12),
             "option_pressure_floor": _matrix_float("option_pressure_floor", 0.20, probability=True),
+            "soft_target_temperature": _matrix_float("soft_target_temperature", 0.16),
+            "soft_target_pressure_tolerance": _matrix_float("soft_target_pressure_tolerance", 0.18),
+            "soft_target_min": _matrix_float("soft_target_min", 0.04, probability=True),
+            "soft_target_max": _matrix_float("soft_target_max", 0.92, probability=True),
+            "soft_target_unknown_penalty": _matrix_float("soft_target_unknown_penalty", 0.30, probability=True),
+            "soft_target_risk_penalty": _matrix_float("soft_target_risk_penalty", 0.45, probability=True),
             "inertia_logit_bias": _matrix_float("inertia_logit_bias", 0.10),
             "ppo": ppo,
         }
@@ -2902,7 +2915,7 @@ class Hedger:
             "stale_option_weight", "low_quality_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
-            "effective_option_mass_coef", "non_effective_option_coef",
+            "effective_option_mass_coef", "non_effective_option_coef", "soft_target_bc_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
@@ -3039,6 +3052,9 @@ class Hedger:
                 "deployment_runtime_stale_risk", "deployment_runtime_relative_weakness",
                 "deployment_policy_probs", "deployment_raw_mode_nodes",
                 "deployment_positive_mask", "deployment_negative_mask",
+                "deployment_soft_option_target", "deployment_soft_option_target_weight",
+                "deployment_soft_option_positive_mask", "deployment_soft_option_negative_mask",
+                "deployment_soft_option_target_floor", "deployment_soft_option_target_margin",
                 "deployment_effective_option_mask", "deployment_top_quality_option_mask",
                 "deployment_clear_non_effective_option_mask",
                 "deployment_risky_option_mask", "deployment_effective_option_floor",
@@ -3497,6 +3513,24 @@ class Hedger:
                     ),
                     "deployment_negative_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "negative_mask", service_idx)
+                    ),
+                    "deployment_soft_option_target": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "soft_option_target", service_idx)
+                    ),
+                    "deployment_soft_option_target_weight": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "soft_option_target_weight", service_idx)
+                    ),
+                    "deployment_soft_option_positive_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "soft_option_positive_mask", service_idx)
+                    ),
+                    "deployment_soft_option_negative_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "soft_option_negative_mask", service_idx)
+                    ),
+                    "deployment_soft_option_target_floor": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "soft_option_target_floor", service_idx)
+                    ),
+                    "deployment_soft_option_target_margin": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "soft_option_target_margin", service_idx)
                     ),
                     "deployment_effective_option_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "effective_option_mask", service_idx)
@@ -6365,6 +6399,12 @@ class Hedger:
                         non_top_candidate_count_mean=aux.get("non_top_candidate_count_mean", 0.0),
                         quality_gap_top_second_mean=aux.get("quality_gap_top_second_mean", 0.0),
                         effective_option_floor_mean=aux.get("effective_option_floor_mean", 0.0),
+                        soft_target_mean=aux.get("soft_target_mean", 0.0),
+                        soft_target_positive_count_mean=aux.get("soft_target_positive_count_mean", 0.0),
+                        soft_target_weight_mean=aux.get("soft_target_weight_mean", 0.0),
+                        soft_target_gap_mean=aux.get("soft_target_gap_mean", 0.0),
+                        soft_target_positive_prob_mean=aux.get("soft_target_positive_prob_mean", 0.0),
+                        soft_target_negative_prob_mean=aux.get("soft_target_negative_prob_mean", 0.0),
                         contrast_margin_gap_mean=aux.get("contrast_margin_gap_mean", 0.0),
                         per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                         per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
@@ -6409,6 +6449,7 @@ class Hedger:
                         memory_margin_coef=offline_rl_record_cfg.memory_margin_coef,
                         effective_option_mass_coef=offline_rl_record_cfg.effective_option_mass_coef,
                         non_effective_option_coef=offline_rl_record_cfg.non_effective_option_coef,
+                        soft_target_bc_coef=offline_rl_record_cfg.soft_target_bc_coef,
                         positive_logit_margin=offline_rl_record_cfg.positive_logit_margin,
                         negative_logit_margin=offline_rl_record_cfg.negative_logit_margin,
                         coverage_logit_margin=offline_rl_record_cfg.coverage_logit_margin,
@@ -7109,6 +7150,9 @@ class Hedger:
                                 "effective_option_prob_mean", "effective_option_logit_mean",
                                 "effective_option_logit_gap_mean", "effective_option_candidate_count_mean",
                                 "effective_option_floor_mean",
+                                "soft_target_mean", "soft_target_positive_count_mean",
+                                "soft_target_weight_mean", "soft_target_gap_mean",
+                                "soft_target_positive_prob_mean", "soft_target_negative_prob_mean",
                                 "contrast_margin_gap_mean",
                                 "top_quality_candidate_count_mean", "non_top_candidate_count_mean",
                                 "quality_gap_top_second_mean",
@@ -7134,7 +7178,7 @@ class Hedger:
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
-            "effective_option_mass_coef", "non_effective_option_coef",
+            "effective_option_mass_coef", "non_effective_option_coef", "soft_target_bc_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
@@ -7611,6 +7655,12 @@ class Hedger:
                     non_top_candidate_count_mean=aux.get("non_top_candidate_count_mean", 0.0),
                     quality_gap_top_second_mean=aux.get("quality_gap_top_second_mean", 0.0),
                     effective_option_floor_mean=aux.get("effective_option_floor_mean", 0.0),
+                    soft_target_mean=aux.get("soft_target_mean", 0.0),
+                    soft_target_positive_count_mean=aux.get("soft_target_positive_count_mean", 0.0),
+                    soft_target_weight_mean=aux.get("soft_target_weight_mean", 0.0),
+                    soft_target_gap_mean=aux.get("soft_target_gap_mean", 0.0),
+                    soft_target_positive_prob_mean=aux.get("soft_target_positive_prob_mean", 0.0),
+                    soft_target_negative_prob_mean=aux.get("soft_target_negative_prob_mean", 0.0),
                     contrast_margin_gap_mean=aux.get("contrast_margin_gap_mean", 0.0),
                     per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                     per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
@@ -7657,6 +7707,7 @@ class Hedger:
                     memory_margin_coef=self.training_cfg.deployment_offline_rl.memory_margin_coef,
                     effective_option_mass_coef=self.training_cfg.deployment_offline_rl.effective_option_mass_coef,
                     non_effective_option_coef=self.training_cfg.deployment_offline_rl.non_effective_option_coef,
+                    soft_target_bc_coef=self.training_cfg.deployment_offline_rl.soft_target_bc_coef,
                     positive_logit_margin=self.training_cfg.deployment_offline_rl.positive_logit_margin,
                     negative_logit_margin=self.training_cfg.deployment_offline_rl.negative_logit_margin,
                     coverage_logit_margin=self.training_cfg.deployment_offline_rl.coverage_logit_margin,
@@ -8264,6 +8315,7 @@ class Hedger:
             "memory_margin_coef": cfg.memory_margin_coef,
             "effective_option_mass_coef": cfg.effective_option_mass_coef,
             "non_effective_option_coef": cfg.non_effective_option_coef,
+            "soft_target_bc_coef": cfg.soft_target_bc_coef,
             "positive_logit_margin": cfg.positive_logit_margin,
             "negative_logit_margin": cfg.negative_logit_margin,
             "coverage_logit_margin": cfg.coverage_logit_margin,

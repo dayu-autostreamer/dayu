@@ -38,6 +38,15 @@ class DeploymentConstraintCfg:
     option_quality_ratio: float = 0.75
     option_quality_tolerance: float = 0.08
     option_pressure_floor: float = 0.25
+    # Soft offline targets for the direct Bernoulli matrix. These targets are
+    # only used during deployment offline/online learning and debug recording;
+    # deterministic inference still uses the learned logit boundary p=0.5.
+    soft_target_temperature: float = 0.16
+    soft_target_pressure_tolerance: float = 0.18
+    soft_target_min: float = 0.04
+    soft_target_max: float = 0.92
+    soft_target_unknown_penalty: float = 0.30
+    soft_target_risk_penalty: float = 0.45
     inertia_logit_bias: float = 0.06
 
 

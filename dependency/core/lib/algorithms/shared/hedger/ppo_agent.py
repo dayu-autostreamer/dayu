@@ -544,6 +544,42 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.20
         return min(max(value, 0.0), 1.0)
 
+    def _soft_target_temperature(self) -> float:
+        value = float(getattr(self.cfg, "soft_target_temperature", 0.16))
+        if not math.isfinite(value):
+            value = 0.16
+        return max(value, 1e-3)
+
+    def _soft_target_pressure_tolerance(self) -> float:
+        value = float(getattr(self.cfg, "soft_target_pressure_tolerance", 0.18))
+        if not math.isfinite(value):
+            value = 0.18
+        return max(value, 0.0)
+
+    def _soft_target_min(self) -> float:
+        value = float(getattr(self.cfg, "soft_target_min", 0.04))
+        if not math.isfinite(value):
+            value = 0.04
+        return min(max(value, 0.0), 1.0)
+
+    def _soft_target_max(self) -> float:
+        value = float(getattr(self.cfg, "soft_target_max", 0.92))
+        if not math.isfinite(value):
+            value = 0.92
+        return min(max(value, self._soft_target_min()), 1.0)
+
+    def _soft_target_unknown_penalty(self) -> float:
+        value = float(getattr(self.cfg, "soft_target_unknown_penalty", 0.30))
+        if not math.isfinite(value):
+            value = 0.30
+        return min(max(value, 0.0), 1.0)
+
+    def _soft_target_risk_penalty(self) -> float:
+        value = float(getattr(self.cfg, "soft_target_risk_penalty", 0.45))
+        if not math.isfinite(value):
+            value = 0.45
+        return min(max(value, 0.0), 1.0)
+
     def _deployment_inertia_logit_bias(self) -> float:
         value = float(getattr(self.cfg, "inertia_logit_bias", 0.10))
         if not math.isfinite(value):
@@ -1401,6 +1437,139 @@ class _DeploymentBackbonePPO(nn.Module):
             "has_effective_candidate": has_effective_candidate,
         }
 
+    def _deployment_soft_option_targets(
+            self,
+            static_allowed: torch.Tensor,
+            policy_ctx: Dict[str, torch.Tensor],
+            *,
+            selected_mask: Optional[torch.Tensor] = None,
+            raw_selected_mask: Optional[torch.Tensor] = None,
+            quality_bucket: str = "unknown",
+            top_quality_tolerance: Optional[float] = None,
+            option_quality_ratio: Optional[float] = None,
+            coverage_pressure_floor: Optional[float] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Build pressure-aware soft labels for the deployment Bernoulli matrix.
+
+        Inference stays literal: an edge pair is selected when its learned logit
+        is above zero.  Offline learning, however, should not reduce a service's
+        alternatives to a single hard top candidate.  This target gives every
+        sufficiently good service-device pair a continuous target based on its
+        relative quality and the service pressure, while weak/risky/unknown
+        pairs receive explicit pressure to stay below the p=0.5 boundary.
+        """
+        device = static_allowed.device
+        dtype = torch.float32
+        option_masks = self._deployment_effective_option_masks(
+            static_allowed,
+            policy_ctx,
+            top_quality_tolerance=top_quality_tolerance,
+            option_quality_ratio=option_quality_ratio,
+            coverage_pressure_floor=coverage_pressure_floor,
+        )
+        edge_allowed = option_masks["edge_allowed"]
+        pair_quality = option_masks["pair_quality"]
+        best_quality = option_masks["best_quality"]
+        effective_option_mask = option_masks["effective_option_mask"]
+        clear_non_effective_mask = option_masks["clear_non_effective_mask"]
+        risky_option_mask = option_masks["risky_option_mask"]
+        evidence_risky_mask = option_masks["evidence_risky_mask"]
+        pressure_weight = option_masks["pressure_weight"]
+
+        def ctx_matrix(name: str, default: float) -> torch.Tensor:
+            value = policy_ctx.get(name)
+            if isinstance(value, torch.Tensor) and value.shape == static_allowed.shape:
+                return value.to(device=device, dtype=dtype)
+            return torch.full(static_allowed.shape, float(default), device=device, dtype=dtype)
+
+        queue_pressure = ctx_matrix("queue_pressure", 0.0).clamp(0.0, 1.0)
+        runtime_risk = ctx_matrix("runtime_risk_score", 0.0).clamp(0.0, 1.0)
+        runtime_unknown = ctx_matrix("runtime_unknown_risk", 0.0).clamp(0.0, 1.0)
+        runtime_stale = ctx_matrix("runtime_stale_risk", 0.0).clamp(0.0, 1.0)
+        low_quality_gap = ctx_matrix("low_quality_gap", 0.0).clamp(0.0, 1.0)
+        active_hotspot = ctx_matrix("active_pair_hotspot", 0.0).clamp(0.0, 1.0)
+
+        num_services = static_allowed.size(0)
+        quality_threshold = float(self._positive_quality_threshold())
+        tolerance = self._option_quality_tolerance() if top_quality_tolerance is None \
+            else max(0.0, float(top_quality_tolerance))
+        quality_ratio = self._option_quality_ratio() if option_quality_ratio is None \
+            else min(max(0.0, float(option_quality_ratio)), 1.0)
+        pressure_tolerance = float(self._soft_target_pressure_tolerance())
+        temp = float(self._soft_target_temperature())
+        min_target = float(self._soft_target_min())
+        max_target = float(self._soft_target_max())
+
+        pressure_expand = pressure_weight.view(num_services, 1).clamp(0.0, 1.0)
+        near_top_floor = (
+            best_quality
+            - tolerance
+            - pressure_tolerance * pressure_expand.squeeze(1)
+        ).clamp_min(quality_threshold)
+        relative_floor = (best_quality * quality_ratio).clamp_min(quality_threshold)
+        soft_floor = torch.minimum(near_top_floor, relative_floor).view(num_services, 1)
+
+        quality_margin = (pair_quality - soft_floor) / temp
+        raw_target = torch.sigmoid(quality_margin).clamp(0.0, 1.0)
+        target = min_target + (max_target - min_target) * raw_target
+
+        evidence_penalty = self._soft_target_unknown_penalty() * torch.maximum(runtime_unknown, runtime_stale)
+        risk_penalty = self._soft_target_risk_penalty() * torch.clamp(
+            0.45 * runtime_risk
+            + 0.25 * queue_pressure
+            + 0.25 * active_hotspot
+            + 0.20 * low_quality_gap,
+            min=0.0,
+            max=1.0,
+        )
+        target = (target - evidence_penalty - risk_penalty).clamp(min_target, max_target)
+
+        selected = torch.zeros_like(edge_allowed)
+        if isinstance(selected_mask, torch.Tensor) and selected_mask.shape == static_allowed.shape:
+            selected = selected_mask.to(device=device).bool() & edge_allowed
+        raw_selected = selected
+        if isinstance(raw_selected_mask, torch.Tensor) and raw_selected_mask.shape == static_allowed.shape:
+            raw_selected = raw_selected_mask.to(device=device).bool() & edge_allowed
+
+        safe_selected = selected & effective_option_mask & ~evidence_risky_mask & ~risky_option_mask
+        if bool(safe_selected.any().item()):
+            selected_floor = torch.full_like(target, 0.58)
+            target = torch.where(safe_selected, torch.maximum(target, selected_floor), target)
+
+        quality = str(quality_bucket or "unknown").strip().lower()
+        if quality == "bad":
+            selected_risky = selected & (risky_option_mask | evidence_risky_mask | clear_non_effective_mask)
+            target = torch.where(selected_risky, torch.full_like(target, min_target), target * 0.65)
+
+        target = torch.where(edge_allowed, target, torch.zeros_like(target))
+        positive_mask = (target >= 0.50) & edge_allowed
+        negative_mask = (target <= 0.35) & edge_allowed
+        risk_weight = (
+            risky_option_mask.to(dtype=dtype)
+            + evidence_risky_mask.to(dtype=dtype)
+            + clear_non_effective_mask.to(dtype=dtype)
+        ).clamp(0.0, 1.0)
+        target_weight = edge_allowed.to(dtype=dtype) * (
+            0.35
+            + 0.75 * pressure_expand
+            + 0.50 * pair_quality
+            + 0.50 * positive_mask.to(dtype=dtype)
+            + 0.65 * risk_weight
+            + 0.35 * raw_selected.to(dtype=dtype)
+        )
+        if quality == "bad":
+            target_weight = target_weight + selected.to(dtype=dtype) * 0.75
+
+        return {
+            **option_masks,
+            "soft_target": target,
+            "soft_target_weight": target_weight,
+            "soft_target_positive_mask": positive_mask,
+            "soft_target_negative_mask": negative_mask,
+            "soft_target_floor": soft_floor.squeeze(1),
+            "soft_target_margin": quality_margin,
+        }
+
     def _deployment_plan_level_terms(
             self,
             select_logits: torch.Tensor,
@@ -1429,7 +1598,7 @@ class _DeploymentBackbonePPO(nn.Module):
         static_allowed = static_allowed.to(device=device).bool()
         num_services, num_devices = static_allowed.shape
         cloud_idx = self._cloud_index(num_devices)
-        option_masks = self._deployment_effective_option_masks(
+        option_masks = self._deployment_soft_option_targets(
             static_allowed,
             policy_ctx,
             top_quality_tolerance=top_quality_tolerance,
@@ -1445,6 +1614,10 @@ class _DeploymentBackbonePPO(nn.Module):
         risky_option_mask = option_masks["risky_option_mask"]
         pressure_weight = option_masks["pressure_weight"]
         has_effective_candidate = option_masks["has_effective_candidate"]
+        soft_target = option_masks["soft_target"].detach()
+        soft_target_weight = option_masks["soft_target_weight"].detach()
+        soft_target_positive_mask = option_masks["soft_target_positive_mask"]
+        soft_target_negative_mask = option_masks["soft_target_negative_mask"]
 
         select_prob = torch.sigmoid(select_logits).clamp(1e-6, 1.0 - 1e-6)
         pair_suppression_logits = select_logits
@@ -1564,13 +1737,13 @@ class _DeploymentBackbonePPO(nn.Module):
         effective_option_count_all = effective_option_mask.to(dtype=dtype).sum(dim=1)
         effective_option_count = effective_option_count_all.masked_select(has_effective_candidate)
         non_top_count = non_top_mask.float().sum(dim=1).masked_select(has_effective_candidate)
-        effective_option_mass = (edge_prob * effective_option_mask.to(dtype=dtype)).sum(dim=1)
-        desired_effective_option_mass = torch.where(
-            has_effective_candidate,
-            torch.minimum(effective_option_count_all, pressure_weight.clamp(0.0, 1.0) * effective_option_count_all),
-            torch.zeros_like(effective_option_count_all),
-        )
-        effective_option_shortage = F.relu(desired_effective_option_mass - effective_option_mass)
+        effective_option_mass = (edge_prob * soft_target).sum(dim=1)
+        desired_effective_option_mass = (soft_target * edge_allowed.to(dtype=dtype)).sum(dim=1)
+        effective_option_shortage = (
+            F.relu(soft_target - edge_prob)
+            * soft_target_weight
+            * edge_allowed.to(dtype=dtype)
+        ).sum(dim=1) / (soft_target_weight * edge_allowed.to(dtype=dtype)).sum(dim=1).clamp_min(1.0)
         effective_option_mass_loss = (
             effective_option_shortage * coverage_weights.detach()
         ).sum() / coverage_weights.detach().sum().clamp_min(1.0)
@@ -1616,6 +1789,12 @@ class _DeploymentBackbonePPO(nn.Module):
         top_quality_logit = select_logits.masked_select(top_quality_mask)
         non_top_logit = select_logits.masked_select(non_top_mask)
         option_floor_values = option_masks["option_floor"].masked_select(has_effective_candidate)
+        soft_target_values = soft_target.masked_select(edge_allowed)
+        soft_target_weights = soft_target_weight.masked_select(edge_allowed)
+        soft_target_gap = (soft_target - edge_prob).masked_select(edge_allowed)
+        soft_target_positive_count = soft_target_positive_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
+        soft_target_positive_prob = select_prob.masked_select(soft_target_positive_mask)
+        soft_target_negative_prob = select_prob.masked_select(soft_target_negative_mask)
         return {
             "coverage_margin_loss": coverage_margin_loss,
             "quality_margin_loss": quality_margin_loss,
@@ -1690,6 +1869,24 @@ class _DeploymentBackbonePPO(nn.Module):
             ),
             "effective_option_floor_mean": (
                 option_floor_values.mean() if bool(option_floor_values.numel()) else zero
+            ),
+            "soft_target_mean": (
+                soft_target_values.mean() if bool(soft_target_values.numel()) else zero
+            ),
+            "soft_target_positive_count_mean": (
+                soft_target_positive_count.mean() if bool(soft_target_positive_count.numel()) else zero
+            ),
+            "soft_target_weight_mean": (
+                soft_target_weights.mean() if bool(soft_target_weights.numel()) else zero
+            ),
+            "soft_target_gap_mean": (
+                soft_target_gap.mean() if bool(soft_target_gap.numel()) else zero
+            ),
+            "soft_target_positive_prob_mean": (
+                soft_target_positive_prob.mean() if bool(soft_target_positive_prob.numel()) else zero
+            ),
+            "soft_target_negative_prob_mean": (
+                soft_target_negative_prob.mean() if bool(soft_target_negative_prob.numel()) else zero
             ),
             "per_service_prob_std_mean": (
                 per_service_prob_std.mean() if per_service_prob_std is not None else zero
@@ -2070,7 +2267,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             pair_ctx,
             prev_deploy_mask=prev_deploy_mask,
         )
-        option_masks = self._deployment_effective_option_masks(static_allowed, pair_ctx)
+        option_masks = self._deployment_soft_option_targets(
+            static_allowed,
+            pair_ctx,
+            selected_mask=deploy_mask,
+            raw_selected_mask=raw_deploy_mask,
+        )
         plan_metrics = {key: _scalar_to_float(value) for key, value in plan_terms.items()}
         return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {
             "capacity_relax_cnt": capacity_relax_cnt,
@@ -2158,6 +2360,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "clear_non_effective_option_mask": option_masks["clear_non_effective_mask"].detach().cpu(),
                 "risky_option_mask": option_masks["risky_option_mask"].detach().cpu(),
                 "effective_option_floor": option_masks["option_floor"].detach().cpu(),
+                "soft_option_target": option_masks["soft_target"].detach().cpu(),
+                "soft_option_target_weight": option_masks["soft_target_weight"].detach().cpu(),
+                "soft_option_positive_mask": option_masks["soft_target_positive_mask"].detach().cpu(),
+                "soft_option_negative_mask": option_masks["soft_target_negative_mask"].detach().cpu(),
+                "soft_option_target_floor": option_masks["soft_target_floor"].detach().cpu(),
+                "soft_option_target_margin": option_masks["soft_target_margin"].detach().cpu(),
                 "positive_mask": positive_mask.detach().cpu(),
                 "negative_mask": negative_mask.detach().cpu(),
             },
@@ -2528,6 +2736,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             memory_margin_coef: float = 0.18,
             effective_option_mass_coef: float = 0.25,
             non_effective_option_coef: float = 0.25,
+            soft_target_bc_coef: float = 0.85,
             positive_logit_margin: float = 0.30,
             negative_logit_margin: float = 0.25,
             coverage_logit_margin: float = 0.20,
@@ -2567,6 +2776,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality_values = []
         select_logits_for_bce = []
         pair_negative_logits_for_bce = []
+        soft_target_logits_for_bce = []
+        soft_targets_for_bce = []
+        soft_target_weights_for_bce = []
         positive_masks_for_bce = []
         negative_masks_for_bce = []
         aux_positive_masks_for_bce = []
@@ -2590,6 +2802,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         aux_positive_prob_means = []
         raw_removed_prob_means = []
         unselected_negative_prob_means = []
+        soft_target_means = []
+        soft_target_positive_counts = []
+        soft_target_weight_means = []
+        soft_target_gap_means = []
+        soft_target_positive_prob_means = []
+        soft_target_negative_prob_means = []
         positive_logit_means = []
         negative_logit_means = []
         aux_positive_logit_means = []
@@ -2681,6 +2899,16 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     option_quality_ratio=option_quality_ratio,
                     coverage_pressure_floor=float(coverage_pressure_floor),
                 )
+                soft_target_info = self._deployment_soft_option_targets(
+                    probe_aux["static_allowed"].to(device).bool(),
+                    probe_aux,
+                    selected_mask=deploy_mask,
+                    raw_selected_mask=raw_deploy_mask,
+                    quality_bucket=quality_bucket,
+                    top_quality_tolerance=float(top_quality_tolerance),
+                    option_quality_ratio=option_quality_ratio,
+                    coverage_pressure_floor=float(coverage_pressure_floor),
+                )
             _logp, ent, _actor_value, policy_aux = self.evaluate(
                 logic_edge_index,
                 logic_feats,
@@ -2734,6 +2962,15 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 edge_allowed_t[:, cloud_idx] = False
             select_logits_for_bce.append(raw_removed_logits)
             pair_negative_logits_for_bce.append(pair_negative_logits)
+            soft_target_logits_for_bce.append(raw_removed_logits)
+            soft_targets_for_bce.append(soft_target_info["soft_target"].to(
+                device=raw_removed_logits.device,
+                dtype=torch.float32,
+            ).detach())
+            soft_target_weights_for_bce.append(soft_target_info["soft_target_weight"].to(
+                device=raw_removed_logits.device,
+                dtype=torch.float32,
+            ).detach())
             positive_masks_for_bce.append(positive_mask_t.detach())
             negative_masks_for_bce.append(negative_mask_t.detach())
             aux_positive_masks_for_bce.append((aux_positive_mask_t & edge_allowed_t & ~positive_mask_t).detach())
@@ -2876,6 +3113,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             non_top_candidate_count_means.append(_scalar_to_float(plan_terms["non_top_candidate_count_mean"]))
             quality_gap_top_second_means.append(_scalar_to_float(plan_terms["quality_gap_top_second_mean"]))
             effective_option_floor_means.append(_scalar_to_float(plan_terms["effective_option_floor_mean"]))
+            soft_target_means.append(_scalar_to_float(plan_terms["soft_target_mean"]))
+            soft_target_positive_counts.append(_scalar_to_float(plan_terms["soft_target_positive_count_mean"]))
+            soft_target_weight_means.append(_scalar_to_float(plan_terms["soft_target_weight_mean"]))
+            soft_target_gap_means.append(_scalar_to_float(plan_terms["soft_target_gap_mean"]))
+            soft_target_positive_prob_means.append(_scalar_to_float(plan_terms["soft_target_positive_prob_mean"]))
+            soft_target_negative_prob_means.append(_scalar_to_float(plan_terms["soft_target_negative_prob_mean"]))
             contrast_margin_gap_means.append(_scalar_to_float(plan_terms["contrast_margin_gap_mean"]))
             per_service_prob_std_means.append(_scalar_to_float(plan_terms["per_service_prob_std_mean"]))
             per_service_prob_range_means.append(_scalar_to_float(plan_terms["per_service_prob_range_mean"]))
@@ -2923,6 +3166,35 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             torch.zeros_like(bad_mask),
             torch.ones_like(bad_mask),
         )
+        soft_target_weight = torch.where(
+            bad_mask > 0.5,
+            torch.ones_like(bad_mask),
+            awac_weight.clamp_min(0.25),
+        )
+
+        def pair_soft_target_loss() -> Tuple[torch.Tensor, torch.Tensor]:
+            if soft_target_logits_for_bce:
+                numerator = soft_target_logits_for_bce[0].sum() * 0.0
+            else:
+                numerator = torch.zeros((), device=device, dtype=torch.float32, requires_grad=True)
+            denominator = torch.zeros((), device=device, dtype=torch.float32)
+            for logits, target, pair_weight, transition_weight in zip(
+                    soft_target_logits_for_bce,
+                    soft_targets_for_bce,
+                    soft_target_weights_for_bce,
+                    soft_target_weight,
+            ):
+                pair_loss = F.binary_cross_entropy_with_logits(
+                    logits,
+                    target.to(device=logits.device, dtype=torch.float32),
+                    reduction="none",
+                )
+                weight = pair_weight.to(device=logits.device, dtype=torch.float32) \
+                    * transition_weight.to(device=logits.device, dtype=torch.float32)
+                numerator = numerator + (pair_loss * weight).sum()
+                denominator = denominator + weight.sum()
+            loss = numerator / denominator.clamp_min(1.0)
+            return loss * float(soft_target_bc_coef), denominator.detach()
 
         def pair_bce_loss(
                 masks: List[torch.Tensor],
@@ -2951,6 +3223,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             loss = numerator / denominator.clamp_min(1.0)
             return loss * float(coef), denominator.detach()
 
+        soft_target_loss, soft_target_pair_weight_sum = pair_soft_target_loss()
         actor_loss, positive_pair_weight_sum = pair_bce_loss(
             positive_masks_for_bce,
             positive_weight,
@@ -2988,7 +3261,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         entropy = ent_t.mean()
         critic_loss = float(value_coef) * value_loss
         actor_pair_bce_loss = (
-            actor_loss
+            soft_target_loss
+            + actor_loss
             + aux_positive_loss
             + negative_loss
             + raw_removed_negative_loss
@@ -3051,6 +3325,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "done_fraction": _mean_or_zero([1.0 if bool(tr.get("done", False)) else 0.0 for tr in batch]),
             "policy_loss": _scalar_to_float(actor_objective_loss.detach()),
             "actor_pair_bce_loss": _scalar_to_float(actor_pair_bce_loss.detach()),
+            "soft_target_loss": _scalar_to_float(soft_target_loss.detach()),
             "aux_positive_loss": _scalar_to_float(aux_positive_loss.detach()),
             "negative_loss": _scalar_to_float(negative_loss.detach()),
             "raw_removed_negative_loss": _scalar_to_float(raw_removed_negative_loss.detach()),
@@ -3066,6 +3341,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "value_loss": _scalar_to_float(value_loss.detach()),
             "entropy": _scalar_to_float(entropy.detach()),
             "entropy_coef": float(entropy_coef),
+            "soft_target_bc_coef": float(soft_target_bc_coef),
             "executed_aux_positive_coef": float(executed_aux_positive_coef),
             "value_coef": float(value_coef),
             "approx_kl": 0.0,
@@ -3081,6 +3357,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 unselected_negative_weight.detach().mean()
             ),
             "positive_pair_weight_sum": _scalar_to_float(positive_pair_weight_sum),
+            "soft_target_pair_weight_sum": _scalar_to_float(soft_target_pair_weight_sum),
             "aux_positive_pair_weight_sum": _scalar_to_float(aux_positive_pair_weight_sum),
             "negative_pair_weight_sum": _scalar_to_float(negative_pair_weight_sum),
             "raw_removed_pair_weight_sum": _scalar_to_float(raw_removed_pair_weight_sum),
@@ -3111,6 +3388,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "negative_prob_mean": _mean_or_zero(negative_prob_means),
             "raw_removed_prob_mean": _mean_or_zero(raw_removed_prob_means),
             "unselected_negative_prob_mean": _mean_or_zero(unselected_negative_prob_means),
+            "soft_target_mean": _mean_or_zero(soft_target_means),
+            "soft_target_positive_count_mean": _mean_or_zero(soft_target_positive_counts),
+            "soft_target_weight_mean": _mean_or_zero(soft_target_weight_means),
+            "soft_target_gap_mean": _mean_or_zero(soft_target_gap_means),
+            "soft_target_positive_prob_mean": _mean_or_zero(soft_target_positive_prob_means),
+            "soft_target_negative_prob_mean": _mean_or_zero(soft_target_negative_prob_means),
             "positive_logit_mean": _mean_or_zero(positive_logit_means),
             "aux_positive_logit_mean": _mean_or_zero(aux_positive_logit_means),
             "negative_logit_mean": _mean_or_zero(negative_logit_means),
