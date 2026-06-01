@@ -2501,9 +2501,38 @@ class Hedger:
         if value.dim() != 2 or service_idx < 0 or service_idx >= value.size(0):
             return {}
         return {
-            self._device_name(device_idx): float(value[service_idx, device_idx].item())
+            self._actor_debug_column_name(device_idx): float(value[service_idx, device_idx].item())
             for device_idx in range(value.size(1))
         }
+
+    def _actor_debug_column_name(self, column_idx: int) -> str:
+        if self.physical_topology is not None:
+            try:
+                if 0 <= int(column_idx) < len(self.physical_topology):
+                    return self._device_name(int(column_idx))
+            except Exception:
+                pass
+        return f"col_{int(column_idx)}"
+
+    @staticmethod
+    def _actor_debug_service_feature_map(
+            actor_debug: Optional[Dict[str, Any]],
+            key: str,
+            service_idx: int,
+            names: Optional[List[str]] = None,
+    ) -> Dict[str, float]:
+        if not isinstance(actor_debug, dict):
+            return {}
+        value = actor_debug.get(key)
+        if not isinstance(value, torch.Tensor) or value.numel() == 0:
+            return {}
+        value = value.detach().float().cpu()
+        if value.dim() != 2 or service_idx < 0 or service_idx >= value.size(0):
+            return {}
+        row = [float(item) for item in value[service_idx].tolist()]
+        if names and len(names) == len(row):
+            return dict(zip(names, row))
+        return {f"feature_{idx}": item for idx, item in enumerate(row)}
 
     @staticmethod
     def _actor_debug_vector_value(
@@ -3452,7 +3481,12 @@ class Hedger:
                         self._actor_debug_row_map(actor_debug, "matrix_logit_raw", service_idx)
                     ),
                     "deployment_service_context_features": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "service_context_feature", service_idx)
+                        self._actor_debug_service_feature_map(
+                            actor_debug,
+                            "service_context_feature",
+                            service_idx,
+                            DEPLOYMENT_SERVICE_CONTEXT_FEATURE_NAMES,
+                        )
                     ),
                     "deployment_pair_rank_logits": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_rank_logit_raw", service_idx)
@@ -3608,6 +3642,15 @@ class Hedger:
                     ),
                 })
             self.dep_decision_recorder.log_dict(row)
+
+    def _safe_log_deployment_decisions(self, **kwargs) -> None:
+        try:
+            self._log_deployment_decisions(**kwargs)
+        except Exception as exc:
+            LOGGER.exception(
+                f"[Hedger][Deployment] Decision debug recorder failed; "
+                f"continue control loop: {exc}"
+            )
 
     def _log_offloading_decisions(
             self,
@@ -6528,7 +6571,7 @@ class Hedger:
                     if self.record_cfg.actor_snapshot_debug:
                         row["state_deployment_actor_snapshot"] = self._json_for_record(aux.get("actor_debug"))
                     self.dep_recorder.log_dict(row)
-                self._log_deployment_decisions(
+                self._safe_log_deployment_decisions(
                     step=step,
                     raw_deploy_mask=raw_deploy_mask,
                     exec_deploy_mask=exec_deploy_mask,
@@ -7806,7 +7849,7 @@ class Hedger:
                 if self.record_cfg.actor_snapshot_debug:
                     row["state_deployment_actor_snapshot"] = self._json_for_record(aux.get("actor_debug"))
                 self.dep_recorder.log_dict(row)
-                self._log_deployment_decisions(
+                self._safe_log_deployment_decisions(
                     step=step,
                     raw_deploy_mask=raw_deploy_mask,
                     exec_deploy_mask=exec_deploy_mask,
