@@ -39,6 +39,10 @@ class DeploymentConstraintCfg:
     option_quality_tolerance: float = 0.12
     option_pressure_floor: float = 0.20
     inertia_logit_bias: float = 0.10
+    decoder_service_need_scale: float = 0.65
+    decoder_replica_decay: float = 0.45
+    decoder_min_gain: float = 0.0
+    decoder_stochastic_temperature: float = 0.35
 
 
 class PhysicalTopology:
