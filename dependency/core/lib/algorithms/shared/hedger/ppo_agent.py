@@ -382,33 +382,6 @@ class DeploymentPairRankHead(nn.Module):
         return self.net(candidate_features.float()).squeeze(-1)
 
 
-class DeploymentServiceNeedHead(nn.Module):
-    """Predict whether each service currently needs edge replica capacity."""
-
-    def __init__(self, input_dim: int, hidden_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 1),
-        )
-        last_layer = self.net[-1]
-        nn.init.zeros_(last_layer.weight)
-        nn.init.zeros_(last_layer.bias)
-
-    def forward(self, service_features: torch.Tensor) -> torch.Tensor:
-        if service_features.numel() == 0:
-            return torch.zeros(
-                service_features.shape[:-1],
-                device=service_features.device,
-                dtype=service_features.dtype,
-            )
-        return self.net(service_features.float()).squeeze(-1)
-
-
 class CandidateValueHead(nn.Module):
     """Graph-size agnostic critic over pooled service, device, and candidate states."""
     def __init__(self, input_dim: int, d_model: int):
@@ -461,10 +434,6 @@ class _DeploymentBackbonePPO(nn.Module):
         self.encoder = encoder
         self.actor = DeploymentActor(d_model)
         hidden_dim = max(32, d_model)
-        self.deployment_service_need_head = DeploymentServiceNeedHead(
-            input_dim=len(DEPLOYMENT_SERVICE_CONTEXT_FEATURE_NAMES),
-            hidden_dim=hidden_dim,
-        )
         self.deployment_pair_rank_head = DeploymentPairRankHead(
             input_dim=len(DEPLOYMENT_CANDIDATE_FEATURE_NAMES),
             hidden_dim=hidden_dim,
@@ -486,7 +455,6 @@ class _DeploymentBackbonePPO(nn.Module):
 
     def _rebuild_actor_optimizer(self):
         params_actor = list(self.actor.parameters())
-        params_actor.extend(list(self.deployment_service_need_head.parameters()))
         params_actor.extend(list(self.deployment_pair_rank_head.parameters()))
         if self._update_encoder:
             params_actor.extend(list(self.encoder.parameters()))
@@ -580,30 +548,6 @@ class _DeploymentBackbonePPO(nn.Module):
         value = float(getattr(self.cfg, "inertia_logit_bias", 0.10))
         if not math.isfinite(value):
             value = 0.10
-        return max(0.0, value)
-
-    def _decoder_service_need_scale(self) -> float:
-        value = float(getattr(self.cfg, "decoder_service_need_scale", 0.65))
-        if not math.isfinite(value):
-            value = 0.65
-        return max(0.0, value)
-
-    def _decoder_replica_decay(self) -> float:
-        value = float(getattr(self.cfg, "decoder_replica_decay", 0.45))
-        if not math.isfinite(value):
-            value = 0.45
-        return max(0.0, value)
-
-    def _decoder_min_gain(self) -> float:
-        value = float(getattr(self.cfg, "decoder_min_gain", 0.0))
-        if not math.isfinite(value):
-            value = 0.0
-        return value
-
-    def _decoder_stochastic_temperature(self) -> float:
-        value = float(getattr(self.cfg, "decoder_stochastic_temperature", 0.35))
-        if not math.isfinite(value):
-            value = 0.35
         return max(0.0, value)
 
     def _scale_edge_memory_budget(self, budget: torch.Tensor) -> torch.Tensor:
@@ -1155,18 +1099,17 @@ class _DeploymentBackbonePPO(nn.Module):
             pair_rank_logit_raw - pair_rank_mean,
             torch.zeros_like(pair_rank_logit_raw),
         )
-        service_need_logit = self.deployment_service_need_head(service_features.float())
         if prev_deploy_mask is None:
             current_replica = torch.zeros_like(pair_rank_logit_raw)
         else:
             current_replica = (
                 prev_deploy_mask.to(device=pair_rank_logit_raw.device).bool() & edge_allowed
             ).to(dtype=pair_rank_logit_raw.dtype)
-        # Pair selection is intentionally service-local and centered.  The
-        # service need head expresses how much option mass a service wants, but
-        # it must not shift every pair in that service row above the Bernoulli
-        # boundary.  A budgeted decoder combines pair utility with service need.
-        select_logits_raw = pair_centered_logit + self._deployment_inertia_logit_bias() * current_replica
+        # Deployment is represented directly as a service-device Bernoulli
+        # matrix.  The absolute pair logit is the actor's deployment intent;
+        # deterministic inference selects edge pairs with logit > 0 and the
+        # projection step only repairs hard feasibility constraints.
+        select_logits_raw = pair_rank_logit_raw + self._deployment_inertia_logit_bias() * current_replica
         select_logits = select_logits_raw
         invalid = ~static_allowed.bool()
         select_logits = torch.where(invalid, torch.full_like(select_logits, -20.0), select_logits)
@@ -1181,8 +1124,6 @@ class _DeploymentBackbonePPO(nn.Module):
         pair_ctx["pair_rank_logit_raw"] = pair_rank_logit_raw
         pair_ctx["pair_centered_logit"] = pair_centered_logit
         pair_ctx["pair_utility_logit"] = select_logits
-        pair_ctx["service_need_logit"] = service_need_logit
-        pair_ctx["service_need_prob"] = torch.sigmoid(service_need_logit)
         pair_ctx["centered_score"] = pair_centered_logit
         pair_ctx["select_logit"] = select_logits
         pair_ctx["select_prob"] = torch.sigmoid(select_logits)
@@ -1236,13 +1177,10 @@ class _DeploymentBackbonePPO(nn.Module):
         return deploy_mask
 
     @torch.no_grad()
-    def _decode_budgeted_deployment_mask(
+    def _sample_matrix_deployment_mask(
             self,
             select_logits: torch.Tensor,
             static_allowed: torch.Tensor,
-            logic_feats: Dict[str, torch.Tensor],
-            phys_feats: Dict[str, torch.Tensor],
-            service_need_logit: torch.Tensor,
             prev_deploy_mask: Optional[torch.Tensor],
             deterministic: bool,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -1257,55 +1195,10 @@ class _DeploymentBackbonePPO(nn.Module):
             prev_edge = prev_deploy_mask.to(device=select_logits.device).bool() & edge_allowed
 
         select_prob = torch.sigmoid(select_logits).clamp(1e-6, 1.0 - 1e-6)
-        service_need_logit = service_need_logit.to(device=select_logits.device, dtype=torch.float32).view(num_services)
-        need_gain = self._decoder_service_need_scale() * service_need_logit
-        base_gain = select_logits + need_gain.view(num_services, 1)
-        if not deterministic and self._decoder_stochastic_temperature() > 0.0:
-            u = torch.rand_like(base_gain).clamp(1e-6, 1.0 - 1e-6)
-            gumbel = -torch.log(-torch.log(u))
-            base_gain = base_gain + self._decoder_stochastic_temperature() * gumbel
-
-        model_mem = logic_feats["model_mem"].to(device=select_logits.device, dtype=torch.float32).view(num_services)
-        residual = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask).to(
-            device=select_logits.device,
-            dtype=torch.float32,
-        )
-        max_edge_replicas = self._max_edge_replicas_per_device()
-        selected_edge = torch.zeros_like(edge_allowed)
-        used_mem = torch.zeros((num_devices,), device=select_logits.device, dtype=torch.float32)
-        used_count = torch.zeros((num_devices,), device=select_logits.device, dtype=torch.float32)
-        service_count = torch.zeros((num_services,), device=select_logits.device, dtype=torch.float32)
-        available = edge_allowed.clone()
-        skipped_memory = 0
-        skipped_count = 0
-        selected_gains: List[float] = []
-        selected_steps = 0
-        min_gain = self._decoder_min_gain()
-        replica_decay = self._decoder_replica_decay()
-
-        while bool(available.any().item()):
-            marginal_gain = base_gain - replica_decay * service_count.view(num_services, 1)
-            marginal_gain = marginal_gain.masked_fill(~available, -1.0e9)
-            flat_idx = int(torch.argmax(marginal_gain).detach().cpu().item())
-            service_idx = flat_idx // num_devices
-            device_idx = flat_idx % num_devices
-            gain = float(marginal_gain[service_idx, device_idx].detach().cpu().item())
-            if gain <= min_gain:
-                break
-            available[service_idx, device_idx] = False
-            mem = model_mem[service_idx]
-            if used_mem[device_idx] + mem > residual[device_idx] + 1e-6:
-                skipped_memory += 1
-                continue
-            if max_edge_replicas is not None and used_count[device_idx] + 1.0 > float(max_edge_replicas):
-                skipped_count += 1
-                continue
-            selected_edge[service_idx, device_idx] = True
-            used_mem[device_idx] = used_mem[device_idx] + mem
-            used_count[device_idx] = used_count[device_idx] + 1.0
-            service_count[service_idx] = service_count[service_idx] + 1.0
-            selected_gains.append(gain)
-            selected_steps += 1
+        if deterministic:
+            selected_edge = (select_logits > 0.0) & edge_allowed
+        else:
+            selected_edge = torch.bernoulli(select_prob).bool() & edge_allowed
 
         deploy_mask = torch.zeros(
             (num_services, num_devices),
@@ -1319,9 +1212,11 @@ class _DeploymentBackbonePPO(nn.Module):
         added_mask = selected_edge & ~prev_edge
         kept_mask = selected_edge & prev_edge
         removed_mask = prev_edge & edge_allowed & ~selected_edge
-        selected_gain_mean = (
-            sum(selected_gains) / len(selected_gains)
-            if selected_gains else 0.0
+        selected_edge_count = selected_edge.float().sum()
+        selected_prob_mean = (
+            select_prob.masked_select(selected_edge).mean()
+            if bool(selected_edge.any().item())
+            else torch.tensor(0.0, device=select_logits.device)
         )
         return deploy_mask, {
             "matrix_added_mask": added_mask,
@@ -1331,15 +1226,9 @@ class _DeploymentBackbonePPO(nn.Module):
             "pre_quality_added_mask": added_mask,
             "pre_quality_kept_mask": kept_mask,
             "select_prob": select_prob,
-            "decoder_base_gain": base_gain,
-            "decoder_selected_edge": selected_edge,
-            "decoder_service_need_logit": service_need_logit,
-            "decoder_service_need_prob": torch.sigmoid(service_need_logit),
-            "decoder_selected_cnt": torch.tensor(float(selected_steps), device=select_logits.device),
-            "decoder_skipped_memory_cnt": torch.tensor(float(skipped_memory), device=select_logits.device),
-            "decoder_skipped_count_cnt": torch.tensor(float(skipped_count), device=select_logits.device),
-            "decoder_selected_gain_mean": torch.tensor(float(selected_gain_mean), device=select_logits.device),
-            "decoder_expected_service_count": service_count,
+            "matrix_raw_selected_edge": selected_edge,
+            "matrix_raw_selected_cnt": selected_edge_count,
+            "matrix_selected_prob_mean": selected_prob_mean,
         }
 
     def _deployment_select_logp_entropy(
@@ -2056,12 +1945,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             pair_ctx["select_logit"] = select_logits
             pair_ctx["select_prob"] = torch.sigmoid(select_logits)
 
-        proposal_deploy_mask, option_debug = self._decode_budgeted_deployment_mask(
+        proposal_deploy_mask, option_debug = self._sample_matrix_deployment_mask(
             select_logits=select_logits,
             static_allowed=static_allowed,
-            logic_feats=logic_feats,
-            phys_feats=phys_feats,
-            service_need_logit=pair_ctx["service_need_logit"],
             prev_deploy_mask=prev_deploy_mask,
             deterministic=deterministic,
         )
@@ -2165,10 +2051,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "matrix_added_cnt": matrix_added_cnt,
             "matrix_kept_cnt": matrix_kept_cnt,
             "matrix_removed_cnt": matrix_removed_cnt,
-            "budgeted_decoder_selected_cnt": _scalar_to_float(option_debug["decoder_selected_cnt"]),
-            "budgeted_decoder_skipped_memory_cnt": _scalar_to_float(option_debug["decoder_skipped_memory_cnt"]),
-            "budgeted_decoder_skipped_count_cnt": _scalar_to_float(option_debug["decoder_skipped_count_cnt"]),
-            "budgeted_decoder_selected_gain_mean": _scalar_to_float(option_debug["decoder_selected_gain_mean"]),
+            "matrix_raw_selected_cnt": _scalar_to_float(option_debug["matrix_raw_selected_cnt"]),
+            "matrix_selected_prob_mean": _scalar_to_float(option_debug["matrix_selected_prob_mean"]),
             **plan_metrics,
             "capacity_removed_mask": capacity_removed_mask,
             "capacity_removed_cnt": int(capacity_removed_mask.detach()[:, :cloud_idx].sum().cpu().item())
@@ -2183,20 +2067,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "matrix_logit_raw": pair_adjustment.detach().cpu(),
                 "service_context_feature": pair_ctx["service_context_feature"].detach().cpu(),
                 "service_context_feature_names": DEPLOYMENT_SERVICE_CONTEXT_FEATURE_NAMES,
-                "service_need_logit": pair_ctx["service_need_logit"].detach().cpu(),
-                "service_need_prob": pair_ctx["service_need_prob"].detach().cpu(),
                 "pair_rank_logit_raw": pair_ctx["pair_rank_logit_raw"].detach().cpu(),
                 "pair_centered_logit": pair_ctx["pair_centered_logit"].detach().cpu(),
                 "base_score": pair_ctx["base_score"].detach().cpu(),
                 "centered_score": pair_ctx["centered_score"].detach().cpu(),
                 "select_logit": select_logits.detach().cpu(),
                 "select_prob": torch.sigmoid(select_logits).detach().cpu(),
-                "budgeted_decoder_gain": option_debug["decoder_base_gain"].detach().cpu(),
-                "budgeted_decoder_selected": option_debug["decoder_selected_edge"].detach().cpu(),
-                "budgeted_decoder_service_need": option_debug["decoder_service_need_prob"].detach().cpu(),
-                "budgeted_decoder_expected_service_count": (
-                    option_debug["decoder_expected_service_count"].detach().cpu()
-                ),
+                "matrix_raw_selected": option_debug["matrix_raw_selected_edge"].detach().cpu(),
                 "static_option_score": pair_ctx["static_option_score"].detach().cpu(),
                 "static_quality_score": pair_ctx["static_quality_score"].detach().cpu(),
                 "observed_quality_score": pair_ctx["observed_quality_score"].detach().cpu(),
@@ -2322,8 +2199,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "negative_mask": negative_mask_t,
                 "pair_rank_logit_raw": pair_ctx["pair_rank_logit_raw"],
                 "pair_centered_logit": pair_ctx["pair_centered_logit"],
-                "service_need_logit": pair_ctx["service_need_logit"],
-                "service_need_prob": pair_ctx["service_need_prob"],
                 "service_pressure": pair_ctx["service_pressure"],
                 "queue_pressure": pair_ctx["queue_pressure"],
                 "active_pair_hotspot": pair_ctx["active_pair_hotspot"],
@@ -2584,8 +2459,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             negative_bc_coef: float = 0.2,
             raw_removed_negative_coef: float = 0.0,
             unselected_negative_coef: float = 0.0,
-            service_need_coef: float = 0.25,
-            cardinality_coef: float = 0.35,
             value_coef: float = 0.5,
             entropy_coef: float = 0.0,
             bootstrap_current_value: bool = True,
@@ -2668,10 +2541,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         memory_margin_losses = []
         effective_option_mass_losses = []
         non_effective_option_losses = []
-        service_need_losses = []
-        cardinality_losses = []
-        service_need_prob_means = []
-        service_activation_target_means = []
         pair_centered_logit_stds = []
         service_no_edge_prob_means = []
         service_no_edge_prob_maxes = []
@@ -2787,10 +2656,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             ).bool()
             raw_removed_probs = policy_aux["policy_prob"].clamp(1e-6, 1.0 - 1e-6)
             raw_removed_logits = policy_aux["select_logit"].to(device=raw_removed_probs.device, dtype=torch.float32)
-            service_logits = policy_aux["service_need_logit"].to(
-                device=raw_removed_logits.device,
-                dtype=torch.float32,
-            )
             pair_negative_logits = raw_removed_logits
             positive_mask_t = policy_aux["positive_mask"].to(device=raw_removed_probs.device).bool()
             negative_mask_t = policy_aux["negative_mask"].to(device=raw_removed_probs.device).bool()
@@ -2806,68 +2671,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             aux_positive_masks_for_bce.append((aux_positive_mask_t & edge_allowed_t & ~positive_mask_t).detach())
             raw_removed_masks_for_bce.append((raw_removed_mask & edge_allowed_t).detach())
             unselected_negative_masks_for_bce.append((unselected_negative_mask & edge_allowed_t).detach())
-
-            option_masks_for_loss = self._deployment_effective_option_masks(
-                policy_aux["static_allowed"],
-                policy_aux,
-                top_quality_tolerance=float(top_quality_tolerance),
-                option_quality_ratio=option_quality_ratio,
-                coverage_pressure_floor=float(coverage_pressure_floor),
-            )
-            service_label_mask = edge_allowed_t.any(dim=1)
-            if bool(service_label_mask.any().item()):
-                has_effective_target = option_masks_for_loss["has_effective_candidate"].to(
-                    device=raw_removed_logits.device,
-                    dtype=torch.float32,
-                )
-                service_weight = torch.maximum(
-                    option_masks_for_loss["pressure_weight"].to(
-                        device=raw_removed_logits.device,
-                        dtype=torch.float32,
-                    ),
-                    torch.full_like(has_effective_target, 0.25),
-                )
-                service_target = has_effective_target * service_weight.clamp(0.0, 1.0)
-                service_loss = F.binary_cross_entropy_with_logits(
-                    service_logits,
-                    service_target,
-                    reduction="none",
-                )
-                service_need_losses.append(
-                    (service_loss * service_weight).masked_select(service_label_mask).sum()
-                    / service_weight.masked_select(service_label_mask).sum().clamp_min(1.0)
-                )
-                effective_mask_f = option_masks_for_loss["effective_option_mask"].to(
-                    device=raw_removed_logits.device,
-                    dtype=torch.float32,
-                )
-                effective_count = effective_mask_f.sum(dim=1)
-                desired_count = torch.minimum(
-                    effective_count,
-                    service_weight.clamp(0.0, 1.0) * effective_count,
-                )
-                expected_count = (raw_removed_probs * effective_mask_f).sum(dim=1)
-                cardinality_losses.append(
-                    (
-                        F.smooth_l1_loss(expected_count, desired_count, reduction="none")
-                        * service_weight
-                    ).masked_select(service_label_mask).sum()
-                    / service_weight.masked_select(service_label_mask).sum().clamp_min(1.0)
-                )
-                service_need_prob_means.append(
-                    _scalar_to_float(
-                        torch.sigmoid(service_logits).masked_select(service_label_mask).mean()
-                    )
-                )
-                service_activation_target_means.append(
-                    _scalar_to_float(service_target.masked_select(service_label_mask).mean())
-                )
-            else:
-                zero_loss = raw_removed_logits.sum() * 0.0
-                service_need_losses.append(zero_loss)
-                cardinality_losses.append(zero_loss)
-                service_need_prob_means.append(0.0)
-                service_activation_target_means.append(0.0)
 
             if bool(raw_removed_mask.any().item()):
                 raw_removed_logp = (
@@ -3018,8 +2821,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         memory_margin_loss_t = torch.stack(memory_margin_losses).float()
         effective_option_mass_loss_t = torch.stack(effective_option_mass_losses).float()
         non_effective_option_loss_t = torch.stack(non_effective_option_losses).float()
-        service_need_loss_t = torch.stack(service_need_losses).float()
-        cardinality_loss_t = torch.stack(cardinality_losses).float()
         target_t = torch.tensor(targets, device=device, dtype=torch.float32)
         adv_t = target_t.detach() - value_t.detach()
         temp = max(1e-6, float(advantage_temperature))
@@ -3125,8 +2926,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         memory_margin_loss = memory_margin_loss_t.mean() * float(memory_margin_coef)
         effective_option_mass_loss = effective_option_mass_loss_t.mean() * float(effective_option_mass_coef)
         non_effective_option_loss = non_effective_option_loss_t.mean() * float(non_effective_option_coef)
-        service_need_loss = service_need_loss_t.mean() * float(service_need_coef)
-        cardinality_loss = cardinality_loss_t.mean() * float(cardinality_coef)
         margin_loss = (
             coverage_margin_loss
             + quality_margin_loss
@@ -3134,8 +2933,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             + memory_margin_loss
             + effective_option_mass_loss
             + non_effective_option_loss
-            + service_need_loss
-            + cardinality_loss
         )
         actor_objective_loss = (
             actor_pair_bce_loss
@@ -3188,10 +2985,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "memory_margin_loss": _scalar_to_float(memory_margin_loss.detach()),
             "effective_option_mass_loss": _scalar_to_float(effective_option_mass_loss.detach()),
             "non_effective_option_loss": _scalar_to_float(non_effective_option_loss.detach()),
-            "service_need_loss": _scalar_to_float(service_need_loss.detach()),
-            "cardinality_loss": _scalar_to_float(cardinality_loss.detach()),
-            "service_need_prob_mean": _mean_or_zero(service_need_prob_means),
-            "service_activation_target_mean": _mean_or_zero(service_activation_target_means),
             "margin_loss": _scalar_to_float(margin_loss.detach()),
             "value_loss": _scalar_to_float(value_loss.detach()),
             "entropy": _scalar_to_float(entropy.detach()),
@@ -3287,8 +3080,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "memory_margin_coef": float(memory_margin_coef),
             "effective_option_mass_coef": float(effective_option_mass_coef),
             "non_effective_option_coef": float(non_effective_option_coef),
-            "service_need_coef": float(service_need_coef),
-            "cardinality_coef": float(cardinality_coef),
             "positive_logit_margin": float(positive_logit_margin),
             "negative_logit_margin": float(negative_logit_margin),
             "coverage_logit_margin": float(coverage_logit_margin),
@@ -3298,10 +3089,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "option_quality_ratio": (
                 self._option_quality_ratio() if option_quality_ratio is None else float(option_quality_ratio)
             ),
-            "decoder_service_need_scale": self._decoder_service_need_scale(),
-            "decoder_replica_decay": self._decoder_replica_decay(),
-            "decoder_min_gain": self._decoder_min_gain(),
-            "decoder_stochastic_temperature": self._decoder_stochastic_temperature(),
         }
 
 

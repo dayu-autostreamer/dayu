@@ -21,7 +21,7 @@ class DeploymentConstraintCfg:
     max_edge_replicas_per_device: Optional[int] = None
     # Fraction of computed available edge memory used as deployment budget.
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
-    edge_memory_budget_ratio: float = 1.0
+    edge_memory_budget_ratio: float = 0.65
     # Direct matrix deployment policy. The actor scores service-device edge
     # candidates and deterministic inference selects edge pairs whose learned
     # logit is above zero. Projection only repairs hard feasibility.
@@ -31,18 +31,14 @@ class DeploymentConstraintCfg:
     negative_runtime_risk_threshold: float = 0.50
     negative_unknown_threshold: float = 0.50
     negative_stale_threshold: float = 0.85
-    positive_quality_threshold: float = 0.20
+    positive_quality_threshold: float = 0.30
     # Effective-option labels used by deployment offline calibration.  They
     # define which feasible edge pairs are trained as useful alternatives, not
     # an inference-time rule that adds replicas.
-    option_quality_ratio: float = 0.65
-    option_quality_tolerance: float = 0.12
-    option_pressure_floor: float = 0.20
-    inertia_logit_bias: float = 0.10
-    decoder_service_need_scale: float = 0.65
-    decoder_replica_decay: float = 0.45
-    decoder_min_gain: float = 0.0
-    decoder_stochastic_temperature: float = 0.35
+    option_quality_ratio: float = 0.75
+    option_quality_tolerance: float = 0.08
+    option_pressure_floor: float = 0.25
+    inertia_logit_bias: float = 0.06
 
 
 class PhysicalTopology:

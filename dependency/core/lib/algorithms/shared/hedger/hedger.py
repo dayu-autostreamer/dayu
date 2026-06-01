@@ -113,30 +113,28 @@ class HedgerDeploymentOfflineRLCfg:
     action_target: str = "executed"
     advantage_temperature: float = 1.0
     min_advantage_weight: float = 0.0
-    max_advantage_weight: float = 20.0
-    actor_bc_coef: float = 1.0
-    executed_aux_positive_coef: float = 0.20
-    negative_bc_coef: float = 0.2
-    raw_removed_negative_coef: float = 0.0
-    unselected_negative_coef: float = 0.0
-    service_need_coef: float = 0.25
-    cardinality_coef: float = 0.35
+    max_advantage_weight: float = 16.0
+    actor_bc_coef: float = 0.75
+    executed_aux_positive_coef: float = 0.08
+    negative_bc_coef: float = 0.40
+    raw_removed_negative_coef: float = 0.40
+    unselected_negative_coef: float = 0.06
     value_coef: float = 0.5
-    entropy_coef: float = 0.0
+    entropy_coef: float = 0.00008
     bootstrap_current_value: bool = True
-    coverage_margin_coef: float = 0.85
-    quality_margin_coef: float = 0.55
+    coverage_margin_coef: float = 0.35
+    quality_margin_coef: float = 0.45
     ranking_margin_coef: float = 0.45
     memory_margin_coef: float = 0.18
     effective_option_mass_coef: float = 0.25
     non_effective_option_coef: float = 0.25
-    positive_logit_margin: float = 0.30
+    positive_logit_margin: float = 0.35
     negative_logit_margin: float = 0.25
-    coverage_logit_margin: float = 0.20
-    ranking_logit_margin: float = 0.15
-    top_quality_tolerance: float = 0.05
-    coverage_pressure_floor: float = 0.35
-    option_quality_ratio: float = 0.65
+    coverage_logit_margin: float = 0.30
+    ranking_logit_margin: float = 0.20
+    top_quality_tolerance: float = 0.08
+    coverage_pressure_floor: float = 0.25
+    option_quality_ratio: float = 0.75
     offline_replay_ratio: float = 0.5
     online_replay_capacity: int = 512
     online_min_new_transitions: int = 1
@@ -652,8 +650,6 @@ class Hedger:
             negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.2))),
             raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.0))),
             unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.0))),
-            service_need_coef=max(0.0, float(offline_rl_cfg.get("service_need_coef", 0.35))),
-            cardinality_coef=max(0.0, float(offline_rl_cfg.get("cardinality_coef", 0.15))),
             value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.5))),
             entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
             bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", True)),
@@ -989,8 +985,6 @@ class Hedger:
             "aux_positive_loss", "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
             "coverage_margin_loss", "quality_margin_loss", "ranking_margin_loss",
             "memory_margin_loss", "effective_option_mass_loss", "non_effective_option_loss",
-            "service_need_loss", "cardinality_loss",
-            "service_need_prob_mean", "service_activation_target_mean",
             "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
@@ -1031,12 +1025,9 @@ class Hedger:
             "per_service_prob_std_mean", "per_service_prob_range_mean",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef",
-            "service_need_coef", "cardinality_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
-            "decoder_service_need_scale", "decoder_replica_decay",
-            "decoder_min_gain", "decoder_stochastic_temperature",
         ]
         if include_offline_batch:
             fieldnames.extend([
@@ -1203,10 +1194,6 @@ class Hedger:
             "option_quality_tolerance": _matrix_float("option_quality_tolerance", 0.12),
             "option_pressure_floor": _matrix_float("option_pressure_floor", 0.20, probability=True),
             "inertia_logit_bias": _matrix_float("inertia_logit_bias", 0.10),
-            "decoder_service_need_scale": _matrix_float("decoder_service_need_scale", 0.65),
-            "decoder_replica_decay": _matrix_float("decoder_replica_decay", 0.45),
-            "decoder_min_gain": _matrix_float("decoder_min_gain", 0.0),
-            "decoder_stochastic_temperature": _matrix_float("decoder_stochastic_temperature", 0.35),
             "ppo": ppo,
         }
 
@@ -2869,8 +2856,7 @@ class Hedger:
             "value_estimate", "raw_edge_replicas", "edge_replicas", "cloud_replicas",
             "raw_zero_edge_services",
             "matrix_added_cnt", "matrix_kept_cnt", "matrix_removed_cnt",
-            "budgeted_decoder_selected_cnt", "budgeted_decoder_skipped_memory_cnt",
-            "budgeted_decoder_skipped_count_cnt", "budgeted_decoder_selected_gain_mean",
+            "matrix_raw_selected_cnt", "matrix_selected_prob_mean",
             "edge_policy_prob_mean", "edge_policy_prob_std",
             "edge_policy_logit_mean", "edge_policy_logit_std",
             "pair_centered_logit_std",
@@ -2905,7 +2891,6 @@ class Hedger:
             "stale_option_weight", "low_quality_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef",
-            "service_need_coef", "cardinality_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
@@ -2914,9 +2899,7 @@ class Hedger:
             "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
             "negative_stale_threshold", "positive_quality_threshold",
-            "queue_normalizer", "decoder_service_need_scale",
-            "decoder_replica_decay", "decoder_min_gain",
-            "decoder_stochastic_temperature",
+            "queue_normalizer",
             "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -3028,13 +3011,10 @@ class Hedger:
             fieldnames.extend([
                 "deployment_qk_scores", "deployment_qk_features",
                 "deployment_matrix_logits_raw", "deployment_service_context_features",
-                "deployment_service_need_logits", "deployment_service_need_probs",
                 "deployment_pair_rank_logits", "deployment_pair_centered_logits",
                 "deployment_base_scores", "deployment_centered_scores",
                 "deployment_final_scores", "deployment_select_logits",
-                "deployment_select_probs", "deployment_budgeted_decoder_gain",
-                "deployment_budgeted_decoder_selected", "deployment_budgeted_decoder_service_need",
-                "deployment_budgeted_decoder_expected_service_count",
+                "deployment_select_probs", "deployment_matrix_raw_selected",
                 "deployment_static_option_score", "deployment_static_quality_score",
                 "deployment_observed_quality_score", "deployment_runtime_risk_score",
                 "deployment_pair_quality", "deployment_service_best_pair_quality",
@@ -3411,12 +3391,6 @@ class Hedger:
                             service_context_feature_names,
                         )
                     ),
-                    "deployment_service_need_logits": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "service_need_logit", service_idx)
-                    ),
-                    "deployment_service_need_probs": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "service_need_prob", service_idx)
-                    ),
                     "deployment_pair_rank_logits": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_rank_logit_raw", service_idx)
                     ),
@@ -3438,21 +3412,8 @@ class Hedger:
                     "deployment_select_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "select_prob", service_idx)
                     ),
-                    "deployment_budgeted_decoder_gain": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "budgeted_decoder_gain", service_idx)
-                    ),
-                    "deployment_budgeted_decoder_selected": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "budgeted_decoder_selected", service_idx)
-                    ),
-                    "deployment_budgeted_decoder_service_need": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "budgeted_decoder_service_need", service_idx)
-                    ),
-                    "deployment_budgeted_decoder_expected_service_count": self._json_for_record(
-                        self._actor_debug_vector_value(
-                            actor_debug,
-                            "budgeted_decoder_expected_service_count",
-                            service_idx,
-                        )
+                    "deployment_matrix_raw_selected": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "matrix_raw_selected", service_idx)
                     ),
                     "deployment_static_option_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "static_option_score", service_idx)
@@ -6353,16 +6314,8 @@ class Hedger:
                         matrix_added_cnt=aux.get("matrix_added_cnt", 0),
                         matrix_kept_cnt=aux.get("matrix_kept_cnt", 0),
                         matrix_removed_cnt=aux.get("matrix_removed_cnt", 0),
-                        budgeted_decoder_selected_cnt=aux.get("budgeted_decoder_selected_cnt", 0),
-                        budgeted_decoder_skipped_memory_cnt=aux.get(
-                            "budgeted_decoder_skipped_memory_cnt",
-                            0,
-                        ),
-                        budgeted_decoder_skipped_count_cnt=aux.get("budgeted_decoder_skipped_count_cnt", 0),
-                        budgeted_decoder_selected_gain_mean=aux.get(
-                            "budgeted_decoder_selected_gain_mean",
-                            0.0,
-                        ),
+                        matrix_raw_selected_cnt=aux.get("matrix_raw_selected_cnt", 0),
+                        matrix_selected_prob_mean=aux.get("matrix_selected_prob_mean", 0.0),
                         edge_policy_prob_mean=aux.get("edge_policy_prob_mean", 0.0),
                         edge_policy_prob_std=aux.get("edge_policy_prob_std", 0.0),
                         edge_policy_logit_mean=aux.get("edge_policy_logit_mean", 0.0),
@@ -6437,8 +6390,6 @@ class Hedger:
                         memory_margin_coef=offline_rl_record_cfg.memory_margin_coef,
                         effective_option_mass_coef=offline_rl_record_cfg.effective_option_mass_coef,
                         non_effective_option_coef=offline_rl_record_cfg.non_effective_option_coef,
-                        service_need_coef=offline_rl_record_cfg.service_need_coef,
-                        cardinality_coef=offline_rl_record_cfg.cardinality_coef,
                         positive_logit_margin=offline_rl_record_cfg.positive_logit_margin,
                         negative_logit_margin=offline_rl_record_cfg.negative_logit_margin,
                         coverage_logit_margin=offline_rl_record_cfg.coverage_logit_margin,
@@ -6460,12 +6411,6 @@ class Hedger:
                         negative_stale_threshold=self.deployment_agent_params["negative_stale_threshold"],
                         positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
-                        decoder_service_need_scale=self.deployment_agent_params["decoder_service_need_scale"],
-                        decoder_replica_decay=self.deployment_agent_params["decoder_replica_decay"],
-                        decoder_min_gain=self.deployment_agent_params["decoder_min_gain"],
-                        decoder_stochastic_temperature=(
-                            self.deployment_agent_params["decoder_stochastic_temperature"]
-                        ),
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
                     if self.record_cfg.actor_snapshot_debug:
@@ -7126,8 +7071,7 @@ class Hedger:
                                 "raw_edge_replicas", "edge_replicas", "cloud_replicas",
                                 "raw_zero_edge_services",
                                 "matrix_added_cnt", "matrix_kept_cnt", "matrix_removed_cnt",
-                                "budgeted_decoder_selected_cnt", "budgeted_decoder_skipped_memory_cnt",
-                                "budgeted_decoder_skipped_count_cnt", "budgeted_decoder_selected_gain_mean",
+                                "matrix_raw_selected_cnt", "matrix_selected_prob_mean",
                                 "edge_policy_prob_mean", "edge_policy_prob_std",
                                 "edge_policy_logit_mean", "edge_policy_logit_std",
                                 "pair_centered_logit_std",
@@ -7169,7 +7113,6 @@ class Hedger:
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef",
-            "service_need_coef", "cardinality_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
@@ -7177,9 +7120,7 @@ class Hedger:
             "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
             "negative_stale_threshold", "positive_quality_threshold",
-            "queue_normalizer", "decoder_service_need_scale",
-            "decoder_replica_decay", "decoder_min_gain",
-            "decoder_stochastic_temperature",
+            "queue_normalizer",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
             "deployment_default_warmup_min_feedback_samples",
@@ -7613,16 +7554,8 @@ class Hedger:
                     matrix_added_cnt=aux.get("matrix_added_cnt", 0),
                     matrix_kept_cnt=aux.get("matrix_kept_cnt", 0),
                     matrix_removed_cnt=aux.get("matrix_removed_cnt", 0),
-                    budgeted_decoder_selected_cnt=aux.get("budgeted_decoder_selected_cnt", 0),
-                    budgeted_decoder_skipped_memory_cnt=aux.get(
-                        "budgeted_decoder_skipped_memory_cnt",
-                        0,
-                    ),
-                    budgeted_decoder_skipped_count_cnt=aux.get("budgeted_decoder_skipped_count_cnt", 0),
-                    budgeted_decoder_selected_gain_mean=aux.get(
-                        "budgeted_decoder_selected_gain_mean",
-                        0.0,
-                    ),
+                    matrix_raw_selected_cnt=aux.get("matrix_raw_selected_cnt", 0),
+                    matrix_selected_prob_mean=aux.get("matrix_selected_prob_mean", 0.0),
                     edge_policy_prob_mean=aux.get("edge_policy_prob_mean", 0.0),
                     edge_policy_prob_std=aux.get("edge_policy_prob_std", 0.0),
                     edge_policy_logit_mean=aux.get("edge_policy_logit_mean", 0.0),
@@ -7699,8 +7632,6 @@ class Hedger:
                     memory_margin_coef=self.training_cfg.deployment_offline_rl.memory_margin_coef,
                     effective_option_mass_coef=self.training_cfg.deployment_offline_rl.effective_option_mass_coef,
                     non_effective_option_coef=self.training_cfg.deployment_offline_rl.non_effective_option_coef,
-                    service_need_coef=self.training_cfg.deployment_offline_rl.service_need_coef,
-                    cardinality_coef=self.training_cfg.deployment_offline_rl.cardinality_coef,
                     positive_logit_margin=self.training_cfg.deployment_offline_rl.positive_logit_margin,
                     negative_logit_margin=self.training_cfg.deployment_offline_rl.negative_logit_margin,
                     coverage_logit_margin=self.training_cfg.deployment_offline_rl.coverage_logit_margin,
@@ -7720,10 +7651,6 @@ class Hedger:
                     negative_stale_threshold=self.deployment_agent_params["negative_stale_threshold"],
                     positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
-                    decoder_service_need_scale=self.deployment_agent_params["decoder_service_need_scale"],
-                    decoder_replica_decay=self.deployment_agent_params["decoder_replica_decay"],
-                    decoder_min_gain=self.deployment_agent_params["decoder_min_gain"],
-                    decoder_stochastic_temperature=self.deployment_agent_params["decoder_stochastic_temperature"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
                     deployment_default_warmup_min_feedback_samples=(
@@ -8301,8 +8228,6 @@ class Hedger:
             "negative_bc_coef": cfg.negative_bc_coef,
             "raw_removed_negative_coef": cfg.raw_removed_negative_coef,
             "unselected_negative_coef": cfg.unselected_negative_coef,
-            "service_need_coef": cfg.service_need_coef,
-            "cardinality_coef": cfg.cardinality_coef,
             "value_coef": cfg.value_coef,
             "entropy_coef": cfg.entropy_coef,
             "bootstrap_current_value": cfg.bootstrap_current_value,
