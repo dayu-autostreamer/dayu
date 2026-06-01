@@ -22,11 +22,10 @@ class DeploymentConstraintCfg:
     # Fraction of computed available edge memory used as deployment budget.
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
     edge_memory_budget_ratio: float = 1.0
-    # Pair-wise Bernoulli matrix policy. The actor proposes the service-device
-    # edge replica matrix directly; deterministic inference uses the Bernoulli
-    # mode (logit > 0), and projection only corrects memory/count infeasibility.
-    # Unknown/stale runtime evidence is diagnostic only; state quality falls
-    # back to static suitability when fresh runtime evidence is missing.
+    # Matrix deployment policy. The actor scores service-device edge candidates,
+    # while the decoder and offline objective compare complete replica sets
+    # under memory/count feasibility. Unknown/stale runtime evidence is
+    # diagnostic and lowers option quality instead of introducing name rules.
     queue_normalizer: float = 8.0
     negative_queue_threshold: float = 0.65
     negative_hotspot_threshold: float = 0.08
