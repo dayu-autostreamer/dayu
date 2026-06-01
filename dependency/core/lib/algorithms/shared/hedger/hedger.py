@@ -21,6 +21,7 @@ from .ppo_agent import (
     SERVICE_DEMAND_FEATURE_NAMES,
     DEVICE_CAPABILITY_FEATURE_NAMES,
     RUNTIME_PAIR_FEATURE_NAMES,
+    DEPLOYMENT_SERVICE_CONTEXT_FEATURE_NAMES,
 )
 from .hedger_config import from_partial_dict, DeploymentConstraintCfg, LogicalTopology, \
     PhysicalTopology
@@ -3470,6 +3471,9 @@ class Hedger:
                     ),
                 })
             if self.record_cfg.decision_actor_debug:
+                service_context_feature_names = actor_debug.get("service_context_feature_names")
+                if not isinstance(service_context_feature_names, list):
+                    service_context_feature_names = DEPLOYMENT_SERVICE_CONTEXT_FEATURE_NAMES
                 row.update({
                     "deployment_qk_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "qk_score", service_idx)
@@ -3485,7 +3489,7 @@ class Hedger:
                             actor_debug,
                             "service_context_feature",
                             service_idx,
-                            DEPLOYMENT_SERVICE_CONTEXT_FEATURE_NAMES,
+                            service_context_feature_names,
                         )
                     ),
                     "deployment_pair_rank_logits": self._json_for_record(
