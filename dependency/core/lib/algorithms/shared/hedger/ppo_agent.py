@@ -1350,6 +1350,8 @@ class _DeploymentBackbonePPO(nn.Module):
         queue_pressure = ctx_matrix("queue_pressure", 0.0).clamp(0.0, 1.0)
         hotspot = ctx_matrix("active_pair_hotspot", 0.0).clamp(0.0, 1.0)
         runtime_risk = ctx_matrix("runtime_risk_score", 0.0).clamp(0.0, 1.0)
+        runtime_unknown = ctx_matrix("runtime_unknown_risk", 0.0).clamp(0.0, 1.0)
+        runtime_stale = ctx_matrix("runtime_stale_risk", 0.0).clamp(0.0, 1.0)
 
         service_pressure = policy_ctx.get("service_pressure")
         if isinstance(service_pressure, torch.Tensor) and service_pressure.dim() == 1 \
@@ -1371,8 +1373,12 @@ class _DeploymentBackbonePPO(nn.Module):
             | (hotspot >= self._negative_hotspot_threshold())
             | (runtime_risk >= self._negative_runtime_risk_threshold())
         ) & edge_allowed
+        evidence_risky = (
+            (runtime_unknown >= self._negative_unknown_threshold())
+            | (runtime_stale >= self._negative_stale_threshold())
+        ) & edge_allowed
         low_quality = (pair_quality < quality_threshold) & edge_allowed
-        quality_eligible = edge_allowed & ~severe_risky & ~low_quality
+        quality_eligible = edge_allowed & ~severe_risky & ~evidence_risky & ~low_quality
 
         best_quality = pair_quality.masked_fill(~quality_eligible, -1.0).max(dim=1).values
         has_effective_candidate = best_quality >= quality_threshold
@@ -1395,13 +1401,16 @@ class _DeploymentBackbonePPO(nn.Module):
             torch.maximum(service_pressure, torch.full_like(service_pressure, pressure_floor)),
             torch.zeros_like(service_pressure),
         )
-        risky_option_mask = (severe_risky | low_quality) & edge_allowed
+        risky_option_mask = (severe_risky | evidence_risky | low_quality) & edge_allowed
         return {
             "edge_allowed": edge_allowed,
             "pair_quality": pair_quality,
+            "runtime_unknown": runtime_unknown,
+            "runtime_stale": runtime_stale,
             "quality_eligible": quality_eligible,
             "top_quality_mask": top_quality_mask,
             "effective_option_mask": effective_option_mask,
+            "evidence_risky_mask": evidence_risky,
             "risky_option_mask": risky_option_mask,
             "option_floor": option_floor,
             "best_quality": best_quality.clamp_min(0.0),
@@ -1547,8 +1556,36 @@ class _DeploymentBackbonePPO(nn.Module):
         non_top_mask = edge_allowed & ~effective_option_mask & has_effective_candidate.view(num_services, 1)
         non_top_probs = select_prob.masked_select(non_top_mask)
         top_quality_count = top_quality_mask.float().sum(dim=1).masked_select(has_effective_candidate)
-        effective_option_count = effective_option_mask.float().sum(dim=1).masked_select(has_effective_candidate)
+        effective_option_count_all = effective_option_mask.to(dtype=dtype).sum(dim=1)
+        effective_option_count = effective_option_count_all.masked_select(has_effective_candidate)
         non_top_count = non_top_mask.float().sum(dim=1).masked_select(has_effective_candidate)
+        effective_option_mass = (edge_prob * effective_option_mask.to(dtype=dtype)).sum(dim=1)
+        desired_effective_option_mass = torch.where(
+            has_effective_candidate,
+            torch.minimum(
+                effective_option_count_all,
+                1.0 + pressure_weight.clamp(0.0, 1.0) * (effective_option_count_all - 1.0).clamp_min(0.0),
+            ),
+            torch.zeros_like(effective_option_count_all),
+        )
+        effective_option_shortage = F.relu(desired_effective_option_mass - effective_option_mass)
+        effective_option_mass_loss = (
+            effective_option_shortage * coverage_weights.detach()
+        ).sum() / coverage_weights.detach().sum().clamp_min(1.0)
+        non_effective_option_mask = non_top_mask
+        non_effective_option_weight = (
+            non_effective_option_mask.to(dtype=dtype)
+            * torch.maximum(pressure_weight, torch.full_like(pressure_weight, 0.25)).view(num_services, 1)
+            * (0.25 + (1.0 - pair_quality).clamp(0.0, 1.0))
+        ).detach()
+        non_effective_option_den = non_effective_option_weight.sum().clamp_min(1.0)
+        non_effective_option_loss = (
+            edge_prob * non_effective_option_weight
+        ).sum() / non_effective_option_den
+        non_effective_option_probs = select_prob.masked_select(non_effective_option_mask)
+        non_effective_selection_cost = (
+            edge_prob * non_effective_option_weight
+        ).sum() / non_effective_option_den
         service_quality_gap = policy_ctx.get("service_quality_gap_top_second")
         if isinstance(service_quality_gap, torch.Tensor):
             service_quality_gap = service_quality_gap.to(device=device, dtype=dtype).masked_select(has_effective_candidate)
@@ -1582,6 +1619,8 @@ class _DeploymentBackbonePPO(nn.Module):
             "quality_margin_loss": quality_margin_loss,
             "ranking_margin_loss": ranking_margin_loss,
             "memory_margin_loss": memory_loss,
+            "effective_option_mass_loss": effective_option_mass_loss,
+            "non_effective_option_loss": non_effective_option_loss,
             "pair_centered_logit_std": pair_centered_logit_std,
             "edge_policy_prob_mean": edge_prob_mean,
             "edge_policy_prob_std": edge_prob_std,
@@ -1594,6 +1633,22 @@ class _DeploymentBackbonePPO(nn.Module):
             "expected_edge_count_max": feasible_edge_count.max() if feasible_edge_count is not None else zero,
             "expected_quality_mass_mean": feasible_quality.mean() if feasible_quality is not None else zero,
             "expected_quality_mass_min": feasible_quality.min() if feasible_quality is not None else zero,
+            "effective_option_mass_mean": (
+                effective_option_mass.masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "desired_effective_option_mass_mean": (
+                desired_effective_option_mass.masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "effective_option_shortage_mean": (
+                effective_option_shortage.masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "non_effective_option_prob_mean": (
+                non_effective_option_probs.mean() if non_effective_option_probs.numel() > 0 else zero
+            ),
+            "non_effective_selection_cost": non_effective_selection_cost,
             "expected_memory_overage_mean": memory_overage_mean,
             "expected_memory_overage_max": memory_overage_max,
             "top_quality_prob_mean": top_quality_probs.mean() if bool(top_quality_probs.numel()) else zero,
@@ -1780,6 +1835,8 @@ class _DeploymentBackbonePPO(nn.Module):
             executed_edge
             * (
                 (runtime_risk_score[:, edge_slice] >= self._negative_runtime_risk_threshold())
+                | (runtime_unknown_risk[:, edge_slice] >= self._negative_unknown_threshold())
+                | (runtime_stale_risk[:, edge_slice] >= self._negative_stale_threshold())
                 | (pair_quality[:, edge_slice] < self._positive_quality_threshold())
             ).float()
         ).sum() if cloud_idx > 0 else torch.zeros((), device=corrected.device)
@@ -2382,7 +2439,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         stale_risky = runtime_stale >= self._negative_stale_threshold()
         low_quality = pair_quality < self._positive_quality_threshold()
         severe_risky = (queue_risky | hotspot_risky | runtime_risky) & edge_allowed
-        diagnostic_risky = (severe_risky | low_quality) & edge_allowed
+        evidence_risky = (unknown_risky | stale_risky) & edge_allowed
+        diagnostic_risky = (severe_risky | evidence_risky | low_quality) & edge_allowed
         option_masks = self._deployment_effective_option_masks(
             static_allowed,
             policy_aux,
@@ -2393,7 +2451,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality_eligible = option_masks["quality_eligible"]
         effective_option_mask = option_masks["effective_option_mask"]
         raw_removed = raw_selected & ~selected
-        selected_safe = selected & quality_eligible
+        selected_safe = selected & quality_eligible & ~evidence_risky
         debug_counts = {
             "actor_selected_risky_samples": float((selected & diagnostic_risky).float().sum().detach().cpu().item()),
             "actor_selected_low_quality_samples": float((selected & low_quality & edge_allowed).float().sum().detach().cpu().item()),
@@ -2409,7 +2467,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         aux_positive_mask = torch.zeros_like(selected)
         if quality != "bad":
             aux_positive_mask = selected_safe & ~positive_mask
-        negative_mask = (selected & (severe_risky | low_quality) & ~positive_mask) & edge_allowed
+        negative_mask = (selected & (severe_risky | evidence_risky | low_quality) & ~positive_mask) & edge_allowed
         if quality == "bad":
             negative_mask = negative_mask | (selected & edge_allowed)
         unselected_negative_mask = (
@@ -2442,6 +2500,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             quality_margin_coef: float = 0.55,
             ranking_margin_coef: float = 0.45,
             memory_margin_coef: float = 0.18,
+            effective_option_mass_coef: float = 0.0,
+            non_effective_option_coef: float = 0.0,
             positive_logit_margin: float = 0.25,
             negative_logit_margin: float = 0.20,
             coverage_logit_margin: float = 0.20,
@@ -2512,6 +2572,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality_margin_losses = []
         ranking_margin_losses = []
         memory_margin_losses = []
+        effective_option_mass_losses = []
+        non_effective_option_losses = []
         service_need_losses = []
         cardinality_losses = []
         pair_centered_logit_stds = []
@@ -2521,6 +2583,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         expected_edge_count_maxes = []
         expected_quality_mass_means = []
         expected_quality_mass_mins = []
+        effective_option_mass_means = []
+        desired_effective_option_mass_means = []
+        effective_option_shortage_means = []
+        non_effective_option_prob_means = []
+        non_effective_selection_costs = []
         expected_memory_overage_means = []
         expected_memory_overage_maxes = []
         top_quality_prob_means = []
@@ -2766,6 +2833,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             quality_margin_losses.append(plan_terms["quality_margin_loss"])
             ranking_margin_losses.append(plan_terms["ranking_margin_loss"])
             memory_margin_losses.append(plan_terms["memory_margin_loss"])
+            effective_option_mass_losses.append(plan_terms["effective_option_mass_loss"])
+            non_effective_option_losses.append(plan_terms["non_effective_option_loss"])
             pair_centered_logit_stds.append(_scalar_to_float(plan_terms["pair_centered_logit_std"]))
             service_no_edge_prob_means.append(_scalar_to_float(plan_terms["service_no_edge_prob_mean"]))
             service_no_edge_prob_maxes.append(_scalar_to_float(plan_terms["service_no_edge_prob_max"]))
@@ -2773,6 +2842,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             expected_edge_count_maxes.append(_scalar_to_float(plan_terms["expected_edge_count_max"]))
             expected_quality_mass_means.append(_scalar_to_float(plan_terms["expected_quality_mass_mean"]))
             expected_quality_mass_mins.append(_scalar_to_float(plan_terms["expected_quality_mass_min"]))
+            effective_option_mass_means.append(_scalar_to_float(plan_terms["effective_option_mass_mean"]))
+            desired_effective_option_mass_means.append(_scalar_to_float(
+                plan_terms["desired_effective_option_mass_mean"]
+            ))
+            effective_option_shortage_means.append(_scalar_to_float(plan_terms["effective_option_shortage_mean"]))
+            non_effective_option_prob_means.append(_scalar_to_float(plan_terms["non_effective_option_prob_mean"]))
+            non_effective_selection_costs.append(_scalar_to_float(plan_terms["non_effective_selection_cost"]))
             expected_memory_overage_means.append(_scalar_to_float(plan_terms["expected_memory_overage_mean"]))
             expected_memory_overage_maxes.append(_scalar_to_float(plan_terms["expected_memory_overage_max"]))
             top_quality_prob_means.append(_scalar_to_float(plan_terms["top_quality_prob_mean"]))
@@ -2807,6 +2883,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality_margin_loss_t = torch.stack(quality_margin_losses).float()
         ranking_margin_loss_t = torch.stack(ranking_margin_losses).float()
         memory_margin_loss_t = torch.stack(memory_margin_losses).float()
+        effective_option_mass_loss_t = torch.stack(effective_option_mass_losses).float()
+        non_effective_option_loss_t = torch.stack(non_effective_option_losses).float()
         service_need_loss_t = torch.stack(service_need_losses).float()
         cardinality_loss_t = torch.stack(cardinality_losses).float()
         target_t = torch.tensor(targets, device=device, dtype=torch.float32)
@@ -2907,6 +2985,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality_margin_loss = quality_margin_loss_t.mean() * float(quality_margin_coef)
         ranking_margin_loss = ranking_margin_loss_t.mean() * float(ranking_margin_coef)
         memory_margin_loss = memory_margin_loss_t.mean() * float(memory_margin_coef)
+        effective_option_mass_loss = effective_option_mass_loss_t.mean() * float(effective_option_mass_coef)
+        non_effective_option_loss = non_effective_option_loss_t.mean() * float(non_effective_option_coef)
         service_need_loss = service_need_loss_t.mean() * float(service_need_coef)
         cardinality_loss = cardinality_loss_t.mean() * float(cardinality_coef)
         margin_loss = (
@@ -2914,6 +2994,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             + quality_margin_loss
             + ranking_margin_loss
             + memory_margin_loss
+            + effective_option_mass_loss
+            + non_effective_option_loss
             + service_need_loss
             + cardinality_loss
         )
@@ -2966,6 +3048,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "quality_margin_loss": _scalar_to_float(quality_margin_loss.detach()),
             "ranking_margin_loss": _scalar_to_float(ranking_margin_loss.detach()),
             "memory_margin_loss": _scalar_to_float(memory_margin_loss.detach()),
+            "effective_option_mass_loss": _scalar_to_float(effective_option_mass_loss.detach()),
+            "non_effective_option_loss": _scalar_to_float(non_effective_option_loss.detach()),
             "service_need_loss": _scalar_to_float(service_need_loss.detach()),
             "cardinality_loss": _scalar_to_float(cardinality_loss.detach()),
             "margin_loss": _scalar_to_float(margin_loss.detach()),
@@ -3035,6 +3119,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "expected_edge_count_max": _mean_or_zero(expected_edge_count_maxes),
             "expected_quality_mass_mean": _mean_or_zero(expected_quality_mass_means),
             "expected_quality_mass_min": _mean_or_zero(expected_quality_mass_mins),
+            "effective_option_mass_mean": _mean_or_zero(effective_option_mass_means),
+            "desired_effective_option_mass_mean": _mean_or_zero(desired_effective_option_mass_means),
+            "effective_option_shortage_mean": _mean_or_zero(effective_option_shortage_means),
+            "non_effective_option_prob_mean": _mean_or_zero(non_effective_option_prob_means),
+            "non_effective_selection_cost": _mean_or_zero(non_effective_selection_costs),
             "expected_memory_overage_mean": _mean_or_zero(expected_memory_overage_means),
             "expected_memory_overage_max": _mean_or_zero(expected_memory_overage_maxes),
             "top_quality_prob_mean": _mean_or_zero(top_quality_prob_means),
@@ -3056,6 +3145,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "quality_margin_coef": float(quality_margin_coef),
             "ranking_margin_coef": float(ranking_margin_coef),
             "memory_margin_coef": float(memory_margin_coef),
+            "effective_option_mass_coef": float(effective_option_mass_coef),
+            "non_effective_option_coef": float(non_effective_option_coef),
             "service_need_coef": float(service_need_coef),
             "cardinality_coef": float(cardinality_coef),
             "positive_logit_margin": float(positive_logit_margin),
