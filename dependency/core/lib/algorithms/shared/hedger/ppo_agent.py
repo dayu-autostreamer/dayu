@@ -508,14 +508,14 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.50
         return min(max(value, 0.0), 1.0)
 
-    def _negative_unknown_threshold(self) -> float:
-        value = float(getattr(self.cfg, "negative_unknown_threshold", 0.50))
+    def _untrusted_unknown_threshold(self) -> float:
+        value = float(getattr(self.cfg, "untrusted_unknown_threshold", 0.50))
         if not math.isfinite(value):
             value = 0.50
         return min(max(value, 0.0), 1.0)
 
-    def _negative_stale_threshold(self) -> float:
-        value = float(getattr(self.cfg, "negative_stale_threshold", 0.85))
+    def _untrusted_stale_threshold(self) -> float:
+        value = float(getattr(self.cfg, "untrusted_stale_threshold", 0.85))
         if not math.isfinite(value):
             value = 0.85
         return min(max(value, 0.0), 1.0)
@@ -568,14 +568,14 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.92
         return min(max(value, self._soft_target_min()), 1.0)
 
-    def _soft_target_unknown_penalty(self) -> float:
-        value = float(getattr(self.cfg, "soft_target_unknown_penalty", 0.30))
+    def _soft_target_untrusted_weight_floor(self) -> float:
+        value = float(getattr(self.cfg, "soft_target_untrusted_weight_floor", 0.40))
         if not math.isfinite(value):
-            value = 0.30
+            value = 0.40
         return min(max(value, 0.0), 1.0)
 
     def _soft_target_risk_penalty(self) -> float:
-        value = float(getattr(self.cfg, "soft_target_risk_penalty", 0.45))
+        value = float(getattr(self.cfg, "soft_target_risk_penalty", 0.40))
         if not math.isfinite(value):
             value = 0.45
         return min(max(value, 0.0), 1.0)
@@ -1379,12 +1379,16 @@ class _DeploymentBackbonePPO(nn.Module):
             | (hotspot >= self._negative_hotspot_threshold())
             | (runtime_risk >= self._negative_runtime_risk_threshold())
         ) & edge_allowed
-        evidence_risky = (
-            (runtime_unknown >= self._negative_unknown_threshold())
-            | (runtime_stale >= self._negative_stale_threshold())
+        evidence_untrusted = (
+            (runtime_unknown >= self._untrusted_unknown_threshold())
+            | (runtime_stale >= self._untrusted_stale_threshold())
         ) & edge_allowed
         low_quality = (pair_quality < quality_threshold) & edge_allowed
-        quality_eligible = edge_allowed & ~severe_risky & ~evidence_risky & ~low_quality
+        # Missing or stale runtime evidence is uncertainty, not evidence that a
+        # pair is bad.  Pair quality already falls back to static suitability
+        # when runtime confidence is low, so only observed risk and low quality
+        # exclude a candidate from the effective option set.
+        quality_eligible = edge_allowed & ~severe_risky & ~low_quality
 
         best_quality = pair_quality.masked_fill(~quality_eligible, -1.0).max(dim=1).values
         has_effective_candidate = best_quality >= quality_threshold
@@ -1417,7 +1421,7 @@ class _DeploymentBackbonePPO(nn.Module):
             non_effective_option_mask
             & (pair_quality < (option_floor.view(num_services, 1) - clear_gap).clamp_min(0.0))
         )
-        risky_option_mask = (severe_risky | evidence_risky | low_quality) & edge_allowed
+        risky_option_mask = (severe_risky | low_quality) & edge_allowed
         return {
             "edge_allowed": edge_allowed,
             "pair_quality": pair_quality,
@@ -1428,7 +1432,7 @@ class _DeploymentBackbonePPO(nn.Module):
             "effective_option_mask": effective_option_mask,
             "non_effective_option_mask": non_effective_option_mask,
             "clear_non_effective_mask": clear_non_effective_mask,
-            "evidence_risky_mask": evidence_risky,
+            "evidence_untrusted_mask": evidence_untrusted,
             "risky_option_mask": risky_option_mask,
             "option_floor": option_floor,
             "best_quality": best_quality.clamp_min(0.0),
@@ -1455,8 +1459,9 @@ class _DeploymentBackbonePPO(nn.Module):
         is above zero.  Offline learning, however, should not reduce a service's
         alternatives to a single hard top candidate.  This target gives every
         sufficiently good service-device pair a continuous target based on its
-        relative quality and the service pressure, while weak/risky/unknown
-        pairs receive explicit pressure to stay below the p=0.5 boundary.
+        relative quality and the service pressure.  Weak or observed-risky
+        pairs receive explicit pressure to stay below the p=0.5 boundary;
+        missing or stale runtime evidence only lowers supervision confidence.
         """
         device = static_allowed.device
         dtype = torch.float32
@@ -1473,7 +1478,7 @@ class _DeploymentBackbonePPO(nn.Module):
         effective_option_mask = option_masks["effective_option_mask"]
         clear_non_effective_mask = option_masks["clear_non_effective_mask"]
         risky_option_mask = option_masks["risky_option_mask"]
-        evidence_risky_mask = option_masks["evidence_risky_mask"]
+        evidence_untrusted_mask = option_masks["evidence_untrusted_mask"]
         pressure_weight = option_masks["pressure_weight"]
 
         def ctx_matrix(name: str, default: float) -> torch.Tensor:
@@ -1513,7 +1518,12 @@ class _DeploymentBackbonePPO(nn.Module):
         raw_target = torch.sigmoid(quality_margin).clamp(0.0, 1.0)
         target = min_target + (max_target - min_target) * raw_target
 
-        evidence_penalty = self._soft_target_unknown_penalty() * torch.maximum(runtime_unknown, runtime_stale)
+        evidence_untrusted = torch.maximum(runtime_unknown, runtime_stale)
+        evidence_weight_floor = self._soft_target_untrusted_weight_floor()
+        evidence_confidence_weight = (
+            evidence_weight_floor
+            + (1.0 - evidence_weight_floor) * (1.0 - evidence_untrusted)
+        ).clamp(evidence_weight_floor, 1.0)
         risk_penalty = self._soft_target_risk_penalty() * torch.clamp(
             0.45 * runtime_risk
             + 0.25 * queue_pressure
@@ -1522,7 +1532,7 @@ class _DeploymentBackbonePPO(nn.Module):
             min=0.0,
             max=1.0,
         )
-        target = (target - evidence_penalty - risk_penalty).clamp(min_target, max_target)
+        target = (target - risk_penalty).clamp(min_target, max_target)
 
         selected = torch.zeros_like(edge_allowed)
         if isinstance(selected_mask, torch.Tensor) and selected_mask.shape == static_allowed.shape:
@@ -1531,31 +1541,32 @@ class _DeploymentBackbonePPO(nn.Module):
         if isinstance(raw_selected_mask, torch.Tensor) and raw_selected_mask.shape == static_allowed.shape:
             raw_selected = raw_selected_mask.to(device=device).bool() & edge_allowed
 
-        safe_selected = selected & effective_option_mask & ~evidence_risky_mask & ~risky_option_mask
+        safe_selected = selected & effective_option_mask & ~risky_option_mask
         if bool(safe_selected.any().item()):
             selected_floor = torch.full_like(target, 0.58)
             target = torch.where(safe_selected, torch.maximum(target, selected_floor), target)
 
         quality = str(quality_bucket or "unknown").strip().lower()
         if quality == "bad":
-            selected_risky = selected & (risky_option_mask | evidence_risky_mask | clear_non_effective_mask)
-            target = torch.where(selected_risky, torch.full_like(target, min_target), target * 0.65)
+            selected_risky = selected & (risky_option_mask | clear_non_effective_mask)
+            target = torch.where(selected_risky, torch.full_like(target, min_target), target)
 
         target = torch.where(edge_allowed, target, torch.zeros_like(target))
         positive_mask = (target >= 0.50) & edge_allowed
         negative_mask = (target <= 0.35) & edge_allowed
         risk_weight = (
             risky_option_mask.to(dtype=dtype)
-            + evidence_risky_mask.to(dtype=dtype)
             + clear_non_effective_mask.to(dtype=dtype)
         ).clamp(0.0, 1.0)
         target_weight = edge_allowed.to(dtype=dtype) * (
-            0.35
-            + 0.75 * pressure_expand
-            + 0.50 * pair_quality
-            + 0.50 * positive_mask.to(dtype=dtype)
+            evidence_confidence_weight * (
+                0.35
+                + 0.75 * pressure_expand
+                + 0.50 * pair_quality
+                + 0.50 * positive_mask.to(dtype=dtype)
+                + 0.35 * raw_selected.to(dtype=dtype)
+            )
             + 0.65 * risk_weight
-            + 0.35 * raw_selected.to(dtype=dtype)
         )
         if quality == "bad":
             target_weight = target_weight + selected.to(dtype=dtype) * 0.75
@@ -1568,6 +1579,15 @@ class _DeploymentBackbonePPO(nn.Module):
             "soft_target_negative_mask": negative_mask,
             "soft_target_floor": soft_floor.squeeze(1),
             "soft_target_margin": quality_margin,
+            "soft_target_confidence_weight": evidence_confidence_weight,
+            "soft_target_known_mask": edge_allowed & ~evidence_untrusted_mask,
+            "soft_target_untrusted_mask": evidence_untrusted_mask,
+            "soft_target_unknown_mask": edge_allowed & (
+                runtime_unknown >= self._untrusted_unknown_threshold()
+            ),
+            "soft_target_stale_mask": edge_allowed & (
+                runtime_stale >= self._untrusted_stale_threshold()
+            ),
         }
 
     def _deployment_plan_level_terms(
@@ -1618,6 +1638,11 @@ class _DeploymentBackbonePPO(nn.Module):
         soft_target_weight = option_masks["soft_target_weight"].detach()
         soft_target_positive_mask = option_masks["soft_target_positive_mask"]
         soft_target_negative_mask = option_masks["soft_target_negative_mask"]
+        soft_target_confidence_weight = option_masks["soft_target_confidence_weight"].detach()
+        soft_target_known_mask = option_masks["soft_target_known_mask"]
+        soft_target_untrusted_mask = option_masks["soft_target_untrusted_mask"]
+        soft_target_unknown_mask = option_masks["soft_target_unknown_mask"]
+        soft_target_stale_mask = option_masks["soft_target_stale_mask"]
 
         select_prob = torch.sigmoid(select_logits).clamp(1e-6, 1.0 - 1e-6)
         pair_suppression_logits = select_logits
@@ -1795,6 +1820,13 @@ class _DeploymentBackbonePPO(nn.Module):
         soft_target_positive_count = soft_target_positive_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
         soft_target_positive_prob = select_prob.masked_select(soft_target_positive_mask)
         soft_target_negative_prob = select_prob.masked_select(soft_target_negative_mask)
+        soft_target_confidence_weights = soft_target_confidence_weight.masked_select(edge_allowed)
+        soft_target_known_count = soft_target_known_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
+        soft_target_untrusted_count = soft_target_untrusted_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
+        soft_target_unknown_count = soft_target_unknown_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
+        soft_target_stale_count = soft_target_stale_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
+        soft_target_known_prob = select_prob.masked_select(soft_target_known_mask)
+        soft_target_untrusted_prob = select_prob.masked_select(soft_target_untrusted_mask)
         return {
             "coverage_margin_loss": coverage_margin_loss,
             "quality_margin_loss": quality_margin_loss,
@@ -1887,6 +1919,27 @@ class _DeploymentBackbonePPO(nn.Module):
             ),
             "soft_target_negative_prob_mean": (
                 soft_target_negative_prob.mean() if bool(soft_target_negative_prob.numel()) else zero
+            ),
+            "soft_target_confidence_weight_mean": (
+                soft_target_confidence_weights.mean() if bool(soft_target_confidence_weights.numel()) else zero
+            ),
+            "soft_target_known_count_mean": (
+                soft_target_known_count.mean() if bool(soft_target_known_count.numel()) else zero
+            ),
+            "soft_target_untrusted_count_mean": (
+                soft_target_untrusted_count.mean() if bool(soft_target_untrusted_count.numel()) else zero
+            ),
+            "soft_target_unknown_count_mean": (
+                soft_target_unknown_count.mean() if bool(soft_target_unknown_count.numel()) else zero
+            ),
+            "soft_target_stale_count_mean": (
+                soft_target_stale_count.mean() if bool(soft_target_stale_count.numel()) else zero
+            ),
+            "soft_target_known_prob_mean": (
+                soft_target_known_prob.mean() if bool(soft_target_known_prob.numel()) else zero
+            ),
+            "soft_target_untrusted_prob_mean": (
+                soft_target_untrusted_prob.mean() if bool(soft_target_untrusted_prob.numel()) else zero
             ),
             "per_service_prob_std_mean": (
                 per_service_prob_std.mean() if per_service_prob_std is not None else zero
@@ -2039,9 +2092,14 @@ class _DeploymentBackbonePPO(nn.Module):
             executed_edge
             * (
                 (runtime_risk_score[:, edge_slice] >= self._negative_runtime_risk_threshold())
-                | (runtime_unknown_risk[:, edge_slice] >= self._negative_unknown_threshold())
-                | (runtime_stale_risk[:, edge_slice] >= self._negative_stale_threshold())
                 | (pair_quality[:, edge_slice] < self._positive_quality_threshold())
+            ).float()
+        ).sum() if cloud_idx > 0 else torch.zeros((), device=corrected.device)
+        selected_untrusted_pair_count = (
+            executed_edge
+            * (
+                (runtime_unknown_risk[:, edge_slice] >= self._untrusted_unknown_threshold())
+                | (runtime_stale_risk[:, edge_slice] >= self._untrusted_stale_threshold())
             ).float()
         ).sum() if cloud_idx > 0 else torch.zeros((), device=corrected.device)
         selected_low_quality_pair_count = (
@@ -2060,6 +2118,7 @@ class _DeploymentBackbonePPO(nn.Module):
             "selected_low_quality_option_cost": _scalar_to_float(selected_low_quality_option_cost),
             "selected_evidence_untrusted_cost": _scalar_to_float(selected_evidence_untrusted_cost),
             "selected_risky_pair_count": _scalar_to_float(selected_risky_pair_count),
+            "selected_untrusted_pair_count": _scalar_to_float(selected_untrusted_pair_count),
             "selected_low_quality_pair_count": _scalar_to_float(selected_low_quality_pair_count),
         }
         return (
@@ -2362,8 +2421,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "effective_option_floor": option_masks["option_floor"].detach().cpu(),
                 "soft_option_target": option_masks["soft_target"].detach().cpu(),
                 "soft_option_target_weight": option_masks["soft_target_weight"].detach().cpu(),
+                "soft_option_confidence_weight": option_masks["soft_target_confidence_weight"].detach().cpu(),
                 "soft_option_positive_mask": option_masks["soft_target_positive_mask"].detach().cpu(),
                 "soft_option_negative_mask": option_masks["soft_target_negative_mask"].detach().cpu(),
+                "soft_option_known_mask": option_masks["soft_target_known_mask"].detach().cpu(),
+                "soft_option_untrusted_mask": option_masks["soft_target_untrusted_mask"].detach().cpu(),
+                "soft_option_unknown_mask": option_masks["soft_target_unknown_mask"].detach().cpu(),
+                "soft_option_stale_mask": option_masks["soft_target_stale_mask"].detach().cpu(),
                 "soft_option_target_floor": option_masks["soft_target_floor"].detach().cpu(),
                 "soft_option_target_margin": option_masks["soft_target_margin"].detach().cpu(),
                 "positive_mask": positive_mask.detach().cpu(),
@@ -2650,12 +2714,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         queue_risky = queue_pressure >= self._negative_queue_threshold()
         hotspot_risky = hotspot >= self._negative_hotspot_threshold()
         runtime_risky = runtime_risk >= self._negative_runtime_risk_threshold()
-        unknown_risky = runtime_unknown >= self._negative_unknown_threshold()
-        stale_risky = runtime_stale >= self._negative_stale_threshold()
+        unknown_untrusted = runtime_unknown >= self._untrusted_unknown_threshold()
+        stale_untrusted = runtime_stale >= self._untrusted_stale_threshold()
         low_quality = pair_quality < self._positive_quality_threshold()
         severe_risky = (queue_risky | hotspot_risky | runtime_risky) & edge_allowed
-        evidence_risky = (unknown_risky | stale_risky) & edge_allowed
-        diagnostic_risky = (severe_risky | evidence_risky | low_quality) & edge_allowed
+        evidence_untrusted = (unknown_untrusted | stale_untrusted) & edge_allowed
+        diagnostic_risky = (severe_risky | low_quality) & edge_allowed
         option_masks = self._deployment_effective_option_masks(
             static_allowed,
             policy_aux,
@@ -2669,7 +2733,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         clear_non_effective_mask = option_masks["clear_non_effective_mask"]
         raw_removed = raw_selected & ~selected
         selected_effective = selected & effective_option_mask
-        selected_safe_effective = selected_effective & quality_eligible & ~evidence_risky
+        selected_safe_effective = selected_effective & quality_eligible
         teacher_positive = top_quality_mask & edge_allowed
         clear_unselected_negative = (
             clear_non_effective_mask
@@ -2681,8 +2745,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_selected_risky_samples": float((selected & diagnostic_risky).float().sum().detach().cpu().item()),
             "actor_selected_low_quality_samples": float((selected & low_quality & edge_allowed).float().sum().detach().cpu().item()),
             "actor_selected_runtime_risky_samples": float((selected & runtime_risky & edge_allowed).float().sum().detach().cpu().item()),
-            "actor_selected_unknown_samples": float((selected & unknown_risky & edge_allowed).float().sum().detach().cpu().item()),
-            "actor_selected_stale_samples": float((selected & stale_risky & edge_allowed).float().sum().detach().cpu().item()),
+            "actor_selected_unknown_samples": float((selected & unknown_untrusted & edge_allowed).float().sum().detach().cpu().item()),
+            "actor_selected_stale_samples": float((selected & stale_untrusted & edge_allowed).float().sum().detach().cpu().item()),
+            "actor_selected_untrusted_samples": float((selected & evidence_untrusted).float().sum().detach().cpu().item()),
             "actor_effective_target_samples": float(selected_effective.float().sum().detach().cpu().item()),
             "actor_teacher_positive_samples": float(teacher_positive.float().sum().detach().cpu().item()),
             "actor_selected_effective_samples": float(selected_effective.float().sum().detach().cpu().item()),
@@ -2701,7 +2766,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         aux_positive_mask = torch.zeros_like(selected)
         if quality != "bad":
             aux_positive_mask = selected_effective & ~positive_mask
-        negative_mask = (selected & (severe_risky | evidence_risky | low_quality) & ~positive_mask) & edge_allowed
+        negative_mask = (selected & (severe_risky | low_quality) & ~positive_mask) & edge_allowed
         if quality == "bad":
             negative_mask = negative_mask | (selected & edge_allowed)
         unselected_negative_mask = (
@@ -2709,7 +2774,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             & ~positive_mask
             & ~raw_removed
             & ~selected
-            & (severe_risky | evidence_risky | clear_unselected_negative)
+            & (severe_risky | clear_unselected_negative)
         )
         return positive_mask, negative_mask, raw_removed, unselected_negative_mask, aux_positive_mask, debug_counts
 
@@ -2794,6 +2859,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         selected_runtime_risky_counts = []
         selected_unknown_counts = []
         selected_stale_counts = []
+        selected_untrusted_counts = []
         teacher_positive_counts = []
         selected_effective_counts = []
         clear_non_effective_counts = []
@@ -2808,6 +2874,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         soft_target_gap_means = []
         soft_target_positive_prob_means = []
         soft_target_negative_prob_means = []
+        soft_target_confidence_weight_means = []
+        soft_target_known_count_means = []
+        soft_target_untrusted_count_means = []
+        soft_target_unknown_count_means = []
+        soft_target_stale_count_means = []
+        soft_target_known_prob_means = []
+        soft_target_untrusted_prob_means = []
         positive_logit_means = []
         negative_logit_means = []
         aux_positive_logit_means = []
@@ -3036,6 +3109,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             selected_runtime_risky_counts.append(float(mask_debug.get("actor_selected_runtime_risky_samples", 0.0)))
             selected_unknown_counts.append(float(mask_debug.get("actor_selected_unknown_samples", 0.0)))
             selected_stale_counts.append(float(mask_debug.get("actor_selected_stale_samples", 0.0)))
+            selected_untrusted_counts.append(float(mask_debug.get("actor_selected_untrusted_samples", 0.0)))
             teacher_positive_counts.append(float(mask_debug.get("actor_teacher_positive_samples", 0.0)))
             selected_effective_counts.append(float(mask_debug.get("actor_selected_effective_samples", 0.0)))
             clear_non_effective_counts.append(float(mask_debug.get("actor_clear_non_effective_samples", 0.0)))
@@ -3119,6 +3193,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             soft_target_gap_means.append(_scalar_to_float(plan_terms["soft_target_gap_mean"]))
             soft_target_positive_prob_means.append(_scalar_to_float(plan_terms["soft_target_positive_prob_mean"]))
             soft_target_negative_prob_means.append(_scalar_to_float(plan_terms["soft_target_negative_prob_mean"]))
+            soft_target_confidence_weight_means.append(_scalar_to_float(
+                plan_terms["soft_target_confidence_weight_mean"]
+            ))
+            soft_target_known_count_means.append(_scalar_to_float(plan_terms["soft_target_known_count_mean"]))
+            soft_target_untrusted_count_means.append(_scalar_to_float(
+                plan_terms["soft_target_untrusted_count_mean"]
+            ))
+            soft_target_unknown_count_means.append(_scalar_to_float(plan_terms["soft_target_unknown_count_mean"]))
+            soft_target_stale_count_means.append(_scalar_to_float(plan_terms["soft_target_stale_count_mean"]))
+            soft_target_known_prob_means.append(_scalar_to_float(plan_terms["soft_target_known_prob_mean"]))
+            soft_target_untrusted_prob_means.append(_scalar_to_float(
+                plan_terms["soft_target_untrusted_prob_mean"]
+            ))
             contrast_margin_gap_means.append(_scalar_to_float(plan_terms["contrast_margin_gap_mean"]))
             per_service_prob_std_means.append(_scalar_to_float(plan_terms["per_service_prob_std_mean"]))
             per_service_prob_range_means.append(_scalar_to_float(plan_terms["per_service_prob_range_mean"]))
@@ -3372,6 +3459,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_selected_runtime_risky_samples": _mean_or_zero(selected_runtime_risky_counts),
             "actor_selected_unknown_samples": _mean_or_zero(selected_unknown_counts),
             "actor_selected_stale_samples": _mean_or_zero(selected_stale_counts),
+            "actor_selected_untrusted_samples": _mean_or_zero(selected_untrusted_counts),
             "actor_teacher_positive_samples": _mean_or_zero(teacher_positive_counts),
             "actor_selected_effective_samples": _mean_or_zero(selected_effective_counts),
             "actor_clear_non_effective_samples": _mean_or_zero(clear_non_effective_counts),
@@ -3394,6 +3482,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "soft_target_gap_mean": _mean_or_zero(soft_target_gap_means),
             "soft_target_positive_prob_mean": _mean_or_zero(soft_target_positive_prob_means),
             "soft_target_negative_prob_mean": _mean_or_zero(soft_target_negative_prob_means),
+            "soft_target_confidence_weight_mean": _mean_or_zero(soft_target_confidence_weight_means),
+            "soft_target_known_count_mean": _mean_or_zero(soft_target_known_count_means),
+            "soft_target_untrusted_count_mean": _mean_or_zero(soft_target_untrusted_count_means),
+            "soft_target_unknown_count_mean": _mean_or_zero(soft_target_unknown_count_means),
+            "soft_target_stale_count_mean": _mean_or_zero(soft_target_stale_count_means),
+            "soft_target_known_prob_mean": _mean_or_zero(soft_target_known_prob_means),
+            "soft_target_untrusted_prob_mean": _mean_or_zero(soft_target_untrusted_prob_means),
             "positive_logit_mean": _mean_or_zero(positive_logit_means),
             "aux_positive_logit_mean": _mean_or_zero(aux_positive_logit_means),
             "negative_logit_mean": _mean_or_zero(negative_logit_means),

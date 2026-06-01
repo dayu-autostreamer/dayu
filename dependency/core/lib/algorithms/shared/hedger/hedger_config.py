@@ -29,8 +29,8 @@ class DeploymentConstraintCfg:
     negative_queue_threshold: float = 0.65
     negative_hotspot_threshold: float = 0.08
     negative_runtime_risk_threshold: float = 0.50
-    negative_unknown_threshold: float = 0.50
-    negative_stale_threshold: float = 0.85
+    untrusted_unknown_threshold: float = 0.50
+    untrusted_stale_threshold: float = 0.85
     positive_quality_threshold: float = 0.30
     # Effective-option labels used by deployment offline calibration.  They
     # define which feasible edge pairs are trained as useful alternatives, not
@@ -45,8 +45,8 @@ class DeploymentConstraintCfg:
     soft_target_pressure_tolerance: float = 0.18
     soft_target_min: float = 0.04
     soft_target_max: float = 0.92
-    soft_target_unknown_penalty: float = 0.30
-    soft_target_risk_penalty: float = 0.45
+    soft_target_untrusted_weight_floor: float = 0.40
+    soft_target_risk_penalty: float = 0.40
     inertia_logit_bias: float = 0.06
 
 
