@@ -125,6 +125,7 @@ class HedgerDeploymentOfflineRLCfg:
     coverage_margin_coef: float = 0.35
     quality_margin_coef: float = 0.45
     ranking_margin_coef: float = 0.45
+    contrast_margin_coef: float = 0.75
     memory_margin_coef: float = 0.18
     effective_option_mass_coef: float = 0.25
     non_effective_option_coef: float = 0.25
@@ -132,6 +133,7 @@ class HedgerDeploymentOfflineRLCfg:
     negative_logit_margin: float = 0.25
     coverage_logit_margin: float = 0.30
     ranking_logit_margin: float = 0.20
+    contrast_logit_margin: float = 0.30
     top_quality_tolerance: float = 0.08
     coverage_pressure_floor: float = 0.25
     option_quality_ratio: float = 0.75
@@ -656,6 +658,7 @@ class Hedger:
             coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.85))),
             quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.55))),
             ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.45))),
+            contrast_margin_coef=max(0.0, float(offline_rl_cfg.get("contrast_margin_coef", 0.75))),
             memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.18))),
             effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.0))),
             non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.0))),
@@ -663,6 +666,7 @@ class Hedger:
             negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.20))),
             coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.20))),
             ranking_logit_margin=max(0.0, float(offline_rl_cfg.get("ranking_logit_margin", 0.15))),
+            contrast_logit_margin=max(0.0, float(offline_rl_cfg.get("contrast_logit_margin", 0.30))),
             top_quality_tolerance=max(0.0, float(offline_rl_cfg.get("top_quality_tolerance", 0.05))),
             coverage_pressure_floor=min(
                 1.0,
@@ -984,6 +988,7 @@ class Hedger:
             "actor_grad_norm", "critic_grad_norm",
             "aux_positive_loss", "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
             "coverage_margin_loss", "quality_margin_loss", "ranking_margin_loss",
+            "contrast_margin_loss",
             "memory_margin_loss", "effective_option_mass_loss", "non_effective_option_loss",
             "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
@@ -996,6 +1001,8 @@ class Hedger:
             "actor_selected_risky_samples", "actor_selected_low_quality_samples",
             "actor_selected_runtime_risky_samples", "actor_selected_unknown_samples",
             "actor_selected_stale_samples",
+            "actor_teacher_positive_samples", "actor_selected_effective_samples",
+            "actor_clear_non_effective_samples",
             "bad_actor_masked",
             "positive_logp_mean", "aux_positive_logp_mean",
             "negative_logp_mean", "raw_removed_logp_mean",
@@ -1021,12 +1028,15 @@ class Hedger:
             "effective_option_prob_mean", "effective_option_logit_mean",
             "effective_option_logit_gap_mean", "effective_option_candidate_count_mean",
             "effective_option_floor_mean",
+            "contrast_margin_gap_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
-            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
+            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
+            "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
-            "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
+            "ranking_logit_margin", "contrast_logit_margin",
+            "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
         ]
         if include_offline_batch:
@@ -2873,6 +2883,7 @@ class Hedger:
             "effective_option_prob_mean", "effective_option_logit_mean",
             "effective_option_logit_gap_mean", "effective_option_candidate_count_mean",
             "effective_option_floor_mean",
+            "contrast_margin_gap_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
             "capacity_removed_cnt", "selected_queue_pressure_cost", "selected_runtime_risk_cost",
@@ -2889,10 +2900,12 @@ class Hedger:
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "hotspot_weight", "runtime_risk_weight", "unknown_option_weight",
             "stale_option_weight", "low_quality_weight",
-            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
+            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
+            "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
-            "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
+            "ranking_logit_margin", "contrast_logit_margin",
+            "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
             "edge_memory_budget_ratio", "bernoulli_mode_boundary",
@@ -3027,6 +3040,7 @@ class Hedger:
                 "deployment_policy_probs", "deployment_raw_mode_nodes",
                 "deployment_positive_mask", "deployment_negative_mask",
                 "deployment_effective_option_mask", "deployment_top_quality_option_mask",
+                "deployment_clear_non_effective_option_mask",
                 "deployment_risky_option_mask", "deployment_effective_option_floor",
                 "deployment_service_pressure",
                 "deployment_edge_replica_counts", "deployment_device_replica_counts",
@@ -3489,6 +3503,9 @@ class Hedger:
                     ),
                     "deployment_top_quality_option_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "top_quality_option_mask", service_idx)
+                    ),
+                    "deployment_clear_non_effective_option_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "clear_non_effective_option_mask", service_idx)
                     ),
                     "deployment_risky_option_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "risky_option_mask", service_idx)
@@ -6348,6 +6365,7 @@ class Hedger:
                         non_top_candidate_count_mean=aux.get("non_top_candidate_count_mean", 0.0),
                         quality_gap_top_second_mean=aux.get("quality_gap_top_second_mean", 0.0),
                         effective_option_floor_mean=aux.get("effective_option_floor_mean", 0.0),
+                        contrast_margin_gap_mean=aux.get("contrast_margin_gap_mean", 0.0),
                         per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                         per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
                         capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
@@ -6387,6 +6405,7 @@ class Hedger:
                         coverage_margin_coef=offline_rl_record_cfg.coverage_margin_coef,
                         quality_margin_coef=offline_rl_record_cfg.quality_margin_coef,
                         ranking_margin_coef=offline_rl_record_cfg.ranking_margin_coef,
+                        contrast_margin_coef=offline_rl_record_cfg.contrast_margin_coef,
                         memory_margin_coef=offline_rl_record_cfg.memory_margin_coef,
                         effective_option_mass_coef=offline_rl_record_cfg.effective_option_mass_coef,
                         non_effective_option_coef=offline_rl_record_cfg.non_effective_option_coef,
@@ -6394,6 +6413,7 @@ class Hedger:
                         negative_logit_margin=offline_rl_record_cfg.negative_logit_margin,
                         coverage_logit_margin=offline_rl_record_cfg.coverage_logit_margin,
                         ranking_logit_margin=offline_rl_record_cfg.ranking_logit_margin,
+                        contrast_logit_margin=offline_rl_record_cfg.contrast_logit_margin,
                         top_quality_tolerance=offline_rl_record_cfg.top_quality_tolerance,
                         coverage_pressure_floor=offline_rl_record_cfg.coverage_pressure_floor,
                         option_quality_ratio=offline_rl_record_cfg.option_quality_ratio,
@@ -7089,6 +7109,7 @@ class Hedger:
                                 "effective_option_prob_mean", "effective_option_logit_mean",
                                 "effective_option_logit_gap_mean", "effective_option_candidate_count_mean",
                                 "effective_option_floor_mean",
+                                "contrast_margin_gap_mean",
                                 "top_quality_candidate_count_mean", "non_top_candidate_count_mean",
                                 "quality_gap_top_second_mean",
                                 "per_service_prob_std_mean", "per_service_prob_range_mean",
@@ -7111,10 +7132,12 @@ class Hedger:
             "hotspot_weight", "runtime_risk_weight", "unknown_option_weight",
             "stale_option_weight", "low_quality_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
-            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
+            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
+            "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
-            "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
+            "ranking_logit_margin", "contrast_logit_margin",
+            "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
             "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
@@ -7588,6 +7611,7 @@ class Hedger:
                     non_top_candidate_count_mean=aux.get("non_top_candidate_count_mean", 0.0),
                     quality_gap_top_second_mean=aux.get("quality_gap_top_second_mean", 0.0),
                     effective_option_floor_mean=aux.get("effective_option_floor_mean", 0.0),
+                    contrast_margin_gap_mean=aux.get("contrast_margin_gap_mean", 0.0),
                     per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                     per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
                     capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
@@ -7629,6 +7653,7 @@ class Hedger:
                     coverage_margin_coef=self.training_cfg.deployment_offline_rl.coverage_margin_coef,
                     quality_margin_coef=self.training_cfg.deployment_offline_rl.quality_margin_coef,
                     ranking_margin_coef=self.training_cfg.deployment_offline_rl.ranking_margin_coef,
+                    contrast_margin_coef=self.training_cfg.deployment_offline_rl.contrast_margin_coef,
                     memory_margin_coef=self.training_cfg.deployment_offline_rl.memory_margin_coef,
                     effective_option_mass_coef=self.training_cfg.deployment_offline_rl.effective_option_mass_coef,
                     non_effective_option_coef=self.training_cfg.deployment_offline_rl.non_effective_option_coef,
@@ -7636,6 +7661,7 @@ class Hedger:
                     negative_logit_margin=self.training_cfg.deployment_offline_rl.negative_logit_margin,
                     coverage_logit_margin=self.training_cfg.deployment_offline_rl.coverage_logit_margin,
                     ranking_logit_margin=self.training_cfg.deployment_offline_rl.ranking_logit_margin,
+                    contrast_logit_margin=self.training_cfg.deployment_offline_rl.contrast_logit_margin,
                     top_quality_tolerance=self.training_cfg.deployment_offline_rl.top_quality_tolerance,
                     coverage_pressure_floor=self.training_cfg.deployment_offline_rl.coverage_pressure_floor,
                     option_quality_ratio=self.training_cfg.deployment_offline_rl.option_quality_ratio,
@@ -8234,6 +8260,7 @@ class Hedger:
             "coverage_margin_coef": cfg.coverage_margin_coef,
             "quality_margin_coef": cfg.quality_margin_coef,
             "ranking_margin_coef": cfg.ranking_margin_coef,
+            "contrast_margin_coef": cfg.contrast_margin_coef,
             "memory_margin_coef": cfg.memory_margin_coef,
             "effective_option_mass_coef": cfg.effective_option_mass_coef,
             "non_effective_option_coef": cfg.non_effective_option_coef,
@@ -8241,6 +8268,7 @@ class Hedger:
             "negative_logit_margin": cfg.negative_logit_margin,
             "coverage_logit_margin": cfg.coverage_logit_margin,
             "ranking_logit_margin": cfg.ranking_logit_margin,
+            "contrast_logit_margin": cfg.contrast_logit_margin,
             "top_quality_tolerance": cfg.top_quality_tolerance,
             "coverage_pressure_floor": cfg.coverage_pressure_floor,
             "option_quality_ratio": cfg.option_quality_ratio,
