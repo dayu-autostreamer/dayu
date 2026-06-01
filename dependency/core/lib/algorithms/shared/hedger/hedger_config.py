@@ -22,10 +22,9 @@ class DeploymentConstraintCfg:
     # Fraction of computed available edge memory used as deployment budget.
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
     edge_memory_budget_ratio: float = 1.0
-    # Matrix deployment policy. The actor scores service-device edge candidates,
-    # while the decoder and offline objective compare complete replica sets
-    # under memory/count feasibility. Unknown/stale runtime evidence is
-    # diagnostic and lowers option quality instead of introducing name rules.
+    # Direct matrix deployment policy. The actor scores service-device edge
+    # candidates and deterministic inference selects edge pairs whose learned
+    # logit is above zero. Projection only repairs hard feasibility.
     queue_normalizer: float = 8.0
     negative_queue_threshold: float = 0.65
     negative_hotspot_threshold: float = 0.08
@@ -39,25 +38,7 @@ class DeploymentConstraintCfg:
     option_quality_ratio: float = 0.65
     option_quality_tolerance: float = 0.12
     option_pressure_floor: float = 0.20
-    # Global constrained decoder.  The deployment actor still emits pair-wise
-    # logits, while the decoder turns those utilities into one feasible replica
-    # set under shared edge memory/count budgets.
-    decoder_actor_weight: float = 0.55
-    decoder_quality_weight: float = 1.25
-    decoder_freedom_weight: float = 1.00
-    decoder_inertia_weight: float = 0.15
-    decoder_raw_bonus: float = 0.05
-    decoder_memory_weight: float = 0.45
-    decoder_runtime_risk_weight: float = 0.55
-    decoder_unknown_weight: float = 0.25
-    decoder_stale_weight: float = 0.20
-    decoder_queue_weight: float = 0.35
-    decoder_hotspot_weight: float = 0.35
-    decoder_change_weight: float = 0.10
-    decoder_min_gain: float = 0.00
-    decoder_coverage_gain_floor: float = -0.05
-    decoder_local_swap_passes: int = 2
-    decoder_local_swap_min_gain: float = 0.02
+    inertia_logit_bias: float = 0.10
 
 
 class PhysicalTopology:

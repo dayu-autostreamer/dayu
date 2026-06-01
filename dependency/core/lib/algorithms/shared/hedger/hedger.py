@@ -119,6 +119,8 @@ class HedgerDeploymentOfflineRLCfg:
     negative_bc_coef: float = 0.2
     raw_removed_negative_coef: float = 0.0
     unselected_negative_coef: float = 0.0
+    service_need_coef: float = 0.35
+    cardinality_coef: float = 0.15
     value_coef: float = 0.5
     entropy_coef: float = 0.0
     bootstrap_current_value: bool = True
@@ -126,14 +128,6 @@ class HedgerDeploymentOfflineRLCfg:
     quality_margin_coef: float = 0.55
     ranking_margin_coef: float = 0.45
     memory_margin_coef: float = 0.18
-    set_preference_coef: float = 0.70
-    service_contrastive_coef: float = 0.55
-    teacher_actor_weight: float = 0.0
-    set_preference_margin: float = 0.40
-    cloud_negative_coef: float = 0.60
-    overdeploy_negative_coef: float = 0.40
-    executed_set_positive_coef: float = 0.20
-    executed_bad_negative_coef: float = 0.70
     positive_logit_margin: float = 0.25
     negative_logit_margin: float = 0.20
     coverage_logit_margin: float = 0.20
@@ -656,6 +650,8 @@ class Hedger:
             negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.2))),
             raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.0))),
             unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.0))),
+            service_need_coef=max(0.0, float(offline_rl_cfg.get("service_need_coef", 0.35))),
+            cardinality_coef=max(0.0, float(offline_rl_cfg.get("cardinality_coef", 0.15))),
             value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.5))),
             entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
             bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", True)),
@@ -663,14 +659,6 @@ class Hedger:
             quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.55))),
             ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.45))),
             memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.18))),
-            set_preference_coef=max(0.0, float(offline_rl_cfg.get("set_preference_coef", 0.70))),
-            service_contrastive_coef=max(0.0, float(offline_rl_cfg.get("service_contrastive_coef", 0.55))),
-            teacher_actor_weight=max(0.0, float(offline_rl_cfg.get("teacher_actor_weight", 0.0))),
-            set_preference_margin=max(0.0, float(offline_rl_cfg.get("set_preference_margin", 0.40))),
-            cloud_negative_coef=max(0.0, float(offline_rl_cfg.get("cloud_negative_coef", 0.60))),
-            overdeploy_negative_coef=max(0.0, float(offline_rl_cfg.get("overdeploy_negative_coef", 0.40))),
-            executed_set_positive_coef=max(0.0, float(offline_rl_cfg.get("executed_set_positive_coef", 0.20))),
-            executed_bad_negative_coef=max(0.0, float(offline_rl_cfg.get("executed_bad_negative_coef", 0.70))),
             positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 0.25))),
             negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.20))),
             coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.20))),
@@ -996,9 +984,8 @@ class Hedger:
             "actor_grad_norm", "critic_grad_norm",
             "aux_positive_loss", "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
             "coverage_margin_loss", "quality_margin_loss", "ranking_margin_loss",
-            "memory_margin_loss", "set_preference_loss", "service_contrastive_loss",
-            "executed_set_loss", "cloud_set_loss", "overdeploy_set_loss",
-            "bad_executed_set_loss", "margin_loss",
+            "memory_margin_loss", "service_need_loss", "cardinality_loss",
+            "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
             "positive_pair_weight_sum", "aux_positive_pair_weight_sum", "negative_pair_weight_sum",
@@ -1026,10 +1013,6 @@ class Hedger:
             "expected_edge_count_mean", "expected_edge_count_max",
             "expected_quality_mass_mean", "expected_quality_mass_min",
             "expected_memory_overage_mean", "expected_memory_overage_max",
-            "decoder_target_edge_count_mean", "decoder_target_quality_mass_mean",
-            "decoder_target_prob_mean", "decoder_target_raw_overlap", "decoder_target_objective",
-            "teacher_set_score_mean", "executed_set_score_mean", "cloud_set_score_mean",
-            "overdeploy_set_score_mean", "set_score_gap_mean", "service_contrastive_pair_count",
             "top_quality_prob_mean", "non_top_prob_mean",
             "top_quality_logit_mean", "non_top_logit_mean", "top_quality_logit_gap_mean",
             "effective_option_prob_mean", "effective_option_logit_mean",
@@ -1038,9 +1021,7 @@ class Hedger:
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
-            "set_preference_coef", "service_contrastive_coef", "teacher_actor_weight",
-            "set_preference_margin", "cloud_negative_coef", "overdeploy_negative_coef",
-            "executed_set_positive_coef", "executed_bad_negative_coef",
+            "service_need_coef", "cardinality_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
@@ -1209,22 +1190,7 @@ class Hedger:
             "option_quality_ratio": _matrix_float("option_quality_ratio", 0.65, probability=True),
             "option_quality_tolerance": _matrix_float("option_quality_tolerance", 0.12),
             "option_pressure_floor": _matrix_float("option_pressure_floor", 0.20, probability=True),
-            "decoder_actor_weight": _matrix_float("decoder_actor_weight", 0.55),
-            "decoder_quality_weight": _matrix_float("decoder_quality_weight", 1.25),
-            "decoder_freedom_weight": _matrix_float("decoder_freedom_weight", 1.0),
-            "decoder_inertia_weight": _matrix_float("decoder_inertia_weight", 0.15),
-            "decoder_raw_bonus": _matrix_float("decoder_raw_bonus", 0.05),
-            "decoder_memory_weight": _matrix_float("decoder_memory_weight", 0.45),
-            "decoder_runtime_risk_weight": _matrix_float("decoder_runtime_risk_weight", 0.55),
-            "decoder_unknown_weight": _matrix_float("decoder_unknown_weight", 0.25),
-            "decoder_stale_weight": _matrix_float("decoder_stale_weight", 0.20),
-            "decoder_queue_weight": _matrix_float("decoder_queue_weight", 0.35),
-            "decoder_hotspot_weight": _matrix_float("decoder_hotspot_weight", 0.35),
-            "decoder_change_weight": _matrix_float("decoder_change_weight", 0.10),
-            "decoder_min_gain": _matrix_float("decoder_min_gain", 0.0),
-            "decoder_coverage_gain_floor": _matrix_float("decoder_coverage_gain_floor", -0.05),
-            "decoder_local_swap_passes": max(0, int(matrix_policy.get("decoder_local_swap_passes", 2))),
-            "decoder_local_swap_min_gain": max(0.0, _matrix_float("decoder_local_swap_min_gain", 0.02)),
+            "inertia_logit_bias": _matrix_float("inertia_logit_bias", 0.10),
             "ppo": ppo,
         }
 
@@ -2884,10 +2850,9 @@ class Hedger:
             "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
             "edge_cover_repair_cost", "edge_cover_unmet", "hotspot_repair_cnt",
             "hotspot_repair_cost", "hotspot_unmet", "policy_logp", "policy_entropy",
-            "value_estimate", "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
-            "raw_zero_edge_services", "decoded_zero_edge_services",
+            "value_estimate", "raw_edge_replicas", "edge_replicas", "cloud_replicas",
+            "raw_zero_edge_services",
             "matrix_added_cnt", "matrix_kept_cnt", "matrix_removed_cnt",
-            "decode_added_cnt", "decode_pruned_cnt",
             "edge_policy_prob_mean", "edge_policy_prob_std",
             "edge_policy_logit_mean", "edge_policy_logit_std",
             "pair_centered_logit_std",
@@ -2896,9 +2861,6 @@ class Hedger:
             "expected_edge_count_max", "expected_quality_mass_mean",
             "expected_quality_mass_min", "expected_memory_overage_mean",
             "expected_memory_overage_max",
-            "decoder_target_edge_count_mean", "decoder_target_quality_mass_mean",
-            "decoder_target_prob_mean", "decoder_target_raw_overlap", "decoder_target_objective",
-            "executed_set_score", "decoded_set_score", "cloud_set_score", "decoded_vs_cloud_set_score_gap",
             "top_quality_prob_mean", "non_top_prob_mean",
             "top_quality_logit_mean", "non_top_logit_mean", "top_quality_logit_gap_mean",
             "effective_option_prob_mean", "effective_option_logit_mean",
@@ -2921,9 +2883,7 @@ class Hedger:
             "hotspot_weight", "runtime_risk_weight", "unknown_option_weight",
             "stale_option_weight", "low_quality_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
-            "set_preference_coef", "service_contrastive_coef", "teacher_actor_weight",
-            "set_preference_margin", "cloud_negative_coef", "overdeploy_negative_coef",
-            "executed_set_positive_coef", "executed_bad_negative_coef",
+            "service_need_coef", "cardinality_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
@@ -2933,10 +2893,6 @@ class Hedger:
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
             "negative_stale_threshold", "positive_quality_threshold",
             "queue_normalizer",
-            "decoder_actor_weight", "decoder_quality_weight", "decoder_freedom_weight",
-            "decoder_memory_weight", "decoder_runtime_risk_weight",
-            "decoder_unknown_weight", "decoder_stale_weight", "decoder_min_gain",
-            "decoder_local_swap_passes",
             "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -3017,9 +2973,8 @@ class Hedger:
             *Hedger._decision_common_fieldnames(),
             "raw_nodes", "executed_nodes", "removed_nodes", "added_nodes",
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
-            "raw_zero_edge", "decoded_zero_edge", "matrix_added_nodes", "matrix_kept_nodes",
-            "matrix_removed_nodes", "decode_added_nodes", "decode_pruned_nodes",
-            "decode_added_reason", "decode_pruned_reason", "capacity_removed_nodes",
+            "raw_zero_edge", "matrix_added_nodes", "matrix_kept_nodes",
+            "matrix_removed_nodes", "capacity_removed_nodes",
             "service_pressure", "edge_feasible_count", "edge_replica_count",
             "device_replica_count", "active_pair_hotspot",
             "collect_behavior", "collect_operation",
@@ -3049,10 +3004,11 @@ class Hedger:
             fieldnames.extend([
                 "deployment_qk_scores", "deployment_qk_features",
                 "deployment_matrix_logits_raw", "deployment_service_context_features",
+                "deployment_service_need_logits", "deployment_service_need_probs",
                 "deployment_pair_rank_logits", "deployment_pair_centered_logits",
                 "deployment_base_scores", "deployment_centered_scores",
                 "deployment_final_scores", "deployment_select_logits",
-                "deployment_select_probs", "deployment_decode_scores",
+                "deployment_select_probs",
                 "deployment_static_option_score", "deployment_static_quality_score",
                 "deployment_observed_quality_score", "deployment_runtime_risk_score",
                 "deployment_pair_quality", "deployment_service_best_pair_quality",
@@ -3063,11 +3019,7 @@ class Hedger:
                 "deployment_queue_pressure", "deployment_runtime_unknown_risk",
                 "deployment_runtime_stale_risk", "deployment_runtime_relative_weakness",
                 "deployment_policy_probs", "deployment_raw_mode_nodes",
-                "deployment_decoded_nodes", "deployment_positive_mask", "deployment_negative_mask",
-                "deployment_decoder_target_nodes", "deployment_decoder_utility",
-                "deployment_decoder_marginal_gain", "deployment_decoder_quality_mass",
-                "deployment_decoder_device_mem_used", "deployment_decoder_device_count",
-                "deployment_decoder_objective",
+                "deployment_positive_mask", "deployment_negative_mask",
                 "deployment_effective_option_mask", "deployment_top_quality_option_mask",
                 "deployment_risky_option_mask", "deployment_effective_option_floor",
                 "deployment_service_pressure",
@@ -3270,27 +3222,6 @@ class Hedger:
             added_indices = torch.nonzero(~raw_mask[service_idx] & exec_mask[service_idx], as_tuple=False)
             raw_edge_count = int(raw_mask[service_idx, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
             exec_edge_count = int(exec_mask[service_idx, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
-            decoded_tensor = actor_debug.get("decoded_mask")
-            if isinstance(decoded_tensor, torch.Tensor) and decoded_tensor.dim() == 2 \
-                    and decoded_tensor.size(0) > service_idx:
-                decoded_row = decoded_tensor[service_idx].detach().cpu().bool()
-            else:
-                decoded_row = exec_mask[service_idx]
-            decoded_edge_count = int(decoded_row[:cloud_idx].sum().item()) if cloud_idx > 0 else 0
-            decode_added_tensor = actor_debug.get("decode_added_mask")
-            if isinstance(decode_added_tensor, torch.Tensor) and decode_added_tensor.dim() == 2 \
-                    and decode_added_tensor.size(0) > service_idx:
-                decode_added_row = decode_added_tensor[service_idx].detach().cpu().bool()
-                decode_added_indices = torch.nonzero(decode_added_row, as_tuple=False).flatten().tolist()
-            else:
-                decode_added_indices = []
-            decode_pruned_tensor = actor_debug.get("decode_pruned_mask")
-            if isinstance(decode_pruned_tensor, torch.Tensor) and decode_pruned_tensor.dim() == 2 \
-                    and decode_pruned_tensor.size(0) > service_idx:
-                decode_pruned_row = decode_pruned_tensor[service_idx].detach().cpu().bool()
-                decode_pruned_indices = torch.nonzero(decode_pruned_row, as_tuple=False).flatten().tolist()
-            else:
-                decode_pruned_indices = []
             matrix_added_tensor = actor_debug.get("matrix_added_mask")
             if isinstance(matrix_added_tensor, torch.Tensor) and matrix_added_tensor.dim() == 2 \
                     and matrix_added_tensor.size(0) > service_idx:
@@ -3325,39 +3256,6 @@ class Hedger:
                 capacity_removed_indices = torch.nonzero(capacity_removed_row, as_tuple=False).flatten().tolist()
             else:
                 capacity_removed_indices = []
-            added_reason_tensor = actor_debug.get("decode_added_reason")
-            if isinstance(added_reason_tensor, torch.Tensor) and added_reason_tensor.dim() == 2 \
-                    and added_reason_tensor.size(0) > service_idx:
-                added_reason_row = added_reason_tensor[service_idx].detach().cpu().long()
-                added_reason_codes = [
-                    int(added_reason_row[idx].item()) for idx in decode_added_indices
-                    if 0 <= idx < added_reason_row.numel()
-                ]
-            else:
-                added_reason_codes = []
-            pruned_reason_tensor = actor_debug.get("decode_pruned_reason")
-            if isinstance(pruned_reason_tensor, torch.Tensor) and pruned_reason_tensor.dim() == 2 \
-                    and pruned_reason_tensor.size(0) > service_idx:
-                pruned_reason_row = pruned_reason_tensor[service_idx].detach().cpu().long()
-                pruned_reason_codes = [
-                    int(pruned_reason_row[idx].item()) for idx in decode_pruned_indices
-                    if 0 <= idx < pruned_reason_row.numel()
-                ]
-            else:
-                pruned_reason_codes = []
-            reason_names = [
-                {
-                    1: "bernoulli_sample",
-                    2: "global_decoder_added",
-                }.get(code, "")
-                for code in added_reason_codes
-                if code > 0
-            ]
-            pruned_reason_names = [
-                {1: "matrix_removed", 2: "global_decoder_pruned"}.get(code, "")
-                for code in pruned_reason_codes
-                if code > 0
-            ]
             edge_feasible_count = self._actor_debug_vector_value(actor_debug, "edge_feasible_count", service_idx)
             row = dict(
                 step=step,
@@ -3380,14 +3278,9 @@ class Hedger:
                 executed_edge_replicas=exec_edge_count,
                 cloud_replica=bool(exec_mask[service_idx, cloud_idx].item()),
                 raw_zero_edge=int(raw_edge_count <= 0 and edge_feasible_count > 0.0),
-                decoded_zero_edge=int(decoded_edge_count <= 0 and edge_feasible_count > 0.0),
                 matrix_added_nodes=self._json_for_record(self._device_names_from_indices(matrix_added_indices)),
                 matrix_kept_nodes=self._json_for_record(self._device_names_from_indices(matrix_kept_indices)),
                 matrix_removed_nodes=self._json_for_record(self._device_names_from_indices(matrix_removed_indices)),
-                decode_added_nodes=self._json_for_record(self._device_names_from_indices(decode_added_indices)),
-                decode_pruned_nodes=self._json_for_record(self._device_names_from_indices(decode_pruned_indices)),
-                decode_added_reason=self._json_for_record(reason_names),
-                decode_pruned_reason=self._json_for_record(pruned_reason_names),
                 capacity_removed_nodes=self._json_for_record(
                     self._device_names_from_indices(capacity_removed_indices)
                 ),
@@ -3492,6 +3385,12 @@ class Hedger:
                             service_context_feature_names,
                         )
                     ),
+                    "deployment_service_need_logits": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "service_need_logit", service_idx)
+                    ),
+                    "deployment_service_need_probs": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "service_need_prob", service_idx)
+                    ),
                     "deployment_pair_rank_logits": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_rank_logit_raw", service_idx)
                     ),
@@ -3512,9 +3411,6 @@ class Hedger:
                     ),
                     "deployment_select_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "select_prob", service_idx)
-                    ),
-                    "deployment_decode_scores": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "decode_score", service_idx)
                     ),
                     "deployment_static_option_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "static_option_score", service_idx)
@@ -3578,38 +3474,6 @@ class Hedger:
                                 as_tuple=False,
                             ).flatten().tolist()
                         ) if isinstance(actor_debug.get("raw_mode_mask"), torch.Tensor) else []
-                    ),
-                    "deployment_decoded_nodes": self._json_for_record(
-                        self._device_names_from_indices(
-                            torch.nonzero(decoded_row, as_tuple=False).flatten().tolist()
-                        )
-                    ),
-                    "deployment_decoder_target_nodes": self._json_for_record(
-                        self._device_names_from_indices(
-                            torch.nonzero(
-                                actor_debug.get("decoder_target_mask", torch.zeros_like(exec_mask))[service_idx]
-                                .detach().cpu().bool(),
-                                as_tuple=False,
-                            ).flatten().tolist()
-                        ) if isinstance(actor_debug.get("decoder_target_mask"), torch.Tensor) else []
-                    ),
-                    "deployment_decoder_utility": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "decoder_utility", service_idx)
-                    ),
-                    "deployment_decoder_marginal_gain": self._json_for_record(
-                        self._actor_debug_row_map(actor_debug, "decoder_marginal_gain", service_idx)
-                    ),
-                    "deployment_decoder_quality_mass": self._json_for_record(
-                        self._actor_debug_vector_value(actor_debug, "decoder_quality_mass", service_idx)
-                    ),
-                    "deployment_decoder_device_mem_used": self._json_for_record(
-                        self._actor_debug_device_vector_map(actor_debug, "decoder_device_mem_used")
-                    ),
-                    "deployment_decoder_device_count": self._json_for_record(
-                        self._actor_debug_device_vector_map(actor_debug, "decoder_device_count")
-                    ),
-                    "deployment_decoder_objective": self._json_for_record(
-                        self._actor_debug_scalar_value(actor_debug, "decoder_objective")
                     ),
                     "deployment_positive_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "positive_mask", service_idx)
@@ -6321,11 +6185,6 @@ class Hedger:
                 )
                 cloud_idx = self.physical_topology.cloud_idx
                 raw_edge_replicas = int(raw_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
-                decoded_mask_aux = aux.get("decoded_deploy_mask")
-                decoded_edge_replicas = (
-                    int(decoded_mask_aux.detach().cpu().bool()[:, :cloud_idx].sum().item())
-                    if isinstance(decoded_mask_aux, torch.Tensor) and cloud_idx > 0 else raw_edge_replicas
-                )
                 edge_replicas = int(exec_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
                 cloud_replicas = int(exec_deploy_mask[:, cloud_idx].sum().item())
                 layout_metrics = self._deployment_layout_metrics(exec_deploy_mask)
@@ -6446,16 +6305,12 @@ class Hedger:
                         policy_entropy=self._scalar_value(ent),
                         value_estimate=self._scalar_value(value),
                         raw_edge_replicas=raw_edge_replicas,
-                        decoded_edge_replicas=decoded_edge_replicas,
                         edge_replicas=edge_replicas,
                         cloud_replicas=cloud_replicas,
                         raw_zero_edge_services=aux.get("raw_zero_edge_services", 0),
-                        decoded_zero_edge_services=aux.get("decoded_zero_edge_services", 0),
                         matrix_added_cnt=aux.get("matrix_added_cnt", 0),
                         matrix_kept_cnt=aux.get("matrix_kept_cnt", 0),
                         matrix_removed_cnt=aux.get("matrix_removed_cnt", 0),
-                        decode_added_cnt=aux.get("decode_added_cnt", 0),
-                        decode_pruned_cnt=aux.get("decode_pruned_cnt", 0),
                         edge_policy_prob_mean=aux.get("edge_policy_prob_mean", 0.0),
                         edge_policy_prob_std=aux.get("edge_policy_prob_std", 0.0),
                         edge_policy_logit_mean=aux.get("edge_policy_logit_mean", 0.0),
@@ -6470,15 +6325,6 @@ class Hedger:
                         expected_quality_mass_min=aux.get("expected_quality_mass_min", 0.0),
                         expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
                         expected_memory_overage_max=aux.get("expected_memory_overage_max", 0.0),
-                        decoder_target_edge_count_mean=aux.get("decoder_target_edge_count_mean", 0.0),
-                        decoder_target_quality_mass_mean=aux.get("decoder_target_quality_mass_mean", 0.0),
-                        decoder_target_prob_mean=aux.get("decoder_target_prob_mean", 0.0),
-                        decoder_target_raw_overlap=aux.get("decoder_target_raw_overlap", 0.0),
-                        decoder_target_objective=aux.get("decoder_target_objective", 0.0),
-                        executed_set_score=aux.get("executed_set_score", 0.0),
-                        decoded_set_score=aux.get("decoded_set_score", 0.0),
-                        cloud_set_score=aux.get("cloud_set_score", 0.0),
-                        decoded_vs_cloud_set_score_gap=aux.get("decoded_vs_cloud_set_score_gap", 0.0),
                         top_quality_prob_mean=aux.get("top_quality_prob_mean", 0.0),
                         effective_option_prob_mean=aux.get("effective_option_prob_mean", 0.0),
                         non_top_prob_mean=aux.get("non_top_prob_mean", 0.0),
@@ -6532,14 +6378,8 @@ class Hedger:
                         quality_margin_coef=offline_rl_record_cfg.quality_margin_coef,
                         ranking_margin_coef=offline_rl_record_cfg.ranking_margin_coef,
                         memory_margin_coef=offline_rl_record_cfg.memory_margin_coef,
-                        set_preference_coef=offline_rl_record_cfg.set_preference_coef,
-                        service_contrastive_coef=offline_rl_record_cfg.service_contrastive_coef,
-                        teacher_actor_weight=offline_rl_record_cfg.teacher_actor_weight,
-                        set_preference_margin=offline_rl_record_cfg.set_preference_margin,
-                        cloud_negative_coef=offline_rl_record_cfg.cloud_negative_coef,
-                        overdeploy_negative_coef=offline_rl_record_cfg.overdeploy_negative_coef,
-                        executed_set_positive_coef=offline_rl_record_cfg.executed_set_positive_coef,
-                        executed_bad_negative_coef=offline_rl_record_cfg.executed_bad_negative_coef,
+                        service_need_coef=offline_rl_record_cfg.service_need_coef,
+                        cardinality_coef=offline_rl_record_cfg.cardinality_coef,
                         positive_logit_margin=offline_rl_record_cfg.positive_logit_margin,
                         negative_logit_margin=offline_rl_record_cfg.negative_logit_margin,
                         coverage_logit_margin=offline_rl_record_cfg.coverage_logit_margin,
@@ -6561,15 +6401,6 @@ class Hedger:
                         negative_stale_threshold=self.deployment_agent_params["negative_stale_threshold"],
                         positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
-                        decoder_actor_weight=self.deployment_agent_params["decoder_actor_weight"],
-                        decoder_quality_weight=self.deployment_agent_params["decoder_quality_weight"],
-                        decoder_freedom_weight=self.deployment_agent_params["decoder_freedom_weight"],
-                        decoder_memory_weight=self.deployment_agent_params["decoder_memory_weight"],
-                        decoder_runtime_risk_weight=self.deployment_agent_params["decoder_runtime_risk_weight"],
-                        decoder_unknown_weight=self.deployment_agent_params["decoder_unknown_weight"],
-                        decoder_stale_weight=self.deployment_agent_params["decoder_stale_weight"],
-                        decoder_min_gain=self.deployment_agent_params["decoder_min_gain"],
-                        decoder_local_swap_passes=self.deployment_agent_params["decoder_local_swap_passes"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
                     if self.record_cfg.actor_snapshot_debug:
@@ -7227,10 +7058,9 @@ class Hedger:
                                 "collect_candidate_risky_pair_count",
                                 "collect_raw_change_count", "collect_exec_change_count",
                                 "deployment_rollout_deterministic",
-                                "raw_edge_replicas", "decoded_edge_replicas", "edge_replicas", "cloud_replicas",
-                                "raw_zero_edge_services", "decoded_zero_edge_services",
+                                "raw_edge_replicas", "edge_replicas", "cloud_replicas",
+                                "raw_zero_edge_services",
                                 "matrix_added_cnt", "matrix_kept_cnt", "matrix_removed_cnt",
-                                "decode_added_cnt", "decode_pruned_cnt",
                                 "edge_policy_prob_mean", "edge_policy_prob_std",
                                 "edge_policy_logit_mean", "edge_policy_logit_std",
                                 "pair_centered_logit_std",
@@ -7239,11 +7069,6 @@ class Hedger:
                                 "expected_edge_count_max", "expected_quality_mass_mean",
                                 "expected_quality_mass_min", "expected_memory_overage_mean",
                                 "expected_memory_overage_max",
-                                "decoder_target_edge_count_mean", "decoder_target_quality_mass_mean",
-                                "decoder_target_prob_mean", "decoder_target_raw_overlap",
-                                "decoder_target_objective",
-                                "executed_set_score", "decoded_set_score", "cloud_set_score",
-                                "decoded_vs_cloud_set_score_gap",
                                 "top_quality_prob_mean", "non_top_prob_mean",
                                 "top_quality_logit_mean", "non_top_logit_mean",
                                 "top_quality_logit_gap_mean",
@@ -7273,9 +7098,7 @@ class Hedger:
             "stale_option_weight", "low_quality_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "memory_margin_coef",
-            "set_preference_coef", "service_contrastive_coef", "teacher_actor_weight",
-            "set_preference_margin", "cloud_negative_coef", "overdeploy_negative_coef",
-            "executed_set_positive_coef", "executed_bad_negative_coef",
+            "service_need_coef", "cardinality_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
@@ -7284,10 +7107,6 @@ class Hedger:
             "negative_runtime_risk_threshold", "negative_unknown_threshold",
             "negative_stale_threshold", "positive_quality_threshold",
             "queue_normalizer",
-            "decoder_actor_weight", "decoder_quality_weight", "decoder_freedom_weight",
-            "decoder_memory_weight", "decoder_runtime_risk_weight",
-            "decoder_unknown_weight", "decoder_stale_weight", "decoder_min_gain",
-            "decoder_local_swap_passes",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
             "deployment_default_warmup_min_feedback_samples",
@@ -7467,11 +7286,6 @@ class Hedger:
                 exec_deploy_mask = deploy_mask.detach().cpu().bool()
                 raw_deploy_plan = self._map_deployment_mask_to_deployment_plan(raw_deploy_mask)
                 raw_edge_replicas = int(raw_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
-                decoded_mask_aux = aux.get("decoded_deploy_mask")
-                decoded_edge_replicas = (
-                    int(decoded_mask_aux.detach().cpu().bool()[:, :cloud_idx].sum().item())
-                    if isinstance(decoded_mask_aux, torch.Tensor) and cloud_idx > 0 else raw_edge_replicas
-                )
                 edge_replicas = int(exec_deploy_mask[:, :cloud_idx].sum().item()) if cloud_idx > 0 else 0
                 cloud_replicas = int(exec_deploy_mask[:, cloud_idx].sum().item())
                 layout_metrics = self._deployment_layout_metrics(exec_deploy_mask)
@@ -7720,16 +7534,12 @@ class Hedger:
                         bool(self.training_cfg.deployment_rollout_deterministic)
                     ),
                     raw_edge_replicas=raw_edge_replicas,
-                    decoded_edge_replicas=decoded_edge_replicas,
                     edge_replicas=edge_replicas,
                     cloud_replicas=cloud_replicas,
                     raw_zero_edge_services=aux.get("raw_zero_edge_services", 0),
-                    decoded_zero_edge_services=aux.get("decoded_zero_edge_services", 0),
                     matrix_added_cnt=aux.get("matrix_added_cnt", 0),
                     matrix_kept_cnt=aux.get("matrix_kept_cnt", 0),
                     matrix_removed_cnt=aux.get("matrix_removed_cnt", 0),
-                    decode_added_cnt=aux.get("decode_added_cnt", 0),
-                    decode_pruned_cnt=aux.get("decode_pruned_cnt", 0),
                     edge_policy_prob_mean=aux.get("edge_policy_prob_mean", 0.0),
                     edge_policy_prob_std=aux.get("edge_policy_prob_std", 0.0),
                     edge_policy_logit_mean=aux.get("edge_policy_logit_mean", 0.0),
@@ -7744,15 +7554,6 @@ class Hedger:
                     expected_quality_mass_min=aux.get("expected_quality_mass_min", 0.0),
                     expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
                     expected_memory_overage_max=aux.get("expected_memory_overage_max", 0.0),
-                    decoder_target_edge_count_mean=aux.get("decoder_target_edge_count_mean", 0.0),
-                    decoder_target_quality_mass_mean=aux.get("decoder_target_quality_mass_mean", 0.0),
-                    decoder_target_prob_mean=aux.get("decoder_target_prob_mean", 0.0),
-                    decoder_target_raw_overlap=aux.get("decoder_target_raw_overlap", 0.0),
-                    decoder_target_objective=aux.get("decoder_target_objective", 0.0),
-                    executed_set_score=aux.get("executed_set_score", 0.0),
-                    decoded_set_score=aux.get("decoded_set_score", 0.0),
-                    cloud_set_score=aux.get("cloud_set_score", 0.0),
-                    decoded_vs_cloud_set_score_gap=aux.get("decoded_vs_cloud_set_score_gap", 0.0),
                     top_quality_prob_mean=aux.get("top_quality_prob_mean", 0.0),
                     effective_option_prob_mean=aux.get("effective_option_prob_mean", 0.0),
                     non_top_prob_mean=aux.get("non_top_prob_mean", 0.0),
@@ -7808,14 +7609,8 @@ class Hedger:
                     quality_margin_coef=self.training_cfg.deployment_offline_rl.quality_margin_coef,
                     ranking_margin_coef=self.training_cfg.deployment_offline_rl.ranking_margin_coef,
                     memory_margin_coef=self.training_cfg.deployment_offline_rl.memory_margin_coef,
-                    set_preference_coef=self.training_cfg.deployment_offline_rl.set_preference_coef,
-                    service_contrastive_coef=self.training_cfg.deployment_offline_rl.service_contrastive_coef,
-                    teacher_actor_weight=self.training_cfg.deployment_offline_rl.teacher_actor_weight,
-                    set_preference_margin=self.training_cfg.deployment_offline_rl.set_preference_margin,
-                    cloud_negative_coef=self.training_cfg.deployment_offline_rl.cloud_negative_coef,
-                    overdeploy_negative_coef=self.training_cfg.deployment_offline_rl.overdeploy_negative_coef,
-                    executed_set_positive_coef=self.training_cfg.deployment_offline_rl.executed_set_positive_coef,
-                    executed_bad_negative_coef=self.training_cfg.deployment_offline_rl.executed_bad_negative_coef,
+                    service_need_coef=self.training_cfg.deployment_offline_rl.service_need_coef,
+                    cardinality_coef=self.training_cfg.deployment_offline_rl.cardinality_coef,
                     positive_logit_margin=self.training_cfg.deployment_offline_rl.positive_logit_margin,
                     negative_logit_margin=self.training_cfg.deployment_offline_rl.negative_logit_margin,
                     coverage_logit_margin=self.training_cfg.deployment_offline_rl.coverage_logit_margin,
@@ -7835,15 +7630,6 @@ class Hedger:
                     negative_stale_threshold=self.deployment_agent_params["negative_stale_threshold"],
                     positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
-                    decoder_actor_weight=self.deployment_agent_params["decoder_actor_weight"],
-                    decoder_quality_weight=self.deployment_agent_params["decoder_quality_weight"],
-                    decoder_freedom_weight=self.deployment_agent_params["decoder_freedom_weight"],
-                    decoder_memory_weight=self.deployment_agent_params["decoder_memory_weight"],
-                    decoder_runtime_risk_weight=self.deployment_agent_params["decoder_runtime_risk_weight"],
-                    decoder_unknown_weight=self.deployment_agent_params["decoder_unknown_weight"],
-                    decoder_stale_weight=self.deployment_agent_params["decoder_stale_weight"],
-                    decoder_min_gain=self.deployment_agent_params["decoder_min_gain"],
-                    decoder_local_swap_passes=self.deployment_agent_params["decoder_local_swap_passes"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
                     deployment_default_warmup_min_feedback_samples=(
@@ -8421,6 +8207,8 @@ class Hedger:
             "negative_bc_coef": cfg.negative_bc_coef,
             "raw_removed_negative_coef": cfg.raw_removed_negative_coef,
             "unselected_negative_coef": cfg.unselected_negative_coef,
+            "service_need_coef": cfg.service_need_coef,
+            "cardinality_coef": cfg.cardinality_coef,
             "value_coef": cfg.value_coef,
             "entropy_coef": cfg.entropy_coef,
             "bootstrap_current_value": cfg.bootstrap_current_value,
@@ -8428,14 +8216,6 @@ class Hedger:
             "quality_margin_coef": cfg.quality_margin_coef,
             "ranking_margin_coef": cfg.ranking_margin_coef,
             "memory_margin_coef": cfg.memory_margin_coef,
-            "set_preference_coef": cfg.set_preference_coef,
-            "service_contrastive_coef": cfg.service_contrastive_coef,
-            "teacher_actor_weight": cfg.teacher_actor_weight,
-            "set_preference_margin": cfg.set_preference_margin,
-            "cloud_negative_coef": cfg.cloud_negative_coef,
-            "overdeploy_negative_coef": cfg.overdeploy_negative_coef,
-            "executed_set_positive_coef": cfg.executed_set_positive_coef,
-            "executed_bad_negative_coef": cfg.executed_bad_negative_coef,
             "positive_logit_margin": cfg.positive_logit_margin,
             "negative_logit_margin": cfg.negative_logit_margin,
             "coverage_logit_margin": cfg.coverage_logit_margin,
