@@ -48,6 +48,11 @@ class DeploymentConstraintCfg:
     soft_target_untrusted_weight_floor: float = 0.40
     soft_target_risk_penalty: float = 0.40
     inertia_logit_bias: float = 0.06
+    # Budget-aware logit calibration.  This is not a decoder rule: it lets the
+    # actor logits see the memory pressure that appears after deterministic
+    # p>0.5 matrix selection.
+    budget_logit_scale: float = 0.75
+    budget_temperature: float = 0.12
 
 
 class PhysicalTopology:

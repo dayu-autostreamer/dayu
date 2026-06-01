@@ -145,6 +145,8 @@ DEPLOYMENT_CANDIDATE_FEATURE_NAMES = [
     "runtime_relative_weakness",
     "low_quality_gap",
     "pair_memory_cost",
+    "device_memory_pressure",
+    "pair_budget_pressure",
     "current_replica",
     "device_replica_count",
     "static_allowed",
@@ -586,6 +588,18 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.10
         return max(0.0, value)
 
+    def _deployment_budget_logit_scale(self) -> float:
+        value = float(getattr(self.cfg, "budget_logit_scale", 0.0))
+        if not math.isfinite(value):
+            value = 0.0
+        return max(0.0, value)
+
+    def _deployment_budget_temperature(self) -> float:
+        value = float(getattr(self.cfg, "budget_temperature", 0.12))
+        if not math.isfinite(value):
+            value = 0.12
+        return max(value, 1e-3)
+
     def _scale_edge_memory_budget(self, budget: torch.Tensor) -> torch.Tensor:
         ratio = self._edge_memory_budget_ratio()
         if ratio >= 1.0 or budget.numel() == 0:
@@ -878,6 +892,19 @@ class _DeploymentBackbonePPO(nn.Module):
         model_log_mem = demand_feat[:, 3].view(num_services, 1)
         mem_gap = model_log_mem - torch.log1p(residual_mem.clamp_min(0.0)).view(1, num_devices)
         pair_memory_cost = torch.sigmoid(mem_gap)
+        model_mem = logic_feats.get("model_mem")
+        if isinstance(model_mem, torch.Tensor):
+            model_mem = model_mem.to(device=device, dtype=dtype).view(num_services)
+        else:
+            model_mem = torch.zeros((num_services,), device=device, dtype=dtype)
+        prev_edge_for_mem = prev_mask.clone()
+        if cloud_idx >= 0:
+            prev_edge_for_mem[:, cloud_idx] = 0.0
+        prev_device_mem = (prev_edge_for_mem * model_mem.view(num_services, 1)).sum(dim=0)
+        effective_device_budget = (prev_device_mem + residual_mem).clamp_min(1e-3)
+        device_memory_pressure_vec = (prev_device_mem / effective_device_budget).clamp(0.0, 2.0)
+        device_memory_pressure = device_memory_pressure_vec.view(1, num_devices).expand(num_services, -1)
+        pair_budget_pressure = (pair_memory_cost * device_memory_pressure).clamp(0.0, 2.0)
         device_load = prev_mask[:, :edge_width].sum(dim=0) if edge_width > 0 \
             else torch.zeros((0,), device=device, dtype=dtype)
         device_load_norm_edge = device_load / device_load.max().clamp_min(1.0) if edge_width > 0 else device_load
@@ -934,6 +961,8 @@ class _DeploymentBackbonePPO(nn.Module):
             "runtime_stale": runtime_stale,
             "runtime_relative_weakness": runtime_relative_weakness,
             "pair_memory_cost": pair_memory_cost,
+            "device_memory_pressure": device_memory_pressure,
+            "pair_budget_pressure": pair_budget_pressure,
             "device_load_norm": device_load_norm,
             "static_quality_score": static_quality_score,
             "observed_quality_score": observed_quality_score,
@@ -1000,6 +1029,8 @@ class _DeploymentBackbonePPO(nn.Module):
                 option_ctx["runtime_relative_weakness"].to(device=device, dtype=dtype),
                 option_ctx["low_quality_gap"].to(device=device, dtype=dtype),
                 option_ctx["pair_memory_cost"].to(device=device, dtype=dtype),
+                option_ctx["device_memory_pressure"].to(device=device, dtype=dtype),
+                option_ctx["pair_budget_pressure"].to(device=device, dtype=dtype),
                 prev_mask,
                 torch.log1p(device_service_count).view(1, num_devices).expand(num_services, -1),
                 static_allowed_float,
@@ -1079,6 +1110,99 @@ class _DeploymentBackbonePPO(nn.Module):
             "service_max_queue_pressure": max_queue_pressure,
         }
 
+    def _deployment_budget_logit_terms(
+            self,
+            select_logits: torch.Tensor,
+            static_allowed: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            pair_memory_cost: Optional[torch.Tensor] = None,
+            prev_deploy_mask: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Differentiable proxy for the memory pressure caused by p>0.5 selection.
+
+        Deployment inference turns logits into a hard 0/1 matrix at logit 0.
+        A plain sigmoid expectation can look feasible while many logits sit
+        just above zero on the same device.  This sharper activation tells the
+        actor and offline loss about the hard-threshold memory pressure without
+        adding another rule-based decoder.
+        """
+        device = select_logits.device
+        dtype = torch.float32
+        num_services, num_devices = select_logits.shape
+        cloud_idx = self._cloud_index(num_devices)
+        edge_allowed = static_allowed.to(device=device).bool().clone()
+        if cloud_idx >= 0:
+            edge_allowed[:, cloud_idx] = False
+        model_mem = logic_feats.get("model_mem")
+        if isinstance(model_mem, torch.Tensor):
+            model_mem = model_mem.to(device=device, dtype=dtype).view(num_services)
+        else:
+            model_mem = torch.zeros((num_services,), device=device, dtype=dtype)
+        residual_mem = self._initial_residual_mem(phys_feats, logic_feats, prev_deploy_mask).to(
+            device=device,
+            dtype=dtype,
+        )
+        tau = self._deployment_budget_temperature()
+        threshold_prob = torch.where(
+            edge_allowed,
+            torch.sigmoid(select_logits.to(dtype=dtype) / tau),
+            torch.zeros_like(select_logits, dtype=dtype),
+        )
+        threshold_device_mem = (threshold_prob * model_mem.view(num_services, 1)).sum(dim=0)
+        threshold_overage = (
+            F.relu(threshold_device_mem - residual_mem) / residual_mem.clamp_min(1e-3)
+        )
+        edge_device = torch.ones((num_devices,), device=device, dtype=torch.bool)
+        if cloud_idx >= 0:
+            edge_device[cloud_idx] = False
+        shadow_price = torch.where(edge_device, threshold_overage, torch.zeros_like(threshold_overage))
+        if pair_memory_cost is None:
+            demand_feat = _service_demand_features(logic_feats, num_services, device, dtype)
+            model_log_mem = demand_feat[:, 3].view(num_services, 1)
+            mem_gap = model_log_mem - torch.log1p(residual_mem.clamp_min(0.0)).view(1, num_devices)
+            pair_memory_cost = torch.sigmoid(mem_gap)
+        pair_memory_cost = pair_memory_cost.to(device=device, dtype=dtype)
+        pair_budget_pressure = (pair_memory_cost * shadow_price.view(1, num_devices)).clamp_min(0.0)
+        budget_penalty = (
+            self._deployment_budget_logit_scale()
+            * pair_budget_pressure
+            * edge_allowed.to(dtype=dtype)
+        )
+        if bool(edge_device.any().item()):
+            edge_overage = threshold_overage.masked_select(edge_device)
+            overage_mean = edge_overage.mean()
+            overage_max = edge_overage.max()
+            over_budget_count = (edge_overage > 1e-6).to(dtype=dtype).sum()
+            shadow_edge = shadow_price.masked_select(edge_device)
+            shadow_mean = shadow_edge.mean()
+            shadow_max = shadow_edge.max()
+        else:
+            zero = select_logits.sum() * 0.0
+            overage_mean = zero
+            overage_max = zero
+            over_budget_count = zero
+            shadow_mean = zero
+            shadow_max = zero
+        expected_edge_count = threshold_prob.sum(dim=1)
+        return {
+            "threshold_edge_prob": threshold_prob,
+            "threshold_expected_device_mem": threshold_device_mem,
+            "threshold_memory_overage": threshold_overage,
+            "threshold_memory_overage_mean": overage_mean,
+            "threshold_memory_overage_max": overage_max,
+            "threshold_device_over_budget_count": over_budget_count,
+            "threshold_expected_edge_count_mean": expected_edge_count.mean()
+            if expected_edge_count.numel() > 0 else select_logits.sum() * 0.0,
+            "budget_shadow_price": shadow_price,
+            "budget_shadow_price_mean": shadow_mean,
+            "budget_shadow_price_max": shadow_max,
+            "budget_pair_pressure": pair_budget_pressure,
+            "budget_logit_penalty": budget_penalty,
+            "budget_logit_penalty_mean": budget_penalty.masked_select(edge_allowed).mean()
+            if bool(edge_allowed.any().item()) else select_logits.sum() * 0.0,
+        }
+
     def _deployment_actor_terms(
             self,
             h_s: torch.Tensor,
@@ -1146,19 +1270,38 @@ class _DeploymentBackbonePPO(nn.Module):
         # deterministic inference selects edge pairs with logit > 0 and the
         # projection step only repairs hard feasibility constraints.
         select_logits_raw = pair_rank_logit_raw + self._deployment_inertia_logit_bias() * current_replica
-        select_logits = select_logits_raw
+        budget_terms = self._deployment_budget_logit_terms(
+            select_logits_raw,
+            static_allowed,
+            logic_feats,
+            phys_feats,
+            pair_memory_cost=option_ctx.get("pair_memory_cost"),
+            prev_deploy_mask=prev_deploy_mask,
+        )
+        select_logits = select_logits_raw - budget_terms["budget_logit_penalty"]
         invalid = ~static_allowed.bool()
         select_logits = torch.where(invalid, torch.full_like(select_logits, -20.0), select_logits)
         if cloud_idx >= 0:
             device_ids = torch.arange(static_allowed.size(1), device=h_s.device)
             cloud_mask = device_ids.view(1, -1).eq(cloud_idx).expand_as(static_allowed)
             select_logits = torch.where(cloud_mask, torch.full_like(select_logits, 20.0), select_logits)
+        final_budget_terms = self._deployment_budget_logit_terms(
+            select_logits,
+            static_allowed,
+            logic_feats,
+            phys_feats,
+            pair_memory_cost=option_ctx.get("pair_memory_cost"),
+            prev_deploy_mask=prev_deploy_mask,
+        )
         pair_ctx.update(option_ctx)
         pair_ctx.update(service_ctx)
+        pair_ctx.update(final_budget_terms)
         pair_ctx["base_score"] = qk_feature
         pair_ctx["service_context_feature"] = service_features
         pair_ctx["pair_rank_logit_raw"] = pair_rank_logit_raw
         pair_ctx["pair_centered_logit"] = pair_centered_logit
+        pair_ctx["select_logit_pre_budget"] = select_logits_raw
+        pair_ctx["budget_logit_penalty"] = budget_terms["budget_logit_penalty"]
         pair_ctx["pair_utility_logit"] = select_logits
         pair_ctx["centered_score"] = pair_centered_logit
         pair_ctx["select_logit"] = select_logits
@@ -1719,19 +1862,31 @@ class _DeploymentBackbonePPO(nn.Module):
             dtype=dtype,
         )
         expected_device_mem = (edge_prob * model_mem.view(num_services, 1)).sum(dim=0)
+        threshold_budget_terms = self._deployment_budget_logit_terms(
+            select_logits,
+            static_allowed,
+            logic_feats,
+            phys_feats,
+            pair_memory_cost=policy_ctx.get("pair_memory_cost"),
+            prev_deploy_mask=prev_deploy_mask,
+        )
         edge_device = torch.ones((num_devices,), device=device, dtype=torch.bool)
         if cloud_idx >= 0:
             edge_device[cloud_idx] = False
         if bool(edge_device.any().item()):
             memory_overage = F.relu(expected_device_mem - residual_mem) / residual_mem.clamp_min(1e-3)
-            memory_loss = memory_overage.masked_select(edge_device).mean()
             memory_overage_mean = memory_overage.masked_select(edge_device).mean()
             memory_overage_max = memory_overage.masked_select(edge_device).max()
+            threshold_memory_overage_mean = threshold_budget_terms["threshold_memory_overage_mean"]
+            threshold_memory_overage_max = threshold_budget_terms["threshold_memory_overage_max"]
+            memory_loss = memory_overage_mean + threshold_memory_overage_mean
         else:
             zero = select_logits.sum() * 0.0
             memory_loss = zero
             memory_overage_mean = zero
             memory_overage_max = zero
+            threshold_memory_overage_mean = zero
+            threshold_memory_overage_max = zero
 
         if bool(edge_allowed.any().item()):
             edge_probs = select_prob.masked_select(edge_allowed)
@@ -1869,6 +2024,16 @@ class _DeploymentBackbonePPO(nn.Module):
             ),
             "expected_memory_overage_mean": memory_overage_mean,
             "expected_memory_overage_max": memory_overage_max,
+            "threshold_memory_overage_mean": threshold_memory_overage_mean,
+            "threshold_memory_overage_max": threshold_memory_overage_max,
+            "threshold_expected_edge_count_mean": threshold_budget_terms["threshold_expected_edge_count_mean"],
+            "threshold_device_over_budget_count": threshold_budget_terms["threshold_device_over_budget_count"],
+            "budget_shadow_price_mean": threshold_budget_terms["budget_shadow_price_mean"],
+            "budget_shadow_price_max": threshold_budget_terms["budget_shadow_price_max"],
+            "budget_logit_penalty_mean": policy_ctx.get(
+                "budget_logit_penalty_mean",
+                threshold_budget_terms["budget_logit_penalty_mean"],
+            ),
             "top_quality_prob_mean": top_quality_probs.mean() if bool(top_quality_probs.numel()) else zero,
             "effective_option_prob_mean": (
                 effective_option_probs.mean() if bool(effective_option_probs.numel()) else zero
@@ -2368,6 +2533,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "service_context_feature_names": DEPLOYMENT_SERVICE_CONTEXT_FEATURE_NAMES,
                 "pair_rank_logit_raw": pair_ctx["pair_rank_logit_raw"].detach().cpu(),
                 "pair_centered_logit": pair_ctx["pair_centered_logit"].detach().cpu(),
+                "select_logit_pre_budget": pair_ctx["select_logit_pre_budget"].detach().cpu(),
+                "budget_logit_penalty": pair_ctx["budget_logit_penalty"].detach().cpu(),
+                "budget_pair_pressure": pair_ctx["budget_pair_pressure"].detach().cpu(),
+                "budget_shadow_price": pair_ctx["budget_shadow_price"].detach().cpu(),
+                "threshold_edge_prob": pair_ctx["threshold_edge_prob"].detach().cpu(),
+                "threshold_expected_device_mem": pair_ctx["threshold_expected_device_mem"].detach().cpu(),
+                "threshold_memory_overage": pair_ctx["threshold_memory_overage"].detach().cpu(),
                 "base_score": pair_ctx["base_score"].detach().cpu(),
                 "centered_score": pair_ctx["centered_score"].detach().cpu(),
                 "select_logit": select_logits.detach().cpu(),
@@ -2389,6 +2561,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "runtime_unknown_risk": pair_ctx["runtime_unknown_risk"].detach().cpu(),
                 "runtime_stale_risk": pair_ctx["runtime_stale_risk"].detach().cpu(),
                 "runtime_relative_weakness": pair_ctx["runtime_relative_weakness"].detach().cpu(),
+                "device_memory_pressure": pair_ctx["device_memory_pressure"].detach().cpu(),
+                "pair_budget_pressure": pair_ctx["pair_budget_pressure"].detach().cpu(),
                 "runtime_confidence": pair_ctx["runtime_confidence"].detach().cpu(),
                 "runtime_recency": pair_ctx["runtime_recency"].detach().cpu(),
                 "runtime_unknown": pair_ctx["runtime_unknown"].detach().cpu(),
@@ -2510,6 +2684,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "negative_mask": negative_mask_t,
                 "pair_rank_logit_raw": pair_ctx["pair_rank_logit_raw"],
                 "pair_centered_logit": pair_ctx["pair_centered_logit"],
+                "select_logit_pre_budget": pair_ctx["select_logit_pre_budget"],
+                "budget_logit_penalty": pair_ctx["budget_logit_penalty"],
+                "budget_pair_pressure": pair_ctx["budget_pair_pressure"],
+                "budget_shadow_price": pair_ctx["budget_shadow_price"],
+                "threshold_edge_prob": pair_ctx["threshold_edge_prob"],
+                "threshold_expected_device_mem": pair_ctx["threshold_expected_device_mem"],
+                "threshold_memory_overage": pair_ctx["threshold_memory_overage"],
                 "service_pressure": pair_ctx["service_pressure"],
                 "queue_pressure": pair_ctx["queue_pressure"],
                 "active_pair_hotspot": pair_ctx["active_pair_hotspot"],
@@ -2529,6 +2710,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "runtime_recency": pair_ctx["runtime_recency"],
                 "runtime_relative_weakness": pair_ctx["runtime_relative_weakness"],
                 "pair_memory_cost": pair_ctx["pair_memory_cost"],
+                "device_memory_pressure": pair_ctx["device_memory_pressure"],
+                "pair_budget_pressure": pair_ctx["pair_budget_pressure"],
                 "edge_replica_count": pair_ctx["edge_replica_count"],
                 "device_replica_count": pair_ctx["device_replica_count"],
             }
@@ -2670,6 +2853,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             phys_feats: Dict[str, torch.Tensor],
             prev_deploy_mask: Optional[torch.Tensor],
             quality_bucket: str,
+            capacity_removed_mask: Optional[torch.Tensor] = None,
             top_quality_tolerance: float = 0.05,
             option_quality_ratio: Optional[float] = None,
             coverage_pressure_floor: Optional[float] = None,
@@ -2731,7 +2915,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         top_quality_mask = option_masks["top_quality_mask"]
         effective_option_mask = option_masks["effective_option_mask"]
         clear_non_effective_mask = option_masks["clear_non_effective_mask"]
-        raw_removed = raw_selected & ~selected
+        capacity_removed = torch.zeros_like(selected)
+        if capacity_removed_mask is not None:
+            capacity_removed = capacity_removed_mask.to(device=edge_allowed.device).bool() & edge_allowed
+        raw_removed = ((raw_selected & ~selected) | capacity_removed) & edge_allowed
         selected_effective = selected & effective_option_mask
         selected_safe_effective = selected_effective & quality_eligible
         teacher_positive = top_quality_mask & edge_allowed
@@ -2752,6 +2939,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_teacher_positive_samples": float(teacher_positive.float().sum().detach().cpu().item()),
             "actor_selected_effective_samples": float(selected_effective.float().sum().detach().cpu().item()),
             "actor_clear_non_effective_samples": float(clear_non_effective_mask.float().sum().detach().cpu().item()),
+            "actor_capacity_removed_samples": float(capacity_removed.float().sum().detach().cpu().item()),
         }
         quality = str(quality_bucket or "unknown").strip().lower()
         # Positive labels are now service-local effective options, not the
@@ -2863,6 +3051,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         teacher_positive_counts = []
         selected_effective_counts = []
         clear_non_effective_counts = []
+        capacity_removed_counts = []
         positive_prob_means = []
         negative_prob_means = []
         aux_positive_prob_means = []
@@ -2912,6 +3101,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         non_effective_selection_costs = []
         expected_memory_overage_means = []
         expected_memory_overage_maxes = []
+        threshold_memory_overage_means = []
+        threshold_memory_overage_maxes = []
+        threshold_expected_edge_count_means = []
+        threshold_device_over_budget_counts = []
+        budget_shadow_price_means = []
+        budget_shadow_price_maxes = []
+        budget_logit_penalty_means = []
         top_quality_prob_means = []
         effective_option_prob_means = []
         non_top_prob_means = []
@@ -2941,6 +3137,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             deploy_mask = tr.get(action_key, tr["deploy_mask"]).to(device).bool()
             raw_deploy_mask = tr.get("raw_deploy_mask")
             raw_deploy_mask = raw_deploy_mask.to(device).bool() if raw_deploy_mask is not None else None
+            capacity_removed_mask = tr.get("capacity_removed_mask")
+            capacity_removed_mask = (
+                capacity_removed_mask.to(device).bool() if capacity_removed_mask is not None else None
+            )
             quality_bucket = transition_quality_bucket(tr)
             with torch.no_grad():
                 _, _, _, probe_aux = self.evaluate(
@@ -2968,6 +3168,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     phys_feats,
                     prev_deploy_mask,
                     quality_bucket,
+                    capacity_removed_mask=capacity_removed_mask,
                     top_quality_tolerance=float(top_quality_tolerance),
                     option_quality_ratio=option_quality_ratio,
                     coverage_pressure_floor=float(coverage_pressure_floor),
@@ -3113,6 +3314,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             teacher_positive_counts.append(float(mask_debug.get("actor_teacher_positive_samples", 0.0)))
             selected_effective_counts.append(float(mask_debug.get("actor_selected_effective_samples", 0.0)))
             clear_non_effective_counts.append(float(mask_debug.get("actor_clear_non_effective_samples", 0.0)))
+            capacity_removed_counts.append(float(mask_debug.get("actor_capacity_removed_samples", 0.0)))
             if bool(positive_mask_t.any().item()):
                 positive_prob_means.append(_scalar_to_float(raw_removed_probs.masked_select(positive_mask_t).mean()))
                 positive_logit_means.append(_scalar_to_float(raw_removed_logits.masked_select(positive_mask_t).mean()))
@@ -3170,6 +3372,17 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             non_effective_selection_costs.append(_scalar_to_float(plan_terms["non_effective_selection_cost"]))
             expected_memory_overage_means.append(_scalar_to_float(plan_terms["expected_memory_overage_mean"]))
             expected_memory_overage_maxes.append(_scalar_to_float(plan_terms["expected_memory_overage_max"]))
+            threshold_memory_overage_means.append(_scalar_to_float(plan_terms["threshold_memory_overage_mean"]))
+            threshold_memory_overage_maxes.append(_scalar_to_float(plan_terms["threshold_memory_overage_max"]))
+            threshold_expected_edge_count_means.append(_scalar_to_float(
+                plan_terms["threshold_expected_edge_count_mean"]
+            ))
+            threshold_device_over_budget_counts.append(_scalar_to_float(
+                plan_terms["threshold_device_over_budget_count"]
+            ))
+            budget_shadow_price_means.append(_scalar_to_float(plan_terms["budget_shadow_price_mean"]))
+            budget_shadow_price_maxes.append(_scalar_to_float(plan_terms["budget_shadow_price_max"]))
+            budget_logit_penalty_means.append(_scalar_to_float(plan_terms["budget_logit_penalty_mean"]))
             top_quality_prob_means.append(_scalar_to_float(plan_terms["top_quality_prob_mean"]))
             effective_option_prob_means.append(_scalar_to_float(plan_terms["effective_option_prob_mean"]))
             non_top_prob_means.append(_scalar_to_float(plan_terms["non_top_prob_mean"]))
@@ -3463,6 +3676,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_teacher_positive_samples": _mean_or_zero(teacher_positive_counts),
             "actor_selected_effective_samples": _mean_or_zero(selected_effective_counts),
             "actor_clear_non_effective_samples": _mean_or_zero(clear_non_effective_counts),
+            "actor_capacity_removed_samples": _mean_or_zero(capacity_removed_counts),
             "bad_actor_masked": _scalar_to_float(bad_mask.detach().mean()),
             "positive_logp_mean": _scalar_to_float(positive_logp_t.detach().mean()),
             "aux_positive_logp_mean": _scalar_to_float(aux_positive_logp_t.detach().mean()),
@@ -3517,6 +3731,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "non_effective_selection_cost": _mean_or_zero(non_effective_selection_costs),
             "expected_memory_overage_mean": _mean_or_zero(expected_memory_overage_means),
             "expected_memory_overage_max": _mean_or_zero(expected_memory_overage_maxes),
+            "threshold_memory_overage_mean": _mean_or_zero(threshold_memory_overage_means),
+            "threshold_memory_overage_max": _mean_or_zero(threshold_memory_overage_maxes),
+            "threshold_expected_edge_count_mean": _mean_or_zero(threshold_expected_edge_count_means),
+            "threshold_device_over_budget_count": _mean_or_zero(threshold_device_over_budget_counts),
+            "budget_shadow_price_mean": _mean_or_zero(budget_shadow_price_means),
+            "budget_shadow_price_max": _mean_or_zero(budget_shadow_price_maxes),
+            "budget_logit_penalty_mean": _mean_or_zero(budget_logit_penalty_means),
             "top_quality_prob_mean": _mean_or_zero(top_quality_prob_means),
             "effective_option_prob_mean": _mean_or_zero(effective_option_prob_means),
             "non_top_prob_mean": _mean_or_zero(non_top_prob_means),

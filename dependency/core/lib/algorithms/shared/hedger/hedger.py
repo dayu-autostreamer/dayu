@@ -1006,7 +1006,7 @@ class Hedger:
             "actor_selected_runtime_risky_samples", "actor_selected_unknown_samples",
             "actor_selected_stale_samples", "actor_selected_untrusted_samples",
             "actor_teacher_positive_samples", "actor_selected_effective_samples",
-            "actor_clear_non_effective_samples",
+            "actor_clear_non_effective_samples", "actor_capacity_removed_samples",
             "bad_actor_masked",
             "positive_logp_mean", "aux_positive_logp_mean",
             "negative_logp_mean", "raw_removed_logp_mean",
@@ -1027,6 +1027,10 @@ class Hedger:
             "effective_option_shortage_mean", "non_effective_option_prob_mean",
             "non_effective_selection_cost",
             "expected_memory_overage_mean", "expected_memory_overage_max",
+            "threshold_memory_overage_mean", "threshold_memory_overage_max",
+            "threshold_expected_edge_count_mean", "threshold_device_over_budget_count",
+            "budget_shadow_price_mean", "budget_shadow_price_max",
+            "budget_logit_penalty_mean",
             "top_quality_prob_mean", "non_top_prob_mean",
             "top_quality_logit_mean", "non_top_logit_mean", "top_quality_logit_gap_mean",
             "effective_option_prob_mean", "effective_option_logit_mean",
@@ -1223,6 +1227,8 @@ class Hedger:
             ),
             "soft_target_risk_penalty": _matrix_float("soft_target_risk_penalty", 0.40, probability=True),
             "inertia_logit_bias": _matrix_float("inertia_logit_bias", 0.10),
+            "budget_logit_scale": _matrix_float("budget_logit_scale", 0.75),
+            "budget_temperature": _matrix_float("budget_temperature", 0.12),
             "ppo": ppo,
         }
 
@@ -2893,6 +2899,10 @@ class Hedger:
             "expected_edge_count_max", "expected_quality_mass_mean",
             "expected_quality_mass_min", "expected_memory_overage_mean",
             "expected_memory_overage_max",
+            "threshold_memory_overage_mean", "threshold_memory_overage_max",
+            "threshold_expected_edge_count_mean", "threshold_device_over_budget_count",
+            "budget_shadow_price_mean", "budget_shadow_price_max",
+            "budget_logit_penalty_mean",
             "effective_option_mass_mean", "desired_effective_option_mass_mean",
             "effective_option_shortage_mean", "non_effective_option_prob_mean",
             "non_effective_selection_cost",
@@ -3049,6 +3059,10 @@ class Hedger:
                 "deployment_qk_scores", "deployment_qk_features",
                 "deployment_matrix_logits_raw", "deployment_service_context_features",
                 "deployment_pair_rank_logits", "deployment_pair_centered_logits",
+                "deployment_select_logits_pre_budget", "deployment_budget_logit_penalty",
+                "deployment_budget_pair_pressure", "deployment_budget_shadow_price",
+                "deployment_threshold_edge_prob", "deployment_threshold_expected_device_mem",
+                "deployment_threshold_memory_overage",
                 "deployment_base_scores", "deployment_centered_scores",
                 "deployment_final_scores", "deployment_select_logits",
                 "deployment_select_probs", "deployment_matrix_raw_selected",
@@ -3061,6 +3075,7 @@ class Hedger:
                 "deployment_evidence_untrusted", "deployment_low_quality_gap",
                 "deployment_queue_pressure", "deployment_runtime_unknown_risk",
                 "deployment_runtime_stale_risk", "deployment_runtime_relative_weakness",
+                "deployment_device_memory_pressure", "deployment_pair_budget_pressure",
                 "deployment_policy_probs", "deployment_raw_mode_nodes",
                 "deployment_positive_mask", "deployment_negative_mask",
                 "deployment_soft_option_target", "deployment_soft_option_target_weight",
@@ -3441,6 +3456,27 @@ class Hedger:
                     "deployment_pair_centered_logits": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_centered_logit", service_idx)
                     ),
+                    "deployment_select_logits_pre_budget": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "select_logit_pre_budget", service_idx)
+                    ),
+                    "deployment_budget_logit_penalty": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "budget_logit_penalty", service_idx)
+                    ),
+                    "deployment_budget_pair_pressure": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "budget_pair_pressure", service_idx)
+                    ),
+                    "deployment_budget_shadow_price": self._json_for_record(
+                        self._actor_debug_device_vector_map(actor_debug, "budget_shadow_price")
+                    ),
+                    "deployment_threshold_edge_prob": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "threshold_edge_prob", service_idx)
+                    ),
+                    "deployment_threshold_expected_device_mem": self._json_for_record(
+                        self._actor_debug_device_vector_map(actor_debug, "threshold_expected_device_mem")
+                    ),
+                    "deployment_threshold_memory_overage": self._json_for_record(
+                        self._actor_debug_device_vector_map(actor_debug, "threshold_memory_overage")
+                    ),
                     "deployment_base_scores": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "base_score", service_idx)
                     ),
@@ -3509,6 +3545,12 @@ class Hedger:
                     ),
                     "deployment_runtime_relative_weakness": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "runtime_relative_weakness", service_idx)
+                    ),
+                    "deployment_device_memory_pressure": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "device_memory_pressure", service_idx)
+                    ),
+                    "deployment_pair_budget_pressure": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "pair_budget_pressure", service_idx)
                     ),
                     "deployment_policy_probs": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "policy_prob", service_idx)
@@ -6413,6 +6455,13 @@ class Hedger:
                         non_effective_selection_cost=aux.get("non_effective_selection_cost", 0.0),
                         expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
                         expected_memory_overage_max=aux.get("expected_memory_overage_max", 0.0),
+                        threshold_memory_overage_mean=aux.get("threshold_memory_overage_mean", 0.0),
+                        threshold_memory_overage_max=aux.get("threshold_memory_overage_max", 0.0),
+                        threshold_expected_edge_count_mean=aux.get("threshold_expected_edge_count_mean", 0.0),
+                        threshold_device_over_budget_count=aux.get("threshold_device_over_budget_count", 0.0),
+                        budget_shadow_price_mean=aux.get("budget_shadow_price_mean", 0.0),
+                        budget_shadow_price_max=aux.get("budget_shadow_price_max", 0.0),
+                        budget_logit_penalty_mean=aux.get("budget_logit_penalty_mean", 0.0),
                         top_quality_prob_mean=aux.get("top_quality_prob_mean", 0.0),
                         effective_option_prob_mean=aux.get("effective_option_prob_mean", 0.0),
                         non_top_prob_mean=aux.get("non_top_prob_mean", 0.0),
@@ -7172,6 +7221,10 @@ class Hedger:
                                 "expected_edge_count_max", "expected_quality_mass_mean",
                                 "expected_quality_mass_min", "expected_memory_overage_mean",
                                 "expected_memory_overage_max",
+                                "threshold_memory_overage_mean", "threshold_memory_overage_max",
+                                "threshold_expected_edge_count_mean", "threshold_device_over_budget_count",
+                                "budget_shadow_price_mean", "budget_shadow_price_max",
+                                "budget_logit_penalty_mean",
                                 "effective_option_mass_mean", "desired_effective_option_mass_mean",
                                 "effective_option_shortage_mean", "non_effective_option_prob_mean",
                                 "non_effective_selection_cost",
@@ -7443,6 +7496,12 @@ class Hedger:
                     "next_phys_feats": {k: v.cpu() for k, v in new_phys_feats_dev.items()},
                     "deploy_mask": deploy_mask.detach().cpu(),
                     "raw_deploy_mask": aux["raw_deploy_mask"].detach().cpu(),
+                    "capacity_removed_mask": aux.get(
+                        "capacity_removed_mask",
+                        torch.zeros_like(deploy_mask),
+                    ).detach().cpu()
+                    if isinstance(aux.get("capacity_removed_mask"), torch.Tensor)
+                    else torch.zeros_like(deploy_mask).detach().cpu(),
                     "positive_mask": aux.get("positive_mask", deploy_mask).detach().cpu()
                     if isinstance(aux.get("positive_mask"), torch.Tensor) else deploy_mask.detach().cpu(),
                     "negative_mask": aux.get("negative_mask", torch.zeros_like(deploy_mask)).detach().cpu()
@@ -7675,6 +7734,13 @@ class Hedger:
                     non_effective_selection_cost=aux.get("non_effective_selection_cost", 0.0),
                     expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
                     expected_memory_overage_max=aux.get("expected_memory_overage_max", 0.0),
+                    threshold_memory_overage_mean=aux.get("threshold_memory_overage_mean", 0.0),
+                    threshold_memory_overage_max=aux.get("threshold_memory_overage_max", 0.0),
+                    threshold_expected_edge_count_mean=aux.get("threshold_expected_edge_count_mean", 0.0),
+                    threshold_device_over_budget_count=aux.get("threshold_device_over_budget_count", 0.0),
+                    budget_shadow_price_mean=aux.get("budget_shadow_price_mean", 0.0),
+                    budget_shadow_price_max=aux.get("budget_shadow_price_max", 0.0),
+                    budget_logit_penalty_mean=aux.get("budget_logit_penalty_mean", 0.0),
                     top_quality_prob_mean=aux.get("top_quality_prob_mean", 0.0),
                     effective_option_prob_mean=aux.get("effective_option_prob_mean", 0.0),
                     non_top_prob_mean=aux.get("non_top_prob_mean", 0.0),
