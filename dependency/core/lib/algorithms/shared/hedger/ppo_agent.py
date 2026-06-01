@@ -1436,6 +1436,7 @@ class _DeploymentBackbonePPO(nn.Module):
         dtype = torch.float32
         static_allowed = static_allowed.to(device=device).bool()
         num_services, num_devices = static_allowed.shape
+        cloud_idx = self._cloud_index(num_devices)
         option_masks = self._deployment_effective_option_masks(
             static_allowed,
             policy_ctx,
