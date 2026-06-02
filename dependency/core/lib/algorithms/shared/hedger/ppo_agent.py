@@ -384,6 +384,31 @@ class DeploymentPairRankHead(nn.Module):
         return self.net(candidate_features.float()).squeeze(-1)
 
 
+class DeploymentServiceNeedHead(nn.Module):
+    """Predict a service-level logit bias for edge option demand."""
+
+    def __init__(self, input_dim: int, hidden_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+        last_layer = self.net[-1]
+        nn.init.zeros_(last_layer.weight)
+        nn.init.zeros_(last_layer.bias)
+
+    def forward(self, service_features: torch.Tensor) -> torch.Tensor:
+        if service_features.numel() == 0:
+            return torch.zeros(
+                service_features.shape[:-1],
+                device=service_features.device,
+                dtype=service_features.dtype,
+            )
+        return self.net(service_features.float()).squeeze(-1)
+
+
 class CandidateValueHead(nn.Module):
     """Graph-size agnostic critic over pooled service, device, and candidate states."""
     def __init__(self, input_dim: int, d_model: int):
@@ -440,6 +465,10 @@ class _DeploymentBackbonePPO(nn.Module):
             input_dim=len(DEPLOYMENT_CANDIDATE_FEATURE_NAMES),
             hidden_dim=hidden_dim,
         )
+        self.deployment_service_need_head = DeploymentServiceNeedHead(
+            input_dim=len(DEPLOYMENT_SERVICE_CONTEXT_FEATURE_NAMES),
+            hidden_dim=hidden_dim,
+        )
         self.critic = CandidateValueHead(input_dim=len(DEPLOYMENT_CANDIDATE_FEATURE_NAMES), d_model=d_model)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
 
@@ -458,6 +487,7 @@ class _DeploymentBackbonePPO(nn.Module):
     def _rebuild_actor_optimizer(self):
         params_actor = list(self.actor.parameters())
         params_actor.extend(list(self.deployment_pair_rank_head.parameters()))
+        params_actor.extend(list(self.deployment_service_need_head.parameters()))
         if self._update_encoder:
             params_actor.extend(list(self.encoder.parameters()))
         self.actor_opt = torch.optim.Adam(params_actor, lr=self._actor_lr)
@@ -582,11 +612,17 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.45
         return min(max(value, 0.0), 1.0)
 
-    def _deployment_inertia_logit_bias(self) -> float:
-        value = float(getattr(self.cfg, "inertia_logit_bias", 0.10))
+    def _service_need_bias_scale(self) -> float:
+        value = float(getattr(self.cfg, "service_need_bias_scale", 1.0))
         if not math.isfinite(value):
-            value = 0.10
+            value = 1.0
         return max(0.0, value)
+
+    def _service_mass_temperature(self) -> float:
+        value = float(getattr(self.cfg, "service_mass_temperature", 0.30))
+        if not math.isfinite(value):
+            value = 0.30
+        return max(value, 1e-3)
 
     def _deployment_budget_logit_scale(self) -> float:
         value = float(getattr(self.cfg, "budget_logit_scale", 0.0))
@@ -1250,6 +1286,8 @@ class _DeploymentBackbonePPO(nn.Module):
         )
         cloud_idx = self._cloud_index(static_allowed.size(1))
         pair_rank_logit_raw = self.deployment_pair_rank_head(candidate_features.float())
+        service_need_logit_raw = self.deployment_service_need_head(service_features.float())
+        service_need_bias = service_need_logit_raw * self._service_need_bias_scale()
         edge_allowed = static_allowed.bool().clone()
         if cloud_idx >= 0:
             edge_allowed[:, cloud_idx] = False
@@ -1259,17 +1297,12 @@ class _DeploymentBackbonePPO(nn.Module):
             pair_rank_logit_raw - pair_rank_mean,
             torch.zeros_like(pair_rank_logit_raw),
         )
-        if prev_deploy_mask is None:
-            current_replica = torch.zeros_like(pair_rank_logit_raw)
-        else:
-            current_replica = (
-                prev_deploy_mask.to(device=pair_rank_logit_raw.device).bool() & edge_allowed
-            ).to(dtype=pair_rank_logit_raw.dtype)
         # Deployment is represented directly as a service-device Bernoulli
-        # matrix.  The absolute pair logit is the actor's deployment intent;
-        # deterministic inference selects edge pairs with logit > 0 and the
-        # projection step only repairs hard feasibility constraints.
-        select_logits_raw = pair_rank_logit_raw + self._deployment_inertia_logit_bias() * current_replica
+        # matrix.  The pair head ranks service-device quality while the service
+        # need head learns how much edge-option mass the service currently
+        # needs.  Deterministic inference still selects edge pairs with logit
+        # > 0; projection only repairs hard feasibility constraints.
+        select_logits_raw = pair_rank_logit_raw + service_need_bias.view(-1, 1)
         budget_terms = self._deployment_budget_logit_terms(
             select_logits_raw,
             static_allowed,
@@ -1299,6 +1332,8 @@ class _DeploymentBackbonePPO(nn.Module):
         pair_ctx["base_score"] = qk_feature
         pair_ctx["service_context_feature"] = service_features
         pair_ctx["pair_rank_logit_raw"] = pair_rank_logit_raw
+        pair_ctx["service_need_logit_raw"] = service_need_logit_raw
+        pair_ctx["service_need_bias"] = service_need_bias
         pair_ctx["pair_centered_logit"] = pair_centered_logit
         pair_ctx["select_logit_pre_budget"] = select_logits_raw
         pair_ctx["budget_logit_penalty"] = budget_terms["budget_logit_penalty"]
@@ -1684,11 +1719,6 @@ class _DeploymentBackbonePPO(nn.Module):
         if isinstance(raw_selected_mask, torch.Tensor) and raw_selected_mask.shape == static_allowed.shape:
             raw_selected = raw_selected_mask.to(device=device).bool() & edge_allowed
 
-        safe_selected = selected & effective_option_mask & ~risky_option_mask
-        if bool(safe_selected.any().item()):
-            selected_floor = torch.full_like(target, 0.58)
-            target = torch.where(safe_selected, torch.maximum(target, selected_floor), target)
-
         quality = str(quality_bucket or "unknown").strip().lower()
         if quality == "bad":
             selected_risky = selected & (risky_option_mask | clear_non_effective_mask)
@@ -1924,9 +1954,25 @@ class _DeploymentBackbonePPO(nn.Module):
             * soft_target_weight
             * edge_allowed.to(dtype=dtype)
         ).sum(dim=1) / (soft_target_weight * edge_allowed.to(dtype=dtype)).sum(dim=1).clamp_min(1.0)
+        mass_tau = self._service_mass_temperature()
+        threshold_mass_prob = torch.where(
+            edge_allowed,
+            torch.sigmoid(select_logits.to(dtype=dtype) / mass_tau),
+            torch.zeros_like(select_logits, dtype=dtype),
+        )
+        service_predicted_mass = threshold_mass_prob.sum(dim=1)
+        service_target_mass = desired_effective_option_mass
+        service_mass_gap = service_target_mass - service_predicted_mass
         effective_option_mass_loss = (
-            effective_option_shortage * coverage_weights.detach()
+            F.smooth_l1_loss(
+                service_predicted_mass,
+                service_target_mass.detach(),
+                reduction="none",
+            )
+            * coverage_weights.detach()
         ).sum() / coverage_weights.detach().sum().clamp_min(1.0)
+        unselected_soft_positive_mask = soft_target_positive_mask & edge_allowed & (edge_prob <= 0.5)
+        selected_non_soft_positive_mask = (edge_prob > 0.5) & edge_allowed & ~soft_target_positive_mask
         non_effective_option_mask = non_top_mask
         non_effective_option_weight = (
             non_effective_option_mask.to(dtype=dtype)
@@ -1966,8 +2012,23 @@ class _DeploymentBackbonePPO(nn.Module):
         else:
             per_service_prob_std = None
             per_service_prob_range = None
+        service_need_bias = policy_ctx.get("service_need_bias")
+        if isinstance(service_need_bias, torch.Tensor) and service_need_bias.dim() == 1:
+            service_need_bias = service_need_bias.to(device=device, dtype=dtype)
+            service_need_bias_mean = service_need_bias.mean()
+            service_need_bias_std = service_need_bias.std(unbiased=False) if service_need_bias.numel() > 1 else zero
+            service_need_bias_range = service_need_bias.max() - service_need_bias.min() \
+                if service_need_bias.numel() > 0 else zero
+        else:
+            service_need_bias_mean = zero
+            service_need_bias_std = zero
+            service_need_bias_range = zero
         top_quality_logit = select_logits.masked_select(top_quality_mask)
         non_top_logit = select_logits.masked_select(non_top_mask)
+        unselected_soft_positive_prob = select_prob.masked_select(unselected_soft_positive_mask)
+        unselected_soft_positive_logit = select_logits.masked_select(unselected_soft_positive_mask)
+        selected_non_soft_positive_prob = select_prob.masked_select(selected_non_soft_positive_mask)
+        selected_non_soft_positive_logit = select_logits.masked_select(selected_non_soft_positive_mask)
         option_floor_values = option_masks["option_floor"].masked_select(has_effective_candidate)
         soft_target_values = soft_target.masked_select(edge_allowed)
         soft_target_weights = soft_target_weight.masked_select(edge_allowed)
@@ -2013,6 +2074,45 @@ class _DeploymentBackbonePPO(nn.Module):
             "effective_option_shortage_mean": (
                 effective_option_shortage.masked_select(has_effective_candidate).mean()
                 if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "service_target_mass_mean": (
+                service_target_mass.masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "service_predicted_mass_mean": (
+                service_predicted_mass.masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "service_mass_gap_mean": (
+                service_mass_gap.masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "service_mass_abs_gap_mean": (
+                service_mass_gap.abs().masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "service_need_bias_mean": service_need_bias_mean,
+            "service_need_bias_std": service_need_bias_std,
+            "service_need_bias_range": service_need_bias_range,
+            "unselected_soft_positive_count_mean": (
+                unselected_soft_positive_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge).mean()
+                if bool(has_edge.any().item()) else zero
+            ),
+            "unselected_soft_positive_prob_mean": (
+                unselected_soft_positive_prob.mean() if bool(unselected_soft_positive_prob.numel()) else zero
+            ),
+            "unselected_soft_positive_logit_mean": (
+                unselected_soft_positive_logit.mean() if bool(unselected_soft_positive_logit.numel()) else zero
+            ),
+            "selected_non_soft_positive_count_mean": (
+                selected_non_soft_positive_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge).mean()
+                if bool(has_edge.any().item()) else zero
+            ),
+            "selected_non_soft_positive_prob_mean": (
+                selected_non_soft_positive_prob.mean() if bool(selected_non_soft_positive_prob.numel()) else zero
+            ),
+            "selected_non_soft_positive_logit_mean": (
+                selected_non_soft_positive_logit.mean() if bool(selected_non_soft_positive_logit.numel()) else zero
             ),
             "non_effective_option_prob_mean": (
                 non_effective_option_probs.mean() if non_effective_option_probs.numel() > 0 else zero
@@ -2497,6 +2597,28 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             selected_mask=deploy_mask,
             raw_selected_mask=raw_deploy_mask,
         )
+        edge_allowed = option_masks["edge_allowed"]
+        mass_prob = torch.where(
+            edge_allowed,
+            torch.sigmoid(select_logits / self._service_mass_temperature()),
+            torch.zeros_like(select_logits),
+        )
+        service_target_mass = (
+            option_masks["soft_target"].to(device=select_logits.device, dtype=torch.float32)
+            * edge_allowed.to(device=select_logits.device, dtype=torch.float32)
+        ).sum(dim=1)
+        service_predicted_mass = mass_prob.sum(dim=1)
+        service_mass_gap = service_target_mass - service_predicted_mass
+        soft_positive_missing_mask = (
+            option_masks["soft_target_positive_mask"].to(device=deploy_mask.device).bool()
+            & edge_allowed.to(device=deploy_mask.device).bool()
+            & ~deploy_mask
+        )
+        selected_non_soft_positive_mask = (
+            deploy_mask
+            & edge_allowed.to(device=deploy_mask.device).bool()
+            & ~option_masks["soft_target_positive_mask"].to(device=deploy_mask.device).bool()
+        )
         plan_metrics = {key: _scalar_to_float(value) for key, value in plan_terms.items()}
         return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {
             "capacity_relax_cnt": capacity_relax_cnt,
@@ -2532,6 +2654,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "service_context_feature": pair_ctx["service_context_feature"].detach().cpu(),
                 "service_context_feature_names": DEPLOYMENT_SERVICE_CONTEXT_FEATURE_NAMES,
                 "pair_rank_logit_raw": pair_ctx["pair_rank_logit_raw"].detach().cpu(),
+                "service_need_logit_raw": pair_ctx["service_need_logit_raw"].detach().cpu(),
+                "service_need_bias": pair_ctx["service_need_bias"].detach().cpu(),
                 "pair_centered_logit": pair_ctx["pair_centered_logit"].detach().cpu(),
                 "select_logit_pre_budget": pair_ctx["select_logit_pre_budget"].detach().cpu(),
                 "budget_logit_penalty": pair_ctx["budget_logit_penalty"].detach().cpu(),
@@ -2604,6 +2728,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "soft_option_stale_mask": option_masks["soft_target_stale_mask"].detach().cpu(),
                 "soft_option_target_floor": option_masks["soft_target_floor"].detach().cpu(),
                 "soft_option_target_margin": option_masks["soft_target_margin"].detach().cpu(),
+                "service_target_mass": service_target_mass.detach().cpu(),
+                "service_predicted_mass": service_predicted_mass.detach().cpu(),
+                "service_mass_gap": service_mass_gap.detach().cpu(),
+                "mass_threshold_prob": mass_prob.detach().cpu(),
+                "soft_positive_missing_mask": soft_positive_missing_mask.detach().cpu(),
+                "selected_non_soft_positive_mask": selected_non_soft_positive_mask.detach().cpu(),
                 "positive_mask": positive_mask.detach().cpu(),
                 "negative_mask": negative_mask.detach().cpu(),
             },
@@ -2683,6 +2813,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "positive_mask": positive_mask_t,
                 "negative_mask": negative_mask_t,
                 "pair_rank_logit_raw": pair_ctx["pair_rank_logit_raw"],
+                "service_need_logit_raw": pair_ctx["service_need_logit_raw"],
+                "service_need_bias": pair_ctx["service_need_bias"],
                 "pair_centered_logit": pair_ctx["pair_centered_logit"],
                 "select_logit_pre_budget": pair_ctx["select_logit_pre_budget"],
                 "budget_logit_penalty": pair_ctx["budget_logit_penalty"],
@@ -2904,24 +3036,25 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         severe_risky = (queue_risky | hotspot_risky | runtime_risky) & edge_allowed
         evidence_untrusted = (unknown_untrusted | stale_untrusted) & edge_allowed
         diagnostic_risky = (severe_risky | low_quality) & edge_allowed
-        option_masks = self._deployment_effective_option_masks(
+        option_masks = self._deployment_soft_option_targets(
             static_allowed,
             policy_aux,
+            selected_mask=selected,
+            raw_selected_mask=raw_selected,
+            quality_bucket=quality_bucket,
             top_quality_tolerance=top_quality_tolerance,
             option_quality_ratio=option_quality_ratio,
             coverage_pressure_floor=coverage_pressure_floor,
         )
-        quality_eligible = option_masks["quality_eligible"]
-        top_quality_mask = option_masks["top_quality_mask"]
         effective_option_mask = option_masks["effective_option_mask"]
+        soft_positive_mask = option_masks["soft_target_positive_mask"]
         clear_non_effective_mask = option_masks["clear_non_effective_mask"]
         capacity_removed = torch.zeros_like(selected)
         if capacity_removed_mask is not None:
             capacity_removed = capacity_removed_mask.to(device=edge_allowed.device).bool() & edge_allowed
         raw_removed = ((raw_selected & ~selected) | capacity_removed) & edge_allowed
         selected_effective = selected & effective_option_mask
-        selected_safe_effective = selected_effective & quality_eligible
-        teacher_positive = top_quality_mask & edge_allowed
+        teacher_positive = soft_positive_mask & effective_option_mask & edge_allowed
         clear_unselected_negative = (
             clear_non_effective_mask
             & ~selected
@@ -2942,18 +3075,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_capacity_removed_samples": float(capacity_removed.float().sum().detach().cpu().item()),
         }
         quality = str(quality_bucket or "unknown").strip().lower()
-        # Positive labels are now service-local effective options, not the
-        # whole executed deployment.  This keeps the Bernoulli matrix literal:
-        # a service's best effective edge candidates are trained above the
-        # p=0.5 boundary, while bad transitions still avoid cloning the
-        # executed edge set.
+        # Positive labels are state-derived effective options, not the whole
+        # executed deployment.  This lets unselected but useful alternatives
+        # cross the p=0.5 boundary instead of cloning the old template.
         positive_mask = (
-            (teacher_positive | selected_safe_effective)
+            teacher_positive
             if quality != "bad" else torch.zeros_like(selected)
         )
         aux_positive_mask = torch.zeros_like(selected)
-        if quality != "bad":
-            aux_positive_mask = selected_effective & ~positive_mask
         negative_mask = (selected & (severe_risky | low_quality) & ~positive_mask) & edge_allowed
         if quality == "bad":
             negative_mask = negative_mask | (selected & edge_allowed)
@@ -3097,6 +3226,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         effective_option_mass_means = []
         desired_effective_option_mass_means = []
         effective_option_shortage_means = []
+        service_target_mass_means = []
+        service_predicted_mass_means = []
+        service_mass_gap_means = []
+        service_mass_abs_gap_means = []
+        service_need_bias_means = []
+        service_need_bias_stds = []
+        service_need_bias_ranges = []
+        unselected_soft_positive_count_means = []
+        unselected_soft_positive_prob_means = []
+        unselected_soft_positive_logit_means = []
+        selected_non_soft_positive_count_means = []
+        selected_non_soft_positive_prob_means = []
+        selected_non_soft_positive_logit_means = []
         non_effective_option_prob_means = []
         non_effective_selection_costs = []
         expected_memory_overage_means = []
@@ -3368,6 +3510,31 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 plan_terms["desired_effective_option_mass_mean"]
             ))
             effective_option_shortage_means.append(_scalar_to_float(plan_terms["effective_option_shortage_mean"]))
+            service_target_mass_means.append(_scalar_to_float(plan_terms["service_target_mass_mean"]))
+            service_predicted_mass_means.append(_scalar_to_float(plan_terms["service_predicted_mass_mean"]))
+            service_mass_gap_means.append(_scalar_to_float(plan_terms["service_mass_gap_mean"]))
+            service_mass_abs_gap_means.append(_scalar_to_float(plan_terms["service_mass_abs_gap_mean"]))
+            service_need_bias_means.append(_scalar_to_float(plan_terms["service_need_bias_mean"]))
+            service_need_bias_stds.append(_scalar_to_float(plan_terms["service_need_bias_std"]))
+            service_need_bias_ranges.append(_scalar_to_float(plan_terms["service_need_bias_range"]))
+            unselected_soft_positive_count_means.append(_scalar_to_float(
+                plan_terms["unselected_soft_positive_count_mean"]
+            ))
+            unselected_soft_positive_prob_means.append(_scalar_to_float(
+                plan_terms["unselected_soft_positive_prob_mean"]
+            ))
+            unselected_soft_positive_logit_means.append(_scalar_to_float(
+                plan_terms["unselected_soft_positive_logit_mean"]
+            ))
+            selected_non_soft_positive_count_means.append(_scalar_to_float(
+                plan_terms["selected_non_soft_positive_count_mean"]
+            ))
+            selected_non_soft_positive_prob_means.append(_scalar_to_float(
+                plan_terms["selected_non_soft_positive_prob_mean"]
+            ))
+            selected_non_soft_positive_logit_means.append(_scalar_to_float(
+                plan_terms["selected_non_soft_positive_logit_mean"]
+            ))
             non_effective_option_prob_means.append(_scalar_to_float(plan_terms["non_effective_option_prob_mean"]))
             non_effective_selection_costs.append(_scalar_to_float(plan_terms["non_effective_selection_cost"]))
             expected_memory_overage_means.append(_scalar_to_float(plan_terms["expected_memory_overage_mean"]))
@@ -3727,6 +3894,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "effective_option_mass_mean": _mean_or_zero(effective_option_mass_means),
             "desired_effective_option_mass_mean": _mean_or_zero(desired_effective_option_mass_means),
             "effective_option_shortage_mean": _mean_or_zero(effective_option_shortage_means),
+            "service_target_mass_mean": _mean_or_zero(service_target_mass_means),
+            "service_predicted_mass_mean": _mean_or_zero(service_predicted_mass_means),
+            "service_mass_gap_mean": _mean_or_zero(service_mass_gap_means),
+            "service_mass_abs_gap_mean": _mean_or_zero(service_mass_abs_gap_means),
+            "service_need_bias_mean": _mean_or_zero(service_need_bias_means),
+            "service_need_bias_std": _mean_or_zero(service_need_bias_stds),
+            "service_need_bias_range": _mean_or_zero(service_need_bias_ranges),
+            "unselected_soft_positive_count_mean": _mean_or_zero(unselected_soft_positive_count_means),
+            "unselected_soft_positive_prob_mean": _mean_or_zero(unselected_soft_positive_prob_means),
+            "unselected_soft_positive_logit_mean": _mean_or_zero(unselected_soft_positive_logit_means),
+            "selected_non_soft_positive_count_mean": _mean_or_zero(selected_non_soft_positive_count_means),
+            "selected_non_soft_positive_prob_mean": _mean_or_zero(selected_non_soft_positive_prob_means),
+            "selected_non_soft_positive_logit_mean": _mean_or_zero(selected_non_soft_positive_logit_means),
             "non_effective_option_prob_mean": _mean_or_zero(non_effective_option_prob_means),
             "non_effective_selection_cost": _mean_or_zero(non_effective_selection_costs),
             "expected_memory_overage_mean": _mean_or_zero(expected_memory_overage_means),
@@ -3771,6 +3951,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "option_quality_ratio": (
                 self._option_quality_ratio() if option_quality_ratio is None else float(option_quality_ratio)
             ),
+            "service_need_bias_scale": self._service_need_bias_scale(),
+            "service_mass_temperature": self._service_mass_temperature(),
         }
 
 

@@ -1024,7 +1024,15 @@ class Hedger:
             "expected_edge_count_mean", "expected_edge_count_max",
             "expected_quality_mass_mean", "expected_quality_mass_min",
             "effective_option_mass_mean", "desired_effective_option_mass_mean",
-            "effective_option_shortage_mean", "non_effective_option_prob_mean",
+            "effective_option_shortage_mean",
+            "service_target_mass_mean", "service_predicted_mass_mean",
+            "service_mass_gap_mean", "service_mass_abs_gap_mean",
+            "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
+            "unselected_soft_positive_count_mean",
+            "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
+            "selected_non_soft_positive_count_mean",
+            "selected_non_soft_positive_prob_mean", "selected_non_soft_positive_logit_mean",
+            "non_effective_option_prob_mean",
             "non_effective_selection_cost",
             "expected_memory_overage_mean", "expected_memory_overage_max",
             "threshold_memory_overage_mean", "threshold_memory_overage_max",
@@ -1052,7 +1060,7 @@ class Hedger:
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
-            "option_quality_ratio",
+            "option_quality_ratio", "service_need_bias_scale", "service_mass_temperature",
         ]
         if include_offline_batch:
             fieldnames.extend([
@@ -1226,8 +1234,9 @@ class Hedger:
                 probability=True,
             ),
             "soft_target_risk_penalty": _matrix_float("soft_target_risk_penalty", 0.40, probability=True),
-            "inertia_logit_bias": _matrix_float("inertia_logit_bias", 0.10),
-            "budget_logit_scale": _matrix_float("budget_logit_scale", 0.75),
+            "service_need_bias_scale": _matrix_float("service_need_bias_scale", 1.0),
+            "service_mass_temperature": _matrix_float("service_mass_temperature", 0.30),
+            "budget_logit_scale": _matrix_float("budget_logit_scale", 0.15),
             "budget_temperature": _matrix_float("budget_temperature", 0.12),
             "ppo": ppo,
         }
@@ -2904,7 +2913,15 @@ class Hedger:
             "budget_shadow_price_mean", "budget_shadow_price_max",
             "budget_logit_penalty_mean",
             "effective_option_mass_mean", "desired_effective_option_mass_mean",
-            "effective_option_shortage_mean", "non_effective_option_prob_mean",
+            "effective_option_shortage_mean",
+            "service_target_mass_mean", "service_predicted_mass_mean",
+            "service_mass_gap_mean", "service_mass_abs_gap_mean",
+            "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
+            "unselected_soft_positive_count_mean",
+            "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
+            "selected_non_soft_positive_count_mean",
+            "selected_non_soft_positive_prob_mean", "selected_non_soft_positive_logit_mean",
+            "non_effective_option_prob_mean",
             "non_effective_selection_cost",
             "top_quality_prob_mean", "non_top_prob_mean",
             "top_quality_logit_mean", "non_top_logit_mean", "top_quality_logit_gap_mean",
@@ -2946,7 +2963,7 @@ class Hedger:
             "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
-            "queue_normalizer",
+            "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
             "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -3058,7 +3075,8 @@ class Hedger:
             fieldnames.extend([
                 "deployment_qk_scores", "deployment_qk_features",
                 "deployment_matrix_logits_raw", "deployment_service_context_features",
-                "deployment_pair_rank_logits", "deployment_pair_centered_logits",
+                "deployment_pair_rank_logits", "deployment_service_need_logits",
+                "deployment_service_need_bias", "deployment_pair_centered_logits",
                 "deployment_select_logits_pre_budget", "deployment_budget_logit_penalty",
                 "deployment_budget_pair_pressure", "deployment_budget_shadow_price",
                 "deployment_threshold_edge_prob", "deployment_threshold_expected_device_mem",
@@ -3084,6 +3102,9 @@ class Hedger:
                 "deployment_soft_option_known_mask", "deployment_soft_option_untrusted_mask",
                 "deployment_soft_option_unknown_mask", "deployment_soft_option_stale_mask",
                 "deployment_soft_option_target_floor", "deployment_soft_option_target_margin",
+                "deployment_service_target_mass", "deployment_service_predicted_mass",
+                "deployment_service_mass_gap", "deployment_mass_threshold_probs",
+                "deployment_soft_positive_missing_mask", "deployment_selected_non_soft_positive_mask",
                 "deployment_effective_option_mask", "deployment_top_quality_option_mask",
                 "deployment_clear_non_effective_option_mask",
                 "deployment_risky_option_mask", "deployment_effective_option_floor",
@@ -3453,6 +3474,12 @@ class Hedger:
                     "deployment_pair_rank_logits": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_rank_logit_raw", service_idx)
                     ),
+                    "deployment_service_need_logits": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "service_need_logit_raw", service_idx)
+                    ),
+                    "deployment_service_need_bias": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "service_need_bias", service_idx)
+                    ),
                     "deployment_pair_centered_logits": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_centered_logit", service_idx)
                     ),
@@ -3602,6 +3629,24 @@ class Hedger:
                     ),
                     "deployment_soft_option_target_margin": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "soft_option_target_margin", service_idx)
+                    ),
+                    "deployment_service_target_mass": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "service_target_mass", service_idx)
+                    ),
+                    "deployment_service_predicted_mass": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "service_predicted_mass", service_idx)
+                    ),
+                    "deployment_service_mass_gap": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "service_mass_gap", service_idx)
+                    ),
+                    "deployment_mass_threshold_probs": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "mass_threshold_prob", service_idx)
+                    ),
+                    "deployment_soft_positive_missing_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "soft_positive_missing_mask", service_idx)
+                    ),
+                    "deployment_selected_non_soft_positive_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "selected_non_soft_positive_mask", service_idx)
                     ),
                     "deployment_effective_option_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "effective_option_mask", service_idx)
@@ -6451,6 +6496,37 @@ class Hedger:
                         effective_option_mass_mean=aux.get("effective_option_mass_mean", 0.0),
                         desired_effective_option_mass_mean=aux.get("desired_effective_option_mass_mean", 0.0),
                         effective_option_shortage_mean=aux.get("effective_option_shortage_mean", 0.0),
+                        service_target_mass_mean=aux.get("service_target_mass_mean", 0.0),
+                        service_predicted_mass_mean=aux.get("service_predicted_mass_mean", 0.0),
+                        service_mass_gap_mean=aux.get("service_mass_gap_mean", 0.0),
+                        service_mass_abs_gap_mean=aux.get("service_mass_abs_gap_mean", 0.0),
+                        service_need_bias_mean=aux.get("service_need_bias_mean", 0.0),
+                        service_need_bias_std=aux.get("service_need_bias_std", 0.0),
+                        service_need_bias_range=aux.get("service_need_bias_range", 0.0),
+                        unselected_soft_positive_count_mean=aux.get(
+                            "unselected_soft_positive_count_mean",
+                            0.0,
+                        ),
+                        unselected_soft_positive_prob_mean=aux.get(
+                            "unselected_soft_positive_prob_mean",
+                            0.0,
+                        ),
+                        unselected_soft_positive_logit_mean=aux.get(
+                            "unselected_soft_positive_logit_mean",
+                            0.0,
+                        ),
+                        selected_non_soft_positive_count_mean=aux.get(
+                            "selected_non_soft_positive_count_mean",
+                            0.0,
+                        ),
+                        selected_non_soft_positive_prob_mean=aux.get(
+                            "selected_non_soft_positive_prob_mean",
+                            0.0,
+                        ),
+                        selected_non_soft_positive_logit_mean=aux.get(
+                            "selected_non_soft_positive_logit_mean",
+                            0.0,
+                        ),
                         non_effective_option_prob_mean=aux.get("non_effective_option_prob_mean", 0.0),
                         non_effective_selection_cost=aux.get("non_effective_selection_cost", 0.0),
                         expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
@@ -6554,6 +6630,8 @@ class Hedger:
                         untrusted_stale_threshold=self.deployment_agent_params["untrusted_stale_threshold"],
                         positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
+                        service_need_bias_scale=self.deployment_agent_params["service_need_bias_scale"],
+                        service_mass_temperature=self.deployment_agent_params["service_mass_temperature"],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
                     if self.record_cfg.actor_snapshot_debug:
@@ -7226,7 +7304,15 @@ class Hedger:
                                 "budget_shadow_price_mean", "budget_shadow_price_max",
                                 "budget_logit_penalty_mean",
                                 "effective_option_mass_mean", "desired_effective_option_mass_mean",
-                                "effective_option_shortage_mean", "non_effective_option_prob_mean",
+                                "effective_option_shortage_mean",
+                                "service_target_mass_mean", "service_predicted_mass_mean",
+                                "service_mass_gap_mean", "service_mass_abs_gap_mean",
+                                "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
+                                "unselected_soft_positive_count_mean",
+                                "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
+                                "selected_non_soft_positive_count_mean",
+                                "selected_non_soft_positive_prob_mean", "selected_non_soft_positive_logit_mean",
+                                "non_effective_option_prob_mean",
                                 "non_effective_selection_cost",
                                 "top_quality_prob_mean", "non_top_prob_mean",
                                 "top_quality_logit_mean", "non_top_logit_mean",
@@ -7275,7 +7361,7 @@ class Hedger:
             "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
-            "queue_normalizer",
+            "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
             "deployment_default_warmup_min_feedback_samples",
@@ -7730,6 +7816,37 @@ class Hedger:
                     effective_option_mass_mean=aux.get("effective_option_mass_mean", 0.0),
                     desired_effective_option_mass_mean=aux.get("desired_effective_option_mass_mean", 0.0),
                     effective_option_shortage_mean=aux.get("effective_option_shortage_mean", 0.0),
+                    service_target_mass_mean=aux.get("service_target_mass_mean", 0.0),
+                    service_predicted_mass_mean=aux.get("service_predicted_mass_mean", 0.0),
+                    service_mass_gap_mean=aux.get("service_mass_gap_mean", 0.0),
+                    service_mass_abs_gap_mean=aux.get("service_mass_abs_gap_mean", 0.0),
+                    service_need_bias_mean=aux.get("service_need_bias_mean", 0.0),
+                    service_need_bias_std=aux.get("service_need_bias_std", 0.0),
+                    service_need_bias_range=aux.get("service_need_bias_range", 0.0),
+                    unselected_soft_positive_count_mean=aux.get(
+                        "unselected_soft_positive_count_mean",
+                        0.0,
+                    ),
+                    unselected_soft_positive_prob_mean=aux.get(
+                        "unselected_soft_positive_prob_mean",
+                        0.0,
+                    ),
+                    unselected_soft_positive_logit_mean=aux.get(
+                        "unselected_soft_positive_logit_mean",
+                        0.0,
+                    ),
+                    selected_non_soft_positive_count_mean=aux.get(
+                        "selected_non_soft_positive_count_mean",
+                        0.0,
+                    ),
+                    selected_non_soft_positive_prob_mean=aux.get(
+                        "selected_non_soft_positive_prob_mean",
+                        0.0,
+                    ),
+                    selected_non_soft_positive_logit_mean=aux.get(
+                        "selected_non_soft_positive_logit_mean",
+                        0.0,
+                    ),
                     non_effective_option_prob_mean=aux.get("non_effective_option_prob_mean", 0.0),
                     non_effective_selection_cost=aux.get("non_effective_selection_cost", 0.0),
                     expected_memory_overage_mean=aux.get("expected_memory_overage_mean", 0.0),
@@ -7833,6 +7950,8 @@ class Hedger:
                     untrusted_stale_threshold=self.deployment_agent_params["untrusted_stale_threshold"],
                     positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
+                    service_need_bias_scale=self.deployment_agent_params["service_need_bias_scale"],
+                    service_mass_temperature=self.deployment_agent_params["service_mass_temperature"],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
                     deployment_default_warmup_min_feedback_samples=(
