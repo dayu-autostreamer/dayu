@@ -47,6 +47,12 @@ class DeploymentConstraintCfg:
     soft_target_max: float = 0.92
     soft_target_untrusted_weight_floor: float = 0.40
     soft_target_risk_penalty: float = 0.40
+    trusted_runtime_confidence_threshold: float = 0.25
+    prior_quality_weight: float = 0.35
+    unknown_target_cap: float = 0.46
+    stale_target_cap: float = 0.47
+    exploration_quality_threshold: float = 0.35
+    exploration_target: float = 0.46
     service_need_bias_scale: float = 1.0
     service_mass_temperature: float = 0.30
     # Budget-aware logit calibration.  This is not a decoder rule: it lets the

@@ -103,6 +103,9 @@ class HedgerDeploymentCollectCfg:
     max_runtime_risk_increase: float = 0.20
     max_pair_quality_drop: float = 0.10
     max_capacity_relax_cost: float = 0.15
+    explore_unknown_prob: float = 0.65
+    min_unknown_prior_quality: float = 0.30
+    max_unknown_queue_pressure: float = 0.30
     allow_remove_last_edge_replica: bool = False
     fallback_to_best_candidate: bool = True
 
@@ -129,6 +132,7 @@ class HedgerDeploymentOfflineRLCfg:
     memory_margin_coef: float = 0.18
     effective_option_mass_coef: float = 0.25
     non_effective_option_coef: float = 0.25
+    service_need_target_coef: float = 0.35
     soft_target_bc_coef: float = 0.85
     positive_logit_margin: float = 0.35
     negative_logit_margin: float = 0.25
@@ -632,6 +636,9 @@ class Hedger:
             max_runtime_risk_increase=max(0.0, float(collect_cfg.get("max_runtime_risk_increase", 0.20))),
             max_pair_quality_drop=max(0.0, float(collect_cfg.get("max_pair_quality_drop", 0.10))),
             max_capacity_relax_cost=max(0.0, float(collect_cfg.get("max_capacity_relax_cost", 0.15))),
+            explore_unknown_prob=min(1.0, max(0.0, float(collect_cfg.get("explore_unknown_prob", 0.65)))),
+            min_unknown_prior_quality=max(0.0, float(collect_cfg.get("min_unknown_prior_quality", 0.30))),
+            max_unknown_queue_pressure=max(0.0, float(collect_cfg.get("max_unknown_queue_pressure", 0.30))),
             allow_remove_last_edge_replica=bool(collect_cfg.get("allow_remove_last_edge_replica", False)),
             fallback_to_best_candidate=bool(collect_cfg.get("fallback_to_best_candidate", True)),
         )
@@ -663,6 +670,7 @@ class Hedger:
             memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.18))),
             effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.0))),
             non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.0))),
+            service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.35))),
             soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.85))),
             positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 0.25))),
             negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.20))),
@@ -1028,6 +1036,8 @@ class Hedger:
             "service_target_mass_mean", "service_predicted_mass_mean",
             "service_mass_gap_mean", "service_mass_abs_gap_mean",
             "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
+            "service_need_target_mean", "service_need_prob_mean",
+            "service_need_target_gap_mean", "service_need_target_loss",
             "unselected_soft_positive_count_mean",
             "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
             "selected_non_soft_positive_count_mean",
@@ -1050,13 +1060,17 @@ class Hedger:
             "soft_target_confidence_weight_mean",
             "soft_target_known_count_mean", "soft_target_untrusted_count_mean",
             "soft_target_unknown_count_mean", "soft_target_stale_count_mean",
+            "soft_target_trusted_count_mean", "soft_target_exploration_count_mean",
             "soft_target_known_prob_mean", "soft_target_untrusted_prob_mean",
+            "soft_target_trusted_prob_mean", "soft_target_exploration_prob_mean",
+            "prior_quality_mean", "trusted_quality_mean",
             "contrast_margin_gap_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
-            "effective_option_mass_coef", "non_effective_option_coef", "soft_target_bc_coef",
+            "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
+            "soft_target_bc_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
@@ -1234,6 +1248,20 @@ class Hedger:
                 probability=True,
             ),
             "soft_target_risk_penalty": _matrix_float("soft_target_risk_penalty", 0.40, probability=True),
+            "trusted_runtime_confidence_threshold": _matrix_float(
+                "trusted_runtime_confidence_threshold",
+                0.25,
+                probability=True,
+            ),
+            "prior_quality_weight": _matrix_float("prior_quality_weight", 0.35, probability=True),
+            "unknown_target_cap": _matrix_float("unknown_target_cap", 0.46, probability=True),
+            "stale_target_cap": _matrix_float("stale_target_cap", 0.47, probability=True),
+            "exploration_quality_threshold": _matrix_float(
+                "exploration_quality_threshold",
+                0.35,
+                probability=True,
+            ),
+            "exploration_target": _matrix_float("exploration_target", 0.46, probability=True),
             "service_need_bias_scale": _matrix_float("service_need_bias_scale", 1.0),
             "service_mass_temperature": _matrix_float("service_mass_temperature", 0.30),
             "budget_logit_scale": _matrix_float("budget_logit_scale", 0.15),
@@ -2917,6 +2945,8 @@ class Hedger:
             "service_target_mass_mean", "service_predicted_mass_mean",
             "service_mass_gap_mean", "service_mass_abs_gap_mean",
             "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
+            "service_need_target_mean", "service_need_prob_mean",
+            "service_need_target_gap_mean", "service_need_target_loss",
             "unselected_soft_positive_count_mean",
             "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
             "selected_non_soft_positive_count_mean",
@@ -2934,7 +2964,10 @@ class Hedger:
             "soft_target_confidence_weight_mean",
             "soft_target_known_count_mean", "soft_target_untrusted_count_mean",
             "soft_target_unknown_count_mean", "soft_target_stale_count_mean",
+            "soft_target_trusted_count_mean", "soft_target_exploration_count_mean",
             "soft_target_known_prob_mean", "soft_target_untrusted_prob_mean",
+            "soft_target_trusted_prob_mean", "soft_target_exploration_prob_mean",
+            "prior_quality_mean", "trusted_quality_mean",
             "contrast_margin_gap_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
@@ -2953,7 +2986,8 @@ class Hedger:
             "hotspot_weight", "runtime_risk_weight", "low_quality_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
-            "effective_option_mass_coef", "non_effective_option_coef", "soft_target_bc_coef",
+            "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
+            "soft_target_bc_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
@@ -2963,6 +2997,9 @@ class Hedger:
             "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
+            "trusted_runtime_confidence_threshold", "prior_quality_weight",
+            "unknown_target_cap", "stale_target_cap",
+            "exploration_quality_threshold", "exploration_target",
             "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
             "loaded_checkpoint",
         ]
@@ -3052,6 +3089,8 @@ class Hedger:
             "collect_fallback_selected_best",
             "collect_selected_service", "collect_selected_device",
             "collect_removed_service", "collect_removed_device",
+            "collect_selected_prior_quality", "collect_selected_runtime_trusted",
+            "collect_explore_unknown",
             "collect_base_queue_pressure", "collect_base_hotspot_cost",
             "collect_base_runtime_risk", "collect_base_min_pair_quality",
             "collect_candidate_queue_pressure", "collect_candidate_hotspot_cost",
@@ -3085,11 +3124,12 @@ class Hedger:
                 "deployment_final_scores", "deployment_select_logits",
                 "deployment_select_probs", "deployment_matrix_raw_selected",
                 "deployment_static_option_score", "deployment_static_quality_score",
+                "deployment_prior_quality_score", "deployment_trusted_quality_score",
                 "deployment_observed_quality_score", "deployment_runtime_risk_score",
                 "deployment_pair_quality", "deployment_service_best_pair_quality",
                 "deployment_service_second_pair_quality", "deployment_quality_gap_top_second",
                 "deployment_service_best_runtime_risk", "deployment_service_max_queue_pressure",
-                "deployment_evidence_confidence",
+                "deployment_evidence_confidence", "deployment_runtime_trusted",
                 "deployment_evidence_untrusted", "deployment_low_quality_gap",
                 "deployment_queue_pressure", "deployment_runtime_unknown_risk",
                 "deployment_runtime_stale_risk", "deployment_runtime_relative_weakness",
@@ -3101,6 +3141,7 @@ class Hedger:
                 "deployment_soft_option_positive_mask", "deployment_soft_option_negative_mask",
                 "deployment_soft_option_known_mask", "deployment_soft_option_untrusted_mask",
                 "deployment_soft_option_unknown_mask", "deployment_soft_option_stale_mask",
+                "deployment_soft_option_trusted_mask", "deployment_soft_option_exploration_mask",
                 "deployment_soft_option_target_floor", "deployment_soft_option_target_margin",
                 "deployment_service_target_mass", "deployment_service_predicted_mass",
                 "deployment_service_mass_gap", "deployment_mass_threshold_probs",
@@ -3394,6 +3435,9 @@ class Hedger:
                 collect_removed_device=(
                     self._device_name(removed_device_idx) if removed_device_idx >= 0 else ""
                 ),
+                collect_selected_prior_quality=collect_debug.get("collect_selected_prior_quality", ""),
+                collect_selected_runtime_trusted=collect_debug.get("collect_selected_runtime_trusted", ""),
+                collect_explore_unknown=collect_debug.get("collect_explore_unknown", ""),
                 collect_base_queue_pressure=collect_debug.get("collect_base_queue_pressure", ""),
                 collect_base_hotspot_cost=collect_debug.get("collect_base_hotspot_cost", ""),
                 collect_base_runtime_risk=collect_debug.get("collect_base_runtime_risk", ""),
@@ -3528,6 +3572,12 @@ class Hedger:
                     "deployment_static_quality_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "static_quality_score", service_idx)
                     ),
+                    "deployment_prior_quality_score": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "prior_quality_score", service_idx)
+                    ),
+                    "deployment_trusted_quality_score": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "trusted_quality_score", service_idx)
+                    ),
                     "deployment_observed_quality_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "observed_quality_score", service_idx)
                     ),
@@ -3536,6 +3586,9 @@ class Hedger:
                     ),
                     "deployment_evidence_confidence": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "evidence_confidence", service_idx)
+                    ),
+                    "deployment_runtime_trusted": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "runtime_trusted", service_idx)
                     ),
                     "deployment_evidence_untrusted": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "evidence_untrusted", service_idx)
@@ -3623,6 +3676,12 @@ class Hedger:
                     ),
                     "deployment_soft_option_stale_mask": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "soft_option_stale_mask", service_idx)
+                    ),
+                    "deployment_soft_option_trusted_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "soft_option_trusted_mask", service_idx)
+                    ),
+                    "deployment_soft_option_exploration_mask": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "soft_option_exploration_mask", service_idx)
                     ),
                     "deployment_soft_option_target_floor": self._json_for_record(
                         self._actor_debug_vector_value(actor_debug, "soft_option_target_floor", service_idx)
@@ -4680,6 +4739,16 @@ class Hedger:
             static_allowed,
             pressure_matrix,
         )
+        prior_quality_matrix = self._deployment_collect_pair_prior_quality_matrix(
+            logic_feats,
+            phys_feats,
+            static_allowed,
+        )
+        trusted_matrix = self._deployment_collect_runtime_trusted_matrix(
+            logic_feats,
+            static_allowed,
+            base_mask.device,
+        )
         service_pressure = pair_ctx["service_pressure"].detach().float()
         active_hotspot = pair_ctx["active_pair_hotspot"].detach().float()
         edge_counts = base_mask[:, :cloud_idx].float().sum(dim=1)
@@ -4688,14 +4757,27 @@ class Hedger:
         candidates: List[Tuple[float, int, int, int]] = []
         if operation == "safe_add":
             for service_idx in range(base_mask.size(0)):
-                feasible_target = min(2.0, float(feasible_counts[service_idx].item()))
+                feasible_target = float(feasible_counts[service_idx].item())
                 current_edges = float(edge_counts[service_idx].item())
-                if current_edges >= feasible_target or feasible_target <= 0.0:
+                pressure = float(service_pressure[service_idx].item())
+                desired_edges = 1.0 + pressure * max(0.0, feasible_target - 1.0)
+                if current_edges + 0.25 >= min(feasible_target, desired_edges) or feasible_target <= 0.0:
                     continue
-                if current_edges > 0.0 and float(service_pressure[service_idx].item()) < 0.40:
+                if current_edges > 0.0 and pressure < 0.35:
                     continue
                 for device_idx in range(cloud_idx):
                     if bool(base_mask[service_idx, device_idx].item()):
+                        continue
+                    observed_quality = float(quality_matrix[service_idx, device_idx].item())
+                    prior_quality = float(prior_quality_matrix[service_idx, device_idx].item())
+                    queue_pressure = float(pressure_matrix[service_idx, device_idx].item())
+                    trusted = bool(trusted_matrix[service_idx, device_idx].item())
+                    explore_unknown = (
+                        not trusted
+                        and prior_quality >= cfg.min_unknown_prior_quality
+                        and queue_pressure <= cfg.max_unknown_queue_pressure
+                    )
+                    if not trusted and not explore_unknown:
                         continue
                     if not self._deployment_collect_pair_capacity_ok(
                             base_mask,
@@ -4706,10 +4788,17 @@ class Hedger:
                             static_allowed,
                     ):
                         continue
+                    quality_for_score = observed_quality if trusted else prior_quality
+                    exploration_bonus = (
+                        0.35 * cfg.explore_unknown_prob
+                        if explore_unknown and random.random() < cfg.explore_unknown_prob else 0.0
+                    )
                     score = (
-                        float(quality_matrix[service_idx, device_idx].item())
-                        + 1.5 * float(service_pressure[service_idx].item())
-                        + 0.30 * max(0.0, feasible_target - current_edges)
+                        quality_for_score
+                        + 1.4 * pressure
+                        + 0.35 * max(0.0, min(feasible_target, desired_edges) - current_edges)
+                        - 0.40 * queue_pressure
+                        + exploration_bonus
                     )
                     candidates.append((score, service_idx, device_idx, -1))
             if not candidates:
@@ -4723,6 +4812,9 @@ class Hedger:
                 "collect_selected_device_idx": int(device_idx),
                 "collect_removed_service_idx": -1,
                 "collect_removed_device_idx": -1,
+                "collect_selected_prior_quality": prior_quality,
+                "collect_selected_runtime_trusted": int(trusted),
+                "collect_explore_unknown": int(explore_unknown),
             }
 
         if operation == "safe_swap":
@@ -4949,6 +5041,68 @@ class Hedger:
             quality[:, cloud_idx] = -1e6
         return quality
 
+    def _deployment_collect_pair_prior_quality_matrix(
+            self,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_feats: Dict[str, torch.Tensor],
+            static_allowed: torch.Tensor,
+    ) -> torch.Tensor:
+        num_services, num_devices = static_allowed.shape
+        device = static_allowed.device
+        dtype = torch.float32
+        cloud_idx = self.physical_topology.cloud_idx
+        device_cap = phys_feats.get("device_capability_feat")
+        if isinstance(device_cap, torch.Tensor) and device_cap.dim() == 2 and device_cap.size(0) == num_devices \
+                and device_cap.size(1) >= 3:
+            relative_compute = device_cap[:, 2].to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        else:
+            gpu_flops = phys_feats.get("gpu_flops")
+            if isinstance(gpu_flops, torch.Tensor) and gpu_flops.numel() == num_devices:
+                gpu_flops = gpu_flops.to(device=device, dtype=dtype)
+                relative_compute = (gpu_flops / gpu_flops.max().clamp_min(1e-6)).clamp(0.0, 1.0)
+            else:
+                relative_compute = torch.zeros((num_devices,), device=device, dtype=dtype)
+
+        model_mem = logic_feats.get("model_mem")
+        if isinstance(model_mem, torch.Tensor):
+            model_mem = model_mem.to(device=device, dtype=dtype).view(num_services)
+        else:
+            model_mem = torch.zeros((num_services,), device=device, dtype=dtype)
+        residual = self.deployment_agent._initial_residual_mem(
+            phys_feats,
+            logic_feats,
+            None,
+        ).to(device=device, dtype=dtype).clamp_min(0.0)
+        mem_gap = torch.log1p(model_mem).view(num_services, 1) - torch.log1p(residual).view(1, num_devices)
+        memory_fit = (1.0 - torch.sigmoid(mem_gap)).clamp(0.0, 1.0)
+        quality = relative_compute.view(1, num_devices).expand(num_services, -1) * memory_fit
+        quality = torch.where(
+            static_allowed.to(device=device).bool(),
+            quality,
+            torch.full_like(quality, -1e6),
+        )
+        if 0 <= cloud_idx < num_devices:
+            quality[:, cloud_idx] = -1e6
+        return quality
+
+    def _deployment_collect_runtime_trusted_matrix(
+            self,
+            logic_feats: Dict[str, torch.Tensor],
+            static_allowed: torch.Tensor,
+            device: torch.device,
+    ) -> torch.Tensor:
+        num_services, num_devices = static_allowed.shape
+        runtime_feat = logic_feats.get("runtime_pair_feat")
+        trusted = torch.zeros((num_services, num_devices), dtype=torch.bool, device=device)
+        if isinstance(runtime_feat, torch.Tensor) and runtime_feat.dim() == 3 and runtime_feat.size(-1) >= 5:
+            runtime_feat = runtime_feat.to(device=device, dtype=torch.float32)
+            confidence = runtime_feat[..., 3].clamp(0.0, 1.0) * runtime_feat[..., 4].clamp(0.0, 1.0)
+            trusted = confidence >= float(self.deployment_agent_params.get(
+                "trusted_runtime_confidence_threshold",
+                0.25,
+            ))
+        return trusted & static_allowed.to(device=device).bool()
+
     def _deployment_collect_candidate_risk(
             self,
             logic_edge_index: torch.Tensor,
@@ -5011,11 +5165,25 @@ class Hedger:
             hotspot = float(service_hotspot.max().detach().cpu().item()) if service_hotspot.numel() else 0.0
             runtime_risk = option_ctx["runtime_risk_score"].to(device=device).float()
             pair_quality = option_ctx["pair_quality_score"].to(device=device).float()
+            prior_quality = option_ctx["prior_quality_score"].to(device=device).float()
+            runtime_trusted = option_ctx["runtime_trusted"].to(device=device).float() >= 0.5
             edge_runtime_risk = runtime_risk[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
             edge_pair_quality = pair_quality[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
+            edge_prior_quality = prior_quality[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(masked_pressure)
+            edge_runtime_trusted = runtime_trusted[:, :cloud_idx] if cloud_idx > 0 else torch.zeros_like(selected_edge)
+            edge_exploration_quality = (
+                (edge_prior_quality >= cfg.min_unknown_prior_quality)
+                & (edge_pressure <= cfg.max_unknown_queue_pressure)
+                & ~edge_runtime_trusted
+            )
+            edge_collect_quality = torch.where(
+                edge_runtime_trusted | edge_exploration_quality,
+                torch.maximum(edge_pair_quality, edge_prior_quality),
+                edge_pair_quality,
+            )
             selected_risk_values = edge_runtime_risk.masked_select(selected_edge) if selected_edge.numel() \
                 else torch.zeros((0,), device=device)
-            selected_quality_values = edge_pair_quality.masked_select(selected_edge) if selected_edge.numel() \
+            selected_quality_values = edge_collect_quality.masked_select(selected_edge) if selected_edge.numel() \
                 else torch.zeros((0,), device=device)
             runtime_risk_max = float(selected_risk_values.max().detach().cpu().item()) \
                 if selected_risk_values.numel() else 0.0
@@ -5033,7 +5201,7 @@ class Hedger:
                 "service_hotspot": service_hotspot,
                 "hotspot": hotspot,
                 "edge_runtime_risk": edge_runtime_risk,
-                "edge_pair_quality": edge_pair_quality,
+                "edge_pair_quality": edge_collect_quality,
                 "runtime_risk": runtime_risk_max,
                 "min_pair_quality": min_pair_quality,
                 "min_pair_quality_for_delta": min_pair_quality_for_delta,
@@ -6503,6 +6671,10 @@ class Hedger:
                         service_need_bias_mean=aux.get("service_need_bias_mean", 0.0),
                         service_need_bias_std=aux.get("service_need_bias_std", 0.0),
                         service_need_bias_range=aux.get("service_need_bias_range", 0.0),
+                        service_need_target_mean=aux.get("service_need_target_mean", 0.0),
+                        service_need_prob_mean=aux.get("service_need_prob_mean", 0.0),
+                        service_need_target_gap_mean=aux.get("service_need_target_gap_mean", 0.0),
+                        service_need_target_loss=aux.get("service_need_target_loss", 0.0),
                         unselected_soft_positive_count_mean=aux.get(
                             "unselected_soft_positive_count_mean",
                             0.0,
@@ -6562,8 +6734,14 @@ class Hedger:
                         soft_target_untrusted_count_mean=aux.get("soft_target_untrusted_count_mean", 0.0),
                         soft_target_unknown_count_mean=aux.get("soft_target_unknown_count_mean", 0.0),
                         soft_target_stale_count_mean=aux.get("soft_target_stale_count_mean", 0.0),
+                        soft_target_trusted_count_mean=aux.get("soft_target_trusted_count_mean", 0.0),
+                        soft_target_exploration_count_mean=aux.get("soft_target_exploration_count_mean", 0.0),
                         soft_target_known_prob_mean=aux.get("soft_target_known_prob_mean", 0.0),
                         soft_target_untrusted_prob_mean=aux.get("soft_target_untrusted_prob_mean", 0.0),
+                        soft_target_trusted_prob_mean=aux.get("soft_target_trusted_prob_mean", 0.0),
+                        soft_target_exploration_prob_mean=aux.get("soft_target_exploration_prob_mean", 0.0),
+                        prior_quality_mean=aux.get("prior_quality_mean", 0.0),
+                        trusted_quality_mean=aux.get("trusted_quality_mean", 0.0),
                         contrast_margin_gap_mean=aux.get("contrast_margin_gap_mean", 0.0),
                         per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                         per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
@@ -6607,6 +6785,7 @@ class Hedger:
                         memory_margin_coef=offline_rl_record_cfg.memory_margin_coef,
                         effective_option_mass_coef=offline_rl_record_cfg.effective_option_mass_coef,
                         non_effective_option_coef=offline_rl_record_cfg.non_effective_option_coef,
+                        service_need_target_coef=offline_rl_record_cfg.service_need_target_coef,
                         soft_target_bc_coef=offline_rl_record_cfg.soft_target_bc_coef,
                         positive_logit_margin=offline_rl_record_cfg.positive_logit_margin,
                         negative_logit_margin=offline_rl_record_cfg.negative_logit_margin,
@@ -6629,6 +6808,14 @@ class Hedger:
                         untrusted_unknown_threshold=self.deployment_agent_params["untrusted_unknown_threshold"],
                         untrusted_stale_threshold=self.deployment_agent_params["untrusted_stale_threshold"],
                         positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
+                        trusted_runtime_confidence_threshold=(
+                            self.deployment_agent_params["trusted_runtime_confidence_threshold"]
+                        ),
+                        prior_quality_weight=self.deployment_agent_params["prior_quality_weight"],
+                        unknown_target_cap=self.deployment_agent_params["unknown_target_cap"],
+                        stale_target_cap=self.deployment_agent_params["stale_target_cap"],
+                        exploration_quality_threshold=self.deployment_agent_params["exploration_quality_threshold"],
+                        exploration_target=self.deployment_agent_params["exploration_target"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                         service_need_bias_scale=self.deployment_agent_params["service_need_bias_scale"],
                         service_mass_temperature=self.deployment_agent_params["service_mass_temperature"],
@@ -7273,6 +7460,8 @@ class Hedger:
                                 "collect_quality_bucket", "collect_anchor_used",
                                 "collect_fallback_selected_best",
                                 "collect_predicted_risk",
+                                "collect_selected_prior_quality", "collect_selected_runtime_trusted",
+                                "collect_explore_unknown",
                                 "collect_base_queue_pressure", "collect_base_hotspot_cost",
                                 "collect_base_runtime_risk", "collect_base_min_pair_quality",
                                 "collect_candidate_queue_pressure",
@@ -7308,6 +7497,8 @@ class Hedger:
                                 "service_target_mass_mean", "service_predicted_mass_mean",
                                 "service_mass_gap_mean", "service_mass_abs_gap_mean",
                                 "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
+                                "service_need_target_mean", "service_need_prob_mean",
+                                "service_need_target_gap_mean", "service_need_target_loss",
                                 "unselected_soft_positive_count_mean",
                                 "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
                                 "selected_non_soft_positive_count_mean",
@@ -7326,7 +7517,10 @@ class Hedger:
                                 "soft_target_confidence_weight_mean",
                                 "soft_target_known_count_mean", "soft_target_untrusted_count_mean",
                                 "soft_target_unknown_count_mean", "soft_target_stale_count_mean",
+                                "soft_target_trusted_count_mean", "soft_target_exploration_count_mean",
                                 "soft_target_known_prob_mean", "soft_target_untrusted_prob_mean",
+                                "soft_target_trusted_prob_mean", "soft_target_exploration_prob_mean",
+                                "prior_quality_mean", "trusted_quality_mean",
                                 "contrast_margin_gap_mean",
                                 "top_quality_candidate_count_mean", "non_top_candidate_count_mean",
                                 "quality_gap_top_second_mean",
@@ -7352,7 +7546,8 @@ class Hedger:
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
-            "effective_option_mass_coef", "non_effective_option_coef", "soft_target_bc_coef",
+            "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
+            "soft_target_bc_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
@@ -7361,6 +7556,9 @@ class Hedger:
             "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
+            "trusted_runtime_confidence_threshold", "prior_quality_weight",
+            "unknown_target_cap", "stale_target_cap",
+            "exploration_quality_threshold", "exploration_target",
             "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
@@ -7625,6 +7823,9 @@ class Hedger:
                     "collect_anchor_used": int(aux.get("collect_anchor_used", 0)),
                     "collect_bad_streak": int(aux.get("collect_bad_streak", 0)),
                     "collect_fallback_selected_best": int(aux.get("collect_fallback_selected_best", 0)),
+                    "collect_selected_prior_quality": float(aux.get("collect_selected_prior_quality", 0.0)),
+                    "collect_selected_runtime_trusted": int(aux.get("collect_selected_runtime_trusted", 0)),
+                    "collect_explore_unknown": int(aux.get("collect_explore_unknown", 0)),
                     "collect_candidate_queue_pressure": float(
                         aux.get("collect_candidate_queue_pressure", 0.0)
                     ),
@@ -7766,6 +7967,9 @@ class Hedger:
                     collect_anchor_used=aux.get("collect_anchor_used", 0),
                     collect_fallback_selected_best=aux.get("collect_fallback_selected_best", 0),
                     collect_predicted_risk=aux.get("collect_predicted_risk", 0.0),
+                    collect_selected_prior_quality=aux.get("collect_selected_prior_quality", ""),
+                    collect_selected_runtime_trusted=aux.get("collect_selected_runtime_trusted", ""),
+                    collect_explore_unknown=aux.get("collect_explore_unknown", ""),
                     collect_base_queue_pressure=aux.get("collect_base_queue_pressure", 0.0),
                     collect_base_hotspot_cost=aux.get("collect_base_hotspot_cost", 0.0),
                     collect_base_runtime_risk=aux.get("collect_base_runtime_risk", 0.0),
@@ -7823,6 +8027,10 @@ class Hedger:
                     service_need_bias_mean=aux.get("service_need_bias_mean", 0.0),
                     service_need_bias_std=aux.get("service_need_bias_std", 0.0),
                     service_need_bias_range=aux.get("service_need_bias_range", 0.0),
+                    service_need_target_mean=aux.get("service_need_target_mean", 0.0),
+                    service_need_prob_mean=aux.get("service_need_prob_mean", 0.0),
+                    service_need_target_gap_mean=aux.get("service_need_target_gap_mean", 0.0),
+                    service_need_target_loss=aux.get("service_need_target_loss", 0.0),
                     unselected_soft_positive_count_mean=aux.get(
                         "unselected_soft_positive_count_mean",
                         0.0,
@@ -7882,8 +8090,14 @@ class Hedger:
                     soft_target_untrusted_count_mean=aux.get("soft_target_untrusted_count_mean", 0.0),
                     soft_target_unknown_count_mean=aux.get("soft_target_unknown_count_mean", 0.0),
                     soft_target_stale_count_mean=aux.get("soft_target_stale_count_mean", 0.0),
+                    soft_target_trusted_count_mean=aux.get("soft_target_trusted_count_mean", 0.0),
+                    soft_target_exploration_count_mean=aux.get("soft_target_exploration_count_mean", 0.0),
                     soft_target_known_prob_mean=aux.get("soft_target_known_prob_mean", 0.0),
                     soft_target_untrusted_prob_mean=aux.get("soft_target_untrusted_prob_mean", 0.0),
+                    soft_target_trusted_prob_mean=aux.get("soft_target_trusted_prob_mean", 0.0),
+                    soft_target_exploration_prob_mean=aux.get("soft_target_exploration_prob_mean", 0.0),
+                    prior_quality_mean=aux.get("prior_quality_mean", 0.0),
+                    trusted_quality_mean=aux.get("trusted_quality_mean", 0.0),
                     contrast_margin_gap_mean=aux.get("contrast_margin_gap_mean", 0.0),
                     per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                     per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
@@ -7929,6 +8143,7 @@ class Hedger:
                     memory_margin_coef=self.training_cfg.deployment_offline_rl.memory_margin_coef,
                     effective_option_mass_coef=self.training_cfg.deployment_offline_rl.effective_option_mass_coef,
                     non_effective_option_coef=self.training_cfg.deployment_offline_rl.non_effective_option_coef,
+                    service_need_target_coef=self.training_cfg.deployment_offline_rl.service_need_target_coef,
                     soft_target_bc_coef=self.training_cfg.deployment_offline_rl.soft_target_bc_coef,
                     positive_logit_margin=self.training_cfg.deployment_offline_rl.positive_logit_margin,
                     negative_logit_margin=self.training_cfg.deployment_offline_rl.negative_logit_margin,
@@ -7949,6 +8164,14 @@ class Hedger:
                     untrusted_unknown_threshold=self.deployment_agent_params["untrusted_unknown_threshold"],
                     untrusted_stale_threshold=self.deployment_agent_params["untrusted_stale_threshold"],
                     positive_quality_threshold=self.deployment_agent_params["positive_quality_threshold"],
+                    trusted_runtime_confidence_threshold=(
+                        self.deployment_agent_params["trusted_runtime_confidence_threshold"]
+                    ),
+                    prior_quality_weight=self.deployment_agent_params["prior_quality_weight"],
+                    unknown_target_cap=self.deployment_agent_params["unknown_target_cap"],
+                    stale_target_cap=self.deployment_agent_params["stale_target_cap"],
+                    exploration_quality_threshold=self.deployment_agent_params["exploration_quality_threshold"],
+                    exploration_target=self.deployment_agent_params["exploration_target"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                     service_need_bias_scale=self.deployment_agent_params["service_need_bias_scale"],
                     service_mass_temperature=self.deployment_agent_params["service_mass_temperature"],
@@ -8531,6 +8754,7 @@ class Hedger:
             "memory_margin_coef": cfg.memory_margin_coef,
             "effective_option_mass_coef": cfg.effective_option_mass_coef,
             "non_effective_option_coef": cfg.non_effective_option_coef,
+            "service_need_target_coef": cfg.service_need_target_coef,
             "soft_target_bc_coef": cfg.soft_target_bc_coef,
             "positive_logit_margin": cfg.positive_logit_margin,
             "negative_logit_margin": cfg.negative_logit_margin,
