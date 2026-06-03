@@ -117,31 +117,32 @@ class HedgerDeploymentOfflineRLCfg:
     advantage_temperature: float = 1.0
     min_advantage_weight: float = 0.0
     max_advantage_weight: float = 16.0
-    actor_bc_coef: float = 1.0
+    actor_bc_coef: float = 0.85
     executed_aux_positive_coef: float = 0.08
-    negative_bc_coef: float = 0.05
-    raw_removed_negative_coef: float = 0.03
-    unselected_negative_coef: float = 0.002
+    negative_bc_coef: float = 0.12
+    raw_removed_negative_coef: float = 0.05
+    unselected_negative_coef: float = 0.015
+    selected_non_soft_negative_coef: float = 0.22
     value_coef: float = 0.45
     entropy_coef: float = 0.0
     bootstrap_current_value: bool = False
-    coverage_margin_coef: float = 0.65
-    quality_margin_coef: float = 0.45
-    ranking_margin_coef: float = 0.20
-    contrast_margin_coef: float = 0.30
-    memory_margin_coef: float = 0.18
-    effective_option_mass_coef: float = 0.12
-    non_effective_option_coef: float = 0.02
-    service_need_target_coef: float = 0.12
-    soft_target_bc_coef: float = 0.80
+    coverage_margin_coef: float = 0.55
+    quality_margin_coef: float = 0.35
+    ranking_margin_coef: float = 0.35
+    contrast_margin_coef: float = 0.45
+    memory_margin_coef: float = 0.25
+    effective_option_mass_coef: float = 0.04
+    non_effective_option_coef: float = 0.10
+    service_need_target_coef: float = 0.06
+    soft_target_bc_coef: float = 0.65
     bad_sample_multiplier: float = 1.20
     bad_sample_max_ratio: float = 0.12
     bad_sample_min_count: int = 1
-    positive_logit_margin: float = 1.0
-    negative_logit_margin: float = 0.10
-    coverage_logit_margin: float = 0.40
-    ranking_logit_margin: float = 0.20
-    contrast_logit_margin: float = 0.30
+    positive_logit_margin: float = 0.80
+    negative_logit_margin: float = 0.18
+    coverage_logit_margin: float = 0.35
+    ranking_logit_margin: float = 0.25
+    contrast_logit_margin: float = 0.40
     top_quality_tolerance: float = 0.16
     coverage_pressure_floor: float = 0.25
     option_quality_ratio: float = 0.60
@@ -658,34 +659,38 @@ class Hedger:
             advantage_temperature=max(1e-6, float(offline_rl_cfg.get("advantage_temperature", 1.0))),
             min_advantage_weight=max(0.0, float(offline_rl_cfg.get("min_advantage_weight", 0.0))),
             max_advantage_weight=max(1.0, float(offline_rl_cfg.get("max_advantage_weight", 20.0))),
-            actor_bc_coef=max(0.0, float(offline_rl_cfg.get("actor_bc_coef", 1.0))),
+            actor_bc_coef=max(0.0, float(offline_rl_cfg.get("actor_bc_coef", 0.85))),
             executed_aux_positive_coef=max(0.0, float(offline_rl_cfg.get("executed_aux_positive_coef", 0.08))),
-            negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.05))),
-            raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.03))),
-            unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.002))),
+            negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.12))),
+            raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.05))),
+            unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.015))),
+            selected_non_soft_negative_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("selected_non_soft_negative_coef", 0.22)),
+            ),
             value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.45))),
             entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
             bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", False)),
-            coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.65))),
-            quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.45))),
-            ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.20))),
-            contrast_margin_coef=max(0.0, float(offline_rl_cfg.get("contrast_margin_coef", 0.30))),
-            memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.18))),
-            effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.12))),
-            non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.02))),
-            service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.12))),
-            soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.80))),
+            coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.55))),
+            quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.35))),
+            ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.35))),
+            contrast_margin_coef=max(0.0, float(offline_rl_cfg.get("contrast_margin_coef", 0.45))),
+            memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.25))),
+            effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.04))),
+            non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.10))),
+            service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.06))),
+            soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.65))),
             bad_sample_multiplier=max(0.0, float(offline_rl_cfg.get("bad_sample_multiplier", 1.20))),
             bad_sample_max_ratio=min(
                 1.0,
                 max(0.0, float(offline_rl_cfg.get("bad_sample_max_ratio", 0.12))),
             ),
             bad_sample_min_count=max(0, int(offline_rl_cfg.get("bad_sample_min_count", 1))),
-            positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 1.0))),
-            negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.10))),
-            coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.40))),
-            ranking_logit_margin=max(0.0, float(offline_rl_cfg.get("ranking_logit_margin", 0.20))),
-            contrast_logit_margin=max(0.0, float(offline_rl_cfg.get("contrast_logit_margin", 0.30))),
+            positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 0.80))),
+            negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.18))),
+            coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.35))),
+            ranking_logit_margin=max(0.0, float(offline_rl_cfg.get("ranking_logit_margin", 0.25))),
+            contrast_logit_margin=max(0.0, float(offline_rl_cfg.get("contrast_logit_margin", 0.40))),
             top_quality_tolerance=max(0.0, float(offline_rl_cfg.get("top_quality_tolerance", 0.16))),
             coverage_pressure_floor=min(
                 1.0,
@@ -1007,18 +1012,21 @@ class Hedger:
             "clip_fraction", "ratio_mean", "ratio_std",
             "actor_grad_norm", "critic_grad_norm",
             "aux_positive_loss", "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
+            "selected_non_soft_negative_loss",
             "coverage_margin_loss", "quality_margin_loss", "ranking_margin_loss",
             "contrast_margin_loss",
             "memory_margin_loss", "effective_option_mass_loss", "non_effective_option_loss",
             "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
+            "actor_selected_non_soft_negative_weight_mean",
             "positive_pair_weight_sum", "soft_target_pair_weight_sum",
             "aux_positive_pair_weight_sum", "negative_pair_weight_sum",
             "raw_removed_pair_weight_sum", "unselected_negative_pair_weight_sum",
+            "selected_non_soft_negative_pair_weight_sum",
             "actor_positive_samples", "actor_aux_positive_samples",
             "actor_negative_samples", "actor_raw_removed_samples",
-            "actor_unselected_negative_samples",
+            "actor_unselected_negative_samples", "actor_selected_non_soft_negative_samples",
             "actor_selected_risky_samples", "actor_selected_low_quality_samples",
             "actor_selected_runtime_risky_samples", "actor_selected_unknown_samples",
             "actor_selected_stale_samples", "actor_selected_untrusted_samples",
@@ -1027,13 +1035,13 @@ class Hedger:
             "bad_actor_masked",
             "positive_logp_mean", "aux_positive_logp_mean",
             "negative_logp_mean", "raw_removed_logp_mean",
-            "unselected_negative_logp_mean",
+            "unselected_negative_logp_mean", "selected_non_soft_negative_logp_mean",
             "positive_prob_mean", "aux_positive_prob_mean",
             "negative_prob_mean", "raw_removed_prob_mean",
-            "unselected_negative_prob_mean",
+            "unselected_negative_prob_mean", "selected_non_soft_negative_prob_mean",
             "positive_logit_mean", "aux_positive_logit_mean",
             "negative_logit_mean", "raw_removed_logit_mean",
-            "unselected_negative_logit_mean",
+            "unselected_negative_logit_mean", "selected_non_soft_negative_logit_mean",
             "edge_prob_mean", "edge_prob_std", "edge_logit_mean", "edge_logit_std",
             "pair_centered_logit_std",
             "prob_above_05_ratio", "raw_mode_edge_density", "logit_margin_mean",
@@ -1081,7 +1089,7 @@ class Hedger:
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
-            "soft_target_bc_coef",
+            "soft_target_bc_coef", "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
@@ -6833,6 +6841,9 @@ class Hedger:
                         non_effective_option_coef=offline_rl_record_cfg.non_effective_option_coef,
                         service_need_target_coef=offline_rl_record_cfg.service_need_target_coef,
                         soft_target_bc_coef=offline_rl_record_cfg.soft_target_bc_coef,
+                        selected_non_soft_negative_coef=(
+                            offline_rl_record_cfg.selected_non_soft_negative_coef
+                        ),
                         bad_sample_multiplier=offline_rl_record_cfg.bad_sample_multiplier,
                         bad_sample_max_ratio=offline_rl_record_cfg.bad_sample_max_ratio,
                         bad_sample_min_count=offline_rl_record_cfg.bad_sample_min_count,
@@ -7563,6 +7574,10 @@ class Hedger:
                                 "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
                                 "selected_non_soft_positive_count_mean",
                                 "selected_non_soft_positive_prob_mean", "selected_non_soft_positive_logit_mean",
+                                "actor_selected_non_soft_negative_samples",
+                                "selected_non_soft_negative_prob_mean",
+                                "selected_non_soft_negative_logit_mean",
+                                "selected_non_soft_negative_loss",
                                 "non_effective_option_prob_mean",
                                 "non_effective_selection_cost",
                                 "top_quality_prob_mean", "non_top_prob_mean",
@@ -7607,7 +7622,7 @@ class Hedger:
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
-            "soft_target_bc_coef",
+            "soft_target_bc_coef", "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
@@ -8212,6 +8227,9 @@ class Hedger:
                     non_effective_option_coef=self.training_cfg.deployment_offline_rl.non_effective_option_coef,
                     service_need_target_coef=self.training_cfg.deployment_offline_rl.service_need_target_coef,
                     soft_target_bc_coef=self.training_cfg.deployment_offline_rl.soft_target_bc_coef,
+                    selected_non_soft_negative_coef=(
+                        self.training_cfg.deployment_offline_rl.selected_non_soft_negative_coef
+                    ),
                     bad_sample_multiplier=self.training_cfg.deployment_offline_rl.bad_sample_multiplier,
                     bad_sample_max_ratio=self.training_cfg.deployment_offline_rl.bad_sample_max_ratio,
                     bad_sample_min_count=self.training_cfg.deployment_offline_rl.bad_sample_min_count,
@@ -8823,6 +8841,7 @@ class Hedger:
             "negative_bc_coef": cfg.negative_bc_coef,
             "raw_removed_negative_coef": cfg.raw_removed_negative_coef,
             "unselected_negative_coef": cfg.unselected_negative_coef,
+            "selected_non_soft_negative_coef": cfg.selected_non_soft_negative_coef,
             "value_coef": cfg.value_coef,
             "entropy_coef": cfg.entropy_coef,
             "bootstrap_current_value": cfg.bootstrap_current_value,

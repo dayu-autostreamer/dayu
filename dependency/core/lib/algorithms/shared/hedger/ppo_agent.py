@@ -3385,7 +3385,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             if quality != "bad" else torch.zeros_like(selected)
         )
         aux_positive_mask = torch.zeros_like(selected)
-        negative_mask = (selected & (severe_risky | low_quality) & ~positive_mask) & edge_allowed
+        negative_mask = (
+            selected
+            & (severe_risky | low_quality | clear_non_effective_mask)
+            & ~positive_mask
+            & edge_allowed
+        )
         if quality == "bad":
             negative_mask = negative_mask | (selected & edge_allowed)
         unselected_negative_mask = (
@@ -3405,30 +3410,31 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             advantage_temperature: float = 1.0,
             min_advantage_weight: float = 0.0,
             max_advantage_weight: float = 20.0,
-            actor_bc_coef: float = 1.0,
-            executed_aux_positive_coef: float = 0.20,
-            negative_bc_coef: float = 0.2,
-            raw_removed_negative_coef: float = 0.0,
-            unselected_negative_coef: float = 0.0,
+            actor_bc_coef: float = 0.85,
+            executed_aux_positive_coef: float = 0.08,
+            negative_bc_coef: float = 0.12,
+            raw_removed_negative_coef: float = 0.05,
+            unselected_negative_coef: float = 0.015,
+            selected_non_soft_negative_coef: float = 0.22,
             value_coef: float = 0.5,
             entropy_coef: float = 0.0,
             bootstrap_current_value: bool = True,
-            coverage_margin_coef: float = 0.85,
-            quality_margin_coef: float = 0.55,
-            ranking_margin_coef: float = 0.45,
-            contrast_margin_coef: float = 0.75,
-            memory_margin_coef: float = 0.18,
-            effective_option_mass_coef: float = 0.25,
-            non_effective_option_coef: float = 0.25,
-            service_need_target_coef: float = 0.35,
-            soft_target_bc_coef: float = 0.85,
-            positive_logit_margin: float = 0.30,
-            negative_logit_margin: float = 0.25,
-            coverage_logit_margin: float = 0.20,
-            ranking_logit_margin: float = 0.15,
-            contrast_logit_margin: float = 0.30,
-            top_quality_tolerance: float = 0.05,
-            coverage_pressure_floor: float = 0.35,
+            coverage_margin_coef: float = 0.55,
+            quality_margin_coef: float = 0.35,
+            ranking_margin_coef: float = 0.35,
+            contrast_margin_coef: float = 0.45,
+            memory_margin_coef: float = 0.25,
+            effective_option_mass_coef: float = 0.04,
+            non_effective_option_coef: float = 0.10,
+            service_need_target_coef: float = 0.06,
+            soft_target_bc_coef: float = 0.65,
+            positive_logit_margin: float = 0.80,
+            negative_logit_margin: float = 0.18,
+            coverage_logit_margin: float = 0.35,
+            ranking_logit_margin: float = 0.25,
+            contrast_logit_margin: float = 0.40,
+            top_quality_tolerance: float = 0.16,
+            coverage_pressure_floor: float = 0.25,
             option_quality_ratio: Optional[float] = None,
     ):
         """
@@ -3455,6 +3461,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         aux_positive_logps = []
         raw_removed_logps = []
         unselected_negative_logps = []
+        selected_non_soft_negative_logps = []
         entropies = []
         targets = []
         rewards = []
@@ -3469,11 +3476,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         aux_positive_masks_for_bce = []
         raw_removed_masks_for_bce = []
         unselected_negative_masks_for_bce = []
+        selected_non_soft_negative_masks_for_bce = []
         positive_counts = []
         negative_counts = []
         aux_positive_counts = []
         raw_removed_counts = []
         unselected_negative_counts = []
+        selected_non_soft_negative_counts = []
         selected_risky_counts = []
         selected_low_quality_counts = []
         selected_runtime_risky_counts = []
@@ -3489,6 +3498,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         aux_positive_prob_means = []
         raw_removed_prob_means = []
         unselected_negative_prob_means = []
+        selected_non_soft_negative_prob_means = []
         soft_target_means = []
         soft_target_positive_counts = []
         soft_target_weight_means = []
@@ -3513,6 +3523,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         aux_positive_logit_means = []
         raw_removed_logit_means = []
         unselected_negative_logit_means = []
+        selected_non_soft_negative_logit_means = []
         edge_prob_means = []
         edge_prob_stds = []
         edge_logit_means = []
@@ -3695,6 +3706,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             cloud_idx = self._cloud_index(edge_allowed_t.size(1))
             if cloud_idx >= 0:
                 edge_allowed_t[:, cloud_idx] = False
+            current_threshold_edge = (raw_removed_logits.detach() > 0.0) & edge_allowed_t
+            selected_non_soft_negative_mask = (
+                current_threshold_edge
+                & ~soft_target_info["soft_target_positive_mask"].to(
+                    device=raw_removed_logits.device,
+                ).bool()
+            )
             select_logits_for_bce.append(raw_removed_logits)
             pair_negative_logits_for_bce.append(pair_negative_logits)
             soft_target_logits_for_bce.append(raw_removed_logits)
@@ -3711,6 +3729,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             aux_positive_masks_for_bce.append((aux_positive_mask_t & edge_allowed_t & ~positive_mask_t).detach())
             raw_removed_masks_for_bce.append((raw_removed_mask & edge_allowed_t).detach())
             unselected_negative_masks_for_bce.append((unselected_negative_mask & edge_allowed_t).detach())
+            selected_non_soft_negative_masks_for_bce.append(selected_non_soft_negative_mask.detach())
 
             if bool(raw_removed_mask.any().item()):
                 raw_removed_logp = (
@@ -3726,6 +3745,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 )
             else:
                 unselected_negative_logp = torch.tensor(0.0, device=device)
+            if bool(selected_non_soft_negative_mask.any().item()):
+                selected_non_soft_negative_logp = (
+                    torch.log1p(-raw_removed_probs).masked_select(selected_non_soft_negative_mask).sum()
+                    / selected_non_soft_negative_mask.float().sum().clamp_min(1.0)
+                )
+            else:
+                selected_non_soft_negative_logp = torch.tensor(0.0, device=device)
 
             reward = float(tr["reward"])
             rewards.append(reward)
@@ -3757,6 +3783,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             aux_positive_logps.append(aux_positive_logp.detach())
             raw_removed_logps.append(raw_removed_logp.detach())
             unselected_negative_logps.append(unselected_negative_logp.detach())
+            selected_non_soft_negative_logps.append(selected_non_soft_negative_logp.detach())
             entropies.append(ent)
             quality_values.append(quality_bucket)
             positive_counts.append(float(policy_aux["positive_mask"].float().sum().detach().cpu().item()))
@@ -3765,6 +3792,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             raw_removed_counts.append(float(raw_removed_mask.float().sum().detach().cpu().item()))
             unselected_negative_counts.append(
                 float(unselected_negative_mask.float().sum().detach().cpu().item())
+            )
+            selected_non_soft_negative_counts.append(
+                float(selected_non_soft_negative_mask.float().sum().detach().cpu().item())
             )
             selected_risky_counts.append(float(mask_debug.get("actor_selected_risky_samples", 0.0)))
             selected_low_quality_counts.append(float(mask_debug.get("actor_selected_low_quality_samples", 0.0)))
@@ -3798,6 +3828,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 )
                 unselected_negative_logit_means.append(
                     _scalar_to_float(raw_removed_logits.masked_select(unselected_negative_mask).mean())
+                )
+            if bool(selected_non_soft_negative_mask.any().item()):
+                selected_non_soft_negative_prob_means.append(
+                    _scalar_to_float(raw_removed_probs.masked_select(selected_non_soft_negative_mask).mean())
+                )
+                selected_non_soft_negative_logit_means.append(
+                    _scalar_to_float(raw_removed_logits.masked_select(selected_non_soft_negative_mask).mean())
                 )
             if bool(edge_allowed_t.any().item()):
                 edge_probs = raw_removed_probs.masked_select(edge_allowed_t)
@@ -3936,6 +3973,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         aux_positive_logp_t = torch.stack(aux_positive_logps).float()
         raw_removed_logp_t = torch.stack(raw_removed_logps).float()
         unselected_negative_logp_t = torch.stack(unselected_negative_logps).float()
+        selected_non_soft_negative_logp_t = torch.stack(selected_non_soft_negative_logps).float()
         ent_t = torch.stack(entropies).float()
         coverage_margin_loss_t = torch.stack(coverage_margin_losses).float()
         quality_margin_loss_t = torch.stack(quality_margin_losses).float()
@@ -3972,6 +4010,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             bad_mask > 0.5,
             torch.zeros_like(bad_mask),
             torch.ones_like(bad_mask),
+        )
+        selected_non_soft_negative_weight = torch.where(
+            bad_mask > 0.5,
+            torch.ones_like(bad_mask),
+            torch.full_like(bad_mask, 0.75),
         )
         soft_target_weight = torch.where(
             bad_mask > 0.5,
@@ -4064,6 +4107,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             coef=float(unselected_negative_coef),
             logits_list=pair_negative_logits_for_bce,
         )
+        selected_non_soft_negative_loss, selected_non_soft_negative_pair_weight_sum = pair_bce_loss(
+            selected_non_soft_negative_masks_for_bce,
+            selected_non_soft_negative_weight,
+            positive_target=False,
+            coef=float(selected_non_soft_negative_coef),
+            logits_list=pair_negative_logits_for_bce,
+        )
         value_loss = F.mse_loss(value_t, target_t)
         entropy = ent_t.mean()
         critic_loss = float(value_coef) * value_loss
@@ -4074,6 +4124,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             + negative_loss
             + raw_removed_negative_loss
             + unselected_negative_loss
+            + selected_non_soft_negative_loss
         )
         coverage_margin_loss = coverage_margin_loss_t.mean() * float(coverage_margin_coef)
         quality_margin_loss = quality_margin_loss_t.mean() * float(quality_margin_coef)
@@ -4139,6 +4190,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "negative_loss": _scalar_to_float(negative_loss.detach()),
             "raw_removed_negative_loss": _scalar_to_float(raw_removed_negative_loss.detach()),
             "unselected_negative_loss": _scalar_to_float(unselected_negative_loss.detach()),
+            "selected_non_soft_negative_loss": _scalar_to_float(
+                selected_non_soft_negative_loss.detach()
+            ),
             "coverage_margin_loss": _scalar_to_float(coverage_margin_loss.detach()),
             "quality_margin_loss": _scalar_to_float(quality_margin_loss.detach()),
             "ranking_margin_loss": _scalar_to_float(ranking_margin_loss.detach()),
@@ -4152,6 +4206,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "entropy": _scalar_to_float(entropy.detach()),
             "entropy_coef": float(entropy_coef),
             "soft_target_bc_coef": float(soft_target_bc_coef),
+            "selected_non_soft_negative_coef": float(selected_non_soft_negative_coef),
             "service_need_target_coef": float(service_need_target_coef),
             "executed_aux_positive_coef": float(executed_aux_positive_coef),
             "value_coef": float(value_coef),
@@ -4167,17 +4222,26 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_unselected_negative_weight_mean": _scalar_to_float(
                 unselected_negative_weight.detach().mean()
             ),
+            "actor_selected_non_soft_negative_weight_mean": _scalar_to_float(
+                selected_non_soft_negative_weight.detach().mean()
+            ),
             "positive_pair_weight_sum": _scalar_to_float(positive_pair_weight_sum),
             "soft_target_pair_weight_sum": _scalar_to_float(soft_target_pair_weight_sum),
             "aux_positive_pair_weight_sum": _scalar_to_float(aux_positive_pair_weight_sum),
             "negative_pair_weight_sum": _scalar_to_float(negative_pair_weight_sum),
             "raw_removed_pair_weight_sum": _scalar_to_float(raw_removed_pair_weight_sum),
             "unselected_negative_pair_weight_sum": _scalar_to_float(unselected_negative_pair_weight_sum),
+            "selected_non_soft_negative_pair_weight_sum": _scalar_to_float(
+                selected_non_soft_negative_pair_weight_sum
+            ),
             "actor_positive_samples": _mean_or_zero(positive_counts),
             "actor_aux_positive_samples": _mean_or_zero(aux_positive_counts),
             "actor_negative_samples": _mean_or_zero(negative_counts),
             "actor_raw_removed_samples": _mean_or_zero(raw_removed_counts),
             "actor_unselected_negative_samples": _mean_or_zero(unselected_negative_counts),
+            "actor_selected_non_soft_negative_samples": _mean_or_zero(
+                selected_non_soft_negative_counts
+            ),
             "actor_selected_risky_samples": _mean_or_zero(selected_risky_counts),
             "actor_selected_low_quality_samples": _mean_or_zero(selected_low_quality_counts),
             "actor_selected_runtime_risky_samples": _mean_or_zero(selected_runtime_risky_counts),
@@ -4196,11 +4260,17 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "unselected_negative_logp_mean": _scalar_to_float(
                 unselected_negative_logp_t.detach().mean()
             ),
+            "selected_non_soft_negative_logp_mean": _scalar_to_float(
+                selected_non_soft_negative_logp_t.detach().mean()
+            ),
             "positive_prob_mean": _mean_or_zero(positive_prob_means),
             "aux_positive_prob_mean": _mean_or_zero(aux_positive_prob_means),
             "negative_prob_mean": _mean_or_zero(negative_prob_means),
             "raw_removed_prob_mean": _mean_or_zero(raw_removed_prob_means),
             "unselected_negative_prob_mean": _mean_or_zero(unselected_negative_prob_means),
+            "selected_non_soft_negative_prob_mean": _mean_or_zero(
+                selected_non_soft_negative_prob_means
+            ),
             "soft_target_mean": _mean_or_zero(soft_target_means),
             "soft_target_positive_count_mean": _mean_or_zero(soft_target_positive_counts),
             "soft_target_weight_mean": _mean_or_zero(soft_target_weight_means),
@@ -4225,6 +4295,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "negative_logit_mean": _mean_or_zero(negative_logit_means),
             "raw_removed_logit_mean": _mean_or_zero(raw_removed_logit_means),
             "unselected_negative_logit_mean": _mean_or_zero(unselected_negative_logit_means),
+            "selected_non_soft_negative_logit_mean": _mean_or_zero(
+                selected_non_soft_negative_logit_means
+            ),
             "edge_prob_mean": _mean_or_zero(edge_prob_means),
             "edge_prob_std": _mean_or_zero(edge_prob_stds),
             "edge_logit_mean": _mean_or_zero(edge_logit_means),
