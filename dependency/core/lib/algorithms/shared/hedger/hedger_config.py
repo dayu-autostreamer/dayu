@@ -35,28 +35,28 @@ class DeploymentConstraintCfg:
     # Effective-option labels used by deployment offline calibration.  They
     # define which feasible edge pairs are trained as useful alternatives, not
     # an inference-time rule that adds replicas.
-    option_quality_ratio: float = 0.75
-    option_quality_tolerance: float = 0.08
+    option_quality_ratio: float = 0.60
+    option_quality_tolerance: float = 0.16
     option_pressure_floor: float = 0.25
     # Soft offline targets for the direct Bernoulli matrix. These targets are
     # only used during deployment offline/online learning and debug recording;
     # deterministic inference still uses the learned logit boundary p=0.5.
-    soft_target_temperature: float = 0.16
-    soft_target_pressure_tolerance: float = 0.18
+    soft_target_temperature: float = 0.18
+    soft_target_pressure_tolerance: float = 0.30
     soft_target_min: float = 0.04
     soft_target_max: float = 0.92
     soft_target_untrusted_weight_floor: float = 0.40
     soft_target_risk_penalty: float = 0.40
     trusted_runtime_confidence_threshold: float = 0.25
     prior_quality_weight: float = 0.35
-    unknown_target_cap: float = 0.46
-    stale_target_cap: float = 0.47
+    unknown_target_cap: float = 0.48
+    stale_target_cap: float = 0.49
     exploration_quality_threshold: float = 0.35
-    exploration_target: float = 0.46
+    exploration_target: float = 0.58
     executed_effective_target_floor: float = 0.72
     executed_effective_weight_bonus: float = 0.75
     service_need_bias_scale: float = 1.0
-    service_mass_temperature: float = 0.30
+    service_mass_temperature: float = 1.0
     service_target_mass_pressure_scale: float = 1.0
     # Budget-aware logit calibration.  This is not a decoder rule: it lets the
     # actor logits see the memory pressure that appears after deterministic

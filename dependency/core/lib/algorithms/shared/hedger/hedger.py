@@ -117,34 +117,34 @@ class HedgerDeploymentOfflineRLCfg:
     advantage_temperature: float = 1.0
     min_advantage_weight: float = 0.0
     max_advantage_weight: float = 16.0
-    actor_bc_coef: float = 0.75
+    actor_bc_coef: float = 1.0
     executed_aux_positive_coef: float = 0.08
-    negative_bc_coef: float = 0.40
-    raw_removed_negative_coef: float = 0.40
-    unselected_negative_coef: float = 0.06
-    value_coef: float = 0.5
-    entropy_coef: float = 0.00008
-    bootstrap_current_value: bool = True
-    coverage_margin_coef: float = 0.35
+    negative_bc_coef: float = 0.05
+    raw_removed_negative_coef: float = 0.03
+    unselected_negative_coef: float = 0.002
+    value_coef: float = 0.45
+    entropy_coef: float = 0.0
+    bootstrap_current_value: bool = False
+    coverage_margin_coef: float = 0.65
     quality_margin_coef: float = 0.45
-    ranking_margin_coef: float = 0.45
-    contrast_margin_coef: float = 0.75
+    ranking_margin_coef: float = 0.20
+    contrast_margin_coef: float = 0.30
     memory_margin_coef: float = 0.18
-    effective_option_mass_coef: float = 0.25
-    non_effective_option_coef: float = 0.25
-    service_need_target_coef: float = 0.35
-    soft_target_bc_coef: float = 0.85
-    bad_sample_multiplier: float = 1.25
-    bad_sample_max_ratio: float = 0.15
+    effective_option_mass_coef: float = 0.12
+    non_effective_option_coef: float = 0.02
+    service_need_target_coef: float = 0.12
+    soft_target_bc_coef: float = 0.80
+    bad_sample_multiplier: float = 1.20
+    bad_sample_max_ratio: float = 0.12
     bad_sample_min_count: int = 1
-    positive_logit_margin: float = 0.35
-    negative_logit_margin: float = 0.25
-    coverage_logit_margin: float = 0.30
+    positive_logit_margin: float = 1.0
+    negative_logit_margin: float = 0.10
+    coverage_logit_margin: float = 0.40
     ranking_logit_margin: float = 0.20
     contrast_logit_margin: float = 0.30
-    top_quality_tolerance: float = 0.08
+    top_quality_tolerance: float = 0.16
     coverage_pressure_floor: float = 0.25
-    option_quality_ratio: float = 0.75
+    option_quality_ratio: float = 0.60
     offline_replay_ratio: float = 0.5
     online_replay_capacity: int = 512
     online_min_new_transitions: int = 1
@@ -659,41 +659,41 @@ class Hedger:
             min_advantage_weight=max(0.0, float(offline_rl_cfg.get("min_advantage_weight", 0.0))),
             max_advantage_weight=max(1.0, float(offline_rl_cfg.get("max_advantage_weight", 20.0))),
             actor_bc_coef=max(0.0, float(offline_rl_cfg.get("actor_bc_coef", 1.0))),
-            executed_aux_positive_coef=max(0.0, float(offline_rl_cfg.get("executed_aux_positive_coef", 0.20))),
-            negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.2))),
-            raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.0))),
-            unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.0))),
-            value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.5))),
+            executed_aux_positive_coef=max(0.0, float(offline_rl_cfg.get("executed_aux_positive_coef", 0.08))),
+            negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.05))),
+            raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.03))),
+            unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.002))),
+            value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.45))),
             entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
-            bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", True)),
-            coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.85))),
-            quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.55))),
-            ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.45))),
-            contrast_margin_coef=max(0.0, float(offline_rl_cfg.get("contrast_margin_coef", 0.75))),
+            bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", False)),
+            coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.65))),
+            quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.45))),
+            ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.20))),
+            contrast_margin_coef=max(0.0, float(offline_rl_cfg.get("contrast_margin_coef", 0.30))),
             memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.18))),
-            effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.0))),
-            non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.0))),
-            service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.35))),
-            soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.85))),
-            bad_sample_multiplier=max(0.0, float(offline_rl_cfg.get("bad_sample_multiplier", 1.25))),
+            effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.12))),
+            non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.02))),
+            service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.12))),
+            soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.80))),
+            bad_sample_multiplier=max(0.0, float(offline_rl_cfg.get("bad_sample_multiplier", 1.20))),
             bad_sample_max_ratio=min(
                 1.0,
-                max(0.0, float(offline_rl_cfg.get("bad_sample_max_ratio", 0.15))),
+                max(0.0, float(offline_rl_cfg.get("bad_sample_max_ratio", 0.12))),
             ),
             bad_sample_min_count=max(0, int(offline_rl_cfg.get("bad_sample_min_count", 1))),
-            positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 0.25))),
-            negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.20))),
-            coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.20))),
-            ranking_logit_margin=max(0.0, float(offline_rl_cfg.get("ranking_logit_margin", 0.15))),
+            positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 1.0))),
+            negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.10))),
+            coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.40))),
+            ranking_logit_margin=max(0.0, float(offline_rl_cfg.get("ranking_logit_margin", 0.20))),
             contrast_logit_margin=max(0.0, float(offline_rl_cfg.get("contrast_logit_margin", 0.30))),
-            top_quality_tolerance=max(0.0, float(offline_rl_cfg.get("top_quality_tolerance", 0.05))),
+            top_quality_tolerance=max(0.0, float(offline_rl_cfg.get("top_quality_tolerance", 0.16))),
             coverage_pressure_floor=min(
                 1.0,
                 max(0.0, float(offline_rl_cfg.get("coverage_pressure_floor", 0.35))),
             ),
             option_quality_ratio=min(
                 1.0,
-                max(0.0, float(offline_rl_cfg.get("option_quality_ratio", 0.65))),
+                max(0.0, float(offline_rl_cfg.get("option_quality_ratio", 0.60))),
             ),
             offline_replay_ratio=min(1.0, max(0.0, float(offline_rl_cfg.get("offline_replay_ratio", 0.5)))),
             online_replay_capacity=max(1, int(offline_rl_cfg.get("online_replay_capacity", 512))),
@@ -1248,12 +1248,12 @@ class Hedger:
             ),
             "untrusted_unknown_threshold": _matrix_float("untrusted_unknown_threshold", 0.50, probability=True),
             "untrusted_stale_threshold": _matrix_float("untrusted_stale_threshold", 0.85, probability=True),
-            "positive_quality_threshold": _matrix_float("positive_quality_threshold", 0.20, probability=True),
-            "option_quality_ratio": _matrix_float("option_quality_ratio", 0.65, probability=True),
-            "option_quality_tolerance": _matrix_float("option_quality_tolerance", 0.12),
-            "option_pressure_floor": _matrix_float("option_pressure_floor", 0.20, probability=True),
-            "soft_target_temperature": _matrix_float("soft_target_temperature", 0.16),
-            "soft_target_pressure_tolerance": _matrix_float("soft_target_pressure_tolerance", 0.18),
+            "positive_quality_threshold": _matrix_float("positive_quality_threshold", 0.30, probability=True),
+            "option_quality_ratio": _matrix_float("option_quality_ratio", 0.60, probability=True),
+            "option_quality_tolerance": _matrix_float("option_quality_tolerance", 0.16),
+            "option_pressure_floor": _matrix_float("option_pressure_floor", 0.25, probability=True),
+            "soft_target_temperature": _matrix_float("soft_target_temperature", 0.18),
+            "soft_target_pressure_tolerance": _matrix_float("soft_target_pressure_tolerance", 0.30),
             "soft_target_min": _matrix_float("soft_target_min", 0.04, probability=True),
             "soft_target_max": _matrix_float("soft_target_max", 0.92, probability=True),
             "soft_target_untrusted_weight_floor": _matrix_float(
@@ -1268,14 +1268,14 @@ class Hedger:
                 probability=True,
             ),
             "prior_quality_weight": _matrix_float("prior_quality_weight", 0.35, probability=True),
-            "unknown_target_cap": _matrix_float("unknown_target_cap", 0.46, probability=True),
-            "stale_target_cap": _matrix_float("stale_target_cap", 0.47, probability=True),
+            "unknown_target_cap": _matrix_float("unknown_target_cap", 0.48, probability=True),
+            "stale_target_cap": _matrix_float("stale_target_cap", 0.49, probability=True),
             "exploration_quality_threshold": _matrix_float(
                 "exploration_quality_threshold",
                 0.35,
                 probability=True,
             ),
-            "exploration_target": _matrix_float("exploration_target", 0.46, probability=True),
+            "exploration_target": _matrix_float("exploration_target", 0.58, probability=True),
             "executed_effective_target_floor": _matrix_float(
                 "executed_effective_target_floor",
                 0.72,
@@ -1283,7 +1283,7 @@ class Hedger:
             ),
             "executed_effective_weight_bonus": _matrix_float("executed_effective_weight_bonus", 0.75),
             "service_need_bias_scale": _matrix_float("service_need_bias_scale", 1.0),
-            "service_mass_temperature": _matrix_float("service_mass_temperature", 0.30),
+            "service_mass_temperature": _matrix_float("service_mass_temperature", 1.0),
             "service_target_mass_pressure_scale": _matrix_float("service_target_mass_pressure_scale", 1.0),
             "budget_logit_scale": _matrix_float("budget_logit_scale", 0.15),
             "budget_temperature": _matrix_float("budget_temperature", 0.12),
@@ -3151,7 +3151,7 @@ class Hedger:
                 "deployment_static_option_score", "deployment_static_quality_score",
                 "deployment_prior_quality_score", "deployment_trusted_quality_score",
                 "deployment_observed_quality_score", "deployment_runtime_risk_score",
-                "deployment_pair_quality", "deployment_service_best_pair_quality",
+                "deployment_pair_quality", "deployment_label_quality", "deployment_service_best_pair_quality",
                 "deployment_service_second_pair_quality", "deployment_quality_gap_top_second",
                 "deployment_service_best_runtime_risk", "deployment_service_max_queue_pressure",
                 "deployment_evidence_confidence", "deployment_runtime_trusted",
@@ -3625,6 +3625,9 @@ class Hedger:
                     ),
                     "deployment_pair_quality": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_quality_score", service_idx)
+                    ),
+                    "deployment_label_quality": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "label_quality", service_idx)
                     ),
                     "deployment_service_best_pair_quality": self._json_for_record(
                         self._actor_debug_vector_value(actor_debug, "service_best_pair_quality", service_idx)

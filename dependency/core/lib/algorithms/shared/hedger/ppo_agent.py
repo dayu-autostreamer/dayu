@@ -563,15 +563,15 @@ class _DeploymentBackbonePPO(nn.Module):
         return min(max(value, 0.0), 1.0)
 
     def _option_quality_ratio(self) -> float:
-        value = float(getattr(self.cfg, "option_quality_ratio", 0.65))
+        value = float(getattr(self.cfg, "option_quality_ratio", 0.60))
         if not math.isfinite(value):
-            value = 0.65
+            value = 0.60
         return min(max(value, 0.0), 1.0)
 
     def _option_quality_tolerance(self) -> float:
-        value = float(getattr(self.cfg, "option_quality_tolerance", 0.12))
+        value = float(getattr(self.cfg, "option_quality_tolerance", 0.16))
         if not math.isfinite(value):
-            value = 0.12
+            value = 0.16
         return max(value, 0.0)
 
     def _option_pressure_floor(self) -> float:
@@ -581,15 +581,15 @@ class _DeploymentBackbonePPO(nn.Module):
         return min(max(value, 0.0), 1.0)
 
     def _soft_target_temperature(self) -> float:
-        value = float(getattr(self.cfg, "soft_target_temperature", 0.16))
+        value = float(getattr(self.cfg, "soft_target_temperature", 0.18))
         if not math.isfinite(value):
-            value = 0.16
+            value = 0.18
         return max(value, 1e-3)
 
     def _soft_target_pressure_tolerance(self) -> float:
-        value = float(getattr(self.cfg, "soft_target_pressure_tolerance", 0.18))
+        value = float(getattr(self.cfg, "soft_target_pressure_tolerance", 0.30))
         if not math.isfinite(value):
-            value = 0.18
+            value = 0.30
         return max(value, 0.0)
 
     def _soft_target_min(self) -> float:
@@ -629,15 +629,15 @@ class _DeploymentBackbonePPO(nn.Module):
         return min(max(value, 0.0), 1.0)
 
     def _unknown_target_cap(self) -> float:
-        value = float(getattr(self.cfg, "unknown_target_cap", 0.46))
+        value = float(getattr(self.cfg, "unknown_target_cap", 0.48))
         if not math.isfinite(value):
-            value = 0.46
+            value = 0.48
         return min(max(value, self._soft_target_min()), 0.499)
 
     def _stale_target_cap(self) -> float:
-        value = float(getattr(self.cfg, "stale_target_cap", 0.47))
+        value = float(getattr(self.cfg, "stale_target_cap", 0.49))
         if not math.isfinite(value):
-            value = 0.47
+            value = 0.49
         return min(max(value, self._soft_target_min()), 0.499)
 
     def _exploration_quality_threshold(self) -> float:
@@ -647,10 +647,10 @@ class _DeploymentBackbonePPO(nn.Module):
         return min(max(value, 0.0), 1.0)
 
     def _exploration_target(self) -> float:
-        value = float(getattr(self.cfg, "exploration_target", 0.46))
+        value = float(getattr(self.cfg, "exploration_target", 0.58))
         if not math.isfinite(value):
-            value = 0.46
-        return min(max(value, self._soft_target_min()), 0.499)
+            value = 0.58
+        return min(max(value, 0.501), self._soft_target_max())
 
     def _executed_effective_target_floor(self) -> float:
         value = float(getattr(self.cfg, "executed_effective_target_floor", 0.72))
@@ -677,9 +677,9 @@ class _DeploymentBackbonePPO(nn.Module):
         return max(0.0, value)
 
     def _service_mass_temperature(self) -> float:
-        value = float(getattr(self.cfg, "service_mass_temperature", 0.30))
+        value = float(getattr(self.cfg, "service_mass_temperature", 1.0))
         if not math.isfinite(value):
-            value = 0.30
+            value = 1.0
         return max(value, 1e-3)
 
     def _deployment_budget_logit_scale(self) -> float:
@@ -1042,9 +1042,10 @@ class _DeploymentBackbonePPO(nn.Module):
             )
             pair_quality_score = torch.where(cloud_mask, torch.zeros_like(pair_quality_score), pair_quality_score)
             runtime_trusted = torch.where(cloud_mask, torch.zeros_like(runtime_trusted), runtime_trusted)
+        label_quality_score = torch.where(runtime_trusted.bool(), pair_quality_score, prior_quality_score).clamp(0.0, 1.0)
         evidence_untrusted = torch.maximum(runtime_unknown, runtime_stale)
         quality_threshold = max(self._positive_quality_threshold(), 1e-6)
-        low_quality_gap = ((quality_threshold - pair_quality_score) / quality_threshold).clamp(0.0, 1.0)
+        low_quality_gap = ((quality_threshold - label_quality_score) / quality_threshold).clamp(0.0, 1.0)
 
         active_hotspot = pair_ctx["active_pair_hotspot"].to(device=device, dtype=dtype)
         runtime_risk_score = torch.clamp(
@@ -1076,6 +1077,7 @@ class _DeploymentBackbonePPO(nn.Module):
             "trusted_quality_score": trusted_quality_score,
             "observed_quality_score": observed_quality_score,
             "pair_quality_score": pair_quality_score,
+            "label_quality_score": label_quality_score,
             "runtime_unknown_risk": runtime_unknown,
             "runtime_stale_risk": runtime_stale,
             "static_option_score": qk_feature.to(device=device, dtype=dtype),
@@ -1632,6 +1634,7 @@ class _DeploymentBackbonePPO(nn.Module):
         pressure_floor = self._option_pressure_floor() if coverage_pressure_floor is None \
             else min(max(0.0, float(coverage_pressure_floor)), 1.0)
 
+        label_quality = torch.where(runtime_trusted, pair_quality, prior_quality).clamp(0.0, 1.0)
         severe_risky = (
             (queue_pressure >= self._negative_queue_threshold())
             | (hotspot >= self._negative_hotspot_threshold())
@@ -1641,7 +1644,7 @@ class _DeploymentBackbonePPO(nn.Module):
             (runtime_unknown >= self._untrusted_unknown_threshold())
             | (runtime_stale >= self._untrusted_stale_threshold())
         ) & edge_allowed
-        low_quality = (pair_quality < quality_threshold) & edge_allowed
+        low_quality = (label_quality < quality_threshold) & edge_allowed
         trusted_option_mask = edge_allowed & runtime_trusted & ~severe_risky & ~low_quality
         exploration_option_mask = (
             edge_allowed
@@ -1649,23 +1652,31 @@ class _DeploymentBackbonePPO(nn.Module):
             & ~severe_risky
             & (prior_quality >= self._exploration_quality_threshold())
             & (queue_pressure <= self._negative_queue_threshold())
+            & ~low_quality
         )
-        quality_eligible = trusted_option_mask
+        quality_eligible = trusted_option_mask | exploration_option_mask
 
-        best_quality = pair_quality.masked_fill(~quality_eligible, -1.0).max(dim=1).values
+        best_quality = label_quality.masked_fill(~quality_eligible, -1.0).max(dim=1).values
         has_effective_candidate = best_quality >= quality_threshold
-        near_top_floor = (best_quality - tolerance).clamp_min(quality_threshold)
-        relative_floor = (best_quality * quality_ratio).clamp_min(quality_threshold)
+        pressure_hint = service_pressure.clamp(0.0, 1.0)
+        near_top_floor = (
+            best_quality
+            - tolerance * (1.0 + pressure_hint)
+        ).clamp_min(quality_threshold)
+        relative_floor = (
+            best_quality
+            * (quality_ratio - 0.15 * pressure_hint).clamp(min=0.45, max=1.0)
+        ).clamp_min(quality_threshold)
         option_floor = torch.minimum(near_top_floor, relative_floor)
         option_floor = torch.where(has_effective_candidate, option_floor, torch.ones_like(option_floor))
         effective_option_mask = (
             quality_eligible
-            & (pair_quality >= option_floor.view(num_services, 1))
+            & (label_quality >= option_floor.view(num_services, 1))
             & has_effective_candidate.view(num_services, 1)
         )
         top_quality_mask = (
             quality_eligible
-            & (pair_quality >= near_top_floor.view(num_services, 1))
+            & (label_quality >= near_top_floor.view(num_services, 1))
             & has_effective_candidate.view(num_services, 1)
         )
         pressure_weight = torch.where(
@@ -1681,12 +1692,13 @@ class _DeploymentBackbonePPO(nn.Module):
         clear_gap = max(0.02, 0.5 * float(tolerance))
         clear_non_effective_mask = (
             non_effective_option_mask
-            & (pair_quality < (option_floor.view(num_services, 1) - clear_gap).clamp_min(0.0))
+            & (label_quality < (option_floor.view(num_services, 1) - clear_gap).clamp_min(0.0))
         )
         risky_option_mask = (severe_risky | low_quality) & edge_allowed
         return {
             "edge_allowed": edge_allowed,
             "pair_quality": pair_quality,
+            "label_quality": label_quality,
             "prior_quality": prior_quality,
             "trusted_quality": trusted_quality,
             "runtime_trusted_mask": runtime_trusted & edge_allowed,
@@ -1741,6 +1753,7 @@ class _DeploymentBackbonePPO(nn.Module):
         )
         edge_allowed = option_masks["edge_allowed"]
         pair_quality = option_masks["pair_quality"]
+        label_quality = option_masks["label_quality"]
         best_quality = option_masks["best_quality"]
         effective_option_mask = option_masks["effective_option_mask"]
         clear_non_effective_mask = option_masks["clear_non_effective_mask"]
@@ -1783,7 +1796,7 @@ class _DeploymentBackbonePPO(nn.Module):
         relative_floor = (best_quality * quality_ratio).clamp_min(quality_threshold)
         soft_floor = torch.minimum(near_top_floor, relative_floor).view(num_services, 1)
 
-        quality_margin = (pair_quality - soft_floor) / temp
+        quality_margin = (label_quality - soft_floor) / temp
         raw_target = torch.sigmoid(quality_margin).clamp(0.0, 1.0)
         target = min_target + (max_target - min_target) * raw_target
 
@@ -1811,12 +1824,12 @@ class _DeploymentBackbonePPO(nn.Module):
         unknown_cap = torch.full_like(target, self._unknown_target_cap())
         stale_cap = torch.full_like(target, self._stale_target_cap())
         target = torch.where(
-            runtime_unknown >= self._untrusted_unknown_threshold(),
+            (runtime_unknown >= self._untrusted_unknown_threshold()) & ~exploration_option_mask,
             torch.minimum(target, unknown_cap),
             target,
         )
         target = torch.where(
-            runtime_stale >= self._untrusted_stale_threshold(),
+            (runtime_stale >= self._untrusted_stale_threshold()) & ~exploration_option_mask,
             torch.minimum(target, stale_cap),
             target,
         )
@@ -1848,7 +1861,7 @@ class _DeploymentBackbonePPO(nn.Module):
             evidence_confidence_weight * (
                 0.35
                 + 0.75 * pressure_expand
-                + 0.50 * pair_quality
+                + 0.50 * label_quality
                 + 0.50 * positive_mask.to(dtype=dtype)
                 + 0.35 * raw_selected.to(dtype=dtype)
             )
@@ -1983,6 +1996,7 @@ class _DeploymentBackbonePPO(nn.Module):
         )
         edge_allowed = option_masks["edge_allowed"]
         pair_quality = option_masks["pair_quality"]
+        label_quality = option_masks["label_quality"]
         top_quality_mask = option_masks["top_quality_mask"]
         effective_option_mask = option_masks["effective_option_mask"]
         non_effective_option_mask = option_masks["non_effective_option_mask"]
@@ -2013,7 +2027,7 @@ class _DeploymentBackbonePPO(nn.Module):
         expected_quality_mass = (edge_prob * pair_quality).sum(dim=1)
 
         quality_threshold = float(self._positive_quality_threshold())
-        quality_advantage = (pair_quality - quality_threshold).clamp_min(0.0).masked_fill(~edge_allowed, 0.0)
+        quality_advantage = (label_quality - quality_threshold).clamp_min(0.0).masked_fill(~edge_allowed, 0.0)
 
         coverage_score = select_logits.masked_fill(~effective_option_mask, -1.0e6).max(dim=1).values
         coverage_services = has_effective_candidate & has_edge
@@ -2026,7 +2040,7 @@ class _DeploymentBackbonePPO(nn.Module):
             * coverage_weights
         ).sum() / coverage_weights.sum().clamp_min(1.0)
 
-        option_quality_weights = top_quality_mask.to(dtype=dtype) * (
+        option_quality_weights = effective_option_mask.to(dtype=dtype) * (
             0.5 + quality_advantage.clamp(0.0, 1.0)
         )
         quality_transition_weight = coverage_weights.view(num_services, 1)
@@ -2156,10 +2170,14 @@ class _DeploymentBackbonePPO(nn.Module):
         )
         service_target_mass = mass_targets["service_target_mass"]
         service_mass_gap = service_target_mass - service_predicted_mass
+        service_mass_floor_target = torch.maximum(
+            service_target_mass.detach(),
+            service_predicted_mass.detach(),
+        )
         effective_option_mass_loss = (
             F.smooth_l1_loss(
                 service_predicted_mass,
-                service_target_mass.detach(),
+                service_mass_floor_target,
                 reduction="none",
             )
             * coverage_weights.detach()
@@ -2989,6 +3007,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "top_quality_option_mask": option_masks["top_quality_mask"].detach().cpu(),
                 "clear_non_effective_option_mask": option_masks["clear_non_effective_mask"].detach().cpu(),
                 "risky_option_mask": option_masks["risky_option_mask"].detach().cpu(),
+                "label_quality": option_masks["label_quality"].detach().cpu(),
                 "effective_option_floor": option_masks["option_floor"].detach().cpu(),
                 "soft_option_target": option_masks["soft_target"].detach().cpu(),
                 "soft_option_target_weight": option_masks["soft_target_weight"].detach().cpu(),
@@ -3314,10 +3333,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         runtime_risky = runtime_risk >= self._negative_runtime_risk_threshold()
         unknown_untrusted = runtime_unknown >= self._untrusted_unknown_threshold()
         stale_untrusted = runtime_stale >= self._untrusted_stale_threshold()
-        low_quality = pair_quality < self._positive_quality_threshold()
         severe_risky = (queue_risky | hotspot_risky | runtime_risky) & edge_allowed
         evidence_untrusted = (unknown_untrusted | stale_untrusted) & edge_allowed
-        diagnostic_risky = (severe_risky | low_quality) & edge_allowed
         option_masks = self._deployment_soft_option_targets(
             static_allowed,
             policy_aux,
@@ -3331,6 +3348,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         effective_option_mask = option_masks["effective_option_mask"]
         soft_positive_mask = option_masks["soft_target_positive_mask"]
         clear_non_effective_mask = option_masks["clear_non_effective_mask"]
+        label_quality = option_masks["label_quality"].to(device=edge_allowed.device, dtype=torch.float32)
+        low_quality = label_quality < self._positive_quality_threshold()
+        diagnostic_risky = (severe_risky | low_quality) & edge_allowed
         capacity_removed = torch.zeros_like(selected)
         if capacity_removed_mask is not None:
             capacity_removed = capacity_removed_mask.to(device=edge_allowed.device).bool() & edge_allowed
