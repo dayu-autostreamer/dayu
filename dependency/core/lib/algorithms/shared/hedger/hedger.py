@@ -245,6 +245,10 @@ class HedgerLatencyGuardCfg:
     task_feedback_quarantine_enabled: bool = True
     task_feedback_quarantine_s: float = 5.0
     clear_latency_window_on_recovery: bool = True
+    deployment_trigger_require_version_match: bool = True
+    deployment_trigger_min_feedback_samples: int = 12
+    deployment_trigger_cooldown_s: float = 60.0
+    deployment_trigger_emergency_max_queue: float = 16.0
 
 
 @dataclass(frozen=True)
@@ -428,6 +432,7 @@ class Hedger:
         self._last_deployment_event_trigger_monotonic = 0.0
         self._last_deployment_event_trigger_record: Dict[str, Any] = {}
         self._last_deployment_event_suppressed_record: Dict[str, Any] = {}
+        self._last_latency_guard_deployment_trigger_monotonic = 0.0
         self._last_redeployment_throttle_log_t = 0.0
         self._frozen_offloading_agent = None
         self._latency_guard_samples = deque(maxlen=self.latency_guard_cfg.window_size)
@@ -880,6 +885,21 @@ class Hedger:
             task_feedback_quarantine_enabled=bool(guard.get("task_feedback_quarantine_enabled", True)),
             task_feedback_quarantine_s=max(0.0, float(guard.get("task_feedback_quarantine_s", 5.0))),
             clear_latency_window_on_recovery=bool(guard.get("clear_latency_window_on_recovery", True)),
+            deployment_trigger_require_version_match=bool(
+                guard.get("deployment_trigger_require_version_match", True)
+            ),
+            deployment_trigger_min_feedback_samples=max(
+                0,
+                int(guard.get("deployment_trigger_min_feedback_samples", 12)),
+            ),
+            deployment_trigger_cooldown_s=max(
+                0.0,
+                float(guard.get("deployment_trigger_cooldown_s", 60.0)),
+            ),
+            deployment_trigger_emergency_max_queue=max(
+                0.0,
+                float(guard.get("deployment_trigger_emergency_max_queue", 16.0)),
+            ),
         )
 
     def _build_deployment_event_trigger_cfg(self, config: dict) -> HedgerDeploymentEventTriggerCfg:
@@ -1528,6 +1548,23 @@ class Hedger:
         event_stats["trigger_deployment_version"] = self._latency_guard_trigger_deployment_version
         self._latency_guard_trigger_stats = event_stats
 
+    def _latency_guard_trigger_event_snapshot(self) -> Optional[dict]:
+        if not self._latency_guard_enabled():
+            return None
+        with self._latency_guard_lock:
+            seq = int(getattr(self, "_latency_guard_trigger_seq", 0))
+            if seq <= 0:
+                return None
+            trigger_version = getattr(self, "_latency_guard_trigger_deployment_version", None)
+            return {
+                "seq": seq,
+                "deployment_version": (
+                    int(trigger_version) if trigger_version is not None else None
+                ),
+                "task_version": getattr(self, "_latency_guard_trigger_task_version", None),
+                "stats": copy.deepcopy(getattr(self, "_latency_guard_trigger_stats", {}) or {}),
+            }
+
     def _latency_guard_trigger_event_for_deployment(self, deployment_version: Optional[int]) -> Optional[dict]:
         if not self._latency_guard_enabled() or deployment_version is None:
             return None
@@ -1967,12 +2004,26 @@ class Hedger:
     @staticmethod
     def _deployment_event_suppression_defaults() -> Dict[str, Any]:
         return {
+            "deployment_actual_wait_s": 0.0,
+            "deployment_next_wake_reason": "",
             "deployment_event_suppressed": False,
             "deployment_event_suppress_reason": "",
             "deployment_event_suppressed_event_reason": "",
             "deployment_event_warmup_remaining_s": 0.0,
             "deployment_event_feedback_count": 0,
             "deployment_event_feedback_required": 0,
+            "latency_guard_deployment_triggered": False,
+            "latency_guard_suppressed": False,
+            "latency_guard_suppress_reason": "",
+            "latency_guard_wake_seq": 0,
+            "latency_guard_wake_matched_version": False,
+            "latency_guard_wake_deployment_version": "",
+            "latency_guard_wake_task_version": "",
+            "latency_guard_wake_bad_ratio": 0.0,
+            "latency_guard_wake_max_queue": 0.0,
+            "latency_guard_wake_feedback_count": 0,
+            "latency_guard_wake_feedback_required": 0,
+            "latency_guard_wake_cooldown_remaining_s": 0.0,
         }
 
     def _record_deployment_event_suppressed(self, status: Dict[str, Any]) -> None:
@@ -2941,6 +2992,7 @@ class Hedger:
     def _inference_deployment_fieldnames(self) -> List[str]:
         fieldnames = [
             "step", "epoch", "decision_version", "served_deployment_version", "decision_reason", "interval_s",
+            "deployment_actual_wait_s", "deployment_next_wake_reason",
             "deployment_decision_overhead_s", "dep_reward_estimate",
             "avg_off_reward", "off_reward_std", "off_reward_count",
             "dep_change_cost", "dep_latency_cost",
@@ -2962,6 +3014,12 @@ class Hedger:
             "deployment_event_suppressed", "deployment_event_suppress_reason",
             "deployment_event_suppressed_event_reason", "deployment_event_warmup_remaining_s",
             "deployment_event_feedback_count", "deployment_event_feedback_required",
+            "latency_guard_deployment_triggered", "latency_guard_suppressed",
+            "latency_guard_suppress_reason", "latency_guard_wake_seq",
+            "latency_guard_wake_matched_version", "latency_guard_wake_deployment_version",
+            "latency_guard_wake_task_version", "latency_guard_wake_bad_ratio",
+            "latency_guard_wake_max_queue", "latency_guard_wake_feedback_count",
+            "latency_guard_wake_feedback_required", "latency_guard_wake_cooldown_remaining_s",
             "deployment_deterministic",
             "cap_relax_cnt", "cap_relax_cost", "edge_cover_repair_cnt",
             "edge_cover_repair_cost", "edge_cover_unmet", "hotspot_repair_cnt",
@@ -5473,11 +5531,22 @@ class Hedger:
             last_tick: float,
             interval_s: float,
             last_guard_trigger_seq: int,
+            active_deployment_version: Optional[int] = None,
     ):
         """Sleep for the deployment cadence, but wake on a new latency-guard trigger."""
         interval_s = max(0.0, float(interval_s))
+        wait_start_t = time.time()
+
+        def _finish(reason: str, guard_seq: int, status: Dict[str, Any]):
+            wake_t = time.time()
+            status = copy.deepcopy(status)
+            status.setdefault("reason", reason)
+            status["deployment_actual_wait_s"] = max(0.0, wake_t - wait_start_t)
+            status["deployment_next_wake_reason"] = str(reason)
+            return wake_t, reason, int(guard_seq), status
+
         if interval_s <= 0.0:
-            return time.time(), "interval", int(last_guard_trigger_seq), self._deployment_event_wait_status("interval")
+            return _finish("interval", int(last_guard_trigger_seq), self._deployment_event_wait_status("interval"))
 
         now = time.time()
         target_t = now + interval_s if last_tick <= 0 else last_tick + interval_s
@@ -5488,19 +5557,106 @@ class Hedger:
             current_seq = self._latency_guard_trigger_seq_value()
             if current_seq > last_guard_trigger_seq:
                 self._latency_guard_trigger_event.clear()
-                LOGGER.warning(
-                    f"[Hedger][Inference][Deployment] Wake deployment decision immediately "
-                    f"for latency guard trigger: seq={current_seq}, "
-                    f"configured_interval={self._format_log_value(interval_s, 2)}s."
+                guard_cfg = self.latency_guard_cfg
+                guard_event = self._latency_guard_trigger_event_for_deployment(active_deployment_version)
+                guard_snapshot = guard_event or self._latency_guard_trigger_event_snapshot() or {}
+                guard_stats = copy.deepcopy(guard_snapshot.get("stats", {}) or {})
+                trigger_version = guard_snapshot.get("deployment_version", None)
+                task_version = guard_snapshot.get("task_version", None)
+                matched_version = guard_event is not None
+                max_queue = float(
+                    guard_stats.get(
+                        "max_queue_length",
+                        guard_stats.get("max_queue", 0.0),
+                    ) or 0.0
                 )
-                return time.time(), "latency_guard_trigger", int(current_seq), {
-                    "triggered": True,
+                bad_ratio = float(guard_stats.get("bad_ratio", 0.0) or 0.0)
+                feedback_required = max(0, int(guard_cfg.deployment_trigger_min_feedback_samples))
+                feedback_count = self._deployment_feedback_count(active_deployment_version)
+                now_mono = time.monotonic()
+                cooldown_remaining_s = 0.0
+                last_trigger_t = float(
+                    getattr(self, "_last_latency_guard_deployment_trigger_monotonic", 0.0)
+                )
+                if last_trigger_t > 0.0 and guard_cfg.deployment_trigger_cooldown_s > 0.0:
+                    cooldown_remaining_s = max(
+                        0.0,
+                        guard_cfg.deployment_trigger_cooldown_s - (now_mono - last_trigger_t),
+                    )
+                emergency_queue = (
+                    guard_cfg.deployment_trigger_emergency_max_queue > 0.0
+                    and max_queue >= guard_cfg.deployment_trigger_emergency_max_queue
+                )
+                suppress_reason = ""
+                if guard_cfg.deployment_trigger_require_version_match and not matched_version:
+                    suppress_reason = "stale_deployment_version"
+                elif cooldown_remaining_s > 0.0 and not emergency_queue:
+                    suppress_reason = "latency_guard_cooldown"
+                elif feedback_required > 0 and feedback_count < feedback_required and not emergency_queue:
+                    suppress_reason = "latency_guard_feedback_shortfall"
+
+                base_status = {
+                    "triggered": False,
                     "reason": "latency_guard_trigger",
                     "queue_pressure": 0.0,
                     "hotspot_pressure": 0.0,
-                    "max_queue": 0.0,
+                    "max_queue": max_queue,
                     **self._deployment_event_suppression_defaults(),
+                    "latency_guard_wake_seq": int(current_seq),
+                    "latency_guard_wake_matched_version": bool(matched_version),
+                    "latency_guard_wake_deployment_version": (
+                        "" if trigger_version is None else int(trigger_version)
+                    ),
+                    "latency_guard_wake_task_version": (
+                        "" if task_version is None else int(task_version)
+                    ),
+                    "latency_guard_wake_bad_ratio": bad_ratio,
+                    "latency_guard_wake_max_queue": max_queue,
+                    "latency_guard_wake_feedback_count": int(feedback_count),
+                    "latency_guard_wake_feedback_required": int(feedback_required),
+                    "latency_guard_wake_cooldown_remaining_s": float(cooldown_remaining_s),
                 }
+                if suppress_reason:
+                    suppressed_status = copy.deepcopy(base_status)
+                    suppressed_status.update({
+                        "triggered": False,
+                        "reason": suppress_reason,
+                        "deployment_event_suppressed": True,
+                        "deployment_event_suppress_reason": suppress_reason,
+                        "deployment_event_suppressed_event_reason": "latency_guard_trigger",
+                        "deployment_event_feedback_count": int(feedback_count),
+                        "deployment_event_feedback_required": int(feedback_required),
+                        "latency_guard_suppressed": True,
+                        "latency_guard_suppress_reason": suppress_reason,
+                    })
+                    self._record_deployment_event_suppressed(suppressed_status)
+                    last_guard_trigger_seq = int(current_seq)
+                    LOGGER.info(
+                        f"[Hedger][Inference][Deployment] Suppress latency guard redeployment: "
+                        f"reason={suppress_reason}, seq={current_seq}, "
+                        f"active_version={active_deployment_version}, trigger_version={trigger_version}, "
+                        f"feedback={feedback_count}/{feedback_required}, "
+                        f"max_queue={self._format_log_value(max_queue, 2)}, "
+                        f"cooldown_remaining={self._format_log_value(cooldown_remaining_s, 2)}s."
+                    )
+                    continue
+
+                self._last_latency_guard_deployment_trigger_monotonic = now_mono
+                wake_status = copy.deepcopy(base_status)
+                wake_status.update({
+                    "triggered": True,
+                    "reason": "latency_guard_trigger",
+                    "latency_guard_deployment_triggered": True,
+                })
+                LOGGER.warning(
+                    f"[Hedger][Inference][Deployment] Wake deployment decision immediately "
+                    f"for latency guard trigger: seq={current_seq}, "
+                    f"deployment_version={active_deployment_version}, "
+                    f"feedback={feedback_count}/{feedback_required}, "
+                    f"max_queue={self._format_log_value(max_queue, 2)}, "
+                    f"configured_interval={self._format_log_value(interval_s, 2)}s."
+                )
+                return _finish("latency_guard_trigger", int(current_seq), wake_status)
 
             event_status = self._deployment_event_trigger_status()
             if bool(event_status.get("triggered", False)):
@@ -5512,11 +5668,12 @@ class Hedger:
                     f"hotspot_pressure={self._format_log_value(event_status.get('hotspot_pressure', 0.0))}, "
                     f"configured_interval={self._format_log_value(interval_s, 2)}s."
                 )
-                return time.time(), str(event_status.get("reason") or "event_trigger"), current_seq, event_status
+                reason = str(event_status.get("reason") or "event_trigger")
+                return _finish(reason, current_seq, event_status)
 
             remaining_s = target_t - time.time()
             if remaining_s <= 0.0:
-                return time.time(), "interval", last_guard_trigger_seq, self._deployment_event_wait_status("interval")
+                return _finish("interval", last_guard_trigger_seq, self._deployment_event_wait_status("interval"))
 
             wait_s = min(remaining_s, poll_s)
             self._latency_guard_trigger_event.wait(timeout=wait_s)
@@ -5526,7 +5683,7 @@ class Hedger:
             if self._deployment_event_trigger_event.is_set():
                 self._deployment_event_trigger_event.clear()
 
-        return time.time(), "stop", last_guard_trigger_seq, self._deployment_event_wait_status("stop")
+        return _finish("stop", last_guard_trigger_seq, self._deployment_event_wait_status("stop"))
 
     def _wait_for_initial_inference_task_feedback(self, worker_name: str, stop_event: threading.Event) -> int:
         cfg = self.inference_cfg
@@ -6546,7 +6703,7 @@ class Hedger:
         logic_feats, phys_feats, _, _, state_debug = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
         last_guard_trigger_seq = self._latency_guard_trigger_seq_value()
         next_decision_reason = "startup"
-        next_event_status: Dict[str, Any] = {"triggered": False, "reason": "startup"}
+        next_event_status: Dict[str, Any] = self._deployment_event_wait_status("startup")
 
         step = 0
         while not self.deployment_thread_stop_event.is_set():
@@ -6592,6 +6749,7 @@ class Hedger:
                     decision_version = self._mark_deployment_decision_pending()
                 if not self._wait_for_inference_deployment_served(decision_version):
                     break
+                served_version_for_wait = self.get_active_deployment_version()
                 (
                     deployment_time_ticket,
                     next_decision_reason,
@@ -6601,6 +6759,7 @@ class Hedger:
                     deployment_time_ticket,
                     self.deployment_interval,
                     last_guard_trigger_seq,
+                    active_deployment_version=served_version_for_wait,
                 )
 
                 served_version = self.get_active_deployment_version()
@@ -6661,6 +6820,12 @@ class Hedger:
                         served_deployment_version=served_version,
                         decision_reason=current_decision_reason,
                         interval_s=self.deployment_interval,
+                        deployment_actual_wait_s=float(
+                            current_event_status.get("deployment_actual_wait_s", 0.0) or 0.0
+                        ),
+                        deployment_next_wake_reason=str(
+                            current_event_status.get("deployment_next_wake_reason", "") or current_decision_reason
+                        ),
                         deployment_decision_overhead_s=deployment_decision_overhead_s,
                         dep_reward_estimate=dep_reward_estimate,
                         avg_off_reward=metrics["avg_offloading_reward"],
@@ -6731,6 +6896,42 @@ class Hedger:
                         ),
                         deployment_event_feedback_required=int(
                             current_event_status.get("deployment_event_feedback_required", 0) or 0
+                        ),
+                        latency_guard_deployment_triggered=int(bool(
+                            current_event_status.get("latency_guard_deployment_triggered", False)
+                        )),
+                        latency_guard_suppressed=int(bool(
+                            current_event_status.get("latency_guard_suppressed", False)
+                        )),
+                        latency_guard_suppress_reason=str(
+                            current_event_status.get("latency_guard_suppress_reason", "") or ""
+                        ),
+                        latency_guard_wake_seq=int(
+                            current_event_status.get("latency_guard_wake_seq", 0) or 0
+                        ),
+                        latency_guard_wake_matched_version=int(bool(
+                            current_event_status.get("latency_guard_wake_matched_version", False)
+                        )),
+                        latency_guard_wake_deployment_version=str(
+                            current_event_status.get("latency_guard_wake_deployment_version", "") or ""
+                        ),
+                        latency_guard_wake_task_version=str(
+                            current_event_status.get("latency_guard_wake_task_version", "") or ""
+                        ),
+                        latency_guard_wake_bad_ratio=float(
+                            current_event_status.get("latency_guard_wake_bad_ratio", 0.0) or 0.0
+                        ),
+                        latency_guard_wake_max_queue=float(
+                            current_event_status.get("latency_guard_wake_max_queue", 0.0) or 0.0
+                        ),
+                        latency_guard_wake_feedback_count=int(
+                            current_event_status.get("latency_guard_wake_feedback_count", 0) or 0
+                        ),
+                        latency_guard_wake_feedback_required=int(
+                            current_event_status.get("latency_guard_wake_feedback_required", 0) or 0
+                        ),
+                        latency_guard_wake_cooldown_remaining_s=float(
+                            current_event_status.get("latency_guard_wake_cooldown_remaining_s", 0.0) or 0.0
                         ),
                         deployment_deterministic=int(bool(self.inference_cfg.deployment_deterministic)),
                         cap_relax_cnt=aux["capacity_relax_cnt"],
@@ -7738,7 +7939,7 @@ class Hedger:
         logic_feats, phys_feats, _, _, state_debug = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
         last_guard_trigger_seq = self._latency_guard_trigger_seq_value()
         next_decision_reason = "startup"
-        next_event_status: Dict[str, Any] = {"triggered": False, "reason": "startup"}
+        next_event_status: Dict[str, Any] = self._deployment_event_wait_status("startup")
 
         while not self.deployment_thread_stop_event.is_set():
             try:
@@ -7824,6 +8025,7 @@ class Hedger:
                         0,
                         self.deployment_interval,
                         last_guard_trigger_seq,
+                        active_deployment_version=decision_version,
                     )
                     next_decision_reason = interval_end_reason
                     next_event_status = interval_event_status
