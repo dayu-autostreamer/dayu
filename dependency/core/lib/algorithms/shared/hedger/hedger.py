@@ -134,6 +134,9 @@ class HedgerDeploymentOfflineRLCfg:
     non_effective_option_coef: float = 0.25
     service_need_target_coef: float = 0.35
     soft_target_bc_coef: float = 0.85
+    bad_sample_multiplier: float = 1.25
+    bad_sample_max_ratio: float = 0.15
+    bad_sample_min_count: int = 1
     positive_logit_margin: float = 0.35
     negative_logit_margin: float = 0.25
     coverage_logit_margin: float = 0.30
@@ -672,6 +675,12 @@ class Hedger:
             non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.0))),
             service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.35))),
             soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.85))),
+            bad_sample_multiplier=max(0.0, float(offline_rl_cfg.get("bad_sample_multiplier", 1.25))),
+            bad_sample_max_ratio=min(
+                1.0,
+                max(0.0, float(offline_rl_cfg.get("bad_sample_max_ratio", 0.15))),
+            ),
+            bad_sample_min_count=max(0, int(offline_rl_cfg.get("bad_sample_min_count", 1))),
             positive_logit_margin=max(0.0, float(offline_rl_cfg.get("positive_logit_margin", 0.25))),
             negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.20))),
             coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.20))),
@@ -1034,6 +1043,8 @@ class Hedger:
             "effective_option_mass_mean", "desired_effective_option_mass_mean",
             "effective_option_shortage_mean",
             "service_target_mass_mean", "service_predicted_mass_mean",
+            "soft_target_mass_mean", "pressure_target_mass_mean",
+            "selected_effective_target_mass_mean", "effective_candidate_mass_mean",
             "service_mass_gap_mean", "service_mass_abs_gap_mean",
             "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
             "service_need_target_mean", "service_need_prob_mean",
@@ -1071,10 +1082,13 @@ class Hedger:
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "soft_target_bc_coef",
+            "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio", "service_need_bias_scale", "service_mass_temperature",
+            "executed_effective_target_floor", "executed_effective_weight_bonus",
+            "service_target_mass_pressure_scale",
         ]
         if include_offline_batch:
             fieldnames.extend([
@@ -1262,8 +1276,15 @@ class Hedger:
                 probability=True,
             ),
             "exploration_target": _matrix_float("exploration_target", 0.46, probability=True),
+            "executed_effective_target_floor": _matrix_float(
+                "executed_effective_target_floor",
+                0.72,
+                probability=True,
+            ),
+            "executed_effective_weight_bonus": _matrix_float("executed_effective_weight_bonus", 0.75),
             "service_need_bias_scale": _matrix_float("service_need_bias_scale", 1.0),
             "service_mass_temperature": _matrix_float("service_mass_temperature", 0.30),
+            "service_target_mass_pressure_scale": _matrix_float("service_target_mass_pressure_scale", 1.0),
             "budget_logit_scale": _matrix_float("budget_logit_scale", 0.15),
             "budget_temperature": _matrix_float("budget_temperature", 0.12),
             "ppo": ppo,
@@ -2943,6 +2964,8 @@ class Hedger:
             "effective_option_mass_mean", "desired_effective_option_mass_mean",
             "effective_option_shortage_mean",
             "service_target_mass_mean", "service_predicted_mass_mean",
+            "soft_target_mass_mean", "pressure_target_mass_mean",
+            "selected_effective_target_mass_mean", "effective_candidate_mass_mean",
             "service_mass_gap_mean", "service_mass_abs_gap_mean",
             "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
             "service_need_target_mean", "service_need_prob_mean",
@@ -3001,6 +3024,8 @@ class Hedger:
             "unknown_target_cap", "stale_target_cap",
             "exploration_quality_threshold", "exploration_target",
             "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
+            "executed_effective_target_floor", "executed_effective_weight_bonus",
+            "service_target_mass_pressure_scale",
             "loaded_checkpoint",
         ]
         if self.record_cfg.actor_snapshot_debug:
@@ -3143,7 +3168,9 @@ class Hedger:
                 "deployment_soft_option_unknown_mask", "deployment_soft_option_stale_mask",
                 "deployment_soft_option_trusted_mask", "deployment_soft_option_exploration_mask",
                 "deployment_soft_option_target_floor", "deployment_soft_option_target_margin",
-                "deployment_service_target_mass", "deployment_service_predicted_mass",
+                "deployment_service_target_mass", "deployment_soft_target_mass",
+                "deployment_pressure_target_mass", "deployment_selected_effective_target_mass",
+                "deployment_effective_candidate_mass", "deployment_service_predicted_mass",
                 "deployment_service_mass_gap", "deployment_mass_threshold_probs",
                 "deployment_soft_positive_missing_mask", "deployment_selected_non_soft_positive_mask",
                 "deployment_effective_option_mask", "deployment_top_quality_option_mask",
@@ -3691,6 +3718,18 @@ class Hedger:
                     ),
                     "deployment_service_target_mass": self._json_for_record(
                         self._actor_debug_vector_value(actor_debug, "service_target_mass", service_idx)
+                    ),
+                    "deployment_soft_target_mass": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "soft_target_mass", service_idx)
+                    ),
+                    "deployment_pressure_target_mass": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "pressure_target_mass", service_idx)
+                    ),
+                    "deployment_selected_effective_target_mass": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "selected_effective_target_mass", service_idx)
+                    ),
+                    "deployment_effective_candidate_mass": self._json_for_record(
+                        self._actor_debug_vector_value(actor_debug, "effective_candidate_mass", service_idx)
                     ),
                     "deployment_service_predicted_mass": self._json_for_record(
                         self._actor_debug_vector_value(actor_debug, "service_predicted_mass", service_idx)
@@ -6665,6 +6704,10 @@ class Hedger:
                         desired_effective_option_mass_mean=aux.get("desired_effective_option_mass_mean", 0.0),
                         effective_option_shortage_mean=aux.get("effective_option_shortage_mean", 0.0),
                         service_target_mass_mean=aux.get("service_target_mass_mean", 0.0),
+                        soft_target_mass_mean=aux.get("soft_target_mass_mean", 0.0),
+                        pressure_target_mass_mean=aux.get("pressure_target_mass_mean", 0.0),
+                        selected_effective_target_mass_mean=aux.get("selected_effective_target_mass_mean", 0.0),
+                        effective_candidate_mass_mean=aux.get("effective_candidate_mass_mean", 0.0),
                         service_predicted_mass_mean=aux.get("service_predicted_mass_mean", 0.0),
                         service_mass_gap_mean=aux.get("service_mass_gap_mean", 0.0),
                         service_mass_abs_gap_mean=aux.get("service_mass_abs_gap_mean", 0.0),
@@ -6787,6 +6830,9 @@ class Hedger:
                         non_effective_option_coef=offline_rl_record_cfg.non_effective_option_coef,
                         service_need_target_coef=offline_rl_record_cfg.service_need_target_coef,
                         soft_target_bc_coef=offline_rl_record_cfg.soft_target_bc_coef,
+                        bad_sample_multiplier=offline_rl_record_cfg.bad_sample_multiplier,
+                        bad_sample_max_ratio=offline_rl_record_cfg.bad_sample_max_ratio,
+                        bad_sample_min_count=offline_rl_record_cfg.bad_sample_min_count,
                         positive_logit_margin=offline_rl_record_cfg.positive_logit_margin,
                         negative_logit_margin=offline_rl_record_cfg.negative_logit_margin,
                         coverage_logit_margin=offline_rl_record_cfg.coverage_logit_margin,
@@ -6819,6 +6865,15 @@ class Hedger:
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                         service_need_bias_scale=self.deployment_agent_params["service_need_bias_scale"],
                         service_mass_temperature=self.deployment_agent_params["service_mass_temperature"],
+                        executed_effective_target_floor=self.deployment_agent_params[
+                            "executed_effective_target_floor"
+                        ],
+                        executed_effective_weight_bonus=self.deployment_agent_params[
+                            "executed_effective_weight_bonus"
+                        ],
+                        service_target_mass_pressure_scale=self.deployment_agent_params[
+                            "service_target_mass_pressure_scale"
+                        ],
                         loaded_checkpoint=self._loaded_checkpoint_path,
                     )
                     if self.record_cfg.actor_snapshot_debug:
@@ -7495,6 +7550,8 @@ class Hedger:
                                 "effective_option_mass_mean", "desired_effective_option_mass_mean",
                                 "effective_option_shortage_mean",
                                 "service_target_mass_mean", "service_predicted_mass_mean",
+                                "soft_target_mass_mean", "pressure_target_mass_mean",
+                                "selected_effective_target_mass_mean", "effective_candidate_mass_mean",
                                 "service_mass_gap_mean", "service_mass_abs_gap_mean",
                                 "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
                                 "service_need_target_mean", "service_need_prob_mean",
@@ -7548,6 +7605,7 @@ class Hedger:
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "soft_target_bc_coef",
+            "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
@@ -7560,6 +7618,8 @@ class Hedger:
             "unknown_target_cap", "stale_target_cap",
             "exploration_quality_threshold", "exploration_target",
             "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
+            "executed_effective_target_floor", "executed_effective_weight_bonus",
+            "service_target_mass_pressure_scale",
             "deployment_default_warmup_enabled",
             "deployment_default_warmup_min_intervals",
             "deployment_default_warmup_min_feedback_samples",
@@ -8021,6 +8081,10 @@ class Hedger:
                     desired_effective_option_mass_mean=aux.get("desired_effective_option_mass_mean", 0.0),
                     effective_option_shortage_mean=aux.get("effective_option_shortage_mean", 0.0),
                     service_target_mass_mean=aux.get("service_target_mass_mean", 0.0),
+                    soft_target_mass_mean=aux.get("soft_target_mass_mean", 0.0),
+                    pressure_target_mass_mean=aux.get("pressure_target_mass_mean", 0.0),
+                    selected_effective_target_mass_mean=aux.get("selected_effective_target_mass_mean", 0.0),
+                    effective_candidate_mass_mean=aux.get("effective_candidate_mass_mean", 0.0),
                     service_predicted_mass_mean=aux.get("service_predicted_mass_mean", 0.0),
                     service_mass_gap_mean=aux.get("service_mass_gap_mean", 0.0),
                     service_mass_abs_gap_mean=aux.get("service_mass_abs_gap_mean", 0.0),
@@ -8145,6 +8209,9 @@ class Hedger:
                     non_effective_option_coef=self.training_cfg.deployment_offline_rl.non_effective_option_coef,
                     service_need_target_coef=self.training_cfg.deployment_offline_rl.service_need_target_coef,
                     soft_target_bc_coef=self.training_cfg.deployment_offline_rl.soft_target_bc_coef,
+                    bad_sample_multiplier=self.training_cfg.deployment_offline_rl.bad_sample_multiplier,
+                    bad_sample_max_ratio=self.training_cfg.deployment_offline_rl.bad_sample_max_ratio,
+                    bad_sample_min_count=self.training_cfg.deployment_offline_rl.bad_sample_min_count,
                     positive_logit_margin=self.training_cfg.deployment_offline_rl.positive_logit_margin,
                     negative_logit_margin=self.training_cfg.deployment_offline_rl.negative_logit_margin,
                     coverage_logit_margin=self.training_cfg.deployment_offline_rl.coverage_logit_margin,
@@ -8175,6 +8242,15 @@ class Hedger:
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                     service_need_bias_scale=self.deployment_agent_params["service_need_bias_scale"],
                     service_mass_temperature=self.deployment_agent_params["service_mass_temperature"],
+                    executed_effective_target_floor=self.deployment_agent_params[
+                        "executed_effective_target_floor"
+                    ],
+                    executed_effective_weight_bonus=self.deployment_agent_params[
+                        "executed_effective_weight_bonus"
+                    ],
+                    service_target_mass_pressure_scale=self.deployment_agent_params[
+                        "service_target_mass_pressure_scale"
+                    ],
                     deployment_default_warmup_enabled=self.training_cfg.deployment_default_warmup.enabled,
                     deployment_default_warmup_min_intervals=self.training_cfg.deployment_default_warmup.min_intervals,
                     deployment_default_warmup_min_feedback_samples=(
@@ -8780,7 +8856,12 @@ class Hedger:
 
         batch: List[dict] = []
         if offline_count > 0 and self.deployment_offline_dataset is not None:
-            batch.extend(self.deployment_offline_dataset.sample(offline_count))
+            batch.extend(self.deployment_offline_dataset.sample(
+                offline_count,
+                bad_sample_multiplier=cfg.bad_sample_multiplier,
+                bad_sample_max_ratio=cfg.bad_sample_max_ratio,
+                bad_sample_min_count=cfg.bad_sample_min_count,
+            ))
         if online_pool and online_count > 0:
             if len(online_pool) >= online_count:
                 batch.extend(random.sample(online_pool, online_count))
@@ -8815,7 +8896,12 @@ class Hedger:
         )
         try:
             while self._epoch < self.training_cfg.total_updates:
-                batch = dataset.sample(self.training_cfg.deployment_offline_rl.batch_size)
+                batch = dataset.sample(
+                    self.training_cfg.deployment_offline_rl.batch_size,
+                    bad_sample_multiplier=self.training_cfg.deployment_offline_rl.bad_sample_multiplier,
+                    bad_sample_max_ratio=self.training_cfg.deployment_offline_rl.bad_sample_max_ratio,
+                    bad_sample_min_count=self.training_cfg.deployment_offline_rl.bad_sample_min_count,
+                )
                 batch_quality = summarize_transition_quality(batch)
                 with self._model_lock:
                     stats = self.deployment_agent.offline_update(
@@ -8825,6 +8911,11 @@ class Hedger:
                     )
                 if stats is not None:
                     stats.update(batch_quality)
+                    stats.update({
+                        "bad_sample_multiplier": self.training_cfg.deployment_offline_rl.bad_sample_multiplier,
+                        "bad_sample_max_ratio": self.training_cfg.deployment_offline_rl.bad_sample_max_ratio,
+                        "bad_sample_min_count": self.training_cfg.deployment_offline_rl.bad_sample_min_count,
+                    })
                 self._deployment_update_steps += 1
                 self._epoch += 1
                 self._global_update_step += 1

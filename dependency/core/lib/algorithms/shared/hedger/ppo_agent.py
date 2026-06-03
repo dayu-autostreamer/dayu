@@ -652,6 +652,24 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.46
         return min(max(value, self._soft_target_min()), 0.499)
 
+    def _executed_effective_target_floor(self) -> float:
+        value = float(getattr(self.cfg, "executed_effective_target_floor", 0.72))
+        if not math.isfinite(value):
+            value = 0.72
+        return min(max(value, 0.501), self._soft_target_max())
+
+    def _executed_effective_weight_bonus(self) -> float:
+        value = float(getattr(self.cfg, "executed_effective_weight_bonus", 0.75))
+        if not math.isfinite(value):
+            value = 0.75
+        return max(0.0, value)
+
+    def _service_target_mass_pressure_scale(self) -> float:
+        value = float(getattr(self.cfg, "service_target_mass_pressure_scale", 1.0))
+        if not math.isfinite(value):
+            value = 1.0
+        return max(0.0, value)
+
     def _service_need_bias_scale(self) -> float:
         value = float(getattr(self.cfg, "service_need_bias_scale", 1.0))
         if not math.isfinite(value):
@@ -1811,6 +1829,10 @@ class _DeploymentBackbonePPO(nn.Module):
             raw_selected = raw_selected_mask.to(device=device).bool() & edge_allowed
 
         quality = str(quality_bucket or "unknown").strip().lower()
+        selected_effective = selected & effective_option_mask
+        if quality != "bad":
+            executed_target = torch.full_like(target, self._executed_effective_target_floor())
+            target = torch.where(selected_effective, torch.maximum(target, executed_target), target)
         if quality == "bad":
             selected_risky = selected & (risky_option_mask | clear_non_effective_mask)
             target = torch.where(selected_risky, torch.full_like(target, min_target), target)
@@ -1834,6 +1856,8 @@ class _DeploymentBackbonePPO(nn.Module):
         )
         if quality == "bad":
             target_weight = target_weight + selected.to(dtype=dtype) * 0.75
+        else:
+            target_weight = target_weight + selected_effective.to(dtype=dtype) * self._executed_effective_weight_bonus()
 
         return {
             **option_masks,
@@ -1856,6 +1880,68 @@ class _DeploymentBackbonePPO(nn.Module):
             ),
         }
 
+    def _deployment_service_mass_targets(
+            self,
+            edge_allowed: torch.Tensor,
+            soft_target: torch.Tensor,
+            effective_option_mask: torch.Tensor,
+            pressure_weight: torch.Tensor,
+            *,
+            selected_mask: Optional[torch.Tensor] = None,
+            quality_bucket: str = "unknown",
+    ) -> Dict[str, torch.Tensor]:
+        """Build per-service option-mass targets for direct matrix calibration.
+
+        The target is not an inference rule. It only tells offline learning how
+        much edge-option mass a service should place above the p=0.5 boundary.
+        It combines three signals: continuous soft quality labels, service
+        pressure over available effective candidates, and effective replicas
+        that were actually executed in non-bad collect windows.
+        """
+        device = edge_allowed.device
+        dtype = torch.float32
+        edge_allowed = edge_allowed.to(device=device).bool()
+        soft_target = soft_target.to(device=device, dtype=dtype)
+        effective_option_mask = effective_option_mask.to(device=device).bool() & edge_allowed
+        pressure_weight = pressure_weight.to(device=device, dtype=dtype).view(-1).clamp(0.0, 1.0)
+
+        edge_f = edge_allowed.to(dtype=dtype)
+        effective_f = effective_option_mask.to(dtype=dtype)
+        soft_target_mass = (soft_target * edge_f).sum(dim=1)
+        effective_candidate_mass = effective_f.sum(dim=1)
+
+        pressure_gain = (pressure_weight * self._service_target_mass_pressure_scale()).clamp(0.0, 1.0)
+        pressure_target_mass = torch.where(
+            effective_candidate_mass > 0.0,
+            1.0 + pressure_gain * (effective_candidate_mass - 1.0).clamp_min(0.0),
+            torch.zeros_like(effective_candidate_mass),
+        )
+
+        if isinstance(selected_mask, torch.Tensor) and selected_mask.shape == edge_allowed.shape:
+            selected_effective_target_mass = (
+                selected_mask.to(device=device).bool() & effective_option_mask
+            ).to(dtype=dtype).sum(dim=1)
+        else:
+            selected_effective_target_mass = torch.zeros_like(effective_candidate_mass)
+        if str(quality_bucket or "unknown").strip().lower() == "bad":
+            selected_effective_target_mass = torch.zeros_like(selected_effective_target_mass)
+
+        service_target_mass = torch.maximum(soft_target_mass, pressure_target_mass)
+        service_target_mass = torch.maximum(service_target_mass, selected_effective_target_mass)
+        service_target_mass = torch.minimum(service_target_mass, effective_candidate_mass)
+        service_target_mass = torch.where(
+            effective_candidate_mass > 0.0,
+            service_target_mass,
+            torch.zeros_like(service_target_mass),
+        )
+        return {
+            "service_target_mass": service_target_mass,
+            "soft_target_mass": soft_target_mass,
+            "pressure_target_mass": pressure_target_mass,
+            "selected_effective_target_mass": selected_effective_target_mass,
+            "effective_candidate_mass": effective_candidate_mass,
+        }
+
     def _deployment_plan_level_terms(
             self,
             select_logits: torch.Tensor,
@@ -1864,7 +1950,9 @@ class _DeploymentBackbonePPO(nn.Module):
             phys_feats: Dict[str, torch.Tensor],
             policy_ctx: Dict[str, torch.Tensor],
             prev_deploy_mask: Optional[torch.Tensor] = None,
+            selected_mask: Optional[torch.Tensor] = None,
             *,
+            quality_bucket: str = "unknown",
             positive_logit_margin: float = 0.25,
             coverage_logit_margin: float = 0.20,
             ranking_logit_margin: float = 0.15,
@@ -1887,6 +1975,8 @@ class _DeploymentBackbonePPO(nn.Module):
         option_masks = self._deployment_soft_option_targets(
             static_allowed,
             policy_ctx,
+            selected_mask=selected_mask,
+            quality_bucket=quality_bucket,
             top_quality_tolerance=top_quality_tolerance,
             option_quality_ratio=option_quality_ratio,
             coverage_pressure_floor=coverage_pressure_floor,
@@ -2056,7 +2146,15 @@ class _DeploymentBackbonePPO(nn.Module):
             torch.zeros_like(select_logits, dtype=dtype),
         )
         service_predicted_mass = threshold_mass_prob.sum(dim=1)
-        service_target_mass = desired_effective_option_mass
+        mass_targets = self._deployment_service_mass_targets(
+            edge_allowed=edge_allowed,
+            soft_target=soft_target,
+            effective_option_mask=effective_option_mask,
+            pressure_weight=pressure_weight,
+            selected_mask=selected_mask,
+            quality_bucket=quality_bucket,
+        )
+        service_target_mass = mass_targets["service_target_mass"]
         service_mass_gap = service_target_mass - service_predicted_mass
         effective_option_mass_loss = (
             F.smooth_l1_loss(
@@ -2198,6 +2296,22 @@ class _DeploymentBackbonePPO(nn.Module):
             ),
             "service_target_mass_mean": (
                 service_target_mass.masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "soft_target_mass_mean": (
+                mass_targets["soft_target_mass"].masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "pressure_target_mass_mean": (
+                mass_targets["pressure_target_mass"].masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "selected_effective_target_mass_mean": (
+                mass_targets["selected_effective_target_mass"].masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "effective_candidate_mass_mean": (
+                mass_targets["effective_candidate_mass"].masked_select(has_effective_candidate).mean()
                 if bool(has_effective_candidate.any().item()) else zero
             ),
             "service_predicted_mass_mean": (
@@ -2741,6 +2855,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             phys_feats,
             pair_ctx,
             prev_deploy_mask=prev_deploy_mask,
+            selected_mask=deploy_mask,
         )
         option_masks = self._deployment_soft_option_targets(
             static_allowed,
@@ -2754,10 +2869,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             torch.sigmoid(select_logits / self._service_mass_temperature()),
             torch.zeros_like(select_logits),
         )
-        service_target_mass = (
-            option_masks["soft_target"].to(device=select_logits.device, dtype=torch.float32)
-            * edge_allowed.to(device=select_logits.device, dtype=torch.float32)
-        ).sum(dim=1)
+        mass_targets = self._deployment_service_mass_targets(
+            edge_allowed=edge_allowed.to(device=select_logits.device).bool(),
+            soft_target=option_masks["soft_target"].to(device=select_logits.device, dtype=torch.float32),
+            effective_option_mask=option_masks["effective_option_mask"].to(device=select_logits.device).bool(),
+            pressure_weight=option_masks["pressure_weight"].to(device=select_logits.device, dtype=torch.float32),
+            selected_mask=deploy_mask,
+        )
+        service_target_mass = mass_targets["service_target_mass"]
         service_predicted_mass = mass_prob.sum(dim=1)
         service_mass_gap = service_target_mass - service_predicted_mass
         soft_positive_missing_mask = (
@@ -2885,6 +3004,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "soft_option_target_floor": option_masks["soft_target_floor"].detach().cpu(),
                 "soft_option_target_margin": option_masks["soft_target_margin"].detach().cpu(),
                 "service_target_mass": service_target_mass.detach().cpu(),
+                "soft_target_mass": mass_targets["soft_target_mass"].detach().cpu(),
+                "pressure_target_mass": mass_targets["pressure_target_mass"].detach().cpu(),
+                "selected_effective_target_mass": mass_targets["selected_effective_target_mass"].detach().cpu(),
+                "effective_candidate_mass": mass_targets["effective_candidate_mass"].detach().cpu(),
                 "service_predicted_mass": service_predicted_mass.detach().cpu(),
                 "service_mass_gap": service_mass_gap.detach().cpu(),
                 "mass_threshold_prob": mass_prob.detach().cpu(),
@@ -3394,6 +3517,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         desired_effective_option_mass_means = []
         effective_option_shortage_means = []
         service_target_mass_means = []
+        soft_target_mass_means = []
+        pressure_target_mass_means = []
+        selected_effective_target_mass_means = []
+        effective_candidate_mass_means = []
         service_predicted_mass_means = []
         service_mass_gap_means = []
         service_mass_abs_gap_means = []
@@ -3524,6 +3651,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 phys_feats,
                 policy_aux,
                 prev_deploy_mask=prev_deploy_mask,
+                selected_mask=deploy_mask,
+                quality_bucket=quality_bucket,
                 positive_logit_margin=float(positive_logit_margin),
                 coverage_logit_margin=float(coverage_logit_margin),
                 ranking_logit_margin=float(ranking_logit_margin),
@@ -3682,6 +3811,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             ))
             effective_option_shortage_means.append(_scalar_to_float(plan_terms["effective_option_shortage_mean"]))
             service_target_mass_means.append(_scalar_to_float(plan_terms["service_target_mass_mean"]))
+            soft_target_mass_means.append(_scalar_to_float(plan_terms["soft_target_mass_mean"]))
+            pressure_target_mass_means.append(_scalar_to_float(plan_terms["pressure_target_mass_mean"]))
+            selected_effective_target_mass_means.append(_scalar_to_float(
+                plan_terms["selected_effective_target_mass_mean"]
+            ))
+            effective_candidate_mass_means.append(_scalar_to_float(plan_terms["effective_candidate_mass_mean"]))
             service_predicted_mass_means.append(_scalar_to_float(plan_terms["service_predicted_mass_mean"]))
             service_mass_gap_means.append(_scalar_to_float(plan_terms["service_mass_gap_mean"]))
             service_mass_abs_gap_means.append(_scalar_to_float(plan_terms["service_mass_abs_gap_mean"]))
@@ -4090,6 +4225,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "desired_effective_option_mass_mean": _mean_or_zero(desired_effective_option_mass_means),
             "effective_option_shortage_mean": _mean_or_zero(effective_option_shortage_means),
             "service_target_mass_mean": _mean_or_zero(service_target_mass_means),
+            "soft_target_mass_mean": _mean_or_zero(soft_target_mass_means),
+            "pressure_target_mass_mean": _mean_or_zero(pressure_target_mass_means),
+            "selected_effective_target_mass_mean": _mean_or_zero(selected_effective_target_mass_means),
+            "effective_candidate_mass_mean": _mean_or_zero(effective_candidate_mass_means),
             "service_predicted_mass_mean": _mean_or_zero(service_predicted_mass_means),
             "service_mass_gap_mean": _mean_or_zero(service_mass_gap_means),
             "service_mass_abs_gap_mean": _mean_or_zero(service_mass_abs_gap_means),
@@ -4152,6 +4291,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             ),
             "service_need_bias_scale": self._service_need_bias_scale(),
             "service_mass_temperature": self._service_mass_temperature(),
+            "executed_effective_target_floor": self._executed_effective_target_floor(),
+            "executed_effective_weight_bonus": self._executed_effective_weight_bonus(),
+            "service_target_mass_pressure_scale": self._service_target_mass_pressure_scale(),
         }
 
 

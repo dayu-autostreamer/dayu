@@ -53,8 +53,11 @@ class DeploymentConstraintCfg:
     stale_target_cap: float = 0.47
     exploration_quality_threshold: float = 0.35
     exploration_target: float = 0.46
+    executed_effective_target_floor: float = 0.72
+    executed_effective_weight_bonus: float = 0.75
     service_need_bias_scale: float = 1.0
     service_mass_temperature: float = 0.30
+    service_target_mass_pressure_scale: float = 1.0
     # Budget-aware logit calibration.  This is not a decoder rule: it lets the
     # actor logits see the memory pressure that appears after deterministic
     # p>0.5 matrix selection.

@@ -91,7 +91,14 @@ class DeploymentTransitionDataset:
                 transitions.extend(shard_transitions)
         self.transitions = transitions
 
-    def sample(self, batch_size: int) -> List[dict]:
+    def sample(
+            self,
+            batch_size: int,
+            *,
+            bad_sample_multiplier: float = 2.5,
+            bad_sample_max_ratio: float = 0.30,
+            bad_sample_min_count: int = 1,
+    ) -> List[dict]:
         batch_size = max(1, int(batch_size))
         if not self.transitions:
             return []
@@ -99,8 +106,13 @@ class DeploymentTransitionDataset:
         normal_bucket = [tr for tr in self.transitions if transition_quality_bucket(tr) != "bad"]
         if bad_bucket:
             bad_ratio = len(bad_bucket) / max(1, len(self.transitions))
-            bad_target_ratio = min(0.30, bad_ratio * 2.5)
-            bad_target = max(1, int(round(batch_size * bad_target_ratio)))
+            bad_sample_multiplier = max(0.0, float(bad_sample_multiplier))
+            bad_sample_max_ratio = min(1.0, max(0.0, float(bad_sample_max_ratio)))
+            bad_sample_min_count = max(0, int(bad_sample_min_count))
+            bad_target_ratio = min(bad_sample_max_ratio, bad_ratio * bad_sample_multiplier)
+            bad_target = int(round(batch_size * bad_target_ratio))
+            if bad_sample_min_count > 0 and bad_target_ratio > 0.0:
+                bad_target = max(bad_sample_min_count, bad_target)
         else:
             bad_target = 0
         if normal_bucket:
