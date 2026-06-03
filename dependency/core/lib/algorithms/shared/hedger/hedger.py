@@ -1276,7 +1276,16 @@ class Hedger:
                 0.25,
                 probability=True,
             ),
-            "prior_quality_weight": _matrix_float("prior_quality_weight", 0.35, probability=True),
+            "label_qk_prior_weight": _matrix_float("label_qk_prior_weight", 0.0, probability=True),
+            "arch_prior_compute_weight": _matrix_float("arch_prior_compute_weight", 0.45),
+            "arch_prior_memory_weight": _matrix_float("arch_prior_memory_weight", 0.25),
+            "arch_prior_memory_fit_weight": _matrix_float("arch_prior_memory_fit_weight", 0.30),
+            "untrusted_arch_prior_floor": _matrix_float("untrusted_arch_prior_floor", 0.28, probability=True),
+            "untrusted_label_confidence_floor": _matrix_float(
+                "untrusted_label_confidence_floor",
+                0.30,
+                probability=True,
+            ),
             "untrusted_history_quality_weight": _matrix_float(
                 "untrusted_history_quality_weight",
                 0.50,
@@ -3032,8 +3041,10 @@ class Hedger:
             "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
-            "trusted_runtime_confidence_threshold", "prior_quality_weight",
-            "untrusted_history_quality_weight",
+            "trusted_runtime_confidence_threshold", "label_qk_prior_weight",
+            "arch_prior_compute_weight", "arch_prior_memory_weight",
+            "arch_prior_memory_fit_weight", "untrusted_arch_prior_floor",
+            "untrusted_label_confidence_floor", "untrusted_history_quality_weight",
             "exploration_quality_threshold", "exploration_target",
             "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
             "executed_effective_target_floor", "executed_effective_weight_bonus",
@@ -3161,8 +3172,10 @@ class Hedger:
                 "deployment_final_scores", "deployment_select_logits",
                 "deployment_select_probs", "deployment_matrix_raw_selected",
                 "deployment_static_option_score", "deployment_static_quality_score",
-                "deployment_prior_quality_score", "deployment_trusted_quality_score",
+                "deployment_prior_quality_score", "deployment_arch_quality_prior",
+                "deployment_qk_static_quality", "deployment_trusted_quality_score",
                 "deployment_observed_quality_score", "deployment_historical_quality",
+                "deployment_untrusted_label_quality", "deployment_label_quality_source",
                 "deployment_runtime_risk_score",
                 "deployment_pair_quality", "deployment_label_quality", "deployment_service_best_pair_quality",
                 "deployment_service_second_pair_quality", "deployment_quality_gap_top_second",
@@ -3615,6 +3628,12 @@ class Hedger:
                     "deployment_prior_quality_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "prior_quality_score", service_idx)
                     ),
+                    "deployment_arch_quality_prior": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "arch_quality_prior", service_idx)
+                    ),
+                    "deployment_qk_static_quality": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "qk_static_quality_score", service_idx)
+                    ),
                     "deployment_trusted_quality_score": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "trusted_quality_score", service_idx)
                     ),
@@ -3642,8 +3661,14 @@ class Hedger:
                     "deployment_historical_quality": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "historical_quality_score", service_idx)
                     ),
+                    "deployment_untrusted_label_quality": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "untrusted_label_quality", service_idx)
+                    ),
                     "deployment_label_quality": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "label_quality", service_idx)
+                    ),
+                    "deployment_label_quality_source": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "label_quality_source", service_idx)
                     ),
                     "deployment_service_best_pair_quality": self._json_for_record(
                         self._actor_debug_vector_value(actor_debug, "service_best_pair_quality", service_idx)
@@ -5112,14 +5137,27 @@ class Hedger:
         device_cap = phys_feats.get("device_capability_feat")
         if isinstance(device_cap, torch.Tensor) and device_cap.dim() == 2 and device_cap.size(0) == num_devices \
                 and device_cap.size(1) >= 3:
-            relative_compute = device_cap[:, 2].to(device=device, dtype=dtype).clamp(0.0, 1.0)
+            device_cap = device_cap.to(device=device, dtype=dtype)
+            compute_quality = torch.sigmoid(device_cap[:, 2])
+            log_mem_capacity = device_cap[:, 1]
         else:
             gpu_flops = phys_feats.get("gpu_flops")
+            mem_capacity = phys_feats.get("mem_capacity")
             if isinstance(gpu_flops, torch.Tensor) and gpu_flops.numel() == num_devices:
                 gpu_flops = gpu_flops.to(device=device, dtype=dtype)
-                relative_compute = (gpu_flops / gpu_flops.max().clamp_min(1e-6)).clamp(0.0, 1.0)
+                compute_quality = (gpu_flops / gpu_flops.max().clamp_min(1e-6)).clamp(0.0, 1.0)
             else:
-                relative_compute = torch.zeros((num_devices,), device=device, dtype=dtype)
+                compute_quality = torch.zeros((num_devices,), device=device, dtype=dtype)
+            if isinstance(mem_capacity, torch.Tensor) and mem_capacity.numel() == num_devices:
+                log_mem_capacity = torch.log1p(mem_capacity.to(device=device, dtype=dtype).clamp_min(0.0))
+            else:
+                log_mem_capacity = torch.zeros((num_devices,), device=device, dtype=dtype)
+        edge_device = torch.ones((num_devices,), device=device, dtype=torch.bool)
+        if 0 <= cloud_idx < num_devices:
+            edge_device[cloud_idx] = False
+        edge_mem = log_mem_capacity.masked_select(edge_device)
+        edge_mem_mean = edge_mem.mean() if edge_mem.numel() > 0 else log_mem_capacity.mean()
+        memory_quality = torch.sigmoid(log_mem_capacity - edge_mem_mean)
 
         model_mem = logic_feats.get("model_mem")
         if isinstance(model_mem, torch.Tensor):
@@ -5133,7 +5171,15 @@ class Hedger:
         ).to(device=device, dtype=dtype).clamp_min(0.0)
         mem_gap = torch.log1p(model_mem).view(num_services, 1) - torch.log1p(residual).view(1, num_devices)
         memory_fit = (1.0 - torch.sigmoid(mem_gap)).clamp(0.0, 1.0)
-        quality = relative_compute.view(1, num_devices).expand(num_services, -1) * memory_fit
+        w_compute = float(self.deployment_agent_params.get("arch_prior_compute_weight", 0.45))
+        w_memory = float(self.deployment_agent_params.get("arch_prior_memory_weight", 0.25))
+        w_fit = float(self.deployment_agent_params.get("arch_prior_memory_fit_weight", 0.30))
+        w_total = max(w_compute + w_memory + w_fit, 1e-6)
+        quality = (
+            w_compute * compute_quality.view(1, num_devices).expand(num_services, -1)
+            + w_memory * memory_quality.view(1, num_devices).expand(num_services, -1)
+            + w_fit * memory_fit
+        ) / w_total
         quality = torch.where(
             static_allowed.to(device=device).bool(),
             quality,
@@ -6879,7 +6925,14 @@ class Hedger:
                         trusted_runtime_confidence_threshold=(
                             self.deployment_agent_params["trusted_runtime_confidence_threshold"]
                         ),
-                        prior_quality_weight=self.deployment_agent_params["prior_quality_weight"],
+                        label_qk_prior_weight=self.deployment_agent_params["label_qk_prior_weight"],
+                        arch_prior_compute_weight=self.deployment_agent_params["arch_prior_compute_weight"],
+                        arch_prior_memory_weight=self.deployment_agent_params["arch_prior_memory_weight"],
+                        arch_prior_memory_fit_weight=self.deployment_agent_params["arch_prior_memory_fit_weight"],
+                        untrusted_arch_prior_floor=self.deployment_agent_params["untrusted_arch_prior_floor"],
+                        untrusted_label_confidence_floor=(
+                            self.deployment_agent_params["untrusted_label_confidence_floor"]
+                        ),
                         untrusted_history_quality_weight=self.deployment_agent_params[
                             "untrusted_history_quality_weight"
                         ],
@@ -7641,8 +7694,10 @@ class Hedger:
             "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
-            "trusted_runtime_confidence_threshold", "prior_quality_weight",
-            "untrusted_history_quality_weight",
+            "trusted_runtime_confidence_threshold", "label_qk_prior_weight",
+            "arch_prior_compute_weight", "arch_prior_memory_weight",
+            "arch_prior_memory_fit_weight", "untrusted_arch_prior_floor",
+            "untrusted_label_confidence_floor", "untrusted_history_quality_weight",
             "exploration_quality_threshold", "exploration_target",
             "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
             "executed_effective_target_floor", "executed_effective_weight_bonus",
@@ -8264,7 +8319,14 @@ class Hedger:
                     trusted_runtime_confidence_threshold=(
                         self.deployment_agent_params["trusted_runtime_confidence_threshold"]
                     ),
-                    prior_quality_weight=self.deployment_agent_params["prior_quality_weight"],
+                    label_qk_prior_weight=self.deployment_agent_params["label_qk_prior_weight"],
+                    arch_prior_compute_weight=self.deployment_agent_params["arch_prior_compute_weight"],
+                    arch_prior_memory_weight=self.deployment_agent_params["arch_prior_memory_weight"],
+                    arch_prior_memory_fit_weight=self.deployment_agent_params["arch_prior_memory_fit_weight"],
+                    untrusted_arch_prior_floor=self.deployment_agent_params["untrusted_arch_prior_floor"],
+                    untrusted_label_confidence_floor=(
+                        self.deployment_agent_params["untrusted_label_confidence_floor"]
+                    ),
                     untrusted_history_quality_weight=self.deployment_agent_params[
                         "untrusted_history_quality_weight"
                     ],

@@ -48,7 +48,14 @@ class DeploymentConstraintCfg:
     soft_target_untrusted_weight_floor: float = 0.40
     soft_target_risk_penalty: float = 0.40
     trusted_runtime_confidence_threshold: float = 0.25
-    prior_quality_weight: float = 0.35
+    # QK remains an actor feature, but should not teach the offline label by
+    # default.  Non-zero values are only for controlled ablations.
+    label_qk_prior_weight: float = 0.0
+    arch_prior_compute_weight: float = 0.45
+    arch_prior_memory_weight: float = 0.25
+    arch_prior_memory_fit_weight: float = 0.30
+    untrusted_arch_prior_floor: float = 0.28
+    untrusted_label_confidence_floor: float = 0.30
     # Historical observed quality still gives weak supervision when runtime
     # evidence is stale/unknown; uncertainty lowers weight, not the label sign.
     untrusted_history_quality_weight: float = 0.50

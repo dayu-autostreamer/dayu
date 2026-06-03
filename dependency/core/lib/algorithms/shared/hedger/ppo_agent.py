@@ -622,10 +622,40 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.25
         return min(max(value, 0.0), 1.0)
 
-    def _prior_quality_weight(self) -> float:
-        value = float(getattr(self.cfg, "prior_quality_weight", 0.35))
+    def _label_qk_prior_weight(self) -> float:
+        value = float(getattr(self.cfg, "label_qk_prior_weight", 0.0))
         if not math.isfinite(value):
-            value = 0.35
+            value = 0.0
+        return min(max(value, 0.0), 1.0)
+
+    def _arch_prior_compute_weight(self) -> float:
+        value = float(getattr(self.cfg, "arch_prior_compute_weight", 0.45))
+        if not math.isfinite(value):
+            value = 0.45
+        return max(value, 0.0)
+
+    def _arch_prior_memory_weight(self) -> float:
+        value = float(getattr(self.cfg, "arch_prior_memory_weight", 0.25))
+        if not math.isfinite(value):
+            value = 0.25
+        return max(value, 0.0)
+
+    def _arch_prior_memory_fit_weight(self) -> float:
+        value = float(getattr(self.cfg, "arch_prior_memory_fit_weight", 0.30))
+        if not math.isfinite(value):
+            value = 0.30
+        return max(value, 0.0)
+
+    def _untrusted_arch_prior_floor(self) -> float:
+        value = float(getattr(self.cfg, "untrusted_arch_prior_floor", 0.28))
+        if not math.isfinite(value):
+            value = 0.28
+        return min(max(value, 0.0), 1.0)
+
+    def _untrusted_label_confidence_floor(self) -> float:
+        value = float(getattr(self.cfg, "untrusted_label_confidence_floor", 0.30))
+        if not math.isfinite(value):
+            value = 0.30
         return min(max(value, 0.0), 1.0)
 
     def _untrusted_history_quality_weight(self) -> float:
@@ -1003,8 +1033,36 @@ class _DeploymentBackbonePPO(nn.Module):
 
         static_allowed_f = static_allowed.to(device=device, dtype=dtype)
         memory_fit = (1.0 - pair_memory_cost).clamp(0.0, 1.0)
-        static_quality_score = torch.clamp(
+        qk_static_quality_score = torch.clamp(
             static_allowed_f * torch.sigmoid(qk_feature.to(device=device, dtype=dtype)) * memory_fit,
+            min=0.0,
+            max=1.0,
+        )
+        device_feat = _device_capability_features(phys_feats, num_devices, device, dtype, cloud_idx)
+        relative_compute = device_feat[:, 2].view(1, num_devices).expand(num_services, -1)
+        log_mem_capacity = device_feat[:, 1]
+        if edge_width > 0:
+            edge_device = torch.ones((num_devices,), device=device, dtype=torch.bool)
+            edge_device[edge_width:] = False
+            edge_mem = log_mem_capacity.masked_select(edge_device)
+            edge_mem_mean = edge_mem.mean() if edge_mem.numel() > 0 else log_mem_capacity.mean()
+        else:
+            edge_mem_mean = log_mem_capacity.mean() if log_mem_capacity.numel() > 0 \
+                else torch.zeros((), device=device, dtype=dtype)
+        relative_mem = (log_mem_capacity - edge_mem_mean).view(1, num_devices).expand(num_services, -1)
+        compute_quality = torch.sigmoid(relative_compute)
+        memory_quality = torch.sigmoid(relative_mem)
+        w_compute = self._arch_prior_compute_weight()
+        w_memory = self._arch_prior_memory_weight()
+        w_fit = self._arch_prior_memory_fit_weight()
+        w_total = max(w_compute + w_memory + w_fit, 1e-6)
+        arch_quality_prior = torch.clamp(
+            static_allowed_f
+            * (
+                w_compute * compute_quality
+                + w_memory * memory_quality
+                + w_fit * memory_fit
+            ) / w_total,
             min=0.0,
             max=1.0,
         )
@@ -1016,36 +1074,75 @@ class _DeploymentBackbonePPO(nn.Module):
             min=0.0,
             max=1.0,
         )
-        prior_quality_score = static_quality_score
+        prior_quality_score = arch_quality_prior
+        static_quality_score = arch_quality_prior
         trusted_quality_score = observed_quality_score
-        untrusted_prior_quality = self._prior_quality_weight() * prior_quality_score
-        pair_quality_score = torch.clamp(
-            torch.where(runtime_trusted, trusted_quality_score, untrusted_prior_quality),
+        historical_quality_score = torch.clamp(
+            trusted_quality_score * self._untrusted_history_quality_weight(),
             min=0.0,
             max=1.0,
+        )
+        untrusted_floor = self._untrusted_arch_prior_floor() * memory_fit
+        untrusted_arch_quality = torch.maximum(prior_quality_score, untrusted_floor).clamp(0.0, 1.0)
+        untrusted_label_quality = torch.maximum(untrusted_arch_quality, historical_quality_score)
+        qk_prior_weight = self._label_qk_prior_weight()
+        if qk_prior_weight > 0.0:
+            untrusted_label_quality = (
+                (1.0 - qk_prior_weight) * untrusted_label_quality
+                + qk_prior_weight * torch.maximum(untrusted_label_quality, qk_static_quality_score)
+            ).clamp(0.0, 1.0)
+        label_quality_score = torch.where(
+            runtime_trusted.bool(),
+            trusted_quality_score,
+            untrusted_label_quality,
+        ).clamp(0.0, 1.0)
+        pair_quality_score = label_quality_score
+        label_quality_source = torch.zeros_like(label_quality_score)
+        label_quality_source = torch.where(
+            static_allowed.bool(),
+            torch.ones_like(label_quality_source),
+            label_quality_source,
+        )
+        label_quality_source = torch.where(
+            (~runtime_trusted.bool()) & static_allowed.bool() & (historical_quality_score > untrusted_arch_quality),
+            torch.full_like(label_quality_source, 2.0),
+            label_quality_source,
+        )
+        label_quality_source = torch.where(
+            runtime_trusted.bool() & static_allowed.bool(),
+            torch.full_like(label_quality_source, 3.0),
+            label_quality_source,
         )
         if cloud_idx >= 0:
             device_ids = torch.arange(num_devices, device=device)
             cloud_mask = device_ids.view(1, -1).eq(cloud_idx).expand(num_services, -1)
             static_quality_score = torch.where(cloud_mask, torch.zeros_like(static_quality_score), static_quality_score)
             prior_quality_score = torch.where(cloud_mask, torch.zeros_like(prior_quality_score), prior_quality_score)
+            qk_static_quality_score = torch.where(
+                cloud_mask,
+                torch.zeros_like(qk_static_quality_score),
+                qk_static_quality_score,
+            )
+            arch_quality_prior = torch.where(cloud_mask, torch.zeros_like(arch_quality_prior), arch_quality_prior)
             trusted_quality_score = torch.where(
                 cloud_mask,
                 torch.zeros_like(trusted_quality_score),
                 trusted_quality_score,
             )
+            historical_quality_score = torch.where(
+                cloud_mask,
+                torch.zeros_like(historical_quality_score),
+                historical_quality_score,
+            )
+            untrusted_label_quality = torch.where(
+                cloud_mask,
+                torch.zeros_like(untrusted_label_quality),
+                untrusted_label_quality,
+            )
+            label_quality_score = torch.where(cloud_mask, torch.zeros_like(label_quality_score), label_quality_score)
             pair_quality_score = torch.where(cloud_mask, torch.zeros_like(pair_quality_score), pair_quality_score)
+            label_quality_source = torch.where(cloud_mask, torch.zeros_like(label_quality_source), label_quality_source)
             runtime_trusted = torch.where(cloud_mask, torch.zeros_like(runtime_trusted), runtime_trusted)
-        historical_quality_score = torch.clamp(
-            trusted_quality_score * self._untrusted_history_quality_weight(),
-            min=0.0,
-            max=1.0,
-        )
-        label_quality_score = torch.where(
-            runtime_trusted.bool(),
-            pair_quality_score,
-            torch.maximum(prior_quality_score, historical_quality_score),
-        ).clamp(0.0, 1.0)
         evidence_untrusted = torch.maximum(runtime_unknown, runtime_stale)
         quality_threshold = max(self._positive_quality_threshold(), 1e-6)
         low_quality_gap = ((quality_threshold - label_quality_score) / quality_threshold).clamp(0.0, 1.0)
@@ -1077,11 +1174,15 @@ class _DeploymentBackbonePPO(nn.Module):
             "device_load_norm": device_load_norm,
             "static_quality_score": static_quality_score,
             "prior_quality_score": prior_quality_score,
+            "arch_quality_prior": arch_quality_prior,
+            "qk_static_quality_score": qk_static_quality_score,
             "trusted_quality_score": trusted_quality_score,
             "observed_quality_score": observed_quality_score,
             "pair_quality_score": pair_quality_score,
             "historical_quality_score": historical_quality_score,
+            "untrusted_label_quality": untrusted_label_quality,
             "label_quality_score": label_quality_score,
+            "label_quality_source": label_quality_source,
             "runtime_unknown_risk": runtime_unknown,
             "runtime_stale_risk": runtime_stale,
             "static_option_score": qk_feature.to(device=device, dtype=dtype),
@@ -1658,7 +1759,7 @@ class _DeploymentBackbonePPO(nn.Module):
             edge_allowed
             & ~runtime_trusted
             & ~severe_risky
-            & (prior_quality >= self._exploration_quality_threshold())
+            & (label_quality >= self._exploration_quality_threshold())
             & (queue_pressure <= self._negative_queue_threshold())
             & ~low_quality
         )
@@ -1809,7 +1910,10 @@ class _DeploymentBackbonePPO(nn.Module):
         target = min_target + (max_target - min_target) * raw_target
 
         evidence_untrusted = torch.maximum(runtime_unknown, runtime_stale)
-        evidence_weight_floor = self._soft_target_untrusted_weight_floor()
+        evidence_weight_floor = max(
+            self._soft_target_untrusted_weight_floor(),
+            self._untrusted_label_confidence_floor(),
+        )
         evidence_confidence_weight = (
             evidence_weight_floor
             + (1.0 - evidence_weight_floor) * (1.0 - evidence_untrusted)
@@ -2956,9 +3060,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "static_option_score": pair_ctx["static_option_score"].detach().cpu(),
                 "static_quality_score": pair_ctx["static_quality_score"].detach().cpu(),
                 "prior_quality_score": pair_ctx["prior_quality_score"].detach().cpu(),
+                "arch_quality_prior": pair_ctx["arch_quality_prior"].detach().cpu(),
+                "qk_static_quality_score": pair_ctx["qk_static_quality_score"].detach().cpu(),
                 "trusted_quality_score": pair_ctx["trusted_quality_score"].detach().cpu(),
                 "observed_quality_score": pair_ctx["observed_quality_score"].detach().cpu(),
                 "historical_quality_score": pair_ctx["historical_quality_score"].detach().cpu(),
+                "untrusted_label_quality": pair_ctx["untrusted_label_quality"].detach().cpu(),
+                "label_quality_source": pair_ctx["label_quality_source"].detach().cpu(),
                 "runtime_risk_score": pair_ctx["runtime_risk_score"].detach().cpu(),
                 "pair_quality_score": pair_ctx["pair_quality_score"].detach().cpu(),
                 "service_best_pair_quality": pair_ctx["service_best_pair_quality"].detach().cpu(),
@@ -3124,8 +3232,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "static_option_score": pair_ctx["static_option_score"],
                 "static_quality_score": pair_ctx["static_quality_score"],
                 "prior_quality_score": pair_ctx["prior_quality_score"],
+                "arch_quality_prior": pair_ctx["arch_quality_prior"],
+                "qk_static_quality_score": pair_ctx["qk_static_quality_score"],
                 "trusted_quality_score": pair_ctx["trusted_quality_score"],
                 "observed_quality_score": pair_ctx["observed_quality_score"],
+                "historical_quality_score": pair_ctx["historical_quality_score"],
+                "untrusted_label_quality": pair_ctx["untrusted_label_quality"],
+                "label_quality_source": pair_ctx["label_quality_source"],
                 "runtime_risk_score": pair_ctx["runtime_risk_score"],
                 "pair_quality_score": pair_ctx["pair_quality_score"],
                 "service_quality_gap_top_second": pair_ctx["service_quality_gap_top_second"],
