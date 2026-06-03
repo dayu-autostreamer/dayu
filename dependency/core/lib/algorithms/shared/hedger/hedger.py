@@ -5533,7 +5533,7 @@ class Hedger:
             last_guard_trigger_seq: int,
             active_deployment_version: Optional[int] = None,
     ):
-        """Sleep for the deployment cadence, but wake on a new latency-guard trigger."""
+        """Sleep for the deployment cadence, but wake on latency-guard/event triggers."""
         interval_s = max(0.0, float(interval_s))
         wait_start_t = time.time()
 
@@ -5549,7 +5549,15 @@ class Hedger:
             return _finish("interval", int(last_guard_trigger_seq), self._deployment_event_wait_status("interval"))
 
         now = time.time()
-        target_t = now + interval_s if last_tick <= 0 else last_tick + interval_s
+        if last_tick <= 0:
+            target_t = now + interval_s
+        else:
+            scheduled_t = float(last_tick) + interval_s
+            # Deployment is heavyweight.  If feedback waiting or serving already
+            # consumed the scheduled interval, do not catch up by firing a burst
+            # of interval decisions; event and latency-guard paths still wake
+            # the loop early when runtime pressure genuinely requires it.
+            target_t = scheduled_t if scheduled_t > now else now + interval_s
         poll_s = max(0.1, min(1.0, float(getattr(self.latency_guard_cfg, "poll_interval_s", 1.0))))
         last_guard_trigger_seq = int(last_guard_trigger_seq)
 
