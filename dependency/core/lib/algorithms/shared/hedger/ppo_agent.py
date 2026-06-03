@@ -628,17 +628,11 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.35
         return min(max(value, 0.0), 1.0)
 
-    def _unknown_target_cap(self) -> float:
-        value = float(getattr(self.cfg, "unknown_target_cap", 0.48))
+    def _untrusted_history_quality_weight(self) -> float:
+        value = float(getattr(self.cfg, "untrusted_history_quality_weight", 0.50))
         if not math.isfinite(value):
-            value = 0.48
-        return min(max(value, self._soft_target_min()), 0.499)
-
-    def _stale_target_cap(self) -> float:
-        value = float(getattr(self.cfg, "stale_target_cap", 0.49))
-        if not math.isfinite(value):
-            value = 0.49
-        return min(max(value, self._soft_target_min()), 0.499)
+            value = 0.50
+        return min(max(value, 0.0), 1.0)
 
     def _exploration_quality_threshold(self) -> float:
         value = float(getattr(self.cfg, "exploration_quality_threshold", 0.35))
@@ -1042,7 +1036,16 @@ class _DeploymentBackbonePPO(nn.Module):
             )
             pair_quality_score = torch.where(cloud_mask, torch.zeros_like(pair_quality_score), pair_quality_score)
             runtime_trusted = torch.where(cloud_mask, torch.zeros_like(runtime_trusted), runtime_trusted)
-        label_quality_score = torch.where(runtime_trusted.bool(), pair_quality_score, prior_quality_score).clamp(0.0, 1.0)
+        historical_quality_score = torch.clamp(
+            trusted_quality_score * self._untrusted_history_quality_weight(),
+            min=0.0,
+            max=1.0,
+        )
+        label_quality_score = torch.where(
+            runtime_trusted.bool(),
+            pair_quality_score,
+            torch.maximum(prior_quality_score, historical_quality_score),
+        ).clamp(0.0, 1.0)
         evidence_untrusted = torch.maximum(runtime_unknown, runtime_stale)
         quality_threshold = max(self._positive_quality_threshold(), 1e-6)
         low_quality_gap = ((quality_threshold - label_quality_score) / quality_threshold).clamp(0.0, 1.0)
@@ -1077,6 +1080,7 @@ class _DeploymentBackbonePPO(nn.Module):
             "trusted_quality_score": trusted_quality_score,
             "observed_quality_score": observed_quality_score,
             "pair_quality_score": pair_quality_score,
+            "historical_quality_score": historical_quality_score,
             "label_quality_score": label_quality_score,
             "runtime_unknown_risk": runtime_unknown,
             "runtime_stale_risk": runtime_stale,
@@ -1613,6 +1617,11 @@ class _DeploymentBackbonePPO(nn.Module):
         prior_quality = ctx_matrix("prior_quality_score", 0.0).clamp(0.0, 1.0)
         trusted_quality = ctx_matrix("trusted_quality_score", 0.0).clamp(0.0, 1.0)
         runtime_trusted = ctx_matrix("runtime_trusted", 0.0).clamp(0.0, 1.0) >= 0.5
+        label_quality_value = policy_ctx.get("label_quality_score")
+        if isinstance(label_quality_value, torch.Tensor) and label_quality_value.shape == static_allowed.shape:
+            label_quality = label_quality_value.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        else:
+            label_quality = torch.where(runtime_trusted, pair_quality, prior_quality).clamp(0.0, 1.0)
         queue_pressure = ctx_matrix("queue_pressure", 0.0).clamp(0.0, 1.0)
         hotspot = ctx_matrix("active_pair_hotspot", 0.0).clamp(0.0, 1.0)
         runtime_risk = ctx_matrix("runtime_risk_score", 0.0).clamp(0.0, 1.0)
@@ -1634,7 +1643,6 @@ class _DeploymentBackbonePPO(nn.Module):
         pressure_floor = self._option_pressure_floor() if coverage_pressure_floor is None \
             else min(max(0.0, float(coverage_pressure_floor)), 1.0)
 
-        label_quality = torch.where(runtime_trusted, pair_quality, prior_quality).clamp(0.0, 1.0)
         severe_risky = (
             (queue_pressure >= self._negative_queue_threshold())
             | (hotspot >= self._negative_hotspot_threshold())
@@ -1819,18 +1827,6 @@ class _DeploymentBackbonePPO(nn.Module):
         target = torch.where(
             exploration_option_mask,
             torch.maximum(target, exploration_target),
-            target,
-        )
-        unknown_cap = torch.full_like(target, self._unknown_target_cap())
-        stale_cap = torch.full_like(target, self._stale_target_cap())
-        target = torch.where(
-            (runtime_unknown >= self._untrusted_unknown_threshold()) & ~exploration_option_mask,
-            torch.minimum(target, unknown_cap),
-            target,
-        )
-        target = torch.where(
-            (runtime_stale >= self._untrusted_stale_threshold()) & ~exploration_option_mask,
-            torch.minimum(target, stale_cap),
             target,
         )
 
@@ -2962,6 +2958,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "prior_quality_score": pair_ctx["prior_quality_score"].detach().cpu(),
                 "trusted_quality_score": pair_ctx["trusted_quality_score"].detach().cpu(),
                 "observed_quality_score": pair_ctx["observed_quality_score"].detach().cpu(),
+                "historical_quality_score": pair_ctx["historical_quality_score"].detach().cpu(),
                 "runtime_risk_score": pair_ctx["runtime_risk_score"].detach().cpu(),
                 "pair_quality_score": pair_ctx["pair_quality_score"].detach().cpu(),
                 "service_best_pair_quality": pair_ctx["service_best_pair_quality"].detach().cpu(),
@@ -3347,6 +3344,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         )
         effective_option_mask = option_masks["effective_option_mask"]
         soft_positive_mask = option_masks["soft_target_positive_mask"]
+        top_quality_mask = option_masks["top_quality_mask"]
         clear_non_effective_mask = option_masks["clear_non_effective_mask"]
         label_quality = option_masks["label_quality"].to(device=edge_allowed.device, dtype=torch.float32)
         low_quality = label_quality < self._positive_quality_threshold()
@@ -3357,6 +3355,28 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         raw_removed = ((raw_selected & ~selected) | capacity_removed) & edge_allowed
         selected_effective = selected & effective_option_mask
         teacher_positive = soft_positive_mask & effective_option_mask & edge_allowed
+        recovery_service = (
+            raw_removed.any(dim=1)
+            | (selected & diagnostic_risky).any(dim=1)
+            | ((selected.sum(dim=1) <= 0) & edge_allowed.any(dim=1))
+        )
+        recovery_candidates = (
+            (effective_option_mask | top_quality_mask)
+            & edge_allowed
+            & ~selected
+            & ~raw_removed
+            & ~diagnostic_risky
+        )
+        recovery_quality = label_quality.masked_fill(~recovery_candidates, -1.0)
+        best_recovery_quality = recovery_quality.max(dim=1).values
+        recovery_gap = max(0.02, 0.5 * float(top_quality_tolerance))
+        recovery_floor = (best_recovery_quality - recovery_gap).clamp_min(self._positive_quality_threshold())
+        aux_positive_mask = (
+            recovery_service.view(-1, 1)
+            & recovery_candidates
+            & (label_quality >= recovery_floor.view(-1, 1))
+            & (best_recovery_quality.view(-1, 1) >= self._positive_quality_threshold())
+        )
         clear_unselected_negative = (
             clear_non_effective_mask
             & ~selected
@@ -3375,6 +3395,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_selected_effective_samples": float(selected_effective.float().sum().detach().cpu().item()),
             "actor_clear_non_effective_samples": float(clear_non_effective_mask.float().sum().detach().cpu().item()),
             "actor_capacity_removed_samples": float(capacity_removed.float().sum().detach().cpu().item()),
+            "actor_recovery_service_samples": float(recovery_service.float().sum().detach().cpu().item()),
+            "actor_recovery_candidate_samples": float(aux_positive_mask.float().sum().detach().cpu().item()),
         }
         quality = str(quality_bucket or "unknown").strip().lower()
         # Positive labels are state-derived effective options, not the whole
@@ -3384,7 +3406,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             teacher_positive
             if quality != "bad" else torch.zeros_like(selected)
         )
-        aux_positive_mask = torch.zeros_like(selected)
         negative_mask = (
             selected
             & (severe_risky | low_quality | clear_non_effective_mask)
@@ -3493,6 +3514,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         selected_effective_counts = []
         clear_non_effective_counts = []
         capacity_removed_counts = []
+        recovery_service_counts = []
+        recovery_candidate_counts = []
         positive_prob_means = []
         negative_prob_means = []
         aux_positive_prob_means = []
@@ -3806,6 +3829,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             selected_effective_counts.append(float(mask_debug.get("actor_selected_effective_samples", 0.0)))
             clear_non_effective_counts.append(float(mask_debug.get("actor_clear_non_effective_samples", 0.0)))
             capacity_removed_counts.append(float(mask_debug.get("actor_capacity_removed_samples", 0.0)))
+            recovery_service_counts.append(float(mask_debug.get("actor_recovery_service_samples", 0.0)))
+            recovery_candidate_counts.append(float(mask_debug.get("actor_recovery_candidate_samples", 0.0)))
             if bool(positive_mask_t.any().item()):
                 positive_prob_means.append(_scalar_to_float(raw_removed_probs.masked_select(positive_mask_t).mean()))
                 positive_logit_means.append(_scalar_to_float(raw_removed_logits.masked_select(positive_mask_t).mean()))
@@ -4252,6 +4277,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_selected_effective_samples": _mean_or_zero(selected_effective_counts),
             "actor_clear_non_effective_samples": _mean_or_zero(clear_non_effective_counts),
             "actor_capacity_removed_samples": _mean_or_zero(capacity_removed_counts),
+            "actor_recovery_service_samples": _mean_or_zero(recovery_service_counts),
+            "actor_recovery_candidate_samples": _mean_or_zero(recovery_candidate_counts),
             "bad_actor_masked": _scalar_to_float(bad_mask.detach().mean()),
             "positive_logp_mean": _scalar_to_float(positive_logp_t.detach().mean()),
             "aux_positive_logp_mean": _scalar_to_float(aux_positive_logp_t.detach().mean()),

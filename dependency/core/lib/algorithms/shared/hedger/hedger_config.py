@@ -49,8 +49,9 @@ class DeploymentConstraintCfg:
     soft_target_risk_penalty: float = 0.40
     trusted_runtime_confidence_threshold: float = 0.25
     prior_quality_weight: float = 0.35
-    unknown_target_cap: float = 0.48
-    stale_target_cap: float = 0.49
+    # Historical observed quality still gives weak supervision when runtime
+    # evidence is stale/unknown; uncertainty lowers weight, not the label sign.
+    untrusted_history_quality_weight: float = 0.50
     exploration_quality_threshold: float = 0.35
     exploration_target: float = 0.58
     executed_effective_target_floor: float = 0.72

@@ -1032,6 +1032,7 @@ class Hedger:
             "actor_selected_stale_samples", "actor_selected_untrusted_samples",
             "actor_teacher_positive_samples", "actor_selected_effective_samples",
             "actor_clear_non_effective_samples", "actor_capacity_removed_samples",
+            "actor_recovery_service_samples", "actor_recovery_candidate_samples",
             "bad_actor_masked",
             "positive_logp_mean", "aux_positive_logp_mean",
             "negative_logp_mean", "raw_removed_logp_mean",
@@ -1276,8 +1277,11 @@ class Hedger:
                 probability=True,
             ),
             "prior_quality_weight": _matrix_float("prior_quality_weight", 0.35, probability=True),
-            "unknown_target_cap": _matrix_float("unknown_target_cap", 0.48, probability=True),
-            "stale_target_cap": _matrix_float("stale_target_cap", 0.49, probability=True),
+            "untrusted_history_quality_weight": _matrix_float(
+                "untrusted_history_quality_weight",
+                0.50,
+                probability=True,
+            ),
             "exploration_quality_threshold": _matrix_float(
                 "exploration_quality_threshold",
                 0.35,
@@ -3029,7 +3033,7 @@ class Hedger:
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
             "trusted_runtime_confidence_threshold", "prior_quality_weight",
-            "unknown_target_cap", "stale_target_cap",
+            "untrusted_history_quality_weight",
             "exploration_quality_threshold", "exploration_target",
             "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
             "executed_effective_target_floor", "executed_effective_weight_bonus",
@@ -3158,7 +3162,8 @@ class Hedger:
                 "deployment_select_probs", "deployment_matrix_raw_selected",
                 "deployment_static_option_score", "deployment_static_quality_score",
                 "deployment_prior_quality_score", "deployment_trusted_quality_score",
-                "deployment_observed_quality_score", "deployment_runtime_risk_score",
+                "deployment_observed_quality_score", "deployment_historical_quality",
+                "deployment_runtime_risk_score",
                 "deployment_pair_quality", "deployment_label_quality", "deployment_service_best_pair_quality",
                 "deployment_service_second_pair_quality", "deployment_quality_gap_top_second",
                 "deployment_service_best_runtime_risk", "deployment_service_max_queue_pressure",
@@ -3633,6 +3638,9 @@ class Hedger:
                     ),
                     "deployment_pair_quality": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_quality_score", service_idx)
+                    ),
+                    "deployment_historical_quality": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "historical_quality_score", service_idx)
                     ),
                     "deployment_label_quality": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "label_quality", service_idx)
@@ -6872,8 +6880,9 @@ class Hedger:
                             self.deployment_agent_params["trusted_runtime_confidence_threshold"]
                         ),
                         prior_quality_weight=self.deployment_agent_params["prior_quality_weight"],
-                        unknown_target_cap=self.deployment_agent_params["unknown_target_cap"],
-                        stale_target_cap=self.deployment_agent_params["stale_target_cap"],
+                        untrusted_history_quality_weight=self.deployment_agent_params[
+                            "untrusted_history_quality_weight"
+                        ],
                         exploration_quality_threshold=self.deployment_agent_params["exploration_quality_threshold"],
                         exploration_target=self.deployment_agent_params["exploration_target"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
@@ -7633,7 +7642,7 @@ class Hedger:
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
             "trusted_runtime_confidence_threshold", "prior_quality_weight",
-            "unknown_target_cap", "stale_target_cap",
+            "untrusted_history_quality_weight",
             "exploration_quality_threshold", "exploration_target",
             "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
             "executed_effective_target_floor", "executed_effective_weight_bonus",
@@ -8256,8 +8265,9 @@ class Hedger:
                         self.deployment_agent_params["trusted_runtime_confidence_threshold"]
                     ),
                     prior_quality_weight=self.deployment_agent_params["prior_quality_weight"],
-                    unknown_target_cap=self.deployment_agent_params["unknown_target_cap"],
-                    stale_target_cap=self.deployment_agent_params["stale_target_cap"],
+                    untrusted_history_quality_weight=self.deployment_agent_params[
+                        "untrusted_history_quality_weight"
+                    ],
                     exploration_quality_threshold=self.deployment_agent_params["exploration_quality_threshold"],
                     exploration_target=self.deployment_agent_params["exploration_target"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
