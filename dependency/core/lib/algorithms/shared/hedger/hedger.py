@@ -395,6 +395,7 @@ class Hedger:
         self.deployment_offline_dataset: Optional[DeploymentTransitionDataset] = None
         self._deployment_collected_transition_count = 0
         self._deployment_last_online_update_transition_count = 0
+        self._last_deployment_online_replay_stats: Dict[str, Any] = {}
         self._deployment_last_collect_checkpoint_step = 0
         self._deployment_collect_anchor_mask: Optional[torch.Tensor] = None
         self._deployment_collect_bad_streak = 0
@@ -482,6 +483,10 @@ class Hedger:
                 ),
             )
             self._deployment_collected_transition_count = self.deployment_dataset_writer.count
+            if mode == "online":
+                self._deployment_last_online_update_transition_count = (
+                    self._deployment_collected_transition_count
+                )
             LOGGER.info(
                 f"[Hedger][DeploymentDataset] Writer ready: "
                 f"mode={mode}, root={self.training_cfg.deployment_dataset.root_dir}, "
@@ -1127,6 +1132,9 @@ class Hedger:
                 "offline_batch_guard_interrupted", "offline_batch_collect_risk_mean",
                 "offline_batch_queue_pressure_mean", "offline_batch_hotspot_cost_mean",
                 "offline_batch_runtime_risk_mean", "offline_batch_min_pair_quality_mean",
+                "online_replay_offline_samples", "online_replay_online_samples",
+                "online_replay_online_pool", "online_replay_offline_pool",
+                "online_replay_new_transitions",
             ])
         return fieldnames
 
@@ -7607,6 +7615,7 @@ class Hedger:
                                     )
                                 if dep_ppo_stats is not None:
                                     dep_ppo_stats.update(batch_quality)
+                                    dep_ppo_stats.update(self._last_deployment_online_replay_stats)
                                 with self._data_lock:
                                     dep_remaining = len(self.deployment_transitions)
                                 self._deployment_last_online_update_transition_count = (
@@ -7627,6 +7636,8 @@ class Hedger:
                                     f"{self._deployment_update_steps}, used={len(dep_transitions)}, "
                                     f"online_buffer={dep_remaining}, offline_samples="
                                     f"{len(self.deployment_offline_dataset) if self.deployment_offline_dataset else 0}, "
+                                    f"batch_online={dep_ppo_stats.get('online_replay_online_samples', 0)}, "
+                                    f"batch_offline={dep_ppo_stats.get('online_replay_offline_samples', 0)}, "
                                     f"reward_mean={self._format_log_value(dep_ppo_stats.get('reward_mean', 0.0))}, "
                                     f"batch_bad_ratio="
                                     f"{self._format_log_value(dep_ppo_stats.get('offline_batch_bad_ratio', 0.0))}, "
@@ -9151,28 +9162,50 @@ class Hedger:
         total_batch = max(1, int(cfg.batch_size))
         with self._data_lock:
             online_pool = list(self.deployment_transitions)
+            new_transitions = max(
+                0,
+                self._deployment_collected_transition_count
+                - self._deployment_last_online_update_transition_count,
+            )
 
         offline_count = 0
+        offline_pool_count = 0
         if self.deployment_offline_dataset is not None and len(self.deployment_offline_dataset) > 0:
+            offline_pool_count = len(self.deployment_offline_dataset)
             offline_count = int(round(total_batch * cfg.offline_replay_ratio))
         offline_count = min(total_batch, max(0, offline_count))
         online_count = max(0, total_batch - offline_count)
 
         batch: List[dict] = []
+        sampled_offline = 0
+        sampled_online = 0
         if offline_count > 0 and self.deployment_offline_dataset is not None:
-            batch.extend(self.deployment_offline_dataset.sample(
+            offline_batch = self.deployment_offline_dataset.sample(
                 offline_count,
                 bad_sample_multiplier=cfg.bad_sample_multiplier,
                 bad_sample_max_ratio=cfg.bad_sample_max_ratio,
                 bad_sample_min_count=cfg.bad_sample_min_count,
-            ))
+            )
+            sampled_offline = len(offline_batch)
+            batch.extend(offline_batch)
         if online_pool and online_count > 0:
             if len(online_pool) >= online_count:
-                batch.extend(random.sample(online_pool, online_count))
+                online_batch = random.sample(online_pool, online_count)
             else:
-                batch.extend(random.choice(online_pool) for _ in range(online_count))
+                online_batch = [random.choice(online_pool) for _ in range(online_count)]
+            sampled_online = len(online_batch)
+            batch.extend(online_batch)
         if not batch and online_pool:
-            batch.extend(random.sample(online_pool, min(len(online_pool), total_batch)))
+            online_batch = random.sample(online_pool, min(len(online_pool), total_batch))
+            sampled_online = len(online_batch)
+            batch.extend(online_batch)
+        self._last_deployment_online_replay_stats = {
+            "online_replay_offline_samples": int(sampled_offline),
+            "online_replay_online_samples": int(sampled_online),
+            "online_replay_online_pool": int(len(online_pool)),
+            "online_replay_offline_pool": int(offline_pool_count),
+            "online_replay_new_transitions": int(new_transitions),
+        }
         return batch
 
     def train_deployment_offline(self):
