@@ -13,4 +13,4 @@ class EndToEndDelayVisualizer(CurveVisualizer, abc.ABC):
         super().__init__(**kwargs)
 
     def __call__(self, task: Task):
-        return {self.variables[0]: task.calculate_total_time()}
+        return {self.variables[0]: task.get_real_end_to_end_time()}
