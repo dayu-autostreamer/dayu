@@ -2192,6 +2192,7 @@ class _DeploymentBackbonePPO(nn.Module):
             positive_logit_margin: float = 0.25,
             coverage_logit_margin: float = 0.20,
             ranking_logit_margin: float = 0.15,
+            quality_order_logit_margin: float = 0.18,
             contrast_logit_margin: float = 0.30,
             top_quality_tolerance: float = 0.05,
             coverage_pressure_floor: float = 0.35,
@@ -2247,6 +2248,7 @@ class _DeploymentBackbonePPO(nn.Module):
         pair_suppression_prob = torch.sigmoid(pair_suppression_logits).clamp(1e-6, 1.0 - 1e-6)
         edge_prob = torch.where(edge_allowed, select_prob, torch.zeros_like(select_prob))
         has_edge = edge_allowed.any(dim=1)
+        zero = select_logits.sum() * 0.0
 
         one_minus_edge = torch.where(edge_allowed, (1.0 - edge_prob).clamp(1e-6, 1.0), torch.ones_like(edge_prob))
         no_edge_prob = one_minus_edge.prod(dim=1)
@@ -2306,6 +2308,37 @@ class _DeploymentBackbonePPO(nn.Module):
             * contrast_weights
         ).sum() / contrast_weights.sum().clamp_min(1.0)
 
+        quality_gap = pair_quality.unsqueeze(2) - pair_quality.unsqueeze(1)
+        logit_gap = select_logits.unsqueeze(2) - select_logits.unsqueeze(1)
+        higher_quality_pair_mask = (
+            effective_option_mask.unsqueeze(2)
+            & edge_allowed.unsqueeze(1)
+            & (quality_gap > float(top_quality_tolerance))
+        )
+        quality_order_weights = (
+            quality_gap.clamp_min(0.0).detach()
+            * torch.maximum(
+                pressure_weight,
+                torch.full_like(pressure_weight, float(coverage_pressure_floor)),
+            ).view(num_services, 1, 1).detach()
+            * higher_quality_pair_mask.to(dtype=dtype)
+        )
+        quality_order_den = quality_order_weights.sum().clamp_min(1.0)
+        quality_order_margin_loss = (
+            F.softplus(float(quality_order_logit_margin) - logit_gap.clamp(-20.0, 20.0))
+            * quality_order_weights
+        ).sum() / quality_order_den
+        quality_order_gap_mean = (logit_gap * quality_order_weights).sum() / quality_order_den
+        quality_order_violation_ratio = (
+            ((logit_gap < float(quality_order_logit_margin)).to(dtype=dtype) * quality_order_weights).sum()
+            / quality_order_den
+        )
+        quality_order_pair_counts = higher_quality_pair_mask.to(dtype=dtype).sum(dim=(1, 2))
+        quality_order_pair_count_mean = (
+            quality_order_pair_counts.masked_select(has_effective_candidate).mean()
+            if bool(has_effective_candidate.any().item()) else zero
+        )
+
         expected_edge_count = edge_prob.sum(dim=1)
 
         model_mem = logic_feats.get("model_mem")
@@ -2358,8 +2391,6 @@ class _DeploymentBackbonePPO(nn.Module):
             edge_logit_mean = zero
             edge_logit_std = zero
             prob_above_05_ratio = zero
-        zero = select_logits.sum() * 0.0
-
         feasible_no_edge = no_edge_prob.masked_select(has_edge) if bool(has_edge.any().item()) else None
         feasible_edge_count = expected_edge_count.masked_select(has_edge) if bool(has_edge.any().item()) else None
         feasible_quality = expected_quality_mass.masked_select(has_edge) if bool(has_edge.any().item()) else None
@@ -2565,6 +2596,10 @@ class _DeploymentBackbonePPO(nn.Module):
             "coverage_margin_loss": coverage_margin_loss,
             "quality_margin_loss": quality_margin_loss,
             "ranking_margin_loss": ranking_margin_loss,
+            "quality_order_margin_loss": quality_order_margin_loss,
+            "quality_order_gap_mean": quality_order_gap_mean,
+            "quality_order_violation_ratio": quality_order_violation_ratio,
+            "quality_order_pair_count_mean": quality_order_pair_count_mean,
             "contrast_margin_loss": contrast_margin_loss,
             "memory_margin_loss": memory_loss,
             "effective_option_mass_loss": effective_option_mass_loss,
@@ -3770,6 +3805,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             coverage_margin_coef: float = 0.55,
             quality_margin_coef: float = 0.35,
             ranking_margin_coef: float = 0.35,
+            quality_order_margin_coef: float = 0.0,
             contrast_margin_coef: float = 0.45,
             memory_margin_coef: float = 0.25,
             effective_option_mass_coef: float = 0.04,
@@ -3780,6 +3816,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             negative_logit_margin: float = 0.18,
             coverage_logit_margin: float = 0.35,
             ranking_logit_margin: float = 0.25,
+            quality_order_logit_margin: float = 0.18,
             contrast_logit_margin: float = 0.40,
             top_quality_tolerance: float = 0.16,
             coverage_pressure_floor: float = 0.25,
@@ -3887,6 +3924,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         coverage_margin_losses = []
         quality_margin_losses = []
         ranking_margin_losses = []
+        quality_order_margin_losses = []
+        quality_order_gap_means = []
+        quality_order_violation_ratios = []
+        quality_order_pair_count_means = []
         contrast_margin_losses = []
         memory_margin_losses = []
         effective_option_mass_losses = []
@@ -4050,6 +4091,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 positive_logit_margin=float(positive_logit_margin),
                 coverage_logit_margin=float(coverage_logit_margin),
                 ranking_logit_margin=float(ranking_logit_margin),
+                quality_order_logit_margin=float(quality_order_logit_margin),
                 contrast_logit_margin=float(contrast_logit_margin),
                 top_quality_tolerance=float(top_quality_tolerance),
                 coverage_pressure_floor=float(coverage_pressure_floor),
@@ -4215,6 +4257,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             coverage_margin_losses.append(plan_terms["coverage_margin_loss"])
             quality_margin_losses.append(plan_terms["quality_margin_loss"])
             ranking_margin_losses.append(plan_terms["ranking_margin_loss"])
+            quality_order_margin_losses.append(plan_terms["quality_order_margin_loss"])
+            quality_order_gap_means.append(_scalar_to_float(plan_terms["quality_order_gap_mean"]))
+            quality_order_violation_ratios.append(_scalar_to_float(plan_terms["quality_order_violation_ratio"]))
+            quality_order_pair_count_means.append(_scalar_to_float(plan_terms["quality_order_pair_count_mean"]))
             contrast_margin_losses.append(plan_terms["contrast_margin_loss"])
             memory_margin_losses.append(plan_terms["memory_margin_loss"])
             effective_option_mass_losses.append(plan_terms["effective_option_mass_loss"])
@@ -4378,6 +4424,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         coverage_margin_loss_t = torch.stack(coverage_margin_losses).float()
         quality_margin_loss_t = torch.stack(quality_margin_losses).float()
         ranking_margin_loss_t = torch.stack(ranking_margin_losses).float()
+        quality_order_margin_loss_t = torch.stack(quality_order_margin_losses).float()
         contrast_margin_loss_t = torch.stack(contrast_margin_losses).float()
         memory_margin_loss_t = torch.stack(memory_margin_losses).float()
         effective_option_mass_loss_t = torch.stack(effective_option_mass_losses).float()
@@ -4529,6 +4576,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         coverage_margin_loss = coverage_margin_loss_t.mean() * float(coverage_margin_coef)
         quality_margin_loss = quality_margin_loss_t.mean() * float(quality_margin_coef)
         ranking_margin_loss = ranking_margin_loss_t.mean() * float(ranking_margin_coef)
+        quality_order_margin_loss = quality_order_margin_loss_t.mean() * float(quality_order_margin_coef)
         contrast_margin_loss = contrast_margin_loss_t.mean() * float(contrast_margin_coef)
         memory_margin_loss = memory_margin_loss_t.mean() * float(memory_margin_coef)
         effective_option_mass_loss = effective_option_mass_loss_t.mean() * float(effective_option_mass_coef)
@@ -4538,6 +4586,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             coverage_margin_loss
             + quality_margin_loss
             + ranking_margin_loss
+            + quality_order_margin_loss
             + contrast_margin_loss
             + memory_margin_loss
             + effective_option_mass_loss
@@ -4596,6 +4645,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "coverage_margin_loss": _scalar_to_float(coverage_margin_loss.detach()),
             "quality_margin_loss": _scalar_to_float(quality_margin_loss.detach()),
             "ranking_margin_loss": _scalar_to_float(ranking_margin_loss.detach()),
+            "quality_order_margin_loss": _scalar_to_float(quality_order_margin_loss.detach()),
+            "quality_order_gap_mean": _mean_or_zero(quality_order_gap_means),
+            "quality_order_violation_ratio": _mean_or_zero(quality_order_violation_ratios),
+            "quality_order_pair_count_mean": _mean_or_zero(quality_order_pair_count_means),
             "contrast_margin_loss": _scalar_to_float(contrast_margin_loss.detach()),
             "memory_margin_loss": _scalar_to_float(memory_margin_loss.detach()),
             "effective_option_mass_loss": _scalar_to_float(effective_option_mass_loss.detach()),
@@ -4792,6 +4845,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "coverage_margin_coef": float(coverage_margin_coef),
             "quality_margin_coef": float(quality_margin_coef),
             "ranking_margin_coef": float(ranking_margin_coef),
+            "quality_order_margin_coef": float(quality_order_margin_coef),
             "contrast_margin_coef": float(contrast_margin_coef),
             "memory_margin_coef": float(memory_margin_coef),
             "effective_option_mass_coef": float(effective_option_mass_coef),
@@ -4801,6 +4855,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "negative_logit_margin": float(negative_logit_margin),
             "coverage_logit_margin": float(coverage_logit_margin),
             "ranking_logit_margin": float(ranking_logit_margin),
+            "quality_order_logit_margin": float(quality_order_logit_margin),
             "contrast_logit_margin": float(contrast_logit_margin),
             "top_quality_tolerance": float(top_quality_tolerance),
             "coverage_pressure_floor": float(coverage_pressure_floor),

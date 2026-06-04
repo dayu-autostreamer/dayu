@@ -129,6 +129,7 @@ class HedgerDeploymentOfflineRLCfg:
     coverage_margin_coef: float = 0.55
     quality_margin_coef: float = 0.35
     ranking_margin_coef: float = 0.35
+    quality_order_margin_coef: float = 0.0
     contrast_margin_coef: float = 0.45
     memory_margin_coef: float = 0.25
     effective_option_mass_coef: float = 0.04
@@ -142,6 +143,7 @@ class HedgerDeploymentOfflineRLCfg:
     negative_logit_margin: float = 0.18
     coverage_logit_margin: float = 0.35
     ranking_logit_margin: float = 0.25
+    quality_order_logit_margin: float = 0.18
     contrast_logit_margin: float = 0.40
     top_quality_tolerance: float = 0.16
     coverage_pressure_floor: float = 0.25
@@ -684,6 +686,10 @@ class Hedger:
             coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.55))),
             quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.35))),
             ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.35))),
+            quality_order_margin_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("quality_order_margin_coef", 0.0)),
+            ),
             contrast_margin_coef=max(0.0, float(offline_rl_cfg.get("contrast_margin_coef", 0.45))),
             memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.25))),
             effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.04))),
@@ -700,6 +706,10 @@ class Hedger:
             negative_logit_margin=max(0.0, float(offline_rl_cfg.get("negative_logit_margin", 0.18))),
             coverage_logit_margin=max(0.0, float(offline_rl_cfg.get("coverage_logit_margin", 0.35))),
             ranking_logit_margin=max(0.0, float(offline_rl_cfg.get("ranking_logit_margin", 0.25))),
+            quality_order_logit_margin=max(
+                0.0,
+                float(offline_rl_cfg.get("quality_order_logit_margin", 0.18)),
+            ),
             contrast_logit_margin=max(0.0, float(offline_rl_cfg.get("contrast_logit_margin", 0.40))),
             top_quality_tolerance=max(0.0, float(offline_rl_cfg.get("top_quality_tolerance", 0.16))),
             coverage_pressure_floor=min(
@@ -1039,6 +1049,8 @@ class Hedger:
             "aux_positive_loss", "negative_loss", "raw_removed_negative_loss", "unselected_negative_loss",
             "selected_non_soft_negative_loss",
             "coverage_margin_loss", "quality_margin_loss", "ranking_margin_loss",
+            "quality_order_margin_loss", "quality_order_gap_mean",
+            "quality_order_violation_ratio", "quality_order_pair_count_mean",
             "contrast_margin_loss",
             "memory_margin_loss", "effective_option_mass_loss", "non_effective_option_loss",
             "margin_loss",
@@ -1120,13 +1132,14 @@ class Hedger:
             "contrast_margin_gap_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
-            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
+            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef",
+            "quality_order_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "soft_target_bc_coef", "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
-            "ranking_logit_margin", "contrast_logit_margin",
+            "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio", "service_need_bias_scale", "service_mass_temperature",
             "service_need_pair_gate_enabled", "service_need_gate_temperature", "service_need_gate_min",
@@ -3048,6 +3061,9 @@ class Hedger:
             "e2e_slo_violation", "feedback_gate_enabled", "feedback_gate_required_samples",
             "feedback_gate_collected_samples", "feedback_gate_sample_shortfall",
             "feedback_gate_shortfall_ratio", "feedback_gate_timed_out", "feedback_gate_guard_truncated",
+            "feedback_gate_skip_reason",
+            "feedback_gate_guard_truncate_reason", "feedback_gate_guard_truncate_max_queue",
+            "feedback_gate_guard_truncate_feedback_required",
             "feedback_timeout_penalty_cost", "deployment_event_triggered",
             "deployment_event_reason", "deployment_event_queue_pressure",
             "deployment_event_hotspot_pressure", "deployment_event_max_queue",
@@ -3136,12 +3152,13 @@ class Hedger:
             "dep_latency_normalizer", "dep_latency_clip", "dep_slo_weight",
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "hotspot_weight", "runtime_risk_weight", "low_quality_weight",
-            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
+            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef",
+            "quality_order_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "soft_target_bc_coef",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
-            "ranking_logit_margin", "contrast_logit_margin",
+            "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
@@ -5609,15 +5626,12 @@ class Hedger:
             return _finish("interval", int(last_guard_trigger_seq), self._deployment_event_wait_status("interval"))
 
         now = time.time()
-        if last_tick <= 0:
-            target_t = now + interval_s
-        else:
-            scheduled_t = float(last_tick) + interval_s
-            # Deployment is heavyweight.  If feedback waiting or serving already
-            # consumed the scheduled interval, do not catch up by firing a burst
-            # of interval decisions; event and latency-guard paths still wake
-            # the loop early when runtime pressure genuinely requires it.
-            target_t = scheduled_t if scheduled_t > now else now + interval_s
+        # Deployment is heavyweight and the feedback gate after each served
+        # plan is part of the decision interval.  Anchor the next periodic
+        # decision on the current served plan instead of "catching up" to an
+        # older tick; event and latency-guard paths still wake early when
+        # runtime pressure genuinely requires it.
+        target_t = now + interval_s
         poll_s = max(0.1, min(1.0, float(getattr(self.latency_guard_cfg, "poll_interval_s", 1.0))))
         last_guard_trigger_seq = int(last_guard_trigger_seq)
 
@@ -5854,21 +5868,56 @@ class Hedger:
                     "skipped": False,
                 }
 
-            if self._latency_guard_trigger_event_for_deployment(deployment_version) is not None:
-                LOGGER.warning(
-                    f"[Hedger][Inference][Deployment] Use guard-truncated deployment feedback: "
-                    f"version={deployment_version}, samples={count}/{required}."
-                )
-                return {
-                    "enabled": True,
-                    "required": required,
-                    "count": count,
-                    "timed_out": False,
-                    "skipped": False,
-                    "guard_truncated": True,
-                }
-
             now = time.monotonic()
+            guard_event = self._latency_guard_trigger_event_for_deployment(deployment_version)
+            if guard_event is not None:
+                guard_stats = copy.deepcopy((guard_event.get("stats", {}) or {}))
+                max_queue = float(
+                    guard_stats.get(
+                        "max_queue_length",
+                        guard_stats.get("max_queue", 0.0),
+                    ) or 0.0
+                )
+                guard_required = max(
+                    0,
+                    int(getattr(self.latency_guard_cfg, "deployment_trigger_min_feedback_samples", 0)),
+                )
+                guard_required = min(required, guard_required) if guard_required > 0 else 0
+                emergency_queue = (
+                    float(getattr(self.latency_guard_cfg, "deployment_trigger_emergency_max_queue", 0.0)) > 0.0
+                    and max_queue >= float(getattr(
+                        self.latency_guard_cfg,
+                        "deployment_trigger_emergency_max_queue",
+                        0.0,
+                    ))
+                )
+                if count >= guard_required or emergency_queue:
+                    truncate_reason = "latency_guard_emergency" if emergency_queue else "latency_guard_min_feedback"
+                    LOGGER.warning(
+                        f"[Hedger][Inference][Deployment] Use guard-truncated deployment feedback: "
+                        f"reason={truncate_reason}, version={deployment_version}, "
+                        f"samples={count}/{required}, guard_required={guard_required}, "
+                        f"max_queue={self._format_log_value(max_queue, 2)}."
+                    )
+                    return {
+                        "enabled": True,
+                        "required": required,
+                        "count": count,
+                        "timed_out": False,
+                        "skipped": False,
+                        "guard_truncated": True,
+                        "guard_truncate_reason": truncate_reason,
+                        "guard_truncate_max_queue": max_queue,
+                        "guard_truncate_feedback_required": guard_required,
+                    }
+                if now - last_log_t >= 10.0:
+                    LOGGER.info(
+                        f"[Hedger][Inference][Deployment] Suppress guard-truncated feedback gate: "
+                        f"version={deployment_version}, samples={count}/{required}, "
+                        f"guard_required={guard_required}, "
+                        f"max_queue={self._format_log_value(max_queue, 2)}."
+                    )
+
             if timeout_s is not None and now - start_t >= float(timeout_s):
                 LOGGER.warning(
                     f"[Hedger][Inference][Deployment] Version-matched feedback gate timed out: "
@@ -6845,8 +6894,9 @@ class Hedger:
                         "required": max(1, int(self.inference_cfg.deployment_min_version_matched_samples)),
                         "count": self._deployment_feedback_count(served_version),
                         "timed_out": False,
-                        "skipped": False,
-                        "guard_truncated": True,
+                        "skipped": True,
+                        "skip_reason": next_decision_reason,
+                        "guard_truncated": False,
                     }
                 new_logic_feats, new_phys_feats, metrics, _, new_state_debug = self._collect_deployment_state(
                     prev_deploy_mask=prev_deploy_mask,
@@ -6932,6 +6982,16 @@ class Hedger:
                         feedback_gate_shortfall_ratio=feedback_shortfall_ratio,
                         feedback_gate_timed_out=int(bool(feedback_gate.get("timed_out", False))),
                         feedback_gate_guard_truncated=int(bool(feedback_gate.get("guard_truncated", False))),
+                        feedback_gate_skip_reason=str(feedback_gate.get("skip_reason", "") or ""),
+                        feedback_gate_guard_truncate_reason=str(
+                            feedback_gate.get("guard_truncate_reason", "") or ""
+                        ),
+                        feedback_gate_guard_truncate_max_queue=float(
+                            feedback_gate.get("guard_truncate_max_queue", 0.0) or 0.0
+                        ),
+                        feedback_gate_guard_truncate_feedback_required=int(
+                            feedback_gate.get("guard_truncate_feedback_required", 0) or 0
+                        ),
                         feedback_timeout_penalty_cost=dep_reward_breakdown["feedback_timeout_penalty_cost"],
                         deployment_event_triggered=int(bool(current_event_status.get("triggered", False))),
                         deployment_event_reason=current_event_status.get("reason", ""),
@@ -7195,6 +7255,7 @@ class Hedger:
                         coverage_margin_coef=offline_rl_record_cfg.coverage_margin_coef,
                         quality_margin_coef=offline_rl_record_cfg.quality_margin_coef,
                         ranking_margin_coef=offline_rl_record_cfg.ranking_margin_coef,
+                        quality_order_margin_coef=offline_rl_record_cfg.quality_order_margin_coef,
                         contrast_margin_coef=offline_rl_record_cfg.contrast_margin_coef,
                         memory_margin_coef=offline_rl_record_cfg.memory_margin_coef,
                         effective_option_mass_coef=offline_rl_record_cfg.effective_option_mass_coef,
@@ -7211,6 +7272,7 @@ class Hedger:
                         negative_logit_margin=offline_rl_record_cfg.negative_logit_margin,
                         coverage_logit_margin=offline_rl_record_cfg.coverage_logit_margin,
                         ranking_logit_margin=offline_rl_record_cfg.ranking_logit_margin,
+                        quality_order_logit_margin=offline_rl_record_cfg.quality_order_logit_margin,
                         contrast_logit_margin=offline_rl_record_cfg.contrast_logit_margin,
                         top_quality_tolerance=offline_rl_record_cfg.top_quality_tolerance,
                         coverage_pressure_floor=offline_rl_record_cfg.coverage_pressure_floor,
@@ -8009,13 +8071,14 @@ class Hedger:
             "dep_change_weight", "dep_cloud_only_weight", "cap_relax_weight", "edge_cover_repair_weight",
             "hotspot_weight", "runtime_risk_weight", "low_quality_weight",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
-            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef", "contrast_margin_coef",
+            "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef",
+            "quality_order_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "soft_target_bc_coef", "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
-            "ranking_logit_margin", "contrast_logit_margin",
+            "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio",
@@ -8651,6 +8714,9 @@ class Hedger:
                     coverage_margin_coef=self.training_cfg.deployment_offline_rl.coverage_margin_coef,
                     quality_margin_coef=self.training_cfg.deployment_offline_rl.quality_margin_coef,
                     ranking_margin_coef=self.training_cfg.deployment_offline_rl.ranking_margin_coef,
+                    quality_order_margin_coef=(
+                        self.training_cfg.deployment_offline_rl.quality_order_margin_coef
+                    ),
                     contrast_margin_coef=self.training_cfg.deployment_offline_rl.contrast_margin_coef,
                     memory_margin_coef=self.training_cfg.deployment_offline_rl.memory_margin_coef,
                     effective_option_mass_coef=self.training_cfg.deployment_offline_rl.effective_option_mass_coef,
@@ -8667,6 +8733,9 @@ class Hedger:
                     negative_logit_margin=self.training_cfg.deployment_offline_rl.negative_logit_margin,
                     coverage_logit_margin=self.training_cfg.deployment_offline_rl.coverage_logit_margin,
                     ranking_logit_margin=self.training_cfg.deployment_offline_rl.ranking_logit_margin,
+                    quality_order_logit_margin=(
+                        self.training_cfg.deployment_offline_rl.quality_order_logit_margin
+                    ),
                     contrast_logit_margin=self.training_cfg.deployment_offline_rl.contrast_logit_margin,
                     top_quality_tolerance=self.training_cfg.deployment_offline_rl.top_quality_tolerance,
                     coverage_pressure_floor=self.training_cfg.deployment_offline_rl.coverage_pressure_floor,
@@ -9301,6 +9370,7 @@ class Hedger:
             "coverage_margin_coef": cfg.coverage_margin_coef,
             "quality_margin_coef": cfg.quality_margin_coef,
             "ranking_margin_coef": cfg.ranking_margin_coef,
+            "quality_order_margin_coef": cfg.quality_order_margin_coef,
             "contrast_margin_coef": cfg.contrast_margin_coef,
             "memory_margin_coef": cfg.memory_margin_coef,
             "effective_option_mass_coef": cfg.effective_option_mass_coef,
@@ -9311,6 +9381,7 @@ class Hedger:
             "negative_logit_margin": cfg.negative_logit_margin,
             "coverage_logit_margin": cfg.coverage_logit_margin,
             "ranking_logit_margin": cfg.ranking_logit_margin,
+            "quality_order_logit_margin": cfg.quality_order_logit_margin,
             "contrast_logit_margin": cfg.contrast_logit_margin,
             "top_quality_tolerance": cfg.top_quality_tolerance,
             "coverage_pressure_floor": cfg.coverage_pressure_floor,
