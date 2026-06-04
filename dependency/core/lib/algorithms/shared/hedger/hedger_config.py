@@ -45,6 +45,10 @@ class DeploymentConstraintCfg:
     soft_target_pressure_tolerance: float = 0.30
     soft_target_min: float = 0.04
     soft_target_max: float = 0.92
+    # Non-positive labels must stay below the deterministic p=0.5 boundary.
+    # This keeps offline soft labels from asking the actor to hold weak pairs
+    # near threshold while selected-non-soft losses try to suppress them.
+    soft_target_negative_ceiling: float = 0.40
     soft_target_untrusted_weight_floor: float = 0.25
     soft_target_risk_penalty: float = 0.55
     trusted_runtime_confidence_threshold: float = 0.25

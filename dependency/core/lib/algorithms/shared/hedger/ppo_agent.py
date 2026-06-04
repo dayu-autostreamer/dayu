@@ -604,6 +604,12 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 0.92
         return min(max(value, self._soft_target_min()), 1.0)
 
+    def _soft_target_negative_ceiling(self) -> float:
+        value = float(getattr(self.cfg, "soft_target_negative_ceiling", 0.40))
+        if not math.isfinite(value):
+            value = 0.40
+        return min(max(value, self._soft_target_min()), 0.49)
+
     def _soft_target_untrusted_weight_floor(self) -> float:
         value = float(getattr(self.cfg, "soft_target_untrusted_weight_floor", 0.25))
         if not math.isfinite(value):
@@ -2069,6 +2075,15 @@ class _DeploymentBackbonePPO(nn.Module):
         if quality == "bad":
             selected_risky = selected & (risky_option_mask | clear_non_effective_mask)
             target = torch.where(selected_risky, torch.full_like(target, min_target), target)
+
+        positive_candidate_mask = (target >= 0.50) & edge_allowed
+        negative_ceiling = self._soft_target_negative_ceiling()
+        if negative_ceiling < 0.50:
+            target = torch.where(
+                edge_allowed & ~positive_candidate_mask,
+                torch.minimum(target, torch.full_like(target, negative_ceiling)),
+                target,
+            )
 
         target = torch.where(edge_allowed, target, torch.zeros_like(target))
         positive_mask = (target >= 0.50) & edge_allowed
@@ -4118,17 +4133,34 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     device=raw_removed_logits.device,
                 ).bool()
             )
+            soft_target_tensor = soft_target_info["soft_target"].to(
+                device=raw_removed_logits.device,
+                dtype=torch.float32,
+            ).detach().clone()
+            soft_target_weight_tensor = soft_target_info["soft_target_weight"].to(
+                device=raw_removed_logits.device,
+                dtype=torch.float32,
+            ).detach().clone()
+            if bool(selected_non_soft_negative_mask.any().item()):
+                negative_ceiling = torch.full_like(
+                    soft_target_tensor,
+                    float(self._soft_target_negative_ceiling()),
+                )
+                soft_target_tensor = torch.where(
+                    selected_non_soft_negative_mask,
+                    torch.minimum(soft_target_tensor, negative_ceiling),
+                    soft_target_tensor,
+                )
+                soft_target_weight_tensor = torch.where(
+                    selected_non_soft_negative_mask,
+                    torch.maximum(soft_target_weight_tensor, torch.ones_like(soft_target_weight_tensor)),
+                    soft_target_weight_tensor,
+                )
             select_logits_for_bce.append(raw_removed_logits)
             pair_negative_logits_for_bce.append(pair_negative_logits)
             soft_target_logits_for_bce.append(raw_removed_logits)
-            soft_targets_for_bce.append(soft_target_info["soft_target"].to(
-                device=raw_removed_logits.device,
-                dtype=torch.float32,
-            ).detach())
-            soft_target_weights_for_bce.append(soft_target_info["soft_target_weight"].to(
-                device=raw_removed_logits.device,
-                dtype=torch.float32,
-            ).detach())
+            soft_targets_for_bce.append(soft_target_tensor)
+            soft_target_weights_for_bce.append(soft_target_weight_tensor)
             positive_masks_for_bce.append(positive_mask_t.detach())
             negative_masks_for_bce.append(negative_mask_t.detach())
             aux_positive_masks_for_bce.append((aux_positive_mask_t & edge_allowed_t & ~positive_mask_t).detach())
@@ -4659,6 +4691,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "entropy": _scalar_to_float(entropy.detach()),
             "entropy_coef": float(entropy_coef),
             "soft_target_bc_coef": float(soft_target_bc_coef),
+            "soft_target_negative_ceiling": self._soft_target_negative_ceiling(),
             "selected_non_soft_negative_coef": float(selected_non_soft_negative_coef),
             "service_need_target_coef": float(service_need_target_coef),
             "executed_aux_positive_coef": float(executed_aux_positive_coef),

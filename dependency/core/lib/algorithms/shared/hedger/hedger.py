@@ -1136,7 +1136,8 @@ class Hedger:
             "quality_order_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
-            "soft_target_bc_coef", "selected_non_soft_negative_coef",
+            "soft_target_bc_coef", "soft_target_negative_ceiling",
+            "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
@@ -1317,6 +1318,11 @@ class Hedger:
             "soft_target_pressure_tolerance": _matrix_float("soft_target_pressure_tolerance", 0.30),
             "soft_target_min": _matrix_float("soft_target_min", 0.04, probability=True),
             "soft_target_max": _matrix_float("soft_target_max", 0.92, probability=True),
+            "soft_target_negative_ceiling": _matrix_float(
+                "soft_target_negative_ceiling",
+                0.40,
+                probability=True,
+            ),
             "soft_target_untrusted_weight_floor": _matrix_float(
                 "soft_target_untrusted_weight_floor",
                 0.40,
@@ -3156,7 +3162,7 @@ class Hedger:
             "quality_order_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
-            "soft_target_bc_coef",
+            "soft_target_bc_coef", "soft_target_negative_ceiling",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
@@ -7262,6 +7268,9 @@ class Hedger:
                         non_effective_option_coef=offline_rl_record_cfg.non_effective_option_coef,
                         service_need_target_coef=offline_rl_record_cfg.service_need_target_coef,
                         soft_target_bc_coef=offline_rl_record_cfg.soft_target_bc_coef,
+                        soft_target_negative_ceiling=self.deployment_agent_params[
+                            "soft_target_negative_ceiling"
+                        ],
                         selected_non_soft_negative_coef=(
                             offline_rl_record_cfg.selected_non_soft_negative_coef
                         ),
@@ -8075,7 +8084,8 @@ class Hedger:
             "quality_order_margin_coef", "contrast_margin_coef",
             "memory_margin_coef",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
-            "soft_target_bc_coef", "selected_non_soft_negative_coef",
+            "soft_target_bc_coef", "soft_target_negative_ceiling",
+            "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
@@ -8723,6 +8733,9 @@ class Hedger:
                     non_effective_option_coef=self.training_cfg.deployment_offline_rl.non_effective_option_coef,
                     service_need_target_coef=self.training_cfg.deployment_offline_rl.service_need_target_coef,
                     soft_target_bc_coef=self.training_cfg.deployment_offline_rl.soft_target_bc_coef,
+                    soft_target_negative_ceiling=self.deployment_agent_params[
+                        "soft_target_negative_ceiling"
+                    ],
                     selected_non_soft_negative_coef=(
                         self.training_cfg.deployment_offline_rl.selected_non_soft_negative_coef
                     ),
