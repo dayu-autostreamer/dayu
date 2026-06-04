@@ -605,15 +605,15 @@ class _DeploymentBackbonePPO(nn.Module):
         return min(max(value, self._soft_target_min()), 1.0)
 
     def _soft_target_untrusted_weight_floor(self) -> float:
-        value = float(getattr(self.cfg, "soft_target_untrusted_weight_floor", 0.40))
+        value = float(getattr(self.cfg, "soft_target_untrusted_weight_floor", 0.25))
         if not math.isfinite(value):
-            value = 0.40
+            value = 0.25
         return min(max(value, 0.0), 1.0)
 
     def _soft_target_risk_penalty(self) -> float:
-        value = float(getattr(self.cfg, "soft_target_risk_penalty", 0.40))
+        value = float(getattr(self.cfg, "soft_target_risk_penalty", 0.55))
         if not math.isfinite(value):
-            value = 0.45
+            value = 0.55
         return min(max(value, 0.0), 1.0)
 
     def _trusted_runtime_confidence_threshold(self) -> float:
@@ -647,21 +647,21 @@ class _DeploymentBackbonePPO(nn.Module):
         return max(value, 0.0)
 
     def _untrusted_arch_prior_floor(self) -> float:
-        value = float(getattr(self.cfg, "untrusted_arch_prior_floor", 0.28))
+        value = float(getattr(self.cfg, "untrusted_arch_prior_floor", 0.18))
         if not math.isfinite(value):
-            value = 0.28
+            value = 0.18
         return min(max(value, 0.0), 1.0)
 
     def _untrusted_label_confidence_floor(self) -> float:
-        value = float(getattr(self.cfg, "untrusted_label_confidence_floor", 0.30))
+        value = float(getattr(self.cfg, "untrusted_label_confidence_floor", 0.22))
         if not math.isfinite(value):
-            value = 0.30
+            value = 0.22
         return min(max(value, 0.0), 1.0)
 
     def _untrusted_history_quality_weight(self) -> float:
-        value = float(getattr(self.cfg, "untrusted_history_quality_weight", 0.50))
+        value = float(getattr(self.cfg, "untrusted_history_quality_weight", 0.30))
         if not math.isfinite(value):
-            value = 0.50
+            value = 0.30
         return min(max(value, 0.0), 1.0)
 
     def _exploration_quality_threshold(self) -> float:
@@ -707,9 +707,9 @@ class _DeploymentBackbonePPO(nn.Module):
         return max(value, 1e-3)
 
     def _deployment_budget_logit_scale(self) -> float:
-        value = float(getattr(self.cfg, "budget_logit_scale", 0.0))
+        value = float(getattr(self.cfg, "budget_logit_scale", 0.22))
         if not math.isfinite(value):
-            value = 0.0
+            value = 0.22
         return max(0.0, value)
 
     def _deployment_budget_temperature(self) -> float:
@@ -1848,8 +1848,11 @@ class _DeploymentBackbonePPO(nn.Module):
         alternatives to a single hard top candidate.  This target gives every
         sufficiently good service-device pair a continuous target based on its
         relative quality and the service pressure.  Weak or observed-risky
-        pairs receive explicit pressure to stay below the p=0.5 boundary;
-        missing or stale runtime evidence only lowers supervision confidence.
+        pairs receive explicit pressure to stay below the p=0.5 boundary.
+        Missing or stale runtime evidence is still not a hard negative label, but
+        it must lower the target itself as well as the supervision confidence;
+        otherwise stale historical/static quality can keep bad alternatives near
+        the deterministic p=0.5 boundary.
         """
         device = static_allowed.device
         dtype = torch.float32
@@ -1919,10 +1922,11 @@ class _DeploymentBackbonePPO(nn.Module):
             + (1.0 - evidence_weight_floor) * (1.0 - evidence_untrusted)
         ).clamp(evidence_weight_floor, 1.0)
         risk_penalty = self._soft_target_risk_penalty() * torch.clamp(
-            0.45 * runtime_risk
-            + 0.25 * queue_pressure
-            + 0.25 * active_hotspot
-            + 0.20 * low_quality_gap,
+            0.38 * runtime_risk
+            + 0.22 * queue_pressure
+            + 0.22 * active_hotspot
+            + 0.18 * low_quality_gap
+            + 0.28 * evidence_untrusted,
             min=0.0,
             max=1.0,
         )

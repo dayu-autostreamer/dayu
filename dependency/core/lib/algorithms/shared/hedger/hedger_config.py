@@ -45,8 +45,8 @@ class DeploymentConstraintCfg:
     soft_target_pressure_tolerance: float = 0.30
     soft_target_min: float = 0.04
     soft_target_max: float = 0.92
-    soft_target_untrusted_weight_floor: float = 0.40
-    soft_target_risk_penalty: float = 0.40
+    soft_target_untrusted_weight_floor: float = 0.25
+    soft_target_risk_penalty: float = 0.55
     trusted_runtime_confidence_threshold: float = 0.25
     # QK remains an actor feature, but should not teach the offline label by
     # default.  Non-zero values are only for controlled ablations.
@@ -54,11 +54,12 @@ class DeploymentConstraintCfg:
     arch_prior_compute_weight: float = 0.45
     arch_prior_memory_weight: float = 0.25
     arch_prior_memory_fit_weight: float = 0.30
-    untrusted_arch_prior_floor: float = 0.28
-    untrusted_label_confidence_floor: float = 0.30
+    untrusted_arch_prior_floor: float = 0.18
+    untrusted_label_confidence_floor: float = 0.22
     # Historical observed quality still gives weak supervision when runtime
-    # evidence is stale/unknown; uncertainty lowers weight, not the label sign.
-    untrusted_history_quality_weight: float = 0.50
+    # evidence is stale/unknown; uncertainty lowers weight and soft target,
+    # but does not turn the pair into a hard negative label.
+    untrusted_history_quality_weight: float = 0.30
     exploration_quality_threshold: float = 0.35
     exploration_target: float = 0.58
     executed_effective_target_floor: float = 0.72
@@ -69,7 +70,7 @@ class DeploymentConstraintCfg:
     # Budget-aware logit calibration.  This is not a decoder rule: it lets the
     # actor logits see the memory pressure that appears after deterministic
     # p>0.5 matrix selection.
-    budget_logit_scale: float = 0.15
+    budget_logit_scale: float = 0.22
     budget_temperature: float = 0.12
 
 
