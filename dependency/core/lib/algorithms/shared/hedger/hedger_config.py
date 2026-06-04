@@ -65,6 +65,17 @@ class DeploymentConstraintCfg:
     executed_effective_target_floor: float = 0.72
     executed_effective_weight_bonus: float = 0.75
     service_need_bias_scale: float = 1.0
+    # Service-level need should only lift service-device pairs that are plausible
+    # options. Otherwise one hot service can push weak/unknown pairs above the
+    # Bernoulli p=0.5 boundary together with the good pairs.
+    service_need_pair_gate_enabled: bool = True
+    service_need_gate_temperature: float = 0.12
+    service_need_gate_quality_center: Optional[float] = None
+    service_need_gate_min: float = 0.05
+    service_need_untrusted_gate_penalty: float = 0.65
+    service_need_runtime_risk_gate_weight: float = 0.75
+    service_need_memory_gate_weight: float = 0.35
+    service_need_pair_bias_max: float = 1.0
     service_mass_temperature: float = 1.0
     service_target_mass_pressure_scale: float = 1.0
     # Budget-aware logit calibration.  This is not a decoder rule: it lets the

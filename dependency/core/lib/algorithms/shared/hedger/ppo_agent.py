@@ -700,6 +700,54 @@ class _DeploymentBackbonePPO(nn.Module):
             value = 1.0
         return max(0.0, value)
 
+    def _service_need_pair_gate_enabled(self) -> bool:
+        return bool(getattr(self.cfg, "service_need_pair_gate_enabled", True))
+
+    def _service_need_gate_temperature(self) -> float:
+        value = float(getattr(self.cfg, "service_need_gate_temperature", 0.12))
+        if not math.isfinite(value):
+            value = 0.12
+        return max(value, 1e-3)
+
+    def _service_need_gate_quality_center(self) -> float:
+        value = getattr(self.cfg, "service_need_gate_quality_center", None)
+        if value is None:
+            return self._positive_quality_threshold()
+        value = float(value)
+        if not math.isfinite(value):
+            return self._positive_quality_threshold()
+        return min(max(value, 0.0), 1.0)
+
+    def _service_need_gate_min(self) -> float:
+        value = float(getattr(self.cfg, "service_need_gate_min", 0.05))
+        if not math.isfinite(value):
+            value = 0.05
+        return min(max(value, 0.0), 1.0)
+
+    def _service_need_untrusted_gate_penalty(self) -> float:
+        value = float(getattr(self.cfg, "service_need_untrusted_gate_penalty", 0.65))
+        if not math.isfinite(value):
+            value = 0.65
+        return min(max(value, 0.0), 1.0)
+
+    def _service_need_runtime_risk_gate_weight(self) -> float:
+        value = float(getattr(self.cfg, "service_need_runtime_risk_gate_weight", 0.75))
+        if not math.isfinite(value):
+            value = 0.75
+        return min(max(value, 0.0), 1.0)
+
+    def _service_need_memory_gate_weight(self) -> float:
+        value = float(getattr(self.cfg, "service_need_memory_gate_weight", 0.35))
+        if not math.isfinite(value):
+            value = 0.35
+        return min(max(value, 0.0), 1.0)
+
+    def _service_need_pair_bias_max(self) -> float:
+        value = float(getattr(self.cfg, "service_need_pair_bias_max", 1.0))
+        if not math.isfinite(value):
+            value = 1.0
+        return max(0.0, value)
+
     def _service_mass_temperature(self) -> float:
         value = float(getattr(self.cfg, "service_mass_temperature", 1.0))
         if not math.isfinite(value):
@@ -1423,6 +1471,53 @@ class _DeploymentBackbonePPO(nn.Module):
             if bool(edge_allowed.any().item()) else select_logits.sum() * 0.0,
         }
 
+    def _deployment_service_need_pair_gate(
+            self,
+            static_allowed: torch.Tensor,
+            option_ctx: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        device = static_allowed.device
+        dtype = torch.float32
+        num_services, num_devices = static_allowed.shape
+        edge_allowed = static_allowed.to(device=device).bool().clone()
+        cloud_idx = self._cloud_index(num_devices)
+        if cloud_idx >= 0:
+            edge_allowed[:, cloud_idx] = False
+
+        if not self._service_need_pair_gate_enabled():
+            return edge_allowed.to(device=device, dtype=dtype)
+
+        def option_matrix(name: str, default: float = 0.0) -> torch.Tensor:
+            value = option_ctx.get(name)
+            if isinstance(value, torch.Tensor):
+                return value.to(device=device, dtype=dtype)
+            return torch.full((num_services, num_devices), float(default), device=device, dtype=dtype)
+
+        label_quality = option_matrix("label_quality_score")
+        runtime_risk = option_matrix("runtime_risk_score")
+        evidence_untrusted = option_matrix("evidence_untrusted")
+        pair_memory_cost = option_matrix("pair_memory_cost")
+
+        quality_gate = torch.sigmoid(
+            (label_quality - self._service_need_gate_quality_center())
+            / self._service_need_gate_temperature()
+        )
+        runtime_gate = (
+            1.0 - self._service_need_runtime_risk_gate_weight() * runtime_risk
+        ).clamp(0.0, 1.0)
+        trusted_gate = (
+            1.0 - self._service_need_untrusted_gate_penalty() * evidence_untrusted
+        ).clamp(0.0, 1.0)
+        memory_gate = (
+            1.0 - self._service_need_memory_gate_weight() * pair_memory_cost
+        ).clamp(0.0, 1.0)
+
+        gate = (quality_gate * runtime_gate * trusted_gate * memory_gate).clamp(0.0, 1.0)
+        gate_min = self._service_need_gate_min()
+        if gate_min > 0.0:
+            gate = gate_min + (1.0 - gate_min) * gate
+        return torch.where(edge_allowed, gate, torch.zeros_like(gate))
+
     def _deployment_actor_terms(
             self,
             h_s: torch.Tensor,
@@ -1472,6 +1567,12 @@ class _DeploymentBackbonePPO(nn.Module):
         pair_rank_logit_raw = self.deployment_pair_rank_head(candidate_features.float())
         service_need_logit_raw = self.deployment_service_need_head(service_features.float())
         service_need_bias = service_need_logit_raw * self._service_need_bias_scale()
+        bias_cap = self._service_need_pair_bias_max()
+        service_need_positive_bias = F.relu(service_need_bias)
+        service_need_negative_bias = -F.relu(-service_need_bias)
+        if bias_cap > 0.0:
+            service_need_positive_bias = service_need_positive_bias.clamp_max(bias_cap)
+            service_need_negative_bias = service_need_negative_bias.clamp_min(-bias_cap)
         edge_allowed = static_allowed.bool().clone()
         if cloud_idx >= 0:
             edge_allowed[:, cloud_idx] = False
@@ -1486,7 +1587,15 @@ class _DeploymentBackbonePPO(nn.Module):
         # need head learns how much edge-option mass the service currently
         # needs.  Deterministic inference still selects edge pairs with logit
         # > 0; projection only repairs hard feasibility constraints.
-        select_logits_raw = pair_rank_logit_raw + service_need_bias.view(-1, 1)
+        service_need_pair_gate = self._deployment_service_need_pair_gate(
+            static_allowed,
+            option_ctx,
+        ).to(device=pair_rank_logit_raw.device, dtype=pair_rank_logit_raw.dtype)
+        service_need_pair_bias = (
+            service_need_positive_bias.view(-1, 1) * service_need_pair_gate
+            + service_need_negative_bias.view(-1, 1)
+        )
+        select_logits_raw = pair_rank_logit_raw + service_need_pair_bias
         budget_terms = self._deployment_budget_logit_terms(
             select_logits_raw,
             static_allowed,
@@ -1518,6 +1627,8 @@ class _DeploymentBackbonePPO(nn.Module):
         pair_ctx["pair_rank_logit_raw"] = pair_rank_logit_raw
         pair_ctx["service_need_logit_raw"] = service_need_logit_raw
         pair_ctx["service_need_bias"] = service_need_bias
+        pair_ctx["service_need_pair_gate"] = service_need_pair_gate
+        pair_ctx["service_need_pair_bias"] = service_need_pair_bias
         pair_ctx["pair_centered_logit"] = pair_centered_logit
         pair_ctx["select_logit_pre_budget"] = select_logits_raw
         pair_ctx["budget_logit_penalty"] = budget_terms["budget_logit_penalty"]
@@ -2368,6 +2479,49 @@ class _DeploymentBackbonePPO(nn.Module):
             service_need_bias_mean = zero
             service_need_bias_std = zero
             service_need_bias_range = zero
+        service_need_pair_gate = policy_ctx.get("service_need_pair_gate")
+        service_need_pair_bias = policy_ctx.get("service_need_pair_bias")
+        if isinstance(service_need_pair_gate, torch.Tensor) and service_need_pair_gate.shape == select_logits.shape:
+            service_need_pair_gate = service_need_pair_gate.to(device=device, dtype=dtype)
+        else:
+            service_need_pair_gate = torch.zeros_like(select_logits, dtype=dtype)
+        if isinstance(service_need_pair_bias, torch.Tensor) and service_need_pair_bias.shape == select_logits.shape:
+            service_need_pair_bias = service_need_pair_bias.to(device=device, dtype=dtype)
+        else:
+            service_need_pair_bias = torch.zeros_like(select_logits, dtype=dtype)
+
+        def masked_tensor_mean(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            mask = mask.to(device=value.device).bool()
+            if bool(mask.any().item()):
+                return value.masked_select(mask).mean()
+            return zero
+
+        service_need_pair_gate_mean = masked_tensor_mean(service_need_pair_gate, edge_allowed)
+        service_need_pair_gate_effective_mean = masked_tensor_mean(
+            service_need_pair_gate,
+            effective_option_mask,
+        )
+        service_need_pair_gate_non_effective_mean = masked_tensor_mean(
+            service_need_pair_gate,
+            non_effective_option_mask & edge_allowed,
+        )
+        service_need_pair_gate_untrusted_mean = masked_tensor_mean(
+            service_need_pair_gate,
+            soft_target_untrusted_mask & edge_allowed,
+        )
+        service_need_pair_bias_mean = masked_tensor_mean(service_need_pair_bias, edge_allowed)
+        service_need_pair_bias_effective_mean = masked_tensor_mean(
+            service_need_pair_bias,
+            effective_option_mask,
+        )
+        service_need_pair_bias_non_effective_mean = masked_tensor_mean(
+            service_need_pair_bias,
+            non_effective_option_mask & edge_allowed,
+        )
+        service_need_pair_bias_untrusted_mean = masked_tensor_mean(
+            service_need_pair_bias,
+            soft_target_untrusted_mask & edge_allowed,
+        )
         top_quality_logit = select_logits.masked_select(top_quality_mask)
         non_top_logit = select_logits.masked_select(non_top_mask)
         unselected_soft_positive_prob = select_prob.masked_select(unselected_soft_positive_mask)
@@ -2475,6 +2629,14 @@ class _DeploymentBackbonePPO(nn.Module):
             "service_need_bias_mean": service_need_bias_mean,
             "service_need_bias_std": service_need_bias_std,
             "service_need_bias_range": service_need_bias_range,
+            "service_need_pair_gate_mean": service_need_pair_gate_mean,
+            "service_need_pair_gate_effective_mean": service_need_pair_gate_effective_mean,
+            "service_need_pair_gate_non_effective_mean": service_need_pair_gate_non_effective_mean,
+            "service_need_pair_gate_untrusted_mean": service_need_pair_gate_untrusted_mean,
+            "service_need_pair_bias_mean": service_need_pair_bias_mean,
+            "service_need_pair_bias_effective_mean": service_need_pair_bias_effective_mean,
+            "service_need_pair_bias_non_effective_mean": service_need_pair_bias_non_effective_mean,
+            "service_need_pair_bias_untrusted_mean": service_need_pair_bias_untrusted_mean,
             "service_need_target_mean": (
                 service_need_target.masked_select(has_effective_candidate).mean()
                 if bool(has_effective_candidate.any().item()) else zero
@@ -3092,6 +3254,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "pair_rank_logit_raw": pair_ctx["pair_rank_logit_raw"].detach().cpu(),
                 "service_need_logit_raw": pair_ctx["service_need_logit_raw"].detach().cpu(),
                 "service_need_bias": pair_ctx["service_need_bias"].detach().cpu(),
+                "service_need_pair_gate": pair_ctx["service_need_pair_gate"].detach().cpu(),
+                "service_need_pair_bias": pair_ctx["service_need_pair_bias"].detach().cpu(),
                 "pair_centered_logit": pair_ctx["pair_centered_logit"].detach().cpu(),
                 "select_logit_pre_budget": pair_ctx["select_logit_pre_budget"].detach().cpu(),
                 "budget_logit_penalty": pair_ctx["budget_logit_penalty"].detach().cpu(),
@@ -3266,6 +3430,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "pair_rank_logit_raw": pair_ctx["pair_rank_logit_raw"],
                 "service_need_logit_raw": pair_ctx["service_need_logit_raw"],
                 "service_need_bias": pair_ctx["service_need_bias"],
+                "service_need_pair_gate": pair_ctx["service_need_pair_gate"],
+                "service_need_pair_bias": pair_ctx["service_need_pair_bias"],
                 "pair_centered_logit": pair_ctx["pair_centered_logit"],
                 "select_logit_pre_budget": pair_ctx["select_logit_pre_budget"],
                 "budget_logit_penalty": pair_ctx["budget_logit_penalty"],
@@ -3747,6 +3913,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         service_need_bias_means = []
         service_need_bias_stds = []
         service_need_bias_ranges = []
+        service_need_pair_gate_means = []
+        service_need_pair_gate_effective_means = []
+        service_need_pair_gate_non_effective_means = []
+        service_need_pair_gate_untrusted_means = []
+        service_need_pair_bias_means = []
+        service_need_pair_bias_effective_means = []
+        service_need_pair_bias_non_effective_means = []
+        service_need_pair_bias_untrusted_means = []
         service_need_target_means = []
         service_need_prob_means = []
         service_need_target_gap_means = []
@@ -4071,6 +4245,26 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             service_need_bias_means.append(_scalar_to_float(plan_terms["service_need_bias_mean"]))
             service_need_bias_stds.append(_scalar_to_float(plan_terms["service_need_bias_std"]))
             service_need_bias_ranges.append(_scalar_to_float(plan_terms["service_need_bias_range"]))
+            service_need_pair_gate_means.append(_scalar_to_float(plan_terms["service_need_pair_gate_mean"]))
+            service_need_pair_gate_effective_means.append(_scalar_to_float(
+                plan_terms["service_need_pair_gate_effective_mean"]
+            ))
+            service_need_pair_gate_non_effective_means.append(_scalar_to_float(
+                plan_terms["service_need_pair_gate_non_effective_mean"]
+            ))
+            service_need_pair_gate_untrusted_means.append(_scalar_to_float(
+                plan_terms["service_need_pair_gate_untrusted_mean"]
+            ))
+            service_need_pair_bias_means.append(_scalar_to_float(plan_terms["service_need_pair_bias_mean"]))
+            service_need_pair_bias_effective_means.append(_scalar_to_float(
+                plan_terms["service_need_pair_bias_effective_mean"]
+            ))
+            service_need_pair_bias_non_effective_means.append(_scalar_to_float(
+                plan_terms["service_need_pair_bias_non_effective_mean"]
+            ))
+            service_need_pair_bias_untrusted_means.append(_scalar_to_float(
+                plan_terms["service_need_pair_bias_untrusted_mean"]
+            ))
             service_need_target_means.append(_scalar_to_float(plan_terms["service_need_target_mean"]))
             service_need_prob_means.append(_scalar_to_float(plan_terms["service_need_prob_mean"]))
             service_need_target_gap_means.append(_scalar_to_float(plan_terms["service_need_target_gap_mean"]))
@@ -4547,6 +4741,18 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "service_need_bias_mean": _mean_or_zero(service_need_bias_means),
             "service_need_bias_std": _mean_or_zero(service_need_bias_stds),
             "service_need_bias_range": _mean_or_zero(service_need_bias_ranges),
+            "service_need_pair_gate_mean": _mean_or_zero(service_need_pair_gate_means),
+            "service_need_pair_gate_effective_mean": _mean_or_zero(service_need_pair_gate_effective_means),
+            "service_need_pair_gate_non_effective_mean": _mean_or_zero(
+                service_need_pair_gate_non_effective_means
+            ),
+            "service_need_pair_gate_untrusted_mean": _mean_or_zero(service_need_pair_gate_untrusted_means),
+            "service_need_pair_bias_mean": _mean_or_zero(service_need_pair_bias_means),
+            "service_need_pair_bias_effective_mean": _mean_or_zero(service_need_pair_bias_effective_means),
+            "service_need_pair_bias_non_effective_mean": _mean_or_zero(
+                service_need_pair_bias_non_effective_means
+            ),
+            "service_need_pair_bias_untrusted_mean": _mean_or_zero(service_need_pair_bias_untrusted_means),
             "service_need_target_mean": _mean_or_zero(service_need_target_means),
             "service_need_prob_mean": _mean_or_zero(service_need_prob_means),
             "service_need_target_gap_mean": _mean_or_zero(service_need_target_gap_means),
@@ -4602,6 +4808,13 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 self._option_quality_ratio() if option_quality_ratio is None else float(option_quality_ratio)
             ),
             "service_need_bias_scale": self._service_need_bias_scale(),
+            "service_need_pair_gate_enabled": float(self._service_need_pair_gate_enabled()),
+            "service_need_gate_temperature": self._service_need_gate_temperature(),
+            "service_need_gate_min": self._service_need_gate_min(),
+            "service_need_untrusted_gate_penalty": self._service_need_untrusted_gate_penalty(),
+            "service_need_runtime_risk_gate_weight": self._service_need_runtime_risk_gate_weight(),
+            "service_need_memory_gate_weight": self._service_need_memory_gate_weight(),
+            "service_need_pair_bias_max": self._service_need_pair_bias_max(),
             "service_mass_temperature": self._service_mass_temperature(),
             "executed_effective_target_floor": self._executed_effective_target_floor(),
             "executed_effective_weight_bonus": self._executed_effective_weight_bonus(),

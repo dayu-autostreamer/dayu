@@ -1081,6 +1081,10 @@ class Hedger:
             "selected_effective_target_mass_mean", "effective_candidate_mass_mean",
             "service_mass_gap_mean", "service_mass_abs_gap_mean",
             "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
+            "service_need_pair_gate_mean", "service_need_pair_gate_effective_mean",
+            "service_need_pair_gate_non_effective_mean", "service_need_pair_gate_untrusted_mean",
+            "service_need_pair_bias_mean", "service_need_pair_bias_effective_mean",
+            "service_need_pair_bias_non_effective_mean", "service_need_pair_bias_untrusted_mean",
             "service_need_target_mean", "service_need_prob_mean",
             "service_need_target_gap_mean", "service_need_target_loss",
             "unselected_soft_positive_count_mean",
@@ -1125,6 +1129,9 @@ class Hedger:
             "ranking_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio", "service_need_bias_scale", "service_mass_temperature",
+            "service_need_pair_gate_enabled", "service_need_gate_temperature", "service_need_gate_min",
+            "service_need_untrusted_gate_penalty", "service_need_runtime_risk_gate_weight",
+            "service_need_memory_gate_weight", "service_need_pair_bias_max",
             "executed_effective_target_floor", "executed_effective_weight_bonus",
             "service_target_mass_pressure_scale",
         ]
@@ -1336,6 +1343,29 @@ class Hedger:
             ),
             "executed_effective_weight_bonus": _matrix_float("executed_effective_weight_bonus", 0.75),
             "service_need_bias_scale": _matrix_float("service_need_bias_scale", 1.0),
+            "service_need_pair_gate_enabled": bool(matrix_policy.get("service_need_pair_gate_enabled", True)),
+            "service_need_gate_temperature": _matrix_float("service_need_gate_temperature", 0.12),
+            "service_need_gate_quality_center": (
+                None if matrix_policy.get("service_need_gate_quality_center") is None
+                else _matrix_float("service_need_gate_quality_center", 0.30, probability=True)
+            ),
+            "service_need_gate_min": _matrix_float("service_need_gate_min", 0.05, probability=True),
+            "service_need_untrusted_gate_penalty": _matrix_float(
+                "service_need_untrusted_gate_penalty",
+                0.65,
+                probability=True,
+            ),
+            "service_need_runtime_risk_gate_weight": _matrix_float(
+                "service_need_runtime_risk_gate_weight",
+                0.75,
+                probability=True,
+            ),
+            "service_need_memory_gate_weight": _matrix_float(
+                "service_need_memory_gate_weight",
+                0.35,
+                probability=True,
+            ),
+            "service_need_pair_bias_max": _matrix_float("service_need_pair_bias_max", 1.0),
             "service_mass_temperature": _matrix_float("service_mass_temperature", 1.0),
             "service_target_mass_pressure_scale": _matrix_float("service_target_mass_pressure_scale", 1.0),
             "budget_logit_scale": _matrix_float("budget_logit_scale", 0.15),
@@ -3059,6 +3089,10 @@ class Hedger:
             "selected_effective_target_mass_mean", "effective_candidate_mass_mean",
             "service_mass_gap_mean", "service_mass_abs_gap_mean",
             "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
+            "service_need_pair_gate_mean", "service_need_pair_gate_effective_mean",
+            "service_need_pair_gate_non_effective_mean", "service_need_pair_gate_untrusted_mean",
+            "service_need_pair_bias_mean", "service_need_pair_bias_effective_mean",
+            "service_need_pair_bias_non_effective_mean", "service_need_pair_bias_untrusted_mean",
             "service_need_target_mean", "service_need_prob_mean",
             "service_need_target_gap_mean", "service_need_target_loss",
             "unselected_soft_positive_count_mean",
@@ -3121,6 +3155,9 @@ class Hedger:
             "untrusted_label_confidence_floor", "untrusted_history_quality_weight",
             "exploration_quality_threshold", "exploration_target",
             "queue_normalizer", "service_need_bias_scale", "service_mass_temperature",
+            "service_need_pair_gate_enabled", "service_need_gate_temperature", "service_need_gate_min",
+            "service_need_untrusted_gate_penalty", "service_need_runtime_risk_gate_weight",
+            "service_need_memory_gate_weight", "service_need_pair_bias_max",
             "executed_effective_target_floor", "executed_effective_weight_bonus",
             "service_target_mass_pressure_scale",
             "loaded_checkpoint",
@@ -3237,7 +3274,8 @@ class Hedger:
                 "deployment_qk_scores", "deployment_qk_features",
                 "deployment_matrix_logits_raw", "deployment_service_context_features",
                 "deployment_pair_rank_logits", "deployment_service_need_logits",
-                "deployment_service_need_bias", "deployment_pair_centered_logits",
+                "deployment_service_need_bias", "deployment_service_need_pair_gate",
+                "deployment_service_need_pair_bias", "deployment_pair_centered_logits",
                 "deployment_select_logits_pre_budget", "deployment_budget_logit_penalty",
                 "deployment_budget_pair_pressure", "deployment_budget_shadow_price",
                 "deployment_threshold_edge_prob", "deployment_threshold_expected_device_mem",
@@ -3650,6 +3688,12 @@ class Hedger:
                     ),
                     "deployment_service_need_bias": self._json_for_record(
                         self._actor_debug_vector_value(actor_debug, "service_need_bias", service_idx)
+                    ),
+                    "deployment_service_need_pair_gate": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "service_need_pair_gate", service_idx)
+                    ),
+                    "deployment_service_need_pair_bias": self._json_for_record(
+                        self._actor_debug_row_map(actor_debug, "service_need_pair_bias", service_idx)
                     ),
                     "deployment_pair_centered_logits": self._json_for_record(
                         self._actor_debug_row_map(actor_debug, "pair_centered_logit", service_idx)
@@ -7004,6 +7048,32 @@ class Hedger:
                         service_need_bias_mean=aux.get("service_need_bias_mean", 0.0),
                         service_need_bias_std=aux.get("service_need_bias_std", 0.0),
                         service_need_bias_range=aux.get("service_need_bias_range", 0.0),
+                        service_need_pair_gate_mean=aux.get("service_need_pair_gate_mean", 0.0),
+                        service_need_pair_gate_effective_mean=aux.get(
+                            "service_need_pair_gate_effective_mean",
+                            0.0,
+                        ),
+                        service_need_pair_gate_non_effective_mean=aux.get(
+                            "service_need_pair_gate_non_effective_mean",
+                            0.0,
+                        ),
+                        service_need_pair_gate_untrusted_mean=aux.get(
+                            "service_need_pair_gate_untrusted_mean",
+                            0.0,
+                        ),
+                        service_need_pair_bias_mean=aux.get("service_need_pair_bias_mean", 0.0),
+                        service_need_pair_bias_effective_mean=aux.get(
+                            "service_need_pair_bias_effective_mean",
+                            0.0,
+                        ),
+                        service_need_pair_bias_non_effective_mean=aux.get(
+                            "service_need_pair_bias_non_effective_mean",
+                            0.0,
+                        ),
+                        service_need_pair_bias_untrusted_mean=aux.get(
+                            "service_need_pair_bias_untrusted_mean",
+                            0.0,
+                        ),
                         service_need_target_mean=aux.get("service_need_target_mean", 0.0),
                         service_need_prob_mean=aux.get("service_need_prob_mean", 0.0),
                         service_need_target_gap_mean=aux.get("service_need_target_gap_mean", 0.0),
@@ -7176,6 +7246,21 @@ class Hedger:
                         exploration_target=self.deployment_agent_params["exploration_target"],
                         queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                         service_need_bias_scale=self.deployment_agent_params["service_need_bias_scale"],
+                        service_need_pair_gate_enabled=self.deployment_agent_params[
+                            "service_need_pair_gate_enabled"
+                        ],
+                        service_need_gate_temperature=self.deployment_agent_params["service_need_gate_temperature"],
+                        service_need_gate_min=self.deployment_agent_params["service_need_gate_min"],
+                        service_need_untrusted_gate_penalty=self.deployment_agent_params[
+                            "service_need_untrusted_gate_penalty"
+                        ],
+                        service_need_runtime_risk_gate_weight=self.deployment_agent_params[
+                            "service_need_runtime_risk_gate_weight"
+                        ],
+                        service_need_memory_gate_weight=self.deployment_agent_params[
+                            "service_need_memory_gate_weight"
+                        ],
+                        service_need_pair_bias_max=self.deployment_agent_params["service_need_pair_bias_max"],
                         service_mass_temperature=self.deployment_agent_params["service_mass_temperature"],
                         executed_effective_target_floor=self.deployment_agent_params[
                             "executed_effective_target_floor"
@@ -8417,6 +8502,32 @@ class Hedger:
                     service_need_bias_mean=aux.get("service_need_bias_mean", 0.0),
                     service_need_bias_std=aux.get("service_need_bias_std", 0.0),
                     service_need_bias_range=aux.get("service_need_bias_range", 0.0),
+                    service_need_pair_gate_mean=aux.get("service_need_pair_gate_mean", 0.0),
+                    service_need_pair_gate_effective_mean=aux.get(
+                        "service_need_pair_gate_effective_mean",
+                        0.0,
+                    ),
+                    service_need_pair_gate_non_effective_mean=aux.get(
+                        "service_need_pair_gate_non_effective_mean",
+                        0.0,
+                    ),
+                    service_need_pair_gate_untrusted_mean=aux.get(
+                        "service_need_pair_gate_untrusted_mean",
+                        0.0,
+                    ),
+                    service_need_pair_bias_mean=aux.get("service_need_pair_bias_mean", 0.0),
+                    service_need_pair_bias_effective_mean=aux.get(
+                        "service_need_pair_bias_effective_mean",
+                        0.0,
+                    ),
+                    service_need_pair_bias_non_effective_mean=aux.get(
+                        "service_need_pair_bias_non_effective_mean",
+                        0.0,
+                    ),
+                    service_need_pair_bias_untrusted_mean=aux.get(
+                        "service_need_pair_bias_untrusted_mean",
+                        0.0,
+                    ),
                     service_need_target_mean=aux.get("service_need_target_mean", 0.0),
                     service_need_prob_mean=aux.get("service_need_prob_mean", 0.0),
                     service_need_target_gap_mean=aux.get("service_need_target_gap_mean", 0.0),
@@ -8589,6 +8700,21 @@ class Hedger:
                     exploration_target=self.deployment_agent_params["exploration_target"],
                     queue_normalizer=self.deployment_agent_params["queue_normalizer"],
                     service_need_bias_scale=self.deployment_agent_params["service_need_bias_scale"],
+                    service_need_pair_gate_enabled=self.deployment_agent_params[
+                        "service_need_pair_gate_enabled"
+                    ],
+                    service_need_gate_temperature=self.deployment_agent_params["service_need_gate_temperature"],
+                    service_need_gate_min=self.deployment_agent_params["service_need_gate_min"],
+                    service_need_untrusted_gate_penalty=self.deployment_agent_params[
+                        "service_need_untrusted_gate_penalty"
+                    ],
+                    service_need_runtime_risk_gate_weight=self.deployment_agent_params[
+                        "service_need_runtime_risk_gate_weight"
+                    ],
+                    service_need_memory_gate_weight=self.deployment_agent_params[
+                        "service_need_memory_gate_weight"
+                    ],
+                    service_need_pair_bias_max=self.deployment_agent_params["service_need_pair_bias_max"],
                     service_mass_temperature=self.deployment_agent_params["service_mass_temperature"],
                     executed_effective_target_floor=self.deployment_agent_params[
                         "executed_effective_target_floor"
