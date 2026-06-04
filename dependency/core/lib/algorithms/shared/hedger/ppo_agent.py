@@ -1910,8 +1910,6 @@ class _DeploymentBackbonePPO(nn.Module):
 
         quality_margin = (label_quality - soft_floor) / temp
         raw_target = torch.sigmoid(quality_margin).clamp(0.0, 1.0)
-        target = min_target + (max_target - min_target) * raw_target
-
         evidence_untrusted = torch.maximum(runtime_unknown, runtime_stale)
         evidence_weight_floor = max(
             self._soft_target_untrusted_weight_floor(),
@@ -1921,6 +1919,19 @@ class _DeploymentBackbonePPO(nn.Module):
             evidence_weight_floor
             + (1.0 - evidence_weight_floor) * (1.0 - evidence_untrusted)
         ).clamp(evidence_weight_floor, 1.0)
+
+        target = min_target + (max_target - min_target) * raw_target
+        exploration_target = torch.full_like(target, self._exploration_target())
+        exploration_floor = (
+            min_target
+            + (exploration_target - min_target) * evidence_confidence_weight
+        ).clamp(min_target, max_target)
+        target = torch.where(
+            exploration_option_mask,
+            torch.maximum(target, exploration_floor),
+            target,
+        )
+
         risk_penalty = self._soft_target_risk_penalty() * torch.clamp(
             0.38 * runtime_risk
             + 0.22 * queue_pressure
@@ -1931,12 +1942,6 @@ class _DeploymentBackbonePPO(nn.Module):
             max=1.0,
         )
         target = (target - risk_penalty).clamp(min_target, max_target)
-        exploration_target = torch.full_like(target, self._exploration_target())
-        target = torch.where(
-            exploration_option_mask,
-            torch.maximum(target, exploration_target),
-            target,
-        )
 
         selected = torch.zeros_like(edge_allowed)
         if isinstance(selected_mask, torch.Tensor) and selected_mask.shape == static_allowed.shape:
@@ -1984,9 +1989,12 @@ class _DeploymentBackbonePPO(nn.Module):
             "soft_target_negative_mask": negative_mask,
             "soft_target_trusted_mask": trusted_option_mask,
             "soft_target_exploration_mask": exploration_option_mask,
+            "soft_target_untrusted_exploration_mask": exploration_option_mask & evidence_untrusted_mask,
             "soft_target_floor": soft_floor.squeeze(1),
             "soft_target_margin": quality_margin,
             "soft_target_confidence_weight": evidence_confidence_weight,
+            "soft_target_exploration_floor": exploration_floor,
+            "soft_target_risk_penalty": risk_penalty,
             "soft_target_known_mask": edge_allowed & ~evidence_untrusted_mask,
             "soft_target_untrusted_mask": evidence_untrusted_mask,
             "soft_target_unknown_mask": edge_allowed & (
@@ -2119,6 +2127,9 @@ class _DeploymentBackbonePPO(nn.Module):
         soft_target_stale_mask = option_masks["soft_target_stale_mask"]
         soft_target_trusted_mask = option_masks["soft_target_trusted_mask"]
         soft_target_exploration_mask = option_masks["soft_target_exploration_mask"]
+        soft_target_untrusted_exploration_mask = option_masks["soft_target_untrusted_exploration_mask"]
+        soft_target_exploration_floor = option_masks["soft_target_exploration_floor"].detach()
+        soft_target_risk_penalty = option_masks["soft_target_risk_penalty"].detach()
 
         select_prob = torch.sigmoid(select_logits).clamp(1e-6, 1.0 - 1e-6)
         pair_suppression_logits = select_logits
@@ -2377,10 +2388,23 @@ class _DeploymentBackbonePPO(nn.Module):
         soft_target_stale_count = soft_target_stale_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
         soft_target_trusted_count = soft_target_trusted_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
         soft_target_exploration_count = soft_target_exploration_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
+        soft_target_untrusted_exploration_count = (
+            soft_target_untrusted_exploration_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
+        )
         soft_target_known_prob = select_prob.masked_select(soft_target_known_mask)
         soft_target_untrusted_prob = select_prob.masked_select(soft_target_untrusted_mask)
         soft_target_trusted_prob = select_prob.masked_select(soft_target_trusted_mask)
         soft_target_exploration_prob = select_prob.masked_select(soft_target_exploration_mask)
+        soft_target_untrusted_exploration_prob = select_prob.masked_select(
+            soft_target_untrusted_exploration_mask
+        )
+        soft_target_exploration_floor_values = soft_target_exploration_floor.masked_select(
+            soft_target_exploration_mask
+        )
+        soft_target_risk_penalty_values = soft_target_risk_penalty.masked_select(edge_allowed)
+        soft_target_untrusted_risk_penalty_values = soft_target_risk_penalty.masked_select(
+            soft_target_untrusted_mask
+        )
         prior_quality_values = option_masks["prior_quality"].masked_select(edge_allowed)
         trusted_quality_values = option_masks["trusted_quality"].masked_select(edge_allowed)
         return {
@@ -2575,6 +2599,10 @@ class _DeploymentBackbonePPO(nn.Module):
             "soft_target_exploration_count_mean": (
                 soft_target_exploration_count.mean() if bool(soft_target_exploration_count.numel()) else zero
             ),
+            "soft_target_untrusted_exploration_count_mean": (
+                soft_target_untrusted_exploration_count.mean()
+                if bool(soft_target_untrusted_exploration_count.numel()) else zero
+            ),
             "soft_target_known_prob_mean": (
                 soft_target_known_prob.mean() if bool(soft_target_known_prob.numel()) else zero
             ),
@@ -2586,6 +2614,22 @@ class _DeploymentBackbonePPO(nn.Module):
             ),
             "soft_target_exploration_prob_mean": (
                 soft_target_exploration_prob.mean() if bool(soft_target_exploration_prob.numel()) else zero
+            ),
+            "soft_target_untrusted_exploration_prob_mean": (
+                soft_target_untrusted_exploration_prob.mean()
+                if bool(soft_target_untrusted_exploration_prob.numel()) else zero
+            ),
+            "soft_target_exploration_floor_mean": (
+                soft_target_exploration_floor_values.mean()
+                if bool(soft_target_exploration_floor_values.numel()) else zero
+            ),
+            "soft_target_risk_penalty_mean": (
+                soft_target_risk_penalty_values.mean()
+                if bool(soft_target_risk_penalty_values.numel()) else zero
+            ),
+            "soft_target_untrusted_risk_penalty_mean": (
+                soft_target_untrusted_risk_penalty_values.mean()
+                if bool(soft_target_untrusted_risk_penalty_values.numel()) else zero
             ),
             "prior_quality_mean": (
                 prior_quality_values.mean() if bool(prior_quality_values.numel()) else zero
@@ -3652,10 +3696,15 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         soft_target_stale_count_means = []
         soft_target_trusted_count_means = []
         soft_target_exploration_count_means = []
+        soft_target_untrusted_exploration_count_means = []
         soft_target_known_prob_means = []
         soft_target_untrusted_prob_means = []
         soft_target_trusted_prob_means = []
         soft_target_exploration_prob_means = []
+        soft_target_untrusted_exploration_prob_means = []
+        soft_target_exploration_floor_means = []
+        soft_target_risk_penalty_means = []
+        soft_target_untrusted_risk_penalty_means = []
         prior_quality_means = []
         trusted_quality_means = []
         positive_logit_means = []
@@ -4094,6 +4143,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             soft_target_exploration_count_means.append(_scalar_to_float(
                 plan_terms["soft_target_exploration_count_mean"]
             ))
+            soft_target_untrusted_exploration_count_means.append(_scalar_to_float(
+                plan_terms["soft_target_untrusted_exploration_count_mean"]
+            ))
             soft_target_known_prob_means.append(_scalar_to_float(plan_terms["soft_target_known_prob_mean"]))
             soft_target_untrusted_prob_means.append(_scalar_to_float(
                 plan_terms["soft_target_untrusted_prob_mean"]
@@ -4101,6 +4153,18 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             soft_target_trusted_prob_means.append(_scalar_to_float(plan_terms["soft_target_trusted_prob_mean"]))
             soft_target_exploration_prob_means.append(_scalar_to_float(
                 plan_terms["soft_target_exploration_prob_mean"]
+            ))
+            soft_target_untrusted_exploration_prob_means.append(_scalar_to_float(
+                plan_terms["soft_target_untrusted_exploration_prob_mean"]
+            ))
+            soft_target_exploration_floor_means.append(_scalar_to_float(
+                plan_terms["soft_target_exploration_floor_mean"]
+            ))
+            soft_target_risk_penalty_means.append(_scalar_to_float(
+                plan_terms["soft_target_risk_penalty_mean"]
+            ))
+            soft_target_untrusted_risk_penalty_means.append(_scalar_to_float(
+                plan_terms["soft_target_untrusted_risk_penalty_mean"]
             ))
             prior_quality_means.append(_scalar_to_float(plan_terms["prior_quality_mean"]))
             trusted_quality_means.append(_scalar_to_float(plan_terms["trusted_quality_mean"]))
@@ -4428,10 +4492,21 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "soft_target_stale_count_mean": _mean_or_zero(soft_target_stale_count_means),
             "soft_target_trusted_count_mean": _mean_or_zero(soft_target_trusted_count_means),
             "soft_target_exploration_count_mean": _mean_or_zero(soft_target_exploration_count_means),
+            "soft_target_untrusted_exploration_count_mean": _mean_or_zero(
+                soft_target_untrusted_exploration_count_means
+            ),
             "soft_target_known_prob_mean": _mean_or_zero(soft_target_known_prob_means),
             "soft_target_untrusted_prob_mean": _mean_or_zero(soft_target_untrusted_prob_means),
             "soft_target_trusted_prob_mean": _mean_or_zero(soft_target_trusted_prob_means),
             "soft_target_exploration_prob_mean": _mean_or_zero(soft_target_exploration_prob_means),
+            "soft_target_untrusted_exploration_prob_mean": _mean_or_zero(
+                soft_target_untrusted_exploration_prob_means
+            ),
+            "soft_target_exploration_floor_mean": _mean_or_zero(soft_target_exploration_floor_means),
+            "soft_target_risk_penalty_mean": _mean_or_zero(soft_target_risk_penalty_means),
+            "soft_target_untrusted_risk_penalty_mean": _mean_or_zero(
+                soft_target_untrusted_risk_penalty_means
+            ),
             "prior_quality_mean": _mean_or_zero(prior_quality_means),
             "trusted_quality_mean": _mean_or_zero(trusted_quality_means),
             "positive_logit_mean": _mean_or_zero(positive_logit_means),
