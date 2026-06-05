@@ -3104,6 +3104,16 @@ class _DeploymentBackbonePPO(nn.Module):
             ),
         }
 
+    def _last_edge_preserve_bonus(self) -> float:
+        value = getattr(self.cfg, "last_edge_preserve_bonus", 0.08)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 0.08
+        if not math.isfinite(value):
+            return 0.08
+        return max(0.0, value)
+
     @torch.no_grad()
     def _project_deployment_mask(
             self,
@@ -3181,6 +3191,15 @@ class _DeploymentBackbonePPO(nn.Module):
             if within_memory and within_count:
                 continue
 
+            if cloud_idx > 0:
+                current_edge_counts = corrected[:, :cloud_idx].float().sum(dim=1)
+                last_edge_selected = current_edge_counts <= 1.0
+            else:
+                last_edge_selected = torch.ones(
+                    corrected.size(0),
+                    device=corrected.device,
+                    dtype=torch.bool,
+                )
             keep = self._select_device_subset(
                 selected=selected,
                 capacity=float(residual[device_idx].item()),
@@ -3189,6 +3208,8 @@ class _DeploymentBackbonePPO(nn.Module):
                 rank_scores=retention_scores[:, device_idx],
                 prev_selected=prev_edge_mask[:, device_idx],
                 max_count=max_edge_replicas,
+                last_edge_selected=last_edge_selected,
+                last_edge_preserve_bonus=self._last_edge_preserve_bonus(),
             )
 
             for service_idx in selected:
@@ -3222,6 +3243,15 @@ class _DeploymentBackbonePPO(nn.Module):
         edge_slice = slice(0, max(0, cloud_idx))
         executed_edge = corrected[:, edge_slice].float() if cloud_idx > 0 \
             else torch.zeros((corrected.size(0), 0), device=corrected.device)
+        raw_edge_before_projection = (
+            self._enforce_cloud_replica(raw_deploy_mask.bool())[:, edge_slice] & static_allowed[:, edge_slice]
+        ).float() if cloud_idx > 0 else torch.zeros((corrected.size(0), 0), device=corrected.device)
+        raw_edge_service_count = raw_edge_before_projection.sum(dim=1)
+        executed_edge_service_count = executed_edge.sum(dim=1)
+        projection_lost_edge_service = (raw_edge_service_count > 0.0) & (executed_edge_service_count <= 0.0)
+        projection_last_edge_removed_mask = (
+            capacity_removed_mask[:, edge_slice] & projection_lost_edge_service.view(-1, 1)
+        ) if cloud_idx > 0 else torch.zeros_like(capacity_removed_mask, dtype=torch.bool)
         selected_stale_option_cost = (
             executed_edge * runtime_stale_risk[:, edge_slice]
         ).sum() / executed_edge.sum().clamp_min(1.0) if cloud_idx > 0 else torch.zeros((), device=corrected.device)
@@ -3275,6 +3305,10 @@ class _DeploymentBackbonePPO(nn.Module):
             "selected_risky_pair_count": _scalar_to_float(selected_risky_pair_count),
             "selected_untrusted_pair_count": _scalar_to_float(selected_untrusted_pair_count),
             "selected_low_quality_pair_count": _scalar_to_float(selected_low_quality_pair_count),
+            "raw_edge_service_count_mean": _scalar_to_float(raw_edge_service_count.mean()),
+            "executed_edge_service_count_mean": _scalar_to_float(executed_edge_service_count.mean()),
+            "projection_lost_edge_service_count": _scalar_to_float(projection_lost_edge_service.float().sum()),
+            "projection_last_edge_removed_count": _scalar_to_float(projection_last_edge_removed_mask.float().sum()),
         }
         return (
             corrected,
@@ -3300,6 +3334,8 @@ class _DeploymentBackbonePPO(nn.Module):
             rank_scores: torch.Tensor,
             prev_selected: torch.Tensor,
             max_count: Optional[int] = None,
+            last_edge_selected: Optional[torch.Tensor] = None,
+            last_edge_preserve_bonus: float = 0.0,
     ) -> set:
         """
         Select which sampled replicas to keep on one edge device.
@@ -3323,14 +3359,25 @@ class _DeploymentBackbonePPO(nn.Module):
             rank_score = float(rank_scores[service_idx].item())
             mem = float(model_mem[service_idx].item())
             was_selected = bool(prev_selected[service_idx].item())
-            candidates.append((int(service_idx), prob, rank_score, mem, was_selected))
+            is_last_edge = bool(last_edge_selected[service_idx].item()) \
+                if last_edge_selected is not None else False
+            adjusted_rank_score = rank_score + (float(last_edge_preserve_bonus) if is_last_edge else 0.0)
+            candidates.append((
+                int(service_idx),
+                prob,
+                rank_score,
+                mem,
+                was_selected,
+                is_last_edge,
+                adjusted_rank_score,
+            ))
             total_mem += mem
 
         keep = {int(service_idx) for service_idx in selected}
         ranked_for_removal = sorted(
             candidates,
             key=lambda item: (
-                item[2],  # Lower safety-aware preference is removed first.
+                item[6],  # Lower model preference, with a small last-edge bonus, is removed first.
                 item[1],  # Then lower actor probability.
                 1 if item[4] else 0,  # Prefer removing non-previous replicas on ties.
                 -item[3],  # If preference is tied, remove the larger footprint first.
@@ -3338,7 +3385,7 @@ class _DeploymentBackbonePPO(nn.Module):
             ),
         )
 
-        for service_idx, _, _, mem, _ in ranked_for_removal:
+        for service_idx, _, _, mem, _, _, _ in ranked_for_removal:
             over_memory = total_mem > capacity + 1e-6
             over_count = max_count is not None and len(keep) > max_count
             if not over_memory and not over_count:
@@ -3515,6 +3562,20 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             & ~option_masks["soft_target_positive_mask"].to(device=deploy_mask.device).bool()
         )
         plan_metrics = {key: _scalar_to_float(value) for key, value in plan_terms.items()}
+        if cloud_idx > 0:
+            raw_edge_count = (raw_deploy_mask[:, :cloud_idx] & static_allowed[:, :cloud_idx].bool()).float().sum(dim=1)
+            executed_edge_count = deploy_mask[:, :cloud_idx].float().sum(dim=1)
+            lost_edge_service = (raw_edge_count > 0.0) & (executed_edge_count <= 0.0)
+            projection_last_edge_removed_mask = capacity_removed_mask.clone()
+            projection_last_edge_removed_mask[:, :cloud_idx] = (
+                capacity_removed_mask[:, :cloud_idx] & lost_edge_service.view(-1, 1)
+            )
+            projection_last_edge_removed_mask[:, cloud_idx:] = False
+        else:
+            raw_edge_count = torch.zeros(deploy_mask.size(0), device=deploy_mask.device)
+            executed_edge_count = torch.zeros(deploy_mask.size(0), device=deploy_mask.device)
+            lost_edge_service = torch.zeros(deploy_mask.size(0), device=deploy_mask.device, dtype=torch.bool)
+            projection_last_edge_removed_mask = torch.zeros_like(capacity_removed_mask, dtype=torch.bool)
         return deploy_mask, logp_sum, ent_sum, value.squeeze(0), {
             "capacity_relax_cnt": capacity_relax_cnt,
             "capacity_relax_cost": capacity_relax_cost,
@@ -3616,7 +3677,14 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 "matrix_added_mask": option_debug["matrix_added_mask"].detach().cpu(),
                 "matrix_kept_mask": option_debug["matrix_kept_mask"].detach().cpu(),
                 "matrix_removed_mask": option_debug["matrix_removed_mask"].detach().cpu(),
-                "capacity_removed_mask": capacity_removed_mask.detach().cpu(),
+            "capacity_removed_mask": capacity_removed_mask.detach().cpu(),
+            "projection_last_edge_removed_mask": projection_last_edge_removed_mask.detach().cpu(),
+            "raw_edge_service_count_mean": _scalar_to_float(raw_edge_count.mean()),
+            "executed_edge_service_count_mean": _scalar_to_float(executed_edge_count.mean()),
+            "projection_lost_edge_service_count": _scalar_to_float(lost_edge_service.float().sum()),
+            "projection_last_edge_removed_count": _scalar_to_float(
+                projection_last_edge_removed_mask.float().sum()
+            ),
                 "effective_option_mask": option_masks["effective_option_mask"].detach().cpu(),
                 "top_quality_option_mask": option_masks["top_quality_mask"].detach().cpu(),
                 "clear_non_effective_option_mask": option_masks["clear_non_effective_mask"].detach().cpu(),
@@ -4070,7 +4138,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             quality_order_margin_coef: float = 0.0,
             contrast_margin_coef: float = 0.0,
             memory_margin_coef: float = 0.40,
-            device_over_budget_mass_coef: float = 0.18,
+            device_over_budget_mass_coef: float = 0.22,
             device_over_budget_logit_margin: float = 0.0,
             effective_option_mass_coef: float = 0.0,
             non_effective_option_coef: float = 0.06,
@@ -4080,6 +4148,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             replica_negative_margin_coef: float = 0.03,
             option_slack_coef: float = 0.35,
             device_concentration_coef: float = 0.12,
+            projection_edge_coverage_coef: float = 0.35,
+            last_edge_removed_coef: float = 0.25,
             soft_target_bc_coef: float = 0.08,
             positive_logit_margin: float = 1.15,
             negative_logit_margin: float = 0.18,
@@ -4211,6 +4281,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         replica_negative_margin_losses = []
         option_slack_losses = []
         device_concentration_losses = []
+        projection_edge_coverage_losses = []
+        last_edge_removed_losses = []
+        projection_lost_edge_service_counts = []
+        projection_last_edge_removed_counts = []
+        projection_edge_candidate_counts = []
         pair_centered_logit_stds = []
         service_no_edge_prob_means = []
         service_no_edge_prob_maxes = []
@@ -4430,6 +4505,60 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             cloud_idx = self._cloud_index(edge_allowed_t.size(1))
             if cloud_idx >= 0:
                 edge_allowed_t[:, cloud_idx] = False
+            if raw_deploy_mask is not None:
+                raw_edge_selected_t = raw_deploy_mask.to(
+                    device=raw_removed_logits.device,
+                ).bool() & edge_allowed_t
+            else:
+                raw_edge_selected_t = deploy_mask.to(device=raw_removed_logits.device).bool() & edge_allowed_t
+            executed_edge_selected_t = deploy_mask.to(device=raw_removed_logits.device).bool() & edge_allowed_t
+            if capacity_removed_mask is not None:
+                capacity_removed_t_all = capacity_removed_mask.to(
+                    device=raw_removed_logits.device,
+                ).bool() & edge_allowed_t
+            else:
+                capacity_removed_t_all = torch.zeros_like(edge_allowed_t, dtype=torch.bool)
+            raw_service_edge_count = raw_edge_selected_t.float().sum(dim=1)
+            executed_service_edge_count = executed_edge_selected_t.float().sum(dim=1)
+            lost_edge_service_mask = (raw_service_edge_count > 0.0) & (executed_service_edge_count <= 0.0)
+            last_edge_removed_mask = capacity_removed_t_all & lost_edge_service_mask.view(-1, 1)
+            recovery_candidate_mask = (
+                edge_allowed_t
+                & lost_edge_service_mask.view(-1, 1)
+                & ~last_edge_removed_mask
+            )
+            recovery_candidate_count = recovery_candidate_mask.float().sum(dim=1)
+            recovery_service_mask = lost_edge_service_mask & (recovery_candidate_count > 0.0)
+            if bool(recovery_service_mask.any().item()):
+                no_edge_prob = torch.where(
+                    recovery_candidate_mask,
+                    1.0 - raw_removed_probs,
+                    torch.ones_like(raw_removed_probs),
+                ).prod(dim=1)
+                recovery_coverage_prob = (1.0 - no_edge_prob).clamp(1e-6, 1.0 - 1e-6)
+                projection_edge_coverage_loss = (
+                    -torch.log(recovery_coverage_prob.masked_select(recovery_service_mask)).mean()
+                )
+            else:
+                projection_edge_coverage_loss = torch.tensor(0.0, device=raw_removed_logits.device)
+            if bool(last_edge_removed_mask.any().item()):
+                last_edge_removed_loss = F.softplus(
+                    raw_removed_logits.masked_select(last_edge_removed_mask)
+                    + float(device_over_budget_logit_margin)
+                ).mean()
+            else:
+                last_edge_removed_loss = torch.tensor(0.0, device=raw_removed_logits.device)
+            projection_edge_coverage_losses.append(projection_edge_coverage_loss)
+            last_edge_removed_losses.append(last_edge_removed_loss)
+            projection_lost_edge_service_counts.append(
+                float(lost_edge_service_mask.float().sum().detach().cpu().item())
+            )
+            projection_last_edge_removed_counts.append(
+                float(last_edge_removed_mask.float().sum().detach().cpu().item())
+            )
+            projection_edge_candidate_counts.append(
+                float(recovery_candidate_mask.float().sum().detach().cpu().item())
+            )
             current_threshold_edge = (raw_removed_logits.detach() > 0.0) & edge_allowed_t
             selected_non_soft_negative_mask = (
                 current_threshold_edge
@@ -4444,10 +4573,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             device_over_budget_candidate_mass = 0.0
             device_over_budget_top_prob = 0.0
             edge_limit = cloud_idx if cloud_idx >= 0 else edge_allowed_t.size(1)
-            if edge_limit > 0 and capacity_removed_mask is not None:
-                capacity_removed_t = capacity_removed_mask.to(
-                    device=raw_removed_logits.device,
-                ).bool() & edge_allowed_t
+            if edge_limit > 0 and bool(capacity_removed_t_all.any().item()):
+                capacity_removed_t = capacity_removed_t_all
                 protected_probe = (
                     probe_verified_positive_mask.to(device=raw_removed_logits.device).bool()
                     | probe_inconclusive_mask.to(device=raw_removed_logits.device).bool()
@@ -4837,6 +4964,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         replica_negative_margin_loss_t = torch.stack(replica_negative_margin_losses).float()
         option_slack_loss_t = torch.stack(option_slack_losses).float()
         device_concentration_loss_t = torch.stack(device_concentration_losses).float()
+        projection_edge_coverage_loss_t = torch.stack(projection_edge_coverage_losses).float()
+        last_edge_removed_loss_t = torch.stack(last_edge_removed_losses).float()
         target_t = torch.tensor(targets, device=device, dtype=torch.float32)
         adv_t = target_t.detach() - value_t.detach()
         temp = max(1e-6, float(advantage_temperature))
@@ -5006,6 +5135,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         device_concentration_loss = (
             device_concentration_loss_t.mean() * float(device_concentration_coef)
         )
+        projection_edge_coverage_loss = (
+            projection_edge_coverage_loss_t.mean() * float(projection_edge_coverage_coef)
+        )
+        last_edge_removed_loss = (
+            last_edge_removed_loss_t.mean() * float(last_edge_removed_coef)
+        )
         margin_loss = (
             coverage_margin_loss
             + quality_margin_loss
@@ -5021,6 +5156,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             + replica_negative_margin_loss
             + option_slack_loss
             + device_concentration_loss
+            + projection_edge_coverage_loss
+            + last_edge_removed_loss
         )
         actor_objective_loss = (
             actor_pair_bce_loss
@@ -5092,6 +5229,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "replica_negative_margin_loss": _scalar_to_float(replica_negative_margin_loss.detach()),
             "option_slack_loss": _scalar_to_float(option_slack_loss.detach()),
             "device_concentration_loss": _scalar_to_float(device_concentration_loss.detach()),
+            "projection_edge_coverage_loss": _scalar_to_float(projection_edge_coverage_loss.detach()),
+            "last_edge_removed_loss": _scalar_to_float(last_edge_removed_loss.detach()),
             "margin_loss": _scalar_to_float(margin_loss.detach()),
             "value_loss": _scalar_to_float(value_loss.detach()),
             "entropy": _scalar_to_float(entropy.detach()),
@@ -5146,6 +5285,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "actor_selected_effective_samples": _mean_or_zero(selected_effective_counts),
             "actor_clear_non_effective_samples": _mean_or_zero(clear_non_effective_counts),
             "actor_capacity_removed_samples": _mean_or_zero(capacity_removed_counts),
+            "projection_lost_edge_service_samples": _mean_or_zero(projection_lost_edge_service_counts),
+            "projection_last_edge_removed_samples": _mean_or_zero(projection_last_edge_removed_counts),
+            "projection_edge_candidate_samples": _mean_or_zero(projection_edge_candidate_counts),
             "actor_recovery_service_samples": _mean_or_zero(recovery_service_counts),
             "actor_recovery_candidate_samples": _mean_or_zero(recovery_candidate_counts),
             "bad_actor_masked": _scalar_to_float(bad_mask.detach().mean()),
@@ -5310,6 +5452,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "replica_negative_margin_coef": float(replica_negative_margin_coef),
             "option_slack_coef": float(option_slack_coef),
             "device_concentration_coef": float(device_concentration_coef),
+            "projection_edge_coverage_coef": float(projection_edge_coverage_coef),
+            "last_edge_removed_coef": float(last_edge_removed_coef),
             "positive_logit_margin": float(positive_logit_margin),
             "negative_logit_margin": float(negative_logit_margin),
             "coverage_logit_margin": float(coverage_logit_margin),

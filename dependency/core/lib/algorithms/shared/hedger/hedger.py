@@ -160,7 +160,7 @@ class HedgerDeploymentOfflineRLCfg:
     quality_order_margin_coef: float = 0.0
     contrast_margin_coef: float = 0.0
     memory_margin_coef: float = 0.40
-    device_over_budget_mass_coef: float = 0.18
+    device_over_budget_mass_coef: float = 0.22
     device_over_budget_logit_margin: float = 0.0
     effective_option_mass_coef: float = 0.0
     non_effective_option_coef: float = 0.06
@@ -170,6 +170,8 @@ class HedgerDeploymentOfflineRLCfg:
     replica_negative_margin_coef: float = 0.03
     option_slack_coef: float = 0.35
     device_concentration_coef: float = 0.12
+    projection_edge_coverage_coef: float = 0.35
+    last_edge_removed_coef: float = 0.25
     soft_target_bc_coef: float = 0.08
     bad_sample_multiplier: float = 1.20
     bad_sample_max_ratio: float = 0.12
@@ -789,7 +791,7 @@ class Hedger:
             memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.70))),
             device_over_budget_mass_coef=max(
                 0.0,
-                float(offline_rl_cfg.get("device_over_budget_mass_coef", 0.30)),
+                float(offline_rl_cfg.get("device_over_budget_mass_coef", 0.22)),
             ),
             device_over_budget_logit_margin=max(
                 0.0,
@@ -814,6 +816,14 @@ class Hedger:
             device_concentration_coef=max(
                 0.0,
                 float(offline_rl_cfg.get("device_concentration_coef", 0.14)),
+            ),
+            projection_edge_coverage_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("projection_edge_coverage_coef", 0.35)),
+            ),
+            last_edge_removed_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("last_edge_removed_coef", 0.25)),
             ),
             soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.20))),
             bad_sample_multiplier=max(0.0, float(offline_rl_cfg.get("bad_sample_multiplier", 1.20))),
@@ -1190,7 +1200,8 @@ class Hedger:
             "effective_option_mass_loss", "non_effective_option_loss",
             "replica_marginal_target_loss", "replica_positive_margin_loss",
             "replica_negative_margin_loss", "option_slack_loss",
-            "device_concentration_loss",
+            "device_concentration_loss", "projection_edge_coverage_loss",
+            "last_edge_removed_loss",
             "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
@@ -1207,6 +1218,8 @@ class Hedger:
             "actor_selected_stale_samples", "actor_selected_untrusted_samples",
             "actor_teacher_positive_samples", "actor_selected_effective_samples",
             "actor_clear_non_effective_samples", "actor_capacity_removed_samples",
+            "projection_lost_edge_service_samples", "projection_last_edge_removed_samples",
+            "projection_edge_candidate_samples",
             "actor_recovery_service_samples", "actor_recovery_candidate_samples",
             "bad_actor_masked",
             "positive_logp_mean", "aux_positive_logp_mean",
@@ -1283,7 +1296,8 @@ class Hedger:
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "replica_marginal_target_coef", "replica_positive_margin_coef",
             "replica_negative_margin_coef", "option_slack_coef",
-            "device_concentration_coef",
+            "device_concentration_coef", "projection_edge_coverage_coef",
+            "last_edge_removed_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
@@ -1408,6 +1422,11 @@ class Hedger:
         edge_memory_budget_ratio = float(constraints.get("edge_memory_budget_ratio", 1.0))
         if not math.isfinite(edge_memory_budget_ratio) or not (0.0 < edge_memory_budget_ratio <= 1.0):
             raise ValueError("Hedger config `agents.deployment.constraints.edge_memory_budget_ratio` must be in (0, 1].")
+        last_edge_preserve_bonus = float(constraints.get("last_edge_preserve_bonus", 0.08))
+        if not math.isfinite(last_edge_preserve_bonus) or last_edge_preserve_bonus < 0.0:
+            raise ValueError(
+                "Hedger config `agents.deployment.constraints.last_edge_preserve_bonus` must be finite and >= 0."
+            )
         queue_normalizer = float(hotspot.get("queue_normalizer", 8.0))
         if not math.isfinite(queue_normalizer) or queue_normalizer <= 0.0:
             raise ValueError("Hedger config `agents.deployment.hotspot.queue_normalizer` must be > 0.")
@@ -1448,6 +1467,7 @@ class Hedger:
             "reward_dep_hotspot_weight": float(hotspot.get("hotspot_weight", 0.0)),
             "max_edge_replicas_per_device": max_edge_replicas,
             "edge_memory_budget_ratio": edge_memory_budget_ratio,
+            "last_edge_preserve_bonus": last_edge_preserve_bonus,
             "queue_normalizer": queue_normalizer,
             "negative_queue_threshold": _matrix_float("negative_queue_threshold", 0.65, probability=True),
             "negative_hotspot_threshold": _matrix_float("negative_hotspot_threshold", 0.08, probability=True),
@@ -3350,6 +3370,8 @@ class Hedger:
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
             "capacity_removed_cnt",
+            "raw_edge_service_count_mean", "executed_edge_service_count_mean",
+            "projection_lost_edge_service_count", "projection_last_edge_removed_count",
             "selected_queue_pressure_cost", "selected_runtime_risk_cost",
             "selected_unknown_option_cost", "selected_stale_option_cost",
             "selected_runtime_weakness_cost", "selected_low_quality_option_cost",
@@ -3376,7 +3398,7 @@ class Hedger:
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
-            "edge_memory_budget_ratio", "bernoulli_mode_boundary",
+            "edge_memory_budget_ratio", "last_edge_preserve_bonus", "bernoulli_mode_boundary",
             "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
@@ -3473,6 +3495,7 @@ class Hedger:
             "raw_edge_replicas", "executed_edge_replicas", "cloud_replica",
             "raw_zero_edge", "matrix_added_nodes", "matrix_kept_nodes",
             "matrix_removed_nodes", "capacity_removed_nodes",
+            "projection_last_edge_removed_nodes",
             "service_pressure", "edge_feasible_count", "edge_replica_count",
             "device_replica_count", "active_pair_hotspot",
             "collect_behavior", "collect_operation",
@@ -3788,6 +3811,18 @@ class Hedger:
                 capacity_removed_indices = torch.nonzero(capacity_removed_row, as_tuple=False).flatten().tolist()
             else:
                 capacity_removed_indices = []
+            projection_last_edge_removed_tensor = actor_debug.get("projection_last_edge_removed_mask")
+            if isinstance(projection_last_edge_removed_tensor, torch.Tensor) \
+                    and projection_last_edge_removed_tensor.dim() == 2 \
+                    and projection_last_edge_removed_tensor.size(0) > service_idx:
+                projection_last_edge_removed_row = projection_last_edge_removed_tensor[service_idx] \
+                    .detach().cpu().bool()
+                projection_last_edge_removed_indices = torch.nonzero(
+                    projection_last_edge_removed_row,
+                    as_tuple=False,
+                ).flatten().tolist()
+            else:
+                projection_last_edge_removed_indices = []
             edge_feasible_count = self._actor_debug_vector_value(actor_debug, "edge_feasible_count", service_idx)
             row = dict(
                 step=step,
@@ -3815,6 +3850,9 @@ class Hedger:
                 matrix_removed_nodes=self._json_for_record(self._device_names_from_indices(matrix_removed_indices)),
                 capacity_removed_nodes=self._json_for_record(
                     self._device_names_from_indices(capacity_removed_indices)
+                ),
+                projection_last_edge_removed_nodes=self._json_for_record(
+                    self._device_names_from_indices(projection_last_edge_removed_indices)
                 ),
                 service_pressure=self._actor_debug_vector_value(actor_debug, "service_pressure", service_idx),
                 edge_feasible_count=edge_feasible_count,
@@ -7923,6 +7961,10 @@ class Hedger:
                         per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                         per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
                         capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
+                        raw_edge_service_count_mean=aux.get("raw_edge_service_count_mean", 0.0),
+                        executed_edge_service_count_mean=aux.get("executed_edge_service_count_mean", 0.0),
+                        projection_lost_edge_service_count=aux.get("projection_lost_edge_service_count", 0.0),
+                        projection_last_edge_removed_count=aux.get("projection_last_edge_removed_count", 0.0),
                         selected_queue_pressure_cost=aux.get("selected_queue_pressure_cost", 0.0),
                         selected_runtime_risk_cost=aux.get("selected_runtime_risk_cost", 0.0),
                         selected_unknown_option_cost=aux.get("selected_unknown_option_cost", 0.0),
@@ -7994,6 +8036,7 @@ class Hedger:
                         feedback_timeout_penalty_weight=self.deployment_agent_params["penalty_feedback_timeout"],
                         max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                         edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
+                        last_edge_preserve_bonus=self.deployment_agent_params["last_edge_preserve_bonus"],
                         bernoulli_mode_boundary=0.5,
                         negative_queue_threshold=self.deployment_agent_params["negative_queue_threshold"],
                         negative_hotspot_threshold=self.deployment_agent_params["negative_hotspot_threshold"],
@@ -8785,7 +8828,10 @@ class Hedger:
                                 "top_quality_candidate_count_mean", "non_top_candidate_count_mean",
                                 "quality_gap_top_second_mean",
                                 "per_service_prob_std_mean", "per_service_prob_range_mean",
-                                "capacity_removed_cnt", "selected_queue_pressure_cost",
+                                "capacity_removed_cnt",
+                                "raw_edge_service_count_mean", "executed_edge_service_count_mean",
+                                "projection_lost_edge_service_count", "projection_last_edge_removed_count",
+                                "selected_queue_pressure_cost",
                                 "selected_runtime_risk_cost", "selected_unknown_option_cost",
                                 "selected_stale_option_cost", "selected_runtime_weakness_cost",
                                 "selected_low_quality_option_cost", "selected_evidence_untrusted_cost",
@@ -8818,7 +8864,7 @@ class Hedger:
             "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
-            "max_edge_replicas_per_device", "edge_memory_budget_ratio",
+            "max_edge_replicas_per_device", "edge_memory_budget_ratio", "last_edge_preserve_bonus",
             "bernoulli_mode_boundary", "negative_queue_threshold", "negative_hotspot_threshold",
             "negative_runtime_risk_threshold", "untrusted_unknown_threshold",
             "untrusted_stale_threshold", "positive_quality_threshold",
@@ -9548,6 +9594,10 @@ class Hedger:
                     per_service_prob_std_mean=aux.get("per_service_prob_std_mean", 0.0),
                     per_service_prob_range_mean=aux.get("per_service_prob_range_mean", 0.0),
                     capacity_removed_cnt=aux.get("capacity_removed_cnt", 0),
+                    raw_edge_service_count_mean=aux.get("raw_edge_service_count_mean", 0.0),
+                    executed_edge_service_count_mean=aux.get("executed_edge_service_count_mean", 0.0),
+                    projection_lost_edge_service_count=aux.get("projection_lost_edge_service_count", 0.0),
+                    projection_last_edge_removed_count=aux.get("projection_last_edge_removed_count", 0.0),
                     selected_queue_pressure_cost=aux.get("selected_queue_pressure_cost", 0.0),
                     selected_runtime_risk_cost=aux.get("selected_runtime_risk_cost", 0.0),
                     selected_unknown_option_cost=aux.get("selected_unknown_option_cost", 0.0),
@@ -9612,6 +9662,12 @@ class Hedger:
                     device_concentration_coef=(
                         self.training_cfg.deployment_offline_rl.device_concentration_coef
                     ),
+                    projection_edge_coverage_coef=(
+                        self.training_cfg.deployment_offline_rl.projection_edge_coverage_coef
+                    ),
+                    last_edge_removed_coef=(
+                        self.training_cfg.deployment_offline_rl.last_edge_removed_coef
+                    ),
                     soft_target_bc_coef=self.training_cfg.deployment_offline_rl.soft_target_bc_coef,
                     soft_target_negative_ceiling=self.deployment_agent_params[
                         "soft_target_negative_ceiling"
@@ -9635,6 +9691,7 @@ class Hedger:
                     option_quality_ratio=self.training_cfg.deployment_offline_rl.option_quality_ratio,
                     max_edge_replicas_per_device=self.deployment_agent_params["max_edge_replicas_per_device"],
                     edge_memory_budget_ratio=self.deployment_agent_params["edge_memory_budget_ratio"],
+                    last_edge_preserve_bonus=self.deployment_agent_params["last_edge_preserve_bonus"],
                     bernoulli_mode_boundary=0.5,
                     negative_queue_threshold=self.deployment_agent_params["negative_queue_threshold"],
                     negative_hotspot_threshold=self.deployment_agent_params["negative_hotspot_threshold"],

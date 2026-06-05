@@ -22,6 +22,11 @@ class DeploymentConstraintCfg:
     # Fraction of computed available edge memory used as deployment budget.
     # Values below 1.0 reserve memory for the OS/runtime and rollout overhead.
     edge_memory_budget_ratio: float = 0.65
+    # Retention bonus applied only during capacity projection when removing a
+    # selected edge replica would leave that service without any edge replica.
+    # The model logit remains the main score; this only breaks small-margin ties
+    # toward preserving offloading choice space.
+    last_edge_preserve_bonus: float = 0.08
     # Direct matrix deployment policy. The actor scores service-device edge
     # candidates and deterministic inference selects edge pairs whose learned
     # logit is above zero. Projection only repairs hard feasibility.
