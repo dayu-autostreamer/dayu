@@ -2234,17 +2234,21 @@ class _DeploymentBackbonePPO(nn.Module):
         ).clamp(-1.0, 1.0)
         soft_gain = ((soft_target - 0.5) * 2.0).clamp(-1.0, 1.0)
         pressure = pressure_weight.view(num_services, 1)
+        candidate_count = effective_option_mask.to(dtype=dtype).sum(dim=1)
+        candidate_expansion = (candidate_count.view(num_services, 1) - 1.0).clamp_min(0.0)
+        pressure_expansion = (pressure * candidate_expansion).clamp(0.0, 1.0)
         risk_cost = (
-            0.42 * runtime_risk
-            + 0.28 * queue_pressure
-            + 0.30 * pair_budget_pressure
-            + 0.24 * evidence_untrusted
-            + 0.20 * active_hotspot
+            0.30 * runtime_risk
+            + 0.18 * queue_pressure
+            + 0.24 * pair_budget_pressure
+            + 0.12 * evidence_untrusted
+            + 0.14 * active_hotspot
         ).clamp(0.0, 2.0)
         marginal_base = (
-            0.95 * quality_gain
-            + 0.72 * soft_gain
-            + 0.82 * pressure
+            1.02 * quality_gain
+            + 0.70 * soft_gain
+            + 0.92 * pressure
+            + 0.26 * pressure_expansion
             - risk_cost
         )
         marginal_base = torch.where(
@@ -2260,12 +2264,11 @@ class _DeploymentBackbonePPO(nn.Module):
         )
         rank = torch.empty_like(marginal_base, dtype=dtype)
         rank.scatter_(1, rank_order, rank_positions)
-        rank_cost = rank * (0.18 + 0.48 * (1.0 - pressure))
+        rank_cost = rank * (0.06 + 0.20 * (1.0 - pressure))
         marginal_value = marginal_base - rank_cost
-        center = 0.24 - 0.30 * pressure
-        target = torch.sigmoid((marginal_value - center) / 0.24).clamp(0.0, 1.0)
+        center = 0.06 - 0.32 * pressure - 0.08 * pressure_expansion
+        target = torch.sigmoid((marginal_value - center) / 0.26).clamp(0.0, 1.0)
         target = torch.where(edge_allowed, target, torch.zeros_like(target))
-        candidate_count = effective_option_mask.to(dtype=dtype).sum(dim=1)
         target_weight = edge_allowed.to(dtype=dtype) * (
             0.25
             + 0.95 * pressure
@@ -2273,8 +2276,8 @@ class _DeploymentBackbonePPO(nn.Module):
             + 0.45 * effective_option_mask.to(dtype=dtype)
             + 0.25 * target
         )
-        positive_mask = (target >= 0.55) & effective_option_mask
-        negative_mask = (target <= 0.35) & edge_allowed & ~positive_mask
+        positive_mask = (target >= 0.50) & effective_option_mask
+        negative_mask = (target <= 0.30) & edge_allowed & ~positive_mask
         return {
             "replica_marginal_value": marginal_value,
             "replica_soft_target": target,
@@ -2536,6 +2539,12 @@ class _DeploymentBackbonePPO(nn.Module):
             torch.sigmoid(select_logits.to(dtype=dtype) / mass_tau),
             torch.zeros_like(select_logits, dtype=dtype),
         )
+        hard_mass_tau = min(max(float(mass_tau), 1.0e-3), 0.12)
+        hard_threshold_mass_prob = torch.where(
+            edge_allowed,
+            torch.sigmoid(select_logits.to(dtype=dtype) / hard_mass_tau),
+            torch.zeros_like(select_logits, dtype=dtype),
+        )
         replica_targets = self._deployment_replica_marginal_targets(
             edge_allowed=edge_allowed,
             label_quality=label_quality,
@@ -2576,13 +2585,13 @@ class _DeploymentBackbonePPO(nn.Module):
             ).mean()
         else:
             replica_negative_margin_loss = zero
-        positive_replica_mass = torch.where(
-            replica_positive_mask,
-            threshold_mass_prob,
-            torch.zeros_like(threshold_mass_prob),
+        effective_replica_mass = torch.where(
+            effective_option_mask,
+            hard_threshold_mass_prob,
+            torch.zeros_like(hard_threshold_mass_prob),
         )
-        service_best_replica_mass = positive_replica_mass.max(dim=1).values
-        service_option_slack = (positive_replica_mass.sum(dim=1) - service_best_replica_mass).clamp_min(0.0)
+        service_best_replica_mass = effective_replica_mass.max(dim=1).values
+        service_option_slack = (effective_replica_mass.sum(dim=1) - service_best_replica_mass).clamp_min(0.0)
         replica_candidate_count = replica_targets["replica_candidate_count"].to(device=device, dtype=dtype)
         option_slack_target = (
             pressure_weight
@@ -2595,7 +2604,7 @@ class _DeploymentBackbonePPO(nn.Module):
             * coverage_weights.detach()
         ).sum() / coverage_weights.detach().sum().clamp_min(1.0)
         if cloud_idx > 0:
-            device_mass = threshold_mass_prob[:, :cloud_idx].sum(dim=0)
+            device_mass = hard_threshold_mass_prob[:, :cloud_idx].sum(dim=0)
             total_device_mass = device_mass.sum().clamp_min(1e-6)
             device_share = device_mass / total_device_mass
             device_mass_max_share = device_share.max()
@@ -4065,11 +4074,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             effective_option_mass_coef: float = 0.0,
             non_effective_option_coef: float = 0.06,
             service_need_target_coef: float = 0.0,
-            replica_marginal_target_coef: float = 0.70,
-            replica_positive_margin_coef: float = 0.14,
-            replica_negative_margin_coef: float = 0.06,
-            option_slack_coef: float = 0.12,
-            device_concentration_coef: float = 0.16,
+            replica_marginal_target_coef: float = 0.75,
+            replica_positive_margin_coef: float = 0.18,
+            replica_negative_margin_coef: float = 0.05,
+            option_slack_coef: float = 0.20,
+            device_concentration_coef: float = 0.14,
             soft_target_bc_coef: float = 0.20,
             positive_logit_margin: float = 0.80,
             negative_logit_margin: float = 0.18,

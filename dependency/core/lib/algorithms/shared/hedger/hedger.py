@@ -165,11 +165,11 @@ class HedgerDeploymentOfflineRLCfg:
     effective_option_mass_coef: float = 0.0
     non_effective_option_coef: float = 0.06
     service_need_target_coef: float = 0.0
-    replica_marginal_target_coef: float = 0.70
-    replica_positive_margin_coef: float = 0.14
-    replica_negative_margin_coef: float = 0.06
-    option_slack_coef: float = 0.12
-    device_concentration_coef: float = 0.16
+    replica_marginal_target_coef: float = 0.75
+    replica_positive_margin_coef: float = 0.18
+    replica_negative_margin_coef: float = 0.05
+    option_slack_coef: float = 0.20
+    device_concentration_coef: float = 0.14
     soft_target_bc_coef: float = 0.20
     bad_sample_multiplier: float = 1.20
     bad_sample_max_ratio: float = 0.12
@@ -800,20 +800,20 @@ class Hedger:
             service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.0))),
             replica_marginal_target_coef=max(
                 0.0,
-                float(offline_rl_cfg.get("replica_marginal_target_coef", 0.70)),
+                float(offline_rl_cfg.get("replica_marginal_target_coef", 0.75)),
             ),
             replica_positive_margin_coef=max(
                 0.0,
-                float(offline_rl_cfg.get("replica_positive_margin_coef", 0.14)),
+                float(offline_rl_cfg.get("replica_positive_margin_coef", 0.18)),
             ),
             replica_negative_margin_coef=max(
                 0.0,
-                float(offline_rl_cfg.get("replica_negative_margin_coef", 0.06)),
+                float(offline_rl_cfg.get("replica_negative_margin_coef", 0.05)),
             ),
-            option_slack_coef=max(0.0, float(offline_rl_cfg.get("option_slack_coef", 0.12))),
+            option_slack_coef=max(0.0, float(offline_rl_cfg.get("option_slack_coef", 0.20))),
             device_concentration_coef=max(
                 0.0,
-                float(offline_rl_cfg.get("device_concentration_coef", 0.16)),
+                float(offline_rl_cfg.get("device_concentration_coef", 0.14)),
             ),
             soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.20))),
             bad_sample_multiplier=max(0.0, float(offline_rl_cfg.get("bad_sample_multiplier", 1.20))),
