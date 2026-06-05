@@ -111,6 +111,31 @@ class HedgerDeploymentCollectCfg:
 
 
 @dataclass(frozen=True)
+class HedgerDeploymentProbeCfg:
+    enabled: bool = False
+    stages: Tuple[str, ...] = ("deployment_collect", "deployment_online")
+    min_interval_decisions: int = 3
+    min_interval_s: float = 180.0
+    start_after_feedback_samples: int = 24
+    min_prior_quality: float = 0.45
+    min_pair_quality: float = 0.45
+    max_runtime_risk: float = 0.45
+    max_queue_pressure: float = 0.55
+    max_pair_budget_pressure: float = 0.80
+    uncertainty_weight: float = 0.45
+    service_pressure_weight: float = 0.25
+    diversity_weight: float = 0.20
+    runtime_risk_weight: float = 0.55
+    queue_pressure_weight: float = 0.35
+    memory_pressure_weight: float = 0.25
+    allow_replace: bool = True
+    cooldown_decisions_per_pair: int = 8
+    bad_probe_cooldown_decisions: int = 16
+    verified_positive_quality: Tuple[str, ...] = ("good", "mid")
+    inconclusive_on_feedback_shortfall: bool = True
+
+
+@dataclass(frozen=True)
 class HedgerDeploymentOfflineRLCfg:
     batch_size: int = 32
     action_target: str = "executed"
@@ -187,6 +212,7 @@ class HedgerTrainingCfg:
     )
     deployment_dataset: HedgerDeploymentDatasetCfg = field(default_factory=HedgerDeploymentDatasetCfg)
     deployment_collect: HedgerDeploymentCollectCfg = field(default_factory=HedgerDeploymentCollectCfg)
+    deployment_probe: HedgerDeploymentProbeCfg = field(default_factory=HedgerDeploymentProbeCfg)
     deployment_offline_rl: HedgerDeploymentOfflineRLCfg = field(default_factory=HedgerDeploymentOfflineRLCfg)
 
 
@@ -407,6 +433,11 @@ class Hedger:
         self._deployment_collect_good_count = 0
         self._deployment_collect_bad_count = 0
         self._deployment_collect_last_quality = "unknown"
+        self._deployment_probe_decision_counter = 0
+        self._deployment_probe_last_decision = -10 ** 9
+        self._deployment_probe_last_t = 0.0
+        self._deployment_probe_pair_cooldown: Dict[Tuple[int, int], int] = {}
+        self._deployment_probe_pair_last_quality: Dict[Tuple[int, int], str] = {}
         self._init_deployment_dataset_runtime()
 
         self.dep_recorder = None
@@ -662,6 +693,51 @@ class Hedger:
             fallback_to_best_candidate=bool(collect_cfg.get("fallback_to_best_candidate", True)),
         )
 
+        probe_cfg = training.get("deployment_probe") or {}
+        if not isinstance(probe_cfg, dict):
+            raise ValueError("Hedger config `training.deployment_probe` must be a mapping when provided.")
+        probe_stages_raw = probe_cfg.get("stages", ("deployment_collect", "deployment_online"))
+        if isinstance(probe_stages_raw, str):
+            probe_stages = (probe_stages_raw,)
+        elif isinstance(probe_stages_raw, (list, tuple, set)):
+            probe_stages = tuple(str(item) for item in probe_stages_raw)
+        else:
+            raise ValueError("Hedger config `training.deployment_probe.stages` must be a string or sequence.")
+        probe_stages = tuple(stage_name for stage_name in probe_stages if stage_name in TRAINING_STAGE_NAMES)
+        if not probe_stages:
+            probe_stages = ("deployment_collect", "deployment_online")
+        verified_quality_raw = probe_cfg.get("verified_positive_quality", ("good", "mid"))
+        if isinstance(verified_quality_raw, str):
+            verified_quality = (verified_quality_raw.strip().lower(),)
+        elif isinstance(verified_quality_raw, (list, tuple, set)):
+            verified_quality = tuple(str(item).strip().lower() for item in verified_quality_raw)
+        else:
+            verified_quality = ("good", "mid")
+        verified_quality = tuple(item for item in verified_quality if item in {"good", "mid", "bad"}) or ("good", "mid")
+        deployment_probe = HedgerDeploymentProbeCfg(
+            enabled=bool(probe_cfg.get("enabled", False)),
+            stages=probe_stages,
+            min_interval_decisions=max(1, int(probe_cfg.get("min_interval_decisions", 3))),
+            min_interval_s=max(0.0, float(probe_cfg.get("min_interval_s", 180.0))),
+            start_after_feedback_samples=max(0, int(probe_cfg.get("start_after_feedback_samples", 24))),
+            min_prior_quality=max(0.0, float(probe_cfg.get("min_prior_quality", 0.45))),
+            min_pair_quality=max(0.0, float(probe_cfg.get("min_pair_quality", 0.45))),
+            max_runtime_risk=max(0.0, float(probe_cfg.get("max_runtime_risk", 0.45))),
+            max_queue_pressure=max(0.0, float(probe_cfg.get("max_queue_pressure", 0.55))),
+            max_pair_budget_pressure=max(0.0, float(probe_cfg.get("max_pair_budget_pressure", 0.80))),
+            uncertainty_weight=max(0.0, float(probe_cfg.get("uncertainty_weight", 0.45))),
+            service_pressure_weight=max(0.0, float(probe_cfg.get("service_pressure_weight", 0.25))),
+            diversity_weight=max(0.0, float(probe_cfg.get("diversity_weight", 0.20))),
+            runtime_risk_weight=max(0.0, float(probe_cfg.get("runtime_risk_weight", 0.55))),
+            queue_pressure_weight=max(0.0, float(probe_cfg.get("queue_pressure_weight", 0.35))),
+            memory_pressure_weight=max(0.0, float(probe_cfg.get("memory_pressure_weight", 0.25))),
+            allow_replace=bool(probe_cfg.get("allow_replace", True)),
+            cooldown_decisions_per_pair=max(1, int(probe_cfg.get("cooldown_decisions_per_pair", 8))),
+            bad_probe_cooldown_decisions=max(1, int(probe_cfg.get("bad_probe_cooldown_decisions", 16))),
+            verified_positive_quality=verified_quality,
+            inconclusive_on_feedback_shortfall=bool(probe_cfg.get("inconclusive_on_feedback_shortfall", True)),
+        )
+
         offline_rl_cfg = training.get("deployment_offline_rl") or {}
         if not isinstance(offline_rl_cfg, dict):
             raise ValueError("Hedger config `training.deployment_offline_rl` must be a mapping when provided.")
@@ -741,6 +817,7 @@ class Hedger:
             deployment_default_warmup=deployment_default_warmup,
             deployment_dataset=deployment_dataset,
             deployment_collect=deployment_collect,
+            deployment_probe=deployment_probe,
             deployment_offline_rl=deployment_offline_rl,
         )
 
@@ -3347,6 +3424,15 @@ class Hedger:
             "collect_base_low_quality_count", "collect_candidate_low_quality_count",
             "collect_delta_low_quality_count", "collect_base_risky_pair_count",
             "collect_candidate_risky_pair_count",
+            "probe_enabled", "probe_triggered", "probe_service", "probe_added_device",
+            "probe_removed_service", "probe_removed_device", "probe_reason",
+            "probe_candidate_score", "probe_pair_quality", "probe_prior_quality",
+            "probe_runtime_trusted_before", "probe_evidence_untrusted_before",
+            "probe_runtime_risk_before", "probe_queue_pressure_before",
+            "probe_pair_budget_pressure_before", "probe_capacity_ok",
+            "probe_projected_out", "probe_projected_out_nodes", "probe_added_nodes", "probe_removed_nodes",
+            "probe_feedback_quality", "probe_reward", "probe_inconclusive",
+            "probe_verified_positive", "probe_negative",
             "capacity_corrected", "deployment_policy_deterministic",
         ]
         if self.record_cfg.decision_candidate_features_debug:
@@ -3718,6 +3804,70 @@ class Hedger:
                 collect_delta_low_quality_count=collect_debug.get("collect_delta_low_quality_count", ""),
                 collect_base_risky_pair_count=collect_debug.get("collect_base_risky_pair_count", ""),
                 collect_candidate_risky_pair_count=collect_debug.get("collect_candidate_risky_pair_count", ""),
+                probe_enabled=collect_debug.get("probe_enabled", 0),
+                probe_triggered=collect_debug.get("probe_triggered", 0),
+                probe_service=(
+                    self._service_name(int(collect_debug.get("probe_service_idx", -1)))
+                    if int(collect_debug.get("probe_service_idx", -1) or -1) >= 0 else ""
+                ),
+                probe_added_device=(
+                    self._device_name(int(collect_debug.get("probe_device_idx", -1)))
+                    if int(collect_debug.get("probe_device_idx", -1) or -1) >= 0 else ""
+                ),
+                probe_removed_service=(
+                    self._service_name(int(collect_debug.get("probe_removed_service_idx", -1)))
+                    if int(collect_debug.get("probe_removed_service_idx", -1) or -1) >= 0 else ""
+                ),
+                probe_removed_device=(
+                    self._device_name(int(collect_debug.get("probe_removed_device_idx", -1)))
+                    if int(collect_debug.get("probe_removed_device_idx", -1) or -1) >= 0 else ""
+                ),
+                probe_reason=collect_debug.get("probe_reason", ""),
+                probe_candidate_score=collect_debug.get("probe_candidate_score", ""),
+                probe_pair_quality=collect_debug.get("probe_pair_quality", ""),
+                probe_prior_quality=collect_debug.get("probe_prior_quality", ""),
+                probe_runtime_trusted_before=collect_debug.get("probe_runtime_trusted_before", ""),
+                probe_evidence_untrusted_before=collect_debug.get("probe_evidence_untrusted_before", ""),
+                probe_runtime_risk_before=collect_debug.get("probe_runtime_risk_before", ""),
+                probe_queue_pressure_before=collect_debug.get("probe_queue_pressure_before", ""),
+                probe_pair_budget_pressure_before=collect_debug.get("probe_pair_budget_pressure_before", ""),
+                probe_capacity_ok=collect_debug.get("probe_capacity_ok", ""),
+                probe_projected_out=collect_debug.get("probe_projected_out", ""),
+                probe_projected_out_nodes=self._json_for_record(
+                    self._device_names_from_indices(
+                        torch.nonzero(
+                            collect_debug.get("probe_projected_out_mask", torch.zeros_like(exec_mask))[service_idx]
+                            if isinstance(collect_debug.get("probe_projected_out_mask"), torch.Tensor)
+                            else torch.zeros_like(exec_mask[service_idx]),
+                            as_tuple=False,
+                        ).flatten().tolist()
+                    )
+                ),
+                probe_added_nodes=self._json_for_record(
+                    self._device_names_from_indices(
+                        torch.nonzero(
+                            collect_debug.get("probe_added_mask", torch.zeros_like(exec_mask))[service_idx]
+                            if isinstance(collect_debug.get("probe_added_mask"), torch.Tensor)
+                            else torch.zeros_like(exec_mask[service_idx]),
+                            as_tuple=False,
+                        ).flatten().tolist()
+                    )
+                ),
+                probe_removed_nodes=self._json_for_record(
+                    self._device_names_from_indices(
+                        torch.nonzero(
+                            collect_debug.get("probe_removed_mask", torch.zeros_like(exec_mask))[service_idx]
+                            if isinstance(collect_debug.get("probe_removed_mask"), torch.Tensor)
+                            else torch.zeros_like(exec_mask[service_idx]),
+                            as_tuple=False,
+                        ).flatten().tolist()
+                    )
+                ),
+                probe_feedback_quality=collect_debug.get("probe_feedback_quality", ""),
+                probe_reward=collect_debug.get("probe_reward", ""),
+                probe_inconclusive=collect_debug.get("probe_inconclusive", ""),
+                probe_verified_positive=collect_debug.get("probe_verified_positive", ""),
+                probe_negative=collect_debug.get("probe_negative", ""),
                 capacity_corrected=bool(not torch.equal(raw_mask[service_idx], exec_mask[service_idx])),
                 deployment_policy_deterministic=(
                     "" if policy_deterministic is None else int(bool(policy_deterministic))
@@ -4674,6 +4824,374 @@ class Hedger:
         base[:, self.physical_topology.cloud_idx] = True
         return base, anchor_used, False
 
+    @staticmethod
+    def _deployment_probe_default_debug() -> Dict[str, Any]:
+        return {
+            "probe_enabled": 0,
+            "probe_triggered": 0,
+            "probe_service_idx": -1,
+            "probe_device_idx": -1,
+            "probe_removed_service_idx": -1,
+            "probe_removed_device_idx": -1,
+            "probe_reason": "disabled",
+            "probe_candidate_score": 0.0,
+            "probe_pair_quality": 0.0,
+            "probe_prior_quality": 0.0,
+            "probe_runtime_trusted_before": 0,
+            "probe_evidence_untrusted_before": 0.0,
+            "probe_runtime_risk_before": 0.0,
+            "probe_queue_pressure_before": 0.0,
+            "probe_pair_budget_pressure_before": 0.0,
+            "probe_projected_out": 0,
+            "probe_capacity_ok": 0,
+            "probe_feedback_quality": "",
+            "probe_reward": 0.0,
+            "probe_inconclusive": 0,
+            "probe_verified_positive": 0,
+            "probe_negative": 0,
+            "probe_cooldown_remaining": 0,
+        }
+
+    @staticmethod
+    def _deployment_probe_context_tensor(
+            ctx: Dict[str, torch.Tensor],
+            key: str,
+            shape: torch.Size,
+            device: torch.device,
+            default: float = 0.0,
+    ) -> torch.Tensor:
+        value = ctx.get(key) if isinstance(ctx, dict) else None
+        if isinstance(value, torch.Tensor):
+            value = value.to(device=device, dtype=torch.float32)
+            if value.shape == shape:
+                return value
+            if value.dim() == 1 and len(shape) == 2 and value.numel() == shape[0]:
+                return value.view(shape[0], 1).expand(shape)
+        return torch.full(shape, float(default), device=device, dtype=torch.float32)
+
+    def _deployment_probe_feedback_ready(self, required_samples: int) -> bool:
+        required_samples = max(0, int(required_samples))
+        if required_samples <= 0:
+            return True
+        if self.state_buffer is None:
+            return False
+        try:
+            stats = self.state_buffer.get_offloading_reward_stats(
+                last_k=required_samples,
+                deployment_version=self.get_active_deployment_version(),
+            )
+        except Exception:
+            stats = {}
+        for key in ("count", "reward_count", "samples", "offloading_reward_count"):
+            value = stats.get(key) if isinstance(stats, dict) else None
+            try:
+                if value is not None and int(value) >= required_samples:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        return self._deployment_collected_transition_count >= required_samples
+
+    def _maybe_apply_deployment_probe(
+            self,
+            logic_edge_index: torch.Tensor,
+            logic_feats: Dict[str, torch.Tensor],
+            phys_edge_index: torch.Tensor,
+            phys_feats: Dict[str, torch.Tensor],
+            prev_deploy_mask: Optional[torch.Tensor],
+            deploy_mask: torch.Tensor,
+            aux: Dict[str, Any],
+    ):
+        aux = dict(aux or {})
+        debug = self._deployment_probe_default_debug()
+        zero_mask = torch.zeros_like(deploy_mask, dtype=torch.bool)
+        aux.update({
+            **debug,
+            "probe_added_mask": zero_mask,
+            "probe_removed_mask": zero_mask,
+            "probe_projected_out_mask": zero_mask,
+            "probe_verified_positive_mask": zero_mask,
+            "probe_negative_mask": zero_mask,
+            "probe_inconclusive_mask": zero_mask,
+        })
+        if self.training_cfg is None or self.stage_cfg is None:
+            return deploy_mask, aux
+        cfg = self.training_cfg.deployment_probe
+        aux["probe_enabled"] = int(bool(cfg.enabled))
+        stage_name = self.training_cfg.stage
+        if not cfg.enabled or stage_name not in cfg.stages:
+            aux["probe_reason"] = "disabled"
+            return deploy_mask, aux
+
+        self._deployment_probe_decision_counter += 1
+        counter = int(self._deployment_probe_decision_counter)
+        cooldown_remaining = max(0, int(self._deployment_probe_last_decision + cfg.min_interval_decisions - counter))
+        aux["probe_cooldown_remaining"] = cooldown_remaining
+        if cooldown_remaining > 0:
+            aux["probe_reason"] = "decision_cooldown"
+            return deploy_mask, aux
+        now = time.monotonic()
+        if cfg.min_interval_s > 0.0 and self._deployment_probe_last_t > 0.0:
+            elapsed = now - float(self._deployment_probe_last_t)
+            if elapsed < cfg.min_interval_s:
+                aux["probe_reason"] = "time_cooldown"
+                aux["probe_cooldown_remaining"] = int(math.ceil(cfg.min_interval_s - elapsed))
+                return deploy_mask, aux
+        if not self._deployment_probe_feedback_ready(cfg.start_after_feedback_samples):
+            aux["probe_reason"] = "feedback_shortfall"
+            return deploy_mask, aux
+
+        device = deploy_mask.device
+        static_allowed = self.deployment_agent._static_allowed_mask(phys_feats, logic_feats).to(device=device).bool()
+        num_services, num_devices = static_allowed.shape
+        cloud_idx = self.physical_topology.cloud_idx
+        edge_allowed = static_allowed.clone()
+        if cloud_idx >= 0:
+            edge_allowed[:, cloud_idx] = False
+        current_edge = deploy_mask.to(device=device).bool() & edge_allowed
+        pair_ctx = self.deployment_agent._deployment_pair_context(
+            logic_edge_index,
+            logic_feats,
+            static_allowed,
+            deploy_mask=deploy_mask,
+        )
+        option_ctx = self.deployment_agent._deployment_runtime_context(
+            logic_feats,
+            phys_feats,
+            torch.zeros_like(static_allowed, dtype=torch.float32, device=device),
+            static_allowed,
+            pair_ctx,
+            prev_deploy_mask=prev_deploy_mask,
+        )
+        shape = static_allowed.shape
+        pair_quality = self._deployment_probe_context_tensor(option_ctx, "pair_quality_score", shape, device, 0.0)
+        prior_quality = self._deployment_probe_context_tensor(option_ctx, "prior_quality_score", shape, device, 0.0)
+        runtime_risk = self._deployment_probe_context_tensor(option_ctx, "runtime_risk_score", shape, device, 0.0)
+        queue_pressure = self._deployment_probe_context_tensor(option_ctx, "queue_pressure", shape, device, 0.0)
+        pair_budget_pressure = self._deployment_probe_context_tensor(option_ctx, "pair_budget_pressure", shape, device, 0.0)
+        runtime_trusted = self._deployment_probe_context_tensor(option_ctx, "runtime_trusted", shape, device, 0.0)
+        evidence_untrusted = self._deployment_probe_context_tensor(option_ctx, "evidence_untrusted", shape, device, 1.0)
+        service_pressure = self._deployment_probe_context_tensor(option_ctx, "service_pressure", shape, device, 0.0)
+        quality = torch.maximum(pair_quality, prior_quality)
+        uncertainty = torch.maximum(evidence_untrusted, 1.0 - runtime_trusted)
+        service_edge_count = current_edge.float().sum(dim=1, keepdim=True)
+        diversity_bonus = (service_edge_count <= 1.0).to(dtype=torch.float32).expand_as(quality)
+        candidate_mask = (
+            edge_allowed
+            & ~current_edge
+            & ((pair_quality >= cfg.min_pair_quality) | (prior_quality >= cfg.min_prior_quality))
+            & (runtime_risk <= cfg.max_runtime_risk)
+            & (queue_pressure <= cfg.max_queue_pressure)
+            & (pair_budget_pressure <= cfg.max_pair_budget_pressure)
+        )
+        for (service_idx, device_idx), cooldown_until in list(self._deployment_probe_pair_cooldown.items()):
+            if counter < int(cooldown_until):
+                if 0 <= service_idx < num_services and 0 <= device_idx < num_devices:
+                    candidate_mask[service_idx, device_idx] = False
+            else:
+                self._deployment_probe_pair_cooldown.pop((service_idx, device_idx), None)
+        if not bool(candidate_mask.any().item()):
+            aux["probe_reason"] = "no_candidate"
+            return deploy_mask, aux
+
+        score = (
+            quality
+            + cfg.uncertainty_weight * uncertainty
+            + cfg.service_pressure_weight * service_pressure
+            + cfg.diversity_weight * diversity_bonus
+            - cfg.runtime_risk_weight * runtime_risk
+            - cfg.queue_pressure_weight * queue_pressure
+            - cfg.memory_pressure_weight * pair_budget_pressure
+        ).masked_fill(~candidate_mask, -1.0e9)
+        flat_idx = int(torch.argmax(score).detach().cpu().item())
+        service_idx = flat_idx // num_devices
+        device_idx = flat_idx % num_devices
+        if not bool(candidate_mask[service_idx, device_idx].item()):
+            aux["probe_reason"] = "no_candidate"
+            return deploy_mask, aux
+
+        proposed = deploy_mask.detach().clone().to(device=device).bool()
+        added_mask = torch.zeros_like(proposed, dtype=torch.bool)
+        removed_mask = torch.zeros_like(proposed, dtype=torch.bool)
+        proposed[service_idx, device_idx] = True
+        added_mask[service_idx, device_idx] = True
+        removed_service_idx = -1
+        removed_device_idx = -1
+        if cfg.allow_replace and cloud_idx > 0:
+            current_devices = torch.nonzero(current_edge[service_idx, :cloud_idx], as_tuple=False).flatten()
+            if current_devices.numel() > 0:
+                current_scores = score[service_idx, :cloud_idx].detach().clone()
+                current_scores = torch.where(
+                    current_edge[service_idx, :cloud_idx],
+                    current_scores,
+                    torch.full_like(current_scores, 1.0e9),
+                )
+                remove_pos = int(torch.argmin(current_scores).detach().cpu().item())
+                if remove_pos != device_idx:
+                    proposed[service_idx, remove_pos] = False
+                    removed_mask[service_idx, remove_pos] = True
+                    removed_service_idx = service_idx
+                    removed_device_idx = remove_pos
+
+        raw_probs = aux.get("policy_prob")
+        if not isinstance(raw_probs, torch.Tensor) or raw_probs.shape != proposed.shape:
+            raw_probs = torch.full(proposed.shape, 0.5, device=device, dtype=torch.float32)
+        else:
+            raw_probs = raw_probs.to(device=device, dtype=torch.float32).clamp(1e-6, 1.0 - 1e-6)
+        if cloud_idx >= 0:
+            raw_probs[:, cloud_idx] = 1.0 - 1e-6
+        retention_scores = aux.get("select_logit")
+        if not isinstance(retention_scores, torch.Tensor) or retention_scores.shape != proposed.shape:
+            retention_scores = torch.logit(raw_probs.clamp(1e-6, 1.0 - 1e-6))
+        else:
+            retention_scores = retention_scores.to(device=device, dtype=torch.float32).clone()
+        retention_scores[service_idx, device_idx] = retention_scores[service_idx, device_idx] + 1.0
+        if removed_device_idx >= 0:
+            retention_scores[removed_service_idx, removed_device_idx] = retention_scores[
+                removed_service_idx,
+                removed_device_idx,
+            ] - 1.0
+        (
+            projected,
+            capacity_relax_cnt,
+            capacity_relax_cost,
+            edge_cover_repair_cnt,
+            edge_cover_repair_cost,
+            edge_cover_unmet,
+            hotspot_repair_cnt,
+            hotspot_repair_cost,
+            hotspot_unmet,
+            risk_metrics,
+            executed_pair_ctx,
+            capacity_removed_mask,
+        ) = self.deployment_agent._project_deployment_mask(
+            proposed,
+            raw_probs=raw_probs,
+            logic_feats=logic_feats,
+            phys_feats=phys_feats,
+            logic_edge_index=logic_edge_index,
+            prev_deploy_mask=prev_deploy_mask,
+            static_allowed=static_allowed,
+            retention_scores=retention_scores,
+            option_ctx=option_ctx,
+        )
+        projected_out_mask = added_mask & ~projected.bool()
+        if bool(projected_out_mask.any().item()):
+            aux.update({
+                "probe_reason": "projected_out",
+                "probe_projected_out": 1,
+                "probe_projected_out_mask": projected_out_mask,
+            })
+            self._deployment_probe_pair_cooldown[(service_idx, device_idx)] = counter + cfg.cooldown_decisions_per_pair
+            return deploy_mask, aux
+
+        risk_debug = self._deployment_collect_candidate_risk(
+            logic_edge_index=logic_edge_index,
+            logic_feats=logic_feats,
+            phys_feats=phys_feats,
+            static_allowed=static_allowed,
+            base_mask=deploy_mask,
+            raw_mask=proposed,
+            deploy_mask=projected,
+            capacity_relax_cost=float(capacity_relax_cost),
+            edge_cover_unmet=int(edge_cover_unmet),
+        )
+        accepted, reject_reason = self._deployment_collect_candidate_accepted(risk_debug)
+        if not accepted:
+            aux.update(risk_debug)
+            aux["probe_reason"] = f"rejected:{reject_reason}"
+            self._deployment_probe_pair_cooldown[(service_idx, device_idx)] = counter + cfg.cooldown_decisions_per_pair
+            return deploy_mask, aux
+
+        aux.update(risk_debug)
+        aux.update(risk_metrics)
+        aux.update({
+            "probe_triggered": 1,
+            "probe_service_idx": int(service_idx),
+            "probe_device_idx": int(device_idx),
+            "probe_removed_service_idx": int(removed_service_idx),
+            "probe_removed_device_idx": int(removed_device_idx),
+            "probe_reason": "safe_evidence_refresh",
+            "probe_candidate_score": float(score[service_idx, device_idx].detach().cpu().item()),
+            "probe_pair_quality": float(pair_quality[service_idx, device_idx].detach().cpu().item()),
+            "probe_prior_quality": float(prior_quality[service_idx, device_idx].detach().cpu().item()),
+            "probe_runtime_trusted_before": int(runtime_trusted[service_idx, device_idx].detach().cpu().item() >= 0.5),
+            "probe_evidence_untrusted_before": float(evidence_untrusted[service_idx, device_idx].detach().cpu().item()),
+            "probe_runtime_risk_before": float(runtime_risk[service_idx, device_idx].detach().cpu().item()),
+            "probe_queue_pressure_before": float(queue_pressure[service_idx, device_idx].detach().cpu().item()),
+            "probe_pair_budget_pressure_before": float(pair_budget_pressure[service_idx, device_idx].detach().cpu().item()),
+            "probe_capacity_ok": int(capacity_relax_cnt <= 0),
+            "probe_added_mask": added_mask,
+            "probe_removed_mask": removed_mask,
+            "probe_projected_out_mask": projected_out_mask,
+            "capacity_relax_cnt": int(capacity_relax_cnt),
+            "capacity_relax_cost": float(capacity_relax_cost),
+            "edge_cover_repair_cnt": int(edge_cover_repair_cnt),
+            "edge_cover_repair_cost": float(edge_cover_repair_cost),
+            "edge_cover_unmet": int(edge_cover_unmet),
+            "hotspot_repair_cnt": int(hotspot_repair_cnt),
+            "hotspot_repair_cost": float(hotspot_repair_cost),
+            "hotspot_unmet": int(hotspot_unmet),
+            "capacity_removed_mask": capacity_removed_mask,
+            "executed_pair_ctx": executed_pair_ctx,
+        })
+        if isinstance(aux.get("collect_operation"), str) and aux["collect_operation"]:
+            aux["collect_operation"] = f"{aux['collect_operation']}+probe"
+        self._deployment_probe_last_decision = counter
+        self._deployment_probe_last_t = now
+        self._deployment_probe_pair_cooldown[(service_idx, device_idx)] = counter + cfg.cooldown_decisions_per_pair
+        return projected.bool(), aux
+
+    def _finalize_deployment_probe_outcome(
+            self,
+            aux: Dict[str, Any],
+            quality_bucket: str,
+            reward: float,
+            feedback_result,
+            metrics: Dict[str, Any],
+    ) -> None:
+        if not isinstance(aux, dict) or not int(aux.get("probe_triggered", 0) or 0):
+            return
+        cfg = self.training_cfg.deployment_probe
+        added_mask = aux.get("probe_added_mask")
+        if not isinstance(added_mask, torch.Tensor):
+            return
+        zero_mask = torch.zeros_like(added_mask, dtype=torch.bool)
+        feedback_shortfall = int(metrics.get("feedback_sample_shortfall", 0) or 0) > 0
+        timed_out = bool(metrics.get("feedback_timed_out", False) or getattr(feedback_result, "timed_out", False))
+        guard_interrupted = bool(
+            metrics.get("feedback_guard_interrupted", False)
+            or getattr(feedback_result, "guard_interrupted", False)
+        )
+        quality = str(quality_bucket or "unknown").strip().lower()
+        inconclusive = bool(cfg.inconclusive_on_feedback_shortfall and (feedback_shortfall or timed_out))
+        verified_positive = bool(
+            quality in cfg.verified_positive_quality
+            and not inconclusive
+            and not guard_interrupted
+        )
+        negative = bool(quality == "bad" and not inconclusive) or bool(guard_interrupted and not inconclusive)
+        aux["probe_feedback_quality"] = quality
+        aux["probe_reward"] = float(reward)
+        aux["probe_inconclusive"] = int(inconclusive)
+        aux["probe_verified_positive"] = int(verified_positive)
+        aux["probe_negative"] = int(negative)
+        aux["probe_verified_positive_mask"] = added_mask.clone() if verified_positive else zero_mask.clone()
+        aux["probe_negative_mask"] = added_mask.clone() if negative else zero_mask.clone()
+        aux["probe_inconclusive_mask"] = added_mask.clone() if inconclusive else zero_mask.clone()
+        service_idx = int(aux.get("probe_service_idx", -1) or -1)
+        device_idx = int(aux.get("probe_device_idx", -1) or -1)
+        if service_idx >= 0 and device_idx >= 0:
+            key = (service_idx, device_idx)
+            self._deployment_probe_pair_last_quality[key] = quality
+            if negative:
+                self._deployment_probe_pair_cooldown[key] = (
+                    self._deployment_probe_decision_counter + cfg.bad_probe_cooldown_decisions
+                )
+            elif inconclusive:
+                self._deployment_probe_pair_cooldown[key] = (
+                    self._deployment_probe_decision_counter + cfg.cooldown_decisions_per_pair
+                )
+
     def _sample_deployment_action_for_training(
             self,
             logic_edge_index: torch.Tensor,
@@ -4684,13 +5202,23 @@ class Hedger:
     ):
         mode = self.stage_cfg.deployment_train_mode if self.stage_cfg is not None else "ppo"
         if mode == "collect":
-            return self._sample_deployment_collection_action(
+            deploy_mask, logp, ent, value, aux = self._sample_deployment_collection_action(
                 logic_edge_index,
                 logic_feats,
                 phys_edge_index,
                 phys_feats,
                 prev_deploy_mask,
             )
+            deploy_mask, aux = self._maybe_apply_deployment_probe(
+                logic_edge_index,
+                logic_feats,
+                phys_edge_index,
+                phys_feats,
+                prev_deploy_mask,
+                deploy_mask,
+                aux,
+            )
+            return deploy_mask, logp, ent, value, aux
         deploy_mask, logp, ent, value, aux = self.deployment_agent.policy(
             logic_edge_index=logic_edge_index,
             logic_feats=logic_feats,
@@ -4701,6 +5229,15 @@ class Hedger:
             deterministic=self.training_cfg.deployment_rollout_deterministic,
         )
         aux["behavior_kind"] = "actor"
+        deploy_mask, aux = self._maybe_apply_deployment_probe(
+            logic_edge_index,
+            logic_feats,
+            phys_edge_index,
+            phys_feats,
+            prev_deploy_mask,
+            deploy_mask,
+            aux,
+        )
         return deploy_mask, logp, ent, value, aux
 
     def _sample_deployment_collection_action(
@@ -8068,6 +8605,14 @@ class Hedger:
                                 "collect_base_low_quality_count", "collect_candidate_low_quality_count",
                                 "collect_delta_low_quality_count", "collect_base_risky_pair_count",
                                 "collect_candidate_risky_pair_count",
+                                "probe_enabled", "probe_triggered", "probe_service", "probe_added_device",
+                                "probe_removed_service", "probe_removed_device", "probe_reason",
+                                "probe_candidate_score", "probe_pair_quality", "probe_prior_quality",
+                                "probe_runtime_trusted_before", "probe_evidence_untrusted_before",
+                                "probe_runtime_risk_before", "probe_queue_pressure_before",
+                                "probe_pair_budget_pressure_before", "probe_capacity_ok",
+                                "probe_projected_out", "probe_feedback_quality", "probe_reward",
+                                "probe_inconclusive", "probe_verified_positive", "probe_negative",
                                 "collect_raw_change_count", "collect_exec_change_count",
                                 "deployment_rollout_deterministic",
                                 "raw_edge_replicas", "edge_replicas", "cloud_replicas",
@@ -8403,6 +8948,7 @@ class Hedger:
                 if self.stage_cfg.deployment_train_mode == "collect":
                     self._update_deployment_collect_quality(collect_quality_bucket)
                 aux["collect_quality_bucket"] = collect_quality_bucket
+                self._finalize_deployment_probe_outcome(aux, collect_quality_bucket, reward, feedback_result, metrics)
                 aux["collect_bad_streak"] = int(self._deployment_collect_bad_streak)
                 aux["collect_good_count"] = int(self._deployment_collect_good_count)
                 aux["collect_bad_count"] = int(self._deployment_collect_bad_count)
@@ -8430,6 +8976,31 @@ class Hedger:
                     if isinstance(aux.get("positive_mask"), torch.Tensor) else deploy_mask.detach().cpu(),
                     "negative_mask": aux.get("negative_mask", torch.zeros_like(deploy_mask)).detach().cpu()
                     if isinstance(aux.get("negative_mask"), torch.Tensor) else torch.zeros_like(deploy_mask).detach().cpu(),
+                    "probe_added_mask": aux.get("probe_added_mask", torch.zeros_like(deploy_mask)).detach().cpu()
+                    if isinstance(aux.get("probe_added_mask"), torch.Tensor) else torch.zeros_like(deploy_mask).detach().cpu(),
+                    "probe_removed_mask": aux.get("probe_removed_mask", torch.zeros_like(deploy_mask)).detach().cpu()
+                    if isinstance(aux.get("probe_removed_mask"), torch.Tensor) else torch.zeros_like(deploy_mask).detach().cpu(),
+                    "probe_projected_out_mask": aux.get(
+                        "probe_projected_out_mask",
+                        torch.zeros_like(deploy_mask),
+                    ).detach().cpu()
+                    if isinstance(aux.get("probe_projected_out_mask"), torch.Tensor)
+                    else torch.zeros_like(deploy_mask).detach().cpu(),
+                    "probe_verified_positive_mask": aux.get(
+                        "probe_verified_positive_mask",
+                        torch.zeros_like(deploy_mask),
+                    ).detach().cpu()
+                    if isinstance(aux.get("probe_verified_positive_mask"), torch.Tensor)
+                    else torch.zeros_like(deploy_mask).detach().cpu(),
+                    "probe_negative_mask": aux.get("probe_negative_mask", torch.zeros_like(deploy_mask)).detach().cpu()
+                    if isinstance(aux.get("probe_negative_mask"), torch.Tensor)
+                    else torch.zeros_like(deploy_mask).detach().cpu(),
+                    "probe_inconclusive_mask": aux.get(
+                        "probe_inconclusive_mask",
+                        torch.zeros_like(deploy_mask),
+                    ).detach().cpu()
+                    if isinstance(aux.get("probe_inconclusive_mask"), torch.Tensor)
+                    else torch.zeros_like(deploy_mask).detach().cpu(),
                     "topo_order": None,  # Recomputed during evaluation if needed.
                     "prev_deploy_mask": prev_deploy_mask.cpu() if prev_deploy_mask is not None else None,
                     "logp": logp.detach().cpu(),
@@ -8495,6 +9066,28 @@ class Hedger:
                     "collect_delta_low_quality_count": int(aux.get("collect_delta_low_quality_count", 0)),
                     "collect_base_risky_pair_count": int(aux.get("collect_base_risky_pair_count", 0)),
                     "collect_candidate_risky_pair_count": int(aux.get("collect_candidate_risky_pair_count", 0)),
+                    "probe_enabled": int(aux.get("probe_enabled", 0)),
+                    "probe_triggered": int(aux.get("probe_triggered", 0)),
+                    "probe_service_idx": int(aux.get("probe_service_idx", -1)),
+                    "probe_device_idx": int(aux.get("probe_device_idx", -1)),
+                    "probe_removed_service_idx": int(aux.get("probe_removed_service_idx", -1)),
+                    "probe_removed_device_idx": int(aux.get("probe_removed_device_idx", -1)),
+                    "probe_reason": str(aux.get("probe_reason", "")),
+                    "probe_candidate_score": float(aux.get("probe_candidate_score", 0.0)),
+                    "probe_pair_quality": float(aux.get("probe_pair_quality", 0.0)),
+                    "probe_prior_quality": float(aux.get("probe_prior_quality", 0.0)),
+                    "probe_runtime_trusted_before": int(aux.get("probe_runtime_trusted_before", 0)),
+                    "probe_evidence_untrusted_before": float(aux.get("probe_evidence_untrusted_before", 0.0)),
+                    "probe_runtime_risk_before": float(aux.get("probe_runtime_risk_before", 0.0)),
+                    "probe_queue_pressure_before": float(aux.get("probe_queue_pressure_before", 0.0)),
+                    "probe_pair_budget_pressure_before": float(aux.get("probe_pair_budget_pressure_before", 0.0)),
+                    "probe_capacity_ok": int(aux.get("probe_capacity_ok", 0)),
+                    "probe_projected_out": int(aux.get("probe_projected_out", 0)),
+                    "probe_feedback_quality": str(aux.get("probe_feedback_quality", "")),
+                    "probe_reward": float(aux.get("probe_reward", 0.0)),
+                    "probe_inconclusive": int(aux.get("probe_inconclusive", 0)),
+                    "probe_verified_positive": int(aux.get("probe_verified_positive", 0)),
+                    "probe_negative": int(aux.get("probe_negative", 0)),
                     "collect_raw_change_count": int(aux.get("collect_raw_change_count", 0)),
                     "collect_exec_change_count": int(aux.get("collect_exec_change_count", 0)),
                     "deployment_rollout_deterministic": bool(
@@ -8642,6 +9235,40 @@ class Hedger:
                     collect_delta_low_quality_count=aux.get("collect_delta_low_quality_count", 0),
                     collect_base_risky_pair_count=aux.get("collect_base_risky_pair_count", 0),
                     collect_candidate_risky_pair_count=aux.get("collect_candidate_risky_pair_count", 0),
+                    probe_enabled=aux.get("probe_enabled", 0),
+                    probe_triggered=aux.get("probe_triggered", 0),
+                    probe_service=(
+                        self._service_name(int(aux.get("probe_service_idx", -1)))
+                        if int(aux.get("probe_service_idx", -1)) >= 0 else ""
+                    ),
+                    probe_added_device=(
+                        self._device_name(int(aux.get("probe_device_idx", -1)))
+                        if int(aux.get("probe_device_idx", -1)) >= 0 else ""
+                    ),
+                    probe_removed_service=(
+                        self._service_name(int(aux.get("probe_removed_service_idx", -1)))
+                        if int(aux.get("probe_removed_service_idx", -1)) >= 0 else ""
+                    ),
+                    probe_removed_device=(
+                        self._device_name(int(aux.get("probe_removed_device_idx", -1)))
+                        if int(aux.get("probe_removed_device_idx", -1)) >= 0 else ""
+                    ),
+                    probe_reason=aux.get("probe_reason", ""),
+                    probe_candidate_score=aux.get("probe_candidate_score", 0.0),
+                    probe_pair_quality=aux.get("probe_pair_quality", 0.0),
+                    probe_prior_quality=aux.get("probe_prior_quality", 0.0),
+                    probe_runtime_trusted_before=aux.get("probe_runtime_trusted_before", 0),
+                    probe_evidence_untrusted_before=aux.get("probe_evidence_untrusted_before", 0.0),
+                    probe_runtime_risk_before=aux.get("probe_runtime_risk_before", 0.0),
+                    probe_queue_pressure_before=aux.get("probe_queue_pressure_before", 0.0),
+                    probe_pair_budget_pressure_before=aux.get("probe_pair_budget_pressure_before", 0.0),
+                    probe_capacity_ok=aux.get("probe_capacity_ok", 0),
+                    probe_projected_out=aux.get("probe_projected_out", 0),
+                    probe_feedback_quality=aux.get("probe_feedback_quality", ""),
+                    probe_reward=aux.get("probe_reward", 0.0),
+                    probe_inconclusive=aux.get("probe_inconclusive", 0),
+                    probe_verified_positive=aux.get("probe_verified_positive", 0),
+                    probe_negative=aux.get("probe_negative", 0),
                     collect_raw_change_count=aux.get("collect_raw_change_count", 0),
                     collect_exec_change_count=aux.get("collect_exec_change_count", 0),
                     deployment_rollout_deterministic=int(

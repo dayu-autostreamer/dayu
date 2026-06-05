@@ -4030,6 +4030,18 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             capacity_removed_mask = (
                 capacity_removed_mask.to(device).bool() if capacity_removed_mask is not None else None
             )
+
+            def _transition_bool_mask(name: str) -> torch.Tensor:
+                value = tr.get(name)
+                if isinstance(value, torch.Tensor) and value.shape == deploy_mask.shape:
+                    return value.to(device).bool()
+                return torch.zeros_like(deploy_mask, dtype=torch.bool, device=device)
+
+            probe_added_mask = _transition_bool_mask("probe_added_mask")
+            probe_verified_positive_mask = _transition_bool_mask("probe_verified_positive_mask")
+            probe_negative_mask = _transition_bool_mask("probe_negative_mask")
+            probe_inconclusive_mask = _transition_bool_mask("probe_inconclusive_mask")
+            probe_projected_out_mask = _transition_bool_mask("probe_projected_out_mask")
             quality_bucket = transition_quality_bucket(tr)
             with torch.no_grad():
                 _, _, _, probe_aux = self.evaluate(
@@ -4062,10 +4074,25 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                     option_quality_ratio=option_quality_ratio,
                     coverage_pressure_floor=float(coverage_pressure_floor),
                 )
+                edge_allowed_for_probe = probe_aux["static_allowed"].to(device).bool().clone()
+                probe_cloud_idx = self._cloud_index(edge_allowed_for_probe.size(1))
+                if probe_cloud_idx >= 0:
+                    edge_allowed_for_probe[:, probe_cloud_idx] = False
+                probe_added_mask = probe_added_mask & edge_allowed_for_probe
+                probe_verified_positive_mask = probe_verified_positive_mask & edge_allowed_for_probe
+                probe_negative_mask = probe_negative_mask & edge_allowed_for_probe
+                probe_inconclusive_mask = probe_inconclusive_mask & edge_allowed_for_probe
+                probe_projected_out_mask = probe_projected_out_mask & edge_allowed_for_probe
+                positive_mask = (positive_mask | probe_verified_positive_mask) & ~probe_negative_mask
+                negative_mask = (negative_mask | probe_negative_mask | probe_projected_out_mask)                     & ~probe_verified_positive_mask & ~probe_inconclusive_mask
+                raw_removed_mask = raw_removed_mask & ~probe_verified_positive_mask & ~probe_inconclusive_mask
+                unselected_negative_mask = unselected_negative_mask                     & ~probe_verified_positive_mask & ~probe_inconclusive_mask
+                aux_positive_mask = (aux_positive_mask | probe_verified_positive_mask)                     & ~probe_negative_mask & ~probe_inconclusive_mask
+                selected_mask_for_targets = deploy_mask & ~probe_inconclusive_mask
                 soft_target_info = self._deployment_soft_option_targets(
                     probe_aux["static_allowed"].to(device).bool(),
                     probe_aux,
-                    selected_mask=deploy_mask,
+                    selected_mask=selected_mask_for_targets,
                     raw_selected_mask=raw_deploy_mask,
                     quality_bucket=quality_bucket,
                     top_quality_tolerance=float(top_quality_tolerance),
@@ -4132,6 +4159,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 & ~soft_target_info["soft_target_positive_mask"].to(
                     device=raw_removed_logits.device,
                 ).bool()
+                & ~probe_verified_positive_mask.to(device=raw_removed_logits.device).bool()
+                & ~probe_inconclusive_mask.to(device=raw_removed_logits.device).bool()
             )
             soft_target_tensor = soft_target_info["soft_target"].to(
                 device=raw_removed_logits.device,
