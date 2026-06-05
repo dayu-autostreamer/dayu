@@ -3823,6 +3823,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             quality_order_margin_coef: float = 0.0,
             contrast_margin_coef: float = 0.45,
             memory_margin_coef: float = 0.25,
+            device_over_budget_mass_coef: float = 0.0,
+            device_over_budget_logit_margin: float = 0.0,
             effective_option_mass_coef: float = 0.04,
             non_effective_option_coef: float = 0.10,
             service_need_target_coef: float = 0.06,
@@ -3945,6 +3947,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality_order_pair_count_means = []
         contrast_margin_losses = []
         memory_margin_losses = []
+        device_over_budget_mass_losses = []
+        device_over_budget_surplus_counts = []
+        device_over_budget_candidate_masses = []
+        device_over_budget_top_probs = []
         effective_option_mass_losses = []
         non_effective_option_losses = []
         service_need_target_losses = []
@@ -4162,6 +4168,51 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 & ~probe_verified_positive_mask.to(device=raw_removed_logits.device).bool()
                 & ~probe_inconclusive_mask.to(device=raw_removed_logits.device).bool()
             )
+            device_over_budget_losses = []
+            device_over_budget_surplus = 0.0
+            device_over_budget_candidate_mass = 0.0
+            device_over_budget_top_prob = 0.0
+            edge_limit = cloud_idx if cloud_idx >= 0 else edge_allowed_t.size(1)
+            if edge_limit > 0 and capacity_removed_mask is not None:
+                capacity_removed_t = capacity_removed_mask.to(
+                    device=raw_removed_logits.device,
+                ).bool() & edge_allowed_t
+                protected_probe = (
+                    probe_verified_positive_mask.to(device=raw_removed_logits.device).bool()
+                    | probe_inconclusive_mask.to(device=raw_removed_logits.device).bool()
+                )
+                margin = float(device_over_budget_logit_margin)
+                for device_idx in range(edge_limit):
+                    surplus_count = int(
+                        capacity_removed_t[:, device_idx].float().sum().detach().cpu().item()
+                    )
+                    if surplus_count <= 0:
+                        continue
+                    candidate_mask = current_threshold_edge[:, device_idx] & ~protected_probe[:, device_idx]
+                    if not bool(candidate_mask.any().item()):
+                        continue
+                    candidate_logits = raw_removed_logits[:, device_idx].masked_select(candidate_mask)
+                    candidate_probs = raw_removed_probs[:, device_idx].masked_select(candidate_mask)
+                    top_k = min(surplus_count, int(candidate_logits.numel()))
+                    if top_k <= 0:
+                        continue
+                    top_logits = torch.topk(candidate_logits, k=top_k).values
+                    top_probs = torch.sigmoid(top_logits)
+                    device_over_budget_losses.append(F.softplus(top_logits + margin).mean())
+                    device_over_budget_surplus += float(top_k)
+                    device_over_budget_candidate_mass += _scalar_to_float(candidate_probs.detach().sum())
+                    device_over_budget_top_prob += _scalar_to_float(top_probs.detach().mean())
+            if device_over_budget_losses:
+                device_over_budget_mass_losses.append(torch.stack(device_over_budget_losses).mean())
+                device_over_budget_surplus_counts.append(device_over_budget_surplus)
+                device_over_budget_candidate_masses.append(device_over_budget_candidate_mass)
+                device_over_budget_top_probs.append(device_over_budget_top_prob / max(1.0, device_over_budget_surplus))
+            else:
+                device_over_budget_mass_losses.append(torch.tensor(0.0, device=raw_removed_logits.device))
+                device_over_budget_surplus_counts.append(0.0)
+                device_over_budget_candidate_masses.append(0.0)
+                device_over_budget_top_probs.append(0.0)
+
             soft_target_tensor = soft_target_info["soft_target"].to(
                 device=raw_removed_logits.device,
                 dtype=torch.float32,
@@ -4488,6 +4539,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality_order_margin_loss_t = torch.stack(quality_order_margin_losses).float()
         contrast_margin_loss_t = torch.stack(contrast_margin_losses).float()
         memory_margin_loss_t = torch.stack(memory_margin_losses).float()
+        device_over_budget_mass_loss_t = torch.stack(device_over_budget_mass_losses).float()
         effective_option_mass_loss_t = torch.stack(effective_option_mass_losses).float()
         non_effective_option_loss_t = torch.stack(non_effective_option_losses).float()
         service_need_target_loss_t = torch.stack(service_need_target_losses).float()
@@ -4633,6 +4685,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             + raw_removed_negative_loss
             + unselected_negative_loss
             + selected_non_soft_negative_loss
+            + device_over_budget_mass_loss
         )
         coverage_margin_loss = coverage_margin_loss_t.mean() * float(coverage_margin_coef)
         quality_margin_loss = quality_margin_loss_t.mean() * float(quality_margin_coef)
@@ -4640,6 +4693,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality_order_margin_loss = quality_order_margin_loss_t.mean() * float(quality_order_margin_coef)
         contrast_margin_loss = contrast_margin_loss_t.mean() * float(contrast_margin_coef)
         memory_margin_loss = memory_margin_loss_t.mean() * float(memory_margin_coef)
+        device_over_budget_mass_loss = (
+            device_over_budget_mass_loss_t.mean() * float(device_over_budget_mass_coef)
+        )
         effective_option_mass_loss = effective_option_mass_loss_t.mean() * float(effective_option_mass_coef)
         non_effective_option_loss = non_effective_option_loss_t.mean() * float(non_effective_option_coef)
         service_need_target_loss = service_need_target_loss_t.mean() * float(service_need_target_coef)
@@ -4712,6 +4768,10 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "quality_order_pair_count_mean": _mean_or_zero(quality_order_pair_count_means),
             "contrast_margin_loss": _scalar_to_float(contrast_margin_loss.detach()),
             "memory_margin_loss": _scalar_to_float(memory_margin_loss.detach()),
+            "device_over_budget_mass_loss": _scalar_to_float(device_over_budget_mass_loss.detach()),
+            "device_over_budget_surplus_samples": _mean_or_zero(device_over_budget_surplus_counts),
+            "device_over_budget_candidate_mass_mean": _mean_or_zero(device_over_budget_candidate_masses),
+            "device_over_budget_top_prob_mean": _mean_or_zero(device_over_budget_top_probs),
             "effective_option_mass_loss": _scalar_to_float(effective_option_mass_loss.detach()),
             "non_effective_option_loss": _scalar_to_float(non_effective_option_loss.detach()),
             "service_need_target_loss": _scalar_to_float(service_need_target_loss.detach()),
@@ -4723,6 +4783,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "soft_target_negative_ceiling": self._soft_target_negative_ceiling(),
             "selected_non_soft_negative_coef": float(selected_non_soft_negative_coef),
             "service_need_target_coef": float(service_need_target_coef),
+            "device_over_budget_mass_coef": float(device_over_budget_mass_coef),
+            "device_over_budget_logit_margin": float(device_over_budget_logit_margin),
             "executed_aux_positive_coef": float(executed_aux_positive_coef),
             "value_coef": float(value_coef),
             "approx_kl": 0.0,

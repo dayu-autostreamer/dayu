@@ -133,6 +133,9 @@ class HedgerDeploymentProbeCfg:
     bad_probe_cooldown_decisions: int = 16
     verified_positive_quality: Tuple[str, ...] = ("good", "mid")
     inconclusive_on_feedback_shortfall: bool = True
+    guard_interrupted_inconclusive: bool = True
+    negative_reward_ceiling: float = -3.25
+    negative_slo_threshold: float = 0.85
 
 
 @dataclass(frozen=True)
@@ -157,6 +160,8 @@ class HedgerDeploymentOfflineRLCfg:
     quality_order_margin_coef: float = 0.0
     contrast_margin_coef: float = 0.45
     memory_margin_coef: float = 0.25
+    device_over_budget_mass_coef: float = 0.0
+    device_over_budget_logit_margin: float = 0.0
     effective_option_mass_coef: float = 0.04
     non_effective_option_coef: float = 0.10
     service_need_target_coef: float = 0.06
@@ -736,6 +741,12 @@ class Hedger:
             bad_probe_cooldown_decisions=max(1, int(probe_cfg.get("bad_probe_cooldown_decisions", 16))),
             verified_positive_quality=verified_quality,
             inconclusive_on_feedback_shortfall=bool(probe_cfg.get("inconclusive_on_feedback_shortfall", True)),
+            guard_interrupted_inconclusive=bool(probe_cfg.get("guard_interrupted_inconclusive", True)),
+            negative_reward_ceiling=float(probe_cfg.get("negative_reward_ceiling", -3.25)),
+            negative_slo_threshold=min(
+                1.0,
+                max(0.0, float(probe_cfg.get("negative_slo_threshold", 0.85))),
+            ),
         )
 
         offline_rl_cfg = training.get("deployment_offline_rl") or {}
@@ -771,6 +782,14 @@ class Hedger:
             ),
             contrast_margin_coef=max(0.0, float(offline_rl_cfg.get("contrast_margin_coef", 0.45))),
             memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.25))),
+            device_over_budget_mass_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("device_over_budget_mass_coef", 0.0)),
+            ),
+            device_over_budget_logit_margin=max(
+                0.0,
+                float(offline_rl_cfg.get("device_over_budget_logit_margin", 0.0)),
+            ),
             effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.04))),
             non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.10))),
             service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.06))),
@@ -1225,7 +1244,7 @@ class Hedger:
             "per_service_prob_std_mean", "per_service_prob_range_mean",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef",
             "quality_order_margin_coef", "contrast_margin_coef",
-            "memory_margin_coef",
+            "memory_margin_coef", "device_over_budget_mass_coef", "device_over_budget_logit_margin",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "selected_non_soft_negative_coef",
@@ -3300,7 +3319,7 @@ class Hedger:
             "hotspot_weight", "runtime_risk_weight", "low_quality_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef",
             "quality_order_margin_coef", "contrast_margin_coef",
-            "memory_margin_coef",
+            "memory_margin_coef", "device_over_budget_mass_coef", "device_over_budget_logit_margin",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
@@ -3808,19 +3827,19 @@ class Hedger:
                 probe_triggered=collect_debug.get("probe_triggered", 0),
                 probe_service=(
                     self._service_name(int(collect_debug.get("probe_service_idx", -1)))
-                    if int(collect_debug.get("probe_service_idx", -1) or -1) >= 0 else ""
+                    if int(collect_debug.get("probe_service_idx", -1)) >= 0 else ""
                 ),
                 probe_added_device=(
                     self._device_name(int(collect_debug.get("probe_device_idx", -1)))
-                    if int(collect_debug.get("probe_device_idx", -1) or -1) >= 0 else ""
+                    if int(collect_debug.get("probe_device_idx", -1)) >= 0 else ""
                 ),
                 probe_removed_service=(
                     self._service_name(int(collect_debug.get("probe_removed_service_idx", -1)))
-                    if int(collect_debug.get("probe_removed_service_idx", -1) or -1) >= 0 else ""
+                    if int(collect_debug.get("probe_removed_service_idx", -1)) >= 0 else ""
                 ),
                 probe_removed_device=(
                     self._device_name(int(collect_debug.get("probe_removed_device_idx", -1)))
-                    if int(collect_debug.get("probe_removed_device_idx", -1) or -1) >= 0 else ""
+                    if int(collect_debug.get("probe_removed_device_idx", -1)) >= 0 else ""
                 ),
                 probe_reason=collect_debug.get("probe_reason", ""),
                 probe_candidate_score=collect_debug.get("probe_candidate_score", ""),
@@ -5019,7 +5038,15 @@ class Hedger:
         if cfg.allow_replace and cloud_idx > 0:
             current_devices = torch.nonzero(current_edge[service_idx, :cloud_idx], as_tuple=False).flatten()
             if current_devices.numel() > 0:
-                current_scores = score[service_idx, :cloud_idx].detach().clone()
+                keep_score = (
+                    quality
+                    + 0.25 * runtime_trusted
+                    - 0.25 * evidence_untrusted
+                    - cfg.runtime_risk_weight * runtime_risk
+                    - cfg.queue_pressure_weight * queue_pressure
+                    - cfg.memory_pressure_weight * pair_budget_pressure
+                )
+                current_scores = keep_score[service_idx, :cloud_idx].detach().clone()
                 current_scores = torch.where(
                     current_edge[service_idx, :cloud_idx],
                     current_scores,
@@ -5163,13 +5190,21 @@ class Hedger:
             or getattr(feedback_result, "guard_interrupted", False)
         )
         quality = str(quality_bucket or "unknown").strip().lower()
-        inconclusive = bool(cfg.inconclusive_on_feedback_shortfall and (feedback_shortfall or timed_out))
-        verified_positive = bool(
-            quality in cfg.verified_positive_quality
-            and not inconclusive
-            and not guard_interrupted
-        )
-        negative = bool(quality == "bad" and not inconclusive) or bool(guard_interrupted and not inconclusive)
+        try:
+            slo_violation = float(metrics.get("e2e_slo_violation", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            slo_violation = 0.0
+        feedback_incomplete = bool(cfg.inconclusive_on_feedback_shortfall and (feedback_shortfall or timed_out))
+        guard_inconclusive = bool(cfg.guard_interrupted_inconclusive and guard_interrupted)
+        inconclusive = bool(feedback_incomplete or guard_inconclusive)
+        verified_positive = bool(quality in cfg.verified_positive_quality and not inconclusive)
+        strong_bad = bool(quality == "bad" and not inconclusive)
+        reward_ceiling = float(cfg.negative_reward_ceiling)
+        reward_supports_negative = (not math.isfinite(reward_ceiling)) or float(reward) <= reward_ceiling
+        slo_supports_negative = slo_violation >= float(cfg.negative_slo_threshold)
+        negative = bool(strong_bad and reward_supports_negative and slo_supports_negative)
+        if strong_bad and not negative:
+            inconclusive = True
         aux["probe_feedback_quality"] = quality
         aux["probe_reward"] = float(reward)
         aux["probe_inconclusive"] = int(inconclusive)
@@ -7864,6 +7899,8 @@ class Hedger:
                         quality_order_margin_coef=offline_rl_record_cfg.quality_order_margin_coef,
                         contrast_margin_coef=offline_rl_record_cfg.contrast_margin_coef,
                         memory_margin_coef=offline_rl_record_cfg.memory_margin_coef,
+                        device_over_budget_mass_coef=offline_rl_record_cfg.device_over_budget_mass_coef,
+                        device_over_budget_logit_margin=offline_rl_record_cfg.device_over_budget_logit_margin,
                         effective_option_mass_coef=offline_rl_record_cfg.effective_option_mass_coef,
                         non_effective_option_coef=offline_rl_record_cfg.non_effective_option_coef,
                         service_need_target_coef=offline_rl_record_cfg.service_need_target_coef,
@@ -8695,7 +8732,7 @@ class Hedger:
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight",
             "coverage_margin_coef", "quality_margin_coef", "ranking_margin_coef",
             "quality_order_margin_coef", "contrast_margin_coef",
-            "memory_margin_coef",
+            "memory_margin_coef", "device_over_budget_mass_coef", "device_over_budget_logit_margin",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "selected_non_soft_negative_coef",
@@ -9463,6 +9500,12 @@ class Hedger:
                     ),
                     contrast_margin_coef=self.training_cfg.deployment_offline_rl.contrast_margin_coef,
                     memory_margin_coef=self.training_cfg.deployment_offline_rl.memory_margin_coef,
+                    device_over_budget_mass_coef=(
+                        self.training_cfg.deployment_offline_rl.device_over_budget_mass_coef
+                    ),
+                    device_over_budget_logit_margin=(
+                        self.training_cfg.deployment_offline_rl.device_over_budget_logit_margin
+                    ),
                     effective_option_mass_coef=self.training_cfg.deployment_offline_rl.effective_option_mass_coef,
                     non_effective_option_coef=self.training_cfg.deployment_offline_rl.non_effective_option_coef,
                     service_need_target_coef=self.training_cfg.deployment_offline_rl.service_need_target_coef,
@@ -10120,6 +10163,8 @@ class Hedger:
             "quality_order_margin_coef": cfg.quality_order_margin_coef,
             "contrast_margin_coef": cfg.contrast_margin_coef,
             "memory_margin_coef": cfg.memory_margin_coef,
+            "device_over_budget_mass_coef": cfg.device_over_budget_mass_coef,
+            "device_over_budget_logit_margin": cfg.device_over_budget_logit_margin,
             "effective_option_mass_coef": cfg.effective_option_mass_coef,
             "non_effective_option_coef": cfg.non_effective_option_coef,
             "service_need_target_coef": cfg.service_need_target_coef,
