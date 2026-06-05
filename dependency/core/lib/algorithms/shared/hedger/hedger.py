@@ -145,27 +145,32 @@ class HedgerDeploymentOfflineRLCfg:
     advantage_temperature: float = 1.0
     min_advantage_weight: float = 0.0
     max_advantage_weight: float = 16.0
-    actor_bc_coef: float = 0.85
-    executed_aux_positive_coef: float = 0.08
+    actor_bc_coef: float = 0.20
+    executed_aux_positive_coef: float = 0.04
     negative_bc_coef: float = 0.12
-    raw_removed_negative_coef: float = 0.05
-    unselected_negative_coef: float = 0.015
+    raw_removed_negative_coef: float = 0.12
+    unselected_negative_coef: float = 0.01
     selected_non_soft_negative_coef: float = 0.22
     value_coef: float = 0.45
     entropy_coef: float = 0.0
     bootstrap_current_value: bool = False
-    coverage_margin_coef: float = 0.55
-    quality_margin_coef: float = 0.35
-    ranking_margin_coef: float = 0.35
+    coverage_margin_coef: float = 0.20
+    quality_margin_coef: float = 0.12
+    ranking_margin_coef: float = 0.0
     quality_order_margin_coef: float = 0.0
-    contrast_margin_coef: float = 0.45
-    memory_margin_coef: float = 0.25
-    device_over_budget_mass_coef: float = 0.0
+    contrast_margin_coef: float = 0.0
+    memory_margin_coef: float = 0.70
+    device_over_budget_mass_coef: float = 0.30
     device_over_budget_logit_margin: float = 0.0
-    effective_option_mass_coef: float = 0.04
-    non_effective_option_coef: float = 0.10
-    service_need_target_coef: float = 0.06
-    soft_target_bc_coef: float = 0.65
+    effective_option_mass_coef: float = 0.0
+    non_effective_option_coef: float = 0.06
+    service_need_target_coef: float = 0.0
+    replica_marginal_target_coef: float = 0.70
+    replica_positive_margin_coef: float = 0.14
+    replica_negative_margin_coef: float = 0.06
+    option_slack_coef: float = 0.12
+    device_concentration_coef: float = 0.16
+    soft_target_bc_coef: float = 0.20
     bad_sample_multiplier: float = 1.20
     bad_sample_max_ratio: float = 0.12
     bad_sample_min_count: int = 1
@@ -761,11 +766,11 @@ class Hedger:
             advantage_temperature=max(1e-6, float(offline_rl_cfg.get("advantage_temperature", 1.0))),
             min_advantage_weight=max(0.0, float(offline_rl_cfg.get("min_advantage_weight", 0.0))),
             max_advantage_weight=max(1.0, float(offline_rl_cfg.get("max_advantage_weight", 20.0))),
-            actor_bc_coef=max(0.0, float(offline_rl_cfg.get("actor_bc_coef", 0.85))),
-            executed_aux_positive_coef=max(0.0, float(offline_rl_cfg.get("executed_aux_positive_coef", 0.08))),
+            actor_bc_coef=max(0.0, float(offline_rl_cfg.get("actor_bc_coef", 0.20))),
+            executed_aux_positive_coef=max(0.0, float(offline_rl_cfg.get("executed_aux_positive_coef", 0.04))),
             negative_bc_coef=max(0.0, float(offline_rl_cfg.get("negative_bc_coef", 0.12))),
-            raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.05))),
-            unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.015))),
+            raw_removed_negative_coef=max(0.0, float(offline_rl_cfg.get("raw_removed_negative_coef", 0.12))),
+            unselected_negative_coef=max(0.0, float(offline_rl_cfg.get("unselected_negative_coef", 0.01))),
             selected_non_soft_negative_coef=max(
                 0.0,
                 float(offline_rl_cfg.get("selected_non_soft_negative_coef", 0.22)),
@@ -773,27 +778,44 @@ class Hedger:
             value_coef=max(0.0, float(offline_rl_cfg.get("value_coef", 0.45))),
             entropy_coef=max(0.0, float(offline_rl_cfg.get("entropy_coef", 0.0))),
             bootstrap_current_value=bool(offline_rl_cfg.get("bootstrap_current_value", False)),
-            coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.55))),
-            quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.35))),
-            ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.35))),
+            coverage_margin_coef=max(0.0, float(offline_rl_cfg.get("coverage_margin_coef", 0.20))),
+            quality_margin_coef=max(0.0, float(offline_rl_cfg.get("quality_margin_coef", 0.12))),
+            ranking_margin_coef=max(0.0, float(offline_rl_cfg.get("ranking_margin_coef", 0.0))),
             quality_order_margin_coef=max(
                 0.0,
                 float(offline_rl_cfg.get("quality_order_margin_coef", 0.0)),
             ),
-            contrast_margin_coef=max(0.0, float(offline_rl_cfg.get("contrast_margin_coef", 0.45))),
-            memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.25))),
+            contrast_margin_coef=max(0.0, float(offline_rl_cfg.get("contrast_margin_coef", 0.0))),
+            memory_margin_coef=max(0.0, float(offline_rl_cfg.get("memory_margin_coef", 0.70))),
             device_over_budget_mass_coef=max(
                 0.0,
-                float(offline_rl_cfg.get("device_over_budget_mass_coef", 0.0)),
+                float(offline_rl_cfg.get("device_over_budget_mass_coef", 0.30)),
             ),
             device_over_budget_logit_margin=max(
                 0.0,
                 float(offline_rl_cfg.get("device_over_budget_logit_margin", 0.0)),
             ),
-            effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.04))),
-            non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.10))),
-            service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.06))),
-            soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.65))),
+            effective_option_mass_coef=max(0.0, float(offline_rl_cfg.get("effective_option_mass_coef", 0.0))),
+            non_effective_option_coef=max(0.0, float(offline_rl_cfg.get("non_effective_option_coef", 0.06))),
+            service_need_target_coef=max(0.0, float(offline_rl_cfg.get("service_need_target_coef", 0.0))),
+            replica_marginal_target_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("replica_marginal_target_coef", 0.70)),
+            ),
+            replica_positive_margin_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("replica_positive_margin_coef", 0.14)),
+            ),
+            replica_negative_margin_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("replica_negative_margin_coef", 0.06)),
+            ),
+            option_slack_coef=max(0.0, float(offline_rl_cfg.get("option_slack_coef", 0.12))),
+            device_concentration_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("device_concentration_coef", 0.16)),
+            ),
+            soft_target_bc_coef=max(0.0, float(offline_rl_cfg.get("soft_target_bc_coef", 0.20))),
             bad_sample_multiplier=max(0.0, float(offline_rl_cfg.get("bad_sample_multiplier", 1.20))),
             bad_sample_max_ratio=min(
                 1.0,
@@ -1162,7 +1184,13 @@ class Hedger:
             "quality_order_margin_loss", "quality_order_gap_mean",
             "quality_order_violation_ratio", "quality_order_pair_count_mean",
             "contrast_margin_loss",
-            "memory_margin_loss", "effective_option_mass_loss", "non_effective_option_loss",
+            "memory_margin_loss", "device_over_budget_mass_loss",
+            "device_over_budget_surplus_samples", "device_over_budget_candidate_mass_mean",
+            "device_over_budget_top_prob_mean",
+            "effective_option_mass_loss", "non_effective_option_loss",
+            "replica_marginal_target_loss", "replica_positive_margin_loss",
+            "replica_negative_margin_loss", "option_slack_loss",
+            "device_concentration_loss",
             "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
             "actor_raw_removed_weight_mean", "actor_unselected_negative_weight_mean",
@@ -1209,6 +1237,13 @@ class Hedger:
             "service_need_pair_bias_non_effective_mean", "service_need_pair_bias_untrusted_mean",
             "service_need_target_mean", "service_need_prob_mean",
             "service_need_target_gap_mean", "service_need_target_loss",
+            "replica_marginal_value_mean", "replica_soft_target_mean",
+            "replica_positive_count_mean", "replica_negative_count_mean",
+            "service_option_slack_mean", "option_slack_target_mean",
+            "threshold_edge_count_mean", "single_option_service_count",
+            "multi_option_service_count", "zero_option_service_count",
+            "device_edge_mass_max_share", "device_edge_mass_entropy",
+            "device_concentration_target",
             "unselected_soft_positive_count_mean",
             "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
             "selected_non_soft_positive_count_mean",
@@ -1246,6 +1281,9 @@ class Hedger:
             "quality_order_margin_coef", "contrast_margin_coef",
             "memory_margin_coef", "device_over_budget_mass_coef", "device_over_budget_logit_margin",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
+            "replica_marginal_target_coef", "replica_positive_margin_coef",
+            "replica_negative_margin_coef", "option_slack_coef",
+            "device_concentration_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
@@ -3276,6 +3314,13 @@ class Hedger:
             "service_need_pair_bias_non_effective_mean", "service_need_pair_bias_untrusted_mean",
             "service_need_target_mean", "service_need_prob_mean",
             "service_need_target_gap_mean", "service_need_target_loss",
+            "replica_marginal_value_mean", "replica_soft_target_mean",
+            "replica_positive_count_mean", "replica_negative_count_mean",
+            "service_option_slack_mean", "option_slack_target_mean",
+            "threshold_edge_count_mean", "single_option_service_count",
+            "multi_option_service_count", "zero_option_service_count",
+            "device_edge_mass_max_share", "device_edge_mass_entropy",
+            "device_concentration_target",
             "unselected_soft_positive_count_mean",
             "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
             "selected_non_soft_positive_count_mean",
@@ -3304,7 +3349,8 @@ class Hedger:
             "contrast_margin_gap_mean",
             "top_quality_candidate_count_mean", "non_top_candidate_count_mean", "quality_gap_top_second_mean",
             "per_service_prob_std_mean", "per_service_prob_range_mean",
-            "capacity_removed_cnt", "selected_queue_pressure_cost", "selected_runtime_risk_cost",
+            "capacity_removed_cnt",
+            "selected_queue_pressure_cost", "selected_runtime_risk_cost",
             "selected_unknown_option_cost", "selected_stale_option_cost",
             "selected_runtime_weakness_cost", "selected_low_quality_option_cost",
             "selected_evidence_untrusted_cost", "selected_risky_pair_count",
@@ -3321,6 +3367,9 @@ class Hedger:
             "quality_order_margin_coef", "contrast_margin_coef",
             "memory_margin_coef", "device_over_budget_mass_coef", "device_over_budget_logit_margin",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
+            "replica_marginal_target_coef", "replica_positive_margin_coef",
+            "replica_negative_margin_coef", "option_slack_coef",
+            "device_concentration_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
@@ -7779,6 +7828,19 @@ class Hedger:
                         service_need_prob_mean=aux.get("service_need_prob_mean", 0.0),
                         service_need_target_gap_mean=aux.get("service_need_target_gap_mean", 0.0),
                         service_need_target_loss=aux.get("service_need_target_loss", 0.0),
+                        replica_marginal_value_mean=aux.get("replica_marginal_value_mean", 0.0),
+                        replica_soft_target_mean=aux.get("replica_soft_target_mean", 0.0),
+                        replica_positive_count_mean=aux.get("replica_positive_count_mean", 0.0),
+                        replica_negative_count_mean=aux.get("replica_negative_count_mean", 0.0),
+                        service_option_slack_mean=aux.get("service_option_slack_mean", 0.0),
+                        option_slack_target_mean=aux.get("option_slack_target_mean", 0.0),
+                        threshold_edge_count_mean=aux.get("threshold_edge_count_mean", 0.0),
+                        single_option_service_count=aux.get("single_option_service_count", 0.0),
+                        multi_option_service_count=aux.get("multi_option_service_count", 0.0),
+                        zero_option_service_count=aux.get("zero_option_service_count", 0.0),
+                        device_edge_mass_max_share=aux.get("device_edge_mass_max_share", 0.0),
+                        device_edge_mass_entropy=aux.get("device_edge_mass_entropy", 0.0),
+                        device_concentration_target=aux.get("device_concentration_target", 0.0),
                         unselected_soft_positive_count_mean=aux.get(
                             "unselected_soft_positive_count_mean",
                             0.0,
@@ -7904,6 +7966,11 @@ class Hedger:
                         effective_option_mass_coef=offline_rl_record_cfg.effective_option_mass_coef,
                         non_effective_option_coef=offline_rl_record_cfg.non_effective_option_coef,
                         service_need_target_coef=offline_rl_record_cfg.service_need_target_coef,
+                        replica_marginal_target_coef=offline_rl_record_cfg.replica_marginal_target_coef,
+                        replica_positive_margin_coef=offline_rl_record_cfg.replica_positive_margin_coef,
+                        replica_negative_margin_coef=offline_rl_record_cfg.replica_negative_margin_coef,
+                        option_slack_coef=offline_rl_record_cfg.option_slack_coef,
+                        device_concentration_coef=offline_rl_record_cfg.device_concentration_coef,
                         soft_target_bc_coef=offline_rl_record_cfg.soft_target_bc_coef,
                         soft_target_negative_ceiling=self.deployment_agent_params[
                             "soft_target_negative_ceiling"
@@ -8677,6 +8744,13 @@ class Hedger:
                                 "service_need_bias_mean", "service_need_bias_std", "service_need_bias_range",
                                 "service_need_target_mean", "service_need_prob_mean",
                                 "service_need_target_gap_mean", "service_need_target_loss",
+                                "replica_marginal_value_mean", "replica_soft_target_mean",
+                                "replica_positive_count_mean", "replica_negative_count_mean",
+                                "service_option_slack_mean", "option_slack_target_mean",
+                                "threshold_edge_count_mean", "single_option_service_count",
+                                "multi_option_service_count", "zero_option_service_count",
+                                "device_edge_mass_max_share", "device_edge_mass_entropy",
+                                "device_concentration_target",
                                 "unselected_soft_positive_count_mean",
                                 "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
                                 "selected_non_soft_positive_count_mean",
@@ -8734,6 +8808,9 @@ class Hedger:
             "quality_order_margin_coef", "contrast_margin_coef",
             "memory_margin_coef", "device_over_budget_mass_coef", "device_over_budget_logit_margin",
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
+            "replica_marginal_target_coef", "replica_positive_margin_coef",
+            "replica_negative_margin_coef", "option_slack_coef",
+            "device_concentration_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
@@ -9376,6 +9453,19 @@ class Hedger:
                     service_need_prob_mean=aux.get("service_need_prob_mean", 0.0),
                     service_need_target_gap_mean=aux.get("service_need_target_gap_mean", 0.0),
                     service_need_target_loss=aux.get("service_need_target_loss", 0.0),
+                    replica_marginal_value_mean=aux.get("replica_marginal_value_mean", 0.0),
+                    replica_soft_target_mean=aux.get("replica_soft_target_mean", 0.0),
+                    replica_positive_count_mean=aux.get("replica_positive_count_mean", 0.0),
+                    replica_negative_count_mean=aux.get("replica_negative_count_mean", 0.0),
+                    service_option_slack_mean=aux.get("service_option_slack_mean", 0.0),
+                    option_slack_target_mean=aux.get("option_slack_target_mean", 0.0),
+                    threshold_edge_count_mean=aux.get("threshold_edge_count_mean", 0.0),
+                    single_option_service_count=aux.get("single_option_service_count", 0.0),
+                    multi_option_service_count=aux.get("multi_option_service_count", 0.0),
+                    zero_option_service_count=aux.get("zero_option_service_count", 0.0),
+                    device_edge_mass_max_share=aux.get("device_edge_mass_max_share", 0.0),
+                    device_edge_mass_entropy=aux.get("device_edge_mass_entropy", 0.0),
+                    device_concentration_target=aux.get("device_concentration_target", 0.0),
                     unselected_soft_positive_count_mean=aux.get(
                         "unselected_soft_positive_count_mean",
                         0.0,
@@ -9509,6 +9599,19 @@ class Hedger:
                     effective_option_mass_coef=self.training_cfg.deployment_offline_rl.effective_option_mass_coef,
                     non_effective_option_coef=self.training_cfg.deployment_offline_rl.non_effective_option_coef,
                     service_need_target_coef=self.training_cfg.deployment_offline_rl.service_need_target_coef,
+                    replica_marginal_target_coef=(
+                        self.training_cfg.deployment_offline_rl.replica_marginal_target_coef
+                    ),
+                    replica_positive_margin_coef=(
+                        self.training_cfg.deployment_offline_rl.replica_positive_margin_coef
+                    ),
+                    replica_negative_margin_coef=(
+                        self.training_cfg.deployment_offline_rl.replica_negative_margin_coef
+                    ),
+                    option_slack_coef=self.training_cfg.deployment_offline_rl.option_slack_coef,
+                    device_concentration_coef=(
+                        self.training_cfg.deployment_offline_rl.device_concentration_coef
+                    ),
                     soft_target_bc_coef=self.training_cfg.deployment_offline_rl.soft_target_bc_coef,
                     soft_target_negative_ceiling=self.deployment_agent_params[
                         "soft_target_negative_ceiling"
@@ -10168,6 +10271,11 @@ class Hedger:
             "effective_option_mass_coef": cfg.effective_option_mass_coef,
             "non_effective_option_coef": cfg.non_effective_option_coef,
             "service_need_target_coef": cfg.service_need_target_coef,
+            "replica_marginal_target_coef": cfg.replica_marginal_target_coef,
+            "replica_positive_margin_coef": cfg.replica_positive_margin_coef,
+            "replica_negative_margin_coef": cfg.replica_negative_margin_coef,
+            "option_slack_coef": cfg.option_slack_coef,
+            "device_concentration_coef": cfg.device_concentration_coef,
             "soft_target_bc_coef": cfg.soft_target_bc_coef,
             "positive_logit_margin": cfg.positive_logit_margin,
             "negative_logit_margin": cfg.negative_logit_margin,

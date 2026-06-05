@@ -2193,6 +2193,98 @@ class _DeploymentBackbonePPO(nn.Module):
             "effective_candidate_mass": effective_candidate_mass,
         }
 
+    def _deployment_replica_marginal_targets(
+            self,
+            edge_allowed: torch.Tensor,
+            label_quality: torch.Tensor,
+            soft_target: torch.Tensor,
+            effective_option_mask: torch.Tensor,
+            pressure_weight: torch.Tensor,
+            runtime_risk: torch.Tensor,
+            queue_pressure: torch.Tensor,
+            pair_budget_pressure: torch.Tensor,
+            evidence_untrusted: torch.Tensor,
+            active_hotspot: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Build scene-adaptive replica targets from marginal utility.
+
+        This deliberately avoids hard-coded per-service replica counts.  A
+        service receives more edge replicas only when additional safe,
+        high-quality options still have positive marginal value under the
+        current pressure, risk, memory, and rank-decay signals.
+        """
+        device = edge_allowed.device
+        dtype = torch.float32
+        edge_allowed = edge_allowed.to(device=device).bool()
+        label_quality = label_quality.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        soft_target = soft_target.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        effective_option_mask = effective_option_mask.to(device=device).bool() & edge_allowed
+        pressure_weight = pressure_weight.to(device=device, dtype=dtype).view(-1).clamp(0.0, 1.0)
+        runtime_risk = runtime_risk.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        queue_pressure = queue_pressure.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        pair_budget_pressure = pair_budget_pressure.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        evidence_untrusted = evidence_untrusted.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        active_hotspot = active_hotspot.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+
+        num_services, num_devices = edge_allowed.shape
+        quality_threshold = float(self._positive_quality_threshold())
+        quality_gain = (
+            (label_quality - quality_threshold)
+            / max(1e-3, 1.0 - quality_threshold)
+        ).clamp(-1.0, 1.0)
+        soft_gain = ((soft_target - 0.5) * 2.0).clamp(-1.0, 1.0)
+        pressure = pressure_weight.view(num_services, 1)
+        risk_cost = (
+            0.42 * runtime_risk
+            + 0.28 * queue_pressure
+            + 0.30 * pair_budget_pressure
+            + 0.24 * evidence_untrusted
+            + 0.20 * active_hotspot
+        ).clamp(0.0, 2.0)
+        marginal_base = (
+            0.95 * quality_gain
+            + 0.72 * soft_gain
+            + 0.82 * pressure
+            - risk_cost
+        )
+        marginal_base = torch.where(
+            effective_option_mask,
+            marginal_base,
+            torch.full_like(marginal_base, -4.0),
+        )
+
+        rank_order = marginal_base.argsort(dim=1, descending=True)
+        rank_positions = torch.arange(num_devices, device=device, dtype=dtype).view(1, -1).expand(
+            num_services,
+            -1,
+        )
+        rank = torch.empty_like(marginal_base, dtype=dtype)
+        rank.scatter_(1, rank_order, rank_positions)
+        rank_cost = rank * (0.18 + 0.48 * (1.0 - pressure))
+        marginal_value = marginal_base - rank_cost
+        center = 0.24 - 0.30 * pressure
+        target = torch.sigmoid((marginal_value - center) / 0.24).clamp(0.0, 1.0)
+        target = torch.where(edge_allowed, target, torch.zeros_like(target))
+        candidate_count = effective_option_mask.to(dtype=dtype).sum(dim=1)
+        target_weight = edge_allowed.to(dtype=dtype) * (
+            0.25
+            + 0.95 * pressure
+            + 0.45 * label_quality
+            + 0.45 * effective_option_mask.to(dtype=dtype)
+            + 0.25 * target
+        )
+        positive_mask = (target >= 0.55) & effective_option_mask
+        negative_mask = (target <= 0.35) & edge_allowed & ~positive_mask
+        return {
+            "replica_marginal_value": marginal_value,
+            "replica_soft_target": target,
+            "replica_target_weight": target_weight.detach(),
+            "replica_positive_mask": positive_mask,
+            "replica_negative_mask": negative_mask,
+            "replica_candidate_count": candidate_count,
+            "replica_pressure_weight": pressure_weight,
+        }
+
     def _deployment_plan_level_terms(
             self,
             select_logits: torch.Tensor,
@@ -2209,6 +2301,7 @@ class _DeploymentBackbonePPO(nn.Module):
             ranking_logit_margin: float = 0.15,
             quality_order_logit_margin: float = 0.18,
             contrast_logit_margin: float = 0.30,
+            negative_logit_margin: float = 0.18,
             top_quality_tolerance: float = 0.05,
             coverage_pressure_floor: float = 0.35,
             option_quality_ratio: Optional[float] = None,
@@ -2257,6 +2350,18 @@ class _DeploymentBackbonePPO(nn.Module):
         soft_target_untrusted_exploration_mask = option_masks["soft_target_untrusted_exploration_mask"]
         soft_target_exploration_floor = option_masks["soft_target_exploration_floor"].detach()
         soft_target_risk_penalty = option_masks["soft_target_risk_penalty"].detach()
+
+        def ctx_matrix(name: str, default: float = 0.0) -> torch.Tensor:
+            value = policy_ctx.get(name)
+            if isinstance(value, torch.Tensor) and value.shape == static_allowed.shape:
+                return value.to(device=device, dtype=dtype)
+            return torch.full(static_allowed.shape, float(default), device=device, dtype=dtype)
+
+        queue_pressure = ctx_matrix("queue_pressure", 0.0).clamp(0.0, 1.0)
+        runtime_risk = ctx_matrix("runtime_risk_score", 0.0).clamp(0.0, 1.0)
+        pair_budget_pressure = ctx_matrix("pair_budget_pressure", 0.0).clamp(0.0, 1.0)
+        evidence_untrusted = ctx_matrix("evidence_untrusted", 0.0).clamp(0.0, 1.0)
+        active_hotspot = ctx_matrix("active_pair_hotspot", 0.0).clamp(0.0, 1.0)
 
         select_prob = torch.sigmoid(select_logits).clamp(1e-6, 1.0 - 1e-6)
         pair_suppression_logits = select_logits
@@ -2431,6 +2536,83 @@ class _DeploymentBackbonePPO(nn.Module):
             torch.sigmoid(select_logits.to(dtype=dtype) / mass_tau),
             torch.zeros_like(select_logits, dtype=dtype),
         )
+        replica_targets = self._deployment_replica_marginal_targets(
+            edge_allowed=edge_allowed,
+            label_quality=label_quality,
+            soft_target=soft_target,
+            effective_option_mask=effective_option_mask,
+            pressure_weight=pressure_weight,
+            runtime_risk=runtime_risk,
+            queue_pressure=queue_pressure,
+            pair_budget_pressure=pair_budget_pressure,
+            evidence_untrusted=evidence_untrusted,
+            active_hotspot=active_hotspot,
+        )
+        replica_soft_target = replica_targets["replica_soft_target"].detach()
+        replica_target_weight = replica_targets["replica_target_weight"].to(
+            device=select_logits.device,
+            dtype=dtype,
+        )
+        replica_positive_mask = replica_targets["replica_positive_mask"].to(device=select_logits.device).bool()
+        replica_negative_mask = replica_targets["replica_negative_mask"].to(device=select_logits.device).bool()
+        replica_weight_den = replica_target_weight.sum().clamp_min(1.0)
+        replica_marginal_target_loss = (
+            F.binary_cross_entropy_with_logits(
+                select_logits,
+                replica_soft_target,
+                reduction="none",
+            )
+            * replica_target_weight
+        ).sum() / replica_weight_den
+        if bool(replica_positive_mask.any().item()):
+            replica_positive_margin_loss = F.softplus(
+                float(positive_logit_margin) - select_logits.masked_select(replica_positive_mask)
+            ).mean()
+        else:
+            replica_positive_margin_loss = zero
+        if bool(replica_negative_mask.any().item()):
+            replica_negative_margin_loss = F.softplus(
+                select_logits.masked_select(replica_negative_mask) + float(negative_logit_margin)
+            ).mean()
+        else:
+            replica_negative_margin_loss = zero
+        positive_replica_mass = torch.where(
+            replica_positive_mask,
+            threshold_mass_prob,
+            torch.zeros_like(threshold_mass_prob),
+        )
+        service_best_replica_mass = positive_replica_mass.max(dim=1).values
+        service_option_slack = (positive_replica_mass.sum(dim=1) - service_best_replica_mass).clamp_min(0.0)
+        replica_candidate_count = replica_targets["replica_candidate_count"].to(device=device, dtype=dtype)
+        option_slack_target = (
+            pressure_weight
+            * (replica_candidate_count - 1.0).clamp_min(0.0)
+            * 0.35
+        ).detach()
+        option_slack_floor = torch.maximum(service_option_slack.detach(), option_slack_target)
+        option_slack_loss = (
+            F.smooth_l1_loss(service_option_slack, option_slack_floor, reduction="none")
+            * coverage_weights.detach()
+        ).sum() / coverage_weights.detach().sum().clamp_min(1.0)
+        if cloud_idx > 0:
+            device_mass = threshold_mass_prob[:, :cloud_idx].sum(dim=0)
+            total_device_mass = device_mass.sum().clamp_min(1e-6)
+            device_share = device_mass / total_device_mass
+            device_mass_max_share = device_share.max()
+            edge_device_count = max(1, int(cloud_idx))
+            device_concentration_target = min(0.72, 1.0 / float(edge_device_count) + 0.22)
+            device_concentration_loss = F.relu(
+                device_mass_max_share - float(device_concentration_target)
+            ).pow(2)
+            device_mass_entropy = (
+                -(device_share * torch.log(device_share.clamp_min(1e-6))).sum()
+                / math.log(max(2, edge_device_count))
+            )
+        else:
+            device_mass_max_share = zero
+            device_concentration_loss = zero
+            device_mass_entropy = zero
+            device_concentration_target = 0.0
         service_predicted_mass = threshold_mass_prob.sum(dim=1)
         mass_targets = self._deployment_service_mass_targets(
             edge_allowed=edge_allowed,
@@ -2574,6 +2756,23 @@ class _DeploymentBackbonePPO(nn.Module):
         unselected_soft_positive_logit = select_logits.masked_select(unselected_soft_positive_mask)
         selected_non_soft_positive_prob = select_prob.masked_select(selected_non_soft_positive_mask)
         selected_non_soft_positive_logit = select_logits.masked_select(selected_non_soft_positive_mask)
+        replica_marginal_values = replica_targets["replica_marginal_value"].masked_select(edge_allowed)
+        replica_soft_target_values = replica_soft_target.masked_select(edge_allowed)
+        replica_positive_count = replica_positive_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
+        replica_negative_count = replica_negative_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge)
+        threshold_edge_count = (
+            (select_logits > 0.0) & edge_allowed
+        ).to(dtype=dtype).sum(dim=1)
+        threshold_edge_count_feasible = threshold_edge_count.masked_select(has_edge)
+        single_option_services = (
+            (threshold_edge_count == 1.0) & has_edge
+        ).to(dtype=dtype).sum()
+        multi_option_services = (
+            (threshold_edge_count >= 2.0) & has_edge
+        ).to(dtype=dtype).sum()
+        zero_option_services = (
+            (threshold_edge_count <= 0.0) & has_edge
+        ).to(dtype=dtype).sum()
         option_floor_values = option_masks["option_floor"].masked_select(has_effective_candidate)
         soft_target_values = soft_target.masked_select(edge_allowed)
         soft_target_weights = soft_target_weight.masked_select(edge_allowed)
@@ -2620,6 +2819,11 @@ class _DeploymentBackbonePPO(nn.Module):
             "effective_option_mass_loss": effective_option_mass_loss,
             "non_effective_option_loss": non_effective_option_loss,
             "service_need_target_loss": service_need_target_loss,
+            "replica_marginal_target_loss": replica_marginal_target_loss,
+            "replica_positive_margin_loss": replica_positive_margin_loss,
+            "replica_negative_margin_loss": replica_negative_margin_loss,
+            "option_slack_loss": option_slack_loss,
+            "device_concentration_loss": device_concentration_loss,
             "pair_centered_logit_std": pair_centered_logit_std,
             "edge_policy_prob_mean": edge_prob_mean,
             "edge_policy_prob_std": edge_prob_std,
@@ -2698,6 +2902,39 @@ class _DeploymentBackbonePPO(nn.Module):
             "service_need_target_gap_mean": (
                 service_need_target_gap.masked_select(has_effective_candidate).mean()
                 if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "replica_marginal_value_mean": (
+                replica_marginal_values.mean() if bool(replica_marginal_values.numel()) else zero
+            ),
+            "replica_soft_target_mean": (
+                replica_soft_target_values.mean() if bool(replica_soft_target_values.numel()) else zero
+            ),
+            "replica_positive_count_mean": (
+                replica_positive_count.mean() if bool(replica_positive_count.numel()) else zero
+            ),
+            "replica_negative_count_mean": (
+                replica_negative_count.mean() if bool(replica_negative_count.numel()) else zero
+            ),
+            "service_option_slack_mean": (
+                service_option_slack.masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "option_slack_target_mean": (
+                option_slack_target.masked_select(has_effective_candidate).mean()
+                if bool(has_effective_candidate.any().item()) else zero
+            ),
+            "threshold_edge_count_mean": (
+                threshold_edge_count_feasible.mean() if bool(threshold_edge_count_feasible.numel()) else zero
+            ),
+            "single_option_service_count": single_option_services,
+            "multi_option_service_count": multi_option_services,
+            "zero_option_service_count": zero_option_services,
+            "device_edge_mass_max_share": device_mass_max_share,
+            "device_edge_mass_entropy": device_mass_entropy,
+            "device_concentration_target": torch.tensor(
+                float(device_concentration_target),
+                device=device,
+                dtype=dtype,
             ),
             "unselected_soft_positive_count_mean": (
                 unselected_soft_positive_mask.to(dtype=dtype).sum(dim=1).masked_select(has_edge).mean()
@@ -3808,27 +4045,32 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             advantage_temperature: float = 1.0,
             min_advantage_weight: float = 0.0,
             max_advantage_weight: float = 20.0,
-            actor_bc_coef: float = 0.85,
-            executed_aux_positive_coef: float = 0.08,
+            actor_bc_coef: float = 0.20,
+            executed_aux_positive_coef: float = 0.04,
             negative_bc_coef: float = 0.12,
-            raw_removed_negative_coef: float = 0.05,
-            unselected_negative_coef: float = 0.015,
+            raw_removed_negative_coef: float = 0.12,
+            unselected_negative_coef: float = 0.01,
             selected_non_soft_negative_coef: float = 0.22,
             value_coef: float = 0.5,
             entropy_coef: float = 0.0,
             bootstrap_current_value: bool = True,
-            coverage_margin_coef: float = 0.55,
-            quality_margin_coef: float = 0.35,
-            ranking_margin_coef: float = 0.35,
+            coverage_margin_coef: float = 0.20,
+            quality_margin_coef: float = 0.12,
+            ranking_margin_coef: float = 0.0,
             quality_order_margin_coef: float = 0.0,
-            contrast_margin_coef: float = 0.45,
-            memory_margin_coef: float = 0.25,
-            device_over_budget_mass_coef: float = 0.0,
+            contrast_margin_coef: float = 0.0,
+            memory_margin_coef: float = 0.70,
+            device_over_budget_mass_coef: float = 0.30,
             device_over_budget_logit_margin: float = 0.0,
-            effective_option_mass_coef: float = 0.04,
-            non_effective_option_coef: float = 0.10,
-            service_need_target_coef: float = 0.06,
-            soft_target_bc_coef: float = 0.65,
+            effective_option_mass_coef: float = 0.0,
+            non_effective_option_coef: float = 0.06,
+            service_need_target_coef: float = 0.0,
+            replica_marginal_target_coef: float = 0.70,
+            replica_positive_margin_coef: float = 0.14,
+            replica_negative_margin_coef: float = 0.06,
+            option_slack_coef: float = 0.12,
+            device_concentration_coef: float = 0.16,
+            soft_target_bc_coef: float = 0.20,
             positive_logit_margin: float = 0.80,
             negative_logit_margin: float = 0.18,
             coverage_logit_margin: float = 0.35,
@@ -3954,6 +4196,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         effective_option_mass_losses = []
         non_effective_option_losses = []
         service_need_target_losses = []
+        replica_marginal_target_losses = []
+        replica_positive_margin_losses = []
+        replica_negative_margin_losses = []
+        option_slack_losses = []
+        device_concentration_losses = []
         pair_centered_logit_stds = []
         service_no_edge_prob_means = []
         service_no_edge_prob_maxes = []
@@ -3986,6 +4233,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         service_need_target_means = []
         service_need_prob_means = []
         service_need_target_gap_means = []
+        replica_marginal_value_means = []
+        replica_soft_target_means = []
+        replica_positive_count_means = []
+        replica_negative_count_means = []
+        service_option_slack_means = []
+        option_slack_target_means = []
+        threshold_edge_count_means = []
+        single_option_service_counts = []
+        multi_option_service_counts = []
+        zero_option_service_counts = []
+        device_edge_mass_max_shares = []
+        device_edge_mass_entropies = []
+        device_concentration_targets = []
         unselected_soft_positive_count_means = []
         unselected_soft_positive_prob_means = []
         unselected_soft_positive_logit_means = []
@@ -4141,6 +4401,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 ranking_logit_margin=float(ranking_logit_margin),
                 quality_order_logit_margin=float(quality_order_logit_margin),
                 contrast_logit_margin=float(contrast_logit_margin),
+                negative_logit_margin=float(negative_logit_margin),
                 top_quality_tolerance=float(top_quality_tolerance),
                 coverage_pressure_floor=float(coverage_pressure_floor),
                 option_quality_ratio=option_quality_ratio,
@@ -4378,6 +4639,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             effective_option_mass_losses.append(plan_terms["effective_option_mass_loss"])
             non_effective_option_losses.append(plan_terms["non_effective_option_loss"])
             service_need_target_losses.append(plan_terms["service_need_target_loss"])
+            replica_marginal_target_losses.append(plan_terms["replica_marginal_target_loss"])
+            replica_positive_margin_losses.append(plan_terms["replica_positive_margin_loss"])
+            replica_negative_margin_losses.append(plan_terms["replica_negative_margin_loss"])
+            option_slack_losses.append(plan_terms["option_slack_loss"])
+            device_concentration_losses.append(plan_terms["device_concentration_loss"])
             pair_centered_logit_stds.append(_scalar_to_float(plan_terms["pair_centered_logit_std"]))
             service_no_edge_prob_means.append(_scalar_to_float(plan_terms["service_no_edge_prob_mean"]))
             service_no_edge_prob_maxes.append(_scalar_to_float(plan_terms["service_no_edge_prob_max"]))
@@ -4426,6 +4692,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             service_need_target_means.append(_scalar_to_float(plan_terms["service_need_target_mean"]))
             service_need_prob_means.append(_scalar_to_float(plan_terms["service_need_prob_mean"]))
             service_need_target_gap_means.append(_scalar_to_float(plan_terms["service_need_target_gap_mean"]))
+            replica_marginal_value_means.append(_scalar_to_float(plan_terms["replica_marginal_value_mean"]))
+            replica_soft_target_means.append(_scalar_to_float(plan_terms["replica_soft_target_mean"]))
+            replica_positive_count_means.append(_scalar_to_float(plan_terms["replica_positive_count_mean"]))
+            replica_negative_count_means.append(_scalar_to_float(plan_terms["replica_negative_count_mean"]))
+            service_option_slack_means.append(_scalar_to_float(plan_terms["service_option_slack_mean"]))
+            option_slack_target_means.append(_scalar_to_float(plan_terms["option_slack_target_mean"]))
+            threshold_edge_count_means.append(_scalar_to_float(plan_terms["threshold_edge_count_mean"]))
+            single_option_service_counts.append(_scalar_to_float(plan_terms["single_option_service_count"]))
+            multi_option_service_counts.append(_scalar_to_float(plan_terms["multi_option_service_count"]))
+            zero_option_service_counts.append(_scalar_to_float(plan_terms["zero_option_service_count"]))
+            device_edge_mass_max_shares.append(_scalar_to_float(plan_terms["device_edge_mass_max_share"]))
+            device_edge_mass_entropies.append(_scalar_to_float(plan_terms["device_edge_mass_entropy"]))
+            device_concentration_targets.append(_scalar_to_float(plan_terms["device_concentration_target"]))
             unselected_soft_positive_count_means.append(_scalar_to_float(
                 plan_terms["unselected_soft_positive_count_mean"]
             ))
@@ -4543,6 +4822,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         effective_option_mass_loss_t = torch.stack(effective_option_mass_losses).float()
         non_effective_option_loss_t = torch.stack(non_effective_option_losses).float()
         service_need_target_loss_t = torch.stack(service_need_target_losses).float()
+        replica_marginal_target_loss_t = torch.stack(replica_marginal_target_losses).float()
+        replica_positive_margin_loss_t = torch.stack(replica_positive_margin_losses).float()
+        replica_negative_margin_loss_t = torch.stack(replica_negative_margin_losses).float()
+        option_slack_loss_t = torch.stack(option_slack_losses).float()
+        device_concentration_loss_t = torch.stack(device_concentration_losses).float()
         target_t = torch.tensor(targets, device=device, dtype=torch.float32)
         adv_t = target_t.detach() - value_t.detach()
         temp = max(1e-6, float(advantage_temperature))
@@ -4699,6 +4983,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         effective_option_mass_loss = effective_option_mass_loss_t.mean() * float(effective_option_mass_coef)
         non_effective_option_loss = non_effective_option_loss_t.mean() * float(non_effective_option_coef)
         service_need_target_loss = service_need_target_loss_t.mean() * float(service_need_target_coef)
+        replica_marginal_target_loss = (
+            replica_marginal_target_loss_t.mean() * float(replica_marginal_target_coef)
+        )
+        replica_positive_margin_loss = (
+            replica_positive_margin_loss_t.mean() * float(replica_positive_margin_coef)
+        )
+        replica_negative_margin_loss = (
+            replica_negative_margin_loss_t.mean() * float(replica_negative_margin_coef)
+        )
+        option_slack_loss = option_slack_loss_t.mean() * float(option_slack_coef)
+        device_concentration_loss = (
+            device_concentration_loss_t.mean() * float(device_concentration_coef)
+        )
         margin_loss = (
             coverage_margin_loss
             + quality_margin_loss
@@ -4709,6 +5006,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             + effective_option_mass_loss
             + non_effective_option_loss
             + service_need_target_loss
+            + replica_marginal_target_loss
+            + replica_positive_margin_loss
+            + replica_negative_margin_loss
+            + option_slack_loss
+            + device_concentration_loss
         )
         actor_objective_loss = (
             actor_pair_bce_loss
@@ -4775,6 +5077,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "effective_option_mass_loss": _scalar_to_float(effective_option_mass_loss.detach()),
             "non_effective_option_loss": _scalar_to_float(non_effective_option_loss.detach()),
             "service_need_target_loss": _scalar_to_float(service_need_target_loss.detach()),
+            "replica_marginal_target_loss": _scalar_to_float(replica_marginal_target_loss.detach()),
+            "replica_positive_margin_loss": _scalar_to_float(replica_positive_margin_loss.detach()),
+            "replica_negative_margin_loss": _scalar_to_float(replica_negative_margin_loss.detach()),
+            "option_slack_loss": _scalar_to_float(option_slack_loss.detach()),
+            "device_concentration_loss": _scalar_to_float(device_concentration_loss.detach()),
             "margin_loss": _scalar_to_float(margin_loss.detach()),
             "value_loss": _scalar_to_float(value_loss.detach()),
             "entropy": _scalar_to_float(entropy.detach()),
@@ -4933,6 +5240,19 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "service_need_target_mean": _mean_or_zero(service_need_target_means),
             "service_need_prob_mean": _mean_or_zero(service_need_prob_means),
             "service_need_target_gap_mean": _mean_or_zero(service_need_target_gap_means),
+            "replica_marginal_value_mean": _mean_or_zero(replica_marginal_value_means),
+            "replica_soft_target_mean": _mean_or_zero(replica_soft_target_means),
+            "replica_positive_count_mean": _mean_or_zero(replica_positive_count_means),
+            "replica_negative_count_mean": _mean_or_zero(replica_negative_count_means),
+            "service_option_slack_mean": _mean_or_zero(service_option_slack_means),
+            "option_slack_target_mean": _mean_or_zero(option_slack_target_means),
+            "threshold_edge_count_mean": _mean_or_zero(threshold_edge_count_means),
+            "single_option_service_count": _mean_or_zero(single_option_service_counts),
+            "multi_option_service_count": _mean_or_zero(multi_option_service_counts),
+            "zero_option_service_count": _mean_or_zero(zero_option_service_counts),
+            "device_edge_mass_max_share": _mean_or_zero(device_edge_mass_max_shares),
+            "device_edge_mass_entropy": _mean_or_zero(device_edge_mass_entropies),
+            "device_concentration_target": _mean_or_zero(device_concentration_targets),
             "unselected_soft_positive_count_mean": _mean_or_zero(unselected_soft_positive_count_means),
             "unselected_soft_positive_prob_mean": _mean_or_zero(unselected_soft_positive_prob_means),
             "unselected_soft_positive_logit_mean": _mean_or_zero(unselected_soft_positive_logit_means),
@@ -4975,6 +5295,11 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "effective_option_mass_coef": float(effective_option_mass_coef),
             "non_effective_option_coef": float(non_effective_option_coef),
             "service_need_target_coef": float(service_need_target_coef),
+            "replica_marginal_target_coef": float(replica_marginal_target_coef),
+            "replica_positive_margin_coef": float(replica_positive_margin_coef),
+            "replica_negative_margin_coef": float(replica_negative_margin_coef),
+            "option_slack_coef": float(option_slack_coef),
+            "device_concentration_coef": float(device_concentration_coef),
             "positive_logit_margin": float(positive_logit_margin),
             "negative_logit_margin": float(negative_logit_margin),
             "coverage_logit_margin": float(coverage_logit_margin),
