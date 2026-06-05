@@ -4677,6 +4677,9 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         value_loss = F.mse_loss(value_t, target_t)
         entropy = ent_t.mean()
         critic_loss = float(value_coef) * value_loss
+        device_over_budget_mass_loss = (
+            device_over_budget_mass_loss_t.mean() * float(device_over_budget_mass_coef)
+        )
         actor_pair_bce_loss = (
             soft_target_loss
             + actor_loss
@@ -4693,9 +4696,6 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         quality_order_margin_loss = quality_order_margin_loss_t.mean() * float(quality_order_margin_coef)
         contrast_margin_loss = contrast_margin_loss_t.mean() * float(contrast_margin_coef)
         memory_margin_loss = memory_margin_loss_t.mean() * float(memory_margin_coef)
-        device_over_budget_mass_loss = (
-            device_over_budget_mass_loss_t.mean() * float(device_over_budget_mass_coef)
-        )
         effective_option_mass_loss = effective_option_mass_loss_t.mean() * float(effective_option_mass_coef)
         non_effective_option_loss = non_effective_option_loss_t.mean() * float(non_effective_option_coef)
         service_need_target_loss = service_need_target_loss_t.mean() * float(service_need_target_coef)
