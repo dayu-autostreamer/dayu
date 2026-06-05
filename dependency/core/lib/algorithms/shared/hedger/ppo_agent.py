@@ -2305,6 +2305,7 @@ class _DeploymentBackbonePPO(nn.Module):
             quality_order_logit_margin: float = 0.18,
             contrast_logit_margin: float = 0.30,
             negative_logit_margin: float = 0.18,
+            alternative_option_logit_margin: float = 0.03,
             top_quality_tolerance: float = 0.05,
             coverage_pressure_floor: float = 0.35,
             option_quality_ratio: Optional[float] = None,
@@ -2618,11 +2619,33 @@ class _DeploymentBackbonePPO(nn.Module):
                 -(device_share * torch.log(device_share.clamp_min(1e-6))).sum()
                 / math.log(max(2, edge_device_count))
             )
+            max_edge_replicas = self._max_edge_replicas_per_device()
+            if max_edge_replicas is not None and max_edge_replicas > 0:
+                threshold_device_count = device_mass
+                threshold_device_count_over_budget = F.relu(
+                    threshold_device_count - float(max_edge_replicas)
+                )
+                device_count_over_budget_loss = threshold_device_count_over_budget.pow(2).mean()
+                threshold_device_count_max = threshold_device_count.max()
+                threshold_device_count_over_budget_mean = threshold_device_count_over_budget.mean()
+                threshold_device_count_over_budget_count = (
+                    threshold_device_count_over_budget > 0.05
+                ).to(dtype=dtype).sum()
+            else:
+                threshold_device_count = device_mass
+                device_count_over_budget_loss = zero
+                threshold_device_count_max = threshold_device_count.max()
+                threshold_device_count_over_budget_mean = zero
+                threshold_device_count_over_budget_count = zero
         else:
             device_mass_max_share = zero
             device_concentration_loss = zero
             device_mass_entropy = zero
             device_concentration_target = 0.0
+            device_count_over_budget_loss = zero
+            threshold_device_count_max = zero
+            threshold_device_count_over_budget_mean = zero
+            threshold_device_count_over_budget_count = zero
         service_predicted_mass = threshold_mass_prob.sum(dim=1)
         mass_targets = self._deployment_service_mass_targets(
             edge_allowed=edge_allowed,
@@ -2634,6 +2657,56 @@ class _DeploymentBackbonePPO(nn.Module):
         )
         service_target_mass = mass_targets["service_target_mass"]
         service_mass_gap = service_target_mass - service_predicted_mass
+        if cloud_idx > 0:
+            alt_candidate_mask = effective_option_mask[:, :cloud_idx].clone()
+            effective_count_for_alt = alt_candidate_mask.to(dtype=dtype).sum(dim=1)
+            primary_logits = select_logits[:, :cloud_idx].masked_fill(~alt_candidate_mask, -1e6)
+            primary_idx = primary_logits.argmax(dim=1)
+            primary_mask = torch.zeros_like(alt_candidate_mask)
+            primary_mask.scatter_(1, primary_idx.view(-1, 1), True)
+            primary_mask = primary_mask & alt_candidate_mask
+            alt_candidate_mask = alt_candidate_mask & ~primary_mask
+            alternative_target_service = (
+                has_effective_candidate
+                & (effective_count_for_alt >= 2.0)
+                & (
+                    (desired_effective_option_mass >= 1.35)
+                    | (service_target_mass >= 1.35)
+                    | (
+                        (pressure_weight >= 0.30)
+                        & (replica_candidate_count >= 2.0)
+                    )
+                )
+            )
+            alternative_active = alternative_target_service & alt_candidate_mask.any(dim=1)
+            alt_logits = select_logits[:, :cloud_idx].masked_fill(~alt_candidate_mask, -1e6)
+            alt_temperature = 0.08
+            alternative_option_score = torch.logsumexp(
+                alt_logits / alt_temperature,
+                dim=1,
+            ) * alt_temperature
+            if bool(alternative_active.any().item()):
+                alternative_option_margin_loss = F.softplus(
+                    float(alternative_option_logit_margin)
+                    - alternative_option_score.masked_select(alternative_active)
+                ).mean()
+                alternative_option_candidate_count_mean = alt_candidate_mask.to(dtype=dtype).sum(
+                    dim=1,
+                ).masked_select(alternative_active).mean()
+                alternative_option_score_mean = alternative_option_score.masked_select(alternative_active).mean()
+                alternative_option_above_threshold_ratio = (
+                    alternative_option_score.masked_select(alternative_active) > 0.0
+                ).to(dtype=dtype).mean()
+            else:
+                alternative_option_margin_loss = zero
+                alternative_option_candidate_count_mean = zero
+                alternative_option_score_mean = zero
+                alternative_option_above_threshold_ratio = zero
+        else:
+            alternative_option_margin_loss = zero
+            alternative_option_candidate_count_mean = zero
+            alternative_option_score_mean = zero
+            alternative_option_above_threshold_ratio = zero
         service_mass_floor_target = torch.maximum(
             service_target_mass.detach(),
             service_predicted_mass.detach(),
@@ -2834,6 +2907,14 @@ class _DeploymentBackbonePPO(nn.Module):
             "replica_negative_margin_loss": replica_negative_margin_loss,
             "option_slack_loss": option_slack_loss,
             "device_concentration_loss": device_concentration_loss,
+            "device_count_over_budget_loss": device_count_over_budget_loss,
+            "alternative_option_margin_loss": alternative_option_margin_loss,
+            "threshold_device_count_max": threshold_device_count_max,
+            "threshold_device_count_over_budget_mean": threshold_device_count_over_budget_mean,
+            "threshold_device_count_over_budget_count": threshold_device_count_over_budget_count,
+            "alternative_option_candidate_count_mean": alternative_option_candidate_count_mean,
+            "alternative_option_score_mean": alternative_option_score_mean,
+            "alternative_option_above_threshold_ratio": alternative_option_above_threshold_ratio,
             "pair_centered_logit_std": pair_centered_logit_std,
             "edge_policy_prob_mean": edge_prob_mean,
             "edge_policy_prob_std": edge_prob_std,
@@ -4148,6 +4229,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             replica_negative_margin_coef: float = 0.03,
             option_slack_coef: float = 0.35,
             device_concentration_coef: float = 0.12,
+            device_count_over_budget_coef: float = 0.30,
+            alternative_option_margin_coef: float = 0.18,
             projection_edge_coverage_coef: float = 0.35,
             last_edge_removed_coef: float = 0.25,
             soft_target_bc_coef: float = 0.08,
@@ -4157,6 +4240,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             ranking_logit_margin: float = 0.25,
             quality_order_logit_margin: float = 0.18,
             contrast_logit_margin: float = 0.40,
+            alternative_option_logit_margin: float = 0.03,
             top_quality_tolerance: float = 0.16,
             coverage_pressure_floor: float = 0.25,
             option_quality_ratio: Optional[float] = None,
@@ -4281,6 +4365,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         replica_negative_margin_losses = []
         option_slack_losses = []
         device_concentration_losses = []
+        device_count_over_budget_losses = []
+        alternative_option_margin_losses = []
         projection_edge_coverage_losses = []
         last_edge_removed_losses = []
         projection_lost_edge_service_counts = []
@@ -4331,6 +4417,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         device_edge_mass_max_shares = []
         device_edge_mass_entropies = []
         device_concentration_targets = []
+        threshold_device_count_maxes = []
+        threshold_device_count_over_budget_means = []
+        threshold_device_count_over_budget_counts = []
+        alternative_option_candidate_count_means = []
+        alternative_option_score_means = []
+        alternative_option_above_threshold_ratios = []
         unselected_soft_positive_count_means = []
         unselected_soft_positive_prob_means = []
         unselected_soft_positive_logit_means = []
@@ -4487,6 +4579,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
                 quality_order_logit_margin=float(quality_order_logit_margin),
                 contrast_logit_margin=float(contrast_logit_margin),
                 negative_logit_margin=float(negative_logit_margin),
+                alternative_option_logit_margin=float(alternative_option_logit_margin),
                 top_quality_tolerance=float(top_quality_tolerance),
                 coverage_pressure_floor=float(coverage_pressure_floor),
                 option_quality_ratio=option_quality_ratio,
@@ -4781,6 +4874,24 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             replica_negative_margin_losses.append(plan_terms["replica_negative_margin_loss"])
             option_slack_losses.append(plan_terms["option_slack_loss"])
             device_concentration_losses.append(plan_terms["device_concentration_loss"])
+            device_count_over_budget_losses.append(plan_terms["device_count_over_budget_loss"])
+            alternative_option_margin_losses.append(plan_terms["alternative_option_margin_loss"])
+            threshold_device_count_maxes.append(_scalar_to_float(plan_terms["threshold_device_count_max"]))
+            threshold_device_count_over_budget_means.append(_scalar_to_float(
+                plan_terms["threshold_device_count_over_budget_mean"]
+            ))
+            threshold_device_count_over_budget_counts.append(_scalar_to_float(
+                plan_terms["threshold_device_count_over_budget_count"]
+            ))
+            alternative_option_candidate_count_means.append(_scalar_to_float(
+                plan_terms["alternative_option_candidate_count_mean"]
+            ))
+            alternative_option_score_means.append(_scalar_to_float(
+                plan_terms["alternative_option_score_mean"]
+            ))
+            alternative_option_above_threshold_ratios.append(_scalar_to_float(
+                plan_terms["alternative_option_above_threshold_ratio"]
+            ))
             pair_centered_logit_stds.append(_scalar_to_float(plan_terms["pair_centered_logit_std"]))
             service_no_edge_prob_means.append(_scalar_to_float(plan_terms["service_no_edge_prob_mean"]))
             service_no_edge_prob_maxes.append(_scalar_to_float(plan_terms["service_no_edge_prob_max"]))
@@ -4964,6 +5075,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         replica_negative_margin_loss_t = torch.stack(replica_negative_margin_losses).float()
         option_slack_loss_t = torch.stack(option_slack_losses).float()
         device_concentration_loss_t = torch.stack(device_concentration_losses).float()
+        device_count_over_budget_loss_t = torch.stack(device_count_over_budget_losses).float()
+        alternative_option_margin_loss_t = torch.stack(alternative_option_margin_losses).float()
         projection_edge_coverage_loss_t = torch.stack(projection_edge_coverage_losses).float()
         last_edge_removed_loss_t = torch.stack(last_edge_removed_losses).float()
         target_t = torch.tensor(targets, device=device, dtype=torch.float32)
@@ -5135,6 +5248,12 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
         device_concentration_loss = (
             device_concentration_loss_t.mean() * float(device_concentration_coef)
         )
+        device_count_over_budget_loss = (
+            device_count_over_budget_loss_t.mean() * float(device_count_over_budget_coef)
+        )
+        alternative_option_margin_loss = (
+            alternative_option_margin_loss_t.mean() * float(alternative_option_margin_coef)
+        )
         projection_edge_coverage_loss = (
             projection_edge_coverage_loss_t.mean() * float(projection_edge_coverage_coef)
         )
@@ -5156,6 +5275,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             + replica_negative_margin_loss
             + option_slack_loss
             + device_concentration_loss
+            + device_count_over_budget_loss
+            + alternative_option_margin_loss
             + projection_edge_coverage_loss
             + last_edge_removed_loss
         )
@@ -5229,6 +5350,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "replica_negative_margin_loss": _scalar_to_float(replica_negative_margin_loss.detach()),
             "option_slack_loss": _scalar_to_float(option_slack_loss.detach()),
             "device_concentration_loss": _scalar_to_float(device_concentration_loss.detach()),
+            "device_count_over_budget_loss": _scalar_to_float(device_count_over_budget_loss.detach()),
+            "alternative_option_margin_loss": _scalar_to_float(alternative_option_margin_loss.detach()),
             "projection_edge_coverage_loss": _scalar_to_float(projection_edge_coverage_loss.detach()),
             "last_edge_removed_loss": _scalar_to_float(last_edge_removed_loss.detach()),
             "margin_loss": _scalar_to_float(margin_loss.detach()),
@@ -5405,6 +5528,20 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "device_edge_mass_max_share": _mean_or_zero(device_edge_mass_max_shares),
             "device_edge_mass_entropy": _mean_or_zero(device_edge_mass_entropies),
             "device_concentration_target": _mean_or_zero(device_concentration_targets),
+            "threshold_device_count_max": _mean_or_zero(threshold_device_count_maxes),
+            "threshold_device_count_over_budget_mean": _mean_or_zero(
+                threshold_device_count_over_budget_means
+            ),
+            "threshold_device_count_over_budget_count": _mean_or_zero(
+                threshold_device_count_over_budget_counts
+            ),
+            "alternative_option_candidate_count_mean": _mean_or_zero(
+                alternative_option_candidate_count_means
+            ),
+            "alternative_option_score_mean": _mean_or_zero(alternative_option_score_means),
+            "alternative_option_above_threshold_ratio": _mean_or_zero(
+                alternative_option_above_threshold_ratios
+            ),
             "unselected_soft_positive_count_mean": _mean_or_zero(unselected_soft_positive_count_means),
             "unselected_soft_positive_prob_mean": _mean_or_zero(unselected_soft_positive_prob_means),
             "unselected_soft_positive_logit_mean": _mean_or_zero(unselected_soft_positive_logit_means),
@@ -5452,6 +5589,8 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "replica_negative_margin_coef": float(replica_negative_margin_coef),
             "option_slack_coef": float(option_slack_coef),
             "device_concentration_coef": float(device_concentration_coef),
+            "device_count_over_budget_coef": float(device_count_over_budget_coef),
+            "alternative_option_margin_coef": float(alternative_option_margin_coef),
             "projection_edge_coverage_coef": float(projection_edge_coverage_coef),
             "last_edge_removed_coef": float(last_edge_removed_coef),
             "positive_logit_margin": float(positive_logit_margin),
@@ -5460,6 +5599,7 @@ class HedgerDeploymentPPO(_DeploymentBackbonePPO):
             "ranking_logit_margin": float(ranking_logit_margin),
             "quality_order_logit_margin": float(quality_order_logit_margin),
             "contrast_logit_margin": float(contrast_logit_margin),
+            "alternative_option_logit_margin": float(alternative_option_logit_margin),
             "top_quality_tolerance": float(top_quality_tolerance),
             "coverage_pressure_floor": float(coverage_pressure_floor),
             "option_quality_ratio": (

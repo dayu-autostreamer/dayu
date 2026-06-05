@@ -170,6 +170,8 @@ class HedgerDeploymentOfflineRLCfg:
     replica_negative_margin_coef: float = 0.03
     option_slack_coef: float = 0.35
     device_concentration_coef: float = 0.12
+    device_count_over_budget_coef: float = 0.30
+    alternative_option_margin_coef: float = 0.18
     projection_edge_coverage_coef: float = 0.35
     last_edge_removed_coef: float = 0.25
     soft_target_bc_coef: float = 0.08
@@ -182,6 +184,7 @@ class HedgerDeploymentOfflineRLCfg:
     ranking_logit_margin: float = 0.25
     quality_order_logit_margin: float = 0.18
     contrast_logit_margin: float = 0.40
+    alternative_option_logit_margin: float = 0.03
     top_quality_tolerance: float = 0.16
     coverage_pressure_floor: float = 0.25
     option_quality_ratio: float = 0.60
@@ -817,6 +820,14 @@ class Hedger:
                 0.0,
                 float(offline_rl_cfg.get("device_concentration_coef", 0.14)),
             ),
+            device_count_over_budget_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("device_count_over_budget_coef", 0.30)),
+            ),
+            alternative_option_margin_coef=max(
+                0.0,
+                float(offline_rl_cfg.get("alternative_option_margin_coef", 0.18)),
+            ),
             projection_edge_coverage_coef=max(
                 0.0,
                 float(offline_rl_cfg.get("projection_edge_coverage_coef", 0.35)),
@@ -841,6 +852,10 @@ class Hedger:
                 float(offline_rl_cfg.get("quality_order_logit_margin", 0.18)),
             ),
             contrast_logit_margin=max(0.0, float(offline_rl_cfg.get("contrast_logit_margin", 0.40))),
+            alternative_option_logit_margin=max(
+                0.0,
+                float(offline_rl_cfg.get("alternative_option_logit_margin", 0.03)),
+            ),
             top_quality_tolerance=max(0.0, float(offline_rl_cfg.get("top_quality_tolerance", 0.16))),
             coverage_pressure_floor=min(
                 1.0,
@@ -1200,7 +1215,8 @@ class Hedger:
             "effective_option_mass_loss", "non_effective_option_loss",
             "replica_marginal_target_loss", "replica_positive_margin_loss",
             "replica_negative_margin_loss", "option_slack_loss",
-            "device_concentration_loss", "projection_edge_coverage_loss",
+            "device_concentration_loss", "device_count_over_budget_loss",
+            "alternative_option_margin_loss", "projection_edge_coverage_loss",
             "last_edge_removed_loss",
             "margin_loss",
             "actor_positive_weight_mean", "actor_negative_weight_mean",
@@ -1257,6 +1273,14 @@ class Hedger:
             "multi_option_service_count", "zero_option_service_count",
             "device_edge_mass_max_share", "device_edge_mass_entropy",
             "device_concentration_target",
+            "threshold_device_count_max", "threshold_device_count_over_budget_mean",
+            "threshold_device_count_over_budget_count",
+            "alternative_option_candidate_count_mean", "alternative_option_score_mean",
+            "alternative_option_above_threshold_ratio",
+            "threshold_device_count_max", "threshold_device_count_over_budget_mean",
+            "threshold_device_count_over_budget_count",
+            "alternative_option_candidate_count_mean", "alternative_option_score_mean",
+            "alternative_option_above_threshold_ratio",
             "unselected_soft_positive_count_mean",
             "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
             "selected_non_soft_positive_count_mean",
@@ -1296,13 +1320,15 @@ class Hedger:
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "replica_marginal_target_coef", "replica_positive_margin_coef",
             "replica_negative_margin_coef", "option_slack_coef",
-            "device_concentration_coef", "projection_edge_coverage_coef",
+            "device_concentration_coef", "device_count_over_budget_coef",
+            "alternative_option_margin_coef", "projection_edge_coverage_coef",
             "last_edge_removed_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
+            "alternative_option_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio", "service_need_bias_scale", "service_mass_temperature",
             "service_need_pair_gate_enabled", "service_need_gate_temperature", "service_need_gate_min",
@@ -3391,10 +3417,12 @@ class Hedger:
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "replica_marginal_target_coef", "replica_positive_margin_coef",
             "replica_negative_margin_coef", "option_slack_coef",
-            "device_concentration_coef",
+            "device_concentration_coef", "device_count_over_budget_coef",
+            "alternative_option_margin_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
+            "alternative_option_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
             "latency_guard_penalty_weight", "feedback_timeout_penalty_weight", "max_edge_replicas_per_device",
@@ -5667,6 +5695,7 @@ class Hedger:
         cloud_idx = self.physical_topology.cloud_idx
         if cloud_idx <= 0:
             return None, {}
+        cfg = self.training_cfg.deployment_collect
 
         pair_ctx = self.deployment_agent._deployment_pair_context(
             logic_edge_index,
@@ -5699,8 +5728,12 @@ class Hedger:
         active_hotspot = pair_ctx["active_pair_hotspot"].detach().float()
         edge_counts = base_mask[:, :cloud_idx].float().sum(dim=1)
         feasible_counts = static_allowed[:, :cloud_idx].float().sum(dim=1)
+        device_counts = base_mask[:, :cloud_idx].float().sum(dim=0)
+        max_edge_replicas = self.deployment_agent._max_edge_replicas_per_device()
+        count_budget = float(max_edge_replicas) if max_edge_replicas else float(max(1, base_mask.size(0)))
+        device_fill = (device_counts / max(count_budget, 1.0)).clamp(0.0, 2.0)
 
-        candidates: List[Tuple[float, int, int, int]] = []
+        candidates: List[Tuple] = []
         if operation == "safe_add":
             for service_idx in range(base_mask.size(0)):
                 feasible_target = float(feasible_counts[service_idx].item())
@@ -5739,17 +5772,42 @@ class Hedger:
                         0.35 * cfg.explore_unknown_prob
                         if explore_unknown and random.random() < cfg.explore_unknown_prob else 0.0
                     )
+                    device_fill_value = float(device_fill[device_idx].item())
+                    diversity_bonus = 0.15 * max(0.0, 1.0 - device_fill_value)
+                    crowding_penalty = 0.45 * device_fill_value
                     score = (
                         quality_for_score
                         + 1.4 * pressure
                         + 0.35 * max(0.0, min(feasible_target, desired_edges) - current_edges)
                         - 0.40 * queue_pressure
+                        - crowding_penalty
+                        + diversity_bonus
                         + exploration_bonus
                     )
-                    candidates.append((score, service_idx, device_idx, -1))
+                    candidates.append(
+                        (
+                            score,
+                            service_idx,
+                            device_idx,
+                            -1,
+                            prior_quality,
+                            int(trusted),
+                            int(explore_unknown),
+                            device_fill_value,
+                        )
+                    )
             if not candidates:
                 return None, {}
-            _, service_idx, device_idx, _ = max(candidates)
+            (
+                _,
+                service_idx,
+                device_idx,
+                _,
+                selected_prior_quality,
+                selected_trusted,
+                selected_explore_unknown,
+                selected_device_fill,
+            ) = max(candidates)
             raw_mask = base_mask.detach().clone()
             raw_mask[service_idx, device_idx] = True
             return raw_mask, {
@@ -5758,9 +5816,9 @@ class Hedger:
                 "collect_selected_device_idx": int(device_idx),
                 "collect_removed_service_idx": -1,
                 "collect_removed_device_idx": -1,
-                "collect_selected_prior_quality": prior_quality,
-                "collect_selected_runtime_trusted": int(trusted),
-                "collect_explore_unknown": int(explore_unknown),
+                "collect_selected_prior_quality": selected_prior_quality,
+                "collect_selected_runtime_trusted": selected_trusted,
+                "collect_explore_unknown": selected_explore_unknown,
             }
 
         if operation == "safe_swap":
@@ -5790,7 +5848,16 @@ class Hedger:
                             continue
                         target_quality = float(quality_matrix[service_idx, target_device].item())
                         target_pressure = float(pressure_matrix[service_idx, target_device].item())
-                        improvement = target_quality - current_quality + current_risk - target_pressure
+                        source_fill = float(device_fill[source_device].item())
+                        target_fill = float(device_fill[target_device].item())
+                        balance_gain = 0.45 * (source_fill - target_fill)
+                        improvement = (
+                            target_quality
+                            - current_quality
+                            + current_risk
+                            - target_pressure
+                            + balance_gain
+                        )
                         if improvement <= 0.0 and current_pressure < 0.10 and current_hotspot < 0.01:
                             continue
                         candidates.append((improvement, service_idx, target_device, source_device))
@@ -7879,6 +7946,24 @@ class Hedger:
                         device_edge_mass_max_share=aux.get("device_edge_mass_max_share", 0.0),
                         device_edge_mass_entropy=aux.get("device_edge_mass_entropy", 0.0),
                         device_concentration_target=aux.get("device_concentration_target", 0.0),
+                        threshold_device_count_max=aux.get("threshold_device_count_max", 0.0),
+                        threshold_device_count_over_budget_mean=aux.get(
+                            "threshold_device_count_over_budget_mean",
+                            0.0,
+                        ),
+                        threshold_device_count_over_budget_count=aux.get(
+                            "threshold_device_count_over_budget_count",
+                            0.0,
+                        ),
+                        alternative_option_candidate_count_mean=aux.get(
+                            "alternative_option_candidate_count_mean",
+                            0.0,
+                        ),
+                        alternative_option_score_mean=aux.get("alternative_option_score_mean", 0.0),
+                        alternative_option_above_threshold_ratio=aux.get(
+                            "alternative_option_above_threshold_ratio",
+                            0.0,
+                        ),
                         unselected_soft_positive_count_mean=aux.get(
                             "unselected_soft_positive_count_mean",
                             0.0,
@@ -8013,6 +8098,8 @@ class Hedger:
                         replica_negative_margin_coef=offline_rl_record_cfg.replica_negative_margin_coef,
                         option_slack_coef=offline_rl_record_cfg.option_slack_coef,
                         device_concentration_coef=offline_rl_record_cfg.device_concentration_coef,
+                        device_count_over_budget_coef=offline_rl_record_cfg.device_count_over_budget_coef,
+                        alternative_option_margin_coef=offline_rl_record_cfg.alternative_option_margin_coef,
                         soft_target_bc_coef=offline_rl_record_cfg.soft_target_bc_coef,
                         soft_target_negative_ceiling=self.deployment_agent_params[
                             "soft_target_negative_ceiling"
@@ -8029,6 +8116,7 @@ class Hedger:
                         ranking_logit_margin=offline_rl_record_cfg.ranking_logit_margin,
                         quality_order_logit_margin=offline_rl_record_cfg.quality_order_logit_margin,
                         contrast_logit_margin=offline_rl_record_cfg.contrast_logit_margin,
+                        alternative_option_logit_margin=offline_rl_record_cfg.alternative_option_logit_margin,
                         top_quality_tolerance=offline_rl_record_cfg.top_quality_tolerance,
                         coverage_pressure_floor=offline_rl_record_cfg.coverage_pressure_floor,
                         option_quality_ratio=offline_rl_record_cfg.option_quality_ratio,
@@ -8794,6 +8882,10 @@ class Hedger:
                                 "multi_option_service_count", "zero_option_service_count",
                                 "device_edge_mass_max_share", "device_edge_mass_entropy",
                                 "device_concentration_target",
+                                "threshold_device_count_max", "threshold_device_count_over_budget_mean",
+                                "threshold_device_count_over_budget_count",
+                                "alternative_option_candidate_count_mean", "alternative_option_score_mean",
+                                "alternative_option_above_threshold_ratio",
                                 "unselected_soft_positive_count_mean",
                                 "unselected_soft_positive_prob_mean", "unselected_soft_positive_logit_mean",
                                 "selected_non_soft_positive_count_mean",
@@ -8856,12 +8948,14 @@ class Hedger:
             "effective_option_mass_coef", "non_effective_option_coef", "service_need_target_coef",
             "replica_marginal_target_coef", "replica_positive_margin_coef",
             "replica_negative_margin_coef", "option_slack_coef",
-            "device_concentration_coef",
+            "device_concentration_coef", "device_count_over_budget_coef",
+            "alternative_option_margin_coef",
             "soft_target_bc_coef", "soft_target_negative_ceiling",
             "selected_non_soft_negative_coef",
             "bad_sample_multiplier", "bad_sample_max_ratio", "bad_sample_min_count",
             "positive_logit_margin", "negative_logit_margin", "coverage_logit_margin",
             "ranking_logit_margin", "quality_order_logit_margin", "contrast_logit_margin",
+            "alternative_option_logit_margin",
             "top_quality_tolerance", "coverage_pressure_floor",
             "option_quality_ratio",
             "max_edge_replicas_per_device", "edge_memory_budget_ratio", "last_edge_preserve_bonus",
@@ -9512,6 +9606,24 @@ class Hedger:
                     device_edge_mass_max_share=aux.get("device_edge_mass_max_share", 0.0),
                     device_edge_mass_entropy=aux.get("device_edge_mass_entropy", 0.0),
                     device_concentration_target=aux.get("device_concentration_target", 0.0),
+                    threshold_device_count_max=aux.get("threshold_device_count_max", 0.0),
+                    threshold_device_count_over_budget_mean=aux.get(
+                        "threshold_device_count_over_budget_mean",
+                        0.0,
+                    ),
+                    threshold_device_count_over_budget_count=aux.get(
+                        "threshold_device_count_over_budget_count",
+                        0.0,
+                    ),
+                    alternative_option_candidate_count_mean=aux.get(
+                        "alternative_option_candidate_count_mean",
+                        0.0,
+                    ),
+                    alternative_option_score_mean=aux.get("alternative_option_score_mean", 0.0),
+                    alternative_option_above_threshold_ratio=aux.get(
+                        "alternative_option_above_threshold_ratio",
+                        0.0,
+                    ),
                     unselected_soft_positive_count_mean=aux.get(
                         "unselected_soft_positive_count_mean",
                         0.0,
@@ -9662,6 +9774,12 @@ class Hedger:
                     device_concentration_coef=(
                         self.training_cfg.deployment_offline_rl.device_concentration_coef
                     ),
+                    device_count_over_budget_coef=(
+                        self.training_cfg.deployment_offline_rl.device_count_over_budget_coef
+                    ),
+                    alternative_option_margin_coef=(
+                        self.training_cfg.deployment_offline_rl.alternative_option_margin_coef
+                    ),
                     projection_edge_coverage_coef=(
                         self.training_cfg.deployment_offline_rl.projection_edge_coverage_coef
                     ),
@@ -9686,6 +9804,9 @@ class Hedger:
                         self.training_cfg.deployment_offline_rl.quality_order_logit_margin
                     ),
                     contrast_logit_margin=self.training_cfg.deployment_offline_rl.contrast_logit_margin,
+                    alternative_option_logit_margin=(
+                        self.training_cfg.deployment_offline_rl.alternative_option_logit_margin
+                    ),
                     top_quality_tolerance=self.training_cfg.deployment_offline_rl.top_quality_tolerance,
                     coverage_pressure_floor=self.training_cfg.deployment_offline_rl.coverage_pressure_floor,
                     option_quality_ratio=self.training_cfg.deployment_offline_rl.option_quality_ratio,
@@ -10333,6 +10454,8 @@ class Hedger:
             "replica_negative_margin_coef": cfg.replica_negative_margin_coef,
             "option_slack_coef": cfg.option_slack_coef,
             "device_concentration_coef": cfg.device_concentration_coef,
+            "device_count_over_budget_coef": cfg.device_count_over_budget_coef,
+            "alternative_option_margin_coef": cfg.alternative_option_margin_coef,
             "soft_target_bc_coef": cfg.soft_target_bc_coef,
             "positive_logit_margin": cfg.positive_logit_margin,
             "negative_logit_margin": cfg.negative_logit_margin,
@@ -10340,6 +10463,7 @@ class Hedger:
             "ranking_logit_margin": cfg.ranking_logit_margin,
             "quality_order_logit_margin": cfg.quality_order_logit_margin,
             "contrast_logit_margin": cfg.contrast_logit_margin,
+            "alternative_option_logit_margin": cfg.alternative_option_logit_margin,
             "top_quality_tolerance": cfg.top_quality_tolerance,
             "coverage_pressure_floor": cfg.coverage_pressure_floor,
             "option_quality_ratio": cfg.option_quality_ratio,
