@@ -163,6 +163,9 @@ class HedgerDeploymentEventTriggerCfg:
     inference_warmup_grace_s: float = 45.0
     inference_min_feedback_samples: int = 5
     inference_require_feedback_before_trigger: bool = True
+    training_online_warmup_grace_s: float = 90.0
+    training_online_min_feedback_samples: int = 30
+    training_online_require_feedback_before_trigger: bool = True
     e2e_slo_threshold: float = 0.18
     e2e_p95_threshold_s: float = 6.0
     e2e_min_feedback_samples: int = 12
@@ -940,6 +943,17 @@ class Hedger:
             ),
             inference_require_feedback_before_trigger=bool(
                 event.get("inference_require_feedback_before_trigger", True)
+            ),
+            training_online_warmup_grace_s=max(
+                0.0,
+                float(event.get("training_online_warmup_grace_s", 90.0)),
+            ),
+            training_online_min_feedback_samples=max(
+                0,
+                int(event.get("training_online_min_feedback_samples", 30)),
+            ),
+            training_online_require_feedback_before_trigger=bool(
+                event.get("training_online_require_feedback_before_trigger", True)
             ),
             e2e_slo_threshold=min(
                 1.0,
@@ -2113,6 +2127,49 @@ class Hedger:
             status["reason"] = reason
         return status
 
+    @staticmethod
+    def _deployment_event_status_has_record(status: Optional[Dict[str, Any]]) -> bool:
+        if not status:
+            return False
+        return bool(
+            status.get("triggered", False)
+            or status.get("deployment_event_suppressed", False)
+            or status.get("latency_guard_suppressed", False)
+            or status.get("deployment_actual_wait_s", 0.0)
+            or status.get("deployment_next_wake_reason", "")
+        )
+
+    def _deployment_event_suppressed_status(
+            self,
+            status: Dict[str, Any],
+            *,
+            suppress_reason: str,
+            event_reason: Optional[str],
+            warmup_remaining_s: float,
+            feedback_count: int,
+            feedback_required: int,
+    ) -> Dict[str, Any]:
+        suppressed_status = copy.deepcopy(status)
+        suppressed_status.update({
+            "triggered": False,
+            "reason": suppress_reason,
+            "deployment_event_suppressed": True,
+            "deployment_event_suppress_reason": suppress_reason,
+            "deployment_event_suppressed_event_reason": str(event_reason or status.get("reason", "") or ""),
+            "deployment_event_warmup_remaining_s": float(warmup_remaining_s),
+            "deployment_event_feedback_count": int(feedback_count),
+            "deployment_event_feedback_required": int(feedback_required),
+        })
+        self._record_deployment_event_suppressed(suppressed_status)
+        return suppressed_status
+
+    def _is_deployment_online_training(self) -> bool:
+        return (
+            self.mode == "train"
+            and self.stage_cfg is not None
+            and self.stage_cfg.deployment_train_mode == "online"
+        )
+
     def _deployment_event_trigger_status(self) -> Dict[str, Any]:
         cfg = getattr(self, "deployment_event_trigger_cfg", HedgerDeploymentEventTriggerCfg())
         if not cfg.enabled:
@@ -2215,39 +2272,45 @@ class Hedger:
         elif queue_pressure >= cfg.queue_pressure_threshold:
             status["triggered"] = True
             status["reason"] = "event_queue_pressure"
-        if not status["triggered"] or self.mode != "inference":
+        if not status["triggered"]:
             return status
 
-        feedback_required = max(0, int(cfg.inference_min_feedback_samples))
-        feedback_count = e2e_feedback_count
-        warmup_remaining_s = 0.0
-        if last_served_t > 0.0 and cfg.inference_warmup_grace_s > 0.0:
-            warmup_remaining_s = max(0.0, cfg.inference_warmup_grace_s - (now - last_served_t))
+        suppress_prefix = ""
+        warmup_grace_s = 0.0
+        feedback_required = 0
+        require_feedback = False
+        if self.mode == "inference":
+            suppress_prefix = "inference"
+            warmup_grace_s = float(cfg.inference_warmup_grace_s)
+            feedback_required = max(0, int(cfg.inference_min_feedback_samples))
+            require_feedback = bool(cfg.inference_require_feedback_before_trigger)
+        elif self._is_deployment_online_training():
+            suppress_prefix = "training_online"
+            warmup_grace_s = float(cfg.training_online_warmup_grace_s)
+            feedback_required = max(0, int(cfg.training_online_min_feedback_samples))
+            require_feedback = bool(cfg.training_online_require_feedback_before_trigger)
 
-        suppress_reason = ""
-        if warmup_remaining_s > 0.0:
-            suppress_reason = "inference_warmup_grace"
-        elif (
-                cfg.inference_require_feedback_before_trigger
-                and feedback_required > 0
-                and feedback_count < feedback_required
-        ):
-            suppress_reason = "inference_feedback_shortfall"
+        if suppress_prefix:
+            feedback_count = e2e_feedback_count
+            warmup_remaining_s = 0.0
+            if last_served_t > 0.0 and warmup_grace_s > 0.0:
+                warmup_remaining_s = max(0.0, warmup_grace_s - (now - last_served_t))
 
-        if suppress_reason:
-            suppressed_status = copy.deepcopy(status)
-            suppressed_status.update({
-                "triggered": False,
-                "reason": suppress_reason,
-                "deployment_event_suppressed": True,
-                "deployment_event_suppress_reason": suppress_reason,
-                "deployment_event_suppressed_event_reason": str(status.get("reason", "") or ""),
-                "deployment_event_warmup_remaining_s": float(warmup_remaining_s),
-                "deployment_event_feedback_count": int(feedback_count),
-                "deployment_event_feedback_required": int(feedback_required),
-            })
-            self._record_deployment_event_suppressed(suppressed_status)
-            return suppressed_status
+            suppress_reason = ""
+            if warmup_remaining_s > 0.0:
+                suppress_reason = f"{suppress_prefix}_warmup_grace"
+            elif require_feedback and feedback_required > 0 and feedback_count < feedback_required:
+                suppress_reason = f"{suppress_prefix}_feedback_shortfall"
+
+            if suppress_reason:
+                return self._deployment_event_suppressed_status(
+                    status,
+                    suppress_reason=suppress_reason,
+                    event_reason=str(status.get("reason", "") or ""),
+                    warmup_remaining_s=warmup_remaining_s,
+                    feedback_count=feedback_count,
+                    feedback_required=feedback_required,
+                )
         return status
 
     def _mark_deployment_event_triggered(self, status: Dict[str, Any]) -> None:
@@ -7975,6 +8038,11 @@ class Hedger:
                                 "deployment_event_max_queue",
                                 "deployment_event_e2e_slo_violation", "deployment_event_e2e_p95",
                                 "deployment_event_e2e_feedback_count",
+                                "deployment_event_suppressed", "deployment_event_suppress_reason",
+                                "deployment_event_suppressed_event_reason",
+                                "deployment_event_warmup_remaining_s",
+                                "deployment_event_feedback_count", "deployment_event_feedback_required",
+                                "deployment_actual_wait_s", "deployment_next_wake_reason",
                                 "cap_relax_cnt", "cap_relax_cost",
                                 "edge_cover_repair_cnt", "edge_cover_repair_cost", "edge_cover_unmet",
                                 "hotspot_repair_cnt", "hotspot_repair_cost", "hotspot_unmet",
@@ -8246,7 +8314,11 @@ class Hedger:
                     feedback_result,
                     min_feedback_required,
                 )
-                event_status_record = next_event_status if next_event_status.get("triggered") else current_event_status
+                event_status_record = (
+                    next_event_status
+                    if self._deployment_event_status_has_record(next_event_status)
+                    else current_event_status
+                )
                 metrics.update({
                     "deployment_event_triggered": int(bool(event_status_record.get("triggered", False))),
                     "deployment_event_reason": str(event_status_record.get("reason", "") or ""),
@@ -8261,6 +8333,30 @@ class Hedger:
                     "deployment_event_e2e_p95": float(event_status_record.get("e2e_p95", 0.0) or 0.0),
                     "deployment_event_e2e_feedback_count": int(
                         event_status_record.get("e2e_feedback_count", 0) or 0
+                    ),
+                    "deployment_event_suppressed": int(
+                        bool(event_status_record.get("deployment_event_suppressed", False))
+                    ),
+                    "deployment_event_suppress_reason": str(
+                        event_status_record.get("deployment_event_suppress_reason", "") or ""
+                    ),
+                    "deployment_event_suppressed_event_reason": str(
+                        event_status_record.get("deployment_event_suppressed_event_reason", "") or ""
+                    ),
+                    "deployment_event_warmup_remaining_s": float(
+                        event_status_record.get("deployment_event_warmup_remaining_s", 0.0) or 0.0
+                    ),
+                    "deployment_event_feedback_count": int(
+                        event_status_record.get("deployment_event_feedback_count", 0) or 0
+                    ),
+                    "deployment_event_feedback_required": int(
+                        event_status_record.get("deployment_event_feedback_required", 0) or 0
+                    ),
+                    "deployment_actual_wait_s": float(
+                        event_status_record.get("deployment_actual_wait_s", 0.0) or 0.0
+                    ),
+                    "deployment_next_wake_reason": str(
+                        event_status_record.get("deployment_next_wake_reason", "") or ""
                     ),
                 })
                 new_logic_feats_dev = {k: v.to(self.device) for k, v in new_logic_feats.items()}
@@ -8487,6 +8583,17 @@ class Hedger:
                     deployment_event_e2e_slo_violation=metrics.get("deployment_event_e2e_slo_violation", 0.0),
                     deployment_event_e2e_p95=metrics.get("deployment_event_e2e_p95", 0.0),
                     deployment_event_e2e_feedback_count=metrics.get("deployment_event_e2e_feedback_count", 0),
+                    deployment_event_suppressed=metrics.get("deployment_event_suppressed", 0),
+                    deployment_event_suppress_reason=metrics.get("deployment_event_suppress_reason", ""),
+                    deployment_event_suppressed_event_reason=metrics.get(
+                        "deployment_event_suppressed_event_reason",
+                        "",
+                    ),
+                    deployment_event_warmup_remaining_s=metrics.get("deployment_event_warmup_remaining_s", 0.0),
+                    deployment_event_feedback_count=metrics.get("deployment_event_feedback_count", 0),
+                    deployment_event_feedback_required=metrics.get("deployment_event_feedback_required", 0),
+                    deployment_actual_wait_s=metrics.get("deployment_actual_wait_s", 0.0),
+                    deployment_next_wake_reason=metrics.get("deployment_next_wake_reason", ""),
                     cap_relax_cnt=aux["capacity_relax_cnt"],
                     cap_relax_cost=aux["capacity_relax_cost"],
                     edge_cover_repair_cnt=aux.get("edge_cover_repair_cnt", 0),
