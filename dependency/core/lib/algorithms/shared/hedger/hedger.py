@@ -453,6 +453,9 @@ class Hedger:
         self._deployment_probe_last_t = 0.0
         self._deployment_probe_pair_cooldown: Dict[Tuple[int, int], int] = {}
         self._deployment_probe_pair_last_quality: Dict[Tuple[int, int], str] = {}
+        self._deployment_collect_pair_visit_counts: Dict[Tuple[int, int], int] = {}
+        self._deployment_collect_service_visit_counts: Dict[int, int] = {}
+        self._deployment_collect_device_visit_counts: Dict[int, int] = {}
         self._init_deployment_dataset_runtime()
 
         self.dep_recorder = None
@@ -5683,6 +5686,57 @@ class Hedger:
                 order.append(operation)
         return order
 
+    @staticmethod
+    def _deployment_collect_pick_candidate(
+            candidates: List[Tuple],
+            *,
+            top_k: int = 4,
+            explore_prob: float = 0.30,
+    ) -> Optional[Tuple]:
+        if not candidates:
+            return None
+        top_candidates = sorted(candidates, key=lambda item: item[0], reverse=True)[
+            :max(1, min(int(top_k), len(candidates)))
+        ]
+        if len(top_candidates) > 1 and random.random() < float(explore_prob):
+            return random.choice(top_candidates)
+        return top_candidates[0]
+
+    def _deployment_collect_visit_bonus(self, service_idx: int, device_idx: int) -> float:
+        pair_count = float(self._deployment_collect_pair_visit_counts.get((service_idx, device_idx), 0))
+        service_count = float(self._deployment_collect_service_visit_counts.get(service_idx, 0))
+        device_count = float(self._deployment_collect_device_visit_counts.get(device_idx, 0))
+        return (
+            0.28 * ((1.0 + pair_count) ** -0.5)
+            + 0.10 * ((1.0 + service_count) ** -0.5)
+            + 0.12 * ((1.0 + device_count) ** -0.5)
+        )
+
+    def _update_deployment_collect_visit_counts(self, deploy_mask: Optional[torch.Tensor]) -> None:
+        if not isinstance(deploy_mask, torch.Tensor) or deploy_mask.dim() != 2:
+            return
+        if self.physical_topology is None:
+            return
+        cloud_idx = int(getattr(self.physical_topology, "cloud_idx", deploy_mask.size(1) - 1))
+        edge_limit = max(0, min(cloud_idx, deploy_mask.size(1)))
+        if edge_limit <= 0:
+            return
+        mask = deploy_mask.detach().to(device="cpu").bool()
+        for service_idx in range(mask.size(0)):
+            for device_idx in range(edge_limit):
+                if not bool(mask[service_idx, device_idx].item()):
+                    continue
+                pair_key = (int(service_idx), int(device_idx))
+                self._deployment_collect_pair_visit_counts[pair_key] = (
+                    self._deployment_collect_pair_visit_counts.get(pair_key, 0) + 1
+                )
+                self._deployment_collect_service_visit_counts[int(service_idx)] = (
+                    self._deployment_collect_service_visit_counts.get(int(service_idx), 0) + 1
+                )
+                self._deployment_collect_device_visit_counts[int(device_idx)] = (
+                    self._deployment_collect_device_visit_counts.get(int(device_idx), 0) + 1
+                )
+
     def _try_deployment_collect_operation(
             self,
             operation: str,
@@ -5775,13 +5829,16 @@ class Hedger:
                     device_fill_value = float(device_fill[device_idx].item())
                     diversity_bonus = 0.15 * max(0.0, 1.0 - device_fill_value)
                     crowding_penalty = 0.45 * device_fill_value
+                    visit_bonus = self._deployment_collect_visit_bonus(service_idx, device_idx)
+                    coverage_gap = max(0.0, min(feasible_target, desired_edges) - current_edges)
                     score = (
                         quality_for_score
                         + 1.4 * pressure
-                        + 0.35 * max(0.0, min(feasible_target, desired_edges) - current_edges)
+                        + 0.35 * coverage_gap
                         - 0.40 * queue_pressure
                         - crowding_penalty
                         + diversity_bonus
+                        + visit_bonus
                         + exploration_bonus
                     )
                     candidates.append(
@@ -5798,6 +5855,11 @@ class Hedger:
                     )
             if not candidates:
                 return None, {}
+            selected = self._deployment_collect_pick_candidate(
+                candidates,
+                top_k=5,
+                explore_prob=0.35,
+            )
             (
                 _,
                 service_idx,
@@ -5807,7 +5869,7 @@ class Hedger:
                 selected_trusted,
                 selected_explore_unknown,
                 selected_device_fill,
-            ) = max(candidates)
+            ) = selected
             raw_mask = base_mask.detach().clone()
             raw_mask[service_idx, device_idx] = True
             return raw_mask, {
@@ -5851,19 +5913,27 @@ class Hedger:
                         source_fill = float(device_fill[source_device].item())
                         target_fill = float(device_fill[target_device].item())
                         balance_gain = 0.45 * (source_fill - target_fill)
+                        target_visit_bonus = self._deployment_collect_visit_bonus(service_idx, target_device)
+                        source_preserve_bonus = self._deployment_collect_visit_bonus(service_idx, source_device)
                         improvement = (
                             target_quality
                             - current_quality
                             + current_risk
                             - target_pressure
                             + balance_gain
+                            + target_visit_bonus
+                            - 0.40 * source_preserve_bonus
                         )
                         if improvement <= 0.0 and current_pressure < 0.10 and current_hotspot < 0.01:
                             continue
                         candidates.append((improvement, service_idx, target_device, source_device))
             if not candidates:
                 return None, {}
-            _, service_idx, target_device, source_device = max(candidates)
+            _, service_idx, target_device, source_device = self._deployment_collect_pick_candidate(
+                candidates,
+                top_k=5,
+                explore_prob=0.30,
+            )
             raw_mask = base_mask.detach().clone()
             raw_mask[service_idx, source_device] = False
             raw_mask[service_idx, target_device] = True
@@ -5889,11 +5959,17 @@ class Hedger:
                         1.0 - float(service_pressure[service_idx].item())
                         + float(pressure_matrix[service_idx, device_idx].item())
                         - 0.20 * float(quality_matrix[service_idx, device_idx].item())
+                        + 0.30 * float(device_fill[device_idx].item())
+                        - 0.35 * self._deployment_collect_visit_bonus(service_idx, device_idx)
                     )
                     candidates.append((score, service_idx, -1, device_idx))
             if not candidates:
                 return None, {}
-            _, service_idx, _, source_device = max(candidates)
+            _, service_idx, _, source_device = self._deployment_collect_pick_candidate(
+                candidates,
+                top_k=4,
+                explore_prob=0.15,
+            )
             raw_mask = base_mask.detach().clone()
             raw_mask[service_idx, source_device] = False
             raw_mask[:, cloud_idx] = True
@@ -9355,6 +9431,7 @@ class Hedger:
                 if self.deployment_dataset_writer is not None \
                         and self.stage_cfg.deployment_train_mode in {"collect", "online"}:
                     self._deployment_collected_transition_count = self.deployment_dataset_writer.append(tr)
+                    self._update_deployment_collect_visit_counts(tr.get("deploy_mask"))
 
                 if self.stage_cfg.update_deployment_policy:
                     with self._data_lock:
