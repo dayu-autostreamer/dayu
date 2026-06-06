@@ -2529,11 +2529,21 @@ class _DeploymentBackbonePPO(nn.Module):
         non_top_count = non_top_mask.float().sum(dim=1).masked_select(has_effective_candidate)
         effective_option_mass = (edge_prob * soft_target).sum(dim=1)
         desired_effective_option_mass = (soft_target * edge_allowed.to(dtype=dtype)).sum(dim=1)
-        effective_option_shortage = (
-            F.relu(soft_target - edge_prob)
-            * soft_target_weight
-            * edge_allowed.to(dtype=dtype)
-        ).sum(dim=1) / (soft_target_weight * edge_allowed.to(dtype=dtype)).sum(dim=1).clamp_min(1.0)
+        effective_confidence_weight = (1.0 - 0.65 * evidence_untrusted.to(dtype=dtype)).clamp(0.25, 1.0)
+        effective_option_weight = (
+            soft_target_weight
+            * effective_option_mask.to(dtype=dtype)
+            * effective_confidence_weight
+        )
+        effective_option_weight_sum = effective_option_weight.sum(dim=1)
+        effective_option_shortage_raw = (
+            F.relu(soft_target - edge_prob) * effective_option_weight
+        ).sum(dim=1) / effective_option_weight_sum.clamp_min(1e-6)
+        effective_option_shortage = torch.where(
+            effective_option_weight_sum > 1e-6,
+            effective_option_shortage_raw,
+            torch.zeros_like(effective_option_shortage_raw),
+        )
         mass_tau = self._service_mass_temperature()
         threshold_mass_prob = torch.where(
             edge_allowed,
@@ -2659,6 +2669,11 @@ class _DeploymentBackbonePPO(nn.Module):
         service_mass_gap = service_target_mass - service_predicted_mass
         if cloud_idx > 0:
             alt_candidate_mask = effective_option_mask[:, :cloud_idx].clone()
+            alt_candidate_weight = torch.where(
+                alt_candidate_mask,
+                effective_confidence_weight[:, :cloud_idx],
+                torch.zeros_like(select_logits[:, :cloud_idx], dtype=dtype),
+            )
             effective_count_for_alt = alt_candidate_mask.to(dtype=dtype).sum(dim=1)
             primary_logits = select_logits[:, :cloud_idx].masked_fill(~alt_candidate_mask, -1e6)
             primary_idx = primary_logits.argmax(dim=1)
@@ -2666,6 +2681,7 @@ class _DeploymentBackbonePPO(nn.Module):
             primary_mask.scatter_(1, primary_idx.view(-1, 1), True)
             primary_mask = primary_mask & alt_candidate_mask
             alt_candidate_mask = alt_candidate_mask & ~primary_mask
+            alt_candidate_weight = alt_candidate_weight * alt_candidate_mask.to(dtype=dtype)
             alternative_target_service = (
                 has_effective_candidate
                 & (effective_count_for_alt >= 2.0)
@@ -2686,10 +2702,25 @@ class _DeploymentBackbonePPO(nn.Module):
                 dim=1,
             ) * alt_temperature
             if bool(alternative_active.any().item()):
-                alternative_option_margin_loss = F.softplus(
+                alternative_loss_values = F.softplus(
                     float(alternative_option_logit_margin)
                     - alternative_option_score.masked_select(alternative_active)
-                ).mean()
+                )
+                if bool(has_effective_candidate.any().item()):
+                    pressure_base = pressure_weight.masked_select(has_effective_candidate).mean()
+                else:
+                    pressure_base = pressure_weight.mean()
+                relative_pressure = (pressure_weight / pressure_base.clamp_min(1e-3)).clamp(0.0, 2.0)
+                alt_confidence = (
+                    alt_candidate_weight.sum(dim=1)
+                    / alt_candidate_mask.to(dtype=dtype).sum(dim=1).clamp_min(1.0)
+                ).clamp(0.25, 1.0)
+                alternative_loss_weight = (
+                    (0.5 + relative_pressure) * alt_confidence
+                ).masked_select(alternative_active).detach()
+                alternative_option_margin_loss = (
+                    alternative_loss_values * alternative_loss_weight
+                ).sum() / alternative_loss_weight.sum().clamp_min(1e-6)
                 alternative_option_candidate_count_mean = alt_candidate_mask.to(dtype=dtype).sum(
                     dim=1,
                 ).masked_select(alternative_active).mean()
@@ -2707,18 +2738,13 @@ class _DeploymentBackbonePPO(nn.Module):
             alternative_option_candidate_count_mean = zero
             alternative_option_score_mean = zero
             alternative_option_above_threshold_ratio = zero
-        service_mass_floor_target = torch.maximum(
-            service_target_mass.detach(),
-            service_predicted_mass.detach(),
+        effective_option_loss_weights = (
+            coverage_weights.detach()
+            * (effective_option_weight_sum > 1e-6).to(dtype=dtype)
         )
         effective_option_mass_loss = (
-            F.smooth_l1_loss(
-                service_predicted_mass,
-                service_mass_floor_target,
-                reduction="none",
-            )
-            * coverage_weights.detach()
-        ).sum() / coverage_weights.detach().sum().clamp_min(1.0)
+            effective_option_shortage * effective_option_loss_weights
+        ).sum() / effective_option_loss_weights.sum().clamp_min(1e-6)
         edge_allowed_count = edge_allowed.to(dtype=dtype).sum(dim=1).clamp_min(1.0)
         service_need_target = (service_target_mass / edge_allowed_count).clamp(0.0, 1.0).detach()
         service_need_logit_raw = policy_ctx.get("service_need_logit_raw")
