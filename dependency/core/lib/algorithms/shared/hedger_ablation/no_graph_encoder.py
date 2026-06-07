@@ -1,10 +1,11 @@
 from core.lib.algorithms.shared.hedger import Hedger
+from core.lib.common import LOGGER
 
 from .no_graph_topology_encoder import NoGraphTopologyEncoders
 
 
 class HedgerNoGraphEncoder(Hedger):
-    """Topology-encoder ablation that removes graph message passing."""
+    """Ablation that removes learned service/device topology embeddings."""
 
     def register_topology_encoder(self):
         if self.shared_topology_encoder:
@@ -18,8 +19,8 @@ class HedgerNoGraphEncoder(Hedger):
         ).to(self.device)
 
     def _load_encoder_state(self, state_dict: dict) -> None:
-        self._load_state_dict_compatible(
-            self.shared_topology_encoder,
-            state_dict,
-            "no_graph_encoder",
-        )
+        if state_dict:
+            LOGGER.info(
+                "[HedgerNoGraphEncoder][Checkpoint] Skip encoder state loading because "
+                "this ablation has no trainable topology encoder."
+            )
