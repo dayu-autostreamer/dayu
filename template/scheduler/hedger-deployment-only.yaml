@@ -5,62 +5,35 @@ pod-template:
   env:
     - name: SCH_CONFIG_EXTRACTION_NAME
       value: hedger
-    # Typical flow: offloading_warmup -> deployment_collect -> deployment_offline -> deployment_online -> joint_finetune -> inference.
+    # Deployment-only ablation:
+    # learned deployment from joint_finetune/final, heuristic offloading in the scheduler agent.
     - name: SCH_CONFIG_EXTRACTION_PARAMETERS
       value: >
         {
           'config':'hedger_config.yaml',
-          'profile':'deployment_online',
+          'profile':'inference',
           'overrides':{
             'device':'cuda:1',
-            'training':{
-              'total_updates': 40,
-              'ppo_epochs': 2,
-              'rollout': {'deployment': 8, 'offloading': 64},
-              'batch_size': {'deployment': 4, 'offloading': 32}
-            },
-            'agents':{
-              'deployment':{
-                'ppo':{
-                  'entropy_coef': 0.0008,
-                  'entropy_coef_final': 0.0002,
-                  'entropy_decay_updates': 30,
-                  'value_coef': 0.5
-                }
-              },
-              'offloading':{
-                 'reward':{
-                    'latency_weight': 0.12,
-                    'slo_weight': 0.8,
-                    'cloud_weight': 0.35
-                 },
-                 'penalty':{
-                    'correction': 0.15
-                 }
-              }
+            'inference':{
+              'run_deployment_worker': True,
+              'run_offloading_worker': False,
+              'deployment_deterministic': True
             },
             'latency_guard':{
-              'latency_threshold_s': 7.0,
-              'window_size':16,
-              'min_samples':8,
-              'trigger_violation_ratio': 0.5
+              'enabled': True
             },
             'checkpoint':{
               'load':{
                 'enabled': True,
-                'from_stage':'deployment_offline',
+                'from_stage':'joint_finetune',
                 'which':'final',
                 'restore':{
                   'encoder': True,
                   'deployment_agent': True,
-                  'offloading_agent': True,
+                  'offloading_agent': False,
                   'optimizer': False
                 },
                 'reset_stage_counters': True
-              },
-              'save':{
-                'interval_updates': 4,
-                'keep_last': 10
               }
             }
           }
@@ -77,7 +50,7 @@ pod-template:
       value: >
         {
           'scope': 'all_edge_nodes',
-          'fixed_value': 'edgexn12',
+          'fixed_value': 'edgex1',
           'fixed_type': 'hostname'
         }
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
@@ -87,9 +60,9 @@ pod-template:
         {
           'deployment':{
             "vehicle-detection": ["edge5"],
-            "pedestrian-detection": ["edge5","edgexn11"],
-            "category-identification": ["edgexn8", "edgexn12"],
-            "license-plate-recognition": ["edgexn8", "edgexn11"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
             "exposure-identification": ["edgexn11", "edgexn12"]
           }
         }
@@ -100,9 +73,9 @@ pod-template:
         {
           'deployment':{
             "vehicle-detection": ["edge5"],
-            "pedestrian-detection": ["edge5","edgexn11"],
-            "category-identification": ["edgexn8", "edgexn12"],
-            "license-plate-recognition": ["edgexn8", "edgexn11"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
             "exposure-identification": ["edgexn11", "edgexn12"]
           }
         }
@@ -113,16 +86,16 @@ pod-template:
         {
           'configuration':{
             'resolution': '720p',
-            'fps': 10,
+            'fps': 6,
             'encoding': 'mp4v',
-            'buffer_size': 4
+            'buffer_size': 2
           },
           'offloading':{
-            'pedestrian-detection':'edgexn11',
+            'pedestrian-detection':'edge5',
             'exposure-identification':'edgexn12',
             'vehicle-detection':'edge5',
-            'category-identification':'edgexn12',
-            'license-plate-recognition':'edgexn8'
+            'category-identification':'edgexn13',
+            'license-plate-recognition':'edgexn12'
           }
         }
 port-open:
