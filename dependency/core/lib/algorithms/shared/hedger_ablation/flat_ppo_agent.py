@@ -57,7 +57,16 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
         )
         self.offload_actor = OffloadActor(d_model)
         self.cloud_idx = cloud_node_idx
-        self._rebuild_actor_optimizer(extra_actor_modules=[self.offload_actor])
+        self._rebuild_actor_optimizer()
+
+    def _rebuild_actor_optimizer(self):
+        super()._rebuild_actor_optimizer()
+        if not hasattr(self, "offload_actor"):
+            return
+        params_actor = list(self._actor_train_params)
+        params_actor.extend(list(self.offload_actor.parameters()))
+        self.actor_opt = torch.optim.Adam(params_actor, lr=self._actor_lr)
+        self._actor_train_params = params_actor
 
     @staticmethod
     def _build_parents(edge_index: torch.Tensor, num_nodes: int) -> List[List[int]]:
