@@ -5,62 +5,33 @@ pod-template:
   env:
     - name: SCH_CONFIG_EXTRACTION_NAME
       value: hedger
-    # Typical flow: offloading_warmup -> deployment_collect -> deployment_offline -> deployment_online -> joint_finetune -> inference.
+    # Offloading-only ablation:
+    # heuristic deployment, learned offloading from the full Hedger joint_finetune/final checkpoint.
     - name: SCH_CONFIG_EXTRACTION_PARAMETERS
       value: >
         {
           'config':'hedger_config.yaml',
-          'profile':'deployment_online',
+          'profile':'inference',
           'overrides':{
             'device':'cuda:1',
-            'training':{
-              'total_updates': 40,
-              'ppo_epochs': 2,
-              'rollout': {'deployment': 8, 'offloading': 64},
-              'batch_size': {'deployment': 4, 'offloading': 32}
-            },
-            'agents':{
-              'deployment':{
-                'ppo':{
-                  'entropy_coef': 0.0008,
-                  'entropy_coef_final': 0.0002,
-                  'entropy_decay_updates': 30,
-                  'value_coef': 0.5
-                }
-              },
-              'offloading':{
-                 'reward':{
-                    'latency_weight': 0.12,
-                    'slo_weight': 0.8,
-                    'cloud_weight': 0.35
-                 },
-                 'penalty':{
-                    'correction': 0.15
-                 }
-              }
-            },
-            'latency_guard':{
-              'latency_threshold_s': 7.0,
-              'window_size':16,
-              'min_samples':8,
-              'trigger_violation_ratio': 0.5
+            'inference':{
+              'run_deployment_worker': False,
+              'run_offloading_worker': True,
+              'offloading_deterministic': True
             },
             'checkpoint':{
+              'root_dir':'hedger_model',
               'load':{
                 'enabled': True,
-                'from_stage':'deployment_offline',
+                'from_stage':'joint_finetune',
                 'which':'final',
                 'restore':{
                   'encoder': True,
-                  'deployment_agent': True,
+                  'deployment_agent': False,
                   'offloading_agent': True,
                   'optimizer': False
                 },
                 'reset_stage_counters': True
-              },
-              'save':{
-                'interval_updates': 4,
-                'keep_last': 10
               }
             }
           }

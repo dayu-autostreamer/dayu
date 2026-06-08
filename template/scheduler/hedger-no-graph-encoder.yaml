@@ -6,24 +6,34 @@ pod-template:
     - name: SCH_CONFIG_EXTRACTION_NAME
       value: hedger
     # No-graph-encoder ablation.
-    # Active next step: retrain from offloading_warmup with a separate checkpoint/dataset root.
-    # After finishing all stages, switch profile to 'inference' to benchmark
-    # hedger_no_graph_encoder_model/joint_finetune/final.
+    # Load the no-graph joint_finetune/final checkpoint
     - name: SCH_CONFIG_EXTRACTION_PARAMETERS
       value: >
         {
           'config':'hedger_config.yaml',
-          'profile':'offloading_warmup',
+          'profile':'inference',
           'overrides':{
             'device':'cuda:1',
-            'training':{
-              'deployment_dataset':{
-                'root_dir':'deployment_dataset_no_graph_encoder',
-                'clear_on_collect_start': True
-              }
+            'inference':{
+              'run_deployment_worker': True,
+              'run_offloading_worker': True,
+              'deployment_deterministic': True,
+              'offloading_deterministic': True
             },
             'checkpoint':{
-              'root_dir':'hedger_no_graph_encoder_model'
+              'root_dir':'hedger_no_graph_encoder_model',
+              'load':{
+                'enabled': True,
+                'from_stage':'joint_finetune',
+                'which':'final',
+                'restore':{
+                  'encoder': False,
+                  'deployment_agent': True,
+                  'offloading_agent': True,
+                  'optimizer': False
+                },
+                'reset_stage_counters': True
+              }
             }
           }
         }
@@ -49,9 +59,9 @@ pod-template:
         {
           'deployment':{
             "vehicle-detection": ["edge5"],
-            "pedestrian-detection": ["edge5","edgexn11"],
-            "category-identification": ["edgexn8", "edgexn12"],
-            "license-plate-recognition": ["edgexn8", "edgexn11"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
             "exposure-identification": ["edgexn11", "edgexn12"]
           }
         }
@@ -62,9 +72,9 @@ pod-template:
         {
           'deployment':{
             "vehicle-detection": ["edge5"],
-            "pedestrian-detection": ["edge5","edgexn11"],
-            "category-identification": ["edgexn8", "edgexn12"],
-            "license-plate-recognition": ["edgexn8", "edgexn11"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
             "exposure-identification": ["edgexn11", "edgexn12"]
           }
         }
@@ -75,16 +85,16 @@ pod-template:
         {
           'configuration':{
             'resolution': '720p',
-            'fps': 10,
+            'fps': 6,
             'encoding': 'mp4v',
-            'buffer_size': 4
+            'buffer_size': 2
           },
           'offloading':{
-            'pedestrian-detection':'edgexn11',
+            'pedestrian-detection':'edge5',
             'exposure-identification':'edgexn12',
             'vehicle-detection':'edge5',
-            'category-identification':'edgexn12',
-            'license-plate-recognition':'edgexn8'
+            'category-identification':'edgexn13',
+            'license-plate-recognition':'edgexn12'
           }
         }
 port-open:
