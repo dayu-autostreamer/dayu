@@ -169,9 +169,48 @@ class HedgerFlat(Hedger):
         if self.checkpoint_cfg.load.enabled and self._loaded_checkpoint_path is None:
             raise RuntimeError("[HedgerFlat][Inference] Checkpoint loading was enabled but no checkpoint was loaded.")
         LOGGER.info(f"[HedgerFlat][Inference] Start: {self._summarize_runtime_config()}, {self._summarize_topology()}")
+        self.set_seed()
+        self.shared_topology_encoder.eval()
         self.flat_agent.eval()
         self.deployment_thread_stop_event.clear()
         self.offloading_thread_stop_event.clear()
+
+        if self.cur_deploy_mask is None:
+            if self.deployment_plan is not None:
+                self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(self.deployment_plan).detach().cpu()
+            elif self.initial_deployment_plan is not None:
+                self.deployment_plan = copy.deepcopy(self.initial_deployment_plan)
+                self.cur_deploy_mask = self._map_deployment_plan_to_deployment_mask(
+                    self.initial_deployment_plan
+                ).detach().cpu()
+            else:
+                LOGGER.warning("[HedgerFlat][Inference] No previous deployment state found; initialize to cloud.")
+                self.cur_deploy_mask = torch.zeros(
+                    (len(self.logical_topology), len(self.physical_topology)),
+                    dtype=torch.bool,
+                )
+                self.cur_deploy_mask[:, self.physical_topology.cloud_idx] = True
+                self.deployment_plan = self._map_deployment_mask_to_deployment_plan(self.cur_deploy_mask)
+        elif self.deployment_plan is None:
+            self.deployment_plan = self._map_deployment_mask_to_deployment_plan(self._current_deploy_mask())
+
+        self.dep_recorder = None
+        self.off_recorder = None
+        self.dep_decision_recorder = Recorder(
+            self._inference_log_path("deployment_decisions.csv"),
+            fmt="csv",
+            fieldnames=self._deployment_decision_fieldnames(),
+            overwrite=True,
+            flush_every=1,
+        )
+        self.off_decision_recorder = Recorder(
+            self._inference_log_path("offloading_decisions.csv"),
+            fmt="csv",
+            fieldnames=self._offloading_decision_fieldnames(),
+            overwrite=True,
+            flush_every=1,
+        )
+
         worker = threading.Thread(target=self.inference_flat_agent, daemon=True)
         worker.start()
         while not self.deployment_thread_stop_event.is_set():
@@ -181,20 +220,28 @@ class HedgerFlat(Hedger):
             time.sleep(0.5)
         self.deployment_thread_stop_event.set()
         self.offloading_thread_stop_event.set()
+        worker.join(timeout=5.0)
+        self.dep_decision_recorder.close()
+        self.off_decision_recorder.close()
+        self.dep_decision_recorder = None
+        self.off_decision_recorder = None
 
     def inference_flat_agent(self):
         logic_edge_index = self._build_edge_index(self.logical_topology.links)
         phys_edge_index = self._build_edge_index(self.physical_topology.links)
         tick = 0
+        step = 0
         prev_deploy_mask = self._current_deploy_mask()
         logic_feats, phys_feats, _, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
         while not self.deployment_thread_stop_event.is_set():
             try:
+                state_logic_feats = logic_feats
+                state_phys_feats = phys_feats
                 logic_feats_dev = {k: v.to(self.device) for k, v in logic_feats.items()}
                 phys_feats_dev = {k: v.to(self.device) for k, v in phys_feats.items()}
                 prev_dev = prev_deploy_mask.to(self.device) if prev_deploy_mask is not None else None
                 with self._model_lock, torch.inference_mode():
-                    deploy_mask, actions, _, _, _, _ = self.flat_agent.policy(
+                    deploy_mask, actions, _, _, _, aux = self.flat_agent.policy(
                         logic_edge_index=logic_edge_index,
                         logic_feats=logic_feats_dev,
                         phys_edge_index=phys_edge_index,
@@ -202,16 +249,37 @@ class HedgerFlat(Hedger):
                         prev_deploy_mask=prev_dev,
                         deterministic=True,
                     )
+                raw_deploy_mask = aux["raw_deploy_mask"].detach().cpu().bool()
+                exec_deploy_mask = deploy_mask.detach().cpu().bool()
                 deploy_plan = self._map_deployment_mask_to_deployment_plan(deploy_mask)
                 offloading_plan = self._map_offloading_mask_to_offloading_plan(actions)
                 with self._data_lock:
                     self.pending_deployment_plan = deploy_plan
-                    self.pending_deploy_mask = deploy_mask.detach().cpu()
+                    self.pending_deploy_mask = exec_deploy_mask
                     self.offloading_plan = offloading_plan
                     self._mark_deployment_decision_pending()
+                self._log_deployment_decisions(
+                    step=step,
+                    raw_deploy_mask=raw_deploy_mask,
+                    exec_deploy_mask=exec_deploy_mask,
+                    logic_feats=state_logic_feats,
+                    phys_feats=state_phys_feats,
+                    logic_edge_index=logic_edge_index,
+                    actor_debug=aux.get("actor_debug", aux),
+                    policy_deterministic=True,
+                )
+                self._log_offloading_decisions(
+                    step=step,
+                    actions=actions.detach().cpu(),
+                    static_mask=exec_deploy_mask,
+                    logic_feats=state_logic_feats,
+                    phys_feats=state_phys_feats,
+                    policy_deterministic=True,
+                )
                 tick = self._sleep_until_next_tick(tick, self.deployment_interval)
                 prev_deploy_mask = self._current_deploy_mask()
                 logic_feats, phys_feats, _, _, _ = self._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+                step += 1
             except Exception as exc:
                 LOGGER.exception(f"[HedgerFlat][Inference] Worker loop error: {exc}")
                 time.sleep(0.5)
@@ -460,6 +528,10 @@ class HedgerFlat(Hedger):
                     raw_deploy_mask=aux["raw_deploy_mask"].detach().cpu(),
                     exec_deploy_mask=exec_deploy_mask,
                     logic_feats=state_logic_feats,
+                    phys_feats=state_phys_feats,
+                    logic_edge_index=logic_edge_index,
+                    actor_debug=aux.get("actor_debug", aux),
+                    policy_deterministic=False,
                 )
                 self._log_offloading_decisions(
                     step=step,
@@ -467,6 +539,7 @@ class HedgerFlat(Hedger):
                     static_mask=deploy_mask.detach().cpu(),
                     logic_feats=state_logic_feats,
                     phys_feats=state_phys_feats,
+                    policy_deterministic=False,
                 )
                 step += 1
             except Exception as exc:

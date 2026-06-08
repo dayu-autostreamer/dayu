@@ -104,39 +104,52 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
 
         cloud_idx = self._cloud_index(Np)
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)
+        (
+            _q_embedding,
+            _k_embedding,
+            _qk_scores,
+            _qk_feature,
+            _pair_adjustment,
+            candidate_features,
+            select_logits,
+            pair_ctx,
+        ) = self._deployment_actor_terms(
+            h_s,
+            h_p,
+            logic_edge_index,
+            logic_feats,
+            phys_feats,
+            static_allowed,
+            prev_deploy_mask=prev_deploy_mask,
+        )
 
-        raw_deploy_mask = torch.zeros((Ms, Np), dtype=torch.bool, device=h_s.device)
-        raw_deploy_probs = torch.zeros((Ms, Np), dtype=torch.float32, device=h_s.device)
-        deploy_logp = torch.tensor(0.0, device=h_s.device)
-        deploy_ent_terms = []
-        eps = 1e-6
+        proposal_deploy_mask, option_debug = self._sample_matrix_deployment_mask(
+            select_logits=select_logits,
+            static_allowed=static_allowed,
+            prev_deploy_mask=prev_deploy_mask,
+            deterministic=deterministic,
+        )
+        raw_deploy_mask = option_debug["pre_quality_raw_mask"].to(device=h_s.device).bool()
+        proposal_deploy_mask = proposal_deploy_mask.to(device=h_s.device).bool()
 
-        for service_idx in topo_order:
-            stochastic_allowed = static_allowed[service_idx].clone()
-            stochastic_allowed[cloud_idx] = False
-            sampled_row = torch.zeros(Np, dtype=torch.bool, device=h_s.device)
-            if stochastic_allowed.any():
-                probs_raw = self.actor(
-                    h_s[service_idx:service_idx + 1],
-                    h_p,
-                    mask=stochastic_allowed.unsqueeze(0),
-                )[0]
-                probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
-                probs_log = torch.where(stochastic_allowed, probs_log, torch.full_like(probs_log, eps))
-                probs_sample = torch.where(stochastic_allowed, probs_raw, torch.zeros_like(probs_raw))
-                dist = torch.distributions.Bernoulli(probs=probs_log)
-                sampled_bits = probs_sample >= 0.5 if deterministic else torch.rand_like(probs_sample) < probs_sample
-                sampled_row = torch.where(
-                    stochastic_allowed,
-                    sampled_bits,
-                    torch.zeros_like(sampled_bits, dtype=torch.bool),
-                )
-                deploy_logp += dist.log_prob(sampled_row.float()).sum()
-                deploy_ent_terms.append(dist.entropy()[stochastic_allowed].mean())
-                raw_deploy_probs[service_idx] = probs_raw
-            sampled_row[cloud_idx] = True
-            raw_deploy_mask[service_idx] = sampled_row
-            raw_deploy_probs[service_idx, cloud_idx] = 1.0
+        if prev_deploy_mask is None:
+            prev_edge = torch.zeros_like(static_allowed.bool())
+        else:
+            prev_edge = prev_deploy_mask.to(device=h_s.device).bool() & static_allowed.bool()
+        if cloud_idx >= 0:
+            prev_edge[:, cloud_idx] = False
+        proposal_edge = proposal_deploy_mask.bool() & static_allowed.bool()
+        if cloud_idx >= 0:
+            proposal_edge[:, cloud_idx] = False
+        option_debug["matrix_added_mask"] = proposal_edge & ~prev_edge
+        option_debug["matrix_kept_mask"] = proposal_edge & prev_edge
+        option_debug["matrix_removed_mask"] = prev_edge & ~proposal_edge
+
+        raw_probs = torch.sigmoid(select_logits).float()
+        if cloud_idx >= 0:
+            device_ids = torch.arange(Np, device=h_s.device)
+            cloud_mask = device_ids.view(1, -1).eq(cloud_idx).expand_as(raw_probs)
+            raw_probs = torch.where(cloud_mask, torch.ones_like(raw_probs), raw_probs)
 
         (
             deploy_mask,
@@ -145,13 +158,43 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             edge_cover_repair_cnt,
             edge_cover_repair_cost,
             edge_cover_unmet,
+            hotspot_repair_cnt,
+            hotspot_repair_cost,
+            hotspot_unmet,
+            risk_metrics,
+            executed_pair_ctx,
+            capacity_removed_mask,
         ) = self._project_deployment_mask(
-            raw_deploy_mask,
-            raw_probs=raw_deploy_probs,
+            proposal_deploy_mask,
+            raw_probs=raw_probs,
             logic_feats=logic_feats,
             phys_feats=phys_feats,
+            logic_edge_index=logic_edge_index,
             prev_deploy_mask=prev_deploy_mask,
             static_allowed=static_allowed,
+            retention_scores=select_logits,
+            option_ctx=pair_ctx,
+        )
+
+        negative_action_mask = raw_deploy_mask & ~deploy_mask & static_allowed.bool()
+        effective_positive_mask = deploy_mask & static_allowed.bool()
+        if cloud_idx >= 0:
+            negative_action_mask[:, cloud_idx] = False
+            effective_positive_mask[:, cloud_idx] = False
+        (
+            deploy_logp,
+            deploy_entropy,
+            _positive_logp,
+            _negative_logp,
+            positive_mask,
+            negative_mask,
+        ) = self._deployment_select_logp_entropy(
+            select_logits,
+            deploy_mask,
+            static_allowed,
+            topo_order=topo_order,
+            positive_mask=effective_positive_mask,
+            negative_mask=negative_action_mask,
         )
 
         parents = self._build_parents(logic_edge_index, Ms)
@@ -166,31 +209,43 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             off_logp += dist.log_prob(actions[service_idx])
             off_ent_terms.append(dist.entropy())
 
-        deploy_entropy = (
-            torch.stack(deploy_ent_terms).mean()
-            if deploy_ent_terms else torch.tensor(0.0, device=h_s.device)
-        )
         off_entropy = (
             torch.stack(off_ent_terms).mean()
             if off_ent_terms else torch.tensor(0.0, device=h_s.device)
         )
-        _, _, _, _, _, candidate_features, _ = self._deployment_actor_terms(
-            h_s,
-            h_p,
-            logic_edge_index,
-            logic_feats,
-            phys_feats,
-            static_allowed,
-            prev_deploy_mask=prev_deploy_mask,
-        )
         value = self.critic(h_s, h_p, candidate_features, static_allowed)
+        actor_debug = dict(pair_ctx)
+        actor_debug.update(executed_pair_ctx or {})
+        actor_debug.update(option_debug)
+        actor_debug.update({
+            "capacity_removed_mask": capacity_removed_mask,
+            "positive_mask": positive_mask,
+            "negative_mask": negative_mask,
+        })
+        if cloud_idx > 0:
+            raw_edge_count = (raw_deploy_mask[:, :cloud_idx] & static_allowed[:, :cloud_idx].bool()).float().sum(dim=1)
+            executed_edge_count = deploy_mask[:, :cloud_idx].float().sum(dim=1)
+            lost_edge_service = (raw_edge_count > 0.0) & (executed_edge_count <= 0.0)
+            projection_last_edge_removed_mask = capacity_removed_mask.clone()
+            projection_last_edge_removed_mask[:, :cloud_idx] = (
+                capacity_removed_mask[:, :cloud_idx] & lost_edge_service.view(-1, 1)
+            )
+            projection_last_edge_removed_mask[:, cloud_idx:] = False
+        else:
+            projection_last_edge_removed_mask = torch.zeros_like(capacity_removed_mask, dtype=torch.bool)
+        actor_debug["projection_last_edge_removed_mask"] = projection_last_edge_removed_mask
         return deploy_mask, actions, deploy_logp + off_logp, (deploy_entropy + off_entropy) * 0.5, value.squeeze(0), {
             "capacity_relax_cnt": capacity_relax_cnt,
             "capacity_relax_cost": capacity_relax_cost,
             "edge_cover_repair_cnt": edge_cover_repair_cnt,
             "edge_cover_repair_cost": edge_cover_repair_cost,
             "edge_cover_unmet": edge_cover_unmet,
+            "hotspot_repair_cnt": hotspot_repair_cnt,
+            "hotspot_repair_cost": hotspot_repair_cost,
+            "hotspot_unmet": hotspot_unmet,
+            **risk_metrics,
             "raw_deploy_mask": raw_deploy_mask,
+            "actor_debug": actor_debug,
         }
 
     def evaluate(
@@ -214,26 +269,47 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
         static_allowed = self._static_allowed_mask(phys_feats, logic_feats)
         cloud_idx = self._cloud_index(Np)
         raw_deploy_mask = self._enforce_cloud_replica(raw_deploy_mask.bool())
-        eps = 1e-6
+        static_mask = static_mask.bool()
+        (
+            _q_embedding,
+            _k_embedding,
+            _qk_scores,
+            _qk_feature,
+            _pair_adjustment,
+            candidate_features,
+            select_logits,
+            _pair_ctx,
+        ) = self._deployment_actor_terms(
+            h_s,
+            h_p,
+            logic_edge_index,
+            logic_feats,
+            phys_feats,
+            static_allowed,
+            prev_deploy_mask=prev_deploy_mask,
+        )
+        negative_action_mask = raw_deploy_mask & ~static_mask & static_allowed.bool()
+        effective_positive_mask = static_mask & static_allowed.bool()
+        if cloud_idx >= 0:
+            negative_action_mask[:, cloud_idx] = False
+            effective_positive_mask[:, cloud_idx] = False
+        (
+            deploy_logp,
+            deploy_entropy,
+            _positive_logp,
+            _negative_logp,
+            _positive_mask,
+            _negative_mask,
+        ) = self._deployment_select_logp_entropy(
+            select_logits,
+            static_mask,
+            static_allowed,
+            topo_order=topo_order,
+            positive_mask=effective_positive_mask,
+            negative_mask=negative_action_mask,
+        )
 
-        deploy_logp = torch.tensor(0.0, device=h_s.device)
-        deploy_ent_terms = []
         actions = actions.long()
-        for service_idx in topo_order:
-            stochastic_allowed = static_allowed[service_idx].clone()
-            stochastic_allowed[cloud_idx] = False
-            if stochastic_allowed.any():
-                probs_raw = self.actor(
-                    h_s[service_idx:service_idx + 1],
-                    h_p,
-                    mask=stochastic_allowed.unsqueeze(0),
-                )[0]
-                probs_log = torch.clamp(probs_raw, eps, 1.0 - eps)
-                probs_log = torch.where(stochastic_allowed, probs_log, torch.full_like(probs_log, eps))
-                dist = torch.distributions.Bernoulli(probs=probs_log)
-                acts_row = raw_deploy_mask[service_idx].float()
-                deploy_logp += dist.log_prob(acts_row).masked_select(stochastic_allowed).sum()
-                deploy_ent_terms.append(dist.entropy().masked_select(stochastic_allowed).mean())
 
         parents = self._build_parents(logic_edge_index, Ms)
         off_logp = torch.tensor(0.0, device=h_p.device)
@@ -245,22 +321,9 @@ class HedgerFlatPPO(_DeploymentBackbonePPO):
             off_logp += dist.log_prob(actions[service_idx])
             off_ent_terms.append(dist.entropy())
 
-        deploy_entropy = (
-            torch.stack(deploy_ent_terms).mean()
-            if deploy_ent_terms else torch.tensor(0.0, device=h_s.device)
-        )
         off_entropy = (
             torch.stack(off_ent_terms).mean()
             if off_ent_terms else torch.tensor(0.0, device=h_s.device)
-        )
-        _, _, _, _, _, candidate_features, _ = self._deployment_actor_terms(
-            h_s,
-            h_p,
-            logic_edge_index,
-            logic_feats,
-            phys_feats,
-            static_allowed,
-            prev_deploy_mask=prev_deploy_mask,
         )
         value = self.critic(h_s, h_p, candidate_features, static_allowed)
         return deploy_logp + off_logp, (deploy_entropy + off_entropy) * 0.5, value.squeeze(0), {}

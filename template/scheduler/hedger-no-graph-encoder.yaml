@@ -49,7 +49,7 @@ pod-template:
       value: >
         {
           'scope': 'all_edge_nodes',
-          'fixed_value': 'edgexn12',
+          'fixed_value': 'edgex1',
           'fixed_type': 'hostname'
         }
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
