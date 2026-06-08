@@ -48,7 +48,7 @@ pod-template:
       value: >
         {
           'scope': 'all_edge_nodes',
-          'fixed_value': 'edgexn12',
+          'fixed_value': 'edgex1',
           'fixed_type': 'hostname'
         }
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
@@ -58,9 +58,9 @@ pod-template:
         {
           'deployment':{
             "vehicle-detection": ["edge5"],
-            "pedestrian-detection": ["edge5","edgexn11"],
-            "category-identification": ["edgexn8", "edgexn12"],
-            "license-plate-recognition": ["edgexn8", "edgexn11"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
             "exposure-identification": ["edgexn11", "edgexn12"]
           }
         }
@@ -71,9 +71,9 @@ pod-template:
         {
           'deployment':{
             "vehicle-detection": ["edge5"],
-            "pedestrian-detection": ["edge5","edgexn11"],
-            "category-identification": ["edgexn8", "edgexn12"],
-            "license-plate-recognition": ["edgexn8", "edgexn11"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
             "exposure-identification": ["edgexn11", "edgexn12"]
           }
         }
@@ -84,16 +84,16 @@ pod-template:
         {
           'configuration':{
             'resolution': '720p',
-            'fps': 10,
+            'fps': 6,
             'encoding': 'mp4v',
-            'buffer_size': 4
+            'buffer_size': 2
           },
           'offloading':{
-            'pedestrian-detection':'edgexn11',
+            'pedestrian-detection':'edge5',
             'exposure-identification':'edgexn12',
             'vehicle-detection':'edge5',
-            'category-identification':'edgexn12',
-            'license-plate-recognition':'edgexn8'
+            'category-identification':'edgexn13',
+            'license-plate-recognition':'edgexn12'
           }
         }
 port-open:
