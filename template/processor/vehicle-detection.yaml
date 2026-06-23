@@ -8,7 +8,7 @@ pod-template:
     - name: DETECTOR_PARAMETERS
       value: >
         {
-          'trt_weights':'yolov8s.engine', 
+          'trt_weights':'yolov8s.engine',
           'trt_plugin_library':'libmyplugins.so',
           'non_trt_weights':'yolov8s.pt',
           'device':0

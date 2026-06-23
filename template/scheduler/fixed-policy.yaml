@@ -17,7 +17,7 @@ pod-template:
       value: >
         {
           'scope': 'all_edge_nodes',
-          'fixed_value': 'edgexn12',
+          'fixed_value': 'edgex1',
           'fixed_type':'hostname'
         }
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
@@ -26,11 +26,11 @@ pod-template:
       value: >
         {
           'policy':{
-            'pedestrian-detection':['edgexn12'],
-            'exposure-identification':['edgexn11','edge5'],
-            'vehicle-detection':['edgexn12'],
-            'category-identification':['edgexn8','edgexn11'],
-            'license-plate-recognition':['edgexn11','edge5']
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5"],
+            "category-identification": ["edgexn8"],
+            "license-plate-recognition": ["edgexn11", "edgexn12"],
+            "exposure-identification": ["edgexn11", "edgexn12", "edgexn8"]
           }
         }
     - name: SCH_REDEPLOYMENT_POLICY_NAME
@@ -39,11 +39,11 @@ pod-template:
       value: >
         {
           'policy':{
-            'pedestrian-detection':['edgexn12'],
-            'exposure-identification':['edgexn11','edge5'],
-            'vehicle-detection':['edgexn12'],
-            'category-identification':['edgexn8','edgexn11'],
-            'license-plate-recognition':['edgexn11','edge5']
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5"],
+            "category-identification": ["edgexn8"],
+            "license-plate-recognition": ["edgexn11", "edgexn12"],
+            "exposure-identification": ["edgexn11", "edgexn12", "edgexn8"]
           }
         }
     - name: SCH_AGENT_NAME
@@ -58,11 +58,11 @@ pod-template:
             'buffer_size': 4
           },
           'offloading':{
-            'pedestrian-detection':'edgexn12',
-            'exposure-identification':'edgexn11',
-            'vehicle-detection':'edgexn12',
+            'pedestrian-detection':'edge5',
+            'exposure-identification':'edgexn12',
+            'vehicle-detection':'edge5',
             'category-identification':'edgexn8',
-            'license-plate-recognition':'edge5'
+            'license-plate-recognition':'edgexn11'
           }
         }
 port-open:
