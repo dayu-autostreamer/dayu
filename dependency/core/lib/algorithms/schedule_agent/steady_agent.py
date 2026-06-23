@@ -193,6 +193,9 @@ class SteadyAgent(BaseAgent, abc.ABC):
 
             raw_meta_data = info['meta_data']
 
+            adjusted_delay_cons = self.init_param['delay_cons']*self.init_param['delay_cons_adjust']
+            adjusted_acc_cons = self.init_param['acc_cons']*self.init_param['acc_cons_adjust']
+
             self.overall_scheduler = OverallScheduler(
                                 kb_path = self.init_param['kb_path'],
                                 service_name_pipeline = self.service_names,
@@ -204,8 +207,8 @@ class SteadyAgent(BaseAgent, abc.ABC):
                                             'buffer_size':self.buffer_size_list,
                                             'edge_serv_num':self.edge_serv_num_list
                                         },
-                                delay_cons = self.init_param['delay_cons'],
-                                acc_cons = self.init_param['acc_cons'],
+                                delay_cons = adjusted_delay_cons,
+                                acc_cons = adjusted_acc_cons,
                                 delay_weight = self.init_param['delay_weight'],
                                 acc_weight = self.init_param['acc_weight'],
                                 default_policy = self.init_param['default_policy'],
