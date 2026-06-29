@@ -10,4 +10,3 @@ from .overall_scheduler import OverallScheduler
 
 
 __all__ = ['ContextRecord','CorrectRecord','SteadyRecord','AccuracyCalculation','AccuracyPrediction','IntegratedSafePredictor','KnowledgeBase','MultiLabelTrainer','OverallScheduler']
-

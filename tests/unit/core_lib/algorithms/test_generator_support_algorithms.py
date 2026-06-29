@@ -262,6 +262,12 @@ def test_before_submit_task_operations_track_file_metadata_and_last_frame_state(
     before_submit_module.CEVASBSTOperation()(system, new_task)
     assert current_task.get_tmp_data()["file_size"] == pytest.approx(compressed_file.stat().st_size / 1024)
 
+    steady_task = build_task()
+    steady_task.set_file_path(str(compressed_file))
+    steady_system = SimpleNamespace()
+    before_submit_module.SteadyBSTOperation()(steady_system, steady_task)
+    assert steady_task.get_tmp_data()["file_size"] == pytest.approx(compressed_file.stat().st_size / 1024 / 1024)
+
     class DummyCap:
         def __init__(self, frames):
             self.frames = iter(frames)
