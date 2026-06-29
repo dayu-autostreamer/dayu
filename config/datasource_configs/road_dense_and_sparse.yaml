@@ -1,0 +1,20 @@
+source_name: "Road Dense & Sparse  (Two Camera HTTP)"
+source_type: "video"
+source_mode: "http_video"
+source_list:
+  - name: "road_camera_dense"
+    url: ""
+    dir: "road_dense/"
+    metadata:
+      resolution: "540p"
+      fps: 30
+      encoding: "mp4v"
+      buffer_size: 4
+  - name: "road_camera_sparse"
+    url: ""
+    dir: "road_sparse/"
+    metadata:
+      resolution: "540p"
+      fps: 30
+      encoding: "mp4v"
+      buffer_size: 4
