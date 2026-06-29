@@ -1,6 +1,6 @@
 position: both
 pod-template:
-  image: repo:5000/dayuhub/face-detection:test-csy-01
+  image: face-detection
   imagePullPolicy: Always
   env:
     - name: PROCESSOR_NAME
@@ -15,7 +15,7 @@ pod-template:
         }
     - name: SCENARIOS_EXTRACTORS
       value: >
-        ['obj_num', 'obj_size', 'obj_velocity']
+        ['obj_num', 'obj_size']
     - name: PRO_QUEUE_NAME
       value: "simple"
     - name: USE_TENSORRT

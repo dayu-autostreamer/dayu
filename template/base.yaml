@@ -1,7 +1,7 @@
 # Base configuration template for dayu system
 
 # Namespace to distinguish different dayu deployments, please modify it when deploying multiple dayu systems in the same kubernetes cluster
-namespace: dayu-csy
+namespace: dayu
 # levels for container logging in dayu: DEBUG, INFO, WARNING, ERROR
 log-level: DEBUG
 # specify the downloaded result log file name, if not set, log file name will be generated with timestamps, e.g., RESULT_LOG_DAYU_NAMESPACE_dayu_TIME_2025_11_04_01_46_26.json.gz
@@ -36,7 +36,7 @@ default-image-meta:
   repository: dayuhub
   tag: v1.3
 # default file mount prefix for dayu containers
-default-file-mount-prefix: "/data/csy/dayu-files"
+default-file-mount-prefix: "/data/dayu-files"
 # datasource configuration
 datasource:
   # true/false, use a simulation datasource container or use a real datasource
