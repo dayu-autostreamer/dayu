@@ -6,6 +6,30 @@
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
+- id: madeye
+  name: MadEye
+  yaml: madeye.yaml
+  dependency:
+    generator: generator-steady.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: adamec
+  name: AdaMEC
+  yaml: adamec.yaml
+  dependency:
+    generator: generator-steady.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: gecko
+  name: Gecko
+  yaml: gecko.yaml
+  dependency:
+    generator: generator-steady.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
 - id: fixed
   name: Fixed Policy
   yaml: fixed-policy.yaml

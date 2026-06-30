@@ -1,0 +1,117 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: steady
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: full
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: non
+    - name: SCH_AGENT_NAME
+      value: madeye
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'sch_param': {},
+          'baseline_param': {
+              'kb_path': 'test_kb/kb2',
+              'delay_cons': 0.3,
+              'acc_cons': 0.6,
+              'delay_weight': 0.8,
+              'acc_weight': 0.2,
+              'delay_cons_adjust': 0.7,
+              'acc_cons_adjust': 1.2,
+              'default_policy': {
+                  'fps': 30,
+                  'resolution': '360p',
+                  'buffer_size': 4,
+                  'edge_serv_num': 0
+              },
+              'use_corrected_prediction': False,
+              'enable_feedback_update': False,
+              'search_param': {
+                  'max_iterations': 32,
+                  'max_expanded_states': 512,
+                  'min_improvement': 1e-09
+              },
+              'madeye_param': {
+                  'candidate_pool_size': 8
+              },
+              'corrector_param': {
+                  'detect': {
+                      'n': 2,
+                      'coeff_window_length': 10,
+                      'x_sample_window_length': 10,
+                      'y_sample_window_length': 10
+                  },
+                  'classify': {
+                      'n': 2,
+                      'coeff_window_length': 10,
+                      'x_sample_window_length': 10,
+                      'y_sample_window_length': 10
+                  },
+                  'trans': {
+                      'n': 1,
+                      'coeff_window_length': 10,
+                      'x_sample_window_length': 10,
+                      'y_sample_window_length': 10
+                  },
+                  'acc': {
+                      'n': 1,
+                      'coeff_window_length': 10,
+                      'x_sample_window_length': 10,
+                      'y_sample_window_length': 10
+                  }
+              },
+              'queue_param': {
+                  'detect_edge': {
+                      'max_diff_thr': 50,
+                      'min_diff_thr': 10,
+                      'min_anylze_thr': 10,
+                      'stable_thr': 0.01,
+                      'fit_thr': 0.9,
+                      'history_window_length': 100
+                  },
+                  'detect_cloud': {
+                      'max_diff_thr': 50,
+                      'min_diff_thr': 10,
+                      'min_anylze_thr': 10,
+                      'stable_thr': 0.01,
+                      'fit_thr': 0.9,
+                      'history_window_length': 100
+                  },
+                  'classify_edge': {
+                      'max_diff_thr': 50,
+                      'min_diff_thr': 10,
+                      'min_anylze_thr': 10,
+                      'stable_thr': 0.01,
+                      'fit_thr': 0.9,
+                      'history_window_length': 100
+                  },
+                  'classify_cloud': {
+                      'max_diff_thr': 50,
+                      'min_diff_thr': 10,
+                      'min_anylze_thr': 10,
+                      'stable_thr': 0.01,
+                      'fit_thr': 0.9,
+                      'history_window_length': 100
+                  }
+              }
+          }
+        }
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/madeye/'
