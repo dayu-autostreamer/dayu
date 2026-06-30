@@ -2,9 +2,11 @@
 
 ---
 
-## v1.3 (In Development)
+## v1.3
 
 ### Features
+- Add our work on deployment and offloading: Hedger, a hierarchical scheduling framework for macro-level service deployment and micro-level task offloading. It uses dual-agent with GNNs and DRLs to make accurate and feasible decisions. [(link)](template/scheduler/hedger.yaml)
+- Add our work on configuration optimization: Steady Scheduler, a configuration selection framework for steady scheduling. It uses side-effect to shrink search space and adapt to context fluctuations. [(link)](template/scheduler/steady.yaml)
 
 ### Bug Fix
 - Fix iptables rule accumulation for edgemesh in incorrect dayu shutdowns with `dayu.sh` script correction.
