@@ -39,6 +39,12 @@ class BaseAgent(metaclass=abc.ABCMeta):
     def get_redeployment_plan(self, info):
         return self.redeployment_policy(info)
 
+    def should_generate(self, info):
+        return {
+            "generate": True,
+            "reason": "default_allow",
+        }
+
     def get_schedule_overhead(self):
         return 0
 

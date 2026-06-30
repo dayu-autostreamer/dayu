@@ -1,0 +1,75 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'scope': 'all_edge_nodes',
+          'fixed_value': 'edgex1',
+          'fixed_type': 'hostname'
+        }
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'policy':{
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
+            "exposure-identification": ["edgexn12", "edgexn13"]
+          }
+        }
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: dynamic
+    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'policy':{
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
+            "exposure-identification": ["edgexn12", "edgexn13"]
+          },
+          'redeployment_interval_minutes': 1,
+          'device_service_limits': {
+            'edge5': 2,
+            'edgexn11': 4,
+            'edgexn12': 2,
+            'edgexn13': 2,
+          },
+          'default_service_limit': 2
+        }
+    - name: SCH_AGENT_NAME
+      value: dynamic
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'configuration':{
+            'resolution': '720p',
+            'fps': 6,
+            'encoding': 'mp4v',
+            'buffer_size': 2
+          },
+          'bandwidth_threshold': 6.0
+        }
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/dynamic/'

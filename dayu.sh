@@ -95,10 +95,23 @@ metadata:
   namespace: $NAMESPACE
 spec:
   edgeWorker:
-    - file:
-        paths:
-          - $DATASOURCE_DATA_ROOT
-          - $DEFAULT_FILE_MOUNT_PREFIX/temp/
+    - mounts:
+        - source:
+            type: hostPath
+            hostPath:
+              path: $DATASOURCE_DATA_ROOT
+              pathType: Directory
+          envName: DEFAULT_MOUNT_PATH
+        - name: temporary-directory
+          source:
+            type: hostPath
+            hostPath:
+              path: temp/
+              pathType: DirectoryOrCreate
+              prefix: $DEFAULT_FILE_MOUNT_PREFIX
+          target:
+            path: /temp
+          envName: TEMP_PATH
       logLevel:
         level: "DEBUG"
       template:
@@ -119,8 +132,6 @@ spec:
                   value: "8000"
                 - name: KUBE_CACHE_TTL
                   value: "$KUBE_CACHE_TTL"
-                - name: FILE_PREFIX
-                  value: "$DATASOURCE_DATA_ROOT"
               image: $REGISTRY/$REPOSITORY/datasource:$TAG
               imagePullPolicy: Always
               name: datasource
@@ -150,10 +161,23 @@ metadata:
   namespace: $NAMESPACE
 spec:
   cloudWorker:
-    file:
-      paths:
-      - $TEMPLATE
-      - $DEFAULT_FILE_MOUNT_PREFIX/temp/
+    mounts:
+      - source:
+          type: hostPath
+          hostPath:
+            path: $TEMPLATE
+            pathType: Directory
+        envName: DEFAULT_MOUNT_PATH
+      - name: temporary-directory
+        source:
+          type: hostPath
+          hostPath:
+            path: temp/
+            pathType: DirectoryOrCreate
+            prefix: $DEFAULT_FILE_MOUNT_PREFIX
+        target:
+          path: /temp
+        envName: TEMP_PATH
     logLevel:
       level: "DEBUG"
     template:

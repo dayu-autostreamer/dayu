@@ -1,0 +1,41 @@
+- name: End to End Delay Curve
+  type: curve
+  x_axis: Task Index
+  y_axis: Delay
+  variables: [ "End to End Delay" ]
+  hook_name: e2e_delay
+  size: 1
+- name: DAG Service Offloading
+  type: topology
+  variables: [ "Realtime DAG Service Offloading State" ]
+  hook_name: dag_offloading
+  save_expense: true
+  size: 2
+- name: Multiple Object Number Curve
+  type: curve
+  x_axis: Task Index
+  y_axis: Number
+  variables: ["vehicle-detection","pedestrian-detection"]
+  hook_name: multiple_obj_num
+  size: 1
+- name: DAG Service Deployment
+  type: topology
+  variables: [ "Realtime DAG Service Deployment State" ]
+  hook_name: dag_deployment
+  save_expense: true
+  size: 2
+- name: Service Processing Delay Curve
+  type: curve
+  x_axis: Task Index
+  y_axis: Delay
+  variables: ["vehicle-detection","pedestrian-detection", "exposure-identification","category-identification","license-plate-recognition"]
+  hook_name: service_processing_delay
+  size: 1
+- name: Service Replica Queue Length Bar
+  type: bar
+  x_axis: Replica
+  y_axis: Queue Length
+  variables: ["vehicle-detection","pedestrian-detection", "exposure-identification","category-identification","license-plate-recognition"]
+  hook_name: service_queue_length
+  save_expense: true
+  size: 2

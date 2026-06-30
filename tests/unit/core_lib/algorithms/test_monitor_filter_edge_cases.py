@@ -305,8 +305,8 @@ Flags: avx2 fma
     monkeypatch.setattr(gpu_flops_module.GPUFlopsMonitor, "load_pycuda", staticmethod(lambda: fake_cuda))
     monkeypatch.setattr(gpu_flops_module.GPUFlopsMonitor, "is_jetson_device", staticmethod(lambda: False))
     monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
-    assert monitor.get_parameter_value() > 0
-    assert gpu_flops_module.GPUFlopsMonitor.calculate_flops(2, 128, 1_500_000, 2) > 0
+    assert monitor.get_parameter_value() == pytest.approx(1536.0)
+    assert gpu_flops_module.GPUFlopsMonitor.calculate_flops(2, 128, 1_500_000, 2) == pytest.approx(1.536e12)
 
     unsupported_cuda = SimpleNamespace(
         Device=type(

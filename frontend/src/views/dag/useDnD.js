@@ -1,5 +1,6 @@
 import { useVueFlow } from '@vue-flow/core';
 import { ref, watch } from 'vue';
+import { getServiceNodeFontSize, getServiceTone } from './nodePalette';
 
 const state = {
 	serviceData: ref(null),
@@ -7,11 +8,12 @@ const state = {
 	isDragOver: ref(false),
 	isDragging: ref(false),
 };
+const GRID_SIZE = 24;
 
-export default function useDragAndDrop() {
+export default function useDragAndDrop(flowId = 'default') {
 	const { draggedType, isDragOver, isDragging, serviceData } = state;
 
-	const { screenToFlowCoordinate, onNodesInitialized, updateNode } = useVueFlow();
+	const { screenToFlowCoordinate, onNodesInitialized, updateNode } = useVueFlow({ id: flowId });
 
 	watch(isDragging, (dragging) => {
 		document.body.style.userSelect = dragging ? 'none' : '';
@@ -54,64 +56,63 @@ export default function useDragAndDrop() {
 		document.removeEventListener('drop', onDragEnd);
 	}
 
-	function randomColor() {
-		const colors = [
-			'#F0F4F8', // 极浅灰蓝
-			'#E3F2FD', // 柔和的天蓝
-			'#E8F5E9', // 薄荷绿
-			'#F3E5F5', // 浅紫丁香
-			'#FFF3E0', // 杏仁白
-			'#FBE9E7', // 浅珊瑚
-			'#E0F7FA', // 冰蓝
-			'#F1F8E9', // 嫩绿
-			'#FCE4EC', // 浅粉红
-			'#EDE7F6', // 薰衣草紫
-			'#E8F5E6', // 青苹果
-			'#FFEBEE', // 淡玫瑰
-			'#E0F2F1', // 浅水蓝
-			'#F5F5F5', // 浅灰白
-			'#FFF8E1', // 香槟黄
-			'#EFEBE9', // 浅米色
-		];
-		const randomIndex = Math.floor(Math.random() * colors.length);
-		return colors[randomIndex];
+	function snapToGrid(value) {
+		return Math.round(value / GRID_SIZE) * GRID_SIZE;
 	}
+
 	function onDrop(event, nodeList, nodeMap) {
+		event.preventDefault();
+
+		if (!serviceData.value) {
+			onDragEnd();
+			return;
+		}
+
 		const position = screenToFlowCoordinate({
 			x: event.clientX,
 			y: event.clientY,
 		});
 
 		const nodeId = serviceData.value.id;
-		const nodeName = serviceData.value.name;
+		const nodeName = serviceData.value.name || serviceData.value.id;
+		const tone = getServiceTone(nodeId);
 		const nodeData = {
 			label: nodeName,
 			prev: [],
 			succ: [],
-			service_id: serviceData.value.name,
+			service_id: serviceData.value.id,
+			service_name: nodeName,
+			description: serviceData.value.description,
 		};
 		const newNode = {
 			id: nodeId,
 			type: draggedType.value,
-			position: position,
+			class: 'dag-node',
 			style: {
-				backgroundColor: randomColor(),
-				class: 'vue-flow__node-input2',
-				width: 'auto',
-				height: 'auto',
+				backgroundColor: tone.background,
+				border: `1px solid ${tone.border}`,
+				borderLeft: `4px solid ${tone.accent}`,
+				borderRadius: '14px',
+				boxShadow: '0 6px 14px rgba(15, 23, 42, 0.06)',
+				color: '#0f172a',
+				fontSize: getServiceNodeFontSize(nodeName),
+				width: '96px',
+				height: '36px',
 			},
 			data: nodeData,
 			sourcePosition: 'right',
 			targetPosition: 'left',
+			position: {
+				x: snapToGrid(position.x),
+				y: snapToGrid(position.y),
+			},
 		};
 
 		const { off } = onNodesInitialized(() => {
 			updateNode(nodeId, (node) => ({
 				position: {
-					// x: node.position.x - node.dimensions.width / 2,
-					// y: node.position.y - node.dimensions.height / 2,
-					x: node.position.x,
-					y: node.position.y,
+					x: snapToGrid(node.position.x),
+					y: snapToGrid(node.position.y),
 				},
 			}));
 
@@ -120,12 +121,14 @@ export default function useDragAndDrop() {
 
 		nodeMap[nodeId] = newNode;
 		nodeList.push(newNode);
+		onDragEnd();
 	}
 
 	return {
 		draggedType,
 		isDragOver,
 		isDragging,
+		serviceData,
 		onDragStart,
 		onDragLeave,
 		onDragOver,

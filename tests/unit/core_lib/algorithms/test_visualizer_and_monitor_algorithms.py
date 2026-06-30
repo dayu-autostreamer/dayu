@@ -28,10 +28,12 @@ e2e_delay_module = importlib.import_module("core.lib.algorithms.result_visualize
 frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.frame_visualizer")
 image_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.image_visualizer")
 multiple_roi_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.multiple_roi_frame_visualizer")
+multiple_object_number_module = importlib.import_module("core.lib.algorithms.result_visualizer.multiple_object_number_visualizer")
 object_number_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.object_number_visualizer")
 roi_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.roi_frame_visualizer")
 roi_label_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.roi_label_frame_visualizer")
 service_delay_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.service_processing_delay_visualizer")
+service_queue_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.service_queue_length_visualizer")
 system_base_module = importlib.import_module("core.lib.algorithms.system_visualizer.base_visualizer")
 system_curve_module = importlib.import_module("core.lib.algorithms.system_visualizer.curve_visualizer")
 cpu_visualizer_module = importlib.import_module("core.lib.algorithms.system_visualizer.cpu_usage_visualizer")
@@ -115,7 +117,7 @@ def test_local_and_remote_parameter_monitors_collect_expected_values(monkeypatch
 
     system = SimpleNamespace(resource_info={})
     assert cpu_usage_module.CPUUsageMonitor(system).get_parameter_value() == 12.5
-    assert memory_usage_module.MemoryUsageMonitor(system).get_parameter_value() == 61.5
+    assert memory_usage_module.MemoryUsageMonitor(system).get_parameter_value() == 0.615
     assert memory_capacity_module.MemoryCapacityMonitor(system).get_parameter_value() == 8.0
 
     monkeypatch.setattr(model_flops_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-a"))
@@ -133,13 +135,39 @@ def test_local_and_remote_parameter_monitors_collect_expected_values(monkeypatch
     monkeypatch.setattr(model_memory_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-a"))
     monkeypatch.setattr(model_memory_module.KubeConfig, "force_refresh", staticmethod(lambda: None))
     monkeypatch.setattr(model_memory_module.KubeConfig, "get_pods_on_node", staticmethod(lambda device: ["processor-face-edge-a-0"]))
+    spec_memory = {"processor-face-edge-a-0": 3_000_000_000}
+    metrics_memory = {"processor-face-edge-a-0": 2_000_000_000}
+    monkeypatch.setattr(
+        model_memory_module.KubeConfig,
+        "get_pod_memory_from_spec",
+        staticmethod(lambda pods: dict(spec_memory)),
+    )
     monkeypatch.setattr(
         model_memory_module.KubeConfig,
         "get_pod_memory_from_metrics",
-        staticmethod(lambda pods: {"processor-face-edge-a-0": 2_000_000_000}),
+        staticmethod(lambda pods: dict(metrics_memory)),
     )
     monkeypatch.setattr(model_memory_module.ServiceConfig, "map_pod_name_to_service", staticmethod(lambda pod: "face"))
-    assert model_memory_module.ModelMemoryMonitor(system).get_parameter_value() == {"face": 2.0}
+    monkeypatch.setattr(model_memory_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.2"))
+    monkeypatch.setattr(
+        model_memory_module.PortInfo,
+        "get_service_ports_dict",
+        staticmethod(lambda device: {"face": 31000, "detector": 31001}),
+    )
+    monkeypatch.setattr(
+        model_memory_module,
+        "http_request",
+        lambda address, method=None, timeout=None: 1_000_000_000 if address.endswith(":31000/model_memory") else 5_000_000_000,
+    )
+    model_memory_monitor = model_memory_module.ModelMemoryMonitor(system)
+    assert model_memory_monitor.get_parameter_value() == {"face": 3.0, "detector": 5.0}
+
+    spec_memory["processor-face-edge-a-0"] = 1_000_000_000
+    metrics_memory["processor-face-edge-a-0"] = 4_000_000_000
+    assert model_memory_monitor.get_parameter_value() == {"face": 4.0, "detector": 5.0}
+
+    metrics_memory["processor-face-edge-a-0"] = 2_000_000_000
+    assert model_memory_monitor.get_parameter_value() == {"face": 4.0, "detector": 5.0}
 
 
 @pytest.mark.unit
@@ -409,6 +437,58 @@ def test_result_visualizers_render_task_data_and_fallback_images(monkeypatch):
 
     assert e2e_delay_module.EndToEndDelayVisualizer(variables=["delay"])(task)["delay"] == pytest.approx(1.3)
     assert object_number_visualizer_module.ObjectNumberVisualizer(variables=["obj_num"])(task) == {"obj_num": 3.0}
+    task.get_service("classifier").set_scenario_data({"obj_num": 5})
+    assert multiple_object_number_module.MultipleObjectNumberVisualizer(
+        variables=["detector", "classifier", "missing"]
+    )(task) == {"detector": 3.0, "classifier": 5.0, "missing": 0.0}
     assert service_delay_visualizer_module.ServiceProcessingDelayVisualizer(
         variables=["detector", "classifier"]
     )(task) == {"detector": 0.4, "classifier": 0.6}
+
+
+@pytest.mark.unit
+def test_service_queue_length_visualizer_renders_replica_queue_bars(monkeypatch):
+    monkeypatch.setattr(service_queue_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
+    monkeypatch.setattr(service_queue_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
+    monkeypatch.setattr(service_queue_visualizer_module.PortInfo, "get_component_port", staticmethod(lambda component: 31000))
+    monkeypatch.setattr(
+        service_queue_visualizer_module,
+        "http_request",
+        lambda address, method=None: {
+            "edge-a": {"queue_length": {"detector": 7}},
+            "edge-b": {"queue_length": {"detector": 2, "classifier": 5}},
+        },
+    )
+    monkeypatch.setattr(service_queue_visualizer_module.KubeConfig, "force_refresh", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        service_queue_visualizer_module.KubeConfig,
+        "get_nodes_for_service",
+        staticmethod(lambda service_name: ["edge-a", "edge-b"] if service_name == "detector" else ["edge-b"]),
+    )
+    monkeypatch.setattr(
+        service_queue_visualizer_module.KubeConfig,
+        "get_pods_on_node",
+        staticmethod(
+            lambda node_name: {
+                "edge-a": ["processor-detector-edge-a-0", "processor-other-edge-a-0"],
+                "edge-b": ["processor-detector-edge-b-0", "processor-classifier-edge-b-0"],
+            }.get(node_name, [])
+        ),
+    )
+
+    visualizer = service_queue_visualizer_module.ServiceQueueLengthVisualizer(variables=["detector", "classifier"])
+    result = visualizer(build_visualization_task())
+
+    assert [item["pod_name"] for item in result["detector"]] == [
+        "processor-detector-edge-a-0",
+        "processor-detector-edge-b-0",
+    ]
+    assert [item["queue_length"] for item in result["detector"]] == [7.0, 2.0]
+    assert result["classifier"] == [
+        {
+            "device": "edge-b",
+            "pod_name": "processor-classifier-edge-b-0",
+            "replica_label": "edge-b/processor-classifier-edge-b-0",
+            "queue_length": 5.0,
+        }
+    ]

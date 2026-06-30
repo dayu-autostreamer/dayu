@@ -5,7 +5,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from core.lib.common import Queue
+from core.lib.common import Queue, FileOps
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
 
@@ -82,6 +82,9 @@ class FakeScheduler:
     def get_redeployment_plan(self, source_id, data):
         return {"edge-node": ["face-detection"]}
 
+    def should_generate(self, source_id, data):
+        return {"generate": data.get("allow", True), "reason": "fake_scheduler"}
+
 
 class FakeProcessor:
     def __call__(self, task):
@@ -129,6 +132,14 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert schedule_response.json()["deployment"] == {"face-detection": ["edge-node"]}
 
         assert client.get("/overhead").json() == 0.0123
+
+        admission_response = client.request(
+            "GET",
+            "/generation_admission",
+            data={"data": json.dumps({"source_id": 7, "allow": False})},
+        )
+        assert admission_response.status_code == 200
+        assert admission_response.json() == {"generate": False, "reason": "fake_scheduler"}
 
         resource_payload = {"device": "edge-node", "resource": {"cpu_usage": 0.42}}
         post_resource = client.post("/resource", data={"data": json.dumps(resource_payload)})
@@ -340,7 +351,7 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
         assert submitted_tasks and submitted_tasks[0].get_task_id() == task.get_task_id()
         assert transmit_records == [(task.get_task_id(), True, "controller-input.bin")]
 
-        temp_file_path = controller_server_module.Context.get_temporary_file_path("controller-input.bin")
+        temp_file_path = FileOps.get_task_file_in_temp(task)
         with open(temp_file_path, "rb") as fh:
             assert fh.read() == b"controller-payload"
 

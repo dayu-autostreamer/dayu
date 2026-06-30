@@ -24,6 +24,9 @@ data_getter_filter_module = importlib.import_module("core.lib.algorithms.data_ge
 data_getter_filter_casva_module = importlib.import_module(
     "core.lib.algorithms.data_getter_filter.casva_getter_filter"
 )
+data_getter_filter_scheduler_module = importlib.import_module(
+    "core.lib.algorithms.data_getter_filter.scheduler_getter_filter"
+)
 frame_filter_dynamic_module = importlib.import_module("core.lib.algorithms.frame_filter.dynamic_filter")
 frame_filter_motion_module = importlib.import_module("core.lib.algorithms.frame_filter.motion_filter")
 frame_filter_simple_module = importlib.import_module("core.lib.algorithms.frame_filter.simple_filter")
@@ -259,6 +262,12 @@ def test_before_submit_task_operations_track_file_metadata_and_last_frame_state(
     before_submit_module.CEVASBSTOperation()(system, new_task)
     assert current_task.get_tmp_data()["file_size"] == pytest.approx(compressed_file.stat().st_size / 1024)
 
+    steady_task = build_task()
+    steady_task.set_file_path(str(compressed_file))
+    steady_system = SimpleNamespace()
+    before_submit_module.SteadyBSTOperation()(steady_system, steady_task)
+    assert steady_task.get_tmp_data()["file_size"] == pytest.approx(compressed_file.stat().st_size / 1024 / 1024)
+
     class DummyCap:
         def __init__(self, frames):
             self.frames = iter(frames)
@@ -309,6 +318,30 @@ def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contra
     casva_filter.reset_filter()
     assert casva_filter.skip_count == 0
     assert data_getter_filter_module.SimpleDataGetterFilter()(SimpleNamespace()) is True
+
+    monkeypatch.setattr(
+        data_getter_filter_module.SchedulerDataGetterFilter,
+        "__init__",
+        lambda self: setattr(self, "scheduler_address", "http://scheduler/generation_admission")
+        or setattr(self, "fail_open", True)
+        or setattr(self, "timeout_s", 1.0)
+        or setattr(self, "log_interval_s", 1.0)
+        or setattr(self, "_last_block_log_t", 0.0)
+        or setattr(self, "_last_error_log_t", 0.0),
+    )
+    scheduler_filter = data_getter_filter_module.SchedulerDataGetterFilter()
+    monkeypatch.setattr(scheduler_filter, "_log_throttled", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        data_getter_filter_scheduler_module,
+        "http_request",
+        lambda *args, **kwargs: {"generate": False, "reason": "test_backpressure"},
+    )
+    assert scheduler_filter(SimpleNamespace(
+        source_id=1,
+        local_device="edge-a",
+        meta_data={"fps": 10},
+        raw_meta_data={"fps": 10},
+    )) is False
 
     task = build_task()
     results = [([[0, 0, 10, 10], [10, 10, 20, 20]], [0.9, 0.8]), ([], [])]

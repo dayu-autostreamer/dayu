@@ -1,0 +1,85 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: hedger
+    # Benchmark 1:
+    # Use the fixed template deployment and only run learned offloading inference.
+    - name: SCH_CONFIG_EXTRACTION_PARAMETERS
+      value: >
+        {
+          'config':'hedger_config.yaml',
+          'profile':'offloading_benchmark',
+          'overrides':{
+            'device':'cuda:1',
+            'record': {'actor_snapshot_debug': True, 'decision_actor_debug': True}
+          }
+        }
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'scope': 'all_edge_nodes',
+          'fixed_value': 'edgexn12',
+          'fixed_type': 'hostname'
+        }
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: hedger
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'deployment':{
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5"],
+            "category-identification": ["edgexn8"],
+            "license-plate-recognition": ["edgexn11", "edgexn12"],
+            "exposure-identification": ["edgexn11", "edgexn12", "edgexn8"]
+          }
+        }
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: hedger
+    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'deployment':{
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5"],
+            "category-identification": ["edgexn8"],
+            "license-plate-recognition": ["edgexn11", "edgexn12"],
+            "exposure-identification": ["edgexn11", "edgexn12", "edgexn8"]
+          }
+        }
+    - name: SCH_AGENT_NAME
+      value: hedger
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'configuration':{
+            'resolution': '720p',
+            'fps': 10,
+            'encoding': 'mp4v',
+            'buffer_size': 4
+          },
+          'offloading':{
+            'pedestrian-detection':'edge5',
+            'exposure-identification':'edgexn12',
+            'vehicle-detection':'edge5',
+            'category-identification':'edgexn8',
+            'license-plate-recognition':'edgexn11'
+          }
+        }
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/hedger-offloading-benchmark/'

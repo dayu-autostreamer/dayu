@@ -47,12 +47,16 @@ class NodeInfo:
 
         for node in nodes:
             node_name = node.metadata.name
+            labels = node.metadata.labels or {}
             for address in node.status.addresses:
                 if address.type == "InternalIP":
                     node_dict[node_name] = address.address
-            if 'node-role.kubernetes.io/edge' in node.metadata.labels:
+            if 'node-role.kubernetes.io/edge' in labels:
                 node_role[node_name] = 'edge'
-            if 'node-role.kubernetes.io/master' in node.metadata.labels:
+            if (
+                'node-role.kubernetes.io/master' in labels
+                or 'node-role.kubernetes.io/control-plane' in labels
+            ):
                 node_role[node_name] = 'cloud'
         node_dict_reverse = reverse_key_value_in_dict(node_dict)
 

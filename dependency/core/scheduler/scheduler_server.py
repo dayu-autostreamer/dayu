@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 from core.lib.content import Task
-from core.lib.common import LOGGER, KubeConfig
+from core.lib.common import KubeConfig
 
 from .scheduler import Scheduler
 
@@ -58,6 +58,10 @@ class SchedulerServer:
                      self.generate_redeployment_plan,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_REDEPLOYMENT]),
+            APIRoute(NetworkAPIPath.SCHEDULER_GENERATION_ADMISSION,
+                     self.check_generation_admission,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_GENERATION_ADMISSION]),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -73,10 +77,30 @@ class SchedulerServer:
         self.scheduler.register_schedule_table(data['source_id'])
         plan = self.scheduler.get_schedule_plan(data)
 
-        return {'plan': plan, 'deployment': KubeConfig.get_service_nodes_dict()}
+        deployment_version = 0
+        if isinstance(plan, dict) and 'deployment_version' in plan:
+            plan = plan.copy()
+            deployment_version = plan.pop('deployment_version')
+            if deployment_version is None:
+                deployment_version = 0
+
+        response = {
+            'plan': plan,
+            'deployment': KubeConfig.get_service_nodes_dict(),
+            'deployment_version': deployment_version,
+        }
+
+        return response
 
     async def get_schedule_overhead(self):
         return self.scheduler.get_schedule_overhead()
+
+    async def check_generation_admission(self, data: str = Form(...)):
+        data = json.loads(data)
+        source_id = int(data['source_id'])
+
+        self.scheduler.register_schedule_table(source_id)
+        return self.scheduler.should_generate(source_id, data)
 
     async def update_object_scenario(self, data: str = Form(...)):
         task = Task.deserialize(data)
@@ -123,7 +147,6 @@ class SchedulerServer:
                  for node in source_plan}
             )
 
-        # LOGGER.info(f'[Initial Deployment] (all sources) Deploy policy: {plan}')
         return {'plan': plan}
 
     async def generate_redeployment_plan(self, data: str = Form(...)):
@@ -138,5 +161,4 @@ class SchedulerServer:
                  for node in source_plan}
             )
 
-        # LOGGER.info(f'[Redeployment] (all sources) Deploy policy: {plan}')
         return {'plan': plan}

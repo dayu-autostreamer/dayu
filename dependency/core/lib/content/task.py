@@ -26,7 +26,8 @@ class Task:
                  file_path: str = None,
                  task_uuid: str = '',
                  parent_uuid: str = '',
-                 root_uuid: str = ''):
+                 root_uuid: str = '',
+                 deployment_version: int = 0):
 
         # unique uuid for each duplicated task
         self.__task_uuid = task_uuid or str(uuid.uuid4())
@@ -54,6 +55,9 @@ class Task:
         self.__dag_flow = dag
         # deployment info
         self.__deployment = deployment
+        # Deployment policy version used when this task was generated.
+        # Version 0 means the scheduler does not distinguish deployment versions.
+        self.__deployment_version = 0 if deployment_version is None else deployment_version
 
         # current service name in dag (work as pointer)
         self.__cur_flow_index = flow_index
@@ -182,6 +186,12 @@ class Task:
 
     def set_deployment(self, deployment):
         self.__deployment = deployment
+
+    def get_deployment_version(self):
+        return self.__deployment_version
+
+    def set_deployment_version(self, deployment_version):
+        self.__deployment_version = 0 if deployment_version is None else deployment_version
 
     def get_flow_index(self):
         return self.__cur_flow_index
@@ -414,8 +424,9 @@ class Task:
         assert dag, 'DAG is empty!'
 
         for node_name in dag.nodes:
-            node = dag.nodes[node_name]
-            node.service.set_execute_device(device)
+            if node_name != TaskConstant.START.value and node_name != TaskConstant.END.value:
+                node = dag.nodes[node_name]
+                node.service.set_execute_device(device)
         return dag
 
     def fork_task(self, new_flow_index: str = None) -> 'Task':
@@ -469,6 +480,7 @@ class Task:
             'all_edge_devices': self.get_all_edge_devices(),
             'dag': self.get_dag().to_dict() if self.get_dag() else None,
             'deployment': self.get_deployment(),
+            'deployment_version': self.get_deployment_version(),
             'cur_flow_index': self.get_flow_index(),
             'past_flow_index': self.get_past_flow_index(),
             'meta_data': self.get_metadata(),
@@ -490,6 +502,7 @@ class Task:
 
         task.set_dag(DAG.from_dict(dag_dict['dag'])) if 'dag' in dag_dict and dag_dict['dag'] else None
         task.set_deployment(dag_dict['deployment']) if 'deployment' in dag_dict else None
+        task.set_deployment_version(dag_dict['deployment_version']) if 'deployment_version' in dag_dict else None
         task.set_flow_index(dag_dict['cur_flow_index']) if 'cur_flow_index' in dag_dict else None
         task.set_past_flow_index(dag_dict['past_flow_index']) if 'past_flow_index' in dag_dict else None
         task.set_metadata(dag_dict['meta_data']) if 'meta_data' in dag_dict else None

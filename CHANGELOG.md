@@ -2,18 +2,25 @@
 
 ---
 
-## v1.3 (In Development)
+## v1.3
 
 ### Features
+- Add our work on deployment and offloading: Hedger, a hierarchical scheduling framework for macro-level service deployment and micro-level task offloading. It uses dual-agent with GNNs and DRLs to make accurate and feasible decisions. [(link)](template/scheduler/hedger.yaml)
+- Add our work on configuration optimization: Steady Scheduler, a configuration selection framework for steady scheduling. It uses side-effect to shrink search space and adapt to context fluctuations. [(link)](template/scheduler/steady.yaml)
 
 ### Bug Fix
 - Fix iptables rule accumulation for edgemesh in incorrect dayu shutdowns with `dayu.sh` script correction.
+- Separate task temporary directory for different users (`controller`/`processor`).
+- Fix incompatibility of real cameras in rtsp video datasource (`generator`/`backend`).
+- Change defualt redeployment plan from full-deployment to raw deployment (`backend`).
 
 ### Minor Update
 - Update log export mode to support large logs in multi-stream scenarios (`backend`/`distributor`).
 - Change storage mode of http video datasource from video frame to video to avoid disk occupation (`datasource`).
 - Reconstruct the dataset format for datasource to support more flexible video data organization and processing (`datasource`).
-  - Change generator selection scope to optional for node set or all edge nodes (`backend`/`scheduler`).
+- Change generator selection scope to optional for node set or all edge nodes (`backend`/`scheduler`).
+- Update file mount to be compatible with different deployment environments.
+- Optimize the frontend interfaces of dayu system (`frontend`/`backend`).
 
 ---
 

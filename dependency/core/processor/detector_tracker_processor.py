@@ -7,7 +7,7 @@ from .processor import Processor
 from core.lib.estimation import Timer
 from core.lib.content import Task
 from core.lib.common import LOGGER, Context, convert_ndarray_to_list
-from core.lib.common import ClassFactory, ClassType
+from core.lib.common import ClassFactory, ClassType, FileOps
 
 
 @ClassFactory.register(ClassType.PROCESSOR, alias='detector_tracker_processor')
@@ -21,7 +21,7 @@ class DetectorTrackerProcessor(Processor):
         self.frame_size = None
 
     def __call__(self, task: Task):
-        data_file_path = Context.get_temporary_file_path(task.get_file_path())
+        data_file_path = FileOps.get_task_file_in_temp(task)
         cap = cv2.VideoCapture(data_file_path)
         image_list = []
         success, frame = cap.read()
@@ -33,7 +33,7 @@ class DetectorTrackerProcessor(Processor):
         if len(image_list) == 0:
             LOGGER.warning(f'[Image list length is 0] Source: {task.get_source_id()} '
                             f'Task: {task.get_task_id()} '
-                            f'file_path: {Context.get_temporary_file_path(task.get_file_path())}')
+                            f'file_path: {FileOps.get_task_file_in_temp(task)}')
             return None
 
         result = self.infer(image_list)

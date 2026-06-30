@@ -8,8 +8,9 @@ pod-template:
     - name: DETECTOR_PARAMETERS
       value: >
         {
-          'weights':'retina_mnet.engine', 
-          'plugin_library':'libdecodeplugin.so',
+          'trt_weights':'retina_mnet.engine',
+          'trt_plugin_library':'libdecodeplugin.so',
+          'non_trt_weights':'retinaface.pth',
           'device':0
         }
     - name: SCENARIOS_EXTRACTORS

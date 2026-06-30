@@ -133,8 +133,8 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias    | Module                                                                                | Purpose                                               | Notes                                    |
 |----------|---------------------------------------------------------------------------------------|-------------------------------------------------------|------------------------------------------|
-| `fixed`  | `dependency/core/lib/algorithms/schedule_selection_policy/fixed_selection_policy.py`  | Choose a source node by fixed position or hostname.   | Supports `fixed_value` and `fixed_type`. |
-| `random` | `dependency/core/lib/algorithms/schedule_selection_policy/random_selection_policy.py` | Choose a source node randomly from the candidate set. | Useful for testing or baseline policies. |
+| `fixed`  | `dependency/core/lib/algorithms/schedule_selection_policy/fixed_selection_policy.py`  | Choose a source node by fixed position or hostname.   | Supports `fixed_value`, `fixed_type`, and the scopes `selected_edge_nodes` / `all_edge_nodes`. |
+| `random` | `dependency/core/lib/algorithms/schedule_selection_policy/random_selection_policy.py` | Choose a source node randomly from the candidate set. | Supports only the scopes `selected_edge_nodes` / `all_edge_nodes`. |
 
 ### `SCH_INITIAL_DEPLOYMENT_POLICY`
 
@@ -222,8 +222,10 @@ that appear in templates, environment variables, and visualization configs.
 | `roi_label_frame`          | `dependency/core/lib/algorithms/result_visualizer/roi_label_frame_visualizer.py`          | Draw ROI bounding boxes plus labels from a downstream service.                |
 | `multiple_roi_frame`       | `dependency/core/lib/algorithms/result_visualizer/multiple_roi_frame_visualizer.py`       | Draw bounding boxes from multiple ROI-producing services onto the same frame. |
 | `obj_num`                  | `dependency/core/lib/algorithms/result_visualizer/object_number_visualizer.py`            | Render mean object count as a curve value.                                    |
+| `multiple_obj_num`         | `dependency/core/lib/algorithms/result_visualizer/multiple_object_number_visualizer.py`   | Render mean object counts for requested DAG services as curve values.         |
 | `e2e_delay`                | `dependency/core/lib/algorithms/result_visualizer/end_to_end_delay_visualizer.py`         | Render total task delay as a curve value.                                     |
 | `service_processing_delay` | `dependency/core/lib/algorithms/result_visualizer/service_processing_delay_visualizer.py` | Render per-service execution time for requested DAG nodes.                    |
+| `service_queue_length`     | `dependency/core/lib/algorithms/result_visualizer/service_queue_length_visualizer.py`     | Render current queue lengths for all live replicas of requested services.     |
 | `dag_deployment`           | `dependency/core/lib/algorithms/result_visualizer/dag_deployment_topology_visualizer.py`  | Render the deployment topology of the current DAG.                            |
 | `dag_offloading`           | `dependency/core/lib/algorithms/result_visualizer/dag_offloading_topology_visualizer.py`  | Render the current offloading targets of DAG services.                        |
 

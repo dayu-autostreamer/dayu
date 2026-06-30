@@ -96,7 +96,20 @@ def test_has_significant_changes_ignores_non_deployment_fields():
             "edgeWorker": [
                 {
                     "logLevel": {"level": "INFO"},
-                    "file": {"paths": ["/data/dayu-files/processor/face-detection/"]},
+                    "mounts": [
+                        {
+                            "source": {
+                                "type": "hostPath",
+                                "hostPath": {
+                                    "path": "processor/face-detection/",
+                                    "pathType": "Directory",
+                                    "prefix": "/data/dayu-files",
+                                },
+                            },
+                            "target": {},
+                            "envName": "DEFAULT_MOUNT_PATH",
+                        }
+                    ],
                     "template": {
                         "spec": {
                             "nodeName": "edgex1",
@@ -118,7 +131,7 @@ def test_has_significant_changes_ignores_non_deployment_fields():
     new_doc = copy.deepcopy(old_doc)
     worker = new_doc["spec"]["edgeWorker"][0]
     worker["logLevel"]["level"] = "DEBUG"
-    worker["file"]["paths"] = ["/tmp/other-path"]
+    worker["mounts"][0]["source"]["hostPath"]["path"] = "processor/other-path/"
     worker["template"]["spec"]["containers"][0]["env"] = [{"name": "PROCESSOR_NAME", "value": "detector-v2"}]
 
     assert backend_core_module.BackendCore.has_significant_changes(old_doc, new_doc) is False

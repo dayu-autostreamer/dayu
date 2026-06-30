@@ -172,8 +172,14 @@ def test_generator_can_run_on_external_edge_node_without_widening_processing_poo
     generator_container = generator_worker["template"]["spec"]["containers"][0]
     generator_env = {item["name"]: item["value"] for item in generator_container["env"]}
 
+    controller_doc = next(doc for doc in docs if doc["metadata"]["name"] == "controller")
+    controller_nodes = {
+        worker["template"]["spec"]["nodeName"]
+        for worker in controller_doc["spec"].get("edgeWorker", [])
+    }
     processor_names = {doc["metadata"]["name"] for doc in docs if doc["metadata"]["name"].startswith("processor-")}
 
     assert generator_worker["template"]["spec"]["nodeName"] == "edge-free"
     assert generator_env["ALL_EDGE_DEVICES"] == "['edgex1', 'edgex2']"
+    assert "edge-free" in controller_nodes
     assert "processor-face-detection-edge-free" not in processor_names

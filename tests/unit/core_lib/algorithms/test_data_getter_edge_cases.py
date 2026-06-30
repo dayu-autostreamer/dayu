@@ -9,6 +9,7 @@ import pytest
 
 http_getter_module = importlib.import_module("core.lib.algorithms.data_getter.http_video_getter")
 rtsp_getter_module = importlib.import_module("core.lib.algorithms.data_getter.rtsp_video_getter")
+v4l2_getter_module = importlib.import_module("core.lib.algorithms.data_getter.v4l2_video_getter")
 
 
 @pytest.mark.unit
@@ -175,3 +176,22 @@ def test_rtsp_video_getter_call_retries_until_filtered_buffer_is_filled(monkeypa
     assert len(started) == 1
     assert len(started[0][1][1]) == 2
     assert getter.frame_buffer == []
+
+
+@pytest.mark.unit
+def test_v4l2_video_getter_opens_device_with_v4l2_backend(monkeypatch):
+    getter = v4l2_getter_module.V4L2VideoGetter()
+    capture_calls = []
+
+    import cv2
+
+    def fake_capture(source, backend=None):
+        capture_calls.append((source, backend))
+        return "capture"
+
+    monkeypatch.setattr(cv2, "VideoCapture", fake_capture)
+
+    capture = getter._open_capture("/dev/video0")
+
+    assert capture == "capture"
+    assert capture_calls == [("/dev/video0", cv2.CAP_V4L2)]

@@ -25,8 +25,13 @@ class Queue:
             self.put(item)
 
     def get_all(self) -> List[object]:
+        return self.drain()
+
+    def drain(self, max_count=None) -> List[object]:
         out_items = []
         while True:
+            if max_count is not None and len(out_items) >= max_count:
+                break
             try:
                 out_items.append(self.get())
             except queue.Empty:
@@ -49,6 +54,5 @@ class Queue:
         return self.__queue.qsize()
 
     def clear(self) -> None:
-        self.get_all()
-
+        self.drain()
 

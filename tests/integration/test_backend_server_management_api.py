@@ -223,6 +223,18 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
     assert upload_response.json()["state"] == "success"
     assert backend.server.source_configs[-1]["source_label"] == "source-config-1"
 
+    multi_upload_response = client.post(
+        "/datasource",
+        files=[
+            ("files", ("datasource-a.yaml", b"source_name: uploaded-a\n", "application/x-yaml")),
+            ("files", ("datasource-b.yaml", b"source_name: uploaded-b\n", "application/x-yaml")),
+        ],
+    )
+    assert multi_upload_response.status_code == 200
+    assert multi_upload_response.json()["state"] == "success"
+    assert len(multi_upload_response.json()["results"]) == 2
+    assert backend.server.source_configs[-1]["source_label"] == "source-config-3"
+
     backend.server.datasource_config_to_return = None
     failed_upload = client.post(
         "/datasource",

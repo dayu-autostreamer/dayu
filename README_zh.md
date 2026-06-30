@@ -135,6 +135,8 @@ make check
 ```bash
 python tools/log_analysis.py --log path/to/exported-log.json.gz
 python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format json
+python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format full-json --output-file path/to/full-report.json
+python tools/log_analysis.py --log path/to/exported-log.json.gz --slo-seconds 2.0
 ```
 
 ## 联系我们
@@ -143,6 +145,22 @@ python tools/log_analysis.py --log path/to/exported-log.json.gz --output-format 
 
 - [谢磊 lxie@nju.edu.cn](mailto:lxie@nju.edu.cn)
 - [周文晖 whzhou@smail.nju.edu.cn](mailto:whzhou@smail.nju.edu.cn)
+
+## 引用
+
+如果你在研究中使用大禹系统或其中的调度/运行时系统，请引用以下论文：
+
+```bibtex
+@inproceedings{zhou2026hier-ei,
+  title = {Tackling the Imbalance in Video Analytics Pipelines with Hierarchical Embodied Intelligence},
+  author = {Zhou, Wenhui and Xie, Lei and Ning, Jingyi and Cao, Shuyu and Wu, Hao and Peng, Qinghua and Fan, Long},
+  booktitle = {IEEE INFOCOM 2026 - IEEE Conference on Computer Communications},
+  year = {2026},
+  pages={1--10},
+  publisher = {IEEE},
+  doi={10.1109/INFOCOM59046.2026.11571610}
+}
+```
 
 ## 许可证
 

@@ -51,6 +51,13 @@ class FakeRequest:
         return self.payload
 
 
+async def collect_streaming_body(response):
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+    return b"".join(chunks)
+
+
 @pytest.fixture
 def distributor_instance(monkeypatch, tmp_path):
     db_path = tmp_path / "records.db"
@@ -289,9 +296,11 @@ def test_distributor_server_covers_background_queries_download_and_export(monkey
     server = distributor_server_module.DistributorServer()
     task = build_task(task_id=8, file_path="dist.bin")
     server.distribute_data_background(task.serialize(), b"payload")
+    hidden_task = build_task(task_id=9, file_path="hidden.bin")
+    server.distribute_data_background(hidden_task.serialize(), b"")
 
     assert saved == [("dist.bin", b"payload")]
-    assert calls[:2] == [("record", 8), ("distribute", 8)]
+    assert calls[:4] == [("record", 8), ("distribute", 8), ("record", 9), ("distribute", 9)]
 
     result = asyncio.run(server.query_result(FakeRequest({"time_ticket": 3.5, "size": 7})))
     by_time = asyncio.run(
@@ -313,10 +322,12 @@ def test_distributor_server_covers_background_queries_download_and_export(monkey
     export_tasks = BackgroundTasks()
     export_response = asyncio.run(server.export_result_log(export_tasks))
     asyncio.run(server.clear_database())
+    export_body = asyncio.run(collect_streaming_body(export_response))
 
     assert download_response.path == str(export_path)
-    assert export_response.path == str(export_path)
-    assert export_response.filename.startswith("DAYU_RESULT_LOG_")
+    assert export_body == b"payload"
+    assert export_response.media_type == "application/gzip"
+    assert export_response.headers["content-disposition"].startswith('attachment; filename="DAYU_RESULT_LOG_')
     assert len(download_tasks.tasks) == 1
-    assert len(export_tasks.tasks) == 1
+    assert len(export_tasks.tasks) == 0
     assert calls[-1] == ("clear", None)

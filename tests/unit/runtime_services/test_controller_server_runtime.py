@@ -48,16 +48,20 @@ def test_controller_server_initialization_starts_instance_cleaner_when_delete_te
 
     monkeypatch.setattr(controller_server_module, "Controller", FakeController)
     monkeypatch.setattr(controller_server_module, "FileCleaner", FakeCleaner)
-    monkeypatch.setattr(controller_server_module.FileOps, "clear_temp_directory", staticmethod(lambda: clear_calls.append(True)))
+    monkeypatch.setattr(
+        controller_server_module.FileOps,
+        "clear_task_temp_directory",
+        staticmethod(lambda: clear_calls.append(True)),
+    )
+    monkeypatch.setattr(
+        controller_server_module.FileOps,
+        "get_task_temp_directory",
+        staticmethod(lambda: "/tmp/dayu/dayu"),
+    )
     monkeypatch.setattr(
         controller_server_module.Context,
         "get_parameter",
         staticmethod(lambda name, default=None, direct=False: True if name == "DELETE_TEMP_FILES" else default),
-    )
-    monkeypatch.setattr(
-        controller_server_module.Context,
-        "get_temporary_file_path",
-        staticmethod(lambda suffix: f"/tmp/dayu/{suffix}"),
     )
 
     server = controller_server_module.ControllerServer()
@@ -65,7 +69,7 @@ def test_controller_server_initialization_starts_instance_cleaner_when_delete_te
     assert clear_calls == [True]
     assert server.is_delete_temp_files is True
     assert len(FakeCleaner.instances) == 1
-    assert FakeCleaner.instances[0].kwargs["folder"] == "/tmp/dayu/"
+    assert FakeCleaner.instances[0].kwargs["folder"] == "/tmp/dayu/dayu"
     assert FakeCleaner.instances[0].started == 1
 
 
@@ -78,16 +82,20 @@ def test_controller_server_lifespan_creates_and_stops_app_cleaner(monkeypatch):
 
     monkeypatch.setattr(controller_server_module, "Controller", FakeController)
     monkeypatch.setattr(controller_server_module, "FileCleaner", FakeCleaner)
-    monkeypatch.setattr(controller_server_module.FileOps, "clear_temp_directory", staticmethod(lambda: clear_calls.append(True)))
+    monkeypatch.setattr(
+        controller_server_module.FileOps,
+        "clear_task_temp_directory",
+        staticmethod(lambda: clear_calls.append(True)),
+    )
+    monkeypatch.setattr(
+        controller_server_module.FileOps,
+        "get_task_temp_directory",
+        staticmethod(lambda: "/tmp/dayu/dayu"),
+    )
     monkeypatch.setattr(
         controller_server_module.Context,
         "get_parameter",
         staticmethod(lambda name, default=None, direct=False: next(delete_flags) if name == "DELETE_TEMP_FILES" else default),
-    )
-    monkeypatch.setattr(
-        controller_server_module.Context,
-        "get_temporary_file_path",
-        staticmethod(lambda suffix: f"/tmp/dayu/{suffix}"),
     )
 
     server = controller_server_module.ControllerServer()

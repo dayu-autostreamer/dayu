@@ -1,282 +1,349 @@
 <template>
-	<div class="outline">
-		<div>
-			<h3>Add Application Dag</h3>
-		</div>
-
-		<div>
-			<div class="new-dag-font-style">Dag Name</div>
-			<el-input v-model="newInputName" placeholder="Please fill the dag name" />
-			<br />
-			<br />
-			<div style="display: inline">
-				<div class="new-dag-font-style">
-					Service Containers
-					<el-tooltip placement="right">
-						<template #content> From docker Registry: https://hub.docker.com/u/dayuhub </template>
-						<el-button size="small" circle>i</el-button>
-					</el-tooltip>
+	<div class="outline dag-manage-page">
+		<section class="section-card composer-section">
+			<div class="section-heading">
+				<div>
+					<h3>Add Application Dag</h3>
 				</div>
 			</div>
-			<div>
-				<ul style="list-style-type: none" class="svc-container">
-					<li v-for="(service, index) in services" :key="index" class="svc-item">
-						<el-tooltip placement="right" :open-delay="500" enterable>
-							<template #content>
-								<div class="description">
-									{{ service.description }}
-								</div>
-							</template>
-							<div class="vue-flow__node-input" :draggable="true" @dragstart="onDragStart($event, '', service)">
-								{{ service.name }}
-							</div>
-						</el-tooltip>
-					</li>
-				</ul>
-			</div>
-		</div>
-		<br />
 
-		<div>
-			<ElRow>
-				<ElCol :span="2">
-					<el-button type="warning" @click="draw">Draw</el-button>
-				</ElCol>
-				<ElCol :span="18"></ElCol>
-				<ElCol :span="2">
-					<el-button type="primary" round @click="handleNewSubmit" v-if="drawing">Add </el-button>
-				</ElCol>
-				<ElCol :span="2">
-					<el-button type="primary" round @click="clearInput" v-if="drawing">Clear </el-button>
-				</ElCol>
-			</ElRow>
-		</div>
-
-		<!-- drawing area -->
-		<div class="draw-container" v-if="drawing" @drop="onDrop($event, flowNodes, flowNodeMap)">
-			<VueFlow
-				class="main-flow"
-				:nodes="flowNodes"
-				:edges="flowEdges"
-				:default-viewport="{ zoom: 1.5 }"
-				:min-zoom="1"
-				:max-zoom="2"
-				:fit-view-on-init="false"
-				@dragover="onDragOver"
-				@dragleave="onDragLeave"
-			>
-				<div v-if="drawing" class="drag-tip">
-					<el-icon class="tip-icon">
-						<MagicStick />
-					</el-icon>
-					<span>Drag service nodes to build your workflow</span>
-				</div>
-
-				<Background pattern-color="#aaa" :gap="16" />
-
-				<MiniMap />
-				<Panel class="process-panel" position="top-right">
-					<div class="layout-panel">
-						<button title="set horizontal layout" @click="layoutGraph('LR')">
-							<Icon name="horizontal" />
-						</button>
-
-						<button title="set vertical layout" @click="layoutGraph('TB')">
-							<Icon name="vertical" />
-						</button>
+			<div class="builder-grid">
+				<div class="builder-main">
+					<div class="field-block">
+						<div class="new-dag-font-style">Dag Name</div>
+						<el-input v-model="newInputName" clearable placeholder="Please fill the dag name" />
 					</div>
-				</Panel>
-			</VueFlow>
-		</div>
-		<br /><br />
-		<div>
-			<h3>Current Application Dags</h3>
-		</div>
 
-		<el-table :data="dagList" style="width: 100%">
-			<el-table-column label="Dag Name" width="180">
-				<template #default="scope">
-					<div style="display: flex; align-items: center">
-						<span style="margin-left: 10px">{{ scope.row.dag_name }}</span>
-					</div>
-				</template>
-			</el-table-column>
-			<el-table-column label="Dag" width="320">
-				<template #default="scope">
-					<div class="dag-preview" @mouseenter="showDagDetail(scope.row, $event)" @mouseleave="hideDagDetail">
-						<!-- thumbnail view -->
-						<div class="mini-dag">
-							<div class="nodes">
-								<span class="first-service">
-									{{ scope.row.nodeList?.[0]?.data.label || 'default' }}
-								</span>
-							</div>
-						</div>
-						<div class="stats">
-							<el-tag type="info" size="small">
-								<el-icon>
-									<Connection />
-								</el-icon>
-								{{ Object.keys(scope.row.dag).length - 1 }} nodes
-							</el-tag>
-							<el-tag type="success" size="small">
-								<el-icon>
-									<Link />
-								</el-icon>
-								{{ countEdges(scope.row.dag) }} links
-							</el-tag>
+					<div class="builder-actions">
+						<div class="builder-buttons">
+							<el-button type="warning" plain @click="draw">{{ drawing ? 'Hide Canvas' : 'Open Canvas' }}</el-button>
+							<el-button type="primary" round :disabled="!drawing || !flowNodes.length" @click="handleNewSubmit">Add Dag</el-button>
+							<el-button round :disabled="!drawing" @click="clearInput">Reset</el-button>
 						</div>
 					</div>
 
-					<!-- floating details card -->
-					<div
-						v-if="activeDag === scope.row.dag_id"
-						class="dag-detail-card"
-						:style="{
-							top: hoverPosition.y + 'px',
-							right: '120px',
-						}"
-					>
-						<div class="dag-title">{{ scope.row.dag_name }}</div>
+					<div v-if="!drawing" class="canvas-placeholder">
+						<el-icon class="canvas-placeholder__icon">
+							<MagicStick />
+						</el-icon>
+						<div class="canvas-placeholder__title">Open the canvas to start drawing</div>
+					</div>
+
+					<div v-else :class="['draw-container', { 'is-drag-over': isDragOver }]" @drop="handleCanvasDrop">
+						<div class="canvas-status-bar">
+							<div class="canvas-metrics">
+								<el-tag type="info" effect="plain">
+									<el-icon><Connection /></el-icon>
+									{{ flowNodes.length }} nodes
+								</el-tag>
+								<el-tag type="success" effect="plain">
+									<el-icon><Link /></el-icon>
+									{{ flowEdges.length }} links
+								</el-tag>
+							</div>
+						</div>
+
 						<VueFlow
-							class="preview-flow"
-							:nodes="scope.row.nodeList"
-							:edges="scope.row.lineList"
-							:view-fit="true"
-							:draggable="false"
-						/>
+							:id="mainFlowId"
+							class="main-flow"
+							:nodes="flowNodes"
+							:edges="flowEdges"
+							:default-viewport="{ zoom: 1 }"
+							:min-zoom="0.5"
+							:max-zoom="2"
+							:fit-view-on-init="true"
+							:snap-to-grid="true"
+							:snap-grid="[24, 24]"
+							:nodes-draggable="true"
+							:nodes-connectable="true"
+							:elements-selectable="true"
+							:default-edge-options="defaultEdgeOptions"
+							@dragover="onDragOver"
+							@dragleave="onDragLeave"
+						>
+							<div v-if="!flowNodes.length" class="drag-tip">
+								<el-icon class="tip-icon">
+									<MagicStick />
+								</el-icon>
+								<span>Drag services here</span>
+							</div>
+
+							<Background pattern-color="#cbd5e1" :gap="14" />
+							<div class="minimap-toggle-wrap" :class="{ expanded: isMiniMapExpanded }">
+								<button type="button" class="minimap-toggle" @click="toggleMiniMap">
+									{{ isMiniMapExpanded ? 'Hide Map' : 'Map' }}
+								</button>
+							</div>
+							<MiniMap v-if="isMiniMapExpanded" class="dag-minimap" />
+							<Controls position="bottom-right" />
+
+							<Panel class="process-panel" position="top-right">
+								<div class="layout-panel">
+									<button type="button" title="fit graph" @click="focusCanvas">Fit</button>
+									<button type="button" title="set horizontal layout" @click="applyLayoutGraph('LR')">
+										<Icon name="horizontal" />
+									</button>
+									<button type="button" title="set vertical layout" @click="applyLayoutGraph('TB')">
+										<Icon name="vertical" />
+									</button>
+								</div>
+							</Panel>
+						</VueFlow>
 					</div>
-				</template>
-			</el-table-column>
-			<el-table-column label="Action">
-				<template #default="scope">
-					<el-button size="small" type="danger" @click="deleteWorkflow(scope.$index, scope.row.dag_id)"
-						>Delete
-					</el-button>
-				</template>
-			</el-table-column>
-		</el-table>
+				</div>
 
-		<br />
+				<aside class="service-sidebar">
+					<div class="sidebar-header">
+						<div class="new-dag-font-style">Service Containers</div>
+					</div>
 
-		<br />
+					<div class="service-grid">
+						<button
+							v-for="service in services"
+							:key="service.id"
+							type="button"
+							class="service-card"
+							:style="getServiceCardStyle(service)"
+							draggable="true"
+							@dragstart="onDragStart($event, '', service)"
+						>
+							<div class="service-card__header">
+								<span class="service-card__name">{{ formatServiceName(service) }}</span>
+								<span class="service-card__drag">Drag</span>
+							</div>
+							<div class="service-card__meta">
+								<span class="service-chip">IN {{ formatIoValue(service.input) }}</span>
+								<span class="service-chip">OUT {{ formatIoValue(service.output) }}</span>
+							</div>
+						</button>
+					</div>
+				</aside>
+			</div>
+		</section>
+
+		<section class="section-card dag-list-section">
+			<div class="section-heading">
+				<div>
+					<h3>Current Application Dags</h3>
+				</div>
+			</div>
+
+			<el-table :data="dagList" row-key="dag_id" empty-text="No application DAGs yet" style="width: 100%">
+				<el-table-column label="Dag Name" min-width="220">
+					<template #default="scope">
+						<div class="dag-name-cell">
+							<div class="dag-name">{{ scope.row.dag_name }}</div>
+							<div class="dag-subtitle">{{ getDagNodeCount(scope.row.dag) }} services</div>
+						</div>
+					</template>
+				</el-table-column>
+
+				<el-table-column label="Overview" min-width="520">
+					<template #default="scope">
+						<el-popover
+							trigger="hover"
+							placement="left-start"
+							:width="480"
+							popper-class="dag-preview-popper"
+						>
+							<template #reference>
+								<button type="button" class="dag-overview-button">
+									<div class="dag-overview-header">
+										<div class="dag-pill-group">
+											<span
+												v-for="label in summarizeServices(scope.row.dag, previewNodeLimit)"
+												:key="label"
+												class="service-pill"
+											>
+												{{ label }}
+											</span>
+											<span v-if="getOverflowServiceCount(scope.row.dag, previewNodeLimit) > 0" class="service-pill service-pill--muted">
+												+{{ getOverflowServiceCount(scope.row.dag, previewNodeLimit) }}
+											</span>
+										</div>
+									</div>
+
+									<div class="stats">
+										<el-tag type="info" size="small" effect="plain">
+											<el-icon><Connection /></el-icon>
+											{{ getDagNodeCount(scope.row.dag) }} nodes
+										</el-tag>
+										<el-tag type="success" size="small" effect="plain">
+											<el-icon><Link /></el-icon>
+											{{ countEdges(scope.row.dag) }} links
+										</el-tag>
+									</div>
+								</button>
+							</template>
+
+							<div class="dag-hover-panel">
+								<div class="dag-hover-header">
+									<div class="dag-title">{{ scope.row.dag_name }}</div>
+									<div class="dag-hover-subtitle">
+										{{ getDagNodeCount(scope.row.dag) }} nodes · {{ countEdges(scope.row.dag) }} links
+									</div>
+								</div>
+
+								<div class="dag-pill-group dag-pill-group--wrap">
+									<span v-for="label in summarizeServices(scope.row.dag, getDagNodeCount(scope.row.dag))" :key="label" class="service-pill">
+										{{ label }}
+									</span>
+								</div>
+
+								<div class="dag-preview-shell">
+									<DagPreviewGraph :dag="scope.row.dag" />
+								</div>
+							</div>
+						</el-popover>
+					</template>
+				</el-table-column>
+
+				<el-table-column label="Action" width="120" align="center">
+					<template #default="scope">
+						<el-button size="small" type="danger" plain @click="deleteWorkflow(scope.row.dag_id)">Delete</el-button>
+					</template>
+				</el-table-column>
+			</el-table>
+		</section>
 	</div>
 </template>
 
 <script>
-import { ElButton, ElCol, ElInput, ElMessage, ElRow, ElTable, ElTableColumn, ElTag, ElTooltip } from 'element-plus';
+import { ElButton, ElInput, ElMessage, ElPopover, ElTable, ElTableColumn, ElTag } from 'element-plus';
 import { nextTick, ref } from 'vue';
 import { MarkerType, Panel, useVueFlow, VueFlow } from '@vue-flow/core';
-import { ControlButton, Controls } from '@vue-flow/controls';
+import { Controls } from '@vue-flow/controls';
 import { Background } from '@vue-flow/background';
 import { MiniMap } from '@vue-flow/minimap';
+import DagPreviewGraph from './DagPreviewGraph.vue';
 import useDragAndDrop from './useDnD';
 import Icon from './Icon.vue';
 import { useLayout } from './useLayout';
-import { Connection, Link, MagicStick, Right } from '@element-plus/icons-vue';
+import { getServiceTone } from './nodePalette';
+import { Connection, Link, MagicStick } from '@element-plus/icons-vue';
+
+const MAIN_FLOW_ID = 'dag-builder-main';
+const PREVIEW_NODE_LIMIT = 4;
 
 export default {
 	name: 'DagManage',
 	components: {
-		nextTick,
 		ElTable,
 		ElTableColumn,
-		ElTooltip,
+		ElPopover,
 		ElTag,
 		ElInput,
 		ElButton,
-		ElCol,
-		ElRow,
-		ElMessage,
 		VueFlow,
 		Background,
-		MarkerType,
 		MiniMap,
-		ControlButton,
 		Controls,
+		DagPreviewGraph,
 		Icon,
 		Panel,
-
 		Connection,
 		Link,
-		Right,
 		MagicStick,
 	},
 	setup() {
-		const { onInit, onNodeDragStop, onConnect, fitView } = useVueFlow();
-
-		const { onDragOver, onDrop, onDragLeave, isDragOver, onDragStart } = useDragAndDrop();
-
-		const layoutMethods = useLayout();
+		const { onInit, onConnect, fitView } = useVueFlow({ id: MAIN_FLOW_ID });
+		const { onDragOver, onDrop, onDragLeave, isDragOver, onDragStart, serviceData } = useDragAndDrop(MAIN_FLOW_ID);
+		const layoutMethods = useLayout(MAIN_FLOW_ID);
 
 		const flowNodes = ref([]);
 		const flowEdges = ref([]);
 		const flowNodeMap = ref({});
+		const defaultEdgeOptions = {
+			type: 'smoothstep',
+			markerEnd: MarkerType.ArrowClosed,
+			style: {
+				stroke: '#64748b',
+				strokeWidth: 2,
+			},
+		};
 
-		const layoutGraph = async (direction) => {
+		const applyLayoutGraph = async (direction) => {
 			try {
-				const layoutNodes = layout([...flowNodes.value], [...flowEdges.value], direction);
+				const layoutNodes = layoutMethods.layout([...flowNodes.value], [...flowEdges.value], direction);
 				flowNodes.value = layoutNodes;
 				await nextTick();
 				fitView();
-			} catch (e) {
-				console.error('Layout failed:', e);
+			} catch (error) {
+				console.error('Layout failed:', error);
 				ElMessage.error('DAG layout error');
 			}
 		};
 
-		// life cycle callback
+		const focusCanvas = async () => {
+			await nextTick();
+			fitView();
+		};
+
 		onInit((vueFlowInstance) => {
 			vueFlowInstance.fitView();
 		});
-		onNodeDragStop(({ event, nodes, node }) => {});
+
 		onConnect((connection) => {
-			const line = {
-				id: connection.source + '-' + connection.target,
+			if (!connection.source || !connection.target) {
+				return;
+			}
+
+			if (connection.source === connection.target) {
+				ElMessage.warning('A service cannot connect to itself');
+				return;
+			}
+
+			const edgeId = `${connection.source}-${connection.target}`;
+			if (flowEdges.value.some((edge) => edge.id === edgeId)) {
+				ElMessage.warning('This connection already exists');
+				return;
+			}
+
+			const sourceNode = flowNodeMap.value[connection.source];
+			const targetNode = flowNodeMap.value[connection.target];
+			if (!sourceNode || !targetNode) {
+				return;
+			}
+
+			flowEdges.value.push({
+				id: edgeId,
 				source: connection.source,
 				target: connection.target,
-				label: '',
-				markerEnd: MarkerType.ArrowClosed,
-			};
-			flowEdges.value.push(line);
-			flowNodeMap.value[connection.source].data.succ.push(connection.target);
-			flowNodeMap.value[connection.target].data.prev.push(connection.source);
+				...defaultEdgeOptions,
+			});
+			sourceNode.data.succ = Array.from(new Set([...(sourceNode.data.succ || []), connection.target]));
+			targetNode.data.prev = Array.from(new Set([...(targetNode.data.prev || []), connection.source]));
 		});
 
-		return {
-			onDragOver,
+			return {
+				mainFlowId: MAIN_FLOW_ID,
+				onDragOver,
 			onDrop,
 			onDragLeave,
 			isDragOver,
 			onDragStart,
-			layoutGraph,
+			serviceData,
+			focusCanvas,
+			applyLayoutGraph,
+			fitView,
+			defaultEdgeOptions,
 			flowNodes,
 			flowEdges,
 			flowNodeMap,
 			...layoutMethods,
 		};
 	},
-
 	data() {
 		return {
 			services: [],
-			editInput: '',
 			newInputName: '',
-			newInputDag: '',
-			newInputDagId: '',
-			editDisabled: true,
-			editingIndex: -1,
-			editingRow: null,
-
-			// drawing flag
 			drawing: false,
 			dagList: [],
-
-			activeDag: null,
-			hoverPosition: { x: 0, y: 0 },
+			refreshTimer: null,
+			previewNodeLimit: PREVIEW_NODE_LIMIT,
+			isMiniMapExpanded: false,
 		};
 	},
-
 	methods: {
 		flushDrawData() {
 			this.flowNodes = [];
@@ -285,427 +352,432 @@ export default {
 		},
 		draw() {
 			this.drawing = !this.drawing;
+
+			if (this.drawing) {
+				this.$nextTick(() => {
+					this.focusCanvas();
+				});
+			}
 		},
 		clearInput() {
 			this.newInputName = '';
-			this.newInputDag = '';
-			this.newInputDagId = '';
 			this.flushDrawData();
 		},
-		// delete dag
-		deleteWorkflow(index, dag_id) {
-			this.dagList.splice(index, 1);
-			const content = {
-				dag_id: dag_id,
-			};
-			fetch('/api/dag_workflow', {
-				method: 'DELETE',
-				body: JSON.stringify(content),
-			})
-				.then((response) => response.json())
-				.then((data) => {
-					const state = data['state'];
-					let msg = data['msg'];
-					msg += '. Refreshing..';
-					this.showMsg(state, msg);
-					setTimeout(() => {
-						location.reload();
-					}, 500);
-				})
-				.catch((error) => {
-					ElMessage.error('Network error');
-					console.error(error);
-				});
+		toggleMiniMap() {
+			this.isMiniMapExpanded = !this.isMiniMapExpanded;
 		},
+		async handleCanvasDrop(event) {
+			if (!this.serviceData) {
+				return;
+			}
 
+			const nodeId = this.serviceData.id;
+			if (this.flowNodeMap[nodeId]) {
+				ElMessage.warning(`Service "${this.formatServiceName(this.serviceData)}" is already on the canvas`);
+				return;
+			}
+
+			this.onDrop(event, this.flowNodes, this.flowNodeMap);
+			await nextTick();
+			this.focusCanvas();
+		},
+		async deleteWorkflow(dag_id) {
+			try {
+				const response = await fetch('/api/dag_workflow', {
+					method: 'DELETE',
+					body: JSON.stringify({ dag_id }),
+				});
+				const data = await response.json();
+				this.showMsg(data.state, data.msg);
+
+				if (data.state === 'success') {
+					await this.getDagList();
+				}
+			} catch (error) {
+				ElMessage.error('Network error');
+				console.error(error);
+			}
+		},
 		handleNewSubmit() {
-			if (this.newInputName === '' || this.newInputName === null) {
+			if (!this.newInputName) {
 				ElMessage.error('Please fill the dag name');
 				return;
 			}
-			if (this.flowNodes === undefined || this.flowNodes.length === 0) {
+
+			if (!this.flowNodes.length) {
 				ElMessage.error('Please choose services');
 				return;
 			}
 
-			// get graph
-			const constructDagGraph = () => {
-				const graph = { _start: [] };
-				for (const flowNode of this.flowNodes) {
-					const serviceId = flowNode.id;
-					if (graph[serviceId]) {
-						throw new Error(`Duplicate service_id: ${serviceId}`);
-					}
-					const prev = flowNode.data?.prev ? [...flowNode.data.prev] : [];
-					const succ = flowNode.data?.succ ? [...flowNode.data.succ] : [];
-					graph[serviceId] = { service_id: serviceId, prev, succ };
-					graph[serviceId] = {
-						id: serviceId,
-						prev: prev,
-						succ: flowNode.data?.succ ?? [],
-					};
-
-					if (prev.length === 0) {
-						graph._start.push(serviceId);
-					}
+			const graph = { _start: [] };
+			for (const flowNode of this.flowNodes) {
+				const serviceId = flowNode.id;
+				if (graph[serviceId]) {
+					throw new Error(`Duplicate service_id: ${serviceId}`);
 				}
 
-				return graph;
-			};
-			const graph = constructDagGraph();
-			const newData = {
+				const prev = flowNode.data?.prev ? [...flowNode.data.prev] : [];
+				const succ = flowNode.data?.succ ? [...flowNode.data.succ] : [];
+				graph[serviceId] = {
+					id: serviceId,
+					prev,
+					succ,
+					service_id: flowNode.data?.service_id || serviceId,
+				};
+
+				if (prev.length === 0) {
+					graph._start.push(serviceId);
+				}
+			}
+
+			this.updateDagList({
 				dag_name: this.newInputName,
 				dag: graph,
-			};
-			// update all Daglist
-			this.updateDagList(newData);
+			});
 		},
-		// get dag from backen
-		getDagList() {
-			fetch('/api/dag_workflow')
-				.then((response) => response.json())
-				.then((data) => {
-					this.dagList = data.map((dag) => {
-						const nodeList = this.parseDag(dag.dag);
-						const lineList = this.generateEdges(dag.dag);
-
-						const layoutNodes = this.layout(nodeList, lineList, 'LR');
-
-						return {
-							...dag,
-							nodeList: layoutNodes,
-							lineList,
-						};
-					});
-				})
-				.catch((error) => {
-					console.error('Error fetching data:', error);
-				});
+		async getDagList() {
+			try {
+				const response = await fetch('/api/dag_workflow');
+				const data = await response.json();
+				this.dagList = data;
+			} catch (error) {
+				console.error('Error fetching data:', error);
+			}
 		},
 		fetchData() {
 			this.getDagList();
 		},
 		showMsg(state, msg) {
-			if (state === 'success') {
-				ElMessage({
-					message: msg,
-					showClose: true,
-					type: 'success',
-					duration: 3000,
-				});
-			} else {
-				ElMessage({
-					message: msg,
-					showClose: true,
-					type: 'error',
-					duration: 3000,
-				});
-			}
+			ElMessage({
+				message: msg,
+				showClose: true,
+				type: state === 'success' ? 'success' : 'error',
+				duration: 3000,
+			});
 		},
-		// update dag to backen
-		updateDagList(data) {
-			fetch('/api/dag_workflow', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-				},
-				body: JSON.stringify(data),
-			})
-				.then((response) => response.json())
-				.then((data) => {
-					const state = data['state'];
-					const msg = data['msg'];
-					this.showMsg(state, msg);
-					if (state === 'success') {
-						this.getDagList();
-						location.reload();
-						this.clearInput();
-					}
-				})
-				.catch((error) => {
-					console.error('Error sending data:', error);
-				});
-		},
-		async getServiceList() {
-			const response = await fetch('/api/service');
-			this.services = await response.json();
-		},
-
-		async layoutGraph(direction) {
+		async updateDagList(data) {
 			try {
-				const layoutNodes = this.layout([...this.flowNodes], [...this.flowEdges], direction);
+				const response = await fetch('/api/dag_workflow', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify(data),
+				});
+				const result = await response.json();
+				this.showMsg(result.state, result.msg);
 
-				this.flowNodes = [...layoutNodes];
-			} catch (e) {
-				console.error('Layout failed:', e);
-				ElMessage.error('DAG layout error');
-			}
-		},
-
-		/*methods for dag view*/
-		async showDagDetail(row, event) {
-			if (!row || !event) {
-				console.warn('Invalid parameters');
-				return;
-			}
-
-			try {
-				this.activeDag = row.dag_id;
-
-				const baseX = event.clientX || 0;
-				const baseY = event.clientY || 0;
-
-				const SAFE_MARGIN = 20;
-				const cardWidth = 400;
-				const cardHeight = 300;
-
-				let posX = baseX + 20;
-				let posY = baseY - 50;
-
-				if (posX + cardWidth > window.innerWidth) {
-					posX = window.innerWidth - cardWidth - SAFE_MARGIN;
-				}
-
-				if (posY + cardHeight > window.innerHeight) {
-					posY = window.innerHeight - cardHeight - SAFE_MARGIN;
-				}
-
-				this.hoverPosition = { x: posX, y: posY };
-
-				if (!row.nodeList) {
-					const nodeList = this.parseDag(row.dag);
-					const lineList = this.generateEdges(row.dag);
-
-					const layoutNodes = this.layout(
-						nodeList.map((n) => ({
-							...n,
-							dimensions: { width: 160, height: 40 },
-						})),
-						lineList,
-						'LR'
-					);
-
-					Object.assign(row, {
-						nodeList: layoutNodes,
-						lineList,
-					});
+				if (result.state === 'success') {
+					await this.getDagList();
+					this.clearInput();
+					this.drawing = false;
 				}
 			} catch (error) {
-				console.error('DAG detail error:', error);
-				this.activeDag = null;
+				console.error('Error sending data:', error);
 			}
 		},
-
-		hideDagDetail() {
-			this.activeDag = null;
+		async getServiceList() {
+			try {
+				const response = await fetch('/api/service');
+				this.services = await response.json();
+			} catch (error) {
+				console.error('Error fetching services:', error);
+				ElMessage.error('Failed to fetch services');
+			}
 		},
 		countEdges(dag) {
-			let count = 0;
-			for (const node of Object.values(dag)) {
-				if (node.succ && Array.isArray(node.succ)) {
-					count += node.succ.length;
-				}
-			}
-			return count;
+			return this.generateEdges(dag).length;
 		},
-
-		randomColor() {
-			const colors = [
-				'#F0F4F8',
-				'#E3F2FD',
-				'#E8F5E9',
-				'#F3E5F5',
-				'#FFF3E0',
-				'#FBE9E7',
-				'#E0F7FA',
-				'#F1F8E9',
-				'#FCE4EC',
-				'#EDE7F6',
-				'#E8F5E6',
-				'#FFEBEE',
-				'#E0F2F1',
-				'#F5F5F5',
-				'#FFF8E1',
-				'#EFEBE9',
-			];
-			return colors[Math.floor(Math.random() * colors.length)];
+		getDagNodeCount(dag) {
+			return Object.keys(dag || {}).filter((key) => key !== '_start').length;
 		},
-
-		parseDag(dag) {
-			return Object.keys(dag)
-				.filter((k) => k !== '_start')
-				.map((key) => ({
-					id: key,
-					data: { label: key },
-					dimensions: { width: 200, height: 50 },
-					style: {
-						backgroundColor: this.randomColor(),
-						border: '1px solid #e2e8f0',
-					},
-				}));
+		getDagServiceLabels(dag) {
+			return Object.entries(dag || {})
+				.filter(([key]) => key !== '_start')
+				.map(([key, node]) => node?.service_id || node?.id || key);
 		},
-
+		summarizeServices(dag, limit) {
+			return this.getDagServiceLabels(dag).slice(0, limit);
+		},
+		getOverflowServiceCount(dag, limit) {
+			return Math.max(this.getDagServiceLabels(dag).length - limit, 0);
+		},
+		getNodeTone(key) {
+			return getServiceTone(key);
+		},
+		getServiceCardStyle(service) {
+			const tone = this.getNodeTone(service?.id || service?.name);
+			return {
+				backgroundColor: tone.background,
+				borderColor: tone.border,
+				'--service-accent': tone.accent,
+			};
+		},
+		formatServiceName(service) {
+			return service?.name || service?.id || 'Unknown Service';
+		},
+		formatIoValue(value) {
+			return value || '-';
+		},
 		generateEdges(dag) {
 			const edges = [];
-			for (const [source, node] of Object.entries(dag)) {
-				if (node.succ) {
-					node.succ.forEach((target) => {
-						edges.push({
-							id: `${source}-${target}`,
-							source,
-							target,
-							markerEnd: MarkerType.ArrowClosed,
-						});
-					});
+			for (const [source, node] of Object.entries(dag || {})) {
+				if (source === '_start' || !Array.isArray(node?.succ)) {
+					continue;
 				}
+
+				node.succ.forEach((target) => {
+					edges.push({
+						id: `${source}-${target}`,
+						source,
+						target,
+						type: 'smoothstep',
+						markerEnd: MarkerType.ArrowClosed,
+						style: {
+							stroke: '#64748b',
+							strokeWidth: 2,
+						},
+					});
+				});
 			}
 			return edges;
 		},
 	},
 	mounted() {
-		// init dag data list
 		this.fetchData();
-
-		const getServiceInterval = () => {
-			let timer;
-			if (timer !== undefined) {
-				clearInterval(timer);
-			}
-			timer = setInterval(() => {
-				this.fetchData();
-			}, 5000);
-		};
-		getServiceInterval();
-
 		this.getServiceList();
+		this.refreshTimer = window.setInterval(() => {
+			this.fetchData();
+		}, 5000);
+	},
+	beforeUnmount() {
+		if (this.refreshTimer) {
+			clearInterval(this.refreshTimer);
+			this.refreshTimer = null;
+		}
 	},
 };
 </script>
 
-<style scoped>
-body {
-	font-family: Arial, sans-serif;
-	background-color: #f9f9f9;
-	margin: 0;
-	display: flex;
-	justify-content: center;
-	align-items: center;
-	height: 100vh;
+<style scoped lang="scss">
+.dag-manage-page {
+	--dag-service-name-font-size: 12px;
+	padding: 20px;
+	display: grid;
+	gap: 24px;
+	background:
+		radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 26%),
+		radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 22%),
+		#f8fafc;
+	border-radius: 24px;
 }
 
-form {
-	max-width: 600px;
-	padding: 20px;
-	background-color: #fff;
-	border-radius: 8px;
+.section-card {
+	padding: 24px;
+	border-radius: 24px;
+	border: 1px solid rgba(148, 163, 184, 0.18);
+	background: rgba(255, 255, 255, 0.92);
+	box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+	backdrop-filter: blur(14px);
+}
+
+.section-heading {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+	margin-bottom: 16px;
 }
 
 h3 {
+	margin: 0;
 	font-size: 24px;
-	color: #333;
-	margin-bottom: 20px;
+	line-height: 1.2;
+	color: #0f172a;
 }
 
-input[type='text'],
-input[type='file'] {
-	width: calc(100% - 20px);
-	padding: 10px;
-	margin-bottom: 10px;
-	border: 1px solid #ccc;
-	border-radius: 4px;
-	font-size: 16px;
+.builder-grid {
+	display: grid;
+	grid-template-columns: minmax(0, 2.1fr) minmax(240px, 0.72fr);
+	gap: 20px;
+	align-items: start;
 }
 
-input[type='file'] {
-	cursor: pointer;
+.builder-main,
+.service-sidebar {
+	border: 1px solid #e2e8f0;
+	border-radius: 20px;
+	background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 }
 
-.draw-container {
-	width: 100%;
-	height: 500px;
-
-	display: flex;
-	align-items: flex-start;
-	justify-content: center;
-	margin-top: 15px;
-	border: 1px solid #ccc;
-}
-
-.compact-container {
-	width: 100%;
-	height: 100px;
-}
-
-.el-button {
-	font-size: 16px;
-	margin-right: 10px;
-}
-
-.el-button:first-child {
-	margin-left: 0;
-}
-
-.outline {
+.builder-main {
 	padding: 20px;
-	background-color: #fff;
-	border-radius: 8px;
+}
+
+.service-sidebar {
+	padding: 20px;
+	position: sticky;
+	top: 20px;
 }
 
 .new-dag-font-style {
-	font-size: 16px;
-	margin-bottom: 15px;
-	font-weight: bold;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 15px;
+	font-weight: 700;
+	color: #0f172a;
+	margin-bottom: 12px;
 }
 
-.svc-container {
-	margin-top: -20px;
+.field-block {
+	margin-bottom: 18px;
+}
+
+.builder-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 12px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
+
+.builder-buttons {
 	display: flex;
 	flex-wrap: wrap;
-	padding: 10px;
-	list-style-type: none;
+	gap: 10px;
 }
 
-.svc-item {
-	display: inline-block;
-	margin: 2px;
-	padding: 2px;
-	border-radius: 12px;
-}
-
-.vue-flow__node-input {
-	border: 1px solid #e2e8f0;
-	border-radius: 8px;
-	background: #ffffff;
-	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-	transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-	width: auto;
-	padding: 10px;
+.tip-icon {
+	color: #2563eb;
 	font-size: 18px;
 }
 
-.vue-flow__node-input:hover {
-	border-color: #94a3b8;
-	box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+.canvas-placeholder {
+	min-height: 500px;
+	display: grid;
+	place-items: center;
+	text-align: center;
+	border: 1.5px dashed #cbd5e1;
+	border-radius: 22px;
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%),
+		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	padding: 32px;
 }
 
-.vue-flow__node-input2 {
-	width: auto;
-	padding: 5px;
-	font-size: 20px;
+.canvas-placeholder__icon {
+	font-size: 34px;
+	color: #2563eb;
+	margin-bottom: 16px;
 }
 
-.description {
-	white-space: pre-wrap;
-	word-wrap: break-word;
+.canvas-placeholder__title {
+	font-size: 18px;
+	font-weight: 700;
+	color: #0f172a;
 }
 
-.el-button {
-	font-size: 16px;
-	margin-right: 10px;
+.draw-container {
+	min-height: 520px;
+	display: flex;
+	flex-direction: column;
+	border-radius: 22px;
+	border: 1px solid #cbd5e1;
+	background: #ffffff;
+	overflow: hidden;
+	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
-.el-button:first-child {
-	margin-left: 0;
+.draw-container.is-drag-over {
+	border-color: #2563eb;
+	box-shadow: 0 18px 40px rgba(37, 99, 235, 0.16);
+	transform: translateY(-2px);
+}
+
+.canvas-status-bar {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+	flex-wrap: wrap;
+	padding: 10px 14px;
+	border-bottom: 1px solid #e2e8f0;
+	background: rgba(248, 250, 252, 0.92);
+}
+
+.canvas-metrics {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.main-flow {
+	position: relative;
+	flex: 1;
+	min-height: 430px;
+	background:
+		linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.98)),
+		#ffffff;
+}
+
+.minimap-toggle-wrap {
+	position: absolute;
+	right: 16px;
+	bottom: 76px;
+	z-index: 12;
+}
+
+.minimap-toggle-wrap.expanded {
+	bottom: 188px;
+}
+
+.minimap-toggle {
+	border: 1px solid #cbd5e1;
+	border-radius: 999px;
+	background: rgba(255, 255, 255, 0.96);
+	color: #334155;
+	padding: 7px 12px;
+	font-size: 12px;
+	font-weight: 700;
+	line-height: 1;
+	cursor: pointer;
+	box-shadow: 0 10px 22px rgba(15, 23, 42, 0.12);
+	transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.minimap-toggle:hover {
+	border-color: #93c5fd;
+	color: #1d4ed8;
+	transform: translateY(-1px);
+}
+
+.drag-tip {
+	position: absolute;
+	top: 20px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 10;
+	background: rgba(255, 255, 255, 0.92);
+	padding: 8px 14px;
+	border-radius: 999px;
+	box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	border: 1px solid #e2e8f0;
+	animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+	0%,
+	100% {
+		transform: translateX(-50%) translateY(0);
+	}
+
+	50% {
+		transform: translateX(-50%) translateY(-4px);
+	}
 }
 
 .process-panel,
@@ -715,223 +787,301 @@ input[type='file'] {
 }
 
 .process-panel {
-	background-color: #2d3748;
 	padding: 10px;
-	border-radius: 8px;
-	box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
-	display: flex;
-	flex-direction: column;
+	border-radius: 14px;
+	background: rgba(15, 23, 42, 0.82);
+	box-shadow: 0 14px 34px rgba(15, 23, 42, 0.26);
 }
 
 .process-panel button {
+	width: 42px;
+	height: 42px;
 	border: none;
-	cursor: pointer;
-	background-color: #4a5568;
-	border-radius: 8px;
-	color: white;
-	box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
-}
-
-.process-panel button {
-	font-size: 16px;
-	width: 40px;
-	height: 40px;
-	display: flex;
+	border-radius: 12px;
+	background: rgba(255, 255, 255, 0.12);
+	color: #ffffff;
+	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	cursor: pointer;
+	font-size: 13px;
+	font-weight: 700;
+	transition: background-color 0.2s ease, transform 0.2s ease;
 }
 
-.checkbox-panel {
+.process-panel button:hover {
+	background: #2563eb;
+	transform: translateY(-1px);
+}
+
+.sidebar-header {
+	margin-bottom: 12px;
+}
+
+.service-grid {
+	display: grid;
+	gap: 12px;
+	max-height: 640px;
+	overflow: auto;
+	padding-right: 4px;
+}
+
+.service-card {
+	width: 100%;
+	padding: 12px 12px 13px;
+	text-align: left;
+	border-radius: 16px;
+	border: 1px solid #dbe4ee;
+	border-left: 4px solid var(--service-accent);
+	cursor: grab;
+	transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.service-card:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+	border-color: #94a3b8;
+}
+
+.service-card:active {
+	cursor: grabbing;
+}
+
+.service-card__header {
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 10px;
 }
 
-.process-panel button:hover,
-.layout-panel button:hover {
-	background-color: #2563eb;
-	transition: background-color 0.2s;
+.service-card__name {
+	font-size: var(--dag-service-name-font-size);
+	font-weight: 700;
+	color: #0f172a;
 }
 
-.process-panel label {
-	color: white;
-	font-size: 12px;
+.service-card__drag {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: #2563eb;
 }
 
-.drag-tip {
-	position: absolute;
-	top: 20px;
-	left: 50%;
-	transform: translateX(-50%);
-	z-index: 10;
-	background: rgba(255, 255, 255, 0.9);
-	padding: 8px 16px;
-	border-radius: 24px;
-	box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+.service-card__meta {
 	display: flex;
-	align-items: center;
+	flex-wrap: wrap;
 	gap: 8px;
-	backdrop-filter: blur(4px);
-	border: 1px solid #ebeef5;
-	animation: float 3s ease-in-out infinite;
 }
 
-.tip-icon {
-	color: #409eff;
-	font-size: 18px;
+.service-chip {
+	display: inline-flex;
+	align-items: center;
+	padding: 4px 8px;
+	border-radius: 999px;
+	background: rgba(255, 255, 255, 0.9);
+	border: 1px solid #dbe4ee;
+	font-size: 11px;
+	font-weight: 700;
+	color: #475569;
 }
 
-.drag-tip span {
-	font-family: 'Segoe UI', system-ui, sans-serif;
-	font-size: 14px;
-	color: #606266;
-	font-weight: 500;
-	letter-spacing: 0.3px;
+.dag-list-section {
+	overflow: hidden;
 }
 
-@keyframes float {
-	0%,
-	100% {
-		transform: translateX(-50%) translateY(0);
-	}
-	50% {
-		transform: translateX(-50%) translateY(-4px);
-	}
+.dag-name-cell {
+	display: grid;
+	gap: 4px;
 }
 
-.dag-preview {
-	position: relative;
-	padding: 8px;
-	border-radius: 8px;
-	background: #f8fafc;
-	transition: all 0.3s;
+.dag-name {
+	font-size: 15px;
+	font-weight: 700;
+	color: #0f172a;
 }
 
-.mini-dag {
+.dag-subtitle {
+	font-size: 13px;
+	color: #64748b;
+}
+
+.dag-overview-button {
+	width: 100%;
+	padding: 14px 16px;
+	text-align: left;
+	border: 1px solid #e2e8f0;
+	border-radius: 18px;
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 32%),
+		#f8fafc;
+	cursor: pointer;
+	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.dag-overview-button:hover {
+	border-color: #93c5fd;
+	box-shadow: 0 14px 32px rgba(37, 99, 235, 0.1);
+	transform: translateY(-1px);
+}
+
+.dag-overview-header {
 	display: flex;
 	align-items: center;
-	gap: 4px;
-	margin-bottom: 8px;
+	gap: 12px;
+	margin-bottom: 12px;
+}
 
-	.node {
-		padding: 2px 8px;
-		background: #e2e8f0;
-		border-radius: 4px;
-		font-size: 12px;
-	}
+.dag-pill-group {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
 
-	.edges {
-		color: #94a3b8;
-		display: flex;
-		gap: 2px;
-	}
+.dag-pill-group--wrap {
+	margin-top: 14px;
+}
+
+.service-pill {
+	display: inline-flex;
+	align-items: center;
+	padding: 6px 10px;
+	border-radius: 999px;
+	background: #ffffff;
+	border: 1px solid #dbe4ee;
+	font-size: 12px;
+	font-weight: 600;
+	color: #334155;
+}
+
+.service-pill--muted {
+	background: #eff6ff;
+	border-color: #bfdbfe;
+	color: #1d4ed8;
 }
 
 .stats {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 8px;
-
-	.el-tag {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-	}
 }
 
-.dag-detail-card {
-	position: fixed;
-	z-index: 99999 !important;
-	pointer-events: none;
-	width: 400px;
-	height: 300px;
-	right: 120px;
-	left: auto !important;
-	top: 40% !important;
-	transform: translate(-20px, -50%) !important;
-	background: white;
-	border-radius: 12px;
-	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+.dag-hover-panel {
+	display: grid;
+	gap: 14px;
+}
+
+.dag-hover-header {
+	display: grid;
+	gap: 4px;
+}
+
+.dag-title {
+	font-size: 16px;
+	font-weight: 700;
+	color: #0f172a;
+}
+
+.dag-hover-subtitle {
+	font-size: 13px;
+	color: #64748b;
+}
+
+.dag-preview-shell {
+	height: 340px;
+	border-radius: 18px;
+	border: 1px solid #e2e8f0;
+	background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	overflow: hidden;
+}
+
+.main-flow :deep(.vue-flow__controls) {
+	box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+	border-radius: 14px;
+	overflow: hidden;
+}
+
+.main-flow :deep(.vue-flow__minimap) {
+	border-radius: 16px;
+	overflow: hidden;
+	box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+	right: 16px;
+	bottom: 116px;
+}
+
+.main-flow :deep(.dag-node) {
+	display: flex;
+	align-items: center;
+	align-content: center;
+	justify-content: center;
+	padding: 0 6px;
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1.15;
+	color: #0f172a;
+	text-align: center;
+	white-space: normal;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+	height: 100%;
+	width: 100%;
+}
+
+.main-flow :deep(.dag-node.selected) {
+	box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22), 0 18px 34px rgba(37, 99, 235, 0.14);
+}
+
+.main-flow :deep(.vue-flow__edge-path) {
+	stroke-linecap: round;
+}
+
+:deep(.dag-preview-popper.el-popover) {
 	padding: 16px;
-	animation: slide-in 0.3s ease;
-	max-width: 90vw;
-	max-height: 80vh;
-	overflow: auto;
-	transition: all 0.3s ease;
+	border-radius: 20px;
+	border: 1px solid #e2e8f0;
+	box-shadow: 0 22px 44px rgba(15, 23, 42, 0.14);
+}
 
-	.dag-title {
-		font-weight: 600;
-		margin-bottom: 12px;
-		color: #2d3748;
+@media (max-width: 1200px) {
+	.builder-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.service-sidebar {
+		position: static;
 	}
 }
 
-@keyframes slide-in {
-	from {
-		opacity: 0;
-		transform: translateY(8px);
-	}
-	to {
-		opacity: 1;
-		transform: translateY(0);
-	}
-}
-
-.dag-detail-card .vue-flow__node {
-	padding: 8px 12px;
-	border-radius: 6px;
-	font-size: 14px;
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
-}
-
-.dag-detail-card .vue-flow__edge-path {
-	stroke: #64748b;
-	stroke-width: 2;
-}
-
-.mini-dag .node {
-	max-width: 80px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.edges {
-	.no-edges {
-		color: #999;
-		font-size: 12px;
+@media (max-width: 768px) {
+	.dag-manage-page {
+		padding: 14px;
+		gap: 16px;
 	}
 
-	.el-icon {
-		&:nth-child(n + 4) {
-			display: none;
-		}
+	.section-card {
+		padding: 18px;
+		border-radius: 20px;
 	}
-}
 
-.el-table__body tr.hover-row > td {
-	z-index: auto !important;
-}
+	.section-heading,
+	.builder-actions,
+	.canvas-status-bar,
+	.dag-overview-header {
+		flex-direction: column;
+		align-items: flex-start;
+	}
 
-.first-service {
-	background: #e2e8f0;
-	border-radius: 4px;
-	padding: 2px 8px;
-	font-size: 12px;
-	max-width: 120px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
+	.canvas-placeholder,
+	.draw-container {
+		min-height: 440px;
+	}
 
-.main-flow .vue-flow__node {
-}
-
-.preview-flow {
-	z-index: 100000;
-	pointer-events: none;
-}
-
-.preview-flow .vue-flow__node {
-	transform: scale(0.8);
-	cursor: default !important;
+	.drag-tip {
+		width: calc(100% - 24px);
+		padding: 10px 14px;
+		justify-content: center;
+	}
 }
 </style>

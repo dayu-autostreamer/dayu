@@ -38,18 +38,22 @@ def backend_core_instance(mounted_runtime, monkeypatch):
 def test_parse_and_apply_templates_runs_two_stage_install_and_starts_cycle_thread(backend_core_instance, monkeypatch):
     backend_core_module = importlib.import_module("backend_core")
     source_deploy = [{"source": {"id": 0, "name": "camera-0"}, "dag": {}, "node_set": ["edge1"]}]
-    first_docs = [_processor_doc("scheduler"), _processor_doc("controller")]
-    second_docs = [_processor_doc("generator"), _processor_doc("processor-face")]
+    first_docs = [_processor_doc("scheduler"), _processor_doc("monitor")]
+    second_docs = [_processor_doc("controller"), _processor_doc("generator"), _processor_doc("processor-face")]
     saved_docs = []
     install_calls = []
     created_threads = []
 
+    def finetune_yaml_parameters(yaml_dict, deploy, scopes):
+        if scopes == ["controller", "generator", "processor"]:
+            deploy[0]["source"]["source_device"] = "edge1"
+            return copy.deepcopy(second_docs)
+        return copy.deepcopy(first_docs)
+
     backend_core_instance.template_helper = SimpleNamespace(
         load_policy_apply_yaml=lambda policy: {"scheduler": {"policy": policy["id"]}},
         load_application_apply_yaml=lambda service_dict: service_dict,
-        finetune_yaml_parameters=lambda yaml_dict, deploy, scopes: copy.deepcopy(
-            first_docs if scopes == ["scheduler", "distributor", "monitor", "controller"] else second_docs
-        ),
+        finetune_yaml_parameters=finetune_yaml_parameters,
     )
     monkeypatch.setattr(
         backend_core_instance,
@@ -84,6 +88,9 @@ def test_parse_and_apply_templates_runs_two_stage_install_and_starts_cycle_threa
         "scheduler": {"policy": "fixed"},
         "processor": {"face-detection": {"yaml": "face.yaml", "node": ["edge1"]}},
     }
+    assert backend_core_instance.source_deploy == [
+        {"source": {"id": 0, "name": "camera-0", "source_device": "edge1"}, "dag": {}, "node_set": ["edge1"]}
+    ]
     assert created_threads and created_threads[0].target == backend_core_instance.run_cycle_deploy
     assert created_threads[0].started is True
 
@@ -123,7 +130,7 @@ def test_parse_and_apply_templates_handles_first_stage_timeout(backend_core_inst
 def test_parse_and_apply_templates_handles_second_stage_exception(backend_core_instance, monkeypatch):
     backend_core_module = importlib.import_module("backend_core")
     first_docs = [_processor_doc("scheduler")]
-    second_docs = [_processor_doc("processor-face")]
+    second_docs = [_processor_doc("controller"), _processor_doc("processor-face")]
     saved_docs = []
     install_count = {"count": 0}
 
@@ -131,7 +138,7 @@ def test_parse_and_apply_templates_handles_second_stage_exception(backend_core_i
         load_policy_apply_yaml=lambda policy: {"scheduler": {"policy": policy["id"]}},
         load_application_apply_yaml=lambda service_dict: service_dict,
         finetune_yaml_parameters=lambda yaml_dict, deploy, scopes: copy.deepcopy(
-            first_docs if scopes == ["scheduler", "distributor", "monitor", "controller"] else second_docs
+            first_docs if scopes == ["scheduler", "distributor", "monitor"] else second_docs
         ),
     )
     monkeypatch.setattr(backend_core_instance, "extract_service_from_source_deployment", lambda deploy: {})
@@ -187,21 +194,36 @@ def test_parse_and_delete_templates_waits_for_lock_and_handles_timeout(backend_c
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("original_docs", "operate_outcome", "expected"),
+    ("original_docs", "operate_outcome_factory", "expected"),
     [
-        (None, None, (False, "")),
-        ([_processor_doc("processor-face")], (False, "apply failed"), (False, "apply failed")),
-        ([_processor_doc("processor-face")], RuntimeError("broken"), (False, "unexpected system error, please refer to logs in backend")),
-        ([_processor_doc("processor-face")], (True, ""), (True, "")),
+        (None, lambda backend_core_module: None, (False, "")),
+        ([_processor_doc("processor-face")], lambda backend_core_module: (False, "apply failed"), (False, "apply failed")),
+        (
+            [_processor_doc("processor-face")],
+            lambda backend_core_module: RuntimeError("broken"),
+            (False, "unexpected system error, please refer to logs in backend"),
+        ),
+        (
+            [_processor_doc("processor-face")],
+            lambda backend_core_module: backend_core_module.timeout_exceptions.FunctionTimedOut(),
+            (
+                False,
+                "processor redeployment timeout; add=['processor-new'], "
+                "update=['processor-face'], delete=[]",
+            ),
+        ),
+        ([_processor_doc("processor-face")], lambda backend_core_module: (True, ""), (True, "")),
     ],
 )
 def test_parse_and_redeploy_services_handles_state_and_failures(
     backend_core_instance,
     monkeypatch,
     original_docs,
-    operate_outcome,
+    operate_outcome_factory,
     expected,
 ):
+    backend_core_module = importlib.import_module("backend_core")
+    operate_outcome = operate_outcome_factory(backend_core_module)
     update_docs = [_processor_doc("processor-face"), _processor_doc("processor-new")]
     monkeypatch.setattr(backend_core_instance, "read_component_yaml", lambda: copy.deepcopy(original_docs))
 
@@ -218,7 +240,7 @@ def test_parse_and_redeploy_services_handles_state_and_failures(
         )
 
         def operate_processors(docs_to_update, docs_to_add, docs_to_delete):
-            if isinstance(operate_outcome, Exception):
+            if isinstance(operate_outcome, BaseException):
                 raise operate_outcome
             return operate_outcome
 
@@ -480,28 +502,35 @@ def test_run_cycle_deploy_skips_missing_config_then_updates_after_success(backen
     finetune_calls = []
     updated_docs = []
     redeploy_docs = [_processor_doc("processor-face")]
+    current_docs = [_processor_doc("processor-current")]
 
     def fake_sleep(seconds):
         sleep_calls.append(seconds)
-        if seconds == 5 and sleep_calls.count(5) > 1:
+        if len(sleep_calls) == 2:
             backend_core_instance.yaml_dict = {"scheduler": {"policy": "fixed"}}
             backend_core_instance.source_deploy = [{"source": {"id": 0}, "dag": {}, "node_set": ["edge1"]}]
-        if seconds == 1 and backend_core_instance.yaml_dict:
-            backend_core_instance.is_cycle_deploy = False
+
+    def parse_and_redeploy_services(docs):
+        backend_core_instance.is_cycle_deploy = False
+        return True, ""
 
     backend_core_instance.is_cycle_deploy = True
     backend_core_instance.yaml_dict = None
     backend_core_instance.source_deploy = None
+    backend_core_instance.processor_redeployment_interval_s = 7.0
     backend_core_instance.template_helper = SimpleNamespace(
-        finetune_yaml_parameters=lambda yaml_dict, source_deploy, scopes: finetune_calls.append(tuple(scopes)) or copy.deepcopy(redeploy_docs)
+        finetune_yaml_parameters=lambda yaml_dict, source_deploy, scopes, current_docs=None: finetune_calls.append(
+            {"scopes": tuple(scopes), "current_docs": copy.deepcopy(current_docs)}
+        ) or copy.deepcopy(redeploy_docs)
     )
 
     monkeypatch.setattr(backend_core_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(backend_core_instance, "read_component_yaml", lambda: copy.deepcopy(current_docs))
     monkeypatch.setattr(backend_core_instance, "check_pods_running_state", lambda: True)
     monkeypatch.setattr(
         backend_core_instance,
         "parse_and_redeploy_services",
-        lambda docs: (True, ""),
+        parse_and_redeploy_services,
     )
     monkeypatch.setattr(
         backend_core_instance,
@@ -511,7 +540,58 @@ def test_run_cycle_deploy_skips_missing_config_then_updates_after_success(backen
 
     backend_core_instance.run_cycle_deploy()
 
-    assert sleep_calls[:3] == [5, 1, 5]
-    assert finetune_calls == [("processor",)]
+    assert sleep_calls[0] == 5
+    assert sleep_calls[1] == pytest.approx(7.0, abs=0.01)
+    assert len(sleep_calls) == 2
+    assert finetune_calls == [{"scopes": ("processor",), "current_docs": current_docs}]
+    assert updated_docs == [redeploy_docs]
+    assert backend_core_instance.uninstall_lock is False
+
+
+@pytest.mark.unit
+def test_run_cycle_deploy_survives_redeployment_timeout(backend_core_instance, monkeypatch):
+    backend_core_module = importlib.import_module("backend_core")
+    sleep_calls = []
+    parse_calls = []
+    updated_docs = []
+    redeploy_docs = [_processor_doc("processor-face")]
+    current_docs = [_processor_doc("processor-current")]
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    def parse_and_redeploy_services(docs):
+        parse_calls.append(copy.deepcopy(docs))
+        if len(parse_calls) == 1:
+            raise backend_core_module.timeout_exceptions.FunctionTimedOut()
+        backend_core_instance.is_cycle_deploy = False
+        return True, ""
+
+    backend_core_instance.is_cycle_deploy = True
+    backend_core_instance.yaml_dict = {"scheduler": {"policy": "fixed"}}
+    backend_core_instance.source_deploy = [{"source": {"id": 0}, "dag": {}, "node_set": ["edge1"]}]
+    backend_core_instance.processor_redeployment_interval_s = 3.0
+    backend_core_instance.template_helper = SimpleNamespace(
+        finetune_yaml_parameters=lambda yaml_dict, source_deploy, scopes, current_docs=None: copy.deepcopy(
+            redeploy_docs
+        )
+    )
+
+    monkeypatch.setattr(backend_core_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(backend_core_instance, "read_component_yaml", lambda: copy.deepcopy(current_docs))
+    monkeypatch.setattr(backend_core_instance, "check_pods_running_state", lambda: True)
+    monkeypatch.setattr(backend_core_instance, "parse_and_redeploy_services", parse_and_redeploy_services)
+    monkeypatch.setattr(
+        backend_core_instance,
+        "update_component_yaml",
+        lambda docs: updated_docs.append(copy.deepcopy(docs)),
+    )
+
+    backend_core_instance.run_cycle_deploy()
+
+    assert len(parse_calls) == 2
+    assert sleep_calls[0] == 5
+    assert sleep_calls[1] == pytest.approx(3.0, abs=0.01)
+    assert len(sleep_calls) == 2
     assert updated_docs == [redeploy_docs]
     assert backend_core_instance.uninstall_lock is False

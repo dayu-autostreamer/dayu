@@ -1,3 +1,35 @@
+- id: steady
+  name: steady
+  yaml: steady.yaml
+  dependency:
+    generator: generator-steady.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: madeye
+  name: MadEye
+  yaml: madeye.yaml
+  dependency:
+    generator: generator-steady.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: adamec
+  name: AdaMEC
+  yaml: adamec.yaml
+  dependency:
+    generator: generator-steady.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: gecko
+  name: Gecko
+  yaml: gecko.yaml
+  dependency:
+    generator: generator-steady.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
 - id: fixed
   name: Fixed Policy
   yaml: fixed-policy.yaml
@@ -10,7 +42,100 @@
   name: Hedger
   yaml: hedger.yaml
   dependency:
-    generator: generator-base.yaml
+    generator: generator-with-scheduler-permitted.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: cloud-only-policy
+  name: Cloud Only Policy
+  yaml: cloud-only-policy.yaml
+  dependency:
+    generator: generator-with-scheduler-permitted.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: edge-only-policy
+  name: Edge Only Policy
+  yaml: edge-only-policy.yaml
+  dependency:
+    generator: generator-with-scheduler-permitted.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: dynamic-policy
+  name: Dynamic Policy
+  yaml: dynamic-policy.yaml
+  generator: generator-with-scheduler-permitted.yaml
+  controller: controller-for-evaluation.yaml
+  distributor: distributor-base.yaml
+  monitor: monitor-base.yaml
+- id: offline-profiling
+  name: Offline Profiling
+  yaml: offline-profiling.yaml
+  generator: generator-with-scheduler-permitted.yaml
+  controller: controller-for-evaluation.yaml
+  distributor: distributor-base.yaml
+  monitor: monitor-base.yaml
+- id: online-profiling
+  name: Online Profiling
+  yaml: online-profiling.yaml
+  generator: generator-with-scheduler-permitted.yaml
+  controller: controller-for-evaluation.yaml
+  distributor: distributor-base.yaml
+  monitor: monitor-base.yaml
+- id: deepva
+  name: DeepVA
+  yaml: deepva.yaml
+  dependency:
+    generator: generator-with-scheduler-permitted.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hedger-offloading-benchmark
+  name: Hedger Offloading Benchmark
+  yaml: hedger-offloading-benchmark.yaml
+  dependency:
+    generator: generator-with-scheduler-permitted.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hedger-deployment-benchmark
+  name: Hedger Deployment Benchmark
+  yaml: hedger-deployment-benchmark.yaml
+  dependency:
+    generator: generator-with-scheduler-permitted.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hedger-no-graph-encoder
+  name: Hedger (No Graph Encoder)
+  yaml: hedger-no-graph-encoder.yaml
+  dependency:
+    generator: generator-with-scheduler-permitted.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hedger-flat
+  name: Hedger Flat
+  yaml: hedger-flat.yaml
+  dependency:
+    generator: generator-with-scheduler-permitted.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hedger-deployment-only
+  name: Hedger Deployment Only
+  yaml: hedger-deployment-only.yaml
+  dependency:
+    generator: generator-with-scheduler-permitted.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-base.yaml
+- id: hedger-offloading-only
+  name: Hedger Offloading Only
+  yaml: hedger-offloading-only.yaml
+  dependency:
+    generator: generator-with-scheduler-permitted.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml

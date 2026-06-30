@@ -1,3 +1,5 @@
+import json
+
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.routing import APIRoute
 from contextlib import asynccontextmanager
@@ -17,13 +19,13 @@ class ControllerServer:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             # Startup
-            FileOps.clear_temp_directory()
+            FileOps.clear_task_temp_directory()
             app.state.file_cleaner = None
             is_delete_temp_files = Context.get_parameter('DELETE_TEMP_FILES', direct=False)
 
             if is_delete_temp_files:
                 cleaner = FileCleaner(
-                    folder=Context.get_temporary_file_path(''),
+                    folder=FileOps.get_task_temp_directory(),
                     poll_seconds=30,
                     ttl_seconds=120,
                     recursive=False,
@@ -36,7 +38,7 @@ class ControllerServer:
                 yield
             finally:
                 # Shutdown
-                FileOps.clear_temp_directory()
+                FileOps.clear_task_temp_directory()
                 cleaner = getattr(app.state, "file_cleaner", None)
                 if cleaner:
                     cleaner.stop(join=True, timeout=3.0)
@@ -56,6 +58,11 @@ class ControllerServer:
                      self.process_return,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.CONTROLLER_RETURN]
+                     ),
+            APIRoute(NetworkAPIPath.CONTROLLER_CLEAR_PROCESSOR_QUEUES,
+                     self.clear_processor_queues,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.CONTROLLER_CLEAR_PROCESSOR_QUEUES]
                      ), ],
             log_level='trace',
             timeout=6000,
@@ -66,10 +73,10 @@ class ControllerServer:
             allow_methods=["*"], allow_headers=["*"],
         )
 
-        FileOps.clear_temp_directory()
+        FileOps.clear_task_temp_directory()
         self.is_delete_temp_files = Context.get_parameter('DELETE_TEMP_FILES', direct=False)
         if self.is_delete_temp_files:
-            self.file_cleaner = FileCleaner(folder=Context.get_temporary_file_path(''),
+            self.file_cleaner = FileCleaner(folder=FileOps.get_task_temp_directory(),
                                             poll_seconds=30, ttl_seconds=120, recursive=False,
                                             max_delete_per_round=200)
             self.file_cleaner.start()
@@ -84,6 +91,16 @@ class ControllerServer:
 
     async def process_return(self, backtask: BackgroundTasks, data: str = Form(...)):
         backtask.add_task(self.process_return_background, data)
+
+    async def clear_processor_queues(self, data: str = Form("{}")):
+        try:
+            request = json.loads(data) if data else {}
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"invalid processor queue clear request: {exc}",
+            }
+        return self.controller.clear_processor_queues(request)
 
     def submit_task_background(self, data, file_data):
         """deal with tasks submitted by the generator or other controllers"""

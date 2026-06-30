@@ -93,16 +93,18 @@ def test_controller_health_check_reports_success_and_failure(controller_under_te
 def test_send_task_to_service_executes_locally_when_processor_and_file_exist(controller_under_test, monkeypatch, tmp_path):
     controller_module, controller = controller_under_test
     task = FakeTask()
-    temp_file = tmp_path / task.get_file_path()
+    temp_file = tmp_path / "dayu" / task.get_file_path()
+    temp_file.parent.mkdir(parents=True, exist_ok=True)
     temp_file.write_bytes(b"payload")
 
     execute_record = []
     request_calls = []
 
+    monkeypatch.setenv("NAMESPACE", "dayu")
     monkeypatch.setattr(
         controller_module.Context,
         "get_temporary_file_path",
-        staticmethod(lambda file_path: str(tmp_path / Path(file_path).name)),
+        staticmethod(lambda file_path: str(tmp_path / file_path)),
     )
     monkeypatch.setattr(
         controller_module.PortInfo,

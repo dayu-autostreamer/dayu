@@ -1,6 +1,4 @@
-import copy
 import importlib
-import multiprocessing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -147,7 +145,7 @@ def test_http_video_getter_call_generates_tasks_and_cleans_files(monkeypatch, tm
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(getter, "request_source_data", lambda cur_system, task_id: setattr(getter, "hash_codes", ["hash-0", "hash-1"]) or setattr(getter, "file_name", "payload.mp4") or Path("payload.mp4").write_bytes(b"video") is None or True)
     monkeypatch.setattr(http_getter_module.Counter, "get_count", staticmethod(lambda name: 11))
-    monkeypatch.setattr(http_getter_module.time, "time", lambda: 10.0)
+    monkeypatch.setattr(http_getter_module.time, "monotonic", lambda: 10.0)
     monkeypatch.setattr(http_getter_module.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(http_getter_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
 
@@ -156,6 +154,57 @@ def test_http_video_getter_call_generates_tasks_and_cleans_files(monkeypatch, tm
     assert system.cumulative_scheduling_frame_count == 4
     assert submitted == [{"task_id": 11, "file_name": "payload.mp4", "hashes": ["hash-0", "hash-1"]}]
     assert removed == ["payload.mp4"]
+
+
+@pytest.mark.unit
+def test_http_video_getter_rate_limits_between_task_submissions(monkeypatch, tmp_path):
+    getter = http_getter_module.HttpVideoGetter()
+    submitted = []
+    removed = []
+    sleep_calls = []
+    clock = {"now": 100.0}
+
+    system = SimpleNamespace(
+        source_id=5,
+        video_data_source="http://datasource",
+        meta_data={"fps": 10, "buffer_size": 4},
+        raw_meta_data={"fps": 10},
+        cumulative_scheduling_frame_count=0,
+        task_dag=build_task().get_dag(),
+        service_deployment={"detector": ["edge-a"]},
+        generate_task=lambda task_id, dag, deployment, metadata, file_name, hash_codes: {
+            "task_id": task_id,
+            "file_name": file_name,
+            "hashes": hash_codes,
+        },
+        submit_task_to_controller=lambda task: submitted.append((clock["now"], task)),
+    )
+
+    def fake_request_source_data(cur_system, task_id):
+        clock["now"] += 0.05
+        getter.hash_codes = ["hash-0", "hash-1", "hash-2", "hash-3"]
+        getter.file_name = str(tmp_path / f"payload-{task_id}.mp4")
+        Path(getter.file_name).write_bytes(b"video")
+        return True
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        clock["now"] += seconds
+
+    task_ids = iter([11, 12])
+    monkeypatch.setattr(getter, "request_source_data", fake_request_source_data)
+    monkeypatch.setattr(http_getter_module.Counter, "get_count", staticmethod(lambda name: next(task_ids)))
+    monkeypatch.setattr(http_getter_module.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(http_getter_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(http_getter_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
+
+    getter(system)
+    getter(system)
+
+    assert sleep_calls == pytest.approx([0, 0.35])
+    assert submitted[1][0] - submitted[0][0] == pytest.approx(0.4)
+    assert [task["task_id"] for _, task in submitted] == [11, 12]
+    assert len(removed) == 2
 
 
 @pytest.mark.unit
@@ -271,20 +320,21 @@ def test_scheduler_helper_algorithms_cover_base_contracts_selection_and_retrieva
     assert casva_scenario["content_dynamics"] == 0.4
 
     monkeypatch.setattr(selection_base_module.NodeInfo, "get_all_edge_nodes", staticmethod(lambda: ["edge-a", "edge-b", "edge-c"]))
-    selector = selection_base_module.BaseSelectionPolicy(scope="cluster")
+    selector = selection_base_module.BaseSelectionPolicy(scope="all_edge_nodes")
     assert selector.get_candidate_node_set({"node_set": ["edge-a", "edge-b"], "all_edge_nodes": ["edge-b", "edge-c"]}) == [
         "edge-b",
         "edge-c",
     ]
-    selector.scope = "unknown"
-    assert selector.get_candidate_node_set({"node_set": ["edge-a", "edge-b"]}) == ["edge-a", "edge-b"]
+    fallback_selector = selection_base_module.BaseSelectionPolicy(scope="cluster")
+    assert fallback_selector.scope == "selected_edge_nodes"
+    assert fallback_selector.get_candidate_node_set({"node_set": ["edge-a", "edge-b"]}) == ["edge-a", "edge-b"]
 
     fixed_position = selection_policy_module.FixedSelectionPolicy(SimpleNamespace(), 1, fixed_value=1, fixed_type="position")
     assert fixed_position({"source": {"id": 1}, "node_set": ["edge-a", "edge-b"]}) == "edge-b"
     fixed_hostname = selection_policy_module.FixedSelectionPolicy(SimpleNamespace(), 1, fixed_value="edge-b", fixed_type="hostname")
     assert fixed_hostname({"source": {"id": 1}, "node_set": ["edge-a", "edge-b"]}) == "edge-b"
 
-    random_selector = selection_policy_module.RandomSelectionPolicy(SimpleNamespace(), 1, scope="node_set")
+    random_selector = selection_policy_module.RandomSelectionPolicy(SimpleNamespace(), 1, scope="selected_edge_nodes")
     monkeypatch.setattr(random_selection_module.random, "choice", lambda seq: seq[-1])
     assert random_selector({"source": {"id": 1}, "node_set": ["edge-a", "edge-b"]}) == "edge-b"
 
@@ -308,6 +358,109 @@ def test_schedule_config_extractors_load_expected_knobs_and_config_files(monkeyp
         captured_paths.append(path)
         if path.endswith("scheduler_config.yaml"):
             return {"fps": [5, 10], "resolution": ["480p", "720p"], "buffer_size": [1, 2], "qp": [20, 28]}
+        if path.endswith("config.yaml") and not path.endswith("scheduler_config.yaml"):
+            return {
+                "default_profile": "offloading_warmup",
+                "mode": "train",
+                "device": "cpu",
+                "seed": 42,
+                "encoder": {
+                    "embedding_dim": 64,
+                    "logical_heads": 4,
+                    "physical_role_count": 2,
+                    "physical_role_embedding_dim": 8,
+                    "dropout": 0.0,
+                },
+                "timing": {"deployment_interval_s": 10.0, "offloading_interval_s": 1.0},
+                "training": {
+                    "stage": "offloading_warmup",
+                    "total_updates": 300,
+                    "ppo_epochs": 4,
+                    "rollout": {
+                        "deployment": 8,
+                        "offloading": 32,
+                    },
+                    "batch_size": {
+                        "deployment": 4,
+                        "offloading": 16,
+                    },
+                },
+                "state": {
+                    "max_buffer_size": 2048,
+                    "sequence_length": {
+                        "deployment": 16,
+                        "offloading": 8,
+                    },
+                    "min_dynamic_length": 2,
+                    "wait_timeout_s": 1.0,
+                    "require_full_sequence": False,
+                    "deployment_reward_window": 10,
+                    "latency_slo_s": 1.0,
+                },
+                "checkpoint": {
+                    "root_dir": "scheduler/hedger/model",
+                    "load": {
+                        "enabled": False,
+                        "which": "latest",
+                        "restore": {
+                            "encoder": True,
+                            "deployment_agent": True,
+                            "offloading_agent": True,
+                            "optimizer": True,
+                        },
+                    },
+                    "save": {
+                        "interval_updates": 20,
+                        "latest": True,
+                        "final": True,
+                        "history": True,
+                        "keep_last": 3,
+                    },
+                },
+                "agents": {
+                    "deployment": {
+                        "actor_lr": 3e-4,
+                        "critic_lr": 1e-3,
+                        "gamma": 0.99,
+                        "lamda": 0.95,
+                        "clip_eps": 0.2,
+                        "update_encoder": True,
+                        "reward": {"offloading_weight": 1.0, "change_cost_weight": 0.1},
+                        "penalty": {"capacity_relax": 1.0},
+                    },
+                    "offloading": {
+                        "actor_lr": 3e-4,
+                        "critic_lr": 1e-3,
+                        "gamma": 0.99,
+                        "lamda": 0.95,
+                        "clip_eps": 0.2,
+                        "update_encoder": True,
+                        "reward": {"latency_weight": 1.0, "slo_weight": 2.0, "cloud_weight": 0.2},
+                        "penalty": {"switch": 0.05, "correction": 0.1},
+                    },
+                },
+                "profiles": {
+                    "offloading_warmup": {
+                        "mode": "train",
+                        "training": {"stage": "offloading_warmup"},
+                        "checkpoint": {"load": {"enabled": False}},
+                    },
+                    "inference": {
+                        "mode": "inference",
+                        "training": None,
+                        "checkpoint": {
+                            "load": {
+                                "enabled": True,
+                                "from_stage": "joint_finetune",
+                                "which": "final",
+                                "restore": {
+                                    "optimizer": False,
+                                },
+                            },
+                        },
+                    },
+                },
+            }
         return {"loaded_from": path}
 
     for module in (
@@ -336,9 +489,27 @@ def test_schedule_config_extractors_load_expected_knobs_and_config_files(monkeyp
     assert scheduler.drl_params == {"loaded_from": "/runtime/scheduler/casva/drl.yaml"}
     assert scheduler.hyper_params == {"loaded_from": "/runtime/scheduler/casva/hyper.yaml"}
 
-    config_extraction_module.HedgerConfigExtraction("network.yaml", "hyper.yaml", "agent.yaml")(scheduler)
-    assert scheduler.network_params == {"loaded_from": "/runtime/scheduler/hedger/network.yaml"}
-    assert scheduler.agent_params == {"loaded_from": "/runtime/scheduler/hedger/agent.yaml"}
+    config_extraction_module.HedgerConfigExtraction(
+        config="config.yaml",
+        profile="inference",
+        overrides={
+            "seed": 7,
+            "agents": {"offloading": {"actor_lr": 1e-4}},
+        },
+    )(scheduler)
+    assert scheduler.hedger_config["mode"] == "inference"
+    assert scheduler.hedger_config["training"] is None
+    assert scheduler.hedger_config["checkpoint"]["load"]["enabled"] is True
+    assert scheduler.hedger_config["checkpoint"]["load"]["from_stage"] == "joint_finetune"
+    assert scheduler.hedger_config["checkpoint"]["load"]["which"] == "final"
+    assert scheduler.hedger_config["checkpoint"]["load"]["restore"]["optimizer"] is False
+    assert scheduler.hedger_config["checkpoint"]["save"]["latest"] is True
+    assert scheduler.hedger_config["checkpoint"]["save"]["final"] is True
+    assert scheduler.hedger_config["checkpoint"]["save"]["history"] is True
+    assert scheduler.hedger_config["checkpoint"]["save"]["keep_last"] == 3
+    assert scheduler.hedger_config["seed"] == 7
+    assert scheduler.hedger_config["agents"]["deployment"]["actor_lr"] == pytest.approx(3e-4)
+    assert scheduler.hedger_config["agents"]["offloading"]["actor_lr"] == pytest.approx(1e-4)
 
     config_extraction_module.HEIConfigExtraction("drl.yaml", "hyper.yaml")(scheduler)
     assert scheduler.monotonic_schedule_knobs == ["resolution", "fps", "buffer_size"]

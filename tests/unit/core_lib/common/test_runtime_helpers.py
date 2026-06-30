@@ -622,6 +622,74 @@ def test_http_request_handles_success_redirects_and_failures(monkeypatch):
 
 
 @pytest.mark.unit
+def test_http_request_retries_transient_failures(monkeypatch):
+    class FakeResponse:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload
+            self.content = b""
+            self.url = "http://service"
+
+        def json(self):
+            return self._payload
+
+    responses = iter([
+        network_client_module.requests.exceptions.Timeout("slow"),
+        FakeResponse(200, payload={"ok": True}),
+    ])
+    request_calls = []
+
+    def timeout_then_success(**kwargs):
+        request_calls.append(kwargs)
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(network_client_module.requests, "request", timeout_then_success)
+    assert http_request("http://service", retry=2) == {"ok": True}
+    assert len(request_calls) == 2
+
+    responses = iter([
+        FakeResponse(503),
+        FakeResponse(200, payload={"recovered": True}),
+    ])
+    request_calls.clear()
+    sleep_calls = []
+    monkeypatch.setattr(network_client_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(network_client_module.requests, "request", timeout_then_success)
+
+    assert http_request("http://service", retry=2, retry_interval=0.25) == {"recovered": True}
+    assert len(request_calls) == 2
+    assert sleep_calls == [0.25]
+
+    responses = iter([
+        FakeResponse(409),
+        FakeResponse(200, payload={"custom": True}),
+    ])
+    request_calls.clear()
+    assert http_request("http://service", retry=2, retry_status_codes="409") == {"custom": True}
+    assert len(request_calls) == 2
+
+
+@pytest.mark.unit
+def test_http_request_does_not_retry_non_retryable_status(monkeypatch):
+    class FakeResponse:
+        status_code = 404
+        url = "http://service"
+
+    request_calls = []
+    monkeypatch.setattr(
+        network_client_module.requests,
+        "request",
+        lambda **kwargs: request_calls.append(kwargs) or FakeResponse(),
+    )
+
+    assert http_request("http://service", retry=3) is None
+    assert len(request_calls) == 1
+
+
+@pytest.mark.unit
 def test_health_checker_and_node_info_cover_cluster_lookup_and_caching(monkeypatch):
     api_calls = {"list_node": 0, "list_namespaced_pod": 0}
 

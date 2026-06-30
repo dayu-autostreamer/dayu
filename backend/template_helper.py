@@ -6,7 +6,7 @@ import uuid
 
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant, NameMaintainer
+from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant, NameMaintainer, Context
 from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
@@ -75,8 +75,7 @@ class TemplateHelper:
                                    'targetPort': node_port['port']}}
             )
             template['env'].extend([
-                {'name': 'GUNICORN_PORT', 'value': str(node_port['port'])},
-                {'name': 'FILE_PREFIX', 'value': str(file_prefix)}
+                {'name': 'GUNICORN_PORT', 'value': str(node_port['port'])}
             ])
             template['ports'] = [{'containerPort': node_port['port']}]
 
@@ -98,68 +97,53 @@ class TemplateHelper:
             'containers': [edge_template]
         }
 
+        cloud_mount_files, edge_mount_files = self.resolve_file_mount(file_mount, file_prefix)
         if pos == 'cloud':
-            files_cloud = [self.prepare_file_path(file['path'])
-                           for file in file_mount if file['pos'] in ('cloud', 'both')] \
-                if file_mount else []
-            files_cloud.append(self.prepare_file_path('temp/'))
-
             template_doc['spec'].update({
                 'cloudWorker': {
                     'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_cloud}}),
+                    'mounts': cloud_mount_files,
                 }
             })
         elif pos == 'edge':
-            files_edge = [self.prepare_file_path(file['path'])
-                          for file in file_mount if file['pos'] in ('edge', 'both')] \
-                if file_mount else []
-            files_edge.append(self.prepare_file_path('temp/'))
-
             template_doc['spec'].update({
                 'edgeWorker': [{
                     'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_edge}}),
+                    'mounts': edge_mount_files,
                 }]
             })
         elif pos == 'both':
-            files_cloud = [self.prepare_file_path(file['path'])
-                           for file in file_mount if file['pos'] in ('cloud', 'both')] \
-                if file_mount else []
-            files_cloud.append(self.prepare_file_path('temp/'))
-            files_edge = [self.prepare_file_path(file['path'])
-                          for file in file_mount if file['pos'] in ('edge', 'both')] \
-                if file_mount else []
-            files_edge.append(self.prepare_file_path('temp/'))
-
             template_doc['spec'].update({
                 'edgeWorker': [{
                     'template': {'spec': copy.deepcopy(edge_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_edge}}),
+                    'mounts': edge_mount_files,
                 }],
                 'cloudWorker': {
                     'template': {'spec': copy.deepcopy(cloud_template)},
                     'logLevel': {'level': log_level},
-                    **({'file': {'paths': files_cloud}}),
+                    'mounts': cloud_mount_files,
                 }
             })
         else:
-            assert None, f'Unknown position of {pos} (position in [cloud, edge, both]).'
+            raise ValueError(f"position of {pos} is illegal, only support cloud/edge/both.")
 
         return template_doc
 
-    def finetune_yaml_parameters(self, yaml_dict, source_deploy, scopes=None):
-        edge_nodes = self.get_all_selected_edge_nodes(yaml_dict)
+    def finetune_yaml_parameters(self, yaml_dict, source_deploy, scopes=None, current_docs=None):
         cloud_node = NodeInfo.get_cloud_node()
 
         docs_list = []
         if not scopes or 'generator' in scopes:
             docs_list.append(self.finetune_generator_yaml(yaml_dict['generator'], source_deploy))
+
+        edge_nodes = self.get_all_selected_edge_nodes(yaml_dict)
+        controller_edge_nodes = self.get_controller_target_edge_nodes(source_deploy, edge_nodes, cloud_node)
+
         if not scopes or 'controller' in scopes:
-            docs_list.append(self.finetune_controller_yaml(yaml_dict['controller'], edge_nodes, cloud_node))
+            docs_list.append(self.finetune_controller_yaml(yaml_dict['controller'], controller_edge_nodes, cloud_node))
         if not scopes or 'distributor' in scopes:
             docs_list.append(self.finetune_distributor_yaml(yaml_dict['distributor'], cloud_node))
         if not scopes or 'scheduler' in scopes:
@@ -167,7 +151,11 @@ class TemplateHelper:
         if not scopes or 'monitor' in scopes:
             docs_list.append(self.finetune_monitor_yaml(yaml_dict['monitor'], edge_nodes, cloud_node))
         if not scopes or 'processor' in scopes:
-            docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node, source_deploy))
+            if current_docs is None:
+                docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node, source_deploy))
+            else:
+                docs_list.extend(self.finetune_processor_yaml(yaml_dict['processor'], cloud_node, source_deploy,
+                                                              current_docs=current_docs, ))
 
         return docs_list
 
@@ -316,7 +304,116 @@ class TemplateHelper:
 
         return yaml_doc
 
-    def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy):
+    def get_controller_target_edge_nodes(self, source_deploy, base_edge_nodes, cloud_node):
+        controller_edge_nodes = list(dict.fromkeys(base_edge_nodes or []))
+        for source_info in source_deploy or []:
+            source = source_info.get('source') or {}
+            selected_source_node = source.get('source_device')
+            if not selected_source_node or selected_source_node == cloud_node:
+                continue
+            if selected_source_node not in controller_edge_nodes:
+                controller_edge_nodes.append(selected_source_node)
+
+        return controller_edge_nodes
+
+    @staticmethod
+    def get_processor_service_name(doc):
+        if not isinstance(doc, dict):
+            return None
+
+        spec = doc.get('spec', {})
+        edge_workers = spec.get('edgeWorker') or []
+        worker_templates = list(edge_workers)
+        if spec.get('cloudWorker'):
+            worker_templates.append(spec['cloudWorker'])
+
+        for worker in worker_templates:
+            containers = worker.get('template', {}).get('spec', {}).get('containers', [])
+            for container in containers:
+                for env_item in container.get('env', []):
+                    if env_item.get('name') != 'PROCESSOR_SERVICE_NAME':
+                        continue
+                    service_name = env_item.get('value')
+                    if not service_name:
+                        continue
+                    return service_name[len('processor-'):] if service_name.startswith('processor-') else service_name
+
+        metadata_name = doc.get('metadata', {}).get('name', '')
+        if not metadata_name.startswith('processor-'):
+            return None
+
+        service_name = metadata_name[len('processor-'):]
+        edge_nodes = []
+        for worker in edge_workers:
+            node_name = worker.get('template', {}).get('spec', {}).get('nodeName')
+            if node_name:
+                edge_nodes.append(node_name)
+
+        if len(edge_nodes) == 1:
+            node_suffix = f"-{NameMaintainer.standardize_device_name(edge_nodes[0])}"
+            if service_name.endswith(node_suffix):
+                service_name = service_name[:-len(node_suffix)]
+
+        return service_name
+
+    def extract_current_processor_deployment(self, docs_list):
+        deployment_plan = {}
+        if not docs_list:
+            return deployment_plan
+
+        for doc in docs_list:
+            if not isinstance(doc, dict):
+                continue
+
+            edge_workers = doc.get('spec', {}).get('edgeWorker') or []
+            if not edge_workers:
+                continue
+
+            service_name = self.get_processor_service_name(doc)
+            if not service_name:
+                continue
+
+            selected_nodes = deployment_plan.setdefault(service_name, [])
+            for worker in edge_workers:
+                node_name = worker.get('template', {}).get('spec', {}).get('nodeName')
+                if node_name and node_name not in selected_nodes:
+                    selected_nodes.append(node_name)
+
+        return deployment_plan
+
+    @staticmethod
+    def normalize_deployment_plan(deployment_plan, source_deploy):
+        """Normalize scheduler plans to {service_name: [edge_node, ...]}."""
+        if not isinstance(deployment_plan, dict):
+            return None
+
+        service_names = set()
+        edge_nodes = set()
+        for source_info in source_deploy or []:
+            edge_nodes.update(source_info.get('node_set') or [])
+            for service_name in (source_info.get('dag') or {}).keys():
+                if service_name != TaskConstant.START.value:
+                    service_names.add(service_name)
+
+        normalized_plan = {}
+        for key, value in deployment_plan.items():
+            values = list(value) if isinstance(value, (list, tuple, set)) else [value]
+            if key in service_names:
+                selected_nodes = normalized_plan.setdefault(key, [])
+                for node_name in values:
+                    if node_name in edge_nodes and node_name not in selected_nodes:
+                        selected_nodes.append(node_name)
+            elif key in edge_nodes:
+                for service_name in values:
+                    if service_name not in service_names:
+                        continue
+                    selected_nodes = normalized_plan.setdefault(service_name, [])
+                    if key not in selected_nodes:
+                        selected_nodes.append(key)
+
+        return normalized_plan
+
+    def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy, current_docs=None):
         """Generate processor CRs with fine-grained units.
 
         For each logical processor service we generate:
@@ -330,6 +427,8 @@ class TemplateHelper:
         service-level queries by prefix still work.
         """
         deployment_plan = self.request_deployment_decision(source_deploy)
+        current_deployment_plan = self.extract_current_processor_deployment(
+            current_docs) if current_docs is not None else None
         yaml_docs = []
 
         for service_id, service_info in service_dict.items():
@@ -339,12 +438,24 @@ class TemplateHelper:
             # Original candidate edge nodes from DAG / services config
             edge_nodes = service_info['node']
 
-            # Apply scheduler's deployment decision if available
-            if service_name in deployment_plan:
-                # Intersect with original edge_nodes to avoid unexpected nodes
-                edge_nodes = list(set(deployment_plan[service_name]) & set(edge_nodes))
+            # Apply scheduler's deployment decision if available.
+            if deployment_plan is not None and service_name in deployment_plan:
+                # Intersect with original edge_nodes to avoid unexpected nodes.
+                selected_nodes = set(deployment_plan[service_name])
+                edge_nodes = [node for node in edge_nodes if node in selected_nodes]
             else:
-                LOGGER.warning(f"Using default service plan for service '{service_id}'.")
+                if current_deployment_plan is not None:
+                    edge_nodes = current_deployment_plan.get(service_name, [])
+                    LOGGER.warning(
+                        f"Scheduler redeployment plan unavailable or missed service '{service_name}', "
+                        f"keep current deployment: {edge_nodes}."
+                    )
+                else:
+                    edge_nodes = []
+                    LOGGER.warning(
+                        f"Scheduler initial deployment plan unavailable or missed service '{service_name}', "
+                        "deploy processor on cloud only."
+                    )
 
             # Cloud-only CR
             # Create cloudWorker CR (processor must be deployed on cloud node)
@@ -456,9 +567,90 @@ class TemplateHelper:
         full_image = f"{registry}/{repository}/{image_name}:{tag}"
         return full_image
 
-    def prepare_file_path(self, file_path: str) -> str:
-        file_prefix = self.load_base_info()['default-file-mount-prefix']
-        return os.path.join(file_prefix, file_path, "")
+    def resolve_file_mount(self, mount_files, file_prefix=''):
+        cloud_mount_files = []
+        edge_mount_files = []
+
+        for file_config in mount_files or []:
+            mount_config = {}
+
+            if 'pos' not in file_config:
+                raise ValueError(f"pos is required for file-mount config, but not found in {file_config}.")
+            if 'path' not in file_config:
+                raise ValueError(f"path is required for file-mount config, but not found in {file_config}.")
+
+            if 'name' in file_config:
+                mount_config['name'] = file_config['name']
+            source_path_type = file_config.get('type', 'Directory')
+            if source_path_type not in ['Directory', 'DirectoryOrCreate', 'File', 'FileOrCreate',
+                                        'Socket', 'CharDevice', 'BlockDevice']:
+                raise ValueError(f'Type "{source_path_type}" for file-mount config is illegal, only support Directory '
+                                 f'| DirectoryOrCreate | File | FileOrCreate | Socket | CharDevice | BlockDevice')
+            mount_config['source'] = {
+                'type': 'hostPath',
+                'hostPath': {
+                    'path': file_config['path'],
+                    'pathType': source_path_type,
+                    'prefix': file_prefix,
+                }
+            }
+
+            target = {}
+            if 'target_path' in file_config:
+                if not os.path.isabs(file_config['target_path']):
+                    raise ValueError(f"target_path '{file_config['target_path']}' in "
+                                     f"file-mount config should be absolute.")
+                target['path'] = file_config['target_path']
+            if 'read_only' in file_config:
+                target['readOnly'] = file_config['read_only']
+            if 'sub_path' in file_config:
+                target['subPath'] = file_config['sub_path']
+            if 'mount_propagation' in file_config:
+                target['mountPropagation'] = file_config['mount_propagation']
+            mount_config['target'] = target
+
+            if 'containers' in file_config:
+                mount_config['containers'] = file_config['containers']
+            if 'env_name' in file_config:
+                mount_config['envName'] = file_config['env_name']
+
+            if file_config['pos'] == 'cloud':
+                cloud_mount_files.append(copy.deepcopy(mount_config))
+            elif file_config['pos'] == 'edge':
+                edge_mount_files.append(copy.deepcopy(mount_config))
+            elif file_config['pos'] == 'both':
+                cloud_mount_files.append(copy.deepcopy(mount_config))
+                edge_mount_files.append(copy.deepcopy(mount_config))
+            else:
+                raise ValueError(f"pos of file-mount should be cloud/edge/both, not {file_config['pos']}.")
+
+        if cloud_mount_files and 'path' not in cloud_mount_files[0]['target'] and 'envName' not in cloud_mount_files[0]:
+            cloud_mount_files[0]['envName'] = 'DEFAULT_MOUNT_PATH'
+        if edge_mount_files and 'path' not in edge_mount_files[0]['target'] and 'envName' not in edge_mount_files[0]:
+            edge_mount_files[0]['envName'] = 'DEFAULT_MOUNT_PATH'
+
+        temp_config = self.resolve_temporary_file_mount(file_prefix)
+        cloud_mount_files.append(copy.deepcopy(temp_config))
+        edge_mount_files.append(copy.deepcopy(temp_config))
+
+        return cloud_mount_files, edge_mount_files
+
+    def resolve_temporary_file_mount(self, file_prefix=''):
+        return {
+            'name': 'temporary-directory',
+            'source': {
+                'type': 'hostPath',
+                'hostPath': {
+                    'path': 'temp/',
+                    'pathType': 'DirectoryOrCreate',
+                    'prefix': file_prefix,
+                }
+            },
+            'target': {
+                'path': '/temp'
+            },
+            'envName': 'TEMP_PATH'
+        }
 
     def request_source_selection_decision(self, source_deploy):
         scheduler_hostname = NodeInfo.get_cloud_node()
@@ -490,13 +682,23 @@ class TemplateHelper:
                 "dag": DAG_ENV
             })
 
-        response = http_request(url=scheduler_address,
-                                method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODES,
-                                data={'data': json.dumps(params)},
-                                )
+        try:
+            response = http_request(url=scheduler_address,
+                                    method=NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODES,
+                                    data={'data': json.dumps(params)},
+                                    retry=3)
+        except Exception as e:
+            LOGGER.warning(f'[Source Node Selection] Error occurred while requesting scheduler: {str(e)}')
+            response = None
 
         if response is None:
             LOGGER.warning('[Source Node Selection] No response from scheduler.')
+            selection_plan = None
+        elif not isinstance(response, dict) or 'plan' not in response or response['plan'] is None:
+            LOGGER.warning('[Source Node Selection] Scheduler response missed selection plan.')
+            selection_plan = None
+        elif not isinstance(response['plan'], dict):
+            LOGGER.warning('[Source Node Selection] Scheduler response contained invalid selection plan.')
             selection_plan = None
         else:
             selection_plan = response['plan']
@@ -534,20 +736,33 @@ class TemplateHelper:
 
         if not self.check_is_redeployment():
             # initial deployment
-            response = http_request(url=initial_deployment_address,
-                                    method=NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT,
-                                    data={'data': json.dumps(params)})
+            scheduler_address = initial_deployment_address
+            request_method = NetworkAPIMethod.SCHEDULER_INITIAL_DEPLOYMENT
         else:
             # redeployment
-            response = http_request(url=redeployment_address,
-                                    method=NetworkAPIMethod.SCHEDULER_REDEPLOYMENT,
-                                    data={'data': json.dumps(params)})
+            scheduler_address = redeployment_address
+            request_method = NetworkAPIMethod.SCHEDULER_REDEPLOYMENT
+
+        try:
+            response = http_request(url=scheduler_address,
+                                    method=request_method,
+                                    data={'data': json.dumps(params)},
+                                    retry=3)
+        except Exception as e:
+            LOGGER.warning(f'[Service Deployment] Error occurred while requesting scheduler: {str(e)}')
+            response = None
 
         if response is None:
             LOGGER.warning('[Service Deployment] No response from scheduler.')
-            deployment_plan = {}
+            deployment_plan = None
+        elif not isinstance(response, dict) or 'plan' not in response or response['plan'] is None:
+            LOGGER.warning('[Service Deployment] Scheduler response missed deployment plan.')
+            deployment_plan = None
+        elif not isinstance(response['plan'], dict):
+            LOGGER.warning('[Service Deployment] Scheduler response contained invalid deployment plan.')
+            deployment_plan = None
         else:
-            deployment_plan = response['plan']
+            deployment_plan = self.normalize_deployment_plan(response['plan'], source_deploy)
 
         return deployment_plan
 
@@ -570,7 +785,7 @@ class TemplateHelper:
 
     @staticmethod
     def get_all_selected_edge_nodes(yaml_dict):
-        service_dict = yaml_dict['processor']
+        service_dict = yaml_dict.get('processor', {})
         edge_nodes = set()
         for service_id in service_dict:
             edge_nodes.update(service_dict[service_id]['node'])

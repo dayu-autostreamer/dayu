@@ -1,0 +1,105 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: hedger
+    # Flat ablation inference:
+    # one joint PPO policy decides deployment and offloading together.
+    - name: SCH_CONFIG_EXTRACTION_PARAMETERS
+      value: >
+        {
+          'config':'hedger_config.yaml',
+          'profile':'inference',
+          'overrides':{
+            'device':'cuda:1',
+            'inference':{
+              'run_deployment_worker': True,
+              'run_offloading_worker': True,
+              'deployment_deterministic': True,
+              'offloading_deterministic': True
+            },
+            'checkpoint':{
+              'root_dir':'hedger_flat_model',
+              'load':{
+                'enabled': True,
+                'from_stage':'joint_finetune',
+                'which':'latest',
+                'restore':{
+                  'encoder': True,
+                  'deployment_agent': True,
+                  'offloading_agent': True,
+                  'optimizer': False
+                },
+                'reset_stage_counters': True
+              }
+            }
+          }
+        }
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'scope': 'all_edge_nodes',
+          'fixed_value': 'edgex1',
+          'fixed_type': 'hostname'
+        }
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: hedger-flat
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'deployment':{
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
+            "exposure-identification": ["edgexn11", "edgexn12"]
+          }
+        }
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: hedger-flat
+    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'deployment':{
+            "vehicle-detection": ["edge5"],
+            "pedestrian-detection": ["edge5", "edgexn11"],
+            "category-identification": ["edgexn11", "edgexn13"],
+            "license-plate-recognition": ["edgexn12", "edgexn13"],
+            "exposure-identification": ["edgexn11", "edgexn12"]
+          }
+        }
+    - name: SCH_AGENT_NAME
+      value: hedger-flat
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'configuration':{
+            'resolution': '720p',
+            'fps': 6,
+            'encoding': 'mp4v',
+            'buffer_size': 2
+          },
+          'offloading':{
+            'pedestrian-detection':'edge5',
+            'exposure-identification':'edgexn12',
+            'vehicle-detection':'edge5',
+            'category-identification':'edgexn13',
+            'license-plate-recognition':'edgexn12'
+          }
+        }
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/hedger-flat/'

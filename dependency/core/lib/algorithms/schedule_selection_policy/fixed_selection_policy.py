@@ -9,7 +9,7 @@ __all__ = ('FixedSelectionPolicy',)
 
 @ClassFactory.register(ClassType.SCH_SELECTION_POLICY, alias='fixed')
 class FixedSelectionPolicy(BaseSelectionPolicy, abc.ABC):
-    def __init__(self, system, agent_id, fixed_value=0, fixed_type="position", scope='node_set'):
+    def __init__(self, system, agent_id, fixed_value=0, fixed_type="position", scope='selected_edge_nodes'):
         super().__init__(system=system, agent_id=agent_id, scope=scope)
         self.fixed_value = fixed_value
         self.fixed_type = fixed_type

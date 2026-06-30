@@ -8,7 +8,7 @@ pod-template:
     - name: ROI_CLASSIFIER_PARAMETERS
       value: >
         {
-          'trt_weights':'yolov8s-cls.engine', 
+          'trt_weights':'yolov8s-cls.engine',
           'trt_plugin_library':'libmyplugins.so',
           'non_trt_weights':'yolov8s-cls.pt',
           'device':0

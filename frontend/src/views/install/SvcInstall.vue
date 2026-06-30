@@ -1,109 +1,155 @@
 <template>
-	<div>
-		<div>
-			<h3>Scheduler Policy</h3>
-		</div>
-		<div>
-			<el-select style="width: 100%" v-model="selectedPolicyIndex" placeholder="Please choose scheduler policy">
-				<template v-for="(option, index) in policyOptions" :key="index">
-					<el-option v-if="isValidIndex(index, policyOptions)" :value="index" :label="option.policy_name" />
-				</template>
-			</el-select>
-		</div>
-	</div>
-
-	<br />
-
-	<div>
-		<div>
-			<h3>DataSource Configuration</h3>
-		</div>
-		<div>
+	<div class="install-panel">
+		<div class="panel-header">
 			<div>
+				<h3>Application Installation</h3>
+			</div>
+
+			<div class="panel-actions">
+				<el-button round plain @click="refreshOptions">
+					<el-icon><RefreshRight /></el-icon>
+					Refresh
+				</el-button>
+			</div>
+		</div>
+
+		<div class="selection-grid">
+			<section class="selector-card">
+				<div class="selector-card__label">Scheduler Policy</div>
+				<el-select v-model="selectedPolicyIndex" placeholder="Choose scheduler policy" class="selector-card__control">
+					<template v-for="(option, index) in policyOptions" :key="index">
+						<el-option v-if="isValidIndex(index, policyOptions)" :value="index" :label="option.policy_name" />
+					</template>
+				</el-select>
+			</section>
+
+			<section class="selector-card">
+				<div class="selector-card__label">Datasource Configuration</div>
 				<el-select
-					style="width: 100%"
 					v-model="selectedDatasourceIndex"
 					@change="handleDatasourceChange"
-					placeholder="Please choose datasource config"
+					placeholder="Choose datasource configuration"
+					class="selector-card__control"
 				>
 					<template v-for="(option, index) in datasourceOptions" :key="index">
 						<el-option v-if="isValidIndex(index, datasourceOptions)" :value="index" :label="option.source_name" />
 					</template>
 				</el-select>
+			</section>
+		</div>
+
+		<section v-if="selectedSources.length" class="mapping-section">
+			<div class="section-heading">
+				<div class="section-heading__title">Source Mapping</div>
+			</div>
+
+			<div class="source-grid">
+				<article
+					v-for="(source, index) in selectedSources"
+					:key="`${source.id}-${source.name}`"
+					class="source-card"
+					:class="{ 'is-ready': isSourceReady(source) }"
+				>
+					<div class="source-card__header">
+						<div class="source-card__title-group">
+							<div class="source-card__title">Source {{ source.id }}</div>
+							<div class="source-card__subtitle">{{ source.name }}</div>
+						</div>
+					</div>
+
+					<div class="field-stack">
+						<div class="field-block">
+							<div class="field-block__label">Dag</div>
+							<el-select
+								v-model="source.dag_selected"
+								@change="updateDagSelection(index, source.dag_selected)"
+								placeholder="Assign dag"
+								class="field-block__control"
+							>
+								<template v-for="(option, dagIndex) in dagOptions" :key="dagIndex">
+									<el-option v-if="isValidIndex(dagIndex, dagOptions)" :label="option.dag_name" :value="option.dag_id" />
+								</template>
+							</el-select>
+						</div>
+
+						<div class="field-block">
+							<div class="field-block__label">Edge Nodes</div>
+							<el-select
+								v-model="source.node_selected"
+								@change="updateNodeSelection(index, source.node_selected)"
+								placeholder="Bind edge nodes"
+								class="field-block__control"
+								multiple
+							>
+								<template v-for="(option, nodeIndex) in nodeOptions" :key="nodeIndex">
+									<el-option v-if="isValidIndex(nodeIndex, nodeOptions)" :label="option.name" :value="option.name" />
+								</template>
+							</el-select>
+						</div>
+					</div>
+
+					<div class="source-card__footer">
+						<div class="source-card__footer-text">
+							{{ source.node_selected?.length || 0 }} node{{ (source.node_selected?.length || 0) === 1 ? '' : 's' }} bound
+						</div>
+						<div class="source-card__footer-actions">
+							<button type="button" class="mini-link" @click="assignAllNodesForSource(index)" :disabled="!nodeOptions.length">All</button>
+							<button type="button" class="mini-link" @click="clearNodesForSource(index)" :disabled="!(source.node_selected?.length)">Clear</button>
+						</div>
+					</div>
+				</article>
+			</div>
+		</section>
+
+		<div v-else class="empty-state">
+			<el-icon class="empty-state__icon"><Connection /></el-icon>
+			<div class="empty-state__title">No sources to map</div>
+		</div>
+
+		<div class="action-bar">
+			<div class="builder-buttons">
+				<el-button
+					type="primary"
+					round
+					native-type="submit"
+					:loading="loading"
+					:disabled="installed === 'install'"
+					@click="submitService"
+				>
+					<el-icon><Promotion /></el-icon>
+					Install
+				</el-button>
+
+				<el-button round @click="handleClear">Clear</el-button>
 			</div>
 		</div>
-	</div>
-
-	<br />
-
-	<div>
-		<div v-for="(source, index) in selectedSources" :key="index" style="margin-top: 10px">
-			<div>
-				<h2>source {{ source.id }}: {{ source.name }}</h2>
-			</div>
-			<el-select
-				style="width: 38%; margin-top: 20px"
-				v-model="source.dag_selected"
-				@change="updateDagSelection(index, source, source.dag_selected)"
-				placeholder="Assign dag"
-			>
-				<template v-for="(option, index) in dagOptions" :key="index">
-					<el-option v-if="isValidIndex(index, dagOptions)" :label="option.dag_name" :value="option.dag_id"></el-option>
-				</template>
-			</el-select>
-
-			<el-select
-				style="width: 58%; margin-top: 20px; margin-left: 4%"
-				v-model="source.node_selected"
-				@change="updateNodeSelection(index, source, source.node_selected)"
-				placeholder="Bind edge nodes"
-				multiple
-			>
-				<template v-for="(option, index) in nodeOptions" :key="index">
-					<el-option v-if="isValidIndex(index, nodeOptions)" :label="option.name" :value="option.name"></el-option>
-				</template>
-			</el-select>
-		</div>
-	</div>
-
-	<div style="text-align: center">
-		<el-button
-			type="primary"
-			round
-			native-type="submit"
-			:loading="loading"
-			:disabled="installed === 'install'"
-			style="margin-top: 25px"
-			@click="submitService"
-			>Install
-		</el-button>
-
-		<el-button type="danger" round style="margin-top: 25px; margin-left: 10px" @click="handleClear">Clear </el-button>
 	</div>
 </template>
 
 <script>
 import { ElButton, ElMessage } from 'element-plus';
-
+import { Connection, Promotion, RefreshRight } from '@element-plus/icons-vue';
 import axios from 'axios';
-import { useInstallStateStore } from '/@/stores/installState';
 import { onMounted, ref, watch } from 'vue';
+import { useInstallStateStore } from '/@/stores/installState';
+
+const INSTALL_STATE_KEY = 'savedInstallConfig';
+const DRAFT_STATE_KEY = 'savedDraftConfig';
+const INSTALL_CHANGED_EVENT = 'dayu-install-changed';
 
 export default {
 	components: {
 		ElButton,
+		Connection,
+		Promotion,
+		RefreshRight,
 	},
 	data() {
 		return {
-			successMessage: '',
-			// installed: install_state.status
-			stageMessage: null,
 			loading: false,
 		};
 	},
 	setup() {
-		const INSTALL_STATE_KEY = 'savedInstallConfig';
-		const DRAFT_STATE_KEY = 'savedDraftConfig';
 		const LENGTH_KEYS = {
 			policy: 'prev_len:policy',
 			datasource: 'prev_len:datasource',
@@ -114,27 +160,26 @@ export default {
 		const selectedPolicyIndex = ref(null);
 		const selectedDatasourceIndex = ref(null);
 		const selectedSources = ref([]);
-
-		const install_state = useInstallStateStore();
-		const installed = ref(null);
+		const installed = ref('uninstall');
 		const policyOptions = ref([]);
 		const datasourceOptions = ref([]);
 		const dagOptions = ref([]);
 		const nodeOptions = ref([]);
+		const install_state = useInstallStateStore();
 
-		const isValidIndex = (index, array) => {
-			return (
-				Number.isSafeInteger(index) &&
-				index >= 0 &&
-				Array.isArray(array) &&
-				index < array.length &&
-				array.hasOwnProperty(index)
-			);
+		const isValidIndex = (index, array) =>
+			Number.isSafeInteger(index) && index >= 0 && Array.isArray(array) && index < array.length && Object.prototype.hasOwnProperty.call(array, index);
+
+		const safeClone = (value) => {
+			try {
+				return JSON.parse(JSON.stringify(value));
+			} catch {
+				return null;
+			}
 		};
 
-		const loadStorage = () => {
+		const loadStorage = (key) => {
 			try {
-				const key = installed.value === 'install' ? INSTALL_STATE_KEY : DRAFT_STATE_KEY;
 				const data = localStorage.getItem(key);
 				return data ? JSON.parse(data) : null;
 			} catch (error) {
@@ -143,396 +188,456 @@ export default {
 			}
 		};
 
-		const updateStorage = (configuration) => {
+		const saveStorage = (key, value) => {
 			try {
-				const safeCopy = (obj) => {
-					try {
-						return JSON.parse(JSON.stringify(obj));
-					} catch {
-						return null;
-					}
-				};
-
-				const currentConfig = {
-					selectedPolicyIndex: configuration.selectedPolicyIndex ?? null,
-					selectedDatasourceIndex: configuration.selectedDatasourceIndex ?? null,
-					selectedSources: safeCopy(configuration.selectedSources) || [],
-				};
-
-				const key = installed.value === 'install' ? INSTALL_STATE_KEY : DRAFT_STATE_KEY;
-				localStorage.setItem(key, JSON.stringify(currentConfig));
+				localStorage.setItem(key, JSON.stringify(value));
 			} catch (error) {
-				console.error('Fail to update storage', error);
+				console.error('Fail to save storage', error);
 			}
 		};
 
-		const getTask = async () => {
-			try {
-				const response = await axios.get('/api/install_state');
-				installed.value = response.data['state'];
-			} catch (error) {
-				console.error('Fail to fetch install state', error);
-				ElMessage.error('Fail to fetch install state');
+		const createSourceSelections = (datasource, savedSources = []) => {
+			const savedById = new Map((savedSources || []).map((source) => [source.id, source]));
+			return (datasource?.source_list || []).map((source) => {
+				const saved = savedById.get(source.id) || {};
+				const dagSelected = dagOptions.value.some((dag) => dag.dag_id === saved.dag_selected) ? saved.dag_selected : '';
+				const nodeSelected = Array.isArray(saved.node_selected)
+					? saved.node_selected.filter((nodeName) => nodeOptions.value.some((node) => node.name === nodeName))
+					: [];
+
+				return {
+					...source,
+					dag_selected: dagSelected,
+					node_selected: nodeSelected,
+				};
+			});
+		};
+
+		const restoreSelections = () => {
+			const activeKey = installed.value === 'install' ? INSTALL_STATE_KEY : DRAFT_STATE_KEY;
+			const storedConfig = loadStorage(activeKey) || loadStorage(DRAFT_STATE_KEY) || loadStorage(INSTALL_STATE_KEY);
+
+			if (!storedConfig) {
+				selectedPolicyIndex.value = null;
+				selectedDatasourceIndex.value = null;
+				selectedSources.value = [];
+				return;
 			}
 
-			try {
-				const response = await axios.get('/api/policy');
-				if (response.data !== null) {
-					const received_policy = response.data;
-					const prevPL = localStorage.getItem(LENGTH_KEYS.policy);
-					if (prevPL && received_policy.length < prevPL) {
-						const config = loadStorage();
-						config.selectedPolicyIndex = null;
-						updateStorage(config);
-					}
-					policyOptions.value = response.data;
-					localStorage.setItem(LENGTH_KEYS.policy, received_policy.length);
-				}
-			} catch (error) {
-				console.error('Fail to fetch policy options', error);
-				ElMessage.error('Fail to fetch policy options');
-			}
+			selectedPolicyIndex.value = isValidIndex(storedConfig.selectedPolicyIndex, policyOptions.value)
+				? storedConfig.selectedPolicyIndex
+				: null;
 
-			try {
-				const response = await axios.get('/api/datasource');
-				if (response.data !== null) {
-					const received_datasource = response.data;
-					const prevDL = localStorage.getItem(LENGTH_KEYS.datasource);
-					if (prevDL && received_datasource.length < prevDL) {
-						const config = loadStorage();
-						config.selectedDatasourceIndex = null;
-						config.selectedSources = [];
-						updateStorage(config);
-					}
-					datasourceOptions.value = response.data;
-					localStorage.setItem(LENGTH_KEYS.datasource, received_datasource.length);
-				}
-			} catch (error) {
-				console.error('Fail to fetch datasource options', error);
-				ElMessage.error('Fail to fetch datasource options');
-			}
+			selectedDatasourceIndex.value = isValidIndex(storedConfig.selectedDatasourceIndex, datasourceOptions.value)
+				? storedConfig.selectedDatasourceIndex
+				: null;
 
-			try {
-				const response = await axios.get('/api/dag_workflow');
-				if (response.data !== null) {
-					const received_dag = response.data;
-					const prevDagL = localStorage.getItem(LENGTH_KEYS.dag);
-					if (prevDagL && received_dag.length < prevDagL) {
-						const config = loadStorage();
-						config.selectedSources = config.selectedSources.map((source) => ({
-							...source,
-							dag_selected: dagOptions.value.some((dag) => dag.dag_id === source.dag_selected)
-								? source.dag_selected
-								: '',
-						}));
-						updateStorage(config);
-					}
-					dagOptions.value = response.data;
-					localStorage.setItem(LENGTH_KEYS.dag, received_dag.length);
-				}
-			} catch (error) {
-				console.error('Fail to fetch dag options', error);
-				ElMessage.error('Fail to fetch dag options');
-			}
-
-			try {
-				const response = await axios.get('/api/edge_node');
-				if (response.data !== null) {
-					const received_node = response.data;
-					const prevNodeL = localStorage.getItem(LENGTH_KEYS.node);
-					if (prevNodeL && received_node.length < prevNodeL) {
-						const config = loadStorage();
-						config.selectedSources = selectedSources.map((source) => ({
-							...source,
-							node_selected: source.node_selected.filter((nodeName) =>
-								nodeOptions.value.some((node) => node.name === nodeName)
-							),
-						}));
-						updateStorage(config);
-					}
-					nodeOptions.value = response.data;
-					localStorage.setItem(LENGTH_KEYS.node, received_node.length);
-				}
-			} catch (error) {
-				console.error('Fail to fetch node options', error);
-				ElMessage.error('Fail to fetch node options');
-			}
-
-			if (installed.value === 'install') {
-				install_state.install();
-				const savedInstall = localStorage.getItem(INSTALL_STATE_KEY);
-				if (savedInstall) {
-					const parsed = JSON.parse(savedInstall);
-					if (isValidIndex(parsed.selectedPolicyIndex, policyOptions.value)) {
-						selectedPolicyIndex.value = parsed.selectedPolicyIndex;
-					} else {
-						selectedPolicyIndex.value = null;
-					}
-
-					if (isValidIndex(parsed.selectedDatasourceIndex, datasourceOptions.value)) {
-						selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
-
-						const datasource = datasourceOptions.value[parsed.selectedDatasourceIndex];
-						selectedSources.value = datasource.source_list.map((source) => ({
-							...source,
-							dag_selected: parsed.selectedSources.find((s) => s.id === source.id)?.dag_selected ?? '',
-							node_selected: parsed.selectedSources.find((s) => s.id === source.id)?.node_selected ?? [],
-						}));
-					} else {
-						selectedDatasourceIndex.value = null;
-						selectedSources.value = [];
-					}
-				}
+			if (selectedDatasourceIndex.value !== null) {
+				const datasource = datasourceOptions.value[selectedDatasourceIndex.value];
+				selectedSources.value = createSourceSelections(datasource, storedConfig.selectedSources);
 			} else {
-				install_state.uninstall();
-				const savedDraft = localStorage.getItem(DRAFT_STATE_KEY);
-				if (savedDraft) {
-					const parsed = JSON.parse(savedDraft);
-					selectedPolicyIndex.value = parsed.selectedPolicyIndex;
-					selectedDatasourceIndex.value = parsed.selectedDatasourceIndex;
-					selectedSources.value = parsed.selectedSources || [];
-				} else {
-					selectedPolicyIndex.value = null;
-					selectedDatasourceIndex.value = null;
-					selectedSources.value = [];
-				}
+				selectedSources.value = [];
 			}
 		};
+
+		const refreshOptions = async () => {
+			try {
+				const [installStateResponse, policyResponse, datasourceResponse, dagResponse, nodeResponse] = await Promise.all([
+					axios.get('/api/install_state'),
+					axios.get('/api/policy'),
+					axios.get('/api/datasource'),
+					axios.get('/api/dag_workflow'),
+					axios.get('/api/edge_node'),
+				]);
+
+				installed.value = installStateResponse.data.state;
+				if (installed.value === 'install') {
+					install_state.install();
+				} else {
+					install_state.uninstall();
+				}
+
+				policyOptions.value = Array.isArray(policyResponse.data) ? policyResponse.data : [];
+				datasourceOptions.value = Array.isArray(datasourceResponse.data) ? datasourceResponse.data : [];
+				dagOptions.value = Array.isArray(dagResponse.data) ? dagResponse.data : [];
+				nodeOptions.value = Array.isArray(nodeResponse.data) ? nodeResponse.data : [];
+
+				localStorage.setItem(LENGTH_KEYS.policy, policyOptions.value.length);
+				localStorage.setItem(LENGTH_KEYS.datasource, datasourceOptions.value.length);
+				localStorage.setItem(LENGTH_KEYS.dag, dagOptions.value.length);
+				localStorage.setItem(LENGTH_KEYS.node, nodeOptions.value.length);
+
+				restoreSelections();
+			} catch (error) {
+				console.error('Fail to refresh install options', error);
+				ElMessage.error('Fail to refresh install options');
+			}
+		};
+
+		watch(
+			[selectedPolicyIndex, selectedDatasourceIndex, selectedSources, installed],
+			([policyIdx, datasourceIdx, sources, installStatus]) => {
+				const payload = {
+					selectedPolicyIndex: isValidIndex(policyIdx, policyOptions.value) ? policyIdx : null,
+					selectedDatasourceIndex: isValidIndex(datasourceIdx, datasourceOptions.value) ? datasourceIdx : null,
+					selectedSources: safeClone(sources) || [],
+				};
+
+				if (installStatus === 'install') {
+					saveStorage(INSTALL_STATE_KEY, payload);
+				} else {
+					saveStorage(DRAFT_STATE_KEY, payload);
+				}
+			},
+			{ deep: true }
+		);
 
 		watch(
 			() => install_state.status,
 			(newValue, oldValue) => {
 				installed.value = newValue;
 				if (oldValue === 'install' && newValue === 'uninstall') {
-					localStorage.removeItem(INSTALL_STATE_KEY);
-				}
-				if (oldValue === 'uninstall' && newValue === 'install') {
-					const currentConfig = {
+					saveStorage(DRAFT_STATE_KEY, {
 						selectedPolicyIndex: selectedPolicyIndex.value,
 						selectedDatasourceIndex: selectedDatasourceIndex.value,
-						selectedSources: JSON.parse(JSON.stringify(selectedSources.value)),
-					};
-					localStorage.setItem(INSTALL_STATE_KEY, JSON.stringify(currentConfig));
-					localStorage.removeItem(DRAFT_STATE_KEY);
+						selectedSources: safeClone(selectedSources.value) || [],
+					});
+					localStorage.removeItem(INSTALL_STATE_KEY);
 				}
 			}
-		);
-		watch(
-			[selectedPolicyIndex, selectedDatasourceIndex, selectedSources],
-			([policyIdx, dsIdx, sources]) => {
-				if (!isValidIndex(policyIdx, policyOptions.value)) {
-					policyIdx = null;
-				}
-				if (!isValidIndex(dsIdx, datasourceOptions.value)) {
-					dsIdx = null;
-					sources = [];
-				}
-
-				if (installed.value === 'uninstall') {
-					const draftData = {
-						selectedPolicyIndex: policyIdx,
-						selectedDatasourceIndex: dsIdx,
-						selectedSources: JSON.parse(JSON.stringify(sources)),
-					};
-					localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(draftData));
-				}
-			},
-			{ deep: true }
 		);
 
 		onMounted(async () => {
-			getTask();
+			await refreshOptions();
 		});
 
 		return {
-			INSTALL_STATE_KEY,
 			DRAFT_STATE_KEY,
-
-			selectedPolicyIndex,
-			selectedDatasourceIndex,
-			selectedSources,
-
-			installed,
-			install_state,
-			policyOptions,
-			datasourceOptions,
+			INSTALL_CHANGED_EVENT,
+			INSTALL_STATE_KEY,
 			dagOptions,
-			nodeOptions,
-			getTask,
+			datasourceOptions,
+			install_state,
+			installed,
 			isValidIndex,
+			nodeOptions,
+			policyOptions,
+			refreshOptions,
+			selectedDatasourceIndex,
+			selectedPolicyIndex,
+			selectedSources,
 		};
 	},
 	methods: {
-		async updateDagSelection(index, source, selected) {
+		hasAssignedDag(source) {
+			return source?.dag_selected !== null && source?.dag_selected !== undefined && source?.dag_selected !== '';
+		},
+		isSourceReady(source) {
+			return this.hasAssignedDag(source) && Array.isArray(source?.node_selected) && source.node_selected.length > 0;
+		},
+		updateDagSelection(index, selected) {
 			this.selectedSources[index].dag_selected = selected;
 		},
-		async updateNodeSelection(index, source, selected) {
+		updateNodeSelection(index, selected) {
 			this.selectedSources[index].node_selected = selected;
 		},
-		async handleDatasourceChange() {
-			this.successMessage = '';
-
-			try {
-				const index = this.selectedDatasourceIndex;
-
-				if (!this.isValidIndex(index, this.datasourceOptions)) {
-					this.selectedDatasourceIndex = null;
-					this.selectedSources = [];
-					return;
-				}
-
-				if (index !== null && index >= 0 && index < this.datasourceOptions.length) {
-					const datasource = this.datasourceOptions[index];
-
-					this.selectedSources = datasource.source_list.map((source) => ({
-						...source,
-						dag_selected: '',
-						node_selected: [],
-					}));
-				} else {
-					console.error('Invalid selected index.');
-				}
-			} catch (error) {
-				console.error('Submission failed', error);
+		handleDatasourceChange() {
+			if (!this.isValidIndex(this.selectedDatasourceIndex, this.datasourceOptions)) {
+				this.selectedDatasourceIndex = null;
+				this.selectedSources = [];
+				return;
 			}
-		},
 
-		submitService() {
-			const policy_index = this.selectedPolicyIndex;
-			if (policy_index === null || policy_index < 0 || policy_index >= this.policyOptions.length) {
+			const datasource = this.datasourceOptions[this.selectedDatasourceIndex];
+			this.selectedSources = (datasource.source_list || []).map((source) => ({
+				...source,
+				dag_selected: '',
+				node_selected: [],
+			}));
+		},
+		assignAllNodesForSource(index) {
+			this.selectedSources[index].node_selected = this.nodeOptions.map((node) => node.name);
+		},
+		clearNodesForSource(index) {
+			this.selectedSources[index].node_selected = [];
+		},
+		async submitService() {
+			if (!this.isValidIndex(this.selectedPolicyIndex, this.policyOptions)) {
 				ElMessage.error('Please choose scheduler policy');
 				return;
 			}
 
-			const source_index = this.selectedDatasourceIndex;
-			if (source_index === null || source_index < 0 || source_index >= this.datasourceOptions.length) {
+			if (!this.isValidIndex(this.selectedDatasourceIndex, this.datasourceOptions)) {
 				ElMessage.error('Please choose datasource configuration');
 				return;
 			}
 
-			if (!this.isValidIndex(this.selectedPolicyIndex, this.policyOptions)) {
-				ElMessage.error('Invalid policy selection');
-				return;
-			}
-
-			if (!this.isValidIndex(this.selectedDatasourceIndex, this.datasourceOptions)) {
-				ElMessage.error('Invalid datasource selection');
-				return;
-			}
-
-			// Bind edge nodes must be selected for each source.
-			for (let i = 0; i < this.selectedSources.length; i++) {
-				const nodes = this.selectedSources[i]?.node_selected;
-				if (!Array.isArray(nodes) || nodes.length === 0) {
-					const sourceId = this.selectedSources[i]?.id ?? i;
-					const sourceName = this.selectedSources[i]?.name ?? '';
-					ElMessage.error(`Please bind edge nodes for source ${sourceId}${sourceName ? `: ${sourceName}` : ''}`);
+			for (let i = 0; i < this.selectedSources.length; i += 1) {
+				const source = this.selectedSources[i];
+				if (!this.hasAssignedDag(source)) {
+					ElMessage.error(`Please assign a dag for source ${source?.id ?? i}`);
+					return;
+				}
+				if (!Array.isArray(source?.node_selected) || source.node_selected.length === 0) {
+					ElMessage.error(`Please bind edge nodes for source ${source?.id ?? i}${source?.name ? `: ${source.name}` : ''}`);
 					return;
 				}
 			}
 
-			const source_config_label = this.datasourceOptions[source_index].source_label;
-			const policy_id = this.policyOptions[policy_index].policy_id;
-
-			// selectedSources contains all map info
-			const content = {
-				source_config_label: source_config_label,
-				policy_id: policy_id,
+			const payload = {
+				source_config_label: this.datasourceOptions[this.selectedDatasourceIndex].source_label,
+				policy_id: this.policyOptions[this.selectedPolicyIndex].policy_id,
 				source: this.selectedSources,
 			};
-			let task_info = JSON.stringify(content);
 
 			this.loading = true;
-			fetch('/api/install', {
-				method: 'POST',
-				body: task_info,
-			})
-				.then((response) => response.json())
-				.then((data) => {
-					const state = data.state;
-					let msg = data.msg;
-					this.loading = false;
-					if (state === 'success') {
-						this.install_state.install();
+			try {
+				const response = await fetch('/api/install', {
+					method: 'POST',
+					body: JSON.stringify(payload),
+				});
+				const data = await response.json();
 
-						const installConfig = {
+				if (data.state === 'success') {
+					this.install_state.install();
+					localStorage.setItem(
+						this.INSTALL_STATE_KEY,
+						JSON.stringify({
 							selectedPolicyIndex: this.selectedPolicyIndex,
 							selectedDatasourceIndex: this.selectedDatasourceIndex,
 							selectedSources: JSON.parse(JSON.stringify(this.selectedSources)),
-						};
-						localStorage.setItem(this.INSTALL_STATE_KEY, JSON.stringify(installConfig));
-						localStorage.removeItem(this.DRAFT_STATE_KEY);
+						})
+					);
+					localStorage.removeItem(this.DRAFT_STATE_KEY);
 
-						msg += '. Refreshing..';
-						ElMessage({
-							message: msg,
-							showClose: true,
-							type: 'success',
-							duration: 3000,
-						});
-						setTimeout(() => {
-							location.reload();
-						}, 3000);
-					} else {
-						ElMessage({
-							message: msg,
-							showClose: true,
-							type: 'error',
-							duration: 3000,
-						});
-					}
-				})
-				.catch((error) => {
-					this.loading = false;
-					ElMessage.error('Network Error', 3000);
-				});
+					ElMessage({
+						message: data.msg,
+						showClose: true,
+						type: 'success',
+						duration: 3000,
+					});
+					window.dispatchEvent(new Event(this.INSTALL_CHANGED_EVENT));
+					await this.refreshOptions();
+				} else {
+					ElMessage({
+						message: data.msg,
+						showClose: true,
+						type: 'error',
+						duration: 3000,
+					});
+				}
+			} catch (error) {
+				console.error('Submission failed', error);
+				ElMessage.error('Network Error');
+			} finally {
+				this.loading = false;
+			}
 		},
-
 		handleClear() {
 			this.selectedPolicyIndex = null;
 			this.selectedDatasourceIndex = null;
 			this.selectedSources = [];
-
 			localStorage.removeItem(this.INSTALL_STATE_KEY);
 			localStorage.removeItem(this.DRAFT_STATE_KEY);
-
-			this.getTask();
 		},
 	},
 };
 </script>
 
-<style scoped>
-body {
-	font-family: Arial, sans-serif;
-	background-color: #f9f9f9;
-	margin: 0;
+<style scoped lang="scss">
+.install-panel {
+	display: grid;
+	gap: 22px;
+}
+
+.panel-header,
+.section-heading,
+.action-bar,
+.source-card__header,
+.source-card__footer {
 	display: flex;
-	justify-content: center;
-	align-items: center;
-	height: 100vh;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 14px;
 }
 
-form {
-	max-width: 600px;
-	padding: 20px;
-	background-color: #fff;
-	border-radius: 8px;
-	/* box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1); */
+.panel-header h3 {
+	margin: 0;
+	font-size: 26px;
+	color: #0f172a;
 }
 
-h3 {
-	font-size: 24px;
-	color: #333;
-	margin-bottom: 20px;
+.panel-actions,
+.builder-buttons,
+.source-card__footer-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
 }
 
-.el-button {
+.selection-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 16px;
+}
+
+.selector-card,
+.mapping-section,
+.empty-state {
+	border-radius: 22px;
+	border: 1px solid #e2e8f0;
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 34%),
+		#ffffff;
+}
+
+.selector-card {
+	padding: 18px;
+	display: grid;
+	gap: 12px;
+}
+
+.selector-card__label,
+.section-heading__title {
+	font-size: 13px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: #475569;
+}
+
+.selector-card__control {
+	width: 100%;
+}
+
+.source-card__subtitle,
+.source-card__footer-text {
+	font-size: 13px;
+	line-height: 1.6;
+	color: #64748b;
+}
+
+.mapping-section {
+	padding: 18px;
+	display: grid;
+	gap: 16px;
+}
+
+.source-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+	gap: 14px;
+}
+
+.source-card {
+	display: grid;
+	gap: 14px;
+	padding: 16px;
+	border-radius: 18px;
+	border: 1px solid #dbe4ee;
+	background: #f8fafc;
+	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.source-card.is-ready {
+	border-color: #86efac;
+	background:
+		linear-gradient(135deg, rgba(34, 197, 94, 0.06), transparent 36%),
+		#f8fafc;
+}
+
+.source-card:hover {
+	border-color: #93c5fd;
+	box-shadow: 0 16px 36px rgba(37, 99, 235, 0.08);
+	transform: translateY(-1px);
+}
+
+.source-card__title-group,
+.field-stack,
+.field-block {
+	display: grid;
+	gap: 8px;
+	min-width: 0;
+}
+
+.source-card__title {
 	font-size: 16px;
-	margin-right: 10px;
+	font-weight: 700;
+	color: #0f172a;
 }
 
-.el-button:first-child {
-	margin-left: 0;
+.field-stack {
+	gap: 12px;
+}
+
+.field-block__label {
+	font-size: 12px;
+	font-weight: 700;
+	color: #475569;
+}
+
+.field-block__control {
+	width: 100%;
+}
+
+.mini-link {
+	border: none;
+	background: transparent;
+	padding: 0;
+	font-size: 12px;
+	font-weight: 700;
+	color: #2563eb;
+	cursor: pointer;
+}
+
+.mini-link:disabled {
+	color: #94a3b8;
+	cursor: not-allowed;
+}
+
+.empty-state {
+	min-height: 220px;
+	display: grid;
+	place-items: center;
+	text-align: center;
+	padding: 28px;
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 38%),
+		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.empty-state__icon {
+	font-size: 34px;
+	color: #2563eb;
+	margin-bottom: 10px;
+}
+
+.empty-state__title {
+	font-size: 18px;
+	font-weight: 700;
+	color: #0f172a;
+}
+
+.action-bar {
+	justify-content: flex-end;
+}
+
+@media (max-width: 768px) {
+	.panel-header,
+	.section-heading,
+	.action-bar,
+	.source-card__header,
+	.source-card__footer {
+		flex-direction: column;
+		align-items: flex-start;
+	}
+
+	.source-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.selection-grid {
+		grid-template-columns: 1fr;
+	}
 }
 </style>

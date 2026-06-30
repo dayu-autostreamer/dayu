@@ -1,8 +1,9 @@
+import json
 import os
 
 from core.lib.estimation import TimeEstimator
 from core.lib.network import http_request, merge_address, NodeInfo, PortInfo, NetworkAPIPath, NetworkAPIMethod
-from core.lib.common import LOGGER, Context, SystemConstant, KubeConfig, TaskConstant
+from core.lib.common import LOGGER, Context, SystemConstant, KubeConfig, TaskConstant, FileOps
 from core.lib.content import Task
 
 from .task_coordinator import TaskCoordinator
@@ -39,6 +40,86 @@ class Controller:
             LOGGER.debug(f'[HEALTH CHECK] service {service} processor health check succeed.')
         return True
 
+    @staticmethod
+    def _normalize_service_filter(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return {value}
+        if isinstance(value, (list, tuple, set)):
+            return {str(item) for item in value}
+        return None
+
+    def clear_processor_queues(self, request=None):
+        """Clear queued, not-yet-running tasks from processor servers on this node."""
+        request = request or {}
+        if not isinstance(request, dict):
+            request = {}
+
+        service_filter = self._normalize_service_filter(request.get("services"))
+        timeout_s = request.get("timeout_s", 5.0)
+        try:
+            timeout_s = max(0.1, float(timeout_s))
+        except (TypeError, ValueError):
+            timeout_s = 5.0
+
+        processor_payload = {
+            "reason": request.get("reason") or "controller_processor_queue_clear",
+            "max_count": request.get("max_count"),
+            "dry_run": bool(request.get("dry_run", False)),
+        }
+
+        PortInfo.force_refresh()
+        service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
+        if service_filter is not None:
+            service_ports_dict = {
+                service: port for service, port in service_ports_dict.items()
+                if service in service_filter
+            }
+
+        results = {}
+        total_cleared = 0
+        total_matched = 0
+        total_remaining = 0
+        local_ip = NodeInfo.hostname2ip(self.local_device)
+        for service, service_port in service_ports_dict.items():
+            processor_address = merge_address(
+                local_ip,
+                port=service_port,
+                path=NetworkAPIPath.PROCESSOR_CLEAR_QUEUE,
+            )
+            response = http_request(
+                url=processor_address,
+                method=NetworkAPIMethod.PROCESSOR_CLEAR_QUEUE,
+                timeout=timeout_s,
+                data={"data": json.dumps(processor_payload)},
+            )
+            if not isinstance(response, dict):
+                results[service] = {
+                    "ok": False,
+                    "error": "processor queue clear request failed",
+                }
+                continue
+
+            results[service] = response
+            total_cleared += int(response.get("cleared_count") or 0)
+            total_matched += int(response.get("matched_count") or 0)
+            total_remaining += int(response.get("remaining_count") or 0)
+
+        LOGGER.warning(
+            f"[Processor Queue Clear] device={self.local_device}, services={list(service_ports_dict.keys())}, "
+            f"matched={total_matched}, cleared={total_cleared}, remaining={total_remaining}"
+        )
+        return {
+            "ok": True,
+            "device": self.local_device,
+            "service_count": len(service_ports_dict),
+            "matched_count": total_matched,
+            "cleared_count": total_cleared,
+            "remaining_count": total_remaining,
+            "services": results,
+        }
+
     def send_task_to_other_device(self, cur_task: Task, device: str = ''):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
         controller_address = merge_address(NodeInfo.hostname2ip(device),
@@ -49,7 +130,7 @@ class Controller:
                      method=NetworkAPIMethod.CONTROLLER_TASK,
                      data={'data': cur_task.serialize()},
                      files={'file': (cur_task.get_file_path(),
-                                     open(Context.get_temporary_file_path(cur_task.get_file_path()), 'rb'),
+                                     open(FileOps.get_task_file_in_temp(cur_task), 'rb'),
                                      'multipart/form-data')})
 
         LOGGER.info(f'[To Device {device}] source: {cur_task.get_source_id()}  '
@@ -88,10 +169,10 @@ class Controller:
                                         port=service_ports_dict[service],
                                         path=NetworkAPIPath.PROCESSOR_PROCESS_LOCAL)
 
-        if not os.path.exists(Context.get_temporary_file_path(cur_task.get_file_path())):
+        if not os.path.exists(FileOps.get_task_file_in_temp(cur_task)):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
                            f'task: {cur_task.get_task_id()} '
-                           f'file: {Context.get_temporary_file_path(cur_task.get_file_path())}')
+                           f'file: {FileOps.get_task_file_in_temp(cur_task)}')
             return 'error'
 
         # Local fast path: only send metadata
@@ -106,12 +187,13 @@ class Controller:
 
     def send_task_to_distributor(self, cur_task: Task):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
-        if not os.path.exists(Context.get_temporary_file_path(cur_task.get_file_path())):
+        task_file_path = FileOps.get_task_file_in_temp(cur_task)
+        if self.is_display and not os.path.exists(task_file_path):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
                            f'task: {cur_task.get_task_id()} '
-                           f'file: {Context.get_temporary_file_path(cur_task.get_file_path())}')
+                           f'file: {task_file_path}')
             return
-        file_content = open(Context.get_temporary_file_path(cur_task.get_file_path()), 'rb') if self.is_display else b''
+        file_content = open(task_file_path, 'rb') if self.is_display else b''
 
         http_request(url=self.distribute_address,
                      method=NetworkAPIMethod.DISTRIBUTOR_DISTRIBUTE,
@@ -127,7 +209,8 @@ class Controller:
             return 'error'
 
         LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
-                    f'current service: {cur_task.get_flow_index()}')
+                    f'current service: {cur_task.get_flow_index()} dst device: {cur_task.get_current_stage_device()} '
+                    f'current device: {self.local_device}')
 
         service_name, _ = cur_task.get_current_service_info()
         dst_device = cur_task.get_current_stage_device()

@@ -1,4 +1,5 @@
 import json
+from core.lib.common import LOGGER
 
 
 class Service:
@@ -43,16 +44,24 @@ class Service:
         self.__execute_device = execute_device
 
     def set_transmit_time(self, transmit_time):
-        assert transmit_time >= 0, f'transmit time of service "{self.__service_name}" is negative: {transmit_time}!'
+        if transmit_time < 0:
+            LOGGER.warning(f'transmit time of service "{self.__service_name}" is negative: {transmit_time}!')
+            transmit_time = 0
+
         self.__transmit_time = transmit_time
 
     def set_execute_time(self, execute_time):
-        assert execute_time >= 0, f'execute time of service "{self.__service_name}" is negative: {execute_time}!'
+        if execute_time < 0:
+            LOGGER.warning(f'execute time of service "{self.__service_name}" is negative: {execute_time}!')
+            execute_time = 0
+
         self.__execute_time = execute_time
 
     def set_real_execute_time(self, real_execute_time):
-        assert real_execute_time >= 0, \
-            f' real execute time of service "{self.__service_name}" is negative: {real_execute_time}!'
+        if real_execute_time < 0:
+            LOGGER.warning(f'real execute time of service "{self.__service_name}" is negative: {real_execute_time}!')
+            real_execute_time = 0
+
         self.__real_execute_time = real_execute_time
 
     def get_transmit_time(self):

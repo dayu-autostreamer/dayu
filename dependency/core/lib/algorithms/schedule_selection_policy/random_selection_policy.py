@@ -10,7 +10,7 @@ __all__ = ('RandomSelectionPolicy',)
 
 @ClassFactory.register(ClassType.SCH_SELECTION_POLICY, alias='random')
 class RandomSelectionPolicy(BaseSelectionPolicy, abc.ABC):
-    def __init__(self, system, agent_id, scope='node_set'):
+    def __init__(self, system, agent_id, scope='selected_edge_nodes'):
         super().__init__(system=system, agent_id=agent_id, scope=scope)
 
     def __call__(self, info):

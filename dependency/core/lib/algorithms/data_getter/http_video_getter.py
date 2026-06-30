@@ -24,7 +24,8 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
 
         self.file_suffix = 'mp4'
 
-        self.time_record = 0
+        # Rate limit against task submissions, which is the observable output cadence.
+        self.last_submit_ts = None
 
     def request_source_data(self, system, task_id):
         data = {
@@ -58,8 +59,13 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
 
     @staticmethod
     def compute_cost_time(system, cost, actual_buffer_size=None):
+        elapsed_since_last_submit = cost
         buffer_size = actual_buffer_size if actual_buffer_size is not None else system.meta_data['buffer_size']
-        return max(1 / system.meta_data['fps'] * buffer_size - cost, 0)
+        LOGGER.info(
+            f'[Camera Simulation] fps:{system.meta_data["fps"]}, '
+            f'elapsed since last submit: {elapsed_since_last_submit}s, buffer size: {buffer_size}'
+        )
+        return max(1 / system.meta_data['fps'] * buffer_size - elapsed_since_last_submit, 0)
 
     def __call__(self, system):
         new_task_id = Counter.get_count('task_id')
@@ -76,10 +82,11 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
             system.meta_data.get('fps', 1)
         )
 
-        new_time_record = time.time()
-        delay = new_time_record - self.time_record if self.time_record else 0
-        self.time_record = new_time_record
-        sleep_time = self.compute_cost_time(system, delay, actual_buffer_size=actual_buffer_size)
+        if self.last_submit_ts is None:
+            sleep_time = 0
+        else:
+            delay = time.monotonic() - self.last_submit_ts
+            sleep_time = self.compute_cost_time(system, delay, actual_buffer_size=actual_buffer_size)
         LOGGER.info(f'[Camera Simulation] source {system.source_id}: sleep {sleep_time}s')
         time.sleep(sleep_time)
 
@@ -88,5 +95,6 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
                                         copy.deepcopy(system.meta_data),
                                         self.file_name, self.hash_codes)
         system.submit_task_to_controller(new_task)
+        self.last_submit_ts = time.monotonic()
 
         FileOps.remove_file(self.file_name)
