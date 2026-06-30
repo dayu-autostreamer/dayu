@@ -160,6 +160,22 @@ If you have questions, feel free to reach out to us in the following ways:
 - [Lei Xie (lxie@nju.edu.cn)](mailto:lxie@nju.edu.cn)
 - [Wenhui Zhou (whzhou@smail.nju.edu.cn)](mailto:whzhou@smail.nju.edu.cn)
 
+## Citation
+
+If you use Dayu or its scheduling/runtime system in your research, please cite the following paper:
+
+```bibtex
+@inproceedings{zhou2026hier-ei,
+  title = {Tackling the Imbalance in Video Analytics Pipelines with Hierarchical Embodied Intelligence},
+  author = {Zhou, Wenhui and Xie, Lei and Ning, Jingyi and Cao, Shuyu and Wu, Hao and Peng, Qinghua and Fan, Long},
+  booktitle = {IEEE INFOCOM 2026 - IEEE Conference on Computer Communications},
+  year = {2026},
+  pages={1--10},
+  publisher = {IEEE},
+  doi={10.1109/INFOCOM59046.2026.11571610}
+}
+```
+
 ## License
 
 Dayu is licensed under Apache 2.0. See the [LICENSE](LICENSE) file for details.
