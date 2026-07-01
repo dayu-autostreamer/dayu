@@ -18,7 +18,7 @@ class GPUFlopsMonitor(BaseMonitor, abc.ABC):
         super().__init__(system)
         self.name = 'gpu_flops'
 
-        """        
+        """
         # Basic GPU Information
         self.DESKTOP_COMPUTE_CAPABILITY_MAP = {
             (6, 0): 'PASCAL',  # GP100
@@ -76,6 +76,8 @@ class GPUFlopsMonitor(BaseMonitor, abc.ABC):
 
         self._is_jetson = self.is_jetson_device()
         self._device_meta = None
+        self._device_meta_loader_id = None
+        self._device_meta_is_jetson = None
 
     @staticmethod
     def load_pycuda():
@@ -103,9 +105,17 @@ class GPUFlopsMonitor(BaseMonitor, abc.ABC):
         return False
 
     def _get_device_meta(self, is_jetson: bool = False):
+        loader = self.load_pycuda
+        loader_id = id(loader)
         if self._device_meta is not None:
-            return self._device_meta
-        cuda = self.load_pycuda()
+            if self._device_meta_loader_id is None:
+                return self._device_meta
+            if (
+                self._device_meta_loader_id == loader_id
+                and self._device_meta_is_jetson == bool(is_jetson)
+            ):
+                return self._device_meta
+        cuda = loader()
         CORES_PER_SM = self.JETSON_CORES_PER_SM if is_jetson else self.DESKTOP_CORES_PER_SM
         DEVICE_DUAL_ISSUE = self.JETSON_DUAL_ISSUE if is_jetson else self.DESKTOP_DUAL_ISSUE
         meta = []
@@ -129,6 +139,8 @@ class GPUFlopsMonitor(BaseMonitor, abc.ABC):
                 "dual_factor": float(dual_factor),
             })
         self._device_meta = meta
+        self._device_meta_loader_id = loader_id
+        self._device_meta_is_jetson = bool(is_jetson)
         return meta
 
     def get_device_fp32_flops(self, is_jetson: bool = False):

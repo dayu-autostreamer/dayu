@@ -7,6 +7,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from core.lib.common import TaskConstant
 from core.lib.algorithms.shared.hedger.hedger import Hedger
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointLoadCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingStageCfg
@@ -20,7 +21,6 @@ from core.lib.algorithms.shared.hedger.hedger import HedgerLatencyGuardCfg
 from core.lib.algorithms.schedule_agent.hedger_agent import HedgerAgent
 from core.lib.algorithms.shared.hedger.hedger_config import (
     DeploymentConstraintCfg,
-    OffloadingConstraintCfg,
     LogicalTopology,
     PhysicalTopology,
     from_partial_dict,
@@ -28,6 +28,8 @@ from core.lib.algorithms.shared.hedger.hedger_config import (
 from core.lib.algorithms.shared.hedger.ppo_agent import (
     HedgerDeploymentPPO,
     HedgerOffloadingPPO,
+    _runtime_pair_features,
+    _service_demand_features,
 )
 from core.lib.algorithms.shared.hedger.state_buffer import BufferWaitCfg, StateBuffer
 from core.lib.algorithms.shared.hedger.utils import compute_returns_advantages
@@ -69,6 +71,37 @@ def build_test_topologies():
     return logical_topology, physical_topology
 
 
+def build_logic_feats(model_mem, num_devices):
+    model_mem = torch.tensor(model_mem, dtype=torch.float32)
+    num_services = int(model_mem.numel())
+    return {
+        "model_mem": model_mem,
+        "model_flops": torch.ones((num_services,), dtype=torch.float32),
+        "service_demand_feat": torch.zeros((num_services, 4), dtype=torch.float32),
+        "runtime_pair_feat": torch.zeros((num_services, num_devices, 6), dtype=torch.float32),
+    }
+
+
+def project_deployment_mask(agent, raw_mask, raw_probs, model_mem, mem_capacity, prev_deploy_mask=None):
+    raw_mask = torch.tensor(raw_mask, dtype=torch.bool)
+    raw_probs = torch.tensor(raw_probs, dtype=torch.float32)
+    num_devices = int(raw_mask.size(1))
+    logic_feats = build_logic_feats(model_mem, num_devices)
+    phys_feats = {
+        "mem_capacity": torch.tensor(mem_capacity, dtype=torch.float32),
+        "mem_util_seq": torch.zeros((num_devices, 1), dtype=torch.float32),
+    }
+    return agent._project_deployment_mask(
+        raw_mask,
+        raw_probs=raw_probs,
+        logic_edge_index=torch.empty((2, 0), dtype=torch.long),
+        logic_feats=logic_feats,
+        phys_feats=phys_feats,
+        static_allowed=torch.ones_like(raw_mask, dtype=torch.bool),
+        prev_deploy_mask=prev_deploy_mask,
+    )
+
+
 def build_training_cfg(stage: str, total_updates: int = 20) -> HedgerTrainingCfg:
     return HedgerTrainingCfg(
         stage=stage,
@@ -90,10 +123,22 @@ def build_checkpoint_cfg(root_dir: str, *, load=None, save=None) -> HedgerCheckp
     )
 
 
+@pytest.fixture(autouse=True)
+def hedger_test_runtime(monkeypatch):
+    monkeypatch.setattr(
+        "core.lib.algorithms.shared.hedger.hedger_config.NodeInfo.get_cloud_node",
+        staticmethod(lambda: "cloud.kubeedge"),
+    )
+    monkeypatch.setattr(
+        "core.lib.algorithms.shared.hedger.hedger.Context.get_file_path",
+        staticmethod(lambda path: path),
+    )
+
+
 @pytest.mark.unit
 def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
-    off_cfg = from_partial_dict(
-        OffloadingConstraintCfg,
+    dep_cfg = from_partial_dict(
+        DeploymentConstraintCfg,
         {
             "allow_stay": False,
             "forbid_return": True,
@@ -102,11 +147,6 @@ def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
             "metric_non_decreasing": False,
             "penalty_switch": 1.5,
             "penalty_relax": 2.5,
-        },
-    )
-    dep_cfg = from_partial_dict(
-        DeploymentConstraintCfg,
-        {
             "enforce_capacity": False,
             "min_edge_replicas": 3,
             "penalty_capacity_relax": 4.0,
@@ -119,29 +159,27 @@ def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
         },
     )
 
-    assert isinstance(off_cfg, OffloadingConstraintCfg)
-    assert off_cfg.penalty_relax == pytest.approx(2.5)
-    assert not hasattr(off_cfg, "penalty_switch")
-    assert not hasattr(off_cfg, "allow_stay")
-    assert not hasattr(off_cfg, "forbid_return")
-    assert not hasattr(off_cfg, "cloud_sticky")
-    assert not hasattr(off_cfg, "use_monotone_metric")
-    assert not hasattr(off_cfg, "metric_non_decreasing")
-
     assert isinstance(dep_cfg, DeploymentConstraintCfg)
     assert dep_cfg.penalty_capacity_relax == pytest.approx(4.0)
     assert dep_cfg.max_edge_replicas_per_device == 2
     assert dep_cfg.edge_memory_budget_ratio == pytest.approx(0.75)
-    assert dep_cfg.max_required_edge_replicas == 2
-    assert dep_cfg.pressure_threshold == pytest.approx(0.7)
-    assert dep_cfg.pressure_temperature == pytest.approx(0.2)
     assert dep_cfg.queue_normalizer == pytest.approx(6.0)
     assert not hasattr(dep_cfg, "enforce_capacity")
     assert not hasattr(dep_cfg, "min_edge_replicas")
+    assert not hasattr(dep_cfg, "max_required_edge_replicas")
+    assert not hasattr(dep_cfg, "pressure_threshold")
+    assert not hasattr(dep_cfg, "pressure_temperature")
+    assert not hasattr(dep_cfg, "penalty_switch")
+    assert not hasattr(dep_cfg, "penalty_relax")
+    assert not hasattr(dep_cfg, "allow_stay")
+    assert not hasattr(dep_cfg, "forbid_return")
+    assert not hasattr(dep_cfg, "cloud_sticky")
+    assert not hasattr(dep_cfg, "use_monotone_metric")
+    assert not hasattr(dep_cfg, "metric_non_decreasing")
 
 
 @pytest.mark.unit
-def test_deployment_policy_always_projects_to_capacity(monkeypatch):
+def test_deployment_policy_always_projects_to_capacity():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -151,49 +189,33 @@ def test_deployment_policy_always_projects_to_capacity(monkeypatch):
         d_model=2,
         update_encoder=False,
         cloud_node_idx=1,
-        constraint_cfg=from_partial_dict(DeploymentConstraintCfg, {"enforce_capacity": False}),
-    )
-    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
-
-    def fake_forward(self, h_s, h_p, mask=None):
-        service_id = int(round(float(h_s[0, 0].item())))
-        edge_probs = [0.9, 0.8]
-        probs = torch.tensor([[edge_probs[service_id], 0.05]], dtype=torch.float32, device=h_s.device)
-        if mask is not None:
-            probs = torch.where(mask, probs, torch.zeros_like(probs))
-        return probs
-
-    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
-    monkeypatch.setattr(
-        torch,
-        "rand_like",
-        lambda x: torch.full_like(x, 0.1),
+        constraint_cfg=from_partial_dict(
+            DeploymentConstraintCfg,
+            {"enforce_capacity": False, "edge_memory_budget_ratio": 1.0},
+        ),
     )
 
-    logic_edge_index = torch.empty((2, 0), dtype=torch.long)
-    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
-    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
-    phys_feats = {
-        "mem_capacity": torch.tensor([1.0, 100.0], dtype=torch.float32),
-        "mem_util_seq": torch.zeros((2, 1), dtype=torch.float32),
-    }
-
-    deploy_mask, _, _, _, aux = agent.policy(
-        logic_edge_index=logic_edge_index,
-        logic_feats=logic_feats,
-        phys_edge_index=phys_edge_index,
-        phys_feats=phys_feats,
+    (
+        deploy_mask,
+        capacity_relax_cnt,
+        capacity_relax_cost,
+        *_rest,
+    ) = project_deployment_mask(
+        agent,
+        raw_mask=[[True, True], [True, True]],
+        raw_probs=[[0.9, 1.0], [0.8, 1.0]],
+        model_mem=[1.0, 1.0],
+        mem_capacity=[1.0, 100.0],
     )
 
     assert deploy_mask[:, 1].tolist() == [True, True]
     assert deploy_mask[:, 0].tolist() == [True, False]
-    assert aux["capacity_relax_cnt"] == 1
-    assert aux["capacity_relax_cost"] == pytest.approx(-math.log(0.2) / 2.0)
-    assert aux["raw_deploy_mask"][:, 0].tolist() == [True, True]
+    assert capacity_relax_cnt == 1
+    assert capacity_relax_cost == pytest.approx(-math.log(0.2) / 2.0)
 
 
 @pytest.mark.unit
-def test_deployment_projection_prunes_lowest_preference_without_overcorrecting(monkeypatch):
+def test_deployment_projection_prunes_lowest_preference_without_overcorrecting():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -203,43 +225,29 @@ def test_deployment_projection_prunes_lowest_preference_without_overcorrecting(m
         d_model=2,
         update_encoder=False,
         cloud_node_idx=1,
-    )
-    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
-
-    def fake_forward(self, h_s, h_p, mask=None):
-        service_id = int(round(float(h_s[0, 0].item())))
-        edge_probs = [0.4, 0.3]
-        probs = torch.tensor([[edge_probs[service_id], 0.05]], dtype=torch.float32, device=h_s.device)
-        if mask is not None:
-            probs = torch.where(mask, probs, torch.zeros_like(probs))
-        return probs
-
-    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
-    monkeypatch.setattr(torch, "rand_like", lambda x: torch.full_like(x, 0.1))
-
-    logic_edge_index = torch.empty((2, 0), dtype=torch.long)
-    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
-    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
-    phys_feats = {
-        "mem_capacity": torch.tensor([1.0, 100.0], dtype=torch.float32),
-        "mem_util_seq": torch.zeros((2, 1), dtype=torch.float32),
-    }
-
-    deploy_mask, _, _, _, aux = agent.policy(
-        logic_edge_index=logic_edge_index,
-        logic_feats=logic_feats,
-        phys_edge_index=phys_edge_index,
-        phys_feats=phys_feats,
+        constraint_cfg=DeploymentConstraintCfg(edge_memory_budget_ratio=1.0),
     )
 
-    assert aux["raw_deploy_mask"][:, 0].tolist() == [True, True]
+    (
+        deploy_mask,
+        capacity_relax_cnt,
+        capacity_relax_cost,
+        *_rest,
+    ) = project_deployment_mask(
+        agent,
+        raw_mask=[[True, True], [True, True]],
+        raw_probs=[[0.4, 1.0], [0.3, 1.0]],
+        model_mem=[1.0, 1.0],
+        mem_capacity=[1.0, 100.0],
+    )
+
     assert deploy_mask[:, 0].tolist() == [True, False]
-    assert aux["capacity_relax_cnt"] == 1
-    assert aux["capacity_relax_cost"] == pytest.approx(-math.log(0.7) / 2.0)
+    assert capacity_relax_cnt == 1
+    assert capacity_relax_cost == pytest.approx(-math.log(0.7) / 2.0)
 
 
 @pytest.mark.unit
-def test_deployment_projection_prioritizes_higher_probability_over_previous_deployment(monkeypatch):
+def test_deployment_projection_prioritizes_higher_probability_over_previous_deployment():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -249,49 +257,31 @@ def test_deployment_projection_prioritizes_higher_probability_over_previous_depl
         d_model=2,
         update_encoder=False,
         cloud_node_idx=1,
+        constraint_cfg=DeploymentConstraintCfg(edge_memory_budget_ratio=1.0),
     )
-    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
-
-    def fake_forward(self, h_s, h_p, mask=None):
-        service_id = int(round(float(h_s[0, 0].item())))
-        edge_probs = [0.9, 0.2]
-        probs = torch.tensor([[edge_probs[service_id], 0.05]], dtype=torch.float32, device=h_s.device)
-        if mask is not None:
-            probs = torch.where(mask, probs, torch.zeros_like(probs))
-        return probs
-
-    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
-    monkeypatch.setattr(
-        torch,
-        "rand_like",
-        lambda x: torch.full_like(x, 0.1),
-    )
-
-    logic_edge_index = torch.empty((2, 0), dtype=torch.long)
-    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
-    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
-    phys_feats = {
-        "mem_capacity": torch.tensor([1.0, 100.0], dtype=torch.float32),
-        "mem_util_seq": torch.zeros((2, 1), dtype=torch.float32),
-    }
     prev_deploy_mask = torch.tensor([[False, True], [True, True]], dtype=torch.bool)
 
-    deploy_mask, _, _, _, aux = agent.policy(
-        logic_edge_index=logic_edge_index,
-        logic_feats=logic_feats,
-        phys_edge_index=phys_edge_index,
-        phys_feats=phys_feats,
+    (
+        deploy_mask,
+        capacity_relax_cnt,
+        capacity_relax_cost,
+        *_rest,
+    ) = project_deployment_mask(
+        agent,
+        raw_mask=[[True, True], [True, True]],
+        raw_probs=[[0.9, 1.0], [0.2, 1.0]],
+        model_mem=[1.0, 1.0],
+        mem_capacity=[1.0, 100.0],
         prev_deploy_mask=prev_deploy_mask,
     )
 
-    assert aux["raw_deploy_mask"][:, 0].tolist() == [True, True]
     assert deploy_mask[:, 0].tolist() == [True, False]
-    assert aux["capacity_relax_cnt"] == 1
-    assert aux["capacity_relax_cost"] == pytest.approx(-math.log(0.8) / 2.0)
+    assert capacity_relax_cnt == 1
+    assert capacity_relax_cost == pytest.approx(-math.log(0.8) / 2.0)
 
 
 @pytest.mark.unit
-def test_deployment_projection_enforces_uniform_edge_replica_cap(monkeypatch):
+def test_deployment_projection_enforces_uniform_edge_replica_cap():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -301,45 +291,30 @@ def test_deployment_projection_enforces_uniform_edge_replica_cap(monkeypatch):
         d_model=2,
         update_encoder=False,
         cloud_node_idx=1,
-        constraint_cfg=DeploymentConstraintCfg(max_edge_replicas_per_device=2),
-    )
-    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
-
-    def fake_forward(self, h_s, h_p, mask=None):
-        service_id = int(round(float(h_s[0, 0].item())))
-        edge_probs = [0.9, 0.8, 0.7]
-        probs = torch.tensor([[edge_probs[service_id], 0.05]], dtype=torch.float32, device=h_s.device)
-        if mask is not None:
-            probs = torch.where(mask, probs, torch.zeros_like(probs))
-        return probs
-
-    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
-    monkeypatch.setattr(torch, "rand_like", lambda x: torch.full_like(x, 0.1))
-
-    logic_edge_index = torch.empty((2, 0), dtype=torch.long)
-    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
-    logic_feats = {"model_mem": torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32)}
-    phys_feats = {
-        "mem_capacity": torch.tensor([100.0, 100.0], dtype=torch.float32),
-        "mem_util_seq": torch.zeros((2, 1), dtype=torch.float32),
-    }
-
-    deploy_mask, _, _, _, aux = agent.policy(
-        logic_edge_index=logic_edge_index,
-        logic_feats=logic_feats,
-        phys_edge_index=phys_edge_index,
-        phys_feats=phys_feats,
+        constraint_cfg=DeploymentConstraintCfg(max_edge_replicas_per_device=2, edge_memory_budget_ratio=1.0),
     )
 
-    assert aux["raw_deploy_mask"][:, 0].tolist() == [True, True, True]
+    (
+        deploy_mask,
+        capacity_relax_cnt,
+        capacity_relax_cost,
+        *_rest,
+    ) = project_deployment_mask(
+        agent,
+        raw_mask=[[True, True], [True, True], [True, True]],
+        raw_probs=[[0.9, 1.0], [0.8, 1.0], [0.7, 1.0]],
+        model_mem=[1.0, 1.0, 1.0],
+        mem_capacity=[100.0, 100.0],
+    )
+
     assert deploy_mask[:, 0].tolist() == [True, True, False]
     assert deploy_mask[:, 1].tolist() == [True, True, True]
-    assert aux["capacity_relax_cnt"] == 1
-    assert aux["capacity_relax_cost"] == pytest.approx(-math.log(0.3) / 3.0)
+    assert capacity_relax_cnt == 1
+    assert capacity_relax_cost == pytest.approx(-math.log(0.3) / 3.0)
 
 
 @pytest.mark.unit
-def test_deployment_projection_uses_edge_memory_budget_ratio(monkeypatch):
+def test_deployment_projection_uses_edge_memory_budget_ratio():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -351,42 +326,27 @@ def test_deployment_projection_uses_edge_memory_budget_ratio(monkeypatch):
         cloud_node_idx=1,
         constraint_cfg=DeploymentConstraintCfg(edge_memory_budget_ratio=0.75),
     )
-    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
 
-    def fake_forward(self, h_s, h_p, mask=None):
-        service_id = int(round(float(h_s[0, 0].item())))
-        edge_probs = [0.9, 0.8]
-        probs = torch.tensor([[edge_probs[service_id], 0.05]], dtype=torch.float32, device=h_s.device)
-        if mask is not None:
-            probs = torch.where(mask, probs, torch.zeros_like(probs))
-        return probs
-
-    monkeypatch.setattr(agent.actor, "forward", types.MethodType(fake_forward, agent.actor))
-    monkeypatch.setattr(torch, "rand_like", lambda x: torch.full_like(x, 0.1))
-
-    logic_edge_index = torch.empty((2, 0), dtype=torch.long)
-    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
-    logic_feats = {"model_mem": torch.tensor([1.0, 1.0], dtype=torch.float32)}
-    phys_feats = {
-        "mem_capacity": torch.tensor([2.0, 100.0], dtype=torch.float32),
-        "mem_util_seq": torch.zeros((2, 1), dtype=torch.float32),
-    }
-
-    deploy_mask, _, _, _, aux = agent.policy(
-        logic_edge_index=logic_edge_index,
-        logic_feats=logic_feats,
-        phys_edge_index=phys_edge_index,
-        phys_feats=phys_feats,
+    (
+        deploy_mask,
+        capacity_relax_cnt,
+        capacity_relax_cost,
+        *_rest,
+    ) = project_deployment_mask(
+        agent,
+        raw_mask=[[True, True], [True, True]],
+        raw_probs=[[0.9, 1.0], [0.8, 1.0]],
+        model_mem=[1.0, 1.0],
+        mem_capacity=[2.0, 100.0],
     )
 
-    assert aux["raw_deploy_mask"][:, 0].tolist() == [True, True]
     assert deploy_mask[:, 0].tolist() == [True, False]
-    assert aux["capacity_relax_cnt"] == 1
-    assert aux["capacity_relax_cost"] == pytest.approx(-math.log(0.2) / 2.0)
+    assert capacity_relax_cnt == 1
+    assert capacity_relax_cost == pytest.approx(-math.log(0.2) / 2.0)
 
 
 @pytest.mark.unit
-def test_deployment_projection_repairs_edge_coverage_when_capacity_available():
+def test_deployment_projection_does_not_add_unsampled_edge_replicas_when_capacity_available():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], dtype=torch.float32),
@@ -426,11 +386,12 @@ def test_deployment_projection_repairs_edge_coverage_when_capacity_available():
         edge_cover_repair_cnt,
         edge_cover_repair_cost,
         edge_cover_unmet,
-        redundancy_repair_cnt,
-        _redundancy_repair_cost,
-        redundancy_unmet,
+        hotspot_repair_cnt,
+        _hotspot_repair_cost,
+        hotspot_unmet,
         _risk_metrics,
-        _executed_redundancy_ctx,
+        _executed_risk_ctx,
+        _capacity_removed_mask,
     ) = agent._project_deployment_mask(
         raw_mask,
         raw_probs=raw_probs,
@@ -441,16 +402,16 @@ def test_deployment_projection_repairs_edge_coverage_when_capacity_available():
     )
 
     assert deploy_mask[:, 2].tolist() == [True, True]
-    assert deploy_mask[:, :2].tolist() == [[False, True], [True, False]]
-    assert edge_cover_repair_cnt == 2
-    assert edge_cover_repair_cost == pytest.approx((-math.log(0.9) - math.log(0.8)) / 2.0)
+    assert deploy_mask[:, :2].tolist() == [[False, False], [False, False]]
+    assert edge_cover_repair_cnt == 0
+    assert edge_cover_repair_cost == pytest.approx(0.0)
     assert edge_cover_unmet == 0
-    assert redundancy_repair_cnt == 0
-    assert redundancy_unmet == 0
+    assert hotspot_repair_cnt == 0
+    assert hotspot_unmet == 0
 
 
 @pytest.mark.unit
-def test_deployment_projection_respects_edge_coverage_capacity():
+def test_deployment_projection_keeps_cloud_only_when_no_edge_replica_was_sampled():
     encoder = DummyEncoder(
         service_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
         device_emb=torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
@@ -492,11 +453,12 @@ def test_deployment_projection_respects_edge_coverage_capacity():
         edge_cover_repair_cnt,
         edge_cover_repair_cost,
         edge_cover_unmet,
-        redundancy_repair_cnt,
-        _redundancy_repair_cost,
-        redundancy_unmet,
+        hotspot_repair_cnt,
+        _hotspot_repair_cost,
+        hotspot_unmet,
         _risk_metrics,
-        _executed_redundancy_ctx,
+        _executed_risk_ctx,
+        _capacity_removed_mask,
     ) = agent._project_deployment_mask(
         raw_mask,
         raw_probs=raw_probs,
@@ -506,13 +468,13 @@ def test_deployment_projection_respects_edge_coverage_capacity():
         static_allowed=static_allowed,
     )
 
-    assert deploy_mask[:, 0].tolist() == [True, False]
+    assert deploy_mask[:, 0].tolist() == [False, False]
     assert deploy_mask[:, 1].tolist() == [True, True]
-    assert edge_cover_repair_cnt == 1
-    assert edge_cover_repair_cost == pytest.approx(-math.log(0.9) / 2.0)
-    assert edge_cover_unmet == 1
-    assert redundancy_repair_cnt == 0
-    assert redundancy_unmet == 0
+    assert edge_cover_repair_cnt == 0
+    assert edge_cover_repair_cost == pytest.approx(0.0)
+    assert edge_cover_unmet == 0
+    assert hotspot_repair_cnt == 0
+    assert hotspot_unmet == 0
 
 
 @pytest.mark.unit
@@ -607,40 +569,19 @@ def test_offloading_policy_corrects_cloud_descendants_after_sampling():
         d_model=2,
         update_encoder=False,
         cloud_node_idx=1,
-        constraint_cfg=OffloadingConstraintCfg(penalty_relax=2.0),
     )
-    agent._adapt_embeddings = lambda h_s, h_p: (h_s, h_p)
-
-    def fake_forward(self, h_s, h_p, mask=None):
-        service_id = int(round(float(h_s[0, 0].item())))
-        if service_id == 0:
-            probs = torch.tensor([0.0, 1.0], dtype=torch.float32, device=h_s.device)
-        else:
-            probs = torch.tensor([1.0, 0.0], dtype=torch.float32, device=h_s.device)
-        if mask is not None:
-            probs = torch.where(mask[0], probs, torch.zeros_like(probs))
-        probs = probs / probs.sum()
-        return probs.unsqueeze(0)
-
-    agent.actor.forward = types.MethodType(fake_forward, agent.actor)
-
-    logic_edge_index = torch.tensor([[0], [1]], dtype=torch.long)
-    phys_edge_index = torch.empty((2, 0), dtype=torch.long)
-    static_mask = torch.tensor([[True, True], [True, True]], dtype=torch.bool)
-
-    actions, _, _, _, aux = agent.policy(
-        logic_edge_index=logic_edge_index,
-        logic_feats={},
-        phys_edge_index=phys_edge_index,
-        phys_feats={},
-        static_mask=static_mask,
+    actions, aux = agent._project_offloading_actions(
+        proposal_actions=torch.tensor([1, 0], dtype=torch.long),
+        effective_mask=torch.tensor([[True, True], [True, True]], dtype=torch.bool),
+        policy_probs=torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32),
+        parents=[[], [0]],
+        topo_order=[0, 1],
     )
 
     assert actions.tolist() == [1, 1]
-    assert aux["raw_actions"].tolist() == [1, 0]
-    assert aux["correction_cnt"] == 1
-    assert aux["correction_cost"] == pytest.approx(-math.log(1e-6) / 2.0)
-    assert aux["aux_cost"] == pytest.approx(2.0 * (-math.log(1e-6) / 2.0))
+    assert aux["projection_cnt"] == 1
+    assert aux["dependency_projection_cnt"] == 1
+    assert aux["projection_cost"] == pytest.approx(-math.log(1e-6) / 2.0)
 
 
 @pytest.mark.unit
@@ -653,7 +594,8 @@ def test_offloading_reward_uses_correction_cost_not_count():
         "reward_off_latency_transform": "raw",
         "reward_off_latency_normalizer": 1.0,
         "reward_off_latency_clip": None,
-        "penalty_relax": 3.0,
+        "reward_off_projection_weight": 3.0,
+        "reward_off_queue_weight": 0.0,
     }
 
     reward = hedger._compute_offloading_reward(
@@ -663,9 +605,8 @@ def test_offloading_reward_uses_correction_cost_not_count():
             "cloud_fraction": 0.5,
         },
         aux={
-            "correction_cnt": 9,
-            "correction_cost": 0.75,
-            "aux_cost": 3.0 * 0.75,
+            "projection_cnt": 9,
+            "projection_cost": 0.75,
         },
     )
 
@@ -682,33 +623,44 @@ def test_offloading_demand_and_congestion_feature_builders():
         dtype=torch.float32,
     )
     model_flops = torch.tensor([10.0, 20.0], dtype=torch.float32)
-    demand = Hedger._build_offloading_demand_features(task_complexity_seq, model_flops)
-
-    assert tuple(demand.shape) == (2, 4)
-    assert demand[0, 1].item() == pytest.approx(2.0)
-    assert demand[1, 1].item() == pytest.approx(0.0)
-
-    latency_pair_feat = torch.zeros((2, 3, 6), dtype=torch.float32)
-    latency_pair_feat[0, 0, 0] = 0.4
-    latency_pair_feat[0, 0, 2] = 0.1
-    latency_pair_feat[0, 0, 5] = 0.7
-    queue_pair_feat = torch.zeros((2, 3, 5), dtype=torch.float32)
-    queue_pair_feat[0, 0, 0] = 0.5
-    queue_pair_feat[0, 0, 2] = 0.8
-    queue_pair_feat[0, 0, 4] = 0.6
-
-    congestion = Hedger._build_offloading_congestion_features(
-        latency_pair_feat,
-        queue_pair_feat,
-        demand,
+    model_mem = torch.tensor([1.0, 2.0], dtype=torch.float32)
+    arrival_seq = torch.tensor([[0.5, 0.7, 0.9], [0.1, 0.1, 0.1]], dtype=torch.float32)
+    demand = _service_demand_features(
+        {
+            "task_complexity_seq": task_complexity_seq,
+            "task_arrival_rate_seq": arrival_seq,
+            "model_flops": model_flops,
+            "model_mem": model_mem,
+        },
+        2,
+        torch.device("cpu"),
+        torch.float32,
     )
 
-    assert tuple(congestion.shape) == (2, 3, 7)
-    assert congestion[0, 0, 0].item() == pytest.approx(0.5)
-    assert congestion[0, 0, 2].item() == pytest.approx(0.4)
-    assert congestion[0, 0, 4].item() == pytest.approx(demand[0, 3].item() * 0.5)
-    assert congestion[0, 0, 5].item() == pytest.approx(demand[0, 3].item() * 0.4)
-    assert congestion[0, 0, 6].item() == pytest.approx(0.6)
+    assert tuple(demand.shape) == (2, 4)
+    assert demand[0, 0].item() == pytest.approx(math.log1p(5.0 * 10.0))
+    assert demand[0, 1].item() == pytest.approx((5.0 - 3.0) / (math.sqrt(8.0 / 3.0) + 1e-6))
+    assert demand[0, 2].item() == pytest.approx(0.9)
+    assert demand[0, 3].item() == pytest.approx(math.log1p(1.0))
+    assert demand[1, 1].item() == pytest.approx(0.0)
+
+    runtime_pair_feat = torch.zeros((2, 3, 6), dtype=torch.float32)
+    runtime_pair_feat[0, 0, 0] = 0.4
+    runtime_pair_feat[0, 0, 2] = 0.1
+    runtime_pair_feat[0, 0, 5] = 0.7
+
+    runtime = _runtime_pair_features(
+        {"runtime_pair_feat": runtime_pair_feat},
+        2,
+        3,
+        torch.device("cpu"),
+        torch.float32,
+    )
+
+    assert tuple(runtime.shape) == (2, 3, 6)
+    assert runtime[0, 0, 0].item() == pytest.approx(0.4)
+    assert runtime[0, 0, 2].item() == pytest.approx(0.1)
+    assert runtime[0, 0, 5].item() == pytest.approx(0.7)
 
 
 @pytest.mark.unit
@@ -745,20 +697,11 @@ def test_state_buffer_supports_incremental_service_and_device_updates():
 
     for _ in range(2):
         buffer.add_bandwidths(10.0)
-        buffer.add_gpu_utilization("edge-a", 0.2)
-        buffer.add_gpu_utilization("edge-b", 0.3)
-        buffer.add_gpu_utilization(cloud_name, 0.1)
-        buffer.add_memory_utilization("edge-a", 0.4)
-        buffer.add_memory_utilization("edge-b", 0.5)
-        buffer.add_memory_utilization(cloud_name, 0.2)
         buffer.add_task_complexity("svc-a", 3.0)
         buffer.add_task_complexity("svc-b", 5.0)
-        buffer.add_task_latency("svc-a", 1.0)
-        buffer.add_task_latency("svc-b", 2.0)
 
     # Unknown sentinel nodes from the task DAG should be ignored gracefully.
     buffer.add_task_complexity("_start", 99.0)
-    buffer.add_task_latency("_end", 99.0)
 
     logic_feats, phys_feats = buffer.get_state(
         seq_len=4,
@@ -771,11 +714,8 @@ def test_state_buffer_supports_incremental_service_and_device_updates():
     assert len(logic_feats["task_complexity_seq"]) == 2
     assert len(logic_feats["task_complexity_seq"][0]) == 4
     assert len(phys_feats["gpu_flops"]) == 3
-    assert len(phys_feats["bandwidth_seq"]) == 3
-    assert len(phys_feats["bandwidth_seq"][0]) == 4
-    assert phys_feats["bandwidth_seq"][0] == pytest.approx([100.0, 100.0, 100.0, 100.0])
-    assert phys_feats["bandwidth_seq"][1] == pytest.approx([100.0, 100.0, 100.0, 100.0])
-    assert phys_feats["bandwidth_seq"][2] == pytest.approx([10.0, 10.0, 10.0, 10.0])
+    assert len(phys_feats["bandwidth_latest"]) == 3
+    assert phys_feats["bandwidth_latest"] == pytest.approx([100.0, 100.0, 10.0])
 
 
 @pytest.mark.unit
@@ -787,8 +727,6 @@ def test_state_buffer_tracks_task_observations_as_end_to_end_latencies():
         physical_topology=physical_topology,
     )
 
-    buffer.add_task_latency("svc-a", 1.0, deployment_version=2)
-    buffer.add_task_latency("svc-b", 3.0, deployment_version=2)
     assert buffer.get_task_observation_version() == 0
 
     buffer.add_task_end_to_end_latency(4.0, deployment_version=2)
@@ -869,17 +807,9 @@ def test_hedger_collect_state_builds_metrics_from_buffer():
 
     for _ in range(2):
         buffer.add_bandwidths(10.0)
-        buffer.add_gpu_utilization("edge-a", 0.2)
-        buffer.add_gpu_utilization("edge-b", 0.3)
-        buffer.add_gpu_utilization(cloud_name, 0.1)
-        buffer.add_memory_utilization("edge-a", 0.4)
-        buffer.add_memory_utilization("edge-b", 0.5)
-        buffer.add_memory_utilization(cloud_name, 0.2)
 
     buffer.add_task_complexity("svc-a", 3.0)
     buffer.add_task_complexity("svc-b", 5.0)
-    buffer.add_task_latency("svc-a", 1.0)
-    buffer.add_task_latency("svc-b", 3.0)
     buffer.add_task_end_to_end_latency(4.0)
     buffer.add_offloading_reward(1.0)
     buffer.add_offloading_reward(3.0)
@@ -902,24 +832,25 @@ def test_hedger_collect_state_builds_metrics_from_buffer():
         [[True, False, True], [False, True, True]],
         dtype=torch.bool,
     )
+    hedger._deployment_version_cond = threading.Condition(threading.Lock())
+    hedger._deployment_served_version = 0
 
     prev_deploy_mask = torch.tensor(
         [[False, False, True], [False, True, True]],
         dtype=torch.bool,
     )
 
-    logic_feats, phys_feats, off_metrics, done = hedger._collect_offloading_state()
+    logic_feats, phys_feats, off_metrics, done, _state_debug = hedger._collect_offloading_state()
     assert logic_feats["task_complexity_seq"].shape == (2, 4)
-    assert phys_feats["bandwidth_seq"].shape == (3, 4)
-    assert phys_feats["bandwidth_seq"][0].tolist() == pytest.approx([100.0, 100.0, 100.0, 100.0])
-    assert phys_feats["bandwidth_seq"][2].tolist() == pytest.approx([10.0, 10.0, 10.0, 10.0])
+    assert phys_feats["bandwidth_latest"].shape == (3,)
+    assert phys_feats["bandwidth_latest"].tolist() == pytest.approx([100.0, 100.0, 10.0])
     assert off_metrics["latency"] == pytest.approx(4.0)
     assert off_metrics["slo_violation"] == pytest.approx(1.0)
     assert off_metrics["cloud_fraction"] == pytest.approx(0.5)
     assert off_metrics["task_latency_count"] == 1
     assert done is False
 
-    _, _, dep_metrics, done = hedger._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
+    _, _, dep_metrics, done, _state_debug = hedger._collect_deployment_state(prev_deploy_mask=prev_deploy_mask)
     assert dep_metrics["avg_offloading_reward"] == pytest.approx(2.0)
     assert dep_metrics["deploy_change_cost"] == pytest.approx(0.25)
     assert done is False
@@ -943,7 +874,7 @@ def test_build_training_cfg_parses_deployment_default_warmup():
 
     cfg = hedger._build_training_cfg({
         "training": {
-            "stage": "deployment_adaptation",
+            "stage": "deployment_online",
             "total_updates": 12,
             "ppo_epochs": 2,
             "rollout": {"deployment": 6, "offloading": 64},
@@ -972,7 +903,7 @@ def test_build_training_stage_cfg_accepts_only_explicit_stage_names():
     hedger = Hedger.__new__(Hedger)
 
     warmup = hedger._build_training_stage_cfg("offloading_warmup")
-    adaptation = hedger._build_training_stage_cfg("deployment_adaptation")
+    adaptation = hedger._build_training_stage_cfg("deployment_online")
     finetune = hedger._build_training_stage_cfg("joint_finetune")
 
     assert warmup == HedgerTrainingStageCfg(
@@ -986,12 +917,13 @@ def test_build_training_stage_cfg_accepts_only_explicit_stage_names():
     with pytest.raises(ValueError):
         hedger._build_training_stage_cfg("stage1")
     assert adaptation == HedgerTrainingStageCfg(
-        name="deployment_adaptation",
+        name="deployment_online",
         run_deployment_worker=True,
         update_deployment_policy=True,
         run_offloading_worker=True,
         update_offloading_policy=False,
         use_frozen_offloading_rollout=True,
+        deployment_train_mode="online",
     )
     assert finetune == HedgerTrainingStageCfg(
         name="joint_finetune",
@@ -1000,6 +932,7 @@ def test_build_training_stage_cfg_accepts_only_explicit_stage_names():
         run_offloading_worker=True,
         update_offloading_policy=True,
         use_frozen_offloading_rollout=False,
+        deployment_train_mode="ppo",
     )
 
 
@@ -1016,6 +949,7 @@ def test_inference_hedger_initializes_runtime_and_starts_worker_threads(monkeypa
     hedger.shared_topology_encoder = torch.nn.Identity()
     hedger.deployment_agent = torch.nn.Identity()
     hedger.offloading_agent = torch.nn.Identity()
+    hedger._model_lock = threading.RLock()
     hedger.deployment_thread_stop_event = threading.Event()
     hedger.offloading_thread_stop_event = threading.Event()
     hedger.state_buffer = types.SimpleNamespace()
@@ -1023,13 +957,14 @@ def test_inference_hedger_initializes_runtime_and_starts_worker_threads(monkeypa
         "/tmp/hedger-test",
         load=HedgerCheckpointLoadCfg(
             enabled=True,
-            from_stage="deployment_adaptation",
+            from_stage="deployment_online",
             which="latest",
             restore_optimizer=False,
         ),
     )
-    hedger._loaded_checkpoint_path = "/tmp/hedger-test/deployment_adaptation/latest.pt"
+    hedger._loaded_checkpoint_path = "/tmp/hedger-test/deployment_online/latest.pt"
     hedger.deployment_plan = None
+    hedger.offloading_plan = None
     hedger.initial_deployment_plan = {"svc-a": ["edge-a"], "svc-b": [cloud_name]}
     hedger.cur_deploy_mask = None
     hedger.inference_cfg = HedgerInferenceCfg()
@@ -1049,6 +984,9 @@ def test_inference_hedger_initializes_runtime_and_starts_worker_threads(monkeypa
 
         def is_alive(self):
             return True
+
+        def join(self, timeout=None):
+            return None
 
     def fake_sleep(_):
         hedger.deployment_thread_stop_event.set()
@@ -1093,6 +1031,7 @@ def test_inference_hedger_can_run_offloading_only_benchmark(monkeypatch):
     hedger.shared_topology_encoder = torch.nn.Identity()
     hedger.deployment_agent = torch.nn.Identity()
     hedger.offloading_agent = torch.nn.Identity()
+    hedger._model_lock = threading.RLock()
     hedger.deployment_thread_stop_event = threading.Event()
     hedger.offloading_thread_stop_event = threading.Event()
     hedger.state_buffer = types.SimpleNamespace()
@@ -1108,6 +1047,7 @@ def test_inference_hedger_can_run_offloading_only_benchmark(monkeypatch):
     )
     hedger._loaded_checkpoint_path = "/tmp/hedger-test/offloading_warmup/latest.pt"
     hedger.deployment_plan = None
+    hedger.offloading_plan = None
     hedger.initial_deployment_plan = {"svc-a": ["edge-a"], "svc-b": [cloud_name]}
     hedger.cur_deploy_mask = None
     hedger.inference_cfg = HedgerInferenceCfg(
@@ -1156,7 +1096,7 @@ def test_inference_hedger_can_run_offloading_only_benchmark(monkeypatch):
 
 
 @pytest.mark.unit
-def test_train_hedger_deployment_adaptation_keeps_frozen_offloading_worker(monkeypatch):
+def test_train_hedger_deployment_online_keeps_frozen_offloading_worker(monkeypatch):
     logical_topology, physical_topology = build_test_topologies()
     cloud_name = physical_topology[physical_topology.cloud_idx]
 
@@ -1168,7 +1108,7 @@ def test_train_hedger_deployment_adaptation_keeps_frozen_offloading_worker(monke
     hedger.seed = 0
     hedger.deployment_interval = 10.0
     hedger.offloading_interval = 1.0
-    hedger.training_cfg = build_training_cfg("deployment_adaptation", total_updates=0)
+    hedger.training_cfg = build_training_cfg("deployment_online", total_updates=0)
     hedger.checkpoint_cfg = build_checkpoint_cfg(
         "/tmp/hedger-test",
         save=HedgerCheckpointSaveCfg(interval_updates=10),
@@ -1177,8 +1117,10 @@ def test_train_hedger_deployment_adaptation_keeps_frozen_offloading_worker(monke
     hedger.shared_topology_encoder = torch.nn.Identity()
     hedger.deployment_agent = torch.nn.Identity()
     hedger.offloading_agent = torch.nn.Identity()
+    hedger._model_lock = threading.RLock()
+    hedger._data_lock = threading.Lock()
     hedger.stage_cfg = HedgerTrainingStageCfg(
-        name="deployment_adaptation",
+        name="deployment_online",
         run_deployment_worker=True,
         update_deployment_policy=True,
         run_offloading_worker=True,
@@ -1196,6 +1138,10 @@ def test_train_hedger_deployment_adaptation_keeps_frozen_offloading_worker(monke
     hedger.offloading_plan = None
     hedger.deployment_transitions = []
     hedger.offloading_transitions = []
+    hedger.deployment_dataset_writer = None
+    hedger.dep_update_recorder = None
+    hedger.off_update_recorder = None
+    hedger.record_cfg = HedgerRecordCfg()
     hedger._deployment_update_steps = 0
     hedger._offloading_update_steps = 0
     hedger._epoch = 0
@@ -1239,7 +1185,15 @@ def test_stage_aware_checkpoint_saves_latest_final_and_prunes_history(tmp_path):
     hedger.device = torch.device("cpu")
     hedger.seed = 7
     hedger.mode = "train"
-    hedger.training_cfg = build_training_cfg("deployment_adaptation")
+    hedger.training_cfg = build_training_cfg("deployment_online")
+    hedger.stage_cfg = HedgerTrainingStageCfg(
+        name="deployment_online",
+        run_deployment_worker=False,
+        update_deployment_policy=False,
+        run_offloading_worker=False,
+        update_offloading_policy=False,
+        deployment_train_mode="online",
+    )
     hedger.checkpoint_cfg = build_checkpoint_cfg(
         str(tmp_path),
         save=HedgerCheckpointSaveCfg(
@@ -1253,6 +1207,7 @@ def test_stage_aware_checkpoint_saves_latest_final_and_prunes_history(tmp_path):
     hedger.shared_topology_encoder = torch.nn.Linear(1, 1)
     hedger.deployment_agent = TinyCheckpointAgent()
     hedger.offloading_agent = TinyCheckpointAgent()
+    hedger._model_lock = threading.RLock()
     hedger._deployment_update_steps = 2
     hedger._offloading_update_steps = 5
     hedger._epoch = 0
@@ -1269,7 +1224,7 @@ def test_stage_aware_checkpoint_saves_latest_final_and_prunes_history(tmp_path):
     hedger._global_update_step = 18
     hedger.save_checkpoint(stage_step=12, is_final=True)
 
-    stage_dir = tmp_path / "deployment_adaptation"
+    stage_dir = tmp_path / "deployment_online"
     latest_path = stage_dir / "latest.pt"
     final_path = stage_dir / "final.pt"
     snapshot_dir = stage_dir / "snapshots"
@@ -1281,7 +1236,7 @@ def test_stage_aware_checkpoint_saves_latest_final_and_prunes_history(tmp_path):
 
     latest_ckpt = torch.load(latest_path, map_location="cpu")
     final_ckpt = torch.load(final_path, map_location="cpu")
-    assert latest_ckpt["meta"]["training_stage"] == "deployment_adaptation"
+    assert latest_ckpt["meta"]["training_stage"] == "deployment_online"
     assert latest_ckpt["meta"]["stage_step"] == 12
     assert latest_ckpt["meta"]["global_step"] == 18
     assert latest_ckpt["meta"]["source_checkpoint"] == "/tmp/parent/latest.pt"
@@ -1295,10 +1250,18 @@ def test_load_checkpoint_resumes_same_stage_counters(tmp_path):
     writer.seed = 3
     writer.mode = "train"
     writer.training_cfg = build_training_cfg("offloading_warmup")
+    writer.stage_cfg = HedgerTrainingStageCfg(
+        name="offloading_warmup",
+        run_deployment_worker=False,
+        update_deployment_policy=False,
+        run_offloading_worker=False,
+        update_offloading_policy=False,
+    )
     writer.checkpoint_cfg = build_checkpoint_cfg(str(tmp_path))
     writer.shared_topology_encoder = torch.nn.Linear(1, 1)
     writer.deployment_agent = TinyCheckpointAgent()
     writer.offloading_agent = TinyCheckpointAgent()
+    writer._model_lock = threading.RLock()
     writer._deployment_update_steps = 1
     writer._offloading_update_steps = 9
     writer._epoch = 6
@@ -1311,6 +1274,13 @@ def test_load_checkpoint_resumes_same_stage_counters(tmp_path):
     reader.seed = 3
     reader.mode = "train"
     reader.training_cfg = build_training_cfg("offloading_warmup")
+    reader.stage_cfg = HedgerTrainingStageCfg(
+        name="offloading_warmup",
+        run_deployment_worker=False,
+        update_deployment_policy=False,
+        run_offloading_worker=False,
+        update_offloading_policy=False,
+    )
     reader.checkpoint_cfg = build_checkpoint_cfg(
         str(tmp_path),
         load=HedgerCheckpointLoadCfg(
@@ -1327,6 +1297,7 @@ def test_load_checkpoint_resumes_same_stage_counters(tmp_path):
     reader.shared_topology_encoder = torch.nn.Linear(1, 1)
     reader.deployment_agent = TinyCheckpointAgent()
     reader.offloading_agent = TinyCheckpointAgent()
+    reader._model_lock = threading.RLock()
     reader._deployment_update_steps = 0
     reader._offloading_update_steps = 0
     reader._epoch = 0
@@ -1348,11 +1319,20 @@ def test_load_checkpoint_from_previous_stage_resets_stage_local_counters(tmp_pat
     writer.device = torch.device("cpu")
     writer.seed = 11
     writer.mode = "train"
-    writer.training_cfg = build_training_cfg("deployment_adaptation")
+    writer.training_cfg = build_training_cfg("deployment_online")
+    writer.stage_cfg = HedgerTrainingStageCfg(
+        name="deployment_online",
+        run_deployment_worker=False,
+        update_deployment_policy=False,
+        run_offloading_worker=False,
+        update_offloading_policy=False,
+        deployment_train_mode="online",
+    )
     writer.checkpoint_cfg = build_checkpoint_cfg(str(tmp_path))
     writer.shared_topology_encoder = torch.nn.Linear(1, 1)
     writer.deployment_agent = TinyCheckpointAgent()
     writer.offloading_agent = TinyCheckpointAgent()
+    writer._model_lock = threading.RLock()
     writer._deployment_update_steps = 4
     writer._offloading_update_steps = 7
     writer._epoch = 5
@@ -1365,11 +1345,18 @@ def test_load_checkpoint_from_previous_stage_resets_stage_local_counters(tmp_pat
     reader.seed = 11
     reader.mode = "train"
     reader.training_cfg = build_training_cfg("joint_finetune")
+    reader.stage_cfg = HedgerTrainingStageCfg(
+        name="joint_finetune",
+        run_deployment_worker=False,
+        update_deployment_policy=False,
+        run_offloading_worker=False,
+        update_offloading_policy=False,
+    )
     reader.checkpoint_cfg = build_checkpoint_cfg(
         str(tmp_path),
         load=HedgerCheckpointLoadCfg(
             enabled=True,
-            from_stage="deployment_adaptation",
+            from_stage="deployment_online",
             which="final",
             restore_encoder=True,
             restore_deployment_agent=True,
@@ -1381,6 +1368,7 @@ def test_load_checkpoint_from_previous_stage_resets_stage_local_counters(tmp_pat
     reader.shared_topology_encoder = torch.nn.Linear(1, 1)
     reader.deployment_agent = TinyCheckpointAgent()
     reader.offloading_agent = TinyCheckpointAgent()
+    reader._model_lock = threading.RLock()
     reader._deployment_update_steps = 0
     reader._offloading_update_steps = 0
     reader._epoch = 0
@@ -1393,19 +1381,21 @@ def test_load_checkpoint_from_previous_stage_resets_stage_local_counters(tmp_pat
     assert reader._global_update_step == 23
     assert reader._deployment_update_steps == 0
     assert reader._offloading_update_steps == 0
-    assert reader._loaded_checkpoint_path.endswith("deployment_adaptation/final.pt")
+    assert reader._loaded_checkpoint_path.endswith("deployment_online/final.pt")
 
 
 @pytest.mark.unit
 def test_register_physical_topology_syncs_agent_indices():
     hedger = Hedger.__new__(Hedger)
+    hedger.logical_topology = None
     hedger.physical_topology = None
     hedger.deployment_agent = types.SimpleNamespace(cloud_idx=-1)
     hedger.offloading_agent = types.SimpleNamespace(cloud_idx=-1)
 
     hedger.register_physical_topology(["edge-a", "edge-b"], "edge-b")
 
-    assert hedger.physical_topology.nodes == ["edge-a", "edge-b", "cloud.kubeedge"]
+    cloud_name = hedger.physical_topology[hedger.physical_topology.cloud_idx]
+    assert hedger.physical_topology.nodes == ["edge-a", "edge-b", cloud_name]
     assert hedger.physical_topology.source_idx == 1
     assert hedger.physical_topology.cloud_idx == 2
     assert hedger.deployment_agent.cloud_idx == 2
@@ -1485,6 +1475,7 @@ def test_hedger_agent_get_schedule_plan_tolerates_missing_default_mappings(monke
 
     policy = agent.get_schedule_plan(
         {
+            "source_id": 1,
             "source": {"id": 1},
             "source_device": "edge-a",
             "all_edge_devices": ["edge-a", "edge-b"],
@@ -1524,6 +1515,7 @@ def test_hedger_agent_get_schedule_plan_forces_default_offloading_during_latency
 
     policy = agent.get_schedule_plan(
         {
+            "source_id": 1,
             "source": {"id": 1},
             "source_device": "edge-a",
             "all_edge_devices": ["edge-a", "edge-b"],
@@ -1557,8 +1549,6 @@ def test_hedger_agent_update_resource_tolerates_partial_resource_updates():
         add_bandwidths=lambda value: calls.append(("bandwidth", value)),
         add_gpu_flops=lambda device, value: calls.append(("gpu_flops", device, value)),
         add_memory_capacity=lambda device, value: calls.append(("memory_capacity", device, value)),
-        add_gpu_utilization=lambda device, value: calls.append(("gpu_usage", device, value)),
-        add_memory_utilization=lambda device, value: calls.append(("memory_usage", device, value)),
         add_model_flops=lambda service, value: calls.append(("model_flops", service, value)),
         add_model_memory=lambda service, value: calls.append(("model_memory", service, value)),
         add_model_memory_from_device=lambda device, service, value: calls.append(
@@ -1579,7 +1569,6 @@ def test_hedger_agent_update_resource_tolerates_partial_resource_updates():
 
     assert calls == [
         ("bandwidth", 12.5),
-        ("gpu_usage", "edge-a", 0.3),
         ("model_flops", "svc-a", 10.0),
     ]
 
@@ -1591,6 +1580,7 @@ def test_hedger_latency_guard_triggers_defaults_and_recovers():
 
     hedger = Hedger.__new__(Hedger)
     hedger.mode = "train"
+    hedger.device = torch.device("cpu")
     hedger.latency_guard_cfg = HedgerLatencyGuardCfg(
         enabled=True,
         latency_threshold_s=2.0,
@@ -1802,8 +1792,9 @@ def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
     calls = []
     buffer = types.SimpleNamespace(
         add_task_complexity=lambda service, value: calls.append(("complexity", service, value)),
-        add_task_latency=lambda service, value, deployment_version=None: calls.append(
-            ("latency", service, value, deployment_version)
+        get_task_observation_version=lambda: 1,
+        add_task_runtime_pair=lambda service, device, real_time, complexity, task_version=None, deployment_version=None: calls.append(
+            ("runtime_pair", service, device, real_time, complexity, task_version, deployment_version)
         ),
         add_task_end_to_end_latency=lambda value, deployment_version=None: calls.append(
             ("end_to_end_latency", value, deployment_version)
@@ -1819,10 +1810,12 @@ def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
     task = types.SimpleNamespace(
         get_source_id=lambda: 7,
         get_deployment_version=lambda: 3,
-        calculate_total_time=lambda: 0.9,
+        get_real_end_to_end_time=lambda: 0.9,
         get_dag=lambda: types.SimpleNamespace(nodes=["svc-a", TaskConstant.START.value, "svc-b", TaskConstant.END.value]),
         get_service=lambda name: types.SimpleNamespace(
-            get_execute_time=lambda: 0.2 if name == "svc-a" else 0.4,
+            get_service_total_time=lambda: 0.2 if name == "svc-a" else 0.4,
+            get_real_execute_time=lambda: 0.15 if name == "svc-a" else 0.35,
+            get_execute_device=lambda: "edge-a" if name == "svc-a" else "cloud.kubeedge",
             get_scenario_data=lambda: {"obj_num": [1, 3]} if name == "svc-a" else {"obj_num": 5},
         ),
     )
@@ -1830,11 +1823,11 @@ def test_hedger_agent_update_task_starts_hedger_after_real_task_update():
     agent.update_task(task)
 
     assert calls == [
-        ("complexity", "svc-a", 2.0),
-        ("latency", "svc-a", 0.2, 3),
-        ("complexity", "svc-b", 5.0),
-        ("latency", "svc-b", 0.4, 3),
         ("end_to_end_latency", 0.9, 3),
+        ("complexity", "svc-a", 2.0),
+        ("runtime_pair", "svc-a", "edge-a", 0.15, 2.0, 1, 3),
+        ("complexity", "svc-b", 5.0),
+        ("runtime_pair", "svc-b", "cloud.kubeedge", 0.35, 5.0, 1, 3),
         ("start", "first task update from source 7"),
     ]
 
@@ -1853,16 +1846,8 @@ def test_state_buffer_bandwidth_model_is_device_agnostic():
     buffer.add_model_memory({"svc-a": 1.0, "svc-b": 2.0})
     buffer.add_gpu_flops({"edge-a": 100.0, "edge-b": 80.0, physical_topology[physical_topology.cloud_idx]: 1000.0})
     buffer.add_memory_capacity({"edge-a": 8.0, "edge-b": 6.0, physical_topology[physical_topology.cloud_idx]: 64.0})
-    buffer.add_gpu_utilization("edge-a", 0.2)
-    buffer.add_gpu_utilization("edge-b", 0.3)
-    buffer.add_gpu_utilization(physical_topology[physical_topology.cloud_idx], 0.1)
-    buffer.add_memory_utilization("edge-a", 0.4)
-    buffer.add_memory_utilization("edge-b", 0.5)
-    buffer.add_memory_utilization(physical_topology[physical_topology.cloud_idx], 0.2)
     buffer.add_task_complexity("svc-a", 3.0)
     buffer.add_task_complexity("svc-b", 5.0)
-    buffer.add_task_latency("svc-a", 1.0)
-    buffer.add_task_latency("svc-b", 2.0)
 
     buffer.add_bandwidths(12.5)
 
@@ -1871,9 +1856,7 @@ def test_state_buffer_bandwidth_model_is_device_agnostic():
         wait_cfg=BufferWaitCfg(min_dynamic_len=1, require_full_seq=False, timeout_s=0.0),
     )
 
-    assert phys_feats["bandwidth_seq"][0] == pytest.approx([100.0])
-    assert phys_feats["bandwidth_seq"][1] == pytest.approx([100.0])
-    assert phys_feats["bandwidth_seq"][2] == pytest.approx([12.5])
+    assert phys_feats["bandwidth_latest"] == pytest.approx([100.0, 100.0, 12.5])
 
 
 @pytest.mark.unit

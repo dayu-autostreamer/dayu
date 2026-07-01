@@ -3,6 +3,7 @@ import re
 class ServiceConfig:
     SERVICE_PATTERN = [
         re.compile(r"^processor-(?P<service>.+)-(?P<node>[^-]+)-(?:edgeworker|cloudworker)(?:-|$)"),
+        re.compile(r"^processor-(?P<service>.+)-(?P<node>(?:edge|cloud)-[^-]+)-\d+$"),
         re.compile(r"^processor-(?P<service>.+)-(?P<node>[^-]+)-[^-]+$"),
         re.compile(r"^processor-(?P<service>.+)-[^-]+$")
         ]

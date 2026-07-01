@@ -25,7 +25,7 @@ data_getter_filter_casva_module = importlib.import_module(
     "core.lib.algorithms.data_getter_filter.casva_getter_filter"
 )
 data_getter_filter_scheduler_module = importlib.import_module(
-    "core.lib.algorithms.data_getter_filter.scheduler_getter_filter"
+    "core.lib.algorithms.data_getter_filter.scheduler_permitted_getter_filter"
 )
 frame_filter_dynamic_module = importlib.import_module("core.lib.algorithms.frame_filter.dynamic_filter")
 frame_filter_motion_module = importlib.import_module("core.lib.algorithms.frame_filter.motion_filter")
@@ -209,6 +209,7 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
     system = SimpleNamespace(
         task_dag=task_dag,
         local_device="edge-a",
+        cloud_device="cloud-a",
         meta_data={"fps": 10, "buffer_size": 2},
         service_deployment={},
     )
@@ -217,7 +218,7 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
 
     after_schedule_module.SimpleASOperation()(system, None)
     assert all(
-        node.service.get_execute_device() == "edge-a"
+        node.service.get_execute_device() == "cloud-a"
         for name, node in system.task_dag.nodes.items()
         if name not in (TaskConstant.START.value, TaskConstant.END.value)
     )
@@ -309,7 +310,7 @@ def test_before_submit_task_operations_track_file_metadata_and_last_frame_state(
 @pytest.mark.unit
 def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contracts(monkeypatch):
     time_values = iter([10.0, 20.0, 22.0])
-    monkeypatch.setattr(data_getter_filter_casva_module.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(data_getter_filter_casva_module, "time", SimpleNamespace(time=lambda: next(time_values)))
 
     casva_filter = data_getter_filter_module.CASVADataGetterFilter(data_coming_interval=5)
     assert casva_filter(SimpleNamespace()) is True
@@ -320,7 +321,7 @@ def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contra
     assert data_getter_filter_module.SimpleDataGetterFilter()(SimpleNamespace()) is True
 
     monkeypatch.setattr(
-        data_getter_filter_module.SchedulerDataGetterFilter,
+        data_getter_filter_module.SchedulerPermittedDataGetterFilter,
         "__init__",
         lambda self: setattr(self, "scheduler_address", "http://scheduler/generation_admission")
         or setattr(self, "fail_open", True)
@@ -329,7 +330,7 @@ def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contra
         or setattr(self, "_last_block_log_t", 0.0)
         or setattr(self, "_last_error_log_t", 0.0),
     )
-    scheduler_filter = data_getter_filter_module.SchedulerDataGetterFilter()
+    scheduler_filter = data_getter_filter_module.SchedulerPermittedDataGetterFilter()
     monkeypatch.setattr(scheduler_filter, "_log_throttled", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         data_getter_filter_scheduler_module,
@@ -349,7 +350,7 @@ def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contra
     obj_size = scenario_extraction_module.ObjectSizeExtraction()(results, task)
     assert obj_size[0] > 0
     assert obj_size[1] == 0
-    assert scenario_extraction_module.ObjectVelocityExtraction()(results, task) is None
+    assert scenario_extraction_module.ObjectVelocityExtraction()(results, task) == 0
 
     simple_queue = task_queue_module.SimpleQueue()
     assert simple_queue.get() is None

@@ -5,9 +5,8 @@ import time
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks, HTTPException
+from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks, HTTPException, Request
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse, FileResponse, StreamingResponse
 
@@ -371,19 +370,20 @@ class BackendServer:
 
         return info
 
-    async def upload_datasource_config_file(self,
-                                            files: Optional[List[UploadFile]] = File(None),
-                                            file: Optional[UploadFile] = File(None)):
+    async def upload_datasource_config_file(self, request: Request):
         """
         body: file/files
         :return:
             {'state':success/fail, 'msg':'...'}
         """
+        form = await request.form()
         upload_items = []
-        if files:
-            upload_items.extend(files)
-        if file:
-            upload_items.append(file)
+        for field_name in ("files", "file"):
+            for upload in form.getlist(field_name):
+                if isinstance(upload, UploadFile) or (
+                    hasattr(upload, "filename") and hasattr(upload, "read")
+                ):
+                    upload_items.append(upload)
 
         if not upload_items:
             return {'state': 'fail', 'msg': 'No datasource config files uploaded', 'results': []}

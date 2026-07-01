@@ -101,7 +101,12 @@ def test_declared_scheduler_and_service_templates_are_loadable():
     for policy in base_info["scheduler-policies"]:
         policy_docs = helper.load_policy_apply_yaml(policy)
         assert "scheduler" in policy_docs
-        assert set(policy["dependency"].keys()).issubset(policy_docs.keys())
+        dependencies = policy.get("dependency") or {
+            name: policy[name]
+            for name in ("generator", "controller", "distributor", "monitor")
+            if name in policy
+        }
+        assert set(dependencies.keys()).issubset(policy_docs.keys())
 
     for service in base_info["services"]:
         processor_doc = YamlOps.read_yaml(REPO_ROOT / "template" / "processor" / service["yaml"])

@@ -149,7 +149,7 @@ class FakeBackendCoreManagement:
 
     def fill_datasource_config(self, config):
         config = copy.deepcopy(config)
-        config["source_label"] = "source-config-1"
+        config["source_label"] = f"source-config-{len(self.source_configs)}"
         config["source_list"][0]["id"] = 0
         return config
 
