@@ -133,7 +133,9 @@ export default {
 
 		const showEmptyState = computed(() => {
 			const hasData = safeData.value.length > 0;
-			const hasValidData = hasData && activeVariables.value.some((varName) => safeData.value.some((entry) => entry[varName] !== undefined));
+			const hasValidData =
+				hasData &&
+				activeVariables.value.some((varName) => safeData.value.some((entry) => entry[varName] !== undefined));
 			return !hasValidData;
 		});
 
@@ -335,21 +337,20 @@ export default {
 						},
 					},
 				},
-				dataZoom:
-					useXAxisZoom
-						? [
-								{ type: 'inside', xAxisIndex: 0 },
-								{
-									type: 'slider',
-									xAxisIndex: 0,
-									height: 16,
-									bottom: 8,
-									borderColor: 'transparent',
-									backgroundColor: 'rgba(148, 163, 184, 0.12)',
-									fillerColor: 'rgba(37, 99, 235, 0.18)',
-								},
-						  ]
-						: [],
+				dataZoom: useXAxisZoom
+					? [
+							{ type: 'inside', xAxisIndex: 0 },
+							{
+								type: 'slider',
+								xAxisIndex: 0,
+								height: 16,
+								bottom: 8,
+								borderColor: 'transparent',
+								backgroundColor: 'rgba(148, 163, 184, 0.12)',
+								fillerColor: 'rgba(37, 99, 235, 0.18)',
+							},
+					  ]
+					: [],
 				series,
 			};
 		};
@@ -420,9 +421,7 @@ export default {
 	height: 100%;
 	min-height: 400px;
 	border-radius: 18px;
-	background:
-		linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.9)),
-		#ffffff;
+	background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.9)), #ffffff;
 }
 
 .chart-wrapper {

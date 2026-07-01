@@ -19,7 +19,13 @@
 						</el-select>
 					</div>
 
-					<el-button type="primary" plain :disabled="!selectedDataSource" :loading="isUploading" @click="triggerConfigUpload">
+					<el-button
+						type="primary"
+						plain
+						:disabled="!selectedDataSource"
+						:loading="isUploading"
+						@click="triggerConfigUpload"
+					>
 						Upload Config
 					</el-button>
 					<el-button type="primary" :disabled="!selectedDataSource" @click="exportTaskLog">Export Result Log</el-button>
@@ -282,7 +288,9 @@ export default {
 
 			const validVizIds = new Set(this.currentVisualizationConfig.map((v) => String(v.id)));
 			return this.bufferedTaskCache[sourceId]
-				.filter((task) => task.data?.some((item) => validVizIds.has(String(item.id)) && String(item.id) === String(vizConfig.id)))
+				.filter((task) =>
+					task.data?.some((item) => validVizIds.has(String(item.id)) && String(item.id) === String(vizConfig.id))
+				)
 				.map((task) => {
 					const vizDataItem = task.data.find((item) => String(item.id) === String(vizConfig.id));
 					return {
@@ -411,7 +419,9 @@ export default {
 				this.bufferedTaskCache = reactive({ ...newCache });
 
 				if (this.selectedDataSource && this.visualizationConfig[this.selectedDataSource]) {
-					this.visualizationConfig[this.selectedDataSource] = this.visualizationConfig[this.selectedDataSource].map((cfg) => ({ ...cfg }));
+					this.visualizationConfig[this.selectedDataSource] = this.visualizationConfig[this.selectedDataSource].map(
+						(cfg) => ({ ...cfg })
+					);
 				}
 
 				this.$nextTick(() => {
@@ -459,8 +469,7 @@ export default {
 	padding: 20px;
 	display: grid;
 	gap: 20px;
-	background:
-		radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
+	background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
 		radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.08), transparent 24%);
 }
 
@@ -468,9 +477,7 @@ export default {
 	padding: 22px;
 	border-radius: 28px;
 	border: 1px solid #e2e8f0;
-	background:
-		linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96)),
-		#ffffff;
+	background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96)), #ffffff;
 	box-shadow: 0 22px 48px rgba(15, 23, 42, 0.06);
 }
 
@@ -556,9 +563,7 @@ export default {
 	flex-direction: column;
 	border-radius: 24px;
 	border: 1px solid #e2e8f0;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 36%),
-		#ffffff;
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 36%), #ffffff;
 	box-shadow: 0 18px 40px rgba(15, 23, 42, 0.05);
 	overflow: hidden;
 }

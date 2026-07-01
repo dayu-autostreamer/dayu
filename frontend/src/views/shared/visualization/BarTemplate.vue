@@ -306,9 +306,7 @@ export default {
 	height: 100%;
 	min-height: 420px;
 	border-radius: 18px;
-	background:
-		linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.9)),
-		#ffffff;
+	background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.9)), #ffffff;
 }
 
 .chart-wrapper {

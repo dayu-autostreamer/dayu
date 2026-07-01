@@ -307,7 +307,9 @@ function buildLayout(config, data) {
 		edges: normalizedEdges,
 		width: Math.max(bounds.maxX - bounds.minX + GRAPH_PADDING * 2, 180),
 		height: Math.max(bounds.maxY - bounds.minY + GRAPH_PADDING * 2, 120),
-		markerId: `topology-arrow-${hashString(`${config?.id || config?.name || 'topology'}-${entries.map(([id]) => id).join('-')}`)}`,
+		markerId: `topology-arrow-${hashString(
+			`${config?.id || config?.name || 'topology'}-${entries.map(([id]) => id).join('-')}`
+		)}`,
 	};
 }
 
@@ -380,11 +382,9 @@ export default {
 	min-height: 0;
 	flex: 1 1 auto;
 	border-radius: 18px;
-	background:
-		linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+	background: linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
 		linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
-		linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.92)),
-		#ffffff;
+		linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.92)), #ffffff;
 	background-size: 24px 24px, 24px 24px, auto, auto;
 	overflow: hidden;
 }

@@ -169,10 +169,8 @@ export default {
 	display: grid;
 	place-items: center;
 	border-radius: 18px;
-	background:
-		radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 26%),
-		linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.92)),
-		#ffffff;
+	background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 26%),
+		linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.92)), #ffffff;
 	overflow: hidden;
 }
 
@@ -183,8 +181,7 @@ export default {
 	align-items: center;
 	justify-content: center;
 	border-radius: 16px;
-	background:
-		linear-gradient(45deg, rgba(226, 232, 240, 0.6) 25%, transparent 25%),
+	background: linear-gradient(45deg, rgba(226, 232, 240, 0.6) 25%, transparent 25%),
 		linear-gradient(-45deg, rgba(226, 232, 240, 0.6) 25%, transparent 25%),
 		linear-gradient(45deg, transparent 75%, rgba(226, 232, 240, 0.6) 75%),
 		linear-gradient(-45deg, transparent 75%, rgba(226, 232, 240, 0.6) 75%);

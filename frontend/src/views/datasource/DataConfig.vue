@@ -27,17 +27,29 @@
 					</el-icon>
 					<div class="upload-inline-trigger__content">
 						<div class="upload-inline-trigger__title">
-							{{ pendingFiles.length === 1 ? pendingFiles[0].name : pendingFiles.length ? `${pendingFiles.length} files selected` : 'Select config files' }}
+							{{
+								pendingFiles.length === 1
+									? pendingFiles[0].name
+									: pendingFiles.length
+									? `${pendingFiles.length} files selected`
+									: 'Select config files'
+							}}
 						</div>
 						<div class="upload-inline-trigger__subtitle">
-							{{ pendingFiles.length ? `${formatFileSize(pendingFilesTotalSize)} total` : 'Drag YAML files here or click to browse' }}
+							{{
+								pendingFiles.length
+									? `${formatFileSize(pendingFilesTotalSize)} total`
+									: 'Drag YAML files here or click to browse'
+							}}
 						</div>
 					</div>
 				</button>
 
 				<div class="upload-inline-actions">
 					<el-button v-if="pendingFiles.length" text @click="clearPendingFiles">Clear all</el-button>
-					<el-button type="primary" round :loading="uploadLoading" :disabled="!pendingFiles.length" @click="uploadFile">Upload</el-button>
+					<el-button type="primary" round :loading="uploadLoading" :disabled="!pendingFiles.length" @click="uploadFile"
+						>Upload</el-button
+					>
 				</div>
 			</div>
 
@@ -47,11 +59,20 @@
 						<div class="upload-queue__name">{{ file.name }}</div>
 						<div class="upload-queue__meta">{{ formatFileSize(file.size) }}</div>
 					</div>
-					<button type="button" class="upload-queue__remove" @click="removePendingFile(getPendingFileKey(file))">Remove</button>
+					<button type="button" class="upload-queue__remove" @click="removePendingFile(getPendingFileKey(file))">
+						Remove
+					</button>
 				</div>
 			</div>
 
-			<input ref="fileInput" class="hidden-file-input" type="file" accept=".yaml,.yml" multiple @change="handleFileChange" />
+			<input
+				ref="fileInput"
+				class="hidden-file-input"
+				type="file"
+				accept=".yaml,.yml"
+				multiple
+				@change="handleFileChange"
+			/>
 		</section>
 
 		<section class="section-card source-list-section">
@@ -73,7 +94,13 @@
 					</div>
 
 					<div class="builder-buttons">
-						<el-button type="primary" round :disabled="state !== 'close' || !selected_label" :loading="loading" @click="submit_query">
+						<el-button
+							type="primary"
+							round
+							:disabled="state !== 'close' || !selected_label"
+							:loading="loading"
+							@click="submit_query"
+						>
 							Open Datasource
 						</el-button>
 						<el-button type="danger" round :disabled="state === 'close'" :loading="kill_loading" @click="stop_query">
@@ -105,8 +132,16 @@
 						</div>
 
 						<div class="source-card__status">
-							<el-tag v-if="state === 'open' && source_label === item.source_label" type="success" size="small" effect="plain">Running</el-tag>
-							<el-tag v-else-if="selected_label === item.source_label" type="info" size="small" effect="plain">Selected</el-tag>
+							<el-tag
+								v-if="state === 'open' && source_label === item.source_label"
+								type="success"
+								size="small"
+								effect="plain"
+								>Running</el-tag
+							>
+							<el-tag v-else-if="selected_label === item.source_label" type="info" size="small" effect="plain"
+								>Selected</el-tag
+							>
 						</div>
 					</div>
 
@@ -322,7 +357,9 @@ export default {
 
 				const uploadResults = Array.isArray(data.results) ? data.results : [];
 				const succeeded = uploadResults.filter((result) => result.state === 'success');
-				const failedNames = new Set(uploadResults.filter((result) => result.state !== 'success').map((result) => result.filename));
+				const failedNames = new Set(
+					uploadResults.filter((result) => result.state !== 'success').map((result) => result.filename)
+				);
 
 				if (data.state === 'success') {
 					this.clearPendingFiles();
@@ -458,8 +495,7 @@ export default {
 	padding: 20px;
 	display: grid;
 	gap: 24px;
-	background:
-		radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
+	background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
 		radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.08), transparent 24%);
 }
 
@@ -467,9 +503,7 @@ export default {
 	padding: 24px;
 	border-radius: 28px;
 	border: 1px solid #e2e8f0;
-	background:
-		linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96)),
-		#ffffff;
+	background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96)), #ffffff;
 	box-shadow: 0 22px 48px rgba(15, 23, 42, 0.06);
 }
 
@@ -509,8 +543,7 @@ export default {
 	padding: 16px 18px;
 	border: 1.5px dashed #bfdbfe;
 	border-radius: 22px;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.08), transparent 34%),
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), transparent 34%),
 		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
@@ -650,9 +683,7 @@ export default {
 	padding: 18px;
 	border-radius: 22px;
 	border: 1px solid #e2e8f0;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 34%),
-		#ffffff;
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 34%), #ffffff;
 	box-shadow: 0 16px 34px rgba(15, 23, 42, 0.05);
 	cursor: pointer;
 	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
@@ -677,9 +708,7 @@ export default {
 }
 
 .source-card.is-active {
-	background:
-		linear-gradient(135deg, rgba(16, 185, 129, 0.08), transparent 34%),
-		#ffffff;
+	background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), transparent 34%), #ffffff;
 }
 
 .source-card__header,
@@ -802,8 +831,7 @@ export default {
 	text-align: center;
 	border: 1.5px dashed #cbd5e1;
 	border-radius: 22px;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%),
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%),
 		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 	padding: 32px;
 }

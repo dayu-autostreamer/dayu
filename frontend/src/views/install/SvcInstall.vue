@@ -67,7 +67,11 @@
 								class="field-block__control"
 							>
 								<template v-for="(option, dagIndex) in dagOptions" :key="dagIndex">
-									<el-option v-if="isValidIndex(dagIndex, dagOptions)" :label="option.dag_name" :value="option.dag_id" />
+									<el-option
+										v-if="isValidIndex(dagIndex, dagOptions)"
+										:label="option.dag_name"
+										:value="option.dag_id"
+									/>
 								</template>
 							</el-select>
 						</div>
@@ -90,11 +94,26 @@
 
 					<div class="source-card__footer">
 						<div class="source-card__footer-text">
-							{{ source.node_selected?.length || 0 }} node{{ (source.node_selected?.length || 0) === 1 ? '' : 's' }} bound
+							{{ source.node_selected?.length || 0 }} node{{ (source.node_selected?.length || 0) === 1 ? '' : 's' }}
+							bound
 						</div>
 						<div class="source-card__footer-actions">
-							<button type="button" class="mini-link" @click="assignAllNodesForSource(index)" :disabled="!nodeOptions.length">All</button>
-							<button type="button" class="mini-link" @click="clearNodesForSource(index)" :disabled="!(source.node_selected?.length)">Clear</button>
+							<button
+								type="button"
+								class="mini-link"
+								@click="assignAllNodesForSource(index)"
+								:disabled="!nodeOptions.length"
+							>
+								All
+							</button>
+							<button
+								type="button"
+								class="mini-link"
+								@click="clearNodesForSource(index)"
+								:disabled="!source.node_selected?.length"
+							>
+								Clear
+							</button>
 						</div>
 					</div>
 				</article>
@@ -168,7 +187,11 @@ export default {
 		const install_state = useInstallStateStore();
 
 		const isValidIndex = (index, array) =>
-			Number.isSafeInteger(index) && index >= 0 && Array.isArray(array) && index < array.length && Object.prototype.hasOwnProperty.call(array, index);
+			Number.isSafeInteger(index) &&
+			index >= 0 &&
+			Array.isArray(array) &&
+			index < array.length &&
+			Object.prototype.hasOwnProperty.call(array, index);
 
 		const safeClone = (value) => {
 			try {
@@ -242,13 +265,15 @@ export default {
 
 		const refreshOptions = async () => {
 			try {
-				const [installStateResponse, policyResponse, datasourceResponse, dagResponse, nodeResponse] = await Promise.all([
-					axios.get('/api/install_state'),
-					axios.get('/api/policy'),
-					axios.get('/api/datasource'),
-					axios.get('/api/dag_workflow'),
-					axios.get('/api/edge_node'),
-				]);
+				const [installStateResponse, policyResponse, datasourceResponse, dagResponse, nodeResponse] = await Promise.all(
+					[
+						axios.get('/api/install_state'),
+						axios.get('/api/policy'),
+						axios.get('/api/datasource'),
+						axios.get('/api/dag_workflow'),
+						axios.get('/api/edge_node'),
+					]
+				);
 
 				installed.value = installStateResponse.data.state;
 				if (installed.value === 'install') {
@@ -379,7 +404,9 @@ export default {
 					return;
 				}
 				if (!Array.isArray(source?.node_selected) || source.node_selected.length === 0) {
-					ElMessage.error(`Please bind edge nodes for source ${source?.id ?? i}${source?.name ? `: ${source.name}` : ''}`);
+					ElMessage.error(
+						`Please bind edge nodes for source ${source?.id ?? i}${source?.name ? `: ${source.name}` : ''}`
+					);
 					return;
 				}
 			}
@@ -486,9 +513,7 @@ export default {
 .empty-state {
 	border-radius: 22px;
 	border: 1px solid #e2e8f0;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 34%),
-		#ffffff;
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 34%), #ffffff;
 }
 
 .selector-card {
@@ -541,9 +566,7 @@ export default {
 
 .source-card.is-ready {
 	border-color: #86efac;
-	background:
-		linear-gradient(135deg, rgba(34, 197, 94, 0.06), transparent 36%),
-		#f8fafc;
+	background: linear-gradient(135deg, rgba(34, 197, 94, 0.06), transparent 36%), #f8fafc;
 }
 
 .source-card:hover {
@@ -601,8 +624,7 @@ export default {
 	place-items: center;
 	text-align: center;
 	padding: 28px;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 38%),
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 38%),
 		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 }
 
