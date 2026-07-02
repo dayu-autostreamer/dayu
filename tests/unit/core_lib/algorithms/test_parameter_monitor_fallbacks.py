@@ -193,6 +193,37 @@ def test_gpu_flops_monitor_uses_current_clock_for_each_sample(monkeypatch):
 
 
 @pytest.mark.unit
+def test_gpu_flops_monitor_reuses_cached_device_meta_without_reloading(monkeypatch):
+    monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
+    cached_meta = [{
+        "idx": 0,
+        "name": "cached-gpu",
+        "max_freq_khz": 1_000_000.0,
+        "capability": (8, 6),
+        "sm_count": 1,
+        "fp32_cores_per_sm": 128,
+        "dual_factor": 2.0,
+    }]
+    monitor._device_meta = cached_meta
+
+    def fail_loader():
+        raise AssertionError("loader should not run")
+
+    monkeypatch.setattr(
+        gpu_flops_module.GPUFlopsMonitor,
+        "load_pycuda",
+        staticmethod(fail_loader),
+    )
+
+    monitor._device_meta_loader_id = None
+    assert monitor._get_device_meta(is_jetson=True) is cached_meta
+
+    monitor._device_meta_loader_id = id(monitor.load_pycuda)
+    monitor._device_meta_is_jetson = True
+    assert monitor._get_device_meta(is_jetson=True) is cached_meta
+
+
+@pytest.mark.unit
 def test_gpu_flops_monitor_normalizes_clock_units_and_caps_to_max(monkeypatch):
     monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
     monitor._device_meta = [{
