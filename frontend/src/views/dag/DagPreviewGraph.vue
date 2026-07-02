@@ -133,7 +133,8 @@ function wrapLabel(label, maxLineLength = 14, maxLines = 3) {
 
 	const limited = lines.slice(0, maxLines);
 	const lastLine = limited[maxLines - 1];
-	limited[maxLines - 1] = lastLine.length > maxLineLength - 1 ? `${lastLine.slice(0, maxLineLength - 1)}…` : `${lastLine}…`;
+	limited[maxLines - 1] =
+		lastLine.length > maxLineLength - 1 ? `${lastLine.slice(0, maxLineLength - 1)}…` : `${lastLine}…`;
 	return limited;
 }
 
@@ -296,8 +297,7 @@ export default {
 	display: flex;
 	align-items: stretch;
 	justify-content: stretch;
-	background:
-		linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+	background: linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
 		linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px);
 	background-size: 24px 24px;
 }

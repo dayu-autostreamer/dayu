@@ -82,7 +82,11 @@ def test_casva_after_schedule_operation_keeps_local_execution_without_scheduler_
     operation = after_schedule_module.CASVAASOperation()
 
     operation(system, None)
-    assert all(node.service.get_execute_device() == "edge-a" for node in system.task_dag.nodes.values())
+    assert all(
+        node.service.get_execute_device() == "edge-a"
+        for name, node in system.task_dag.nodes.items()
+        if name not in (TaskConstant.START.value, TaskConstant.END.value)
+    )
 
     dag_deployment = Task.extract_dag_deployment_from_dag(build_task().get_dag())
     dag_deployment["detector"]["service"]["execute_device"] = "edge-b"

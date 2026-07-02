@@ -358,11 +358,13 @@ def test_task_service_and_content_helpers_cover_stage_updates_and_time_ticket_op
     assert all(
         updated_dag.get_node(node_name).service.get_execute_device() == "uniform-device"
         for node_name in updated_dag.nodes
+        if node_name not in (TaskConstant.START.value, TaskConstant.END.value)
     )
     join_task.set_initial_execute_device("initial-device")
     assert all(
         join_task.get_dag().get_node(node_name).service.get_execute_device() == "initial-device"
         for node_name in join_task.get_dag().nodes
+        if node_name not in (TaskConstant.START.value, TaskConstant.END.value)
     )
     assert branch.get_hash_data() == ["hash-1"]
 

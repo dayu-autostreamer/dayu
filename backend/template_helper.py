@@ -6,7 +6,7 @@ import uuid
 
 from kube_helper import KubeHelper
 
-from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant, NameMaintainer, Context
+from core.lib.common import YamlOps, LOGGER, SystemConstant, deep_merge, TaskConstant, NameMaintainer
 from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
 
 
@@ -22,10 +22,17 @@ class TemplateHelper:
         yaml_dict = {'scheduler': YamlOps.read_yaml(
             os.path.join(self.templates_dir, 'scheduler', policy['yaml'])
         )}
-        for component in policy['dependency']:
+        dependency = policy.get('dependency')
+        if dependency is None:
+            dependency = {
+                component: policy[component]
+                for component in ('generator', 'controller', 'distributor', 'monitor')
+                if component in policy
+            }
+        for component in dependency:
             yaml_dict.update({
                 component: YamlOps.read_yaml(
-                    os.path.join(self.templates_dir, component, policy['dependency'][component])
+                    os.path.join(self.templates_dir, component, dependency[component])
                 )
             })
         return yaml_dict

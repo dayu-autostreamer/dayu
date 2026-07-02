@@ -17,7 +17,9 @@
 					<div class="builder-actions">
 						<div class="builder-buttons">
 							<el-button type="warning" plain @click="draw">{{ drawing ? 'Hide Canvas' : 'Open Canvas' }}</el-button>
-							<el-button type="primary" round :disabled="!drawing || !flowNodes.length" @click="handleNewSubmit">Add Dag</el-button>
+							<el-button type="primary" round :disabled="!drawing || !flowNodes.length" @click="handleNewSubmit"
+								>Add Dag</el-button
+							>
 							<el-button round :disabled="!drawing" @click="clearInput">Reset</el-button>
 						</div>
 					</div>
@@ -140,12 +142,7 @@
 
 				<el-table-column label="Overview" min-width="520">
 					<template #default="scope">
-						<el-popover
-							trigger="hover"
-							placement="left-start"
-							:width="480"
-							popper-class="dag-preview-popper"
-						>
+						<el-popover trigger="hover" placement="left-start" :width="480" popper-class="dag-preview-popper">
 							<template #reference>
 								<button type="button" class="dag-overview-button">
 									<div class="dag-overview-header">
@@ -157,7 +154,10 @@
 											>
 												{{ label }}
 											</span>
-											<span v-if="getOverflowServiceCount(scope.row.dag, previewNodeLimit) > 0" class="service-pill service-pill--muted">
+											<span
+												v-if="getOverflowServiceCount(scope.row.dag, previewNodeLimit) > 0"
+												class="service-pill service-pill--muted"
+											>
 												+{{ getOverflowServiceCount(scope.row.dag, previewNodeLimit) }}
 											</span>
 										</div>
@@ -185,7 +185,11 @@
 								</div>
 
 								<div class="dag-pill-group dag-pill-group--wrap">
-									<span v-for="label in summarizeServices(scope.row.dag, getDagNodeCount(scope.row.dag))" :key="label" class="service-pill">
+									<span
+										v-for="label in summarizeServices(scope.row.dag, getDagNodeCount(scope.row.dag))"
+										:key="label"
+										class="service-pill"
+									>
 										{{ label }}
 									</span>
 								</div>
@@ -315,9 +319,9 @@ export default {
 			targetNode.data.prev = Array.from(new Set([...(targetNode.data.prev || []), connection.source]));
 		});
 
-			return {
-				mainFlowId: MAIN_FLOW_ID,
-				onDragOver,
+		return {
+			mainFlowId: MAIN_FLOW_ID,
+			onDragOver,
 			onDrop,
 			onDragLeave,
 			isDragOver,
@@ -565,10 +569,8 @@ export default {
 	padding: 20px;
 	display: grid;
 	gap: 24px;
-	background:
-		radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 26%),
-		radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 22%),
-		#f8fafc;
+	background: radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 26%),
+		radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 22%), #f8fafc;
 	border-radius: 24px;
 }
 
@@ -660,8 +662,7 @@ h3 {
 	text-align: center;
 	border: 1.5px dashed #cbd5e1;
 	border-radius: 22px;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%),
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%),
 		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 	padding: 32px;
 }
@@ -716,9 +717,7 @@ h3 {
 	position: relative;
 	flex: 1;
 	min-height: 430px;
-	background:
-		linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.98)),
-		#ffffff;
+	background: linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.98)), #ffffff;
 }
 
 .minimap-toggle-wrap {
@@ -913,9 +912,7 @@ h3 {
 	text-align: left;
 	border: 1px solid #e2e8f0;
 	border-radius: 18px;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 32%),
-		#f8fafc;
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 32%), #f8fafc;
 	cursor: pointer;
 	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }

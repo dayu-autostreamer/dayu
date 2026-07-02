@@ -12,33 +12,50 @@ const pathResolve = (dir: string) => {
 const alias: Record<string, string> = {
   "@": pathResolve("./src/"),
   "/@": pathResolve("./src/"),
-  '/images': pathResolve("./src/assets/images"),
+  "/images": pathResolve("./src/assets/images"),
   "vue-i18n": "vue-i18n/dist/vue-i18n.cjs.js",
 };
 
+const envValue = (key: string, defaultValue: string) => process.env[key] ?? defaultValue;
+
+const envBoolean = (key: string, defaultValue = false) => {
+  const value = process.env[key];
+  if (value === undefined) return defaultValue;
+  try {
+    return JSON.parse(value) === true;
+  } catch {
+    return defaultValue;
+  }
+};
+
 const viteConfig = defineConfig((mode: ConfigEnv) => {
+  const openCdn = envBoolean("VITE_OPEN_CDN", false);
+  const openBrowser = envBoolean("VITE_OPEN", false);
+  const publicPath = envValue("VITE_PUBLIC_PATH", "./");
+  const backendAddress = envValue("VITE_BACKEND_ADDRESS", "http://127.0.0.1:8000");
+  const port = Number(envValue("VITE_PORT", "8888"));
 
   return {
     plugins: [
       vue(),
       viteCompression(),
-      JSON.parse(String(process.env.VITE_OPEN_CDN)) ? buildConfig.cdn() : null,
-      EnvironmentPlugin([
-        "VITE_PORT",
-        "VITE_OPEN",
-        "VITE_OPEN_CDN",
-        "VITE_PUBLIC_PATH",
-        "VITE_BACKEND_ADDRESS",
-      ]),
+      openCdn ? buildConfig.cdn() : null,
+      EnvironmentPlugin({
+        VITE_PORT: String(port),
+        VITE_OPEN: String(openBrowser),
+        VITE_OPEN_CDN: String(openCdn),
+        VITE_PUBLIC_PATH: publicPath,
+        VITE_BACKEND_ADDRESS: backendAddress,
+      }),
     ],
     root: process.cwd(),
     resolve: { alias },
-    base: mode.command === "serve" ? "./" : process.env.VITE_PUBLIC_PATH,
+    base: mode.command === "serve" ? "./" : publicPath,
     optimizeDeps: { exclude: ["vue-demi"] },
     server: {
       host: "0.0.0.0",
-      port: process.env.VITE_PORT as unknown as number,
-      open: JSON.parse(String(process.env.VITE_OPEN)),
+      port,
+      open: openBrowser,
       hmr: true,
       proxy: {
         "/gitee": {
@@ -48,7 +65,7 @@ const viteConfig = defineConfig((mode: ConfigEnv) => {
           rewrite: (path) => path.replace(/^\/gitee/, ""),
         },
         "/api": {
-          target: process.env.VITE_BACKEND_ADDRESS,
+          target: backendAddress,
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/api/, ""),
         },
@@ -73,9 +90,7 @@ const viteConfig = defineConfig((mode: ConfigEnv) => {
             }
           },
         },
-        ...(JSON.parse(String(process.env.VITE_OPEN_CDN))
-          ? { external: buildConfig.external }
-          : {}),
+        ...(openCdn ? { external: buildConfig.external } : {}),
       },
     },
     css: { preprocessorOptions: { css: { charset: false } } },

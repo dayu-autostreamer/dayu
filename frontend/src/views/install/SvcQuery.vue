@@ -19,7 +19,12 @@
 			</div>
 
 			<div v-if="services.length" class="service-chip-list">
-				<label v-for="service in services" :key="service" class="service-chip" :class="{ 'is-selected': selected === service }">
+				<label
+					v-for="service in services"
+					:key="service"
+					class="service-chip"
+					:class="{ 'is-selected': selected === service }"
+				>
 					<input v-model="selected" type="radio" :value="service" @change="sendRequest(service)" />
 					<span>{{ service }}</span>
 				</label>
@@ -264,9 +269,7 @@ export default {
 	padding: 18px;
 	border-radius: 22px;
 	border: 1px solid #e2e8f0;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 34%),
-		#ffffff;
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 34%), #ffffff;
 	display: grid;
 	gap: 16px;
 }

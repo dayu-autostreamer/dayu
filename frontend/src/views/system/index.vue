@@ -319,8 +319,7 @@ export default {
 	padding: 20px;
 	display: grid;
 	gap: 20px;
-	background:
-		radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
+	background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
 		radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.08), transparent 24%);
 }
 
@@ -328,9 +327,7 @@ export default {
 	padding: 22px;
 	border-radius: 28px;
 	border: 1px solid #e2e8f0;
-	background:
-		linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96)),
-		#ffffff;
+	background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96)), #ffffff;
 	box-shadow: 0 22px 48px rgba(15, 23, 42, 0.06);
 }
 
@@ -395,9 +392,7 @@ export default {
 	flex-direction: column;
 	border-radius: 24px;
 	border: 1px solid #e2e8f0;
-	background:
-		linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 36%),
-		#ffffff;
+	background: linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 36%), #ffffff;
 	box-shadow: 0 18px 40px rgba(15, 23, 42, 0.05);
 	overflow: hidden;
 }

@@ -1,6 +1,6 @@
 position: edge
 pod-template:
-  image: repo:5000/adayoung/gen-tx2:v0.4
+  image: generator
   imagePullPolicy: Always
   env:
     - name: GEN_FILTER_NAME
