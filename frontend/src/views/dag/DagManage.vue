@@ -17,11 +17,20 @@
 					<div class="builder-actions">
 						<div class="builder-buttons">
 							<el-button type="warning" plain @click="draw">{{ drawing ? 'Hide Canvas' : 'Open Canvas' }}</el-button>
+							<el-button plain @click="triggerDagImport">
+								<el-icon><Upload /></el-icon>
+								Import .dag
+							</el-button>
+							<el-button plain :disabled="!flowNodes.length" @click="exportCurrentDag">
+								<el-icon><Download /></el-icon>
+								Export .dag
+							</el-button>
 							<el-button type="primary" round :disabled="!drawing || !flowNodes.length" @click="handleNewSubmit"
 								>Add Dag</el-button
 							>
 							<el-button round :disabled="!drawing" @click="clearInput">Reset</el-button>
 						</div>
+						<input ref="dagFileInput" class="hidden-file-input" type="file" accept=".dag" @change="handleDagFileChange" />
 					</div>
 
 					<div v-if="!drawing" class="canvas-placeholder">
@@ -202,9 +211,15 @@
 					</template>
 				</el-table-column>
 
-				<el-table-column label="Action" width="120" align="center">
+				<el-table-column label="Action" width="190" align="center">
 					<template #default="scope">
-						<el-button size="small" type="danger" plain @click="deleteWorkflow(scope.row.dag_id)">Delete</el-button>
+						<div class="table-action-buttons">
+							<el-button size="small" plain @click="exportStoredDag(scope.row)">
+								<el-icon><Download /></el-icon>
+								Export
+							</el-button>
+							<el-button size="small" type="danger" plain @click="deleteWorkflow(scope.row.dag_id)">Delete</el-button>
+						</div>
 					</template>
 				</el-table-column>
 			</el-table>
@@ -223,11 +238,15 @@ import DagPreviewGraph from './DagPreviewGraph.vue';
 import useDragAndDrop from './useDnD';
 import Icon from './Icon.vue';
 import { useLayout } from './useLayout';
-import { getServiceTone } from './nodePalette';
-import { Connection, Link, MagicStick } from '@element-plus/icons-vue';
+import { getServiceNodeFontSize, getServiceTone } from './nodePalette';
+import { Connection, Download, Link, MagicStick, Upload } from '@element-plus/icons-vue';
 
 const MAIN_FLOW_ID = 'dag-builder-main';
 const PREVIEW_NODE_LIMIT = 4;
+const DAG_FILE_FORMAT = 'dayu.application-dag';
+const DAG_FILE_VERSION = 1;
+const IMPORT_LAYOUT_GAP_X = 168;
+const IMPORT_LAYOUT_GAP_Y = 96;
 
 export default {
 	name: 'DagManage',
@@ -246,8 +265,10 @@ export default {
 		Icon,
 		Panel,
 		Connection,
+		Download,
 		Link,
 		MagicStick,
+		Upload,
 	},
 	setup() {
 		const { onInit, onConnect, fitView } = useVueFlow({ id: MAIN_FLOW_ID });
@@ -385,6 +406,181 @@ export default {
 			await nextTick();
 			this.focusCanvas();
 		},
+		triggerDagImport() {
+			this.$refs.dagFileInput.value = null;
+			this.$refs.dagFileInput.click();
+		},
+		async handleDagFileChange(event) {
+			const file = event.target.files[0];
+			if (!file) {
+				return;
+			}
+
+			if (!file.name.toLowerCase().endsWith('.dag')) {
+				ElMessage.error('Please choose a .dag file');
+				return;
+			}
+
+			try {
+				const text = await file.text();
+				const document = this.parseDagDocument(text);
+				await this.importDagDocument(document);
+				ElMessage.success(`Imported ${document.dag_name}`);
+			} catch (error) {
+				console.error('DAG import failed:', error);
+				ElMessage.error(error.message || 'DAG import failed');
+			} finally {
+				event.target.value = null;
+			}
+		},
+		parseDagDocument(text) {
+			let document;
+			try {
+				document = JSON.parse(text);
+			} catch (error) {
+				throw new Error('Invalid .dag JSON content');
+			}
+
+			if (!document || typeof document !== 'object' || Array.isArray(document)) {
+				throw new Error('Invalid .dag document');
+			}
+			if (document.format !== DAG_FILE_FORMAT) {
+				throw new Error(`Unsupported .dag format: ${document.format || 'unknown'}`);
+			}
+			if (document.version !== DAG_FILE_VERSION) {
+				throw new Error(`Unsupported .dag version: ${document.version || 'unknown'}`);
+			}
+			if (!document.dag_name || typeof document.dag_name !== 'string') {
+				throw new Error('The .dag file is missing dag_name');
+			}
+			this.validateDagGraph(document.dag);
+
+			return document;
+		},
+		validateDagGraph(dag) {
+			if (!dag || typeof dag !== 'object' || Array.isArray(dag)) {
+				throw new Error('The .dag file is missing dag');
+			}
+			if (!Array.isArray(dag._start)) {
+				throw new Error('DAG _start must be a list');
+			}
+
+			const nodeIds = Object.keys(dag).filter((key) => key !== '_start');
+			const nodeIdSet = new Set(nodeIds);
+			if (!nodeIds.length) {
+				throw new Error('DAG must contain at least one service');
+			}
+
+			for (const startNode of dag._start) {
+				if (!nodeIdSet.has(startNode)) {
+					throw new Error(`DAG start node does not exist: ${startNode}`);
+				}
+			}
+
+			for (const nodeId of nodeIds) {
+				const node = dag[nodeId];
+				if (!node || typeof node !== 'object' || Array.isArray(node)) {
+					throw new Error(`Invalid DAG node: ${nodeId}`);
+				}
+				if ((node.id || nodeId) !== nodeId) {
+					throw new Error(`DAG node id must match its key: ${nodeId}`);
+				}
+				if ((node.service_id || node.id || nodeId) !== nodeId) {
+					throw new Error(`DAG service_id must match node id: ${nodeId}`);
+				}
+				if (!Array.isArray(node.prev) || !Array.isArray(node.succ)) {
+					throw new Error(`DAG node prev and succ must be lists: ${nodeId}`);
+				}
+
+				for (const prevNode of node.prev) {
+					if (!nodeIdSet.has(prevNode)) {
+						throw new Error(`DAG predecessor does not exist: ${prevNode}`);
+					}
+					if (!Array.isArray(dag[prevNode]?.succ) || !dag[prevNode].succ.includes(nodeId)) {
+						throw new Error(`DAG predecessor link is not reciprocal: ${prevNode} -> ${nodeId}`);
+					}
+				}
+
+				for (const succNode of node.succ) {
+					if (!nodeIdSet.has(succNode)) {
+						throw new Error(`DAG successor does not exist: ${succNode}`);
+					}
+					if (!Array.isArray(dag[succNode]?.prev) || !dag[succNode].prev.includes(nodeId)) {
+						throw new Error(`DAG successor link is not reciprocal: ${nodeId} -> ${succNode}`);
+					}
+				}
+			}
+		},
+		async importDagDocument(document) {
+			if (!this.services.length) {
+				await this.getServiceList();
+			}
+
+			const servicesById = new Map(this.services.map((service) => [service.id, service]));
+			const nodeIds = Object.keys(document.dag).filter((key) => key !== '_start');
+			const missingServices = nodeIds.filter((nodeId) => !servicesById.has(nodeId));
+			if (missingServices.length) {
+				throw new Error(`Missing service definitions: ${missingServices.join(', ')}`);
+			}
+
+			const layoutNodes = document.layout?.nodes || {};
+			const importedNodes = nodeIds.map((nodeId, index) =>
+				this.createFlowNodeFromDagNode(nodeId, document.dag[nodeId], servicesById.get(nodeId), layoutNodes[nodeId], index)
+			);
+			const importedMap = {};
+			importedNodes.forEach((node) => {
+				importedMap[node.id] = node;
+			});
+
+			this.drawing = true;
+			this.newInputName = document.dag_name;
+			this.flowNodes = importedNodes;
+			this.flowEdges = this.generateEdges(document.dag);
+			this.flowNodeMap = importedMap;
+
+			await nextTick();
+			if (!Object.keys(layoutNodes).length) {
+				await this.applyLayoutGraph(document.layout?.direction || 'LR');
+			} else {
+				this.focusCanvas();
+			}
+		},
+		createFlowNodeFromDagNode(nodeId, dagNode, service, layoutNode, index) {
+			const nodeName = service?.name || dagNode?.service_name || dagNode?.service_id || nodeId;
+			const tone = getServiceTone(nodeId);
+			const position = {
+				x: Number.isFinite(layoutNode?.x) ? layoutNode.x : (index % 4) * IMPORT_LAYOUT_GAP_X,
+				y: Number.isFinite(layoutNode?.y) ? layoutNode.y : Math.floor(index / 4) * IMPORT_LAYOUT_GAP_Y,
+			};
+
+			return {
+				id: nodeId,
+				type: '',
+				class: 'dag-node',
+				style: {
+					backgroundColor: tone.background,
+					border: `1px solid ${tone.border}`,
+					borderLeft: `4px solid ${tone.accent}`,
+					borderRadius: '14px',
+					boxShadow: '0 6px 14px rgba(15, 23, 42, 0.06)',
+					color: '#0f172a',
+					fontSize: getServiceNodeFontSize(nodeName),
+					width: '96px',
+					height: '36px',
+				},
+				data: {
+					label: nodeName,
+					prev: [...dagNode.prev],
+					succ: [...dagNode.succ],
+					service_id: nodeId,
+					service_name: nodeName,
+					description: service?.description || dagNode?.description,
+				},
+				sourcePosition: 'right',
+				targetPosition: 'left',
+				position,
+			};
+		},
 		async deleteWorkflow(dag_id) {
 			try {
 				const response = await fetch('/api/dag_workflow', {
@@ -413,6 +609,14 @@ export default {
 				return;
 			}
 
+			const graph = this.buildDagGraphFromCanvas();
+
+			this.updateDagList({
+				dag_name: this.newInputName,
+				dag: graph,
+			});
+		},
+		buildDagGraphFromCanvas() {
 			const graph = { _start: [] };
 			for (const flowNode of this.flowNodes) {
 				const serviceId = flowNode.id;
@@ -433,11 +637,74 @@ export default {
 					graph._start.push(serviceId);
 				}
 			}
-
-			this.updateDagList({
-				dag_name: this.newInputName,
-				dag: graph,
+			return graph;
+		},
+		buildDagDocument(dagName, dag, flowNodes = []) {
+			this.validateDagGraph(dag);
+			const layoutNodes = {};
+			flowNodes.forEach((node) => {
+				layoutNodes[node.id] = {
+					x: Math.round(node.position?.x || 0),
+					y: Math.round(node.position?.y || 0),
+				};
 			});
+
+			const document = {
+				format: DAG_FILE_FORMAT,
+				version: DAG_FILE_VERSION,
+				dag_name: dagName || 'application_dag',
+				dag,
+			};
+			if (Object.keys(layoutNodes).length) {
+				document.layout = {
+					direction: this.previousDirection || 'LR',
+					nodes: layoutNodes,
+				};
+			}
+
+			return document;
+		},
+		exportCurrentDag() {
+			if (!this.flowNodes.length) {
+				ElMessage.warning('Please draw a DAG before exporting');
+				return;
+			}
+
+			try {
+				const dagName = this.newInputName || 'application_dag';
+				const document = this.buildDagDocument(dagName, this.buildDagGraphFromCanvas(), this.flowNodes);
+				this.downloadDagDocument(document);
+			} catch (error) {
+				console.error('DAG export failed:', error);
+				ElMessage.error(error.message || 'DAG export failed');
+			}
+		},
+		exportStoredDag(row) {
+			try {
+				const document = this.buildDagDocument(row.dag_name, row.dag);
+				this.downloadDagDocument(document);
+			} catch (error) {
+				console.error('DAG export failed:', error);
+				ElMessage.error(error.message || 'DAG export failed');
+			}
+		},
+		downloadDagDocument(dagDocument) {
+			const blob = new Blob([`${JSON.stringify(dagDocument, null, 2)}\n`], { type: 'application/json' });
+			const url = URL.createObjectURL(blob);
+			const link = document.createElement('a');
+			link.href = url;
+			link.download = `${this.sanitizeDagFileName(dagDocument.dag_name)}.dag`;
+			document.body.appendChild(link);
+			link.click();
+			document.body.removeChild(link);
+			URL.revokeObjectURL(url);
+		},
+		sanitizeDagFileName(name) {
+			const normalized = String(name || 'application_dag')
+				.trim()
+				.replace(/[^a-zA-Z0-9._-]+/g, '_')
+				.replace(/^_+|_+$/g, '');
+			return normalized || 'application_dag';
 		},
 		async getDagList() {
 			try {
@@ -521,7 +788,10 @@ export default {
 			return service?.name || service?.id || 'Unknown Service';
 		},
 		formatIoValue(value) {
-			return value || '-';
+			if (Array.isArray(value)) {
+				return value.join(', ');
+			}
+			return '-';
 		},
 		generateEdges(dag) {
 			const edges = [];
@@ -648,6 +918,10 @@ h3 {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 10px;
+}
+
+.hidden-file-input {
+	display: none;
 }
 
 .tip-icon {
@@ -888,6 +1162,14 @@ h3 {
 
 .dag-list-section {
 	overflow: hidden;
+}
+
+.table-action-buttons {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	flex-wrap: wrap;
 }
 
 .dag-name-cell {
