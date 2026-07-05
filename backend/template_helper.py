@@ -389,8 +389,8 @@ class TemplateHelper:
         return deployment_plan
 
     @staticmethod
-    def normalize_deployment_plan(deployment_plan, source_deploy):
-        """Normalize scheduler plans to {service_name: [edge_node, ...]}."""
+    def normalize_deployment_plan(deployment_plan, source_deploy, cloud_node=None):
+        """Normalize scheduler plans to {service_name: [selected_node, ...]}."""
         if not isinstance(deployment_plan, dict):
             return None
 
@@ -402,15 +402,19 @@ class TemplateHelper:
                 if service_name != TaskConstant.START.value:
                     service_names.add(service_name)
 
+        valid_nodes = set(edge_nodes)
+        if cloud_node:
+            valid_nodes.add(cloud_node)
+
         normalized_plan = {}
         for key, value in deployment_plan.items():
             values = list(value) if isinstance(value, (list, tuple, set)) else [value]
             if key in service_names:
                 selected_nodes = normalized_plan.setdefault(key, [])
                 for node_name in values:
-                    if node_name in edge_nodes and node_name not in selected_nodes:
+                    if node_name in valid_nodes and node_name not in selected_nodes:
                         selected_nodes.append(node_name)
-            elif key in edge_nodes:
+            elif key in valid_nodes:
                 for service_name in values:
                     if service_name not in service_names:
                         continue
@@ -423,19 +427,21 @@ class TemplateHelper:
     def finetune_processor_yaml(self, service_dict, cloud_node, source_deploy, current_docs=None):
         """Generate processor CRs with fine-grained units.
 
-        For each logical processor service we generate:
-        - One cloud-only CR  with name
-          `processor-{service_name}-cloud`.
-        - One edge-only CR per edge node with name
+        For each logical processor service we can generate:
+        - One cloud-only CR with name
+          `processor-{service_name}-{cloud_node}` when default cloud backup is
+          enabled or the scheduler explicitly selects the cloud hostname.
+        - One edge-only CR per selected edge node with name
           `processor-{service_name}-{edge_node}`.
 
-        This enables independent redeployment for cloud and each edge node
-        while keeping the `processor-{service_name}` prefix so that
-        service-level queries by prefix still work.
+        This enables independent redeployment for cloud and each edge node while
+        keeping the `processor-{service_name}` prefix so service-level queries by
+        prefix still work.
         """
         deployment_plan = self.request_deployment_decision(source_deploy)
         current_deployment_plan = self.extract_current_processor_deployment(
             current_docs) if current_docs is not None else None
+        default_cloud_backup = self.load_base_info().get('default-cloud-processor-backup', True)
         yaml_docs = []
 
         for service_id, service_info in service_dict.items():
@@ -444,49 +450,56 @@ class TemplateHelper:
 
             # Original candidate edge nodes from DAG / services config
             edge_nodes = service_info['node']
+            scheduler_selected_nodes = []
 
             # Apply scheduler's deployment decision if available.
             if deployment_plan is not None and service_name in deployment_plan:
                 # Intersect with original edge_nodes to avoid unexpected nodes.
-                selected_nodes = set(deployment_plan[service_name])
+                scheduler_selected_nodes = list(deployment_plan[service_name])
+                selected_nodes = set(scheduler_selected_nodes)
                 edge_nodes = [node for node in edge_nodes if node in selected_nodes]
             else:
                 if current_deployment_plan is not None:
                     edge_nodes = current_deployment_plan.get(service_name, [])
                     LOGGER.warning(
                         f"Scheduler redeployment plan unavailable or missed service '{service_name}', "
-                        f"keep current deployment: {edge_nodes}."
+                        f"keep current edge deployment: {edge_nodes}."
                     )
                 else:
                     edge_nodes = []
+                    fallback_msg = "deploy processor on cloud backup only." if default_cloud_backup else \
+                        "skip default cloud processor backup."
                     LOGGER.warning(
                         f"Scheduler initial deployment plan unavailable or missed service '{service_name}', "
-                        "deploy processor on cloud only."
+                        f"{fallback_msg}"
                     )
 
-            # Cloud-only CR
-            # Create cloudWorker CR (processor must be deployed on cloud node)
-            cloud_component_name = f"processor-{service_name}-{NameMaintainer.standardize_device_name(cloud_node)}"
-            cloud_yaml_doc = copy.deepcopy(base_yaml_doc)
-            cloud_yaml_doc = self.fill_template(cloud_yaml_doc, cloud_component_name)
+            should_create_cloud = default_cloud_backup or cloud_node in scheduler_selected_nodes
+            if should_create_cloud:
+                # Cloud-only CR
+                cloud_component_name = f"processor-{service_name}-{NameMaintainer.standardize_device_name(cloud_node)}"
+                cloud_yaml_doc = copy.deepcopy(base_yaml_doc)
+                cloud_yaml_doc = self.fill_template(cloud_yaml_doc, cloud_component_name)
 
-            # Configure cloudWorker bound to cloud_node
-            if 'cloudWorker' in cloud_yaml_doc['spec'] and cloud_yaml_doc['spec']['cloudWorker']:
-                cloud_worker_template = cloud_yaml_doc['spec']['cloudWorker']
-                new_cloud_worker = copy.deepcopy(cloud_worker_template)
-                new_cloud_worker['template']['spec']['nodeName'] = cloud_node
-                new_cloud_worker['template']['spec']['containers'][0]['env'].append({
-                    'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"})
-                cloud_yaml_doc['spec']['cloudWorker'] = new_cloud_worker
-            else:
-                LOGGER.warning(f"Processor service '{service_name}' has no cloudWorker template; skip cloud CR.")
+                # Configure cloudWorker bound to cloud_node
+                if 'cloudWorker' in cloud_yaml_doc['spec'] and cloud_yaml_doc['spec']['cloudWorker']:
+                    cloud_worker_template = cloud_yaml_doc['spec']['cloudWorker']
+                    new_cloud_worker = copy.deepcopy(cloud_worker_template)
+                    new_cloud_worker['template']['spec']['nodeName'] = cloud_node
+                    new_cloud_worker['template']['spec']['containers'][0]['env'].append({
+                        'name': 'PROCESSOR_SERVICE_NAME', 'value': f"processor-{service_name}"})
+                    cloud_yaml_doc['spec']['cloudWorker'] = new_cloud_worker
+                else:
+                    LOGGER.warning(f"Processor service '{service_name}' has no cloudWorker template; skip cloud CR.")
+                    cloud_yaml_doc = None
 
-            # Remove edgeWorker from cloud-only CR if present to avoid
-            # accidentally scheduling edge workloads here.
-            if 'edgeWorker' in cloud_yaml_doc['spec']:
-                cloud_yaml_doc['spec'].pop('edgeWorker', None)
+                if cloud_yaml_doc is not None:
+                    # Remove edgeWorker from cloud-only CR if present to avoid
+                    # accidentally scheduling edge workloads here.
+                    if 'edgeWorker' in cloud_yaml_doc['spec']:
+                        cloud_yaml_doc['spec'].pop('edgeWorker', None)
 
-            yaml_docs.append(cloud_yaml_doc)
+                    yaml_docs.append(cloud_yaml_doc)
 
             # If no edge nodes are selected, skip edge CR generation
             if not edge_nodes:
@@ -769,7 +782,8 @@ class TemplateHelper:
             LOGGER.warning('[Service Deployment] Scheduler response contained invalid deployment plan.')
             deployment_plan = None
         else:
-            deployment_plan = self.normalize_deployment_plan(response['plan'], source_deploy)
+            deployment_plan = self.normalize_deployment_plan(response['plan'], source_deploy,
+                                                             cloud_node=scheduler_hostname)
 
         return deployment_plan
 

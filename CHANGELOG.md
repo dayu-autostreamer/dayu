@@ -12,6 +12,7 @@
 - Add more services: traffic-object-detection, road-context-segmentation, traffic-signal-recognition, vehicle-reidentification-tracking, vehicle-attribute-recognition, vehicle-trajectory-prediction, pedestrian-cyclist-pose-estimation, pedestrian-cyclist-intent-recognition, traffic-risk-graph-inference (`processor`).
 - Change input/output format of processors from value to list (`processor`).
 - Add import/export of dag in DAG Orchestrain frontend page (`frontend`).
+- Set default cloud processor as options to permit edge-only processors (`backend`).
 
 ## v1.3
 

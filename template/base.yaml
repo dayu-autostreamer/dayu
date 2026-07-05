@@ -37,6 +37,9 @@ default-image-meta:
   tag: v1.4
 # default file mount prefix for dayu containers
 default-file-mount-prefix: "/data/dayu-files"
+# whether to create one cloud-side backup processor for each logical service by default.
+# false: deploy cloud processors only when the scheduler plan explicitly selects the cloud hostname.
+default-cloud-processor-backup: true
 # datasource configuration
 datasource:
   # true/false, use a simulation datasource container or use a real datasource
@@ -59,4 +62,3 @@ result-visualizations:
 # import system visualization configurations
 system-visualizations:
   !include system-visualizations.yaml
-
