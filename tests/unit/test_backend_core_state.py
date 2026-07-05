@@ -57,6 +57,29 @@ def test_component_yaml_state_machine_updates_adds_and_clears_docs(backend_core_
 
 
 @pytest.mark.unit
+def test_component_yaml_diff_deletes_cloud_processor_when_backup_is_removed(backend_core_instance):
+    original_docs = [
+        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "scheduler"}, "spec": {}},
+        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-face-cloudx1"}, "spec": {}},
+        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-face-edgex1"}, "spec": {}},
+    ]
+    update_docs = [
+        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "scheduler"}, "spec": {}},
+        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-face-edgex1"}, "spec": {}},
+    ]
+
+    total_docs, docs_to_add, docs_to_update, docs_to_delete = backend_core_instance.check_and_update_docs_list(
+        copy.deepcopy(original_docs),
+        copy.deepcopy(update_docs),
+    )
+
+    assert docs_to_add == []
+    assert docs_to_update == []
+    assert [doc["metadata"]["name"] for doc in docs_to_delete] == ["processor-face-cloudx1"]
+    assert sorted(doc["metadata"]["name"] for doc in total_docs) == ["processor-face-edgex1", "scheduler"]
+
+
+@pytest.mark.unit
 def test_backend_core_log_snapshot_compaction_and_record_count(backend_core_instance, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     backend_core_instance.system_log_store_path = str(tmp_path / "system.jsonl")

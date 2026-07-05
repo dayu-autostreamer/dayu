@@ -153,6 +153,38 @@ def test_end_to_end_template_rendering_covers_core_components_and_processors(rea
 
 
 @pytest.mark.e2e
+def test_end_to_end_template_rendering_can_disable_default_cloud_processor_backup(
+    real_backend_core,
+    mounted_runtime,
+):
+    base_path = mounted_runtime / "base.yaml"
+    base_path.write_text(
+        base_path.read_text(encoding="utf-8").replace(
+            "default-cloud-processor-backup: true",
+            "default-cloud-processor-backup: false",
+        ),
+        encoding="utf-8",
+    )
+    source_deploy = make_source_deploy()
+    policy = real_backend_core.find_scheduler_policy_by_id("fixed")
+
+    service_dict = real_backend_core.extract_service_from_source_deployment(copy.deepcopy(source_deploy))
+    yaml_dict = real_backend_core.template_helper.load_policy_apply_yaml(policy)
+    yaml_dict["processor"] = real_backend_core.template_helper.load_application_apply_yaml(service_dict)
+
+    docs = real_backend_core.template_helper.finetune_yaml_parameters(
+        copy.deepcopy(yaml_dict),
+        copy.deepcopy(source_deploy),
+    )
+
+    names = {doc["metadata"]["name"] for doc in docs}
+    assert "processor-face-detection-cloudmaster" not in names
+    assert "processor-gender-classification-cloudmaster" not in names
+    assert {"processor-face-detection-edgex1", "processor-face-detection-edgex2"}.issubset(names)
+    assert "processor-gender-classification-edgex2" in names
+
+
+@pytest.mark.e2e
 def test_generator_can_run_on_external_edge_node_without_widening_processing_pool(real_backend_core, monkeypatch):
     source_deploy = make_source_deploy()
     policy = real_backend_core.find_scheduler_policy_by_id("fixed")

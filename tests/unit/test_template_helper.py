@@ -249,3 +249,27 @@ def test_request_deployment_decision_normalizes_node_to_services_plan(mounted_ru
     source_deploy = [{"source": {"id": 9}, "node_set": ["edgex1"], "dag": dag}]
 
     assert helper.request_deployment_decision(source_deploy) == {"face-detection": ["edgex1"]}
+
+
+@pytest.mark.unit
+def test_request_deployment_decision_preserves_exact_cloud_hostname(mounted_runtime, monkeypatch):
+    template_helper_module = importlib.import_module("template_helper")
+    monkeypatch.setattr(template_helper_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
+    monkeypatch.setattr(template_helper_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.8"))
+    monkeypatch.setattr(template_helper_module.PortInfo, "get_component_port", staticmethod(lambda component: 9001))
+
+    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
+    monkeypatch.setattr(helper, "check_is_redeployment", lambda: False)
+    monkeypatch.setattr(
+        template_helper_module,
+        "http_request",
+        lambda url, method=None, **kwargs: {"plan": {"face-detection": ["cloudx1", "cloud", "edgex1"]}},
+    )
+
+    dag = {
+        TaskConstant.START.value: {"succ": ["face-detection"], "prev": []},
+        "face-detection": {"succ": [], "prev": [TaskConstant.START.value]},
+    }
+    source_deploy = [{"source": {"id": 9}, "node_set": ["edgex1"], "dag": dag}]
+
+    assert helper.request_deployment_decision(source_deploy) == {"face-detection": ["cloudx1", "edgex1"]}
