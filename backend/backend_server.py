@@ -264,8 +264,13 @@ class BackendServer:
         services = self.server.services
         for service in services:
             service_view = copy.deepcopy(service)
+            service_input, input_error = self.server.service_io_labels(service_view, 'input')
+            service_output, output_error = self.server.service_io_labels(service_view, 'output')
+            if input_error or output_error:
+                raise ValueError(input_error or output_error)
             service_view['description'] = (
-                service_view['description'] + ' (in:' + service_view['input'] + ', out:' + service_view['output'] + ')'
+                service_view['description'] + ' (in:' + ', '.join(service_input) +
+                ', out:' + ', '.join(service_output) + ')'
             )
             service_dict[service_view['id']] = (
                 service_view if service_view['id'] not in service_dict else service_dict[service_view['id']]

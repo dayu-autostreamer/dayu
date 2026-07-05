@@ -1,0 +1,30 @@
+position: both
+pod-template:
+  image: pedestrian-cyclist-pose-estimation
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "structured_processor"
+    - name: APPLICATION_PARAMETERS
+      value: >
+        {
+          'model_name':'pedestrian-cyclist-pose-estimator',
+          'model_weight':'pedestrian_cyclist_pose_estimation.pt',
+          'model_variant':'rtmpose',
+          'device':0,
+          'synthetic_complexity':2
+        }
+    - name: INPUT_SERVICES
+      value: >
+        []
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        ['structured_profile']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/pedestrian-cyclist-pose-estimation/"

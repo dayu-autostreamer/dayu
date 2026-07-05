@@ -9,6 +9,8 @@
 ### Bug Fix
 
 ### Minor Update
+- Add more services: traffic-object-detection, road-context-segmentation, traffic-signal-recognition, vehicle-reidentification-tracking, vehicle-attribute-recognition, vehicle-trajectory-prediction, pedestrian-cyclist-pose-estimation, pedestrian-cyclist-intent-recognition, traffic-risk-graph-inference (`processor`).
+- Change input/output format of processors from value to list (`processor`).
 
 ## v1.3
 

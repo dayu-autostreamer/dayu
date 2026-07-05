@@ -1,0 +1,30 @@
+position: both
+pod-template:
+  image: traffic-object-detection
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "structured_processor"
+    - name: APPLICATION_PARAMETERS
+      value: >
+        {
+          'model_name':'traffic-object-detector',
+          'model_weight':'traffic_object_detection.pt',
+          'model_variant':'yolov8s',
+          'device':0,
+          'synthetic_complexity':2
+        }
+    - name: INPUT_SERVICES
+      value: >
+        []
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        ['structured_profile']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/traffic-object-detection/"

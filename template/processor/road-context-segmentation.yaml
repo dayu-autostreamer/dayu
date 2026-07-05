@@ -1,0 +1,30 @@
+position: both
+pod-template:
+  image: road-context-segmentation
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "structured_processor"
+    - name: APPLICATION_PARAMETERS
+      value: >
+        {
+          'model_name':'road-context-segmenter',
+          'model_weight':'road_context_segmentation.pt',
+          'model_variant':'yolop',
+          'device':0,
+          'synthetic_complexity':2
+        }
+    - name: INPUT_SERVICES
+      value: >
+        []
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        ['structured_profile']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/road-context-segmentation/"

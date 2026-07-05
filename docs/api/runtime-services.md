@@ -45,6 +45,11 @@ Operational notes:
 - `PROCESSOR_NAME` selects the processor implementation.
 - `PRO_QUEUE_NAME` selects the queue strategy.
 - A background thread drains the task queue and posts results back to controller through `/process_return_task`.
+- `structured_processor` is a generic processor shell for services that consume and produce structured dictionaries. It
+  reads frames, gathers named upstream service outputs, invokes the current service's `Application`, and stores scenario
+  data from the returned `profile`.
+- Structured application services should not encode DAG membership or shared DAG schemas in their outputs. Users compose
+  services into DAGs at runtime through the service catalog and workflow definition.
 
 ## Scheduler Service
 

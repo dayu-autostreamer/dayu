@@ -1,0 +1,30 @@
+position: both
+pod-template:
+  image: vehicle-trajectory-prediction
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "structured_processor"
+    - name: APPLICATION_PARAMETERS
+      value: >
+        {
+          'model_name':'vehicle-trajectory-predictor',
+          'model_weight':'vehicle_trajectory_prediction.pt',
+          'model_variant':'trajectory-transformer',
+          'device':0,
+          'synthetic_complexity':3
+        }
+    - name: INPUT_SERVICES
+      value: >
+        []
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        ['structured_profile']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/vehicle-trajectory-prediction/"

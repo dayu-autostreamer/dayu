@@ -1,0 +1,150 @@
+{
+  "format": "dayu.application-dag",
+  "version": 1,
+  "dag_name": "traffic risk monitoring",
+  "dag": {
+    "_start": [
+      "traffic-object-detection",
+      "road-context-segmentation"
+    ],
+    "traffic-object-detection": {
+      "id": "traffic-object-detection",
+      "prev": [],
+      "succ": [
+        "traffic-signal-recognition",
+        "vehicle-reidentification-tracking",
+        "vehicle-attribute-recognition",
+        "pedestrian-cyclist-pose-estimation"
+      ],
+      "service_id": "traffic-object-detection"
+    },
+    "road-context-segmentation": {
+      "id": "road-context-segmentation",
+      "prev": [],
+      "succ": [
+        "vehicle-trajectory-prediction",
+        "pedestrian-cyclist-intent-recognition",
+        "traffic-risk-graph-inference"
+      ],
+      "service_id": "road-context-segmentation"
+    },
+    "traffic-signal-recognition": {
+      "id": "traffic-signal-recognition",
+      "prev": [
+        "traffic-object-detection"
+      ],
+      "succ": [
+        "traffic-risk-graph-inference"
+      ],
+      "service_id": "traffic-signal-recognition"
+    },
+    "vehicle-reidentification-tracking": {
+      "id": "vehicle-reidentification-tracking",
+      "prev": [
+        "traffic-object-detection"
+      ],
+      "succ": [
+        "vehicle-trajectory-prediction"
+      ],
+      "service_id": "vehicle-reidentification-tracking"
+    },
+    "vehicle-attribute-recognition": {
+      "id": "vehicle-attribute-recognition",
+      "prev": [
+        "traffic-object-detection"
+      ],
+      "succ": [
+        "vehicle-trajectory-prediction"
+      ],
+      "service_id": "vehicle-attribute-recognition"
+    },
+    "vehicle-trajectory-prediction": {
+      "id": "vehicle-trajectory-prediction",
+      "prev": [
+        "road-context-segmentation",
+        "vehicle-reidentification-tracking",
+        "vehicle-attribute-recognition"
+      ],
+      "succ": [
+        "traffic-risk-graph-inference"
+      ],
+      "service_id": "vehicle-trajectory-prediction"
+    },
+    "pedestrian-cyclist-pose-estimation": {
+      "id": "pedestrian-cyclist-pose-estimation",
+      "prev": [
+        "traffic-object-detection"
+      ],
+      "succ": [
+        "pedestrian-cyclist-intent-recognition"
+      ],
+      "service_id": "pedestrian-cyclist-pose-estimation"
+    },
+    "pedestrian-cyclist-intent-recognition": {
+      "id": "pedestrian-cyclist-intent-recognition",
+      "prev": [
+        "road-context-segmentation",
+        "pedestrian-cyclist-pose-estimation"
+      ],
+      "succ": [
+        "traffic-risk-graph-inference"
+      ],
+      "service_id": "pedestrian-cyclist-intent-recognition"
+    },
+    "traffic-risk-graph-inference": {
+      "id": "traffic-risk-graph-inference",
+      "prev": [
+        "road-context-segmentation",
+        "traffic-signal-recognition",
+        "vehicle-trajectory-prediction",
+        "pedestrian-cyclist-intent-recognition"
+      ],
+      "succ": [],
+      "service_id": "traffic-risk-graph-inference"
+    }
+  },
+  "layout": {
+    "direction": "LR",
+    "nodes": {
+      "traffic-object-detection": {
+        "x": 0,
+        "y": 120
+      },
+      "road-context-segmentation": {
+        "x": 0,
+        "y": 300
+      },
+      "traffic-signal-recognition": {
+        "x": 240,
+        "y": 0
+      },
+      "vehicle-reidentification-tracking": {
+        "x": 240,
+        "y": 120
+      },
+      "vehicle-attribute-recognition": {
+        "x": 240,
+        "y": 220
+      },
+      "pedestrian-cyclist-pose-estimation": {
+        "x": 240,
+        "y": 360
+      },
+      "vehicle-trajectory-prediction": {
+        "x": 520,
+        "y": 160
+      },
+      "pedestrian-cyclist-intent-recognition": {
+        "x": 520,
+        "y": 360
+      },
+      "traffic-risk-graph-inference": {
+        "x": 800,
+        "y": 240
+      }
+    }
+  },
+  "metadata": {
+    "description": "Recommended structured traffic DAG for traffic risk monitoring review."
+  }
+}

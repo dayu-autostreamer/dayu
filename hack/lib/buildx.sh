@@ -97,6 +97,15 @@ dayu::buildx::import_docker_info() {
       [vehicle-detection]="build/vehicle_detection.Dockerfile"
       [exposure-identification]="build/exposure_identification.Dockerfile"
       [category-identification]="build/category_identification.Dockerfile"
+      [traffic-object-detection]="build/traffic_object_detection.Dockerfile"
+      [road-context-segmentation]="build/road_context_segmentation.Dockerfile"
+      [traffic-signal-recognition]="build/traffic_signal_recognition.Dockerfile"
+      [vehicle-reidentification-tracking]="build/vehicle_reidentification_tracking.Dockerfile"
+      [vehicle-attribute-recognition]="build/vehicle_attribute_recognition.Dockerfile"
+      [vehicle-trajectory-prediction]="build/vehicle_trajectory_prediction.Dockerfile"
+      [pedestrian-cyclist-pose-estimation]="build/pedestrian_cyclist_pose_estimation.Dockerfile"
+      [pedestrian-cyclist-intent-recognition]="build/pedestrian_cyclist_intent_recognition.Dockerfile"
+      [traffic-risk-graph-inference]="build/traffic_risk_graph_inference.Dockerfile"
   )
 
   declare -g -A PLATFORMS=(
@@ -120,6 +129,15 @@ dayu::buildx::import_docker_info() {
       [vehicle-detection]="linux/amd64,linux/arm64"
       [exposure-identification]="linux/amd64,linux/arm64"
       [category-identification]="linux/amd64,linux/arm64"
+      [traffic-object-detection]="linux/amd64,linux/arm64"
+      [road-context-segmentation]="linux/amd64,linux/arm64"
+      [traffic-signal-recognition]="linux/amd64,linux/arm64"
+      [vehicle-reidentification-tracking]="linux/amd64,linux/arm64"
+      [vehicle-attribute-recognition]="linux/amd64,linux/arm64"
+      [vehicle-trajectory-prediction]="linux/amd64,linux/arm64"
+      [pedestrian-cyclist-pose-estimation]="linux/amd64,linux/arm64"
+      [pedestrian-cyclist-intent-recognition]="linux/amd64,linux/arm64"
+      [traffic-risk-graph-inference]="linux/amd64,linux/arm64"
   )
 
   # ----------------------------------------------------------
@@ -137,6 +155,15 @@ dayu::buildx::import_docker_info() {
     vehicle-detection
     exposure-identification
     category-identification
+    traffic-object-detection
+    road-context-segmentation
+    traffic-signal-recognition
+    vehicle-reidentification-tracking
+    vehicle-attribute-recognition
+    vehicle-trajectory-prediction
+    pedestrian-cyclist-pose-estimation
+    pedestrian-cyclist-intent-recognition
+    traffic-risk-graph-inference
   )
 }
 

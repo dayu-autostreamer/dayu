@@ -1,3 +1,4 @@
+import ast
 import copy
 import gzip
 import importlib
@@ -57,6 +58,125 @@ def test_check_dag_validates_service_input_output_contracts(backend_core_instanc
     invalid_state, invalid_msg = backend_core_instance.check_dag(invalid_dag)
     assert invalid_state is False
     assert "Node connection mismatch" in invalid_msg
+
+    fan_in_dag = {
+        "_start": ["traffic-object-detection", "road-context-segmentation"],
+        "traffic-object-detection": {
+            "id": "traffic-object-detection",
+            "prev": [],
+            "succ": [
+                "vehicle-reidentification-tracking",
+                "vehicle-attribute-recognition",
+            ],
+        },
+        "road-context-segmentation": {
+            "id": "road-context-segmentation",
+            "prev": [],
+            "succ": ["vehicle-trajectory-prediction"],
+        },
+        "vehicle-reidentification-tracking": {
+            "id": "vehicle-reidentification-tracking",
+            "prev": ["traffic-object-detection"],
+            "succ": ["vehicle-trajectory-prediction"],
+        },
+        "vehicle-attribute-recognition": {
+            "id": "vehicle-attribute-recognition",
+            "prev": ["traffic-object-detection"],
+            "succ": ["vehicle-trajectory-prediction"],
+        },
+        "vehicle-trajectory-prediction": {
+            "id": "vehicle-trajectory-prediction",
+            "prev": [
+                "road-context-segmentation",
+                "vehicle-reidentification-tracking",
+                "vehicle-attribute-recognition",
+            ],
+            "succ": [],
+        },
+    }
+
+    fan_in_state, fan_in_msg = backend_core_instance.check_dag(fan_in_dag)
+    assert fan_in_state is True
+    assert fan_in_msg == "DAG validation passed"
+
+    generic_shape_dag = {
+        "_start": ["car-detection"],
+        "car-detection": {
+            "id": "car-detection",
+            "prev": [],
+            "succ": ["gender-classification"],
+        },
+        "gender-classification": {
+            "id": "gender-classification",
+            "prev": ["car-detection"],
+            "succ": [],
+        },
+    }
+    generic_state, generic_msg = backend_core_instance.check_dag(generic_shape_dag)
+    assert generic_state is True
+    assert generic_msg == "DAG validation passed"
+
+    allowed_io_labels = {
+        "frame",
+        "bbox",
+        "text",
+        "segmentation",
+        "track",
+        "attribute",
+        "trajectory",
+        "pose",
+        "graph",
+    }
+    for service in backend_core_instance.services:
+        assert set(service["input"]).issubset(allowed_io_labels)
+        assert set(service["output"]).issubset(allowed_io_labels)
+
+    face_service = backend_core_instance.find_service_by_id("face-detection")
+    original_input = face_service["input"]
+    face_service["input"] = "frame"
+    strict_state, strict_msg = backend_core_instance.check_dag(make_valid_dag())
+    assert strict_state is False
+    assert "must be a list" in strict_msg
+    face_service["input"] = original_input
+
+
+@pytest.mark.unit
+def test_structured_traffic_example_dag_and_templates_remain_flexible(backend_core_instance, mounted_runtime):
+    from core.lib.common import YamlOps
+
+    repo_root = Path(__file__).resolve().parents[2]
+    example = YamlOps.read_yaml(repo_root / "config" / "application_dags" / "traffic_risk_monitoring.dag")
+    assert example["format"] == "dayu.application-dag"
+    assert example["version"] == 1
+    assert example["dag_name"] == "traffic risk monitoring"
+    assert set(example["layout"]["nodes"]) == set(example["dag"]) - {"_start"}
+
+    state, msg = backend_core_instance.check_dag(example["dag"])
+    assert state is True
+    assert msg == "DAG validation passed"
+
+    structured_services = {
+        "traffic-object-detection",
+        "road-context-segmentation",
+        "traffic-signal-recognition",
+        "vehicle-reidentification-tracking",
+        "vehicle-attribute-recognition",
+        "vehicle-trajectory-prediction",
+        "pedestrian-cyclist-pose-estimation",
+        "pedestrian-cyclist-intent-recognition",
+        "traffic-risk-graph-inference",
+    }
+    assert structured_services.issubset(set(example["dag"]) - {"_start"})
+
+    for service_id in structured_services:
+        service = backend_core_instance.find_service_by_id(service_id)
+        processor_yaml = YamlOps.read_yaml(mounted_runtime / "processor" / service["yaml"])
+        env = {
+            item["name"]: item["value"]
+            for item in processor_yaml["pod-template"]["env"]
+        }
+        assert env["PROCESSOR_NAME"] == "structured_processor"
+        assert ast.literal_eval(env["INPUT_SERVICES"]) == []
 
 
 @pytest.mark.unit

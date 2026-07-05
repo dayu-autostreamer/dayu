@@ -75,10 +75,51 @@ This file is the service catalog used by DAG construction and processor deployme
 
 - a stable service id
 - a display name and description
-- input and output shape
+- `input` and `output` type labels as YAML lists, even when there is only one label
 - the processor template file used for deployment
 
 The service catalog is what bridges user-facing DAG definitions and processor runtime templates.
+Scalar `input` or `output` values such as `input: frame` are invalid; DAG validation only accepts list-form
+contracts such as `input: [frame]`.
+These labels describe payload form rather than business meaning. Prefer generic labels such as `frame`, `bbox`,
+`text`, `segmentation`, `track`, `attribute`, `trajectory`, `pose`, or `graph`; avoid content-specific labels such as
+`traffic-object-detections` or `vehicle-trajectories`. This keeps DAG composition permissive: the platform checks
+shape compatibility and leaves semantic correctness to the user.
+
+For the structured traffic services and a reviewable example DAG, see
+[`structured-traffic-services.md`](structured-traffic-services.md).
+
+### Application DAG Files
+
+The DAG orchestration UI can import and export `.dag` files. A `.dag` file is JSON content with this top-level shape:
+
+```json
+{
+  "format": "dayu.application-dag",
+  "version": 1,
+  "dag_name": "traffic risk monitoring",
+  "dag": {
+    "_start": ["traffic-object-detection"],
+    "traffic-object-detection": {
+      "id": "traffic-object-detection",
+      "prev": [],
+      "succ": [],
+      "service_id": "traffic-object-detection"
+    }
+  },
+  "layout": {
+    "direction": "LR",
+    "nodes": {
+      "traffic-object-detection": { "x": 0, "y": 120 }
+    }
+  }
+}
+```
+
+`dag` is the backend-facing logical workflow. `layout` is optional and is used only by the frontend canvas to restore
+node positions. The current orchestration UI and backend validation use service ids as node ids, so each node key,
+`id`, and `service_id` should match. The repository includes a reviewable example at
+`config/application_dags/traffic_risk_monitoring.dag`.
 
 ## Component Templates
 
@@ -135,6 +176,8 @@ Processor templates describe how one AI service runs:
 ```
 
 That is why adding a new service usually requires updating both `template/services.yaml` and a matching file under `template/processor/`.
+Application code should remain service-local under `dependency/core/applications/<service>/`; DAG membership is decided by
+the user-selected workflow at runtime, not by hard-coded schema names inside the service implementation.
 
 ## Runtime Env Naming Conventions
 

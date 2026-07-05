@@ -561,6 +561,26 @@ class BackendCore:
                 return service
         return None
 
+    @staticmethod
+    def service_io_labels(service, field):
+        service_id = service.get('id') or service.get('service') or '<unknown>'
+        value = service.get(field)
+        if not isinstance(value, list):
+            return None, f"Service '{service_id}' field '{field}' must be a list of type labels"
+        if any(not isinstance(item, str) or not item for item in value):
+            return None, f"Service '{service_id}' field '{field}' must contain non-empty string labels"
+        return value, None
+
+    @classmethod
+    def service_io_compatible(cls, parent_service, child_service):
+        parent_outputs, error_msg = cls.service_io_labels(parent_service, 'output')
+        if error_msg:
+            return False, error_msg
+        child_inputs, error_msg = cls.service_io_labels(child_service, 'input')
+        if error_msg:
+            return False, error_msg
+        return bool(set(parent_outputs) & set(child_inputs)), None
+
     def find_dag_by_id(self, dag_id):
         for dag in self.dags:
             if dag['dag_id'] == dag_id:
@@ -645,6 +665,20 @@ class BackendCore:
     def check_dag(self, dag):
 
         def topo_sort(graph):
+            for node, node_info in graph.items():
+                if node == TaskConstant.START.value:
+                    continue
+                service = self.find_service_by_id(node_info['id'])
+                if not service:
+                    error_msg = f"Missing service definition for node {node}"
+                    LOGGER.error(f"DAG Validation Error: {error_msg}")
+                    return False, error_msg
+                for field in ('input', 'output'):
+                    _, error_msg = self.service_io_labels(service, field)
+                    if error_msg:
+                        LOGGER.error(f"DAG Validation Error: {error_msg}")
+                        return False, error_msg
+
             in_degree = {}
             for node in graph.keys():
                 if node != TaskConstant.START.value:
@@ -662,7 +696,11 @@ class BackendCore:
                         error_msg = f"Missing service definition for node {parent if not parent_service else child}"
                         LOGGER.error(f"DAG Validation Error: {error_msg}")
                         return False, error_msg
-                    if child_service['input'] != parent_service['output']:
+                    is_compatible, error_msg = self.service_io_compatible(parent_service, child_service)
+                    if error_msg:
+                        LOGGER.error(f"DAG Validation Error: {error_msg}")
+                        return False, error_msg
+                    if not is_compatible:
                         error_msg = (
                             f"Node connection mismatch, '{parent}' output '{parent_service['output']}', '{child}' input '{child_service['input']}' "
                         )

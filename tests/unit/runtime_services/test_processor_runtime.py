@@ -11,6 +11,7 @@ detector_module = importlib.import_module("core.processor.detector_processor")
 detector_tracker_module = importlib.import_module("core.processor.detector_tracker_processor")
 classifier_module = importlib.import_module("core.processor.classifier_processor")
 roi_classifier_module = importlib.import_module("core.processor.roi_classifier_processor")
+structured_module = importlib.import_module("core.processor.structured_processor")
 
 
 def build_task(service_names, flow_index, file_path="payload.bin"):
@@ -335,3 +336,85 @@ def test_roi_classifier_processor_resets_cache_uses_roi_ids_and_handles_missing_
     ]
     assert task.get_scenario_data("roi-classifier") == {"objects": 2}
     assert processor.flops == 222.0
+
+
+@pytest.mark.unit
+def test_structured_processor_collects_named_inputs_and_saves_profile(monkeypatch):
+    class FakeApplication:
+        flops = 333.0
+
+        def __init__(self):
+            self.payload = None
+
+        def __call__(self, payload):
+            self.payload = payload
+            return {
+                "service": "structured",
+                "outputs": {"events": [{"type": "near_miss"}]},
+                "profile": {"num_objects": 3, "model_name": "fake-model"},
+            }
+
+    application = FakeApplication()
+    frames = [np.ones((4, 6, 3), dtype=np.uint8)]
+
+    def fake_get_parameter(name, default=None, direct=True):
+        if name == "SCENARIOS_EXTRACTORS":
+            return ["structured_profile"]
+        if name == "INPUT_SERVICES":
+            return ["detector", "road"]
+        return default
+
+    def fake_get_algorithm(algorithm, al_name=None, **kwargs):
+        if algorithm == "PRO_SCENARIO":
+            return lambda result, task: result.get("profile", {})
+        raise AssertionError(f"Unexpected algorithm request: {algorithm}")
+
+    monkeypatch.setattr(structured_module.Context, "get_parameter", staticmethod(fake_get_parameter))
+    monkeypatch.setattr(structured_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
+    monkeypatch.setattr(structured_module.Context, "get_instance", staticmethod(lambda name: application))
+    monkeypatch.setattr(structured_module.FileOps, "get_task_file_in_temp", staticmethod(lambda task: "payload.bin"))
+    monkeypatch.setattr(structured_module.cv2, "VideoCapture", lambda path: FakeVideoCapture(frames))
+    monkeypatch.setattr(structured_module, "Timer", DummyTimer)
+
+    dag = Task.extract_dag_from_dict(
+        {
+            "detector": {
+                "service": {"service_name": "detector", "execute_device": "edge-node"},
+                "next_nodes": ["structured"],
+            },
+            "road": {
+                "service": {"service_name": "road", "execute_device": "edge-node"},
+                "next_nodes": ["structured"],
+            },
+            "structured": {
+                "service": {"service_name": "structured", "execute_device": "edge-node"},
+                "prev_nodes": ["detector", "road"],
+            },
+        }
+    )
+    task = Task(
+        source_id=1,
+        task_id=2,
+        source_device="edge-node",
+        all_edge_devices=["edge-node"],
+        dag=dag,
+        flow_index="structured",
+        metadata={"buffer_size": 1},
+        raw_metadata={"buffer_size": 1},
+        hash_data=["frame-1"],
+        file_path="payload.bin",
+    )
+    task.get_service("detector").set_content_data({"outputs": {"detections": [1]}})
+    task.get_service("road").set_content_data({"outputs": {"road_context": True}})
+
+    processor = structured_module.StructuredProcessor()
+    result_task = processor(task)
+
+    assert result_task is task
+    assert application.payload["inputs"]["detector"] == {"outputs": {"detections": [1]}}
+    assert application.payload["inputs"]["road"] == {"outputs": {"road_context": True}}
+    assert task.get_current_content()["outputs"]["events"] == [{"type": "near_miss"}]
+    assert task.get_scenario_data("structured") == {
+        "structured_profile": {"num_objects": 3, "model_name": "fake-model"}
+    }
+    assert processor.flops == 333.0
