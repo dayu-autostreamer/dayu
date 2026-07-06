@@ -1,79 +1,108 @@
-# Docker Containers for Dayu System
+# Docker Images For Dayu
 
-## introduction
+Dayu runs as a set of containerized cloud-edge services. The Dockerfiles in this
+directory describe how each image is assembled; the build matrix itself lives in
+[`../docker-bake.hcl`](../docker-bake.hcl).
 
-Dayu is based on KubeEdge, which is a distributed cloud-edge system with docker containers. Thus, each component of our system is in the form of docker container.
+This split keeps two concerns separate:
 
-To be noted, usually we take server with NVIDIA GPU for cloud (which is amd64 architecture) and take NVIDIA Jetson devices as edge (which are arm64 architecture). Therefore, building dockers should be carefully for architectures.
+- `build/*.Dockerfile`: package one image, install its dependencies, and copy the
+  required Dayu code.
+- `docker-bake.hcl`: declare which images exist, which Dockerfile they use, which
+  platforms they build for, and which tag variants they publish.
 
-## Basic Source
+## Common Entry Points
 
-Here list basic docker images used in the dayu system. Our own images can be built by dockerfiles in [this folder](../dockerfile).
+Use `make` for normal development and CI-compatible builds:
 
-**Tips**: If you have difficulty visiting [dockerhub](https://hub.docker.com/), constructing a private docker registry is recommended. Then you can replace `docker.io` as your registry address. **[Here](../../instructions/private_docker_registry.md) is a short instruction you can refer to.** 
-
-
-```
-# From others
-docker.io/ultralytics/ultralytics:latest (amd64)
-docker.io/ultralytics/ultralytics:latest-jetson-jetpack4 (arm64)
-docker.io/redis:latest (amd64)
-
-
-# Our own images
-docker.io/dayuhub/tensorrt:trt8  (amd64/arm64)
-
-docker.io/dayuhub/backend:{VERSION} (amd64)
-docker.io/dayuhub/frontend:{VERSION} (amd64)
-docker.io/dayuhub/datasource:{VERSION} (arm64)
-
-docker.io/dayuhub/generator:{VERSION} (arm64)
-docker.io/dayuhub/controller:{VERSION}  (amd64/arm64)
-docker.io/dayuhub/dsitributor:{VERSION}  (amd64)
-docker.io/dayuhub/scheduler:{VERSION}  (amd64)
-docker.io/dayuhub/monitor:{VERSION}  (amd64/arm64)
-
-docker.io/dayuhub/car-detection:{VERSION}  (amd64/arm64)
-docker.io/dayuhub/face-detection:{VERSION}  (amd64/arm64)
-docker.io/dayuhub/gender-classification:{VERSION}  (amd64/arm64)
-docker.io/dayuhub/age-classification:{VERSION}  (amd64/arm64)
-
-```
-
-
-## How to build docker manifest list
-
-You can refer to the [instruction](../../instructions/docker_build) to build dockers 
-
-To make an image adaptive to different architectures (like amd64 and arm64), our docker images use docker manifest.
-
-You can follow the instructions to build docker manifest.
-
-- build different architecture images separately.
-
-build amd64 image (or pull existed image) on amd64 device:
 ```bash
-docker build ${registry}/${repository}/${image}:${tag-amd64}
-docker push ${registry}/${repository}/${image}:${tag-amd64}
+make build WHAT=backend
+make build WHAT=monitor,generator
+make build WHAT=processors
+make all
+make validate-build
 ```
 
-build arm64 image (or pull existed image) on arm64 device:
+`make all` builds the same default image set as the historical `cross-build`
+script: runtime images plus processor images. It does not build `dayubase` or
+`rtsp-server` unless those targets are requested explicitly.
+
+The build variables are:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `REG` / `REGISTRY` | `docker.io` | Output registry and default external base registry |
+| `REPO` | `dayuhub` | Output repository/namespace |
+| `TAG` / `IMAGE_TAG` | `v1.4` from `Makefile` | Output image tag |
+| `BASE_REPO` | `dayuhub` | Repository/namespace for internal Dayu base images used in `FROM` |
+| `BASE_TAG` | `latest` | Base `dayubase` tag used by JetPack-aware images |
+| `NO_CACHE` / `NOCACHE` | `0` | Set to `1` or `true` to pass `--no-cache` |
+
+Examples:
+
 ```bash
-docker build ${registry}/${repository}/${image}:${tag-arm64}
-docker push ${registry}/${repository}/${image}:${tag-arm64}
+make build WHAT=traffic-signal-recognition TAG=v1.4 REG=repo:5000 REPO=dayuhub
+make build WHAT=processors BASE_REPO=private-dayu BASE_TAG=v1.4
+make all NOCACHE=1
 ```
 
-- build image manifest.
+To inspect the resolved Bake definition without building:
+
 ```bash
-docker buildx imagetools create -t ${registry}/${repository}/${image}:${tag} ${registry}/${repository}/${image}:${tag-amd64} ${registry}/${repository}/${image}:${tag-arm64}
+bash hack/make-rules/cross-build.sh --print --files monitor --tag v1.4
 ```
 
-With docker manifest, you can pull docker image with the same tag on devices with different architectures. The system will get the correct image automatically.
+## Bake Targets And Groups
 
-## How to build different architectures on one device
+The main groups in `docker-bake.hcl` are:
 
-You can you use docker buildx to build amd64 and arm64 images on amd64 computer. The instruction of setting docker buildx is [here](../../instructions/buildx.md)
+| Target/group | Purpose |
+| --- | --- |
+| `default` | Runtime images plus processor images, matching `make all` |
+| `runtime` | Backend, frontend, datasource, generator, distributor, controller, scheduler, monitor |
+| `processors` | All application service processor images |
+| `rtsp-server` | RTSP server utility image |
+| `dayubase` | Arch-specific dayubase images used before manifest creation |
+| `all-images` | Default set plus `rtsp-server` and dayubase arch tags |
 
-## Easy way for building all images in our system
+Most runtime images publish a single tag. `monitor` and processor images publish
+four tags automatically:
 
-You can run [shell script](../../tools/build.sh) of building all required images.
+- `TAG`
+- `TAG-jp4`
+- `TAG-jp5`
+- `TAG-jp6`
+
+These variants line up with the deployment logic in `backend/template_helper.py`,
+which appends `-jpX` to edge images when a Jetson device reports a known JetPack
+major version.
+
+## Dayubase
+
+`dayubase` is special because amd64 and Jetson arm64 variants use different
+Dockerfiles. Build it through the dedicated wrapper so the arch images and final
+manifest tags are both created:
+
+```bash
+bash hack/tools/build_dayubase.sh --tag latest --jp default
+bash hack/tools/build_dayubase.sh --tag latest --jp all
+```
+
+The wrapper builds the relevant arch targets from `docker-bake.hcl`, then creates
+the multi-arch manifest tag with `docker buildx imagetools create`.
+
+## Consistency Checks
+
+Run this after adding, renaming, or removing images:
+
+```bash
+make validate-build
+```
+
+The validator checks that:
+
+- every `build/*.Dockerfile` is referenced by `docker-bake.hcl`
+- every Dockerfile referenced by Bake exists
+- every `template/**.yaml` `image:` reference has a matching Bake target
+- Dayu component Dockerfiles use `BASE_REPO` instead of hard-coding internal
+  Dayu base-image repositories

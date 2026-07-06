@@ -111,6 +111,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Validate build matrix
+        run: make validate-build
+
       - name: Build and push (make all)
         run: make all REG=${{ env.REG }} REPO=${{ env.REPO }}
 

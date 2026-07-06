@@ -113,6 +113,7 @@ Use the provided `Makefile` targets for local feedback loops:
 
 ```bash
 make install-python-dev
+make validate-build
 make lint-python
 make python-syntax
 make test-unit-integration
@@ -124,6 +125,7 @@ make frontend-check
 make check
 ```
 
+`make validate-build` checks the Docker Bake image matrix against Dockerfiles and deployment templates.
 `make check` is the day-to-day aggregate gate. `make coverage-python` mirrors the Python coverage run used by hosted CI.
 `make frontend-lint` remains available as a cleanup target while the frontend template debt continues to be reduced
 incrementally.

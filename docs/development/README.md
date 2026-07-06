@@ -19,6 +19,7 @@ This guide is for contributors who need to change code in the repository and wan
 | `dependency/core/lib/` | Shared runtime library: hooks, content model, network helpers, estimators | reusable runtime helpers and most extensibility points |
 | `dependency/core/applications/` | Concrete AI application implementations | detector, classifier, tracker, service-specific logic |
 | `template/` | Deployment composition and default runtime env | scheduler families, processor templates, default visualizers |
+| `build/` and `docker-bake.hcl` | Dockerfiles plus the declarative image build matrix | image packaging, platform/tag matrix, JetPack build variants |
 | `config/` | Example datasource and visualization inputs | sample runtime inputs and demos |
 | `docs/` | Repository-managed technical documentation | architecture, API, hooks, datasource, testing, contributor docs |
 | `tests/` | Unit, integration, component, and e2e tests | regression coverage |
@@ -88,6 +89,19 @@ Usually touch:
 - `backend/backend_server.py` if the workflow requires new data or route shape
 - `docs/api/backend.md` if a backend contract changes
 
+### Add or change a Docker image
+
+Usually touch:
+
+- `build/<image>.Dockerfile` for image packaging details
+- `docker-bake.hcl` for the image name, Dockerfile path, target platforms, tags, and JetPack variants
+- `template/**/*.yaml` only if runtime deployment should point at a new image name
+- [`../../build/README.md`](../../build/README.md) if the build workflow changes
+- `tests/unit/tools/test_validate_build_matrix.py` when the build-matrix contract itself changes
+
+Run `make validate-build` after changing image names, Dockerfiles, or templates. The deployment templates remain runtime
+configuration; they are not the source of truth for how images are built.
+
 ## Quality Gates
 
 The repository already has a good baseline for local verification.
@@ -103,6 +117,7 @@ The repository already has a good baseline for local verification.
 
 ```bash
 make install-python-dev
+make validate-build
 make lint-python
 make python-syntax
 make test-unit-integration

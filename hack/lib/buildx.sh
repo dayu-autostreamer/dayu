@@ -3,28 +3,10 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-# ============================================================
-# Build logic:
-# - Normal components: build exactly ONCE with TAG.
-# - Special components (defined by SPECIAL_TAG_IMAGES array in import_docker_info):
-#   build 4 variants automatically: TAG, TAG-jp4, TAG-jp5, TAG-jp6
-#   (each variant is multi-arch if PLATFORMS includes amd64,arm64)
-#
-# Special components Dockerfile typically contains:
-#   ARG TAG=latest
-#   FROM .../dayubase:${TAG}
-# pass --build-arg TAG=<variant-tag> during build.
-#
-# Normal components Dockerfile typically contains:
-#   FROM .../dayubase:latest
-# do not need build-arg TAG.
-# ============================================================
-
-
-# -----------------------------
-# Helpers
-# -----------------------------
-die() { echo "ERROR: $*" >&2; exit 1; }
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
 
 dayu::buildx::read_driver_opts() {
   local driver_opts_file="$1"
@@ -32,17 +14,14 @@ dayu::buildx::read_driver_opts() {
 
   _driver_opts_array=()
   if [[ -f "$driver_opts_file" ]]; then
+    local line key value
     while IFS= read -r line; do
       [[ -z "$line" || "$line" =~ ^# ]] && continue
       if [[ "$line" =~ = ]]; then
         key=$(echo "$line" | awk -F'=' '{gsub(/^[ \t]+|[ \t]+$/, "", $1); print $1}')
         value=$(echo "$line" | awk -F'=' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')
         value=$(echo "$value" | sed 's/^"\(.*\)"$/\1/')
-        if [[ "$value" =~ , ]]; then
-          _driver_opts_array+=( --driver-opt \"$key=$value\" )
-        else
-          _driver_opts_array+=( --driver-opt "$key=$value" )
-        fi
+        _driver_opts_array+=(--driver-opt "$key=$value")
       fi
     done < "$driver_opts_file"
   fi
@@ -56,7 +35,9 @@ dayu::buildx::prepare_env() {
     exit 1
   fi
 
-  docker run --privileged --rm tonistiigi/binfmt --install all
+  if [[ "${DAYU_BUILDX_SKIP_BINFMT:-false}" != "true" ]]; then
+    docker run --privileged --rm tonistiigi/binfmt --install all
+  fi
 
   local BUILDER_INSTANCE="dayu-buildx"
   local BUILDKIT_CONFIG_FILE="${DAYU_ROOT}/hack/resource/buildkitd.toml"
@@ -75,328 +56,150 @@ dayu::buildx::prepare_env() {
   docker buildx use "$BUILDER_INSTANCE"
 }
 
-dayu::buildx::import_docker_info() {
-  declare -g -A DOCKERFILES=(
-      [backend]="build/backend.Dockerfile"
-      [frontend]="build/frontend.Dockerfile"
-      [datasource]="build/datasource.Dockerfile"
+dayu::buildx::show_help() {
+  cat << EOF
+Usage: cross-build.sh [--files TARGETS] [--tag TAG] [--repo REPO] [--registry REG] [--base-repo REPO]
+                      [--base-tag TAG] [--no-cache] [--print] [--help]
 
-      [generator]="build/generator.Dockerfile"
-      [distributor]="build/distributor.Dockerfile"
-      [controller]="build/controller.Dockerfile"
-      [monitor]="build/monitor.Dockerfile"
-      [scheduler]="build/scheduler.Dockerfile"
+--files       Comma-separated Bake targets or groups. Default: default.
+              Examples: backend,monitor,traffic-signal-recognition,processors,rtsp-server
+--tag         Output image tag. Default: latest.
+--repo        Output image repository/namespace. Default: dayuhub.
+--registry    Output image registry. Default: \${REG:-docker.io}.
+--base-repo   Repository/namespace for internal Dayu base images. Default: dayuhub.
+--base-tag    Base dayubase tag used by special JP images. Default: latest.
+--no-cache    Disable Docker build cache for selected targets.
+--print       Print the resolved Bake definition instead of building.
+--help        Display this help message and exit.
 
-      [car-detection]="build/car_detection.Dockerfile"
-      [face-detection]="build/face_detection.Dockerfile"
-      [gender-classification]="build/gender_classification.Dockerfile"
-      [age-classification]="build/age_classification.Dockerfile"
-      [model-switch-detection]="build/model_switch_detection.Dockerfile"
-      [pedestrian-detection]="build/pedestrian_detection.Dockerfile"
-      [license-plate-recognition]="build/license_plate_recognition.Dockerfile"
-      [vehicle-detection]="build/vehicle_detection.Dockerfile"
-      [exposure-identification]="build/exposure_identification.Dockerfile"
-      [category-identification]="build/category_identification.Dockerfile"
-      [traffic-object-detection]="build/traffic_object_detection.Dockerfile"
-      [road-context-segmentation]="build/road_context_segmentation.Dockerfile"
-      [traffic-signal-recognition]="build/traffic_signal_recognition.Dockerfile"
-      [vehicle-reidentification-tracking]="build/vehicle_reidentification_tracking.Dockerfile"
-      [vehicle-attribute-recognition]="build/vehicle_attribute_recognition.Dockerfile"
-      [vehicle-trajectory-prediction]="build/vehicle_trajectory_prediction.Dockerfile"
-      [pedestrian-cyclist-pose-estimation]="build/pedestrian_cyclist_pose_estimation.Dockerfile"
-      [pedestrian-cyclist-intent-recognition]="build/pedestrian_cyclist_intent_recognition.Dockerfile"
-      [traffic-risk-graph-inference]="build/traffic_risk_graph_inference.Dockerfile"
-  )
-
-  declare -g -A PLATFORMS=(
-      [backend]="linux/amd64"
-      [frontend]="linux/amd64"
-      [datasource]="linux/amd64,linux/arm64"
-
-      [generator]="linux/amd64,linux/arm64"
-      [distributor]="linux/amd64"
-      [controller]="linux/amd64,linux/arm64"
-      [monitor]="linux/amd64,linux/arm64"
-      [scheduler]="linux/amd64"
-
-      [car-detection]="linux/amd64,linux/arm64"
-      [face-detection]="linux/amd64,linux/arm64"
-      [gender-classification]="linux/amd64,linux/arm64"
-      [age-classification]="linux/amd64,linux/arm64"
-      [model-switch-detection]="linux/amd64,linux/arm64"
-      [pedestrian-detection]="linux/amd64,linux/arm64"
-      [license-plate-recognition]="linux/amd64,linux/arm64"
-      [vehicle-detection]="linux/amd64,linux/arm64"
-      [exposure-identification]="linux/amd64,linux/arm64"
-      [category-identification]="linux/amd64,linux/arm64"
-      [traffic-object-detection]="linux/amd64,linux/arm64"
-      [road-context-segmentation]="linux/amd64,linux/arm64"
-      [traffic-signal-recognition]="linux/amd64,linux/arm64"
-      [vehicle-reidentification-tracking]="linux/amd64,linux/arm64"
-      [vehicle-attribute-recognition]="linux/amd64,linux/arm64"
-      [vehicle-trajectory-prediction]="linux/amd64,linux/arm64"
-      [pedestrian-cyclist-pose-estimation]="linux/amd64,linux/arm64"
-      [pedestrian-cyclist-intent-recognition]="linux/amd64,linux/arm64"
-      [traffic-risk-graph-inference]="linux/amd64,linux/arm64"
-  )
-
-  # ----------------------------------------------------------
-  # Special images that must build 4 tags: TAG / TAG-jp4/5/6
-  # ----------------------------------------------------------
-  declare -g -a SPECIAL_TAG_IMAGES=(
-    monitor
-    car-detection
-    face-detection
-    gender-classification
-    age-classification
-    model-switch-detection
-    pedestrian-detection
-    license-plate-recognition
-    vehicle-detection
-    exposure-identification
-    category-identification
-    traffic-object-detection
-    road-context-segmentation
-    traffic-signal-recognition
-    vehicle-reidentification-tracking
-    vehicle-attribute-recognition
-    vehicle-trajectory-prediction
-    pedestrian-cyclist-pose-estimation
-    pedestrian-cyclist-intent-recognition
-    traffic-risk-graph-inference
-  )
+The build matrix lives in docker-bake.hcl. This wrapper only prepares buildx and
+translates the historical Dayu command-line flags into Bake variables.
+EOF
 }
 
-dayu::buildx::import_env_variables(){
+dayu::buildx::trim_target() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+dayu::buildx::parse_args() {
   NO_CACHE=false
-  BASE_TAG="latest"
+  PRINT_ONLY=false
   SELECTED_FILES=""
+  TAG="${TAG:-latest}"
+  REPO="${REPO:-dayuhub}"
+  REGISTRY="${REGISTRY:-${REG:-docker.io}}"
+  BASE_REPO="${BASE_REPO:-dayuhub}"
+  BASE_TAG="${BASE_TAG:-latest}"
 
-  # Parse command line arguments
   while [[ $# -gt 0 ]]; do
-      case "$1" in
-          --files)
-              [[ -n "${2:-}" ]] || die '"--files" requires a non-empty option argument.'
-              SELECTED_FILES=$2
-              shift
-              ;;
-          --tag)
-              [[ -n "${2:-}" ]] || die '"--tag" requires a non-empty option argument.'
-              TAG=$2
-              shift
-              ;;
-          --repo)
-              [[ -n "${2:-}" ]] || die '"--repo" requires a non-empty option argument.'
-              REPO=$2
-              shift
-              ;;
-          --registry)
-              [[ -n "${2:-}" ]] || die '"--registry" requires a non-empty option argument.'
-              REGISTRY=$2
-              shift
-              ;;
-          --no-cache)
-              NO_CACHE=true
-              ;;
-          --) shift; break ;;
-          *) break ;;
-      esac
-      shift
+    case "$1" in
+      --help)
+        dayu::buildx::show_help
+        exit 0
+        ;;
+      --files)
+        [[ -n "${2:-}" ]] || die '"--files" requires a non-empty option argument.'
+        SELECTED_FILES="$2"
+        shift
+        ;;
+      --tag)
+        [[ -n "${2:-}" ]] || die '"--tag" requires a non-empty option argument.'
+        TAG="$2"
+        shift
+        ;;
+      --repo)
+        [[ -n "${2:-}" ]] || die '"--repo" requires a non-empty option argument.'
+        REPO="$2"
+        shift
+        ;;
+      --registry)
+        [[ -n "${2:-}" ]] || die '"--registry" requires a non-empty option argument.'
+        REGISTRY="$2"
+        shift
+        ;;
+      --base-repo)
+        [[ -n "${2:-}" ]] || die '"--base-repo" requires a non-empty option argument.'
+        BASE_REPO="$2"
+        shift
+        ;;
+      --base-tag)
+        [[ -n "${2:-}" ]] || die '"--base-tag" requires a non-empty option argument.'
+        BASE_TAG="$2"
+        shift
+        ;;
+      --no-cache)
+        NO_CACHE=true
+        ;;
+      --print)
+        PRINT_ONLY=true
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        die "Unknown build option: $1"
+        ;;
+    esac
+    shift
   done
 }
 
-dayu::buildx::init_env(){
-  dayu::buildx::prepare_env
-  dayu::buildx::import_docker_info
-  dayu::buildx::import_env_variables "$@"
-}
-
-# ------------------------------------------------------------
-# Special-image decision based on SPECIAL_TAG_IMAGES array
-# ------------------------------------------------------------
-dayu::buildx::is_special_image() {
-  local image="$1"
-  local x
-  for x in "${SPECIAL_TAG_IMAGES[@]}"; do
-    if [[ "$x" == "$image" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-# ------------------------------------------------------------
-# Build functions
-# ------------------------------------------------------------
-dayu::buildx::build_normal_image() {
-  local image="$1"
-  local platform="$2"
-  local dockerfile="$3"
-  local cache_option="$4"
-
-  local image_tag="${REGISTRY}/${REPO}/${image}:${TAG}"
-  local context_dir="."
-
-  echo "Building NORMAL image: ${image_tag} platform: ${platform} dockerfile: ${dockerfile} no-cache: ${NO_CACHE}"
-
-  if [[ -z "${cache_option}" ]]; then
-    docker buildx build \
-      --platform "${platform}" \
-      --build-arg REG="${REGISTRY}" \
-      -t "${image_tag}" \
-      -f "${dockerfile}" \
-      "${context_dir}" \
-      --push
-  else
-    docker buildx build \
-      --platform "${platform}" \
-      --build-arg REG="${REGISTRY}" \
-      -t "${image_tag}" \
-      -f "${dockerfile}" \
-      "${context_dir}" \
-      "${cache_option}" \
-      --push
-  fi
-}
-
-dayu::buildx::build_special_arch() {
-  local image="$1"
-  local platform="$2"      # linux/amd64 or linux/arm64
-  local dockerfile="$3"
-  local suffix_variant="$4"   # TAG / TAG-jp4 / TAG-jp5 / TAG-jp6
-  local cache_option="$5"
-
-  local arch="${platform##*/}"
-  local temp_tag="${REGISTRY}/${REPO}/${image}:${TAG}${suffix_variant}-${arch}"
-  local context_dir="."
-
-  echo "Building SPECIAL arch image: ${temp_tag} platform: ${platform} dockerfile: ${dockerfile} baseTAG: ${BASE_TAG}${suffix_variant} no-cache: ${NO_CACHE}"
-
-  if [[ -z "${cache_option}" ]]; then
-    docker buildx build \
-      --platform "${platform}" \
-      --build-arg REG="${REGISTRY}" \
-      --build-arg TAG="${BASE_TAG}${suffix_variant}" \
-      -t "${temp_tag}" \
-      -f "${dockerfile}" \
-      "${context_dir}" \
-      --push
-  else
-    docker buildx build \
-      --platform "${platform}" \
-      --build-arg REG="${REGISTRY}" \
-      --build-arg TAG="${BASE_TAG}${suffix_variant}" \
-      -t "${temp_tag}" \
-      -f "${dockerfile}" \
-      "${context_dir}" \
-      "${cache_option}" \
-      --push
-  fi
-}
-
-dayu::buildx::create_and_push_manifest() {
-  local image="$1"
-  local variant_tag="$2"
-
-  local manifest_tag="${REGISTRY}/${REPO}/${image}:${variant_tag}"
-  echo "Creating and pushing manifest for: ${manifest_tag}"
-
-  docker buildx imagetools create -t "${manifest_tag}" \
-    "${REGISTRY}/${REPO}/${image}:${variant_tag}-amd64" \
-    "${REGISTRY}/${REPO}/${image}:${variant_tag}-arm64"
-}
-
-dayu::buildx::build_special_image_all_variants() {
-  local image="$1"
-  local platform_csv="$2"
-  local dockerfile="$3"
-  local cache_option="$4"
-
-  local -a suffix_variants=("" "-jp4" "-jp5" "-jp6")
-
-  for vt in "${suffix_variants[@]}"; do
-    local image_tag="${REGISTRY}/${REPO}/${image}:${TAG}${vt}"
-
-    echo "Building SPECIAL multi-arch image (single shot): ${image_tag}"
-    echo "platforms: ${platform_csv} dockerfile: ${dockerfile} baseTAG: ${BASE_TAG}${vt}"
-
-    if [[ -z "${cache_option}" ]]; then
-      docker buildx build \
-        --platform "${platform_csv}" \
-        --build-arg REG="${REGISTRY}" \
-        --build-arg TAG="${BASE_TAG}${vt}" \
-        -t "${image_tag}" \
-        -f "${dockerfile}" \
-        "." \
-        --push
-    else
-      docker buildx build \
-        --platform "${platform_csv}" \
-        --build-arg REG="${REGISTRY}" \
-        --build-arg TAG="${BASE_TAG}${vt}" \
-        -t "${image_tag}" \
-        -f "${dockerfile}" \
-        "." \
-        "${cache_option}" \
-        --push
-    fi
-  done
-}
-
-
-# ------------------------------------------------------------
-# Main entry
-# ------------------------------------------------------------
-dayu::buildx::build_and_push_multi_platform_images(){
-  dayu::buildx::init_env "$@"
-
-  local CACHE_OPTION=""
-  if [[ "${NO_CACHE}" = true ]]; then
-    CACHE_OPTION="--no-cache"
-  fi
-
-  local -a targets=()
+dayu::buildx::resolve_targets() {
+  RESOLVED_TARGETS=()
   if [[ -n "${SELECTED_FILES}" ]]; then
-    IFS=',' read -ra targets <<< "${SELECTED_FILES}"
+    local -a raw_targets=()
+    local raw target
+    IFS=',' read -ra raw_targets <<< "${SELECTED_FILES}"
+    for raw in "${raw_targets[@]}"; do
+      target="$(dayu::buildx::trim_target "$raw")"
+      [[ -n "$target" ]] || continue
+      RESOLVED_TARGETS+=("$target")
+    done
   else
-    echo "No images specified, building all default images."
-    for k in "${!DOCKERFILES[@]}"; do targets+=("$k"); done
+    RESOLVED_TARGETS=("default")
   fi
+
+  [[ ${#RESOLVED_TARGETS[@]} -gt 0 ]] || die "No build targets resolved."
+}
+
+dayu::buildx::run_bake() {
+  local -a targets=("$@")
+  local bake_file="${DAYU_ROOT}/docker-bake.hcl"
+  [[ -f "$bake_file" ]] || die "Bake file not found: $bake_file"
+
+  export REGISTRY REPO TAG BASE_REPO BASE_TAG
+
+  local -a bake_args=(-f "$bake_file")
+  if [[ "${NO_CACHE}" == "true" ]]; then
+    bake_args+=(--set=*.no-cache=true)
+  fi
+  if [[ "${PRINT_ONLY}" == "true" ]]; then
+    bake_args+=(--print)
+  fi
+  bake_args+=("${targets[@]}")
+
+  docker buildx bake "${bake_args[@]}"
+}
+
+dayu::buildx::build_and_push_multi_platform_images() {
+  dayu::buildx::parse_args "$@"
+  dayu::buildx::resolve_targets
 
   echo "Registry : ${REGISTRY}"
   echo "Repo     : ${REPO}"
   echo "Tag      : ${TAG}"
+  echo "Base repo: ${BASE_REPO}"
+  echo "Base tag : ${BASE_TAG}"
   echo "No-cache : ${NO_CACHE}"
-  echo "Targets  : ${targets[*]}"
-  echo "Special  : ${SPECIAL_TAG_IMAGES[*]}"
+  echo "Targets  : ${RESOLVED_TARGETS[*]}"
   echo ""
 
-  for image in "${targets[@]}"; do
-    if [[ -z "${DOCKERFILES[$image]:-}" || -z "${PLATFORMS[$image]:-}" ]]; then
-      echo "Unknown image or platform not specified: ${image} (skipped)"
-      continue
-    fi
-
-    local dockerfile="${DOCKERFILES[$image]}"
-    local platform="${PLATFORMS[$image]}"
-
-    if dayu::buildx::is_special_image "${image}"; then
-      echo "------------------------------------------------------------"
-      echo "SPECIAL build: ${image}  (will build: ${TAG}, ${TAG}-jp4, ${TAG}-jp5, ${TAG}-jp6)"
-      echo "platforms: ${platform}"
-      echo "dockerfile: ${dockerfile}"
-      echo "------------------------------------------------------------"
-      dayu::buildx::build_special_image_all_variants "${image}" "${platform}" "${dockerfile}" "${CACHE_OPTION}"
-    else
-      echo "------------------------------------------------------------"
-      echo "NORMAL build: ${image} (will build: ${TAG})"
-      echo "platforms: ${platform}"
-      echo "dockerfile: ${dockerfile}"
-      echo "------------------------------------------------------------"
-      dayu::buildx::build_normal_image "${image}" "${platform}" "${dockerfile}" "${CACHE_OPTION}"
-    fi
-  done
-
-  echo ""
-  echo "Done."
+  if [[ "${PRINT_ONLY}" != "true" ]]; then
+    dayu::buildx::prepare_env
+  fi
+  dayu::buildx::run_bake "${RESOLVED_TARGETS[@]}"
 }

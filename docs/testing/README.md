@@ -12,6 +12,7 @@ This document explains how Dayu's current code structure maps to the test pyrami
 | Source adapters | `http_video`, `rtsp_video`, dataset readers, datasource API | `datasource/` |
 | Service entrypoints | Container-facing `main.py` launchers for components | `components/` |
 | Deployment templates | YAML-driven runtime composition and hook selection | `template/` |
+| Build configuration | Dockerfiles, Bake targets, and template image references | `build/`, `docker-bake.hcl`, `tools/validate_build_matrix.py` |
 | Tests | Layered Python test pyramid | `tests/` |
 
 ## Current Test Pyramid
@@ -26,6 +27,8 @@ The repository already follows a sensible layered layout that is close to mature
 | E2E smoke | Template rendering, config catalog, and top-level smoke checks | `tests/e2e/` | `python-e2e-smoke` |
 
 This is the right base framework, so the recommended change is not to introduce a new top-level testing style. The better move is to make the existing pyramid more systematic around hooks.
+
+Build-matrix consistency is covered by `make validate-build` and `tests/unit/tools/test_validate_build_matrix.py`. These checks stay fast and local: they validate `docker-bake.hcl`, Dockerfile coverage, and template `image:` references without requiring a Docker daemon.
 
 ## Recommended Test Layout
 
