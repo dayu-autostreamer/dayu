@@ -18,11 +18,8 @@ variable "BASE_TAG" {
   default = "latest"
 }
 
-locals {
-  image_output = ["type=image,push=true"]
-  multi_platform = ["linux/amd64", "linux/arm64"]
-
-  runtime_targets = [
+group "default" {
+  targets = [
     "backend",
     "frontend",
     "datasource",
@@ -31,9 +28,6 @@ locals {
     "controller",
     "scheduler",
     "monitor",
-  ]
-
-  processor_targets = [
     "car-detection",
     "face-detection",
     "gender-classification",
@@ -54,37 +48,47 @@ locals {
     "pedestrian-cyclist-intent-recognition",
     "traffic-risk-graph-inference",
   ]
+}
 
-  default_targets = concat(local.runtime_targets, local.processor_targets)
-
-  jetpack_variants = [
-    {
-      name = "default"
-      suffix = ""
-      base_tag = BASE_TAG
-      image_tag = TAG
-    },
-    {
-      name = "jp4"
-      suffix = "-jp4"
-      base_tag = "${BASE_TAG}-jp4"
-      image_tag = "${TAG}-jp4"
-    },
-    {
-      name = "jp5"
-      suffix = "-jp5"
-      base_tag = "${BASE_TAG}-jp5"
-      image_tag = "${TAG}-jp5"
-    },
-    {
-      name = "jp6"
-      suffix = "-jp6"
-      base_tag = "${BASE_TAG}-jp6"
-      image_tag = "${TAG}-jp6"
-    },
+group "runtime" {
+  targets = [
+    "backend",
+    "frontend",
+    "datasource",
+    "generator",
+    "distributor",
+    "controller",
+    "scheduler",
+    "monitor",
   ]
+}
 
-  dayubase_targets = [
+group "processors" {
+  targets = [
+    "car-detection",
+    "face-detection",
+    "gender-classification",
+    "age-classification",
+    "model-switch-detection",
+    "pedestrian-detection",
+    "license-plate-recognition",
+    "vehicle-detection",
+    "exposure-identification",
+    "category-identification",
+    "traffic-object-detection",
+    "road-context-segmentation",
+    "traffic-signal-recognition",
+    "vehicle-reidentification-tracking",
+    "vehicle-attribute-recognition",
+    "vehicle-trajectory-prediction",
+    "pedestrian-cyclist-pose-estimation",
+    "pedestrian-cyclist-intent-recognition",
+    "traffic-risk-graph-inference",
+  ]
+}
+
+group "dayubase" {
+  targets = [
     "dayubase-default-amd64",
     "dayubase-default-arm64",
     "dayubase-jp4-amd64",
@@ -96,29 +100,50 @@ locals {
   ]
 }
 
-group "default" {
-  targets = local.default_targets
-}
-
-group "runtime" {
-  targets = local.runtime_targets
-}
-
-group "processors" {
-  targets = local.processor_targets
-}
-
-group "dayubase" {
-  targets = local.dayubase_targets
-}
-
 group "all-images" {
-  targets = concat(local.default_targets, ["rtsp-server"], local.dayubase_targets)
+  targets = [
+    "backend",
+    "frontend",
+    "datasource",
+    "generator",
+    "distributor",
+    "controller",
+    "scheduler",
+    "monitor",
+    "car-detection",
+    "face-detection",
+    "gender-classification",
+    "age-classification",
+    "model-switch-detection",
+    "pedestrian-detection",
+    "license-plate-recognition",
+    "vehicle-detection",
+    "exposure-identification",
+    "category-identification",
+    "traffic-object-detection",
+    "road-context-segmentation",
+    "traffic-signal-recognition",
+    "vehicle-reidentification-tracking",
+    "vehicle-attribute-recognition",
+    "vehicle-trajectory-prediction",
+    "pedestrian-cyclist-pose-estimation",
+    "pedestrian-cyclist-intent-recognition",
+    "traffic-risk-graph-inference",
+    "rtsp-server",
+    "dayubase-default-amd64",
+    "dayubase-default-arm64",
+    "dayubase-jp4-amd64",
+    "dayubase-jp4-arm64",
+    "dayubase-jp5-amd64",
+    "dayubase-jp5-arm64",
+    "dayubase-jp6-amd64",
+    "dayubase-jp6-arm64",
+  ]
 }
 
 target "_image-common" {
   context = "."
-  output = local.image_output
+  output = ["type=image,push=true"]
 }
 
 target "backend" {
@@ -146,7 +171,7 @@ target "frontend" {
 target "datasource" {
   inherits = ["_image-common"]
   dockerfile = "build/datasource.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
@@ -157,7 +182,7 @@ target "datasource" {
 target "generator" {
   inherits = ["_image-common"]
   dockerfile = "build/generator.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
@@ -179,7 +204,7 @@ target "distributor" {
 target "controller" {
   inherits = ["_image-common"]
   dockerfile = "build/controller.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
@@ -201,7 +226,7 @@ target "scheduler" {
 target "rtsp-server" {
   inherits = ["_image-common"]
   dockerfile = "build/rtsp_server.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
@@ -212,321 +237,661 @@ target "rtsp-server" {
 target "monitor" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "monitor-${variant.name}"
   dockerfile = "build/monitor.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/monitor:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/monitor:${TAG}${variant.suffix}"]
 }
 
 target "car-detection" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "car-detection-${variant.name}"
   dockerfile = "build/car_detection.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/car-detection:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/car-detection:${TAG}${variant.suffix}"]
 }
 
 target "face-detection" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "face-detection-${variant.name}"
   dockerfile = "build/face_detection.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/face-detection:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/face-detection:${TAG}${variant.suffix}"]
 }
 
 target "gender-classification" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "gender-classification-${variant.name}"
   dockerfile = "build/gender_classification.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/gender-classification:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/gender-classification:${TAG}${variant.suffix}"]
 }
 
 target "age-classification" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "age-classification-${variant.name}"
   dockerfile = "build/age_classification.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/age-classification:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/age-classification:${TAG}${variant.suffix}"]
 }
 
 target "model-switch-detection" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "model-switch-detection-${variant.name}"
   dockerfile = "build/model_switch_detection.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/model-switch-detection:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/model-switch-detection:${TAG}${variant.suffix}"]
 }
 
 target "pedestrian-detection" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "pedestrian-detection-${variant.name}"
   dockerfile = "build/pedestrian_detection.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/pedestrian-detection:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/pedestrian-detection:${TAG}${variant.suffix}"]
 }
 
 target "license-plate-recognition" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "license-plate-recognition-${variant.name}"
   dockerfile = "build/license_plate_recognition.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/license-plate-recognition:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/license-plate-recognition:${TAG}${variant.suffix}"]
 }
 
 target "vehicle-detection" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "vehicle-detection-${variant.name}"
   dockerfile = "build/vehicle_detection.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/vehicle-detection:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/vehicle-detection:${TAG}${variant.suffix}"]
 }
 
 target "exposure-identification" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "exposure-identification-${variant.name}"
   dockerfile = "build/exposure_identification.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/exposure-identification:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/exposure-identification:${TAG}${variant.suffix}"]
 }
 
 target "category-identification" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "category-identification-${variant.name}"
   dockerfile = "build/category_identification.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/category-identification:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/category-identification:${TAG}${variant.suffix}"]
 }
 
 target "traffic-object-detection" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "traffic-object-detection-${variant.name}"
   dockerfile = "build/traffic_object_detection.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/traffic-object-detection:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/traffic-object-detection:${TAG}${variant.suffix}"]
 }
 
 target "road-context-segmentation" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "road-context-segmentation-${variant.name}"
   dockerfile = "build/road_context_segmentation.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/road-context-segmentation:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/road-context-segmentation:${TAG}${variant.suffix}"]
 }
 
 target "traffic-signal-recognition" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "traffic-signal-recognition-${variant.name}"
   dockerfile = "build/traffic_signal_recognition.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/traffic-signal-recognition:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/traffic-signal-recognition:${TAG}${variant.suffix}"]
 }
 
 target "vehicle-reidentification-tracking" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "vehicle-reidentification-tracking-${variant.name}"
   dockerfile = "build/vehicle_reidentification_tracking.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/vehicle-reidentification-tracking:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/vehicle-reidentification-tracking:${TAG}${variant.suffix}"]
 }
 
 target "vehicle-attribute-recognition" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "vehicle-attribute-recognition-${variant.name}"
   dockerfile = "build/vehicle_attribute_recognition.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/vehicle-attribute-recognition:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/vehicle-attribute-recognition:${TAG}${variant.suffix}"]
 }
 
 target "vehicle-trajectory-prediction" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "vehicle-trajectory-prediction-${variant.name}"
   dockerfile = "build/vehicle_trajectory_prediction.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/vehicle-trajectory-prediction:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/vehicle-trajectory-prediction:${TAG}${variant.suffix}"]
 }
 
 target "pedestrian-cyclist-pose-estimation" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "pedestrian-cyclist-pose-estimation-${variant.name}"
   dockerfile = "build/pedestrian_cyclist_pose_estimation.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/pedestrian-cyclist-pose-estimation:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/pedestrian-cyclist-pose-estimation:${TAG}${variant.suffix}"]
 }
 
 target "pedestrian-cyclist-intent-recognition" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "pedestrian-cyclist-intent-recognition-${variant.name}"
   dockerfile = "build/pedestrian_cyclist_intent_recognition.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/pedestrian-cyclist-intent-recognition:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/pedestrian-cyclist-intent-recognition:${TAG}${variant.suffix}"]
 }
 
 target "traffic-risk-graph-inference" {
   inherits = ["_image-common"]
   matrix = {
-    variant = local.jetpack_variants
+    variant = [
+      {
+        name = "default"
+        suffix = ""
+      },
+      {
+        name = "jp4"
+        suffix = "-jp4"
+      },
+      {
+        name = "jp5"
+        suffix = "-jp5"
+      },
+      {
+        name = "jp6"
+        suffix = "-jp6"
+      },
+    ]
   }
   name = "traffic-risk-graph-inference-${variant.name}"
   dockerfile = "build/traffic_risk_graph_inference.Dockerfile"
-  platforms = local.multi_platform
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
-    TAG = variant.base_tag
+    TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/traffic-risk-graph-inference:${variant.image_tag}"]
+  tags = ["${REGISTRY}/${REPO}/traffic-risk-graph-inference:${TAG}${variant.suffix}"]
 }
 
 target "dayubase-default-amd64" {
