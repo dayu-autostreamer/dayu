@@ -31,15 +31,15 @@ class FakeBackendCore:
                 "id": "face-detection",
                 "name": "face detection",
                 "description": "face detection",
-                "input": "frame",
-                "output": "bbox",
+                "input": ["frame"],
+                "output": ["bbox"],
             },
             {
                 "id": "gender-classification",
                 "name": "gender classification",
                 "description": "gender classification",
-                "input": "bbox",
-                "output": "text",
+                "input": ["bbox", "frame"],
+                "output": ["text"],
             },
         ]
         self.dags = []
@@ -61,6 +61,16 @@ class FakeBackendCore:
 
     def parse_base_info(self):
         return None
+
+    @staticmethod
+    def service_io_labels(service, field):
+        service_id = service.get("id") or service.get("service") or "<unknown>"
+        value = service.get(field)
+        if not isinstance(value, list):
+            return None, f"Service '{service_id}' field '{field}' must be a list of type labels"
+        if any(not isinstance(item, str) or not item for item in value):
+            return None, f"Service '{service_id}' field '{field}' must contain non-empty string labels"
+        return value, None
 
     def check_pods_running_state(self):
         return True
@@ -144,6 +154,7 @@ def test_get_all_services_is_idempotent(backend_client):
     assert first_response.json() == second_response.json()
     service_map = {service["id"]: service for service in first_response.json()}
     assert service_map["face-detection"]["description"].endswith("(in:frame, out:bbox)")
+    assert service_map["gender-classification"]["description"].endswith("(in:bbox, frame, out:text)")
     assert service_map["face-detection"]["description"].count("(in:") == 1
 
 

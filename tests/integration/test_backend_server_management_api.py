@@ -39,8 +39,8 @@ class FakeBackendCoreManagement:
                 "id": "face-detection",
                 "name": "face detection",
                 "description": "face detection",
-                "input": "frame",
-                "output": "bbox",
+                "input": ["frame"],
+                "output": ["bbox"],
             }
         ]
         self.dags = [{"dag_id": 1, "dag_name": "face-pipeline", "dag": make_dag()}]
@@ -88,6 +88,16 @@ class FakeBackendCoreManagement:
 
     def parse_base_info(self):
         return None
+
+    @staticmethod
+    def service_io_labels(service, field):
+        service_id = service.get("id") or service.get("service") or "<unknown>"
+        value = service.get(field)
+        if not isinstance(value, list):
+            return None, f"Service '{service_id}' field '{field}' must be a list of type labels"
+        if any(not isinstance(item, str) or not item for item in value):
+            return None, f"Service '{service_id}' field '{field}' must contain non-empty string labels"
+        return value, None
 
     def check_pods_running_state(self):
         return True

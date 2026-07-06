@@ -269,8 +269,8 @@ class BackendServer:
             if input_error or output_error:
                 raise ValueError(input_error or output_error)
             service_view['description'] = (
-                service_view['description'] + ' (in:' + ', '.join(service_input) +
-                ', out:' + ', '.join(service_output) + ')'
+                f"{service_view['description']} "
+                f"(in:{', '.join(service_input)}, out:{', '.join(service_output)})"
             )
             service_dict[service_view['id']] = (
                 service_view if service_view['id'] not in service_dict else service_dict[service_view['id']]
