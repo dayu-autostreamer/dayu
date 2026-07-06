@@ -8,11 +8,10 @@ pod-template:
     - name: APPLICATION_PARAMETERS
       value: >
         {
-          'model_name':'vehicle-reidentification-tracker',
-          'model_weight':'vehicle_reidentification_tracking.pt',
-          'model_variant':'bytetrack-reidentification',
-          'device':0,
-          'synthetic_complexity':2
+          'trt_weights':'vehicle_reidentification_tracking.engine',
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'vehicle_reidentification_tracking.pt',
+          'device':0
         }
     - name: INPUT_SERVICES
       value: >
@@ -22,6 +21,8 @@ pod-template:
         ['structured_profile']
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
 port-open:
   pos: both
   port: 9000

@@ -1,1 +1,1 @@
-# No additional package requirements.
+ultralytics>=8.3,<9

@@ -1,0 +1,3 @@
+from .traffic_risk_graph_inference_mlp import TrafficRiskGraphInference as TrafficRiskGraphInferenceWithoutTensorRT
+
+__all__ = ['TrafficRiskGraphInferenceWithoutTensorRT']

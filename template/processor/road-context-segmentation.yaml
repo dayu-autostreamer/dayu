@@ -8,11 +8,10 @@ pod-template:
     - name: APPLICATION_PARAMETERS
       value: >
         {
-          'model_name':'road-context-segmenter',
-          'model_weight':'road_context_segmentation.pt',
-          'model_variant':'yolop',
-          'device':0,
-          'synthetic_complexity':2
+          'trt_weights':'road_context_segmentation.engine',
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'road_context_segmentation.pt',
+          'device':0
         }
     - name: INPUT_SERVICES
       value: >
@@ -22,6 +21,8 @@ pod-template:
         ['structured_profile']
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
 port-open:
   pos: both
   port: 9000

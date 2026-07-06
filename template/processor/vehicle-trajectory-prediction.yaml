@@ -8,11 +8,10 @@ pod-template:
     - name: APPLICATION_PARAMETERS
       value: >
         {
-          'model_name':'vehicle-trajectory-predictor',
-          'model_weight':'vehicle_trajectory_prediction.pt',
-          'model_variant':'trajectory-transformer',
-          'device':0,
-          'synthetic_complexity':3
+          'trt_weights':'vehicle_trajectory_prediction.engine',
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'vehicle_trajectory_prediction.pt',
+          'device':0
         }
     - name: INPUT_SERVICES
       value: >
@@ -22,6 +21,8 @@ pod-template:
         ['structured_profile']
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
 port-open:
   pos: both
   port: 9000

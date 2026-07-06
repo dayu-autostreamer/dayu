@@ -1,0 +1,4 @@
+from .vehicle_reidentification_tracking_tensorrt8 import VehicleReidentificationTrackingTensorRT8
+from .vehicle_reidentification_tracking_tensorrt10 import VehicleReidentificationTrackingTensorRT10
+
+__all__ = ['VehicleReidentificationTrackingTensorRT8', 'VehicleReidentificationTrackingTensorRT10']

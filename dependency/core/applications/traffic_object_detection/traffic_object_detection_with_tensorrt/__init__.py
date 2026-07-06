@@ -1,0 +1,4 @@
+from .traffic_object_detection_tensorrt8 import TrafficObjectDetectionTensorRT8
+from .traffic_object_detection_tensorrt10 import TrafficObjectDetectionTensorRT10
+
+__all__ = ['TrafficObjectDetectionTensorRT8', 'TrafficObjectDetectionTensorRT10']

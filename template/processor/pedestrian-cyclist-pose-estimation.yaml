@@ -8,11 +8,10 @@ pod-template:
     - name: APPLICATION_PARAMETERS
       value: >
         {
-          'model_name':'pedestrian-cyclist-pose-estimator',
-          'model_weight':'pedestrian_cyclist_pose_estimation.pt',
-          'model_variant':'rtmpose',
-          'device':0,
-          'synthetic_complexity':2
+          'trt_weights':'pedestrian_cyclist_pose_estimation.engine',
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'pedestrian_cyclist_pose_estimation.pt',
+          'device':0
         }
     - name: INPUT_SERVICES
       value: >
@@ -22,6 +21,8 @@ pod-template:
         ['structured_profile']
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
 port-open:
   pos: both
   port: 9000

@@ -48,28 +48,37 @@ Each application returns:
         "output_bytes": 0,
         "frame_count": 0,
         "model_name": "...",
-        "model_variant": "...",
         "model_weight": "...",
-        "synthetic_complexity": 1
+        "model_weight_exists": true,
+        "model_loaded": true,
+        "inference_backend": "...",
+        "model_error": ""
     }
 }
 ```
 
 `structured_profile` stores the returned `profile` as scenario data for scheduler and debugging consumers.
+Each application follows the same wrapper pattern as the existing detector/classifier services: the top-level service
+accepts `trt_weights`, `trt_plugin_library`, `non_trt_weights`, and `device`, then selects
+`*_with_tensorrt` or `*_without_tensorrt` according to `USE_TENSORRT`. TensorRT classes are present as explicit stubs and
+raise `NotImplementedError` until engine implementations are added.
+`model_loaded` means the service reconstructed a runnable neural model object. Some services also report
+`checkpoint_loaded` when a staged checkpoint was readable but the deployable path uses a non-neural adapter because the
+upstream project requires extra model definitions or config files that are not carried by the checkpoint alone.
 
 ## Service Catalog
 
-| Service id | Form input | Form output | Model variant | Main output fields | Application path |
-| --- | --- | --- | --- | --- | --- |
-| `traffic-object-detection` | `[frame]` | `[bbox]` | `yolov8s` | `detections`, `object_counts` | `dependency/core/applications/traffic_object_detection/` |
-| `road-context-segmentation` | `[frame]` | `[segmentation]` | `yolop` | `lane_polylines`, `drivable_area`, `crosswalk_regions`, `road_boundary` | `dependency/core/applications/road_context_segmentation/` |
-| `traffic-signal-recognition` | `[frame, bbox]` | `[text]` | `mobilenetv3` | `signals` | `dependency/core/applications/traffic_signal_recognition/` |
-| `vehicle-reidentification-tracking` | `[bbox]` | `[track]` | `bytetrack-reidentification` | `vehicle_tracklets` | `dependency/core/applications/vehicle_reidentification_tracking/` |
-| `vehicle-attribute-recognition` | `[bbox]` | `[attribute]` | `efficientnet` | `vehicle_attributes` | `dependency/core/applications/vehicle_attribute_recognition/` |
-| `vehicle-trajectory-prediction` | `[segmentation, track, attribute]` | `[trajectory]` | `trajectory-transformer` | `trajectory_predictions` | `dependency/core/applications/vehicle_trajectory_prediction/` |
-| `pedestrian-cyclist-pose-estimation` | `[bbox]` | `[pose]` | `rtmpose` | `skeletons` | `dependency/core/applications/pedestrian_cyclist_pose_estimation/` |
-| `pedestrian-cyclist-intent-recognition` | `[segmentation, pose]` | `[text]` | `st-gcn` | `pedestrian_cyclist_intents` | `dependency/core/applications/pedestrian_cyclist_intent_recognition/` |
-| `traffic-risk-graph-inference` | `[segmentation, text, trajectory]` | `[graph]` | `graph-transformer` | `events`, `graph_summary` | `dependency/core/applications/traffic_risk_graph_inference/` |
+| Service id | Form input | Form output | Non-TRT backend | Main output fields |
+| --- | --- | --- | --- | --- |
+| `traffic-object-detection` | `[frame]` | `[bbox]` | Ultralytics YOLO detection, with COCO traffic-class mapping | `detections`, `object_counts` |
+| `road-context-segmentation` | `[frame]` | `[segmentation]` | OpenCV lane/drivable/crosswalk adapter; YOLOP checkpoint is staged and checksumable | `lane_polylines`, `drivable_area`, `crosswalk_regions`, `road_boundary` |
+| `traffic-signal-recognition` | `[frame, bbox]` | `[text]` | Ultralytics YOLO traffic-light state detection | `signals` |
+| `vehicle-reidentification-tracking` | `[bbox]` | `[track]` | IoU plus crop-histogram tracking adapter; FastReID checkpoint is staged and checksumable | `vehicle_tracklets` |
+| `vehicle-attribute-recognition` | `[bbox]` | `[attribute]` | EfficientNet-B0 checkpoint trained for vehicle type classification | `vehicle_attributes` |
+| `vehicle-trajectory-prediction` | `[segmentation, track, attribute]` | `[trajectory]` | PIE-trained sequence GRU over normalized bbox history | `trajectory_predictions` |
+| `pedestrian-cyclist-pose-estimation` | `[bbox]` | `[pose]` | Optional MMPose RTMPose if `non_trt_config` is provided; geometric pose adapter otherwise | `skeletons` |
+| `pedestrian-cyclist-intent-recognition` | `[segmentation, pose]` | `[text]` | PIE-trained sequence GRU over bbox, motion, action, and look features | `pedestrian_cyclist_intents` |
+| `traffic-risk-graph-inference` | `[segmentation, text, trajectory]` | `[graph]` | DoTA-trained risk MLP over graph-derived tabular features | `events`, `graph_summary` |
 
 Model parameter staging is recorded in `.model/dag1_model_parameters.yaml`.
 

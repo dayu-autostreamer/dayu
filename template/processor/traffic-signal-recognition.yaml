@@ -8,11 +8,10 @@ pod-template:
     - name: APPLICATION_PARAMETERS
       value: >
         {
-          'model_name':'traffic-signal-classifier',
-          'model_weight':'traffic_signal_recognition.pt',
-          'model_variant':'mobilenetv3',
-          'device':0,
-          'synthetic_complexity':1
+          'trt_weights':'traffic_signal_recognition.engine',
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'traffic_signal_recognition.pt',
+          'device':0
         }
     - name: INPUT_SERVICES
       value: >
@@ -22,6 +21,8 @@ pod-template:
         ['structured_profile']
     - name: PRO_QUEUE_NAME
       value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
 port-open:
   pos: both
   port: 9000

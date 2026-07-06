@@ -1,0 +1,4 @@
+from .traffic_risk_graph_inference_tensorrt8 import TrafficRiskGraphInferenceTensorRT8
+from .traffic_risk_graph_inference_tensorrt10 import TrafficRiskGraphInferenceTensorRT10
+
+__all__ = ['TrafficRiskGraphInferenceTensorRT8', 'TrafficRiskGraphInferenceTensorRT10']

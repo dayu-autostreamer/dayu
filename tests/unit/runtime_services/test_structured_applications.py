@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from core.lib.common import Context
 from core.applications.pedestrian_cyclist_intent_recognition.pedestrian_cyclist_intent_recognition import (
     PedestrianCyclistIntentRecognition,
 )
@@ -18,20 +19,22 @@ from core.applications.vehicle_reidentification_tracking.vehicle_reidentificatio
 from core.applications.vehicle_trajectory_prediction.vehicle_trajectory_prediction import VehicleTrajectoryPrediction
 
 
+APPLICATION_CLASSES = [
+    TrafficObjectDetection,
+    RoadContextSegmentation,
+    TrafficSignalRecognition,
+    VehicleReidentificationTracking,
+    VehicleAttributeRecognition,
+    VehicleTrajectoryPrediction,
+    PedestrianCyclistPoseEstimation,
+    PedestrianCyclistIntentRecognition,
+    TrafficRiskGraphInference,
+]
+
+
 @pytest.mark.unit
 def test_structured_applications_are_independent_and_schema_free():
-    application_classes = [
-        TrafficObjectDetection,
-        RoadContextSegmentation,
-        TrafficSignalRecognition,
-        VehicleReidentificationTracking,
-        VehicleAttributeRecognition,
-        VehicleTrajectoryPrediction,
-        PedestrianCyclistPoseEstimation,
-        PedestrianCyclistIntentRecognition,
-        TrafficRiskGraphInference,
-    ]
-    assert all(cls.__bases__ == (object,) for cls in application_classes)
+    assert all(cls.__bases__ == (object,) for cls in APPLICATION_CLASSES)
 
     base_payload = {
         "task": {
@@ -99,3 +102,52 @@ def test_structured_applications_are_independent_and_schema_free():
         assert result["service"]
         assert isinstance(result["outputs"], dict)
         assert result["profile"]["model_name"]
+        assert "model_variant" not in result["profile"]
+        assert "synthetic_complexity" not in result["profile"]
+        assert "model_loaded" in result["profile"]
+        assert "inference_backend" in result["profile"]
+        assert "model_error" in result["profile"]
+
+
+@pytest.mark.unit
+def test_structured_applications_resolve_weight_aliases(monkeypatch, tmp_path):
+    weight_file = tmp_path / "service_weight.pt"
+    weight_file.write_bytes(b"weight")
+
+    def fake_get_file_path(file_path):
+        return str(tmp_path / file_path)
+
+    monkeypatch.setattr(Context, "get_file_path", staticmethod(fake_get_file_path))
+
+    for application_cls in APPLICATION_CLASSES:
+        application = application_cls(non_trt_weights="service_weight.pt",
+                                      trt_weights="service_weight.engine",
+                                      trt_plugin_library="libplugins.so")
+        assert application.non_trt_weights == str(weight_file)
+        assert application.trt_weights.endswith("service_weight.engine")
+        assert application.trt_plugin_library.endswith("libplugins.so")
+        assert application.model.weights == str(weight_file)
+        assert application.model.model["exists"] is True
+        assert "loaded" in application.model.model
+
+
+@pytest.mark.unit
+def test_structured_applications_tensor_rt_paths_are_explicitly_unimplemented(monkeypatch, tmp_path):
+    def fake_get_file_path(file_path):
+        return str(tmp_path / file_path)
+
+    def fake_get_parameter(param, default=None, direct=True):
+        if param == "USE_TENSORRT":
+            return True
+        if param == "JETPACK":
+            return 6
+        return default
+
+    monkeypatch.setattr(Context, "get_file_path", staticmethod(fake_get_file_path))
+    monkeypatch.setattr(Context, "get_parameter", classmethod(lambda cls, param, default=None, direct=True: fake_get_parameter(param, default, direct)))
+
+    for application_cls in APPLICATION_CLASSES:
+        with pytest.raises(NotImplementedError):
+            application_cls(non_trt_weights="service_weight.pt",
+                            trt_weights="service_weight.engine",
+                            trt_plugin_library="libplugins.so")

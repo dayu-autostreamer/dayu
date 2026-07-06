@@ -1,0 +1,3 @@
+from .pedestrian_cyclist_intent_recognition_gru import PedestrianCyclistIntentRecognition as PedestrianCyclistIntentRecognitionWithoutTensorRT
+
+__all__ = ['PedestrianCyclistIntentRecognitionWithoutTensorRT']
