@@ -1,12 +1,9 @@
-import json
 import os
 
 class RoadContextSegmentation:
     service_name = 'road-context-segmentation'
-    default_model_name = 'road-context-segmenter'
 
     def __init__(self, weights='', device=0):
-        self.model_name = self.default_model_name
         self.weights = weights
         self.device = device
         self.model = self._load_model(self.weights)
@@ -37,11 +34,9 @@ class RoadContextSegmentation:
         return model
 
     def __call__(self, payload):
-        outputs = self._infer_context(payload)
-        return self._wrap_result(payload, outputs,
-                                 num_objects=len(outputs.get('lane_polylines', [])) +
-                                             len(outputs.get('crosswalk_regions', [])),
-                                 inference_backend=self._model_backend())
+        context = self._infer_context(payload)
+        segmentation_records = self._segmentation_records(context)
+        return {'segmentation': segmentation_records}
 
     def _infer_context(self, payload):
         frames = payload.get('frames') or []
@@ -195,26 +190,6 @@ class RoadContextSegmentation:
         y2 = max(box[3] for box in boxes)
         return [[[x1, y1], [x2, y1], [x2, y2], [x1, y2]]]
 
-    def _wrap_result(self, payload, outputs, num_objects=0, inference_backend='opencv-road-context'):
-        profile = {
-            'num_objects': int(num_objects),
-            'input_bytes': self._input_bytes(payload),
-            'output_bytes': self._output_bytes(outputs),
-            'frame_count': len(payload.get('frames') or []),
-            'model_name': self.model_name,
-            'model_weight': os.path.basename(self.weights) if self.weights else '',
-            'model_weight_exists': bool(self.model and self.model.get('exists')),
-            'model_loaded': bool(self.model and self.model.get('loaded')),
-            'checkpoint_loaded': bool(self.model and self.model.get('checkpoint_loaded')),
-            'inference_backend': inference_backend,
-            'model_error': (self.model or {}).get('error', ''),
-        }
-        return {
-            'service': self.service_name,
-            'outputs': outputs,
-            'profile': profile,
-        }
-
     @staticmethod
     def _frame_shape(payload):
         frames = payload.get('frames') or []
@@ -223,8 +198,20 @@ class RoadContextSegmentation:
         height, width = frames[0].shape[:2]
         return int(width), int(height)
 
-    def _model_backend(self):
-        return (self.model or {}).get('backend', 'opencv-road-context')
+    @staticmethod
+    def _segmentation_records(context):
+        items = []
+        for polyline in context.get('lane_polylines', []):
+            items.append({'type': 'lane_polyline', 'points': polyline})
+        drivable_area = context.get('drivable_area')
+        if drivable_area:
+            items.append({'type': 'drivable_area', 'polygon': drivable_area})
+        for region in context.get('crosswalk_regions', []):
+            items.append({'type': 'crosswalk_region', 'polygon': region})
+        road_boundary = context.get('road_boundary')
+        if road_boundary:
+            items.append({'type': 'road_boundary', 'polyline': road_boundary})
+        return [{'frame_index': 0, 'items': items}]
 
     @staticmethod
     def _torch_load(torch, weight_path):
@@ -232,18 +219,3 @@ class RoadContextSegmentation:
             return torch.load(weight_path, map_location='cpu', weights_only=False)
         except TypeError:
             return torch.load(weight_path, map_location='cpu')
-
-    @staticmethod
-    def _input_bytes(payload):
-        file_path = (payload.get('task') or {}).get('file_path')
-        try:
-            return os.path.getsize(file_path) if file_path else 0
-        except OSError:
-            return 0
-
-    @staticmethod
-    def _output_bytes(outputs):
-        try:
-            return len(json.dumps(outputs, default=str).encode('utf-8'))
-        except TypeError:
-            return 0

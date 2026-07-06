@@ -162,3 +162,37 @@ class ImageVisualizer(BaseVisualizer, abc.ABC):
                         text_color, font_thickness, cv2.LINE_AA)
 
         return frame
+
+    @staticmethod
+    def extract_bboxes(content, frame_index=0):
+        return [
+            item.get('bbox')
+            for item in ImageVisualizer.extract_items(content, 'bbox', frame_index)
+            if isinstance(item, dict) and len(item.get('bbox') or []) == 4
+        ]
+
+    @staticmethod
+    def extract_texts(content, frame_index=0):
+        return [
+            str(item.get('text', item.get('label', '')))
+            for item in ImageVisualizer.extract_items(content, 'text', frame_index)
+        ]
+
+    @staticmethod
+    def extract_items(content, label, frame_index=0):
+        if not isinstance(content, dict):
+            return []
+        outputs = content.get('outputs')
+        if not isinstance(outputs, dict):
+            return []
+        records = outputs.get(label) or []
+        selected = [
+            record for record in records
+            if isinstance(record, dict) and record.get('frame_index') == frame_index
+        ]
+        if not selected and records:
+            selected = [record for record in records if isinstance(record, dict)][:1]
+        items = []
+        for record in selected:
+            items.extend(record.get('items') or [])
+        return items

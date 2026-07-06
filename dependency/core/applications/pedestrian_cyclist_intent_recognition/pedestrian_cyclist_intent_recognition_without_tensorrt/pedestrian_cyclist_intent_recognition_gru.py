@@ -1,12 +1,9 @@
-import json
 import os
 
 class PedestrianCyclistIntentRecognition:
     service_name = 'pedestrian-cyclist-intent-recognition'
-    default_model_name = 'pedestrian-cyclist-intent-classifier'
 
     def __init__(self, weights='', device=0):
-        self.model_name = self.default_model_name
         self.weights = weights
         self.device = device
         self.model = self._load_model(self.weights)
@@ -70,17 +67,13 @@ class PedestrianCyclistIntentRecognition:
 
     def __call__(self, payload):
         inputs = payload.get('inputs')
-        skeletons = self._all_outputs(inputs, 'skeletons')
-        crosswalk_regions = self._first_output(inputs, 'crosswalk_regions', default=[])
+        skeletons = self._all_items(inputs, 'pose')
+        crosswalk_regions = self._crosswalk_regions(self._all_items(inputs, 'segmentation'))
         intents = self._infer_with_model(payload, skeletons, crosswalk_regions)
-        inference_backend = self._model_backend()
         if intents is None:
             intents = self._fallback_intents(skeletons, crosswalk_regions)
-            inference_backend = 'rule-intent'
 
-        outputs = {'pedestrian_cyclist_intents': intents}
-        return self._wrap_result(payload, outputs, num_objects=len(intents),
-                                 inference_backend=inference_backend)
+        return {'text': [{'frame_index': None, 'items': intents}]}
 
     def _infer_with_model(self, payload, skeletons, crosswalk_regions):
         if not (self.model and self.model.get('loaded')):
@@ -105,12 +98,15 @@ class PedestrianCyclistIntentRecognition:
                 return None
             skeleton = history[-1]
             label = self.model.get('labels', [])[int(index.item())]
-            action, intent = self._label_to_intent(label, skeleton.get('category', 'pedestrian'))
+            category = skeleton.get('category', skeleton.get('label', 'pedestrian'))
+            action, intent = self._label_to_intent(label, category)
             intents.append({
                 'person_id': person_id,
-                'category': skeleton.get('category', 'pedestrian'),
+                'label': 'pedestrian_cyclist_intent',
+                'category': category,
                 'action': action,
                 'intent': intent,
+                'text': intent,
                 'confidence': round(float(score.item()), 4),
                 'time_window': [0.0, 2.0],
                 'road_context_available': bool(crosswalk_regions),
@@ -122,63 +118,46 @@ class PedestrianCyclistIntentRecognition:
     def _fallback_intents(skeletons, crosswalk_regions):
         intents = []
         for skeleton in skeletons:
-            category = skeleton.get('category', 'pedestrian')
+            category = skeleton.get('category', skeleton.get('label', 'pedestrian'))
             action = 'crossing' if category == 'pedestrian' else 'riding'
             confidence = 0.82 if crosswalk_regions else 0.68
             intents.append({
                 'person_id': skeleton.get('person_id'),
+                'label': 'pedestrian_cyclist_intent',
                 'category': category,
                 'action': action,
                 'intent': 'likely_to_cross' if action == 'crossing' else 'likely_to_enter_lane',
+                'text': 'likely_to_cross' if action == 'crossing' else 'likely_to_enter_lane',
                 'confidence': confidence,
                 'time_window': [0.0, 2.0],
                 'road_context_available': bool(crosswalk_regions),
             })
         return intents
 
-    def _wrap_result(self, payload, outputs, num_objects=0, inference_backend='rule-intent'):
-        profile = {
-            'num_objects': int(num_objects),
-            'input_bytes': self._input_bytes(payload),
-            'output_bytes': self._output_bytes(outputs),
-            'frame_count': len(payload.get('frames') or []),
-            'model_name': self.model_name,
-            'model_weight': os.path.basename(self.weights) if self.weights else '',
-            'model_weight_exists': bool(self.model and self.model.get('exists')),
-            'model_loaded': bool(self.model and self.model.get('loaded')),
-            'inference_backend': inference_backend,
-            'model_error': (self.model or {}).get('error', ''),
-        }
-        return {
-            'service': self.service_name,
-            'outputs': outputs,
-            'profile': profile,
-        }
-
     @staticmethod
-    def _first_output(inputs, key, default=None):
-        for content in (inputs or {}).values():
-            if not isinstance(content, dict):
-                continue
-            outputs = content.get('outputs')
-            if isinstance(outputs, dict) and key in outputs:
-                return outputs[key]
-        return default
-
-    @staticmethod
-    def _all_outputs(inputs, key):
+    def _all_items(inputs, key):
         values = []
         for content in (inputs or {}).values():
             if not isinstance(content, dict):
                 continue
             outputs = content.get('outputs')
             if isinstance(outputs, dict) and key in outputs:
-                value = outputs[key]
-                if isinstance(value, list):
-                    values.extend(value)
-                else:
-                    values.append(value)
+                for record in outputs[key] or []:
+                    if isinstance(record, dict):
+                        frame_index = record.get('frame_index')
+                        for item in record.get('items') or []:
+                            item = dict(item)
+                            item.setdefault('frame_index', frame_index)
+                            values.append(item)
         return values
+
+    @staticmethod
+    def _crosswalk_regions(segmentation_items):
+        return [
+            item.get('polygon')
+            for item in segmentation_items
+            if item.get('type') == 'crosswalk_region' and item.get('polygon')
+        ]
 
     @staticmethod
     def _group_skeletons(skeletons):
@@ -257,9 +236,6 @@ class PedestrianCyclistIntentRecognition:
             return 'crossing-irrelevant', 'not_relevant_to_lane'
         return 'not-crossing', 'not_likely_to_cross'
 
-    def _model_backend(self):
-        return (self.model or {}).get('backend', 'rule-intent')
-
     def _torch_device(self, torch):
         if isinstance(self.device, str):
             return torch.device(self.device if self.device.startswith('cuda') and torch.cuda.is_available() else 'cpu')
@@ -273,18 +249,3 @@ class PedestrianCyclistIntentRecognition:
             return torch.load(weight_path, map_location='cpu', weights_only=False)
         except TypeError:
             return torch.load(weight_path, map_location='cpu')
-
-    @staticmethod
-    def _input_bytes(payload):
-        file_path = (payload.get('task') or {}).get('file_path')
-        try:
-            return os.path.getsize(file_path) if file_path else 0
-        except OSError:
-            return 0
-
-    @staticmethod
-    def _output_bytes(outputs):
-        try:
-            return len(json.dumps(outputs, default=str).encode('utf-8'))
-        except TypeError:
-            return 0

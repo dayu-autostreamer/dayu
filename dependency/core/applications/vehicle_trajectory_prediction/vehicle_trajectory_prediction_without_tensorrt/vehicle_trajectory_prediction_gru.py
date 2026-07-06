@@ -1,12 +1,9 @@
-import json
 import os
 
 class VehicleTrajectoryPrediction:
     service_name = 'vehicle-trajectory-prediction'
-    default_model_name = 'vehicle-trajectory-predictor'
 
     def __init__(self, weights='', device=0):
-        self.model_name = self.default_model_name
         self.weights = weights
         self.device = device
         self.model = self._load_model(self.weights)
@@ -68,19 +65,15 @@ class VehicleTrajectoryPrediction:
 
     def __call__(self, payload):
         inputs = payload.get('inputs')
-        tracklets = self._all_outputs(inputs, 'vehicle_tracklets')
-        attributes = self._all_outputs(inputs, 'vehicle_attributes')
-        road_context = self._first_output(inputs, 'drivable_area', default=[])
-        attribute_by_object = {item.get('object_id'): item for item in attributes}
+        tracklets = self._all_items(inputs, 'track')
+        attributes = self._all_items(inputs, 'attribute')
+        road_context = self._road_context(self._all_items(inputs, 'segmentation'))
+        attribute_by_object = {item.get('source_object_id'): item for item in attributes}
         predictions = self._predict_with_model(payload, tracklets, attribute_by_object, road_context)
-        inference_backend = self._model_backend()
         if predictions is None:
             predictions = self._fallback_predictions(tracklets, attribute_by_object, road_context)
-            inference_backend = 'constant-velocity'
 
-        outputs = {'trajectory_predictions': predictions}
-        return self._wrap_result(payload, outputs, num_objects=len(predictions),
-                                 inference_backend=inference_backend)
+        return {'trajectory': [{'frame_index': None, 'items': predictions}]}
 
     def _predict_with_model(self, payload, tracklets, attribute_by_object, road_context):
         if not (self.model and self.model.get('loaded')):
@@ -100,6 +93,7 @@ class VehicleTrajectoryPrediction:
                 self.model['error'] = str(exc)
                 return None
             attr = attribute_by_object.get(tracklet.get('source_object_id'), {})
+            attributes = attr.get('attributes') or {}
             future_points = []
             for step, (offset_x, offset_y) in enumerate(offsets, start=1):
                 future_points.append([
@@ -109,7 +103,7 @@ class VehicleTrajectoryPrediction:
                 ])
             predictions.append({
                 'track_id': tracklet.get('track_id'),
-                'vehicle_type': attr.get('type', tracklet.get('category', 'vehicle')),
+                'vehicle_type': attributes.get('type', tracklet.get('category', tracklet.get('label', 'vehicle'))),
                 'future_trajectories': [{'prob': 0.78, 'points': future_points}],
                 'abnormal_stop_prob': self._stop_probability(tracklet),
                 'road_context_available': bool(road_context),
@@ -126,62 +120,43 @@ class VehicleTrajectoryPrediction:
             center_y = (last_box[1] + last_box[3]) / 2
             speed = float(tracklet.get('speed_px_per_s', 0))
             attr = attribute_by_object.get(tracklet.get('source_object_id'), {})
+            attributes = attr.get('attributes') or {}
             future_points = [
                 [round(center_x + speed * step * 0.2, 2), round(center_y, 2), round(step * 0.5, 2)]
                 for step in range(1, 5)
             ]
             predictions.append({
                 'track_id': tracklet.get('track_id'),
-                'vehicle_type': attr.get('type', tracklet.get('category', 'vehicle')),
+                'vehicle_type': attributes.get('type', tracklet.get('category', tracklet.get('label', 'vehicle'))),
                 'future_trajectories': [{'prob': 0.72, 'points': future_points}],
                 'abnormal_stop_prob': 0.18 if speed < 1 else 0.05,
                 'road_context_available': bool(road_context),
             })
         return predictions
 
-    def _wrap_result(self, payload, outputs, num_objects=0, inference_backend='constant-velocity'):
-        profile = {
-            'num_objects': int(num_objects),
-            'input_bytes': self._input_bytes(payload),
-            'output_bytes': self._output_bytes(outputs),
-            'frame_count': len(payload.get('frames') or []),
-            'model_name': self.model_name,
-            'model_weight': os.path.basename(self.weights) if self.weights else '',
-            'model_weight_exists': bool(self.model and self.model.get('exists')),
-            'model_loaded': bool(self.model and self.model.get('loaded')),
-            'inference_backend': inference_backend,
-            'model_error': (self.model or {}).get('error', ''),
-        }
-        return {
-            'service': self.service_name,
-            'outputs': outputs,
-            'profile': profile,
-        }
-
     @staticmethod
-    def _first_output(inputs, key, default=None):
-        for content in (inputs or {}).values():
-            if not isinstance(content, dict):
-                continue
-            outputs = content.get('outputs')
-            if isinstance(outputs, dict) and key in outputs:
-                return outputs[key]
-        return default
-
-    @staticmethod
-    def _all_outputs(inputs, key):
+    def _all_items(inputs, key):
         values = []
         for content in (inputs or {}).values():
             if not isinstance(content, dict):
                 continue
             outputs = content.get('outputs')
             if isinstance(outputs, dict) and key in outputs:
-                value = outputs[key]
-                if isinstance(value, list):
-                    values.extend(value)
-                else:
-                    values.append(value)
+                for record in outputs[key] or []:
+                    if isinstance(record, dict):
+                        frame_index = record.get('frame_index')
+                        for item in record.get('items') or []:
+                            item = dict(item)
+                            item.setdefault('frame_index', frame_index)
+                            values.append(item)
         return values
+
+    @staticmethod
+    def _road_context(segmentation_items):
+        return [
+            item for item in segmentation_items
+            if item.get('type') in {'drivable_area', 'lane_polyline', 'crosswalk_region', 'road_boundary'}
+        ]
 
     @staticmethod
     def _track_features(tracklet, width, height, history_len):
@@ -233,9 +208,6 @@ class VehicleTrajectoryPrediction:
                     max_y = max(max_y, float(bbox[3]))
         return max_x, max_y
 
-    def _model_backend(self):
-        return (self.model or {}).get('backend', 'constant-velocity')
-
     def _torch_device(self, torch):
         if isinstance(self.device, str):
             return torch.device(self.device if self.device.startswith('cuda') and torch.cuda.is_available() else 'cpu')
@@ -249,18 +221,3 @@ class VehicleTrajectoryPrediction:
             return torch.load(weight_path, map_location='cpu', weights_only=False)
         except TypeError:
             return torch.load(weight_path, map_location='cpu')
-
-    @staticmethod
-    def _input_bytes(payload):
-        file_path = (payload.get('task') or {}).get('file_path')
-        try:
-            return os.path.getsize(file_path) if file_path else 0
-        except OSError:
-            return 0
-
-    @staticmethod
-    def _output_bytes(outputs):
-        try:
-            return len(json.dumps(outputs, default=str).encode('utf-8'))
-        except TypeError:
-            return 0

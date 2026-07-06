@@ -14,6 +14,7 @@
 - Add import/export of dag in DAG Orchestrain frontend page (`frontend`).
 - Set default cloud processor as options to permit edge-only processors (`backend`).
 - Update dockerfile building to support concise modification of ultra parameters.
+- Unify input/output interface format of processors (`processor`).
 
 ## v1.3
 

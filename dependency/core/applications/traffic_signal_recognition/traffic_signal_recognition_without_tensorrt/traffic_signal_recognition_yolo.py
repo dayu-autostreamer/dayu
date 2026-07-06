@@ -1,12 +1,9 @@
-import json
 import os
 
 class TrafficSignalRecognition:
     service_name = 'traffic-signal-recognition'
-    default_model_name = 'traffic-signal-classifier'
 
     def __init__(self, weights='', device=0, confidence_threshold=0.25):
-        self.model_name = self.default_model_name
         self.weights = weights
         self.device = device
         self.confidence_threshold = float(confidence_threshold)
@@ -40,14 +37,10 @@ class TrafficSignalRecognition:
 
     def __call__(self, payload):
         signals = self._infer_with_model(payload)
-        inference_backend = self._model_backend()
         if signals is None:
             signals = self._fallback_signals(payload)
-            inference_backend = 'upstream-bbox-rule'
 
-        outputs = {'signals': signals}
-        return self._wrap_result(payload, outputs, num_objects=len(signals),
-                                 inference_backend=inference_backend)
+        return {'text': self._text_records(signals)}
 
     def _infer_with_model(self, payload):
         if not (self.model and self.model.get('loaded')):
@@ -84,7 +77,9 @@ class TrafficSignalRecognition:
                     'frame_id': int(frame_id),
                     'signal_id': f'traffic-signal-{int(frame_id)}-{index}',
                     'bbox': [int(round(value)) for value in box[:4]],
+                    'label': 'traffic_light',
                     'type': 'traffic_light',
+                    'text': state.replace('-', '_'),
                     'state': state.replace('-', '_'),
                     'score': round(float(score), 4),
                     'model_label': state,
@@ -92,7 +87,7 @@ class TrafficSignalRecognition:
         return signals
 
     def _fallback_signals(self, payload):
-        detections = self._first_output(payload.get('inputs'), 'detections', default=[])
+        detections = self._all_items(payload.get('inputs'), 'bbox')
         signal_detections = self._filter_detections(detections, {'traffic_light', 'traffic_sign'})
         signals = []
 
@@ -101,9 +96,11 @@ class TrafficSignalRecognition:
                 category = detection.get('category')
                 state = 'red' if category == 'traffic_light' else 'stop'
                 signals.append({
-                    'frame_id': detection.get('frame_id', 0),
+                    'frame_id': detection.get('frame_id', detection.get('frame_index', 0)),
                     'bbox': detection.get('bbox', []),
+                    'label': category,
                     'type': category,
+                    'text': state,
                     'state': state,
                     'score': round(float(detection.get('score', 0.8)), 3),
                 })
@@ -112,45 +109,52 @@ class TrafficSignalRecognition:
                 signals.append({
                     'frame_id': frame_id,
                     'bbox': [],
+                    'label': 'traffic_light',
                     'type': 'traffic_light',
+                    'text': 'red',
                     'state': 'red',
                     'score': 0.75,
                 })
         return signals
 
-    def _wrap_result(self, payload, outputs, num_objects=0, inference_backend='upstream-bbox-rule'):
-        profile = {
-            'num_objects': int(num_objects),
-            'input_bytes': self._input_bytes(payload),
-            'output_bytes': self._output_bytes(outputs),
-            'frame_count': len(payload.get('frames') or []),
-            'model_name': self.model_name,
-            'model_weight': os.path.basename(self.weights) if self.weights else '',
-            'model_weight_exists': bool(self.model and self.model.get('exists')),
-            'model_loaded': bool(self.model and self.model.get('loaded')),
-            'inference_backend': inference_backend,
-            'model_error': (self.model or {}).get('error', ''),
-        }
-        return {
-            'service': self.service_name,
-            'outputs': outputs,
-            'profile': profile,
-        }
-
     @staticmethod
-    def _first_output(inputs, key, default=None):
+    def _all_items(inputs, key):
+        items = []
         for content in (inputs or {}).values():
             if not isinstance(content, dict):
                 continue
             outputs = content.get('outputs')
             if isinstance(outputs, dict) and key in outputs:
-                return outputs[key]
-        return default
+                for record in outputs[key] or []:
+                    if isinstance(record, dict):
+                        frame_index = record.get('frame_index')
+                        for item in record.get('items') or []:
+                            item = dict(item)
+                            item.setdefault('frame_index', frame_index)
+                            items.append(item)
+        return items
 
     @staticmethod
     def _filter_detections(detections, categories):
         category_set = set(categories)
-        return [detection for detection in detections if detection.get('category') in category_set]
+        return [
+            detection for detection in detections
+            if (detection.get('label') or detection.get('category')) in category_set
+        ]
+
+    @staticmethod
+    def _text_records(signals):
+        grouped = {}
+        for signal in signals:
+            frame_index = int(signal.get('frame_id', signal.get('frame_index', 0)))
+            item = dict(signal)
+            item['frame_index'] = frame_index
+            item.setdefault('text', item.get('state', ''))
+            grouped.setdefault(frame_index, []).append(item)
+        return [
+            {'frame_index': frame_index, 'items': grouped[frame_index]}
+            for frame_index in sorted(grouped)
+        ]
 
     @staticmethod
     def _frame_ids(payload):
@@ -158,9 +162,6 @@ class TrafficSignalRecognition:
         if hashes:
             return list(range(len(hashes)))
         return list(range(len(payload.get('frames') or [])))
-
-    def _model_backend(self):
-        return (self.model or {}).get('backend', 'upstream-bbox-rule')
 
     def _ultralytics_device(self):
         if self.device is None:
@@ -185,18 +186,3 @@ class TrafficSignalRecognition:
         if hasattr(value, 'tolist'):
             return value.tolist()
         return list(value)
-
-    @staticmethod
-    def _input_bytes(payload):
-        file_path = (payload.get('task') or {}).get('file_path')
-        try:
-            return os.path.getsize(file_path) if file_path else 0
-        except OSError:
-            return 0
-
-    @staticmethod
-    def _output_bytes(outputs):
-        try:
-            return len(json.dumps(outputs, default=str).encode('utf-8'))
-        except TypeError:
-            return 0

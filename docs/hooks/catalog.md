@@ -174,10 +174,11 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias                        | Module                                                    | Purpose                                                             | Notes                                                    |
 |------------------------------|-----------------------------------------------------------|---------------------------------------------------------------------|----------------------------------------------------------|
-| `detector_processor`         | `dependency/core/processor/detector_processor.py`         | Run detection on all frames in a task file.                         | Stores scenario data after inference.                    |
-| `detector_tracker_processor` | `dependency/core/processor/detector_tracker_processor.py` | Detect on the first frame, then track on subsequent frames.         | Good fit for detector-plus-tracker services.             |
-| `classifier_processor`       | `dependency/core/processor/classifier_processor.py`       | Classify ROIs produced by a previous stage.                         | Expects `Classifier` instance from application code.     |
-| `roi_classifier_processor`   | `dependency/core/processor/roi_classifier_processor.py`   | ROI-aware classification with per-ROI ids and cache reset per task. | Expects `Roi_Classifier` instance from application code. |
+| `detector_processor`         | `dependency/core/processor/detector_processor.py`         | Run detection on all frames in a task file.                         | Writes unified `bbox` output records and scenario data.  |
+| `detector_tracker_processor` | `dependency/core/processor/detector_tracker_processor.py` | Detect on the first frame, then track on subsequent frames.         | Writes unified `bbox` output records and scenario data.  |
+| `classifier_processor`       | `dependency/core/processor/classifier_processor.py`       | Classify ROIs produced by a previous stage.                         | Reads `bbox` records and writes unified `text` records.  |
+| `roi_classifier_processor`   | `dependency/core/processor/roi_classifier_processor.py`   | ROI-aware classification with per-ROI ids and cache reset per task. | Reads `bbox` records and writes unified `text` records.  |
+| `structured_processor`       | `dependency/core/processor/structured_processor.py`       | Run an independent structured application service.                  | Passes unified upstream content to the service.          |
 
 ### `PRO_QUEUE`
 

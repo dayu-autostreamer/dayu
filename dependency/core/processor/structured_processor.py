@@ -46,7 +46,13 @@ class StructuredProcessor(Processor):
         with Timer(f'Structured Application / {task.get_flow_index()} / {len(image_list)} frame'):
             result = self.application(payload)
 
-        result = convert_ndarray_to_list(result)
+        outputs = convert_ndarray_to_list(result)
+        self.validate_outputs(outputs)
+        result = self.make_content(
+            task.get_flow_index(),
+            outputs,
+            self.make_profile(frame_count=len(image_list)),
+        )
         self.save_scenario(result, task)
         task.set_current_content(result)
 

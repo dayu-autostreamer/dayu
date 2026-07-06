@@ -105,6 +105,12 @@ BaseExtraction = importlib.import_module(
 BaseQueue = importlib.import_module("core.lib.algorithms.task_queue.base_queue").BaseQueue
 
 
+def content_profile(frame_count=1):
+    return {
+        "frame_count": frame_count,
+    }
+
+
 def service_entry(name, *, execute_device="", next_nodes=None, prev_nodes=None):
     return {
         "service": {
@@ -134,9 +140,39 @@ def build_task():
         file_path="payload.mp4",
         hash_data=["hash-0"],
     )
-    task.get_service("detector").set_content_data([([[1, 1, 4, 4]], [0.9])])
+    task.get_service("detector").set_content_data(
+        {
+            "service": "detector",
+            "outputs": {
+                "bbox": [
+                    {
+                        "frame_index": 0,
+                        "items": [
+                            {"bbox": [1, 1, 4, 4], "score": 0.9, "label": "car", "object_id": 1}
+                        ],
+                    }
+                ]
+            },
+            "profile": content_profile(),
+        }
+    )
     task.get_service("detector").set_scenario_data({"obj_num": [2, 4]})
-    task.get_service("classifier").set_content_data([(["car"], [0.9])])
+    task.get_service("classifier").set_content_data(
+        {
+            "service": "classifier",
+            "outputs": {
+                "text": [
+                    {
+                        "frame_index": 0,
+                        "items": [
+                            {"text": "car", "source_object_id": 1, "bbox": [1, 1, 4, 4], "score": 0.9}
+                        ],
+                    }
+                ]
+            },
+            "profile": content_profile(),
+        }
+    )
     task.get_service("detector").set_execute_time(0.4)
     task.get_service("classifier").set_execute_time(0.7)
     task.set_tmp_data({"file_size": 1.0, "file_dynamics": 0.2})
@@ -345,7 +381,22 @@ def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contra
     )) is False
 
     task = build_task()
-    results = [([[0, 0, 10, 10], [10, 10, 20, 20]], [0.9, 0.8]), ([], [])]
+    results = {
+        "service": "detector",
+        "outputs": {
+            "bbox": [
+                {
+                    "frame_index": 0,
+                    "items": [
+                        {"bbox": [0, 0, 10, 10], "score": 0.9, "label": "object", "object_id": 1},
+                        {"bbox": [10, 10, 20, 20], "score": 0.8, "label": "object", "object_id": 2},
+                    ],
+                },
+                {"frame_index": 1, "items": []},
+            ]
+        },
+        "profile": content_profile(frame_count=2),
+    }
     assert scenario_extraction_module.ObjectNumberExtraction()(results, task) == [2, 0]
     obj_size = scenario_extraction_module.ObjectSizeExtraction()(results, task)
     assert obj_size[0] > 0

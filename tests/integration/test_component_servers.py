@@ -88,7 +88,22 @@ class FakeScheduler:
 
 class FakeProcessor:
     def __call__(self, task):
-        task.set_current_content({"service": task.get_flow_index(), "detections": 1})
+        task.set_current_content(
+            {
+                "service": task.get_flow_index(),
+                "outputs": {
+                    "bbox": [
+                        {
+                            "frame_index": 0,
+                            "items": [{"bbox": [0, 0, 1, 1], "score": 1.0, "label": "object", "object_id": 1}],
+                        }
+                    ]
+                },
+                "profile": {
+                    "frame_count": 1,
+                },
+            }
+        )
         task.add_scenario({"obj_num": 1})
         return task
 
@@ -222,7 +237,20 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
 
         queued_task = fake_queue.get()
         processed_task = server.process_task_service(queued_task)
-        assert processed_task.get_current_content() == {"service": "face-detection", "detections": 1}
+        assert processed_task.get_current_content() == {
+            "service": "face-detection",
+            "outputs": {
+                "bbox": [
+                    {
+                        "frame_index": 0,
+                        "items": [{"bbox": [0, 0, 1, 1], "score": 1.0, "label": "object", "object_id": 1}],
+                    }
+                ]
+            },
+            "profile": {
+                "frame_count": 1,
+            },
+        }
         assert processed_task.get_scenario_data("face-detection") == {"obj_num": 1}
 
         with open("processor-input.bin", "wb") as fh:
@@ -235,7 +263,20 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
             )
         assert return_response.status_code == 200
         returned_task = Task.deserialize(return_response.json())
-        assert returned_task.get_current_content() == {"service": "face-detection", "detections": 1}
+        assert returned_task.get_current_content() == {
+            "service": "face-detection",
+            "outputs": {
+                "bbox": [
+                    {
+                        "frame_index": 0,
+                        "items": [{"bbox": [0, 0, 1, 1], "score": 1.0, "label": "object", "object_id": 1}],
+                    }
+                ]
+            },
+            "profile": {
+                "frame_count": 1,
+            },
+        }
         assert client.get("/queue_length").json() == 0
         assert client.get("/model_flops").json() == 321.0
 

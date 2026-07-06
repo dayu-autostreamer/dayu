@@ -1,12 +1,9 @@
-import json
 import os
 
 class VehicleReidentificationTracking:
     service_name = 'vehicle-reidentification-tracking'
-    default_model_name = 'vehicle-reidentification-tracker'
 
     def __init__(self, weights='', device=0):
-        self.model_name = self.default_model_name
         self.weights = weights
         self.device = device
         self.model = self._load_model(self.weights)
@@ -37,15 +34,15 @@ class VehicleReidentificationTracking:
         return model
 
     def __call__(self, payload):
-        detections = self._first_output(payload.get('inputs'), 'detections', default=[])
+        detections = self._all_items(payload.get('inputs'), 'bbox')
         vehicles = self._filter_detections(detections, {'car', 'bus', 'truck', 'motorcycle'})
         tracks = self._associate_detections(payload, vehicles)
 
         tracklets = []
         for index, track in enumerate(tracks):
-            object_detections = sorted(track['detections'], key=lambda item: item.get('frame_id', 0))
+            object_detections = sorted(track['detections'], key=lambda item: item.get('frame_id', item.get('frame_index', 0)))
             bboxes = [item.get('bbox', []) for item in object_detections]
-            frames = [item.get('frame_id', 0) for item in object_detections]
+            frames = [item.get('frame_id', item.get('frame_index', 0)) for item in object_detections]
             first_box = bboxes[0] if bboxes else [0, 0, 0, 0]
             last_box = bboxes[-1] if bboxes else first_box
             dx = ((last_box[0] + last_box[2]) - (first_box[0] + first_box[2])) / 2
@@ -53,7 +50,8 @@ class VehicleReidentificationTracking:
             tracklets.append({
                 'track_id': f'vehicle-{index}',
                 'source_object_id': object_detections[0].get('object_id') if object_detections else '',
-                'category': object_detections[0].get('category', 'vehicle') if object_detections else 'vehicle',
+                'label': object_detections[0].get('label', object_detections[0].get('category', 'vehicle')) if object_detections else 'vehicle',
+                'category': object_detections[0].get('category', object_detections[0].get('label', 'vehicle')) if object_detections else 'vehicle',
                 'frames': frames,
                 'bboxes': bboxes,
                 'embedding': [round(float(value), 4) for value in track.get('embedding', [])],
@@ -61,20 +59,18 @@ class VehicleReidentificationTracking:
                 'direction': 'eastbound' if dx >= 0 else 'westbound',
             })
 
-        outputs = {'vehicle_tracklets': tracklets}
-        return self._wrap_result(payload, outputs, num_objects=len(tracklets),
-                                 inference_backend=self._model_backend())
+        return {'track': [{'frame_index': None, 'items': tracklets}]}
 
     def _associate_detections(self, payload, detections):
         tracks = []
-        for detection in sorted(detections, key=lambda item: (item.get('frame_id', 0), item.get('object_id', ''))):
+        for detection in sorted(detections, key=lambda item: (item.get('frame_id', item.get('frame_index', 0)), item.get('object_id', ''))):
             embedding = self._embedding_for_detection(payload, detection)
             best_track = None
             best_score = 0.0
             for track in tracks:
-                if detection.get('category') != track.get('category'):
+                if self._label(detection) != track.get('label'):
                     continue
-                frame_gap = int(detection.get('frame_id', 0)) - int(track.get('last_frame', 0))
+                frame_gap = int(detection.get('frame_id', detection.get('frame_index', 0))) - int(track.get('last_frame', 0))
                 if frame_gap < 0 or frame_gap > 8:
                     continue
                 iou = self._bbox_iou(detection.get('bbox', []), track.get('last_bbox', []))
@@ -85,57 +81,49 @@ class VehicleReidentificationTracking:
                     best_track = track
             if best_track is None or best_score < 0.25:
                 tracks.append({
-                    'category': detection.get('category', 'vehicle'),
+                    'label': self._label(detection),
+                    'category': detection.get('category', self._label(detection)),
                     'detections': [detection],
                     'last_bbox': detection.get('bbox', []),
-                    'last_frame': detection.get('frame_id', 0),
+                    'last_frame': detection.get('frame_id', detection.get('frame_index', 0)),
                     'embedding': embedding,
                 })
             else:
                 count = len(best_track['detections'])
                 best_track['detections'].append(detection)
                 best_track['last_bbox'] = detection.get('bbox', [])
-                best_track['last_frame'] = detection.get('frame_id', 0)
+                best_track['last_frame'] = detection.get('frame_id', detection.get('frame_index', 0))
                 best_track['embedding'] = [
                     (old * count + new) / float(count + 1)
                     for old, new in zip(best_track.get('embedding', embedding), embedding)
                 ]
         return tracks
 
-    def _wrap_result(self, payload, outputs, num_objects=0, inference_backend='histogram-iou-tracker'):
-        profile = {
-            'num_objects': int(num_objects),
-            'input_bytes': self._input_bytes(payload),
-            'output_bytes': self._output_bytes(outputs),
-            'frame_count': len(payload.get('frames') or []),
-            'model_name': self.model_name,
-            'model_weight': os.path.basename(self.weights) if self.weights else '',
-            'model_weight_exists': bool(self.model and self.model.get('exists')),
-            'model_loaded': bool(self.model and self.model.get('loaded')),
-            'checkpoint_loaded': bool(self.model and self.model.get('checkpoint_loaded')),
-            'inference_backend': inference_backend,
-            'model_error': (self.model or {}).get('error', ''),
-        }
-        return {
-            'service': self.service_name,
-            'outputs': outputs,
-            'profile': profile,
-        }
-
     @staticmethod
-    def _first_output(inputs, key, default=None):
+    def _all_items(inputs, key):
+        items = []
         for content in (inputs or {}).values():
             if not isinstance(content, dict):
                 continue
             outputs = content.get('outputs')
             if isinstance(outputs, dict) and key in outputs:
-                return outputs[key]
-        return default
+                for record in outputs[key] or []:
+                    if isinstance(record, dict):
+                        frame_index = record.get('frame_index')
+                        for item in record.get('items') or []:
+                            item = dict(item)
+                            item.setdefault('frame_index', frame_index)
+                            items.append(item)
+        return items
 
     @staticmethod
     def _filter_detections(detections, categories):
         category_set = set(categories)
-        return [detection for detection in detections if detection.get('category') in category_set]
+        return [detection for detection in detections if VehicleReidentificationTracking._label(detection) in category_set]
+
+    @staticmethod
+    def _label(item):
+        return item.get('label') or item.get('category') or ''
 
     def _embedding_for_detection(self, payload, detection):
         crop = self._crop_for_detection(payload, detection)
@@ -189,7 +177,7 @@ class VehicleReidentificationTracking:
         frames = payload.get('frames') or []
         if not frames:
             return None
-        frame_id = int(detection.get('frame_id', 0))
+        frame_id = int(detection.get('frame_id', detection.get('frame_index', 0)))
         frame_id = max(0, min(frame_id, len(frames) - 1))
         frame = frames[frame_id]
         bbox = detection.get('bbox') or []
@@ -205,27 +193,9 @@ class VehicleReidentificationTracking:
             return None
         return frame[y1:y2, x1:x2]
 
-    def _model_backend(self):
-        return (self.model or {}).get('backend', 'histogram-iou-tracker')
-
     @staticmethod
     def _torch_load(torch, weight_path):
         try:
             return torch.load(weight_path, map_location='cpu', weights_only=False)
         except TypeError:
             return torch.load(weight_path, map_location='cpu')
-
-    @staticmethod
-    def _input_bytes(payload):
-        file_path = (payload.get('task') or {}).get('file_path')
-        try:
-            return os.path.getsize(file_path) if file_path else 0
-        except OSError:
-            return 0
-
-    @staticmethod
-    def _output_bytes(outputs):
-        try:
-            return len(json.dumps(outputs, default=str).encode('utf-8'))
-        except TypeError:
-            return 0

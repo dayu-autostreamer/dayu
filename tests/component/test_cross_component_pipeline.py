@@ -98,7 +98,22 @@ class FakeScheduler:
 
 class FakeProcessor:
     def __call__(self, task):
-        task.set_current_content({"service": task.get_flow_index(), "detections": 1})
+        task.set_current_content(
+            {
+                "service": task.get_flow_index(),
+                "outputs": {
+                    "bbox": [
+                        {
+                            "frame_index": 0,
+                            "items": [{"bbox": [0, 0, 1, 1], "score": 1.0, "label": "object", "object_id": 1}],
+                        }
+                    ]
+                },
+                "profile": {
+                    "frame_count": 1,
+                },
+            }
+        )
         task.add_scenario({"obj_num": 1})
         return task
 
@@ -113,8 +128,17 @@ class StreamAwareProcessor:
         task.set_current_content(
             {
                 "service": task.get_flow_index(),
-                "payload": payload,
-                "frames": task.get_hash_data(),
+                "outputs": {
+                    "text": [
+                        {
+                            "frame_index": None,
+                            "items": [{"text": payload, "frames": task.get_hash_data()}],
+                        }
+                    ]
+                },
+                "profile": {
+                    "frame_count": len(task.get_hash_data()),
+                },
             }
         )
         task.add_scenario({"obj_num": len(task.get_hash_data()), "payload": payload})
@@ -340,7 +364,20 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
 
         stored_task = Task.deserialize(query_response.json()["result"][0])
         assert stored_task.get_current_service_info()[0] == "_end"
-        assert stored_task.get_last_content() == {"service": "face-detection", "detections": 1}
+        assert stored_task.get_last_content() == {
+            "service": "face-detection",
+            "outputs": {
+                "bbox": [
+                    {
+                        "frame_index": 0,
+                        "items": [{"bbox": [0, 0, 1, 1], "score": 1.0, "label": "object", "object_id": 1}],
+                    }
+                ]
+            },
+            "profile": {
+                "frame_count": 1,
+            },
+        }
 
         assert scheduler_server.scheduler.schedule_calls, "Generator should request a schedule plan"
         assert len(scheduler_server.scheduler.scenario_tasks) == 1
@@ -507,12 +544,16 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
 
         stored_tasks = [Task.deserialize(task_json) for task_json in query_response.json()["result"]]
         assert [task.get_task_id() for task in stored_tasks] == [0, 1, 2]
-        assert [task.get_last_content()["payload"] for task in stored_tasks] == [
+        assert [task.get_last_content()["outputs"]["text"][0]["items"][0]["text"] for task in stored_tasks] == [
             "stream-batch-0",
             "stream-batch-1",
             "stream-batch-2",
         ]
-        assert [task.get_last_content()["frames"] for task in stored_tasks] == [[0], [1], [2]]
+        assert [task.get_last_content()["outputs"]["text"][0]["items"][0]["frames"] for task in stored_tasks] == [
+            [0],
+            [1],
+            [2],
+        ]
 
         assert len(source_server.source_requests) == 3
         assert all(request["gen_filter_name"] == "simple" for request in source_server.source_requests)

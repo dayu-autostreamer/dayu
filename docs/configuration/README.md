@@ -82,9 +82,9 @@ The service catalog is what bridges user-facing DAG definitions and processor ru
 Scalar `input` or `output` values such as `input: frame` are invalid; DAG validation only accepts list-form
 contracts such as `input: [frame]`.
 These labels describe payload form rather than business meaning. Prefer generic labels such as `frame`, `bbox`,
-`text`, `segmentation`, `track`, `attribute`, `trajectory`, `pose`, or `graph`; avoid content-specific labels such as
-`traffic-object-detections` or `vehicle-trajectories`. This keeps DAG composition permissive: the platform checks
-shape compatibility and leaves semantic correctness to the user.
+`text`, `segmentation`, `track`, `attribute`, `trajectory`, `pose`, or `graph`; avoid labels that encode a specific
+application or scene meaning. This keeps DAG composition permissive: the platform checks shape compatibility and leaves
+semantic correctness to the user.
 
 For the structured traffic services and a reviewable example DAG, see
 [`structured-traffic-services.md`](structured-traffic-services.md).

@@ -73,8 +73,19 @@ class AccuracyCalculation():
 
         bbox_list = []
         task_content = task.get_first_content()
-        for frame_content in task_content:
-            bbox_list.append(frame_content[0])
+        if not isinstance(task_content, dict):
+            return bbox_list
+        outputs = task_content.get('outputs')
+        if not isinstance(outputs, dict):
+            return bbox_list
+        for record in outputs.get('bbox', []) or []:
+            if not isinstance(record, dict):
+                continue
+            bbox_list.append([
+                item.get('bbox')
+                for item in record.get('items') or []
+                if isinstance(item, dict) and len(item.get('bbox') or []) == 4
+            ])
         return bbox_list
 
     @classmethod

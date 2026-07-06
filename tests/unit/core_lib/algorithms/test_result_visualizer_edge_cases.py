@@ -13,6 +13,12 @@ roi_frame_visualizer_module = importlib.import_module("core.lib.algorithms.resul
 roi_label_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.roi_label_frame_visualizer")
 
 
+def content_profile(frame_count=1):
+    return {
+        "frame_count": frame_count,
+    }
+
+
 def service_entry(name, *, execute_device="", next_nodes=None, prev_nodes=None):
     return {
         "service": {
@@ -41,8 +47,16 @@ def build_visualization_task():
         raw_metadata={"buffer_size": 2, "resolution": "1080p"},
         file_path="sample.mp4",
     )
-    task.get_service("detector").set_content_data([([[1, 1, 5, 5]], [0.9])])
-    task.get_service("classifier").set_content_data([(["car"], [0.9])])
+    task.get_service("detector").set_content_data({
+        "service": "detector",
+        "outputs": {"bbox": [{"frame_index": 0, "items": [{"bbox": [1, 1, 5, 5], "score": 0.9, "label": "car", "object_id": 1}]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("classifier").set_content_data({
+        "service": "classifier",
+        "outputs": {"text": [{"frame_index": 0, "items": [{"text": "car", "source_object_id": 1, "bbox": [1, 1, 5, 5]}]}]},
+        "profile": content_profile(),
+    })
     return task
 
 

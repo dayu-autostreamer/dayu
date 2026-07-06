@@ -1,9 +1,7 @@
-import json
 import os
 
 class TrafficObjectDetection:
     service_name = 'traffic-object-detection'
-    default_model_name = 'traffic-object-detector'
     traffic_categories = {
         'person': 'pedestrian',
         'bicycle': 'cyclist',
@@ -16,7 +14,6 @@ class TrafficObjectDetection:
     }
 
     def __init__(self, weights='', device=0, confidence_threshold=0.25):
-        self.model_name = self.default_model_name
         self.weights = weights
         self.device = device
         self.confidence_threshold = float(confidence_threshold)
@@ -50,17 +47,10 @@ class TrafficObjectDetection:
 
     def __call__(self, payload):
         detections = self._infer_with_model(payload)
-        inference_backend = self._model_backend()
         if detections is None:
             detections = self._fallback_detections(payload)
-            inference_backend = 'template'
 
-        outputs = {
-            'detections': detections,
-            'object_counts': self._detection_counts(detections),
-        }
-        return self._wrap_result(payload, outputs, num_objects=len(detections),
-                                 inference_backend=inference_backend)
+        return {'bbox': self._bbox_records(detections)}
 
     def _infer_with_model(self, payload):
         if not (self.model and self.model.get('loaded')):
@@ -99,6 +89,7 @@ class TrafficObjectDetection:
                 detections.append({
                     'frame_id': int(frame_id),
                     'object_id': f'{category}-{int(frame_id)}-{index}',
+                    'label': category,
                     'category': category,
                     'bbox': [int(round(value)) for value in box[:4]],
                     'score': round(float(score), 4),
@@ -133,30 +124,12 @@ class TrafficObjectDetection:
                 detections.append({
                     'frame_id': frame_id,
                     'object_id': f'{category}-{index}',
+                    'label': category,
                     'category': category,
                     'bbox': bbox,
                     'score': score,
                 })
         return detections
-
-    def _wrap_result(self, payload, outputs, num_objects=0, inference_backend='template'):
-        profile = {
-            'num_objects': int(num_objects),
-            'input_bytes': self._input_bytes(payload),
-            'output_bytes': self._output_bytes(outputs),
-            'frame_count': len(payload.get('frames') or []),
-            'model_name': self.model_name,
-            'model_weight': os.path.basename(self.weights) if self.weights else '',
-            'model_weight_exists': bool(self.model and self.model.get('exists')),
-            'model_loaded': bool(self.model and self.model.get('loaded')),
-            'inference_backend': inference_backend,
-            'model_error': (self.model or {}).get('error', ''),
-        }
-        return {
-            'service': self.service_name,
-            'outputs': outputs,
-            'profile': profile,
-        }
 
     @staticmethod
     def _frame_shape(payload):
@@ -174,15 +147,18 @@ class TrafficObjectDetection:
         return list(range(len(payload.get('frames') or [])))
 
     @staticmethod
-    def _detection_counts(detections):
-        counts = {}
+    def _bbox_records(detections):
+        grouped = {}
         for detection in detections:
-            category = detection.get('category', 'unknown')
-            counts[category] = counts.get(category, 0) + 1
-        return counts
-
-    def _model_backend(self):
-        return (self.model or {}).get('backend', 'template')
+            frame_index = int(detection.get('frame_id', detection.get('frame_index', 0)))
+            item = dict(detection)
+            item['frame_index'] = frame_index
+            item.setdefault('label', item.get('category', 'object'))
+            grouped.setdefault(frame_index, []).append(item)
+        return [
+            {'frame_index': frame_index, 'items': grouped[frame_index]}
+            for frame_index in sorted(grouped)
+        ]
 
     def _ultralytics_device(self):
         if self.device is None:
@@ -207,18 +183,3 @@ class TrafficObjectDetection:
         if hasattr(value, 'tolist'):
             return value.tolist()
         return list(value)
-
-    @staticmethod
-    def _input_bytes(payload):
-        file_path = (payload.get('task') or {}).get('file_path')
-        try:
-            return os.path.getsize(file_path) if file_path else 0
-        except OSError:
-            return 0
-
-    @staticmethod
-    def _output_bytes(outputs):
-        try:
-            return len(json.dumps(outputs, default=str).encode('utf-8'))
-        except TypeError:
-            return 0

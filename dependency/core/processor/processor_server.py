@@ -110,7 +110,11 @@ class ProcessorServer:
         FileOps.save_task_file_in_temp(cur_task, file_data)
 
         new_task = self.processor(cur_task)
-        LOGGER.debug(f'[Processor Return completed] content length: {len(new_task.get_current_content())}')
+        current_content = new_task.get_current_content() if new_task else None
+        output_labels = []
+        if isinstance(current_content, dict) and isinstance(current_content.get('outputs'), dict):
+            output_labels = list(current_content['outputs'].keys())
+        LOGGER.debug(f'[Processor Return completed] output labels: {output_labels}')
         FileOps.remove_task_file_in_temp(cur_task)
         if new_task:
             return new_task.serialize()

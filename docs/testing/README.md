@@ -116,8 +116,8 @@ For `dependency/core/lib/` outside `algorithms/`, the current state is now much 
 For service-layer code, the most useful unit tests are not “does FastAPI work” or “does OpenCV decode real video.” Mature projects usually focus on consumer contracts instead:
 
 - `processor` unit tests should prove how a task is read, how upstream content is consumed, how model/tracker/classifier dependencies are invoked, and how results/scenarios are written back into the task.
-- structured application unit tests should prove each application service can be instantiated independently, returns `outputs`
-  plus `profile`, and does not encode DAG membership or shared DAG schemas.
+- structured application unit tests should prove each application service can be instantiated independently, returns only
+  service-specific `outputs`, and does not encode DAG membership or shared DAG schemas.
 - `monitor` unit tests should prove how monitor workers are instantiated, scheduled, joined, and posted to the scheduler API.
 - `distributor` unit tests should prove persistence ordering, incremental reads, export behavior, and scheduler forwarding without needing a full pipeline run.
 - `generator_server` unit tests should prove context parameters are collected and passed into the selected generator hook correctly.

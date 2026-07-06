@@ -31,6 +31,25 @@ APPLICATION_CLASSES = [
     TrafficRiskGraphInference,
 ]
 
+EXPECTED_OUTPUT_KEYS = [
+    {"bbox"},
+    {"segmentation"},
+    {"text"},
+    {"track"},
+    {"attribute"},
+    {"trajectory"},
+    {"pose"},
+    {"text"},
+    {"graph"},
+]
+
+def content(service_name, outputs, frame_count=1):
+    return {
+        "service": service_name,
+        "outputs": outputs,
+        "profile": {"frame_count": frame_count},
+    }
+
 
 @pytest.mark.unit
 def test_structured_applications_are_independent_and_schema_free():
@@ -46,48 +65,56 @@ def test_structured_applications_are_independent_and_schema_free():
     }
 
     object_result = TrafficObjectDetection()(base_payload)
+    object_content = content("traffic-object-detection", object_result)
     road_result = RoadContextSegmentation()(base_payload)
+    road_content = content("road-context-segmentation", road_result)
     signal_result = TrafficSignalRecognition()({
         **base_payload,
-        "inputs": {"traffic-object-detection": object_result},
+        "inputs": {"traffic-object-detection": object_content},
     })
+    signal_content = content("traffic-signal-recognition", signal_result)
     tracking_result = VehicleReidentificationTracking()({
         **base_payload,
-        "inputs": {"traffic-object-detection": object_result},
+        "inputs": {"traffic-object-detection": object_content},
     })
+    tracking_content = content("vehicle-reidentification-tracking", tracking_result)
     attribute_result = VehicleAttributeRecognition()({
         **base_payload,
-        "inputs": {"traffic-object-detection": object_result},
+        "inputs": {"traffic-object-detection": object_content},
     })
+    attribute_content = content("vehicle-attribute-recognition", attribute_result)
     trajectory_result = VehicleTrajectoryPrediction()({
         **base_payload,
         "inputs": {
-            "road-context-segmentation": road_result,
-            "vehicle-reidentification-tracking": tracking_result,
-            "vehicle-attribute-recognition": attribute_result,
+            "road-context-segmentation": road_content,
+            "vehicle-reidentification-tracking": tracking_content,
+            "vehicle-attribute-recognition": attribute_content,
         },
     })
+    trajectory_content = content("vehicle-trajectory-prediction", trajectory_result)
     pose_result = PedestrianCyclistPoseEstimation()({
         **base_payload,
-        "inputs": {"traffic-object-detection": object_result},
+        "inputs": {"traffic-object-detection": object_content},
     })
+    pose_content = content("pedestrian-cyclist-pose-estimation", pose_result)
     intent_result = PedestrianCyclistIntentRecognition()({
         **base_payload,
         "inputs": {
-            "road-context-segmentation": road_result,
-            "pedestrian-cyclist-pose-estimation": pose_result,
+            "road-context-segmentation": road_content,
+            "pedestrian-cyclist-pose-estimation": pose_content,
         },
     })
+    intent_content = content("pedestrian-cyclist-intent-recognition", intent_result)
     risk_result = TrafficRiskGraphInference()({
         **base_payload,
         "inputs": {
-            "traffic-signal-recognition": signal_result,
-            "vehicle-trajectory-prediction": trajectory_result,
-            "pedestrian-cyclist-intent-recognition": intent_result,
+            "traffic-signal-recognition": signal_content,
+            "vehicle-trajectory-prediction": trajectory_content,
+            "pedestrian-cyclist-intent-recognition": intent_content,
         },
     })
 
-    for result in [
+    for result, output_keys in zip([
         object_result,
         road_result,
         signal_result,
@@ -97,16 +124,14 @@ def test_structured_applications_are_independent_and_schema_free():
         pose_result,
         intent_result,
         risk_result,
-    ]:
+    ], EXPECTED_OUTPUT_KEYS):
         assert "schema" not in result
-        assert result["service"]
-        assert isinstance(result["outputs"], dict)
-        assert result["profile"]["model_name"]
-        assert "model_variant" not in result["profile"]
-        assert "synthetic_complexity" not in result["profile"]
-        assert "model_loaded" in result["profile"]
-        assert "inference_backend" in result["profile"]
-        assert "model_error" in result["profile"]
+        assert "service" not in result
+        assert "profile" not in result
+        assert set(result) == output_keys
+        for records in result.values():
+            assert isinstance(records, list)
+            assert all("frame_index" in record and isinstance(record.get("items"), list) for record in records)
 
 
 @pytest.mark.unit

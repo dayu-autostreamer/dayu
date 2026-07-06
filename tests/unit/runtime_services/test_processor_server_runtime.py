@@ -48,7 +48,15 @@ class FakeProcessor:
 
     def __call__(self, task):
         self.calls.append(task)
-        task.set_current_content({"processed": task.get_flow_index()})
+        task.set_current_content(
+            {
+                "service": task.get_flow_index(),
+                "outputs": {"text": [{"frame_index": None, "items": [{"text": "processed"}]}]},
+                "profile": {
+                    "frame_count": 0,
+                },
+            }
+        )
         return task
 
     @property
@@ -130,7 +138,13 @@ def test_processor_server_process_task_service_records_duration_and_sends_result
     processed = server.process_task_service(task)
     server.send_result_back_to_controller(processed)
 
-    assert processed.get_current_content() == {"processed": "detector"}
+    assert processed.get_current_content() == {
+        "service": "detector",
+        "outputs": {"text": [{"frame_index": None, "items": [{"text": "processed"}]}]},
+        "profile": {
+            "frame_count": 0,
+        },
+    }
     assert processed.get_service("detector").get_real_execute_time() == 0.75
     assert durations == [(4, False, "real_execute"), (4, True, "real_execute")]
     assert requests == [
@@ -168,7 +182,13 @@ def test_processor_server_process_return_service_serializes_processed_task_and_c
 
     assert saved == [("return.bin", b"payload")]
     assert removed == ["return.bin"]
-    assert returned_task.get_current_content() == {"processed": "detector"}
+    assert returned_task.get_current_content() == {
+        "service": "detector",
+        "outputs": {"text": [{"frame_index": None, "items": [{"text": "processed"}]}]},
+        "profile": {
+            "frame_count": 0,
+        },
+    }
 
 
 @pytest.mark.unit

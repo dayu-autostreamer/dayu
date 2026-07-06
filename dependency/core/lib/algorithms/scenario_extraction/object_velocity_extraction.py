@@ -32,6 +32,11 @@ class ObjectVelocityExtraction(BaseExtraction, abc.ABC):
         self._thread.start()
 
     def __call__(self, result, task):
+        if not isinstance(result, dict):
+            return 0
+        outputs = result.get('outputs')
+        if not isinstance(outputs, dict):
+            return 0
 
         # LOGGER.info(f'ready for get obj_speed, test if TrackerCSRT_create exists')
 
@@ -51,9 +56,17 @@ class ObjectVelocityExtraction(BaseExtraction, abc.ABC):
             return 0
 
         bboxes_list = []
-        for frame_result in result:
-            bboxes = frame_result[0]
+        for record in outputs.get('bbox', []) or []:
+            if not isinstance(record, dict):
+                continue
+            bboxes = [
+                item.get('bbox')
+                for item in record.get('items') or []
+                if isinstance(item, dict) and len(item.get('bbox') or []) == 4
+            ]
             bboxes_list.append(bboxes)
+        if len(bboxes_list) < 2:
+            return 0
 
         pre_frame = image_list[-2]
         pre_bbox = bboxes_list[-2]

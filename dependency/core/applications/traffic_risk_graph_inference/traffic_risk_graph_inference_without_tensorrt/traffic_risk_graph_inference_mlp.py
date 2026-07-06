@@ -1,12 +1,9 @@
-import json
 import os
 
 class TrafficRiskGraphInference:
     service_name = 'traffic-risk-graph-inference'
-    default_model_name = 'traffic-risk-graph-model'
 
     def __init__(self, weights='', device=0):
-        self.model_name = self.default_model_name
         self.weights = weights
         self.device = device
         self.model = self._load_model(self.weights)
@@ -70,9 +67,10 @@ class TrafficRiskGraphInference:
 
     def __call__(self, payload):
         inputs = payload.get('inputs')
-        trajectories = self._all_outputs(inputs, 'trajectory_predictions')
-        intents = self._all_outputs(inputs, 'pedestrian_cyclist_intents')
-        signals = self._all_outputs(inputs, 'signals')
+        trajectories = self._all_items(inputs, 'trajectory')
+        text_items = self._all_items(inputs, 'text')
+        intents = [item for item in text_items if item.get('label') == 'pedestrian_cyclist_intent']
+        signals = [item for item in text_items if item.get('state') or item.get('label') in {'traffic_light', 'traffic_sign'}]
         red_signal = any(signal.get('state') == 'red' for signal in signals)
         events = self._rule_events(trajectories, intents, red_signal)
         risk_level, risk_confidence = self._infer_risk(payload, trajectories, intents, signals, events)
@@ -85,12 +83,7 @@ class TrafficRiskGraphInference:
             'risk_level': risk_level,
             'risk_confidence': risk_confidence,
         }
-        outputs = {
-            'events': events,
-            'graph_summary': graph_summary,
-        }
-        return self._wrap_result(payload, outputs, num_objects=graph_summary['entity_count'],
-                                 inference_backend=self._model_backend())
+        return {'graph': [{'frame_index': None, 'items': [self._graph_item(trajectories, intents, signals, events, graph_summary)]}]}
 
     @staticmethod
     def _rule_events(trajectories, intents, red_signal):
@@ -197,42 +190,48 @@ class TrafficRiskGraphInference:
             updated.append(item)
         return updated
 
-    def _wrap_result(self, payload, outputs, num_objects=0, inference_backend='rule-risk-graph'):
-        profile = {
-            'num_objects': int(num_objects),
-            'input_bytes': self._input_bytes(payload),
-            'output_bytes': self._output_bytes(outputs),
-            'frame_count': len(payload.get('frames') or []),
-            'model_name': self.model_name,
-            'model_weight': os.path.basename(self.weights) if self.weights else '',
-            'model_weight_exists': bool(self.model and self.model.get('exists')),
-            'model_loaded': bool(self.model and self.model.get('loaded')),
-            'inference_backend': inference_backend,
-            'model_error': (self.model or {}).get('error', ''),
-        }
-        return {
-            'service': self.service_name,
-            'outputs': outputs,
-            'profile': profile,
-        }
-
     @staticmethod
-    def _all_outputs(inputs, key):
+    def _all_items(inputs, key):
         values = []
         for content in (inputs or {}).values():
             if not isinstance(content, dict):
                 continue
             outputs = content.get('outputs')
             if isinstance(outputs, dict) and key in outputs:
-                value = outputs[key]
-                if isinstance(value, list):
-                    values.extend(value)
-                else:
-                    values.append(value)
+                for record in outputs[key] or []:
+                    if isinstance(record, dict):
+                        frame_index = record.get('frame_index')
+                        for item in record.get('items') or []:
+                            item = dict(item)
+                            item.setdefault('frame_index', frame_index)
+                            values.append(item)
         return values
 
-    def _model_backend(self):
-        return (self.model or {}).get('backend', 'rule-risk-graph')
+    @staticmethod
+    def _graph_item(trajectories, intents, signals, events, graph_summary):
+        nodes = []
+        for trajectory in trajectories:
+            nodes.append({'id': trajectory.get('track_id'), 'type': 'trajectory'})
+        for intent in intents:
+            nodes.append({'id': intent.get('person_id'), 'type': 'intent'})
+        for index, signal in enumerate(signals):
+            nodes.append({'id': signal.get('signal_id', f'signal-{index}'), 'type': 'signal'})
+        edges = []
+        for trajectory in trajectories:
+            for intent in intents:
+                edges.append({
+                    'source': trajectory.get('track_id'),
+                    'target': intent.get('person_id'),
+                    'type': 'interaction',
+                })
+        return {
+            'nodes': nodes,
+            'edges': edges,
+            'events': events,
+            'summary': graph_summary,
+            'risk_level': graph_summary.get('risk_level'),
+            'risk_confidence': graph_summary.get('risk_confidence'),
+        }
 
     def _torch_device(self, torch):
         if isinstance(self.device, str):
@@ -247,18 +246,3 @@ class TrafficRiskGraphInference:
             return torch.load(weight_path, map_location='cpu', weights_only=False)
         except TypeError:
             return torch.load(weight_path, map_location='cpu')
-
-    @staticmethod
-    def _input_bytes(payload):
-        file_path = (payload.get('task') or {}).get('file_path')
-        try:
-            return os.path.getsize(file_path) if file_path else 0
-        except OSError:
-            return 0
-
-    @staticmethod
-    def _output_bytes(outputs):
-        try:
-            return len(json.dumps(outputs, default=str).encode('utf-8'))
-        except TypeError:
-            return 0
