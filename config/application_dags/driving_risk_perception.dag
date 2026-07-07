@@ -126,13 +126,13 @@
         "x": 240,
         "y": 220
       },
-      "pedestrian-cyclist-pose-estimation": {
-        "x": 240,
-        "y": 360
-      },
       "vehicle-trajectory-prediction": {
         "x": 520,
         "y": 160
+      },
+      "pedestrian-cyclist-pose-estimation": {
+        "x": 240,
+        "y": 360
       },
       "pedestrian-cyclist-intent-recognition": {
         "x": 520,
@@ -143,8 +143,5 @@
         "y": 240
       }
     }
-  },
-  "metadata": {
-    "description": "Recommended structured traffic DAG for traffic risk monitoring review."
   }
 }
