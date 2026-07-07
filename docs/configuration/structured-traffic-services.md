@@ -84,6 +84,26 @@ Model/backend status belongs to service logs, health checks, or model manifests 
 
 Model parameter staging is recorded in `.model/dag1_model_parameters.yaml`.
 
+## Service Result Visualization
+
+The repository includes per-service frame overlay hooks for checking whether a DAG service produced reasonable results.
+These hooks are categorized by drawing method instead of by service name:
+
+| Hook | Main output shape | Typical services |
+| --- | --- | --- |
+| `bbox_frame` | items with `bbox` plus labels or scores | object detection, signal recognition, vehicle attributes |
+| `segmentation_frame` | polygons and polylines | road context segmentation |
+| `track_frame` | track histories with `bboxes` | vehicle reidentification and tracking |
+| `trajectory_frame` | predicted future points | vehicle trajectory prediction |
+| `pose_frame` | keypoints and optional boxes | pedestrian or cyclist pose estimation |
+| `text_frame` | text records, optionally anchored to another service by key | pedestrian or cyclist intent recognition |
+| `event_frame` | graph/event summaries | traffic risk graph inference |
+
+`config/visualization_configs/traffic_service_frame_visualization_config.yaml` configures one image visualization per
+service in the recommended traffic DAG. The hooks only name the service/output to inspect; they do not encode DAG
+membership. Users can upload or adapt the same config for any runtime DAG whose services expose compatible structured
+outputs.
+
 ## Recommended Review DAG
 
 The repository includes this example as `config/application_dags/traffic_risk_monitoring.dag`.

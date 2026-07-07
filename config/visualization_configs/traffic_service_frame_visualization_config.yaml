@@ -1,0 +1,63 @@
+- name: Traffic Object Detection Frame
+  type: image
+  variables: [ "Traffic Object Detection Frame" ]
+  hook_name: bbox_frame
+  hook_params: '{"service": "traffic-object-detection", "output": "bbox", "frame_index": 0, "label_fields": ["label", "score"], "color": [0, 220, 0]}'
+  save_expense: true
+  size: 1
+- name: Road Context Segmentation Frame
+  type: image
+  variables: [ "Road Context Segmentation Frame" ]
+  hook_name: segmentation_frame
+  hook_params: '{"service": "road-context-segmentation", "output": "segmentation", "frame_index": 0}'
+  save_expense: true
+  size: 1
+- name: Traffic Signal Recognition Frame
+  type: image
+  variables: [ "Traffic Signal Recognition Frame" ]
+  hook_name: bbox_frame
+  hook_params: '{"service": "traffic-signal-recognition", "output": "text", "frame_index": 0, "label_fields": ["state", "score"], "color": [0, 180, 255]}'
+  save_expense: true
+  size: 1
+- name: Vehicle Reidentification Tracking Frame
+  type: image
+  variables: [ "Vehicle Reidentification Tracking Frame" ]
+  hook_name: track_frame
+  hook_params: '{"service": "vehicle-reidentification-tracking", "output": "track", "frame_index": 0}'
+  save_expense: true
+  size: 1
+- name: Vehicle Attribute Recognition Frame
+  type: image
+  variables: [ "Vehicle Attribute Recognition Frame" ]
+  hook_name: bbox_frame
+  hook_params: '{"service": "vehicle-attribute-recognition", "output": "attribute", "frame_index": 0, "label_template": "{attributes.type}/{attributes.color}/{attributes.orientation} {confidence}", "label_fields": ["attributes.type", "attributes.color", "attributes.orientation", "confidence"], "color": [200, 120, 40]}'
+  save_expense: true
+  size: 1
+- name: Vehicle Trajectory Prediction Frame
+  type: image
+  variables: [ "Vehicle Trajectory Prediction Frame" ]
+  hook_name: trajectory_frame
+  hook_params: '{"service": "vehicle-trajectory-prediction", "output": "trajectory", "frame_index": 0, "track_service": "vehicle-reidentification-tracking"}'
+  save_expense: true
+  size: 1
+- name: Pedestrian Cyclist Pose Estimation Frame
+  type: image
+  variables: [ "Pedestrian Cyclist Pose Estimation Frame" ]
+  hook_name: pose_frame
+  hook_params: '{"service": "pedestrian-cyclist-pose-estimation", "output": "pose", "frame_index": 0}'
+  save_expense: true
+  size: 1
+- name: Pedestrian Cyclist Intent Recognition Frame
+  type: image
+  variables: [ "Pedestrian Cyclist Intent Recognition Frame" ]
+  hook_name: text_frame
+  hook_params: '{"service": "pedestrian-cyclist-intent-recognition", "output": "text", "frame_index": 0, "label_fields": ["intent", "confidence"], "anchor_service": "pedestrian-cyclist-pose-estimation", "anchor_output": "pose", "anchor_key": "person_id"}'
+  save_expense: true
+  size: 1
+- name: Traffic Risk Graph Inference Frame
+  type: image
+  variables: [ "Traffic Risk Graph Inference Frame" ]
+  hook_name: event_frame
+  hook_params: '{"service": "traffic-risk-graph-inference", "output": "graph", "frame_index": 0}'
+  save_expense: true
+  size: 1
