@@ -87,8 +87,11 @@ def test_deployment_policy_bases_and_fixed_policies_cover_loading_and_defaults(m
     redeploy_policy = fixed_redeployment_module.FixedRedeploymentPolicy(SimpleNamespace(), 0, policy="redeploy.yaml")
     redeploy_plan = redeploy_policy(build_deployment_info())
     assert redeploy_paths == ["/runtime/redeploy.yaml"]
-    assert sorted(redeploy_plan["detector"]) == ["edge-a", "edge-b"]
+    assert "detector" not in redeploy_plan
     assert sorted(redeploy_plan["tracker"]) == ["edge-b"]
+
+    empty_redeployment_policy = fixed_redeployment_module.FixedRedeploymentPolicy(SimpleNamespace(), 0)
+    assert empty_redeployment_policy(build_deployment_info()) == {}
 
     with pytest.raises(TypeError, match="type str or dict"):
         fixed_initial_module.FixedInitialDeploymentPolicy(SimpleNamespace(), 0, policy=object())
