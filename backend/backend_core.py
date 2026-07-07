@@ -5,12 +5,14 @@ import shutil
 import tempfile
 import threading
 import re
+import uuid
 from collections import deque
 from func_timeout import func_set_timeout as timeout
 import func_timeout.exceptions as timeout_exceptions
 
 import os
 import time
+import yaml
 from core.lib.content import Task
 from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant, TaskConstant, \
     ConfigBoundInstanceCache
@@ -26,6 +28,16 @@ def _indent_json_block(text, prefix='    '):
 
 
 class BackendCore:
+    RUNTIME_SCOPE_LABEL = 'dayu.io/runtime-scope'
+    RUNTIME_SCOPE_INSTALLATION = 'installation'
+    MANAGED_BY_LABEL = 'app.kubernetes.io/managed-by'
+    PART_OF_LABEL = 'app.kubernetes.io/part-of'
+    INSTALL_ID_LABEL = 'dayu.io/install-id'
+    COMPONENT_LABEL = 'dayu.io/component'
+    SOURCE_LABEL_ANNOTATION = 'dayu.io/source-label'
+    POLICY_ID_ANNOTATION = 'dayu.io/policy-id'
+    INSTALL_RECORD_NAME = 'dayu-runtime-install-state'
+
     def __init__(self):
 
         self.template_helper = TemplateHelper(Context.get_default_file_path())
@@ -71,6 +83,7 @@ class BackendCore:
         self.inner_datasource = self.check_simulation_datasource()
         self.source_open = False
         self.source_label = ''
+        self.query_lock = threading.Lock()
 
         self.task_results = {}
 
@@ -85,6 +98,9 @@ class BackendCore:
 
         self.cur_yaml_docs = None
         self.save_yaml_path = 'resources.yaml'
+        self.current_install_id = ''
+        self.current_source_label = ''
+        self.current_policy_id = ''
         self.system_log_store_path = 'system_log_store.jsonl'
         self.system_log_lock = threading.Lock()
         self.system_log_retention_records = max(
@@ -127,7 +143,129 @@ class BackendCore:
             return None
         return load_file_name.split('.')[0]
 
-    def parse_and_apply_templates(self, policy, source_deploy):
+    @staticmethod
+    def _component_name_from_doc(doc):
+        name = doc.get('metadata', {}).get('name', '')
+        return 'processor' if name.startswith('processor-') else name
+
+    def annotate_runtime_docs(self, docs, install_id, source_label='', policy_id=''):
+        for doc in docs or []:
+            if not isinstance(doc, dict):
+                continue
+            metadata = doc.setdefault('metadata', {})
+            labels = metadata.setdefault('labels', {})
+            annotations = metadata.setdefault('annotations', {})
+            labels.update({
+                self.PART_OF_LABEL: 'dayu',
+                self.MANAGED_BY_LABEL: 'dayu-backend',
+                self.RUNTIME_SCOPE_LABEL: self.RUNTIME_SCOPE_INSTALLATION,
+                self.INSTALL_ID_LABEL: str(install_id),
+                self.COMPONENT_LABEL: self._component_name_from_doc(doc),
+            })
+            annotations.update({
+                self.SOURCE_LABEL_ANNOTATION: str(source_label or ''),
+                self.POLICY_ID_ANNOTATION: str(policy_id or ''),
+            })
+        return docs
+
+    @staticmethod
+    def _resource_refs_from_docs(docs):
+        refs = []
+        for doc in docs or []:
+            if not isinstance(doc, dict):
+                continue
+            metadata = doc.get('metadata', {})
+            refs.append({
+                'apiVersion': doc.get('apiVersion', ''),
+                'kind': doc.get('kind', ''),
+                'namespace': metadata.get('namespace', ''),
+                'name': metadata.get('name', ''),
+            })
+        return refs
+
+    def save_install_record(self, install_id, source_label, policy_id, state, docs):
+        data = {
+            'install_id': str(install_id or ''),
+            'source_label': str(source_label or ''),
+            'policy_id': str(policy_id or ''),
+            'state': str(state or ''),
+            'resources': json.dumps(self._resource_refs_from_docs(docs), ensure_ascii=False),
+            'docs_yaml': yaml.safe_dump_all(docs or [], allow_unicode=True),
+        }
+        try:
+            saved = KubeHelper.upsert_configmap(self.namespace, self.INSTALL_RECORD_NAME, data)
+        except Exception as e:
+            LOGGER.warning(f'[Install State] Failed to persist install record ConfigMap: {str(e)}')
+            LOGGER.exception(e)
+            return
+        if not saved:
+            LOGGER.warning('[Install State] Failed to persist install record ConfigMap.')
+
+    def read_install_record(self):
+        try:
+            return KubeHelper.read_configmap(self.namespace, self.INSTALL_RECORD_NAME) or {}
+        except Exception as e:
+            LOGGER.warning(f'[Install State] Failed to read install record ConfigMap: {str(e)}')
+            LOGGER.exception(e)
+            return {}
+
+    def clear_install_record(self):
+        try:
+            deleted = KubeHelper.delete_configmap(self.namespace, self.INSTALL_RECORD_NAME)
+        except Exception as e:
+            LOGGER.warning(f'[Install State] Failed to delete install record ConfigMap: {str(e)}')
+            LOGGER.exception(e)
+            deleted = True
+        if not deleted:
+            LOGGER.warning('[Install State] Failed to delete install record ConfigMap.')
+        self.current_install_id = ''
+        self.current_source_label = ''
+        self.current_policy_id = ''
+
+    def docs_from_install_record(self):
+        record = self.read_install_record()
+        docs_yaml = record.get('docs_yaml')
+        if not docs_yaml:
+            return None
+        try:
+            docs = [doc for doc in yaml.safe_load_all(docs_yaml) if doc is not None]
+            return docs or None
+        except Exception as e:
+            LOGGER.warning(f'[Install State] Failed to parse install record docs: {str(e)}')
+            LOGGER.exception(e)
+            return None
+
+    def list_runtime_component_docs(self):
+        try:
+            base_info = self.template_helper.load_base_info()
+            crd_meta = base_info['crd-meta']
+            return KubeHelper.list_custom_resources(
+                namespace=self.namespace,
+                api_version=crd_meta['api-version'],
+                kind=crd_meta['kind'],
+                label_selector=f'{self.RUNTIME_SCOPE_LABEL}={self.RUNTIME_SCOPE_INSTALLATION}',
+            )
+        except Exception as e:
+            LOGGER.warning(f'[Install State] Failed to list runtime resources: {str(e)}')
+            LOGGER.exception(e)
+            return []
+
+    def read_runtime_component_docs(self):
+        docs = self.list_runtime_component_docs()
+        if docs:
+            return docs
+        docs = self.read_component_yaml()
+        if docs:
+            return docs
+        return self.docs_from_install_record()
+
+    def parse_and_apply_templates(self, policy, source_deploy, source_label=''):
+        install_id = str(uuid.uuid4())
+        policy_id = policy.get('id', '')
+        self.current_install_id = install_id
+        self.current_source_label = source_label
+        self.current_policy_id = policy_id
+
         yaml_dict = {}
 
         yaml_dict.update(self.template_helper.load_policy_apply_yaml(policy))
@@ -144,6 +282,9 @@ class BackendCore:
         first_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
                                                                         copy.deepcopy(source_deploy),
                                                                         scopes=first_stage_components)
+        self.annotate_runtime_docs(first_docs_list, install_id, source_label, policy_id)
+        self.save_install_record(install_id, source_label, policy_id, 'installing', first_docs_list)
+        result = False
         try:
             result, msg = self.install_yaml_templates(first_docs_list)
         except timeout_exceptions.FunctionTimedOut:
@@ -157,6 +298,8 @@ class BackendCore:
             msg = 'unexpected system error, please refer to logs in backend'
         finally:
             self.save_component_yaml(first_docs_list)
+            if not result:
+                self.save_install_record(install_id, source_label, policy_id, 'failed', first_docs_list)
         if not result:
             return False, msg
         # Wait for scheduler to be ready
@@ -167,9 +310,13 @@ class BackendCore:
         second_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
                                                                          second_stage_source_deploy,
                                                                          scopes=second_stage_components)
+        self.annotate_runtime_docs(second_docs_list, install_id, source_label, policy_id)
+        all_docs_list = first_docs_list + second_docs_list
+        self.save_install_record(install_id, source_label, policy_id, 'installing', all_docs_list)
         # Persist source_device selected during generator planning so later
         # processor-only redeployment requests keep the scheduler context.
         self.source_deploy = second_stage_source_deploy
+        result = False
         try:
             result, msg = self.install_yaml_templates(second_docs_list)
         except timeout_exceptions.FunctionTimedOut:
@@ -182,12 +329,15 @@ class BackendCore:
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
         finally:
-            self.save_component_yaml(first_docs_list + second_docs_list)
+            self.save_component_yaml(all_docs_list)
+            if not result:
+                self.save_install_record(install_id, source_label, policy_id, 'failed', all_docs_list)
 
         if not result:
             return False, msg
 
         self.installed_running_state = True
+        self.save_install_record(install_id, source_label, policy_id, 'installed', all_docs_list)
 
         # Start cycle deployment
         self.is_cycle_deploy = True
@@ -204,7 +354,13 @@ class BackendCore:
         # End cycle deployment
         self.is_cycle_deploy = False
 
-        docs = self.read_component_yaml()
+        docs = self.read_runtime_component_docs()
+        install_record = self.read_install_record()
+        install_id = install_record.get('install_id', self.current_install_id)
+        source_label = install_record.get('source_label', self.current_source_label)
+        policy_id = install_record.get('policy_id', self.current_policy_id)
+        if docs:
+            self.save_install_record(install_id, source_label, policy_id, 'uninstalling', docs)
         try:
             result, msg = self.uninstall_yaml_templates(docs)
         except timeout_exceptions.FunctionTimedOut:
@@ -216,6 +372,9 @@ class BackendCore:
             LOGGER.exception(e)
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
+
+        if not result and docs:
+            self.save_install_record(install_id, source_label, policy_id, 'failed', docs)
 
         return result, msg
 
@@ -871,6 +1030,11 @@ class BackendCore:
                         scopes=['processor'],
                         current_docs=self.read_component_yaml(),
                     )
+                    install_record = self.read_install_record()
+                    install_id = self.current_install_id or install_record.get('install_id', '')
+                    source_label = self.current_source_label or install_record.get('source_label', '')
+                    policy_id = self.current_policy_id or install_record.get('policy_id', '')
+                    self.annotate_runtime_docs(redeploy_docs_list, install_id, source_label, policy_id)
 
                     self.uninstall_lock = True
                     try:
@@ -880,6 +1044,13 @@ class BackendCore:
                         if res:
                             if self._last_processor_redeploy_applied is not False:
                                 self.update_component_yaml(redeploy_docs_list)
+                                self.save_install_record(
+                                    install_id,
+                                    source_label,
+                                    policy_id,
+                                    'installed',
+                                    self.read_component_yaml(),
+                                )
                                 LOGGER.info('[Redeployment] Redeployment succeeded.')
                             else:
                                 LOGGER.debug('[Redeployment] Redeployment skipped; no processor changes were applied.')

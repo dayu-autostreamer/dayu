@@ -7,6 +7,16 @@ from core.lib.common import LOGGER, YamlOps
 
 class KubeHelper:
     @staticmethod
+    def _is_not_found_error(error):
+        return getattr(error, 'status', None) == 404
+
+    @staticmethod
+    def _api_group_version(api_version):
+        if '/' not in api_version:
+            raise ValueError(f'Custom resource apiVersion "{api_version}" must include group/version.')
+        return api_version.split('/', 1)
+
+    @staticmethod
     def apply_custom_resources(docs):
         config.load_incluster_config()
         api_instance = client.CustomObjectsApi()
@@ -44,46 +54,123 @@ class KubeHelper:
         config.load_incluster_config()
         v1 = client.CoreV1Api()
         apps_v1 = client.AppsV1Api()
+        custom_api = client.CustomObjectsApi()
+        failures = []
 
         for doc in docs:
             if doc is None:
                 continue
-            group = doc['apiVersion'].split('/')[0]
-            version = doc['apiVersion'].split('/')[-1]
+            group, version = KubeHelper._api_group_version(doc['apiVersion'])
             kind = doc['kind']
             namespace = doc['metadata']['namespace']
             name = doc['metadata']['name']
-            node_name_config = doc['spec']['serviceConfig'] if 'serviceConfig' in doc['spec'] else None
+            node_name_config = doc.get('spec', {}).get('serviceConfig')
+            plural = KubeHelper.get_crd_plural(kind)
 
             try:
-                # Delete Service
-                if node_name_config:
-                    svc_name = f"{name}-{node_name_config['pos']}"
-                    LOGGER.info(f"Deleting Service: {name} in namespace {namespace}")
-                    v1.delete_namespaced_service(name=svc_name, namespace=namespace)
-
-                # Delete Deployments
-                deployments = apps_v1.list_namespaced_deployment(namespace)
-                for dep in deployments.items:
-                    if dep.metadata.name.startswith(name):
-                        LOGGER.info(f"Deleting Deployment: {dep.metadata.name} in namespace {namespace}")
-                        apps_v1.delete_namespaced_deployment(name=dep.metadata.name, namespace=namespace)
-
-                # Delete Custom Resource
-                custom_api = client.CustomObjectsApi()
                 custom_api.delete_namespaced_custom_object(
                     group=group,
                     version=version,
                     namespace=namespace,
-                    plural=KubeHelper.get_crd_plural(kind),
+                    plural=plural,
                     name=name
                 )
                 LOGGER.info(f"Deleting Custom Resource: {name} in namespace {namespace}")
-
             except Exception as e:
+                if not KubeHelper._is_not_found_error(e):
+                    LOGGER.exception(e)
+                    failures.append(f'{kind}/{name}')
+
+            if node_name_config:
+                svc_name = f"{name}-{node_name_config['pos']}"
+                try:
+                    LOGGER.info(f"Deleting Service: {svc_name} in namespace {namespace}")
+                    v1.delete_namespaced_service(name=svc_name, namespace=namespace)
+                except Exception as e:
+                    if not KubeHelper._is_not_found_error(e):
+                        LOGGER.exception(e)
+                        failures.append(f'Service/{svc_name}')
+
+            try:
+                deployments = apps_v1.list_namespaced_deployment(namespace)
+                for dep in deployments.items:
+                    if dep.metadata.name.startswith(name):
+                        LOGGER.info(f"Deleting Deployment: {dep.metadata.name} in namespace {namespace}")
+                        try:
+                            apps_v1.delete_namespaced_deployment(name=dep.metadata.name, namespace=namespace)
+                        except Exception as e:
+                            if not KubeHelper._is_not_found_error(e):
+                                LOGGER.exception(e)
+                                failures.append(f'Deployment/{dep.metadata.name}')
+            except Exception as e:
+                if not KubeHelper._is_not_found_error(e):
+                    LOGGER.exception(e)
+                    failures.append(f'Deployments/{name}')
+
+        if failures:
+            LOGGER.warning(f'Delete custom resources finished with failures: {failures}')
+            return False
+        return True
+
+    @staticmethod
+    def list_custom_resources(namespace, api_version, kind, label_selector=None):
+        config.load_incluster_config()
+        custom_api = client.CustomObjectsApi()
+        group, version = KubeHelper._api_group_version(api_version)
+        response = custom_api.list_namespaced_custom_object(
+            group=group,
+            version=version,
+            namespace=namespace,
+            plural=KubeHelper.get_crd_plural(kind),
+            label_selector=label_selector,
+        )
+        return response.get('items', [])
+
+    @staticmethod
+    def read_configmap(namespace, name):
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        try:
+            configmap = v1.read_namespaced_config_map(name=name, namespace=namespace)
+            return configmap.data or {}
+        except Exception as e:
+            if not KubeHelper._is_not_found_error(e):
+                LOGGER.exception(e)
+            return None
+
+    @staticmethod
+    def upsert_configmap(namespace, name, data):
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        body = client.V1ConfigMap(
+            metadata=client.V1ObjectMeta(name=name, namespace=namespace),
+            data=data or {},
+        )
+        try:
+            v1.replace_namespaced_config_map(name=name, namespace=namespace, body=body)
+        except Exception as e:
+            if not KubeHelper._is_not_found_error(e):
                 LOGGER.exception(e)
                 return False
+            try:
+                v1.create_namespaced_config_map(namespace=namespace, body=body)
+            except Exception as create_error:
+                LOGGER.exception(create_error)
+                return False
         return True
+
+    @staticmethod
+    def delete_configmap(namespace, name):
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        try:
+            v1.delete_namespaced_config_map(name=name, namespace=namespace)
+            return True
+        except Exception as e:
+            if KubeHelper._is_not_found_error(e):
+                return True
+            LOGGER.exception(e)
+            return False
 
     @staticmethod
     def delete_custom_resources_by_file(yaml_file_path):
@@ -340,4 +427,3 @@ class KubeHelper:
             "jetpack_major": labels.get("jetson.nvidia.com/jetpack.major"),
             "l4t_major": labels.get("jetson.nvidia.com/l4t.major")
         }
-

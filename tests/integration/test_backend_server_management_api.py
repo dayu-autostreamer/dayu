@@ -3,6 +3,7 @@ import copy
 import gzip
 import importlib
 import json
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -68,6 +69,8 @@ class FakeBackendCoreManagement:
         self.uninstall_result = (True, "ok")
         self.run_get_result_called = False
         self.clear_yaml_docs_calls = 0
+        self.clear_install_record_calls = 0
+        self.query_lock = threading.Lock()
         self.applied_templates = []
         self.datasource_config_to_return = {
             "source_name": "uploaded",
@@ -120,10 +123,14 @@ class FakeBackendCoreManagement:
     def check_node_exist(self, node):
         return node in {"edgex1", "edgex2"}
 
-    def parse_and_apply_templates(self, policy, source_deploy):
+    def parse_and_apply_templates(self, policy, source_deploy, source_label=""):
         if self.install_exception:
             raise self.install_exception
-        self.applied_templates.append({"policy": policy, "source_deploy": copy.deepcopy(source_deploy)})
+        self.applied_templates.append({
+            "policy": policy,
+            "source_deploy": copy.deepcopy(source_deploy),
+            "source_label": source_label,
+        })
         return self.install_result
 
     def parse_and_delete_templates(self):
@@ -131,6 +138,9 @@ class FakeBackendCoreManagement:
 
     def clear_yaml_docs(self):
         self.clear_yaml_docs_calls += 1
+
+    def clear_install_record(self):
+        self.clear_install_record_calls += 1
 
     def check_install_state(self):
         return self.install_state
@@ -305,6 +315,7 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
     assert install_result["state"] == "success"
     assert len(backend.server.applied_templates) == 1
     assert backend.server.applied_templates[0]["source_deploy"][0]["source"]["source_mode"] == "http_video"
+    assert backend.server.applied_templates[0]["source_label"] == "source-config-0"
 
     backend.server.install_exception = RuntimeError("boom")
     failed_install = asyncio.run(
@@ -326,10 +337,13 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
     uninstall_result = asyncio.run(backend.uninstall_service())
     assert uninstall_result["state"] == "success"
     assert backend.server.clear_yaml_docs_calls == 1
+    assert backend.server.clear_install_record_calls == 1
 
     backend.server.uninstall_result = (False, "still running")
     failed_uninstall = asyncio.run(backend.uninstall_service())
     assert failed_uninstall["state"] == "fail"
+    assert backend.server.clear_yaml_docs_calls == 1
+    assert backend.server.clear_install_record_calls == 1
 
 
 @pytest.mark.integration
@@ -343,6 +357,10 @@ def test_backend_server_covers_query_state_visualization_and_service_info(manage
     assert open_query["state"] == "success"
     assert backend.server.source_open is True
     assert sorted(backend.server.task_results.keys()) == [0, 1]
+    assert len(started_targets) == 1
+
+    duplicate_query = asyncio.run(backend.submit_query(json.dumps({"source_label": "source-config-0"}).encode()))
+    assert duplicate_query["state"] == "success"
     assert len(started_targets) == 1
 
     assert client.get("/query_state").json() == {"state": "open", "source_label": "source-config-0"}

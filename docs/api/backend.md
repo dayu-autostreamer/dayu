@@ -90,7 +90,7 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `POST` | `/install` | Resolve policy + datasource mapping and deploy the runtime stack. | JSON body described below | `{state, msg}` |
-| `POST` | `/stop_service` | Uninstall deployed runtime components. | None | `{state, msg}` |
+| `POST` | `/stop_service` | Uninstall deployed runtime components discovered from Kubernetes runtime labels. | None | `{state, msg}` |
 | `GET` | `/install_state` | Check whether the stack is installed. | None | `{state: "install"|"uninstall"}` |
 | `POST` | `/submit_query` | Open datasource playback for a datasource label and begin result collection. | JSON body with `source_label` | `{state, msg}` |
 | `POST` | `/stop_query` | Stop datasource playback and clear in-memory task results. | None | `{state, msg}` |
@@ -115,6 +115,12 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
   ]
 }
 ```
+
+During install, backend labels every application runtime `JointMultiEdgeService` with
+`dayu.io/runtime-scope=installation` and records the install snapshot in the
+`dayu-runtime-install-state` ConfigMap. The local `resources.yaml` file is only a backend-side cache for
+redeployment diffs and diagnostics; uninstall must be recoverable from Kubernetes state even if that local file is
+missing.
 
 ### Runtime data, visualization, and logs
 
@@ -176,6 +182,9 @@ The backend fetches scheduler resource data once, renders the configured system 
 ## Compatibility Notes
 
 - `POST /install` assumes the requested scheduler policy, datasource configuration, DAG workflow, and edge nodes all already exist and are mutually compatible.
+- `POST /stop_service` is retryable. Backend clears the local YAML cache and install-state ConfigMap only after runtime resource deletion succeeds; failed uninstall attempts keep the recorded state for the next retry.
 - `POST /submit_query` only works after install-time deployment has completed and a datasource config exists for the requested label.
+- `POST /submit_query` is idempotent for the already-open datasource label. Opening a different datasource while one is active fails until `/stop_query` closes the current one.
+- `POST /stop_query` is idempotent and succeeds when the datasource is already closed.
 - `GET /source_list`, `GET /task_result`, and `GET /datasource_state` are runtime-state dependent. They return empty collections or closed state when no datasource is active.
 - Visualization config upload uses YAML validation in backend memory. The file is accepted only if each visualization entry contains a valid `name`, `type`, `variables`, and `size`, plus valid hook metadata when present.

@@ -51,7 +51,7 @@
   yaml: cloud-only-policy.yaml
   dependency:
     generator: generator-with-scheduler-permitted.yaml
-    controller: controller-for-evaluation.yaml
+    controller: controller-base.yaml
     distributor: distributor-base.yaml
     monitor: monitor-base.yaml
 - id: edge-only-policy

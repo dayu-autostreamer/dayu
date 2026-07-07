@@ -556,7 +556,7 @@ class BackendServer:
             source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
         try:
-            result, msg = self.server.parse_and_apply_templates(policy, source_deploy)
+            result, msg = self.server.parse_and_apply_templates(policy, source_deploy, source_label=source_label)
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             LOGGER.exception(e)
@@ -590,9 +590,9 @@ class BackendServer:
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
 
-        self.server.clear_yaml_docs()
-
         if result:
+            self.server.clear_yaml_docs()
+            self.server.clear_install_record()
             return {'state': 'success', 'msg': 'Uninstall services successfully'}
         else:
             return {'state': 'fail', 'msg': f'Uninstall services failed: {msg}'}
@@ -630,16 +630,22 @@ class BackendServer:
         if not self.server.find_datasource_configuration_by_label(source_label):
             return {'state': 'fail', 'msg': 'Datasource configuration not exists'}
 
-        self.server.source_open = True
-        self.server.source_label = source_label
-        source_ids = self.server.get_source_ids()
-        for source_id in source_ids:
-            self.server.task_results[source_id] = Queue(20)
+        with self.server.query_lock:
+            if self.server.source_open:
+                if self.server.source_label == source_label:
+                    return {'state': 'success', 'msg': 'Datasource is already open'}
+                return {'state': 'fail', 'msg': 'Another datasource is already open, please close it first'}
 
-        time.sleep((len(source_ids) - 1) * 4)
+            self.server.source_open = True
+            self.server.source_label = source_label
+            source_ids = self.server.get_source_ids()
+            for source_id in source_ids:
+                self.server.task_results[source_id] = Queue(20)
 
-        self.server.is_get_result = True
-        threading.Thread(target=self.server.run_get_result).start()
+            time.sleep((len(source_ids) - 1) * 4)
+
+            self.server.is_get_result = True
+            threading.Thread(target=self.server.run_get_result).start()
 
         return {'state': 'success', 'msg': 'Datasource open successfully'}
 
@@ -650,11 +656,15 @@ class BackendServer:
         {'state':"success/fail",'msg':'...'}
         """
 
-        self.server.source_open = False
-        self.server.source_label = ''
-        self.server.is_get_result = False
-        self.server.task_results.clear()
-        self.server.customized_source_result_visualization_configs.clear()
+        with self.server.query_lock:
+            if not self.server.source_open and not self.server.is_get_result:
+                return {'state': 'success', 'msg': 'Datasource is already closed'}
+
+            self.server.source_open = False
+            self.server.source_label = ''
+            self.server.is_get_result = False
+            self.server.task_results.clear()
+            self.server.customized_source_result_visualization_configs.clear()
         time.sleep(1)
 
         return {'state': 'success', 'msg': 'Datasource close successfully'}

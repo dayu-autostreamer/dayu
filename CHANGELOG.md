@@ -7,6 +7,7 @@
 ### Features
 
 ### Bug Fix
+- Fix possible failure in install/uninstall applications with multi-layer fallback including kubernetes label and configmap (`backend`).
 
 ### Minor Update
 - Add more services: traffic-detection, road-context-segmentation, traffic-signal-recognition, vehicle-tracking, vehicle-attribute-recognition, vehicle-trajectory-prediction, pedestrian-pose-estimation, pedestrian-intent-recognition, risk-graph-generation (`processor`).

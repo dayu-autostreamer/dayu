@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from core.lib.common import Queue
 
@@ -77,6 +78,68 @@ def test_component_yaml_diff_deletes_cloud_processor_when_backup_is_removed(back
     assert docs_to_update == []
     assert [doc["metadata"]["name"] for doc in docs_to_delete] == ["processor-face-cloudx1"]
     assert sorted(doc["metadata"]["name"] for doc in total_docs) == ["processor-face-edgex1", "scheduler"]
+
+
+@pytest.mark.unit
+def test_runtime_docs_are_labelled_and_recoverable_from_install_record(backend_core_instance, monkeypatch):
+    backend_core_module = importlib.import_module("backend_core")
+    docs = [
+        {
+            "apiVersion": "sedna.io/v1alpha1",
+            "kind": "JointMultiEdgeService",
+            "metadata": {"name": "processor-face-edgex1", "namespace": "dayu"},
+            "spec": {},
+        }
+    ]
+
+    backend_core_instance.annotate_runtime_docs(
+        docs,
+        install_id="install-1",
+        source_label="source-config-0",
+        policy_id="fixed",
+    )
+
+    metadata = docs[0]["metadata"]
+    assert metadata["labels"]["dayu.io/runtime-scope"] == "installation"
+    assert metadata["labels"]["dayu.io/component"] == "processor"
+    assert metadata["labels"]["dayu.io/install-id"] == "install-1"
+    assert metadata["annotations"]["dayu.io/source-label"] == "source-config-0"
+    assert metadata["annotations"]["dayu.io/policy-id"] == "fixed"
+
+    monkeypatch.setattr(
+        backend_core_module.KubeHelper,
+        "read_configmap",
+        staticmethod(lambda namespace, name: {"docs_yaml": yaml.safe_dump_all(docs)}),
+    )
+    recovered_docs = backend_core_instance.docs_from_install_record()
+
+    assert recovered_docs[0]["metadata"]["name"] == "processor-face-edgex1"
+    assert recovered_docs[0]["metadata"]["labels"]["dayu.io/runtime-scope"] == "installation"
+
+
+@pytest.mark.unit
+def test_runtime_doc_reader_prefers_kubernetes_label_discovery(backend_core_instance, monkeypatch):
+    cluster_docs = [
+        {
+            "apiVersion": "sedna.io/v1alpha1",
+            "kind": "JointMultiEdgeService",
+            "metadata": {"name": "scheduler", "namespace": "dayu"},
+            "spec": {},
+        }
+    ]
+    file_docs = [
+        {
+            "apiVersion": "sedna.io/v1alpha1",
+            "kind": "JointMultiEdgeService",
+            "metadata": {"name": "processor-file", "namespace": "dayu"},
+            "spec": {},
+        }
+    ]
+
+    monkeypatch.setattr(backend_core_instance, "list_runtime_component_docs", lambda: copy.deepcopy(cluster_docs))
+    monkeypatch.setattr(backend_core_instance, "read_component_yaml", lambda: copy.deepcopy(file_docs))
+
+    assert backend_core_instance.read_runtime_component_docs()[0]["metadata"]["name"] == "scheduler"
 
 
 @pytest.mark.unit

@@ -129,6 +129,111 @@ def test_kube_helper_delete_custom_resources_covers_success_failure_and_file_dis
 
 
 @pytest.mark.unit
+def test_kube_helper_delete_custom_resources_ignores_not_found(kube_helper_module, monkeypatch):
+    class NotFound(Exception):
+        status = 404
+
+    doc = make_doc(with_service_config=True)
+    monkeypatch.setattr(
+        kube_helper_module.client,
+        "CoreV1Api",
+        lambda: SimpleNamespace(
+            delete_namespaced_service=lambda name=None, namespace=None: (_ for _ in ()).throw(NotFound("missing service"))
+        ),
+    )
+    monkeypatch.setattr(
+        kube_helper_module.client,
+        "AppsV1Api",
+        lambda: SimpleNamespace(
+            list_namespaced_deployment=lambda namespace: SimpleNamespace(
+                items=[SimpleNamespace(metadata=SimpleNamespace(name="processor-demo-edge-a"))]
+            ),
+            delete_namespaced_deployment=lambda name=None, namespace=None: (_ for _ in ()).throw(
+                NotFound("missing deployment")
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        kube_helper_module.client,
+        "CustomObjectsApi",
+        lambda: SimpleNamespace(
+            delete_namespaced_custom_object=lambda **kwargs: (_ for _ in ()).throw(NotFound("missing cr"))
+        ),
+    )
+    monkeypatch.setattr(kube_helper_module.KubeHelper, "get_crd_plural", staticmethod(lambda kind: "jointmultiedgeservices"))
+
+    assert kube_helper_module.KubeHelper.delete_custom_resources([doc]) is True
+
+
+@pytest.mark.unit
+def test_kube_helper_configmap_state_and_runtime_resource_listing(kube_helper_module, monkeypatch):
+    class NotFound(Exception):
+        status = 404
+
+    store = {}
+    list_calls = []
+
+    def replace_configmap(name=None, namespace=None, body=None):
+        key = (namespace, name)
+        if key not in store:
+            raise NotFound("missing configmap")
+        store[key] = body
+
+    def create_configmap(namespace=None, body=None):
+        store[(namespace, body.metadata.name)] = body
+
+    def read_configmap(name=None, namespace=None):
+        key = (namespace, name)
+        if key not in store:
+            raise NotFound("missing configmap")
+        return store[key]
+
+    def delete_configmap(name=None, namespace=None):
+        key = (namespace, name)
+        if key not in store:
+            raise NotFound("missing configmap")
+        del store[key]
+
+    monkeypatch.setattr(
+        kube_helper_module.client,
+        "CoreV1Api",
+        lambda: SimpleNamespace(
+            replace_namespaced_config_map=replace_configmap,
+            create_namespaced_config_map=create_configmap,
+            read_namespaced_config_map=read_configmap,
+            delete_namespaced_config_map=delete_configmap,
+        ),
+    )
+    monkeypatch.setattr(
+        kube_helper_module.client,
+        "CustomObjectsApi",
+        lambda: SimpleNamespace(
+            list_namespaced_custom_object=lambda **kwargs: list_calls.append(kwargs)
+            or {"items": [{"metadata": {"name": "scheduler"}}]}
+        ),
+    )
+    monkeypatch.setattr(kube_helper_module.KubeHelper, "get_crd_plural", staticmethod(lambda kind: "jointmultiedgeservices"))
+
+    assert kube_helper_module.KubeHelper.upsert_configmap("dayu", "dayu-runtime-install-state", {"state": "installed"})
+    assert kube_helper_module.KubeHelper.read_configmap("dayu", "dayu-runtime-install-state") == {"state": "installed"}
+
+    assert kube_helper_module.KubeHelper.upsert_configmap("dayu", "dayu-runtime-install-state", {"state": "failed"})
+    assert kube_helper_module.KubeHelper.read_configmap("dayu", "dayu-runtime-install-state") == {"state": "failed"}
+
+    items = kube_helper_module.KubeHelper.list_custom_resources(
+        "dayu",
+        "sedna.io/v1alpha1",
+        "JointMultiEdgeService",
+        label_selector="dayu.io/runtime-scope=installation",
+    )
+    assert items == [{"metadata": {"name": "scheduler"}}]
+    assert list_calls[0]["label_selector"] == "dayu.io/runtime-scope=installation"
+
+    assert kube_helper_module.KubeHelper.delete_configmap("dayu", "dayu-runtime-install-state")
+    assert kube_helper_module.KubeHelper.delete_configmap("dayu", "dayu-runtime-install-state")
+
+
+@pytest.mark.unit
 def test_kube_helper_runtime_helpers_cover_missing_resources_and_api_exceptions(kube_helper_module, monkeypatch):
     class DummyApiException(Exception):
         pass
