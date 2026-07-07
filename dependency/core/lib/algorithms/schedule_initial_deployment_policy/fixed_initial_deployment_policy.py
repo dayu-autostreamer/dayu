@@ -15,7 +15,9 @@ class FixedInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
         Args:
             policy: {'service1':['node1', 'node2'], 'service2':['node2', 'node3']}
         """
-        if policy is None or isinstance(policy, dict):
+        if policy is None:
+            self.fixed_policy = {}
+        elif isinstance(policy, dict):
             self.fixed_policy = policy
         elif isinstance(policy, str):
             self.fixed_policy = ConfigLoader.load(Context.get_file_path(policy))
@@ -35,7 +37,10 @@ class FixedInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
                 intersection_nodes = list(set(deploy_plan[service]) & set(node_set))
                 deploy_plan[service] = intersection_nodes
             else:
-                deploy_plan[service] = list(node_set)
+                LOGGER.warning(
+                    f"[Initial Deployment] (source {source_id}) Service '{service}' is missing in fixed policy; "
+                    "skip edge deployment for this service."
+                )
 
 
         LOGGER.info(f'[Initial Deployment] (source {source_id}) Deploy policy: {deploy_plan}')

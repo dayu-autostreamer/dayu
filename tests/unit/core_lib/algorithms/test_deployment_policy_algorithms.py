@@ -68,7 +68,10 @@ def test_deployment_policy_bases_and_fixed_policies_cover_loading_and_defaults(m
     deploy_plan = initial_policy(build_deployment_info())
     assert loaded_paths == ["/runtime/policy.yaml"]
     assert sorted(deploy_plan["detector"]) == ["edge-a"]
-    assert sorted(deploy_plan["tracker"]) == ["edge-a", "edge-b"]
+    assert "tracker" not in deploy_plan
+
+    empty_initial_policy = fixed_initial_module.FixedInitialDeploymentPolicy(SimpleNamespace(), 0)
+    assert empty_initial_policy(build_deployment_info()) == {}
 
     redeploy_paths = []
     monkeypatch.setattr(
