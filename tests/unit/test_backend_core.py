@@ -59,12 +59,12 @@ def test_check_dag_validates_service_input_output_contracts(backend_core_instanc
     assert "Node connection mismatch" in invalid_msg
 
     fan_in_dag = {
-        "_start": ["traffic-object-detection", "road-context-segmentation"],
-        "traffic-object-detection": {
-            "id": "traffic-object-detection",
+        "_start": ["traffic-detection", "road-context-segmentation"],
+        "traffic-detection": {
+            "id": "traffic-detection",
             "prev": [],
             "succ": [
-                "vehicle-reidentification-tracking",
+                "vehicle-tracking",
                 "vehicle-attribute-recognition",
             ],
         },
@@ -73,21 +73,21 @@ def test_check_dag_validates_service_input_output_contracts(backend_core_instanc
             "prev": [],
             "succ": ["vehicle-trajectory-prediction"],
         },
-        "vehicle-reidentification-tracking": {
-            "id": "vehicle-reidentification-tracking",
-            "prev": ["traffic-object-detection"],
+        "vehicle-tracking": {
+            "id": "vehicle-tracking",
+            "prev": ["traffic-detection"],
             "succ": ["vehicle-trajectory-prediction"],
         },
         "vehicle-attribute-recognition": {
             "id": "vehicle-attribute-recognition",
-            "prev": ["traffic-object-detection"],
+            "prev": ["traffic-detection"],
             "succ": ["vehicle-trajectory-prediction"],
         },
         "vehicle-trajectory-prediction": {
             "id": "vehicle-trajectory-prediction",
             "prev": [
                 "road-context-segmentation",
-                "vehicle-reidentification-tracking",
+                "vehicle-tracking",
                 "vehicle-attribute-recognition",
             ],
             "succ": [],
@@ -144,10 +144,10 @@ def test_structured_traffic_example_dag_and_templates_remain_flexible(backend_co
     from core.lib.common import YamlOps
 
     repo_root = Path(__file__).resolve().parents[2]
-    example = YamlOps.read_yaml(repo_root / "config" / "application_dags" / "traffic_risk_monitoring.dag")
+    example = YamlOps.read_yaml(repo_root / "config" / "application_dags" / "driving_risk_perception.dag")
     assert example["format"] == "dayu.application-dag"
     assert example["version"] == 1
-    assert example["dag_name"] == "traffic risk monitoring"
+    assert example["dag_name"] == "driving risk perception"
     assert set(example["layout"]["nodes"]) == set(example["dag"]) - {"_start"}
 
     state, msg = backend_core_instance.check_dag(example["dag"])
@@ -155,15 +155,15 @@ def test_structured_traffic_example_dag_and_templates_remain_flexible(backend_co
     assert msg == "DAG validation passed"
 
     structured_services = {
-        "traffic-object-detection",
+        "traffic-detection",
         "road-context-segmentation",
         "traffic-signal-recognition",
-        "vehicle-reidentification-tracking",
+        "vehicle-tracking",
         "vehicle-attribute-recognition",
         "vehicle-trajectory-prediction",
-        "pedestrian-cyclist-pose-estimation",
-        "pedestrian-cyclist-intent-recognition",
-        "traffic-risk-graph-inference",
+        "pedestrian-pose-estimation",
+        "pedestrian-intent-recognition",
+        "risk-graph-generation",
     }
     assert structured_services.issubset(set(example["dag"]) - {"_start"})
 

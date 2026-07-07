@@ -71,15 +71,15 @@ def build_visualization_task():
 
 def build_service_overlay_task():
     service_names = [
-        "traffic-object-detection",
+        "traffic-detection",
         "road-context-segmentation",
         "traffic-signal-recognition",
-        "vehicle-reidentification-tracking",
+        "vehicle-tracking",
         "vehicle-attribute-recognition",
         "vehicle-trajectory-prediction",
-        "pedestrian-cyclist-pose-estimation",
-        "pedestrian-cyclist-intent-recognition",
-        "traffic-risk-graph-inference",
+        "pedestrian-pose-estimation",
+        "pedestrian-intent-recognition",
+        "risk-graph-generation",
     ]
     dag_dict = {}
     for index, service_name in enumerate(service_names):
@@ -95,8 +95,8 @@ def build_service_overlay_task():
         file_path="sample.mp4",
     )
 
-    task.get_service("traffic-object-detection").set_content_data({
-        "service": "traffic-object-detection",
+    task.get_service("traffic-detection").set_content_data({
+        "service": "traffic-detection",
         "outputs": {"bbox": [{"frame_index": 0, "items": [
             {"bbox": [10, 20, 42, 60], "label": "car", "score": 0.91, "object_id": "car-1"},
             {"bbox": [70, 18, 78, 68], "label": "pedestrian", "score": 0.88, "object_id": "person-1"},
@@ -119,8 +119,8 @@ def build_service_overlay_task():
         ]}]},
         "profile": content_profile(),
     })
-    task.get_service("vehicle-reidentification-tracking").set_content_data({
-        "service": "vehicle-reidentification-tracking",
+    task.get_service("vehicle-tracking").set_content_data({
+        "service": "vehicle-tracking",
         "outputs": {"track": [{"frame_index": None, "items": [
             {"track_id": "vehicle-1", "bboxes": [[10, 22, 40, 60], [16, 22, 46, 60]], "frames": [0, 1],
              "direction": "eastbound", "speed_px_per_s": 6.2, "source_object_id": "car-1"},
@@ -143,23 +143,23 @@ def build_service_overlay_task():
         ]}]},
         "profile": content_profile(),
     })
-    task.get_service("pedestrian-cyclist-pose-estimation").set_content_data({
-        "service": "pedestrian-cyclist-pose-estimation",
+    task.get_service("pedestrian-pose-estimation").set_content_data({
+        "service": "pedestrian-pose-estimation",
         "outputs": {"pose": [{"frame_index": 0, "items": [
             {"person_id": "person-1", "bbox": [70, 18, 78, 68], "orientation": "toward-road",
              "keypoints": [[74, 24, 0.9], [72, 36, 0.8], [76, 36, 0.8], [72, 62, 0.8], [76, 62, 0.8]]},
         ]}]},
         "profile": content_profile(),
     })
-    task.get_service("pedestrian-cyclist-intent-recognition").set_content_data({
-        "service": "pedestrian-cyclist-intent-recognition",
+    task.get_service("pedestrian-intent-recognition").set_content_data({
+        "service": "pedestrian-intent-recognition",
         "outputs": {"text": [{"frame_index": None, "items": [
             {"person_id": "person-1", "intent": "likely_to_cross", "text": "likely_to_cross", "confidence": 0.82},
         ]}]},
         "profile": content_profile(),
     })
-    task.get_service("traffic-risk-graph-inference").set_content_data({
-        "service": "traffic-risk-graph-inference",
+    task.get_service("risk-graph-generation").set_content_data({
+        "service": "risk-graph-generation",
         "outputs": {"graph": [{"frame_index": None, "items": [
             {"nodes": [{"id": "vehicle-1"}, {"id": "person-1"}],
              "edges": [{"source": "vehicle-1", "target": "person-1"}],
@@ -435,15 +435,15 @@ def test_multiple_roi_visualizer_uses_default_image_when_rendering_fails(monkeyp
 def test_driving_perception_visualization_config_uses_registered_hooks():
     config = YamlOps.read_yaml("config/visualization_configs/driving_perception_visualization_config.yaml")
     expected_services = {
-        "traffic-object-detection",
+        "traffic-detection",
         "road-context-segmentation",
         "traffic-signal-recognition",
-        "vehicle-reidentification-tracking",
+        "vehicle-tracking",
         "vehicle-attribute-recognition",
         "vehicle-trajectory-prediction",
-        "pedestrian-cyclist-pose-estimation",
-        "pedestrian-cyclist-intent-recognition",
-        "traffic-risk-graph-inference",
+        "pedestrian-pose-estimation",
+        "pedestrian-intent-recognition",
+        "risk-graph-generation",
     }
     image_services = set()
 
@@ -490,7 +490,7 @@ def test_service_frame_visualizers_render_structured_outputs(monkeypatch):
     visualizers = [
         bbox_frame_visualizer_module.BBoxFrameVisualizer(
             variables=["image"],
-            service="traffic-object-detection",
+            service="traffic-detection",
             output="bbox",
             label_fields=["label", "score"],
         ),
@@ -507,7 +507,7 @@ def test_service_frame_visualizers_render_structured_outputs(monkeypatch):
         ),
         track_frame_visualizer_module.TrackFrameVisualizer(
             variables=["image"],
-            service="vehicle-reidentification-tracking",
+            service="vehicle-tracking",
             output="track",
         ),
         bbox_frame_visualizer_module.BBoxFrameVisualizer(
@@ -521,30 +521,30 @@ def test_service_frame_visualizers_render_structured_outputs(monkeypatch):
             variables=["image"],
             service="vehicle-trajectory-prediction",
             output="trajectory",
-            track_service="vehicle-reidentification-tracking",
+            track_service="vehicle-tracking",
         ),
         pose_frame_visualizer_module.PoseFrameVisualizer(
             variables=["image"],
-            service="pedestrian-cyclist-pose-estimation",
+            service="pedestrian-pose-estimation",
             output="pose",
         ),
         text_frame_visualizer_module.TextFrameVisualizer(
             variables=["image"],
-            service="pedestrian-cyclist-intent-recognition",
+            service="pedestrian-intent-recognition",
             output="text",
             label_fields=["intent", "confidence"],
-            anchor_service="pedestrian-cyclist-pose-estimation",
+            anchor_service="pedestrian-pose-estimation",
             anchor_output="pose",
             anchor_key="person_id",
         ),
         event_frame_visualizer_module.EventFrameVisualizer(
             variables=["image"],
-            service="traffic-risk-graph-inference",
+            service="risk-graph-generation",
             output="graph",
         ),
         bbox_frame_visualizer_module.BBoxFrameVisualizer(
             variables=["image"],
-            service="traffic-object-detection",
+            service="traffic-detection",
             output="missing",
         ),
     ]

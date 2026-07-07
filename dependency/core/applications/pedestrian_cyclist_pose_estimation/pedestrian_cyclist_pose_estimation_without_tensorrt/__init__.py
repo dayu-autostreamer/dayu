@@ -1,3 +1,0 @@
-from .pedestrian_cyclist_pose_estimation_mmpose import PedestrianCyclistPoseEstimation as PedestrianCyclistPoseEstimationWithoutTensorRT
-
-__all__ = ['PedestrianCyclistPoseEstimationWithoutTensorRT']

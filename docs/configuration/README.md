@@ -99,18 +99,18 @@ The DAG orchestration UI can import and export `.dag` files. A `.dag` file is JS
   "version": 1,
   "dag_name": "traffic risk monitoring",
   "dag": {
-    "_start": ["traffic-object-detection"],
-    "traffic-object-detection": {
-      "id": "traffic-object-detection",
+    "_start": ["traffic-detection"],
+    "traffic-detection": {
+      "id": "traffic-detection",
       "prev": [],
       "succ": [],
-      "service_id": "traffic-object-detection"
+      "service_id": "traffic-detection"
     }
   },
   "layout": {
     "direction": "LR",
     "nodes": {
-      "traffic-object-detection": { "x": 0, "y": 120 }
+      "traffic-detection": { "x": 0, "y": 120 }
     }
   }
 }
@@ -119,7 +119,7 @@ The DAG orchestration UI can import and export `.dag` files. A `.dag` file is JS
 `dag` is the backend-facing logical workflow. `layout` is optional and is used only by the frontend canvas to restore
 node positions. The current orchestration UI and backend validation use service ids as node ids, so each node key,
 `id`, and `service_id` should match. The repository includes a reviewable example at
-`config/application_dags/traffic_risk_monitoring.dag`.
+`config/application_dags/driving_risk_perception.dag`.
 
 ## Component Templates
 

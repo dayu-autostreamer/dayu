@@ -38,15 +38,15 @@ group "default" {
     "vehicle-detection",
     "exposure-identification",
     "category-identification",
-    "traffic-object-detection",
+    "traffic-detection",
     "road-context-segmentation",
     "traffic-signal-recognition",
-    "vehicle-reidentification-tracking",
+    "vehicle-tracking",
     "vehicle-attribute-recognition",
     "vehicle-trajectory-prediction",
-    "pedestrian-cyclist-pose-estimation",
-    "pedestrian-cyclist-intent-recognition",
-    "traffic-risk-graph-inference",
+    "pedestrian-pose-estimation",
+    "pedestrian-intent-recognition",
+    "risk-graph-generation",
   ]
 }
 
@@ -75,15 +75,15 @@ group "processors" {
     "vehicle-detection",
     "exposure-identification",
     "category-identification",
-    "traffic-object-detection",
+    "traffic-detection",
     "road-context-segmentation",
     "traffic-signal-recognition",
-    "vehicle-reidentification-tracking",
+    "vehicle-tracking",
     "vehicle-attribute-recognition",
     "vehicle-trajectory-prediction",
-    "pedestrian-cyclist-pose-estimation",
-    "pedestrian-cyclist-intent-recognition",
-    "traffic-risk-graph-inference",
+    "pedestrian-pose-estimation",
+    "pedestrian-intent-recognition",
+    "risk-graph-generation",
   ]
 }
 
@@ -120,15 +120,15 @@ group "all-images" {
     "vehicle-detection",
     "exposure-identification",
     "category-identification",
-    "traffic-object-detection",
+    "traffic-detection",
     "road-context-segmentation",
     "traffic-signal-recognition",
-    "vehicle-reidentification-tracking",
+    "vehicle-tracking",
     "vehicle-attribute-recognition",
     "vehicle-trajectory-prediction",
-    "pedestrian-cyclist-pose-estimation",
-    "pedestrian-cyclist-intent-recognition",
-    "traffic-risk-graph-inference",
+    "pedestrian-pose-estimation",
+    "pedestrian-intent-recognition",
+    "risk-graph-generation",
     "rtsp-server",
     "dayubase-default-amd64",
     "dayubase-default-arm64",
@@ -597,7 +597,7 @@ target "category-identification" {
   tags = ["${REGISTRY}/${REPO}/category-identification:${TAG}${variant.suffix}"]
 }
 
-target "traffic-object-detection" {
+target "traffic-detection" {
   inherits = ["_image-common"]
   matrix = {
     variant = [
@@ -619,15 +619,15 @@ target "traffic-object-detection" {
       },
     ]
   }
-  name = "traffic-object-detection-${variant.name}"
-  dockerfile = "build/traffic_object_detection.Dockerfile"
+  name = "traffic-detection-${variant.name}"
+  dockerfile = "build/traffic_detection.Dockerfile"
   platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
     TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/traffic-object-detection:${TAG}${variant.suffix}"]
+  tags = ["${REGISTRY}/${REPO}/traffic-detection:${TAG}${variant.suffix}"]
 }
 
 target "road-context-segmentation" {
@@ -696,7 +696,7 @@ target "traffic-signal-recognition" {
   tags = ["${REGISTRY}/${REPO}/traffic-signal-recognition:${TAG}${variant.suffix}"]
 }
 
-target "vehicle-reidentification-tracking" {
+target "vehicle-tracking" {
   inherits = ["_image-common"]
   matrix = {
     variant = [
@@ -718,15 +718,15 @@ target "vehicle-reidentification-tracking" {
       },
     ]
   }
-  name = "vehicle-reidentification-tracking-${variant.name}"
-  dockerfile = "build/vehicle_reidentification_tracking.Dockerfile"
+  name = "vehicle-tracking-${variant.name}"
+  dockerfile = "build/vehicle_tracking.Dockerfile"
   platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
     TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/vehicle-reidentification-tracking:${TAG}${variant.suffix}"]
+  tags = ["${REGISTRY}/${REPO}/vehicle-tracking:${TAG}${variant.suffix}"]
 }
 
 target "vehicle-attribute-recognition" {
@@ -795,7 +795,7 @@ target "vehicle-trajectory-prediction" {
   tags = ["${REGISTRY}/${REPO}/vehicle-trajectory-prediction:${TAG}${variant.suffix}"]
 }
 
-target "pedestrian-cyclist-pose-estimation" {
+target "pedestrian-pose-estimation" {
   inherits = ["_image-common"]
   matrix = {
     variant = [
@@ -817,18 +817,18 @@ target "pedestrian-cyclist-pose-estimation" {
       },
     ]
   }
-  name = "pedestrian-cyclist-pose-estimation-${variant.name}"
-  dockerfile = "build/pedestrian_cyclist_pose_estimation.Dockerfile"
+  name = "pedestrian-pose-estimation-${variant.name}"
+  dockerfile = "build/pedestrian_pose_estimation.Dockerfile"
   platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
     TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/pedestrian-cyclist-pose-estimation:${TAG}${variant.suffix}"]
+  tags = ["${REGISTRY}/${REPO}/pedestrian-pose-estimation:${TAG}${variant.suffix}"]
 }
 
-target "pedestrian-cyclist-intent-recognition" {
+target "pedestrian-intent-recognition" {
   inherits = ["_image-common"]
   matrix = {
     variant = [
@@ -850,18 +850,18 @@ target "pedestrian-cyclist-intent-recognition" {
       },
     ]
   }
-  name = "pedestrian-cyclist-intent-recognition-${variant.name}"
-  dockerfile = "build/pedestrian_cyclist_intent_recognition.Dockerfile"
+  name = "pedestrian-intent-recognition-${variant.name}"
+  dockerfile = "build/pedestrian_intent_recognition.Dockerfile"
   platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
     TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/pedestrian-cyclist-intent-recognition:${TAG}${variant.suffix}"]
+  tags = ["${REGISTRY}/${REPO}/pedestrian-intent-recognition:${TAG}${variant.suffix}"]
 }
 
-target "traffic-risk-graph-inference" {
+target "risk-graph-generation" {
   inherits = ["_image-common"]
   matrix = {
     variant = [
@@ -883,15 +883,15 @@ target "traffic-risk-graph-inference" {
       },
     ]
   }
-  name = "traffic-risk-graph-inference-${variant.name}"
-  dockerfile = "build/traffic_risk_graph_inference.Dockerfile"
+  name = "risk-graph-generation-${variant.name}"
+  dockerfile = "build/risk_graph_generation.Dockerfile"
   platforms = ["linux/amd64", "linux/arm64"]
   args = {
     REG = REGISTRY
     BASE_REPO = BASE_REPO
     TAG = "${BASE_TAG}${variant.suffix}"
   }
-  tags = ["${REGISTRY}/${REPO}/traffic-risk-graph-inference:${TAG}${variant.suffix}"]
+  tags = ["${REGISTRY}/${REPO}/risk-graph-generation:${TAG}${variant.suffix}"]
 }
 
 target "dayubase-default-amd64" {

@@ -72,15 +72,15 @@ Model/backend status belongs to service logs, health checks, or model manifests 
 
 | Service id | Form input | Form output | Non-TRT backend | Output content |
 | --- | --- | --- | --- | --- |
-| `traffic-object-detection` | `[frame]` | `[bbox]` | Ultralytics YOLO detection, with COCO traffic-class mapping | `bbox` records with item-level boxes, labels, scores, and object ids |
+| `traffic-detection` | `[frame]` | `[bbox]` | Ultralytics YOLO detection, with COCO traffic-class mapping | `bbox` records with item-level boxes, labels, scores, and object ids |
 | `road-context-segmentation` | `[frame]` | `[segmentation]` | OpenCV lane/drivable/crosswalk adapter; YOLOP checkpoint is staged and checksumable | `segmentation` records with item-level polygons or polylines |
 | `traffic-signal-recognition` | `[frame, bbox]` | `[text]` | Ultralytics YOLO traffic-light state detection | `text` records with item-level signal state text and source boxes |
-| `vehicle-reidentification-tracking` | `[bbox]` | `[track]` | IoU plus crop-histogram tracking adapter; FastReID checkpoint is staged and checksumable | `track` records with item-level track ids and history |
+| `vehicle-tracking` | `[bbox]` | `[track]` | IoU plus crop-histogram tracking adapter; FastReID checkpoint is staged and checksumable | `track` records with item-level track ids and history |
 | `vehicle-attribute-recognition` | `[bbox]` | `[attribute]` | EfficientNet-B0 checkpoint trained for vehicle type classification | `attribute` records with item-level vehicle attributes |
 | `vehicle-trajectory-prediction` | `[segmentation, track, attribute]` | `[trajectory]` | PIE-trained sequence GRU over normalized bbox history | `trajectory` records with item-level future points and risk hints |
-| `pedestrian-cyclist-pose-estimation` | `[bbox]` | `[pose]` | Optional MMPose RTMPose if `non_trt_config` is provided; geometric pose adapter otherwise | `pose` records with item-level keypoints and source boxes |
-| `pedestrian-cyclist-intent-recognition` | `[segmentation, pose]` | `[text]` | PIE-trained sequence GRU over bbox, motion, action, and look features | `text` records with item-level intent text and confidence |
-| `traffic-risk-graph-inference` | `[segmentation, text, trajectory]` | `[graph]` | DoTA-trained risk MLP over graph-derived tabular features | `graph` records with item-level nodes, edges, events, and summary |
+| `pedestrian-pose-estimation` | `[bbox]` | `[pose]` | Optional MMPose RTMPose if `non_trt_config` is provided; geometric pose adapter otherwise | `pose` records with item-level keypoints and source boxes |
+| `pedestrian-intent-recognition` | `[segmentation, pose]` | `[text]` | PIE-trained sequence GRU over bbox, motion, action, and look features | `text` records with item-level intent text and confidence |
+| `risk-graph-generation` | `[segmentation, text, trajectory]` | `[graph]` | DoTA-trained risk MLP over graph-derived tabular features | `graph` records with item-level nodes, edges, events, and summary |
 
 Model parameter staging is recorded in `.model/dag1_model_parameters.yaml`.
 
@@ -93,11 +93,11 @@ These hooks are categorized by drawing method instead of by service name:
 | --- | --- | --- |
 | `bbox_frame` | items with `bbox` plus labels or scores | object detection, signal recognition, vehicle attributes |
 | `segmentation_frame` | polygons and polylines | road context segmentation |
-| `track_frame` | track histories with `bboxes` | vehicle reidentification and tracking |
+| `track_frame` | track histories with `bboxes` | vehicle tracking |
 | `trajectory_frame` | predicted future points | vehicle trajectory prediction |
 | `pose_frame` | keypoints and optional boxes | pedestrian or cyclist pose estimation |
 | `text_frame` | text records, optionally anchored to another service by key | pedestrian or cyclist intent recognition |
-| `event_frame` | graph/event summaries | traffic risk graph inference |
+| `event_frame` | graph/event summaries | risk graph generation |
 
 `config/visualization_configs/driving_perception_visualization_config.yaml` includes one image visualization per service
 in the recommended traffic DAG plus supporting DAG/runtime visualizations. The hooks only name the service/output to
@@ -106,20 +106,20 @@ expose compatible structured outputs.
 
 ## Recommended Review DAG
 
-The repository includes this example as `config/application_dags/traffic_risk_monitoring.dag`.
+The repository includes this example as `config/application_dags/driving_risk_perception.dag`.
 
 ```mermaid
 flowchart LR
     Start["_start"]
-    T1["traffic-object-detection\nframe -> bbox"]
+    T1["traffic-detection\nframe -> bbox"]
     T2["road-context-segmentation\nframe -> segmentation"]
     T3["traffic-signal-recognition\nframe,bbox -> text"]
-    T4["vehicle-reidentification-tracking\nbbox -> track"]
+    T4["vehicle-tracking\nbbox -> track"]
     T5["vehicle-attribute-recognition\nbbox -> attribute"]
     T6["vehicle-trajectory-prediction\nsegmentation,track,attribute -> trajectory"]
-    T7["pedestrian-cyclist-pose-estimation\nbbox -> pose"]
-    T8["pedestrian-cyclist-intent-recognition\nsegmentation,pose -> text"]
-    T9["traffic-risk-graph-inference\nsegmentation,text,trajectory -> graph"]
+    T7["pedestrian-pose-estimation\nbbox -> pose"]
+    T8["pedestrian-intent-recognition\nsegmentation,pose -> text"]
+    T9["risk-graph-generation\nsegmentation,text,trajectory -> graph"]
 
     Start --> T1
     Start --> T2
@@ -140,12 +140,12 @@ flowchart LR
 
 The DAG is intentionally application-oriented:
 
-- `traffic-object-detection` and `road-context-segmentation` start from frames in parallel.
+- `traffic-detection` and `road-context-segmentation` start from frames in parallel.
 - Detection feeds services that need bounding boxes: signal recognition, vehicle tracking, vehicle attributes, and
   pedestrian or cyclist pose.
 - Road context joins tracking and attributes for trajectory prediction.
 - Road context joins pose for pedestrian or cyclist intent recognition.
-- Risk graph inference joins segmentation, signal text, trajectory, and intent text into graph-shaped event output.
+- Risk graph generation joins segmentation, signal text, trajectory, and intent text into graph-shaped event output.
 
 This is only a recommended application workflow. Because `input` and `output` labels are generic forms, users can still
 build other shape-compatible DAGs, including semantically odd combinations, when that helps experimentation.

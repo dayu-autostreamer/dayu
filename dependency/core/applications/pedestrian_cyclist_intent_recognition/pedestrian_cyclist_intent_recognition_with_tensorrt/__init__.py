@@ -1,4 +1,0 @@
-from .pedestrian_cyclist_intent_recognition_tensorrt8 import PedestrianCyclistIntentRecognitionTensorRT8
-from .pedestrian_cyclist_intent_recognition_tensorrt10 import PedestrianCyclistIntentRecognitionTensorRT10
-
-__all__ = ['PedestrianCyclistIntentRecognitionTensorRT8', 'PedestrianCyclistIntentRecognitionTensorRT10']

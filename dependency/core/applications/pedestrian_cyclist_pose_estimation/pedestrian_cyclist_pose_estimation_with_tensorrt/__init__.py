@@ -1,4 +1,0 @@
-from .pedestrian_cyclist_pose_estimation_tensorrt8 import PedestrianCyclistPoseEstimationTensorRT8
-from .pedestrian_cyclist_pose_estimation_tensorrt10 import PedestrianCyclistPoseEstimationTensorRT10
-
-__all__ = ['PedestrianCyclistPoseEstimationTensorRT8', 'PedestrianCyclistPoseEstimationTensorRT10']

@@ -134,13 +134,13 @@
   output: [bbox]
   yaml: model-switch-detection.yaml
 
-- id: traffic-object-detection
-  service: traffic-object-detection
-  name: traffic object detection
-  description: traffic object detection for vehicles, pedestrians, cyclists, lights, and signs
+- id: traffic-detection
+  service: traffic-detection
+  name: traffic detection
+  description: traffic detection for vehicles, pedestrians, cyclists, lights, and signs
   input: [frame]
   output: [bbox]
-  yaml: traffic-object-detection.yaml
+  yaml: traffic-detection.yaml
 
 - id: road-context-segmentation
   service: road-context-segmentation
@@ -158,13 +158,13 @@
   output: [text]
   yaml: traffic-signal-recognition.yaml
 
-- id: vehicle-reidentification-tracking
-  service: vehicle-reidentification-tracking
-  name: vehicle reidentification and tracking
-  description: vehicle reidentification embedding and multi-object tracking
+- id: vehicle-tracking
+  service: vehicle-tracking
+  name: vehicle tracking
+  description: vehicle appearance matching and multi-object tracking
   input: [bbox]
   output: [track]
-  yaml: vehicle-reidentification-tracking.yaml
+  yaml: vehicle-tracking.yaml
 
 - id: vehicle-attribute-recognition
   service: vehicle-attribute-recognition
@@ -182,26 +182,26 @@
   output: [trajectory]
   yaml: vehicle-trajectory-prediction.yaml
 
-- id: pedestrian-cyclist-pose-estimation
-  service: pedestrian-cyclist-pose-estimation
-  name: pedestrian cyclist pose estimation
+- id: pedestrian-pose-estimation
+  service: pedestrian-pose-estimation
+  name: pedestrian pose estimation
   description: pedestrian and cyclist skeleton estimation
   input: [bbox]
   output: [pose]
-  yaml: pedestrian-cyclist-pose-estimation.yaml
+  yaml: pedestrian-pose-estimation.yaml
 
-- id: pedestrian-cyclist-intent-recognition
-  service: pedestrian-cyclist-intent-recognition
-  name: pedestrian cyclist intent recognition
+- id: pedestrian-intent-recognition
+  service: pedestrian-intent-recognition
+  name: pedestrian intent recognition
   description: pedestrian and cyclist behavior and crossing intent recognition
   input: [segmentation, pose]
   output: [text]
-  yaml: pedestrian-cyclist-intent-recognition.yaml
+  yaml: pedestrian-intent-recognition.yaml
 
-- id: traffic-risk-graph-inference
-  service: traffic-risk-graph-inference
-  name: traffic risk graph inference
-  description: traffic risk and violation event graph inference
+- id: risk-graph-generation
+  service: risk-graph-generation
+  name: risk graph generation
+  description: traffic risk and violation event graph generation
   input: [segmentation, text, trajectory]
   output: [graph]
-  yaml: traffic-risk-graph-inference.yaml
+  yaml: risk-graph-generation.yaml

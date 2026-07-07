@@ -1,8 +1,8 @@
-- name: Traffic Object Detection Frame
+- name: Traffic Detection Frame
   type: image
-  variables: [ "Traffic Object Detection Frame" ]
+  variables: [ "Traffic Detection Frame" ]
   hook_name: bbox_frame
-  hook_params: '{"service": "traffic-object-detection", "output": "bbox", "frame_index": 0, "label_fields": ["label", "score"], "color": [0, 220, 0]}'
+  hook_params: '{"service": "traffic-detection", "output": "bbox", "frame_index": 0, "label_fields": ["label", "score"], "color": [0, 220, 0]}'
   save_expense: true
   size: 1
 - name: Road Context Segmentation Frame
@@ -19,11 +19,11 @@
   hook_params: '{"service": "traffic-signal-recognition", "output": "text", "frame_index": 0, "label_fields": ["state", "score"], "color": [0, 180, 255]}'
   save_expense: true
   size: 1
-- name: Vehicle Reidentification Tracking Frame
+- name: Vehicle Tracking Frame
   type: image
-  variables: [ "Vehicle Reidentification Tracking Frame" ]
+  variables: [ "Vehicle Tracking Frame" ]
   hook_name: track_frame
-  hook_params: '{"service": "vehicle-reidentification-tracking", "output": "track", "frame_index": 0}'
+  hook_params: '{"service": "vehicle-tracking", "output": "track", "frame_index": 0}'
   save_expense: true
   size: 1
 - name: Vehicle Attribute Recognition Frame
@@ -37,28 +37,28 @@
   type: image
   variables: [ "Vehicle Trajectory Prediction Frame" ]
   hook_name: trajectory_frame
-  hook_params: '{"service": "vehicle-trajectory-prediction", "output": "trajectory", "frame_index": 0, "track_service": "vehicle-reidentification-tracking"}'
+  hook_params: '{"service": "vehicle-trajectory-prediction", "output": "trajectory", "frame_index": 0, "track_service": "vehicle-tracking"}'
   save_expense: true
   size: 1
-- name: Pedestrian Cyclist Pose Estimation Frame
+- name: Pedestrian Pose Estimation Frame
   type: image
-  variables: [ "Pedestrian Cyclist Pose Estimation Frame" ]
+  variables: [ "Pedestrian Pose Estimation Frame" ]
   hook_name: pose_frame
-  hook_params: '{"service": "pedestrian-cyclist-pose-estimation", "output": "pose", "frame_index": 0}'
+  hook_params: '{"service": "pedestrian-pose-estimation", "output": "pose", "frame_index": 0}'
   save_expense: true
   size: 1
-- name: Pedestrian Cyclist Intent Recognition Frame
+- name: Pedestrian Intent Recognition Frame
   type: image
-  variables: [ "Pedestrian Cyclist Intent Recognition Frame" ]
+  variables: [ "Pedestrian Intent Recognition Frame" ]
   hook_name: text_frame
-  hook_params: '{"service": "pedestrian-cyclist-intent-recognition", "output": "text", "frame_index": 0, "label_fields": ["intent", "confidence"], "anchor_service": "pedestrian-cyclist-pose-estimation", "anchor_output": "pose", "anchor_key": "person_id"}'
+  hook_params: '{"service": "pedestrian-intent-recognition", "output": "text", "frame_index": 0, "label_fields": ["intent", "confidence"], "anchor_service": "pedestrian-pose-estimation", "anchor_output": "pose", "anchor_key": "person_id"}'
   save_expense: true
   size: 1
-- name: Traffic Risk Graph Inference Frame
+- name: Risk Graph Generation Frame
   type: image
-  variables: [ "Traffic Risk Graph Inference Frame" ]
+  variables: [ "Risk Graph Generation Frame" ]
   hook_name: event_frame
-  hook_params: '{"service": "traffic-risk-graph-inference", "output": "graph", "frame_index": 0}'
+  hook_params: '{"service": "risk-graph-generation", "output": "graph", "frame_index": 0}'
   save_expense: true
   size: 1
 - name: DAG Service Offloading

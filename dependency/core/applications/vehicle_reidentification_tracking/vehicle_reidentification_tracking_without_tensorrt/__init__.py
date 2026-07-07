@@ -1,3 +1,0 @@
-from .vehicle_reidentification_tracking_histogram import VehicleReidentificationTracking as VehicleReidentificationTrackingWithoutTensorRT
-
-__all__ = ['VehicleReidentificationTrackingWithoutTensorRT']

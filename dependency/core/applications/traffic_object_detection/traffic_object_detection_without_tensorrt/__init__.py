@@ -1,3 +1,0 @@
-from .traffic_object_detection_yolo import TrafficObjectDetection as TrafficObjectDetectionWithoutTensorRT
-
-__all__ = ['TrafficObjectDetectionWithoutTensorRT']

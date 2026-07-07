@@ -4,33 +4,33 @@ import numpy as np
 import pytest
 
 from core.lib.common import Context
-from core.applications.pedestrian_cyclist_intent_recognition.pedestrian_cyclist_intent_recognition import (
-    PedestrianCyclistIntentRecognition,
+from core.applications.pedestrian_intent_recognition.pedestrian_intent_recognition import (
+    PedestrianIntentRecognition,
 )
-from core.applications.pedestrian_cyclist_pose_estimation.pedestrian_cyclist_pose_estimation import (
-    PedestrianCyclistPoseEstimation,
+from core.applications.pedestrian_pose_estimation.pedestrian_pose_estimation import (
+    PedestrianPoseEstimation,
 )
 from core.applications.road_context_segmentation.road_context_segmentation import RoadContextSegmentation
-from core.applications.traffic_object_detection.traffic_object_detection import TrafficObjectDetection
-from core.applications.traffic_risk_graph_inference.traffic_risk_graph_inference import TrafficRiskGraphInference
+from core.applications.traffic_detection.traffic_detection import TrafficDetection
+from core.applications.risk_graph_generation.risk_graph_generation import RiskGraphGeneration
 from core.applications.traffic_signal_recognition.traffic_signal_recognition import TrafficSignalRecognition
 from core.applications.vehicle_attribute_recognition.vehicle_attribute_recognition import VehicleAttributeRecognition
-from core.applications.vehicle_reidentification_tracking.vehicle_reidentification_tracking import (
-    VehicleReidentificationTracking,
+from core.applications.vehicle_tracking.vehicle_tracking import (
+    VehicleTracking,
 )
 from core.applications.vehicle_trajectory_prediction.vehicle_trajectory_prediction import VehicleTrajectoryPrediction
 
 
 STRUCTURED_PROCESSOR_CLASSES = [
-    TrafficObjectDetection,
+    TrafficDetection,
     RoadContextSegmentation,
     TrafficSignalRecognition,
-    VehicleReidentificationTracking,
+    VehicleTracking,
     VehicleAttributeRecognition,
     VehicleTrajectoryPrediction,
-    PedestrianCyclistPoseEstimation,
-    PedestrianCyclistIntentRecognition,
-    TrafficRiskGraphInference,
+    PedestrianPoseEstimation,
+    PedestrianIntentRecognition,
+    RiskGraphGeneration,
 ]
 
 EXPECTED_OUTPUT_KEYS = [
@@ -56,15 +56,15 @@ def content(service_name, outputs, frame_count=1):
 @pytest.mark.unit
 def test_structured_processor_exports_are_named_explicitly():
     modules = [
-        "traffic_object_detection",
+        "traffic_detection",
         "road_context_segmentation",
         "traffic_signal_recognition",
-        "vehicle_reidentification_tracking",
+        "vehicle_tracking",
         "vehicle_attribute_recognition",
         "vehicle_trajectory_prediction",
-        "pedestrian_cyclist_pose_estimation",
-        "pedestrian_cyclist_intent_recognition",
-        "traffic_risk_graph_inference",
+        "pedestrian_pose_estimation",
+        "pedestrian_intent_recognition",
+        "risk_graph_generation",
     ]
 
     for module_name, expected_class in zip(modules, STRUCTURED_PROCESSOR_CLASSES):
@@ -87,53 +87,53 @@ def test_structured_processors_are_independent_and_schema_free():
         "inputs": {},
     }
 
-    object_result = TrafficObjectDetection()(base_payload)
-    object_content = content("traffic-object-detection", object_result)
+    object_result = TrafficDetection()(base_payload)
+    object_content = content("traffic-detection", object_result)
     road_result = RoadContextSegmentation()(base_payload)
     road_content = content("road-context-segmentation", road_result)
     signal_result = TrafficSignalRecognition()({
         **base_payload,
-        "inputs": {"traffic-object-detection": object_content},
+        "inputs": {"traffic-detection": object_content},
     })
     signal_content = content("traffic-signal-recognition", signal_result)
-    tracking_result = VehicleReidentificationTracking()({
+    tracking_result = VehicleTracking()({
         **base_payload,
-        "inputs": {"traffic-object-detection": object_content},
+        "inputs": {"traffic-detection": object_content},
     })
-    tracking_content = content("vehicle-reidentification-tracking", tracking_result)
+    tracking_content = content("vehicle-tracking", tracking_result)
     attribute_result = VehicleAttributeRecognition()({
         **base_payload,
-        "inputs": {"traffic-object-detection": object_content},
+        "inputs": {"traffic-detection": object_content},
     })
     attribute_content = content("vehicle-attribute-recognition", attribute_result)
     trajectory_result = VehicleTrajectoryPrediction()({
         **base_payload,
         "inputs": {
             "road-context-segmentation": road_content,
-            "vehicle-reidentification-tracking": tracking_content,
+            "vehicle-tracking": tracking_content,
             "vehicle-attribute-recognition": attribute_content,
         },
     })
     trajectory_content = content("vehicle-trajectory-prediction", trajectory_result)
-    pose_result = PedestrianCyclistPoseEstimation()({
+    pose_result = PedestrianPoseEstimation()({
         **base_payload,
-        "inputs": {"traffic-object-detection": object_content},
+        "inputs": {"traffic-detection": object_content},
     })
-    pose_content = content("pedestrian-cyclist-pose-estimation", pose_result)
-    intent_result = PedestrianCyclistIntentRecognition()({
+    pose_content = content("pedestrian-pose-estimation", pose_result)
+    intent_result = PedestrianIntentRecognition()({
         **base_payload,
         "inputs": {
             "road-context-segmentation": road_content,
-            "pedestrian-cyclist-pose-estimation": pose_content,
+            "pedestrian-pose-estimation": pose_content,
         },
     })
-    intent_content = content("pedestrian-cyclist-intent-recognition", intent_result)
-    risk_result = TrafficRiskGraphInference()({
+    intent_content = content("pedestrian-intent-recognition", intent_result)
+    risk_result = RiskGraphGeneration()({
         **base_payload,
         "inputs": {
             "traffic-signal-recognition": signal_content,
             "vehicle-trajectory-prediction": trajectory_content,
-            "pedestrian-cyclist-intent-recognition": intent_content,
+            "pedestrian-intent-recognition": intent_content,
         },
     })
 
