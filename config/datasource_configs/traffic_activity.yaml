@@ -1,10 +1,10 @@
-source_name: "Traffic Cameras (Activity)"
+source_name: "Traffic Monitoring Cameras (Activity)"
 source_type: "video"
 source_mode: "http_video"
 source_list:
-  - name: "traffic_activity_camera"
+  - name: "traffic_monitoring_activity_camera"
     url: ""
-    dir: "scenario3/"
+    dir: "traffic_monitoring_activity/"
     metadata:
       resolution: "1080p"
       fps: 30

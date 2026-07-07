@@ -1,10 +1,10 @@
-source_name: "Traffic Cameras (Evening)"
+source_name: "Traffic Monitoring Cameras (Evening)"
 source_type: "video"
 source_mode: "http_video"
 source_list:
-  - name: "traffic_evening_camera"
+  - name: "traffic_monitoring_evening_camera"
     url: ""
-    dir: "scenario2/"
+    dir: "traffic_monitoring_evening/"
     metadata:
       resolution: "1080p"
       fps: 30
