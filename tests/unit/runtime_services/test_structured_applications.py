@@ -1,3 +1,5 @@
+import importlib
+
 import numpy as np
 import pytest
 
@@ -19,7 +21,7 @@ from core.applications.vehicle_reidentification_tracking.vehicle_reidentificatio
 from core.applications.vehicle_trajectory_prediction.vehicle_trajectory_prediction import VehicleTrajectoryPrediction
 
 
-APPLICATION_CLASSES = [
+STRUCTURED_PROCESSOR_CLASSES = [
     TrafficObjectDetection,
     RoadContextSegmentation,
     TrafficSignalRecognition,
@@ -52,8 +54,29 @@ def content(service_name, outputs, frame_count=1):
 
 
 @pytest.mark.unit
-def test_structured_applications_are_independent_and_schema_free():
-    assert all(cls.__bases__ == (object,) for cls in APPLICATION_CLASSES)
+def test_structured_processor_exports_are_named_explicitly():
+    modules = [
+        "traffic_object_detection",
+        "road_context_segmentation",
+        "traffic_signal_recognition",
+        "vehicle_reidentification_tracking",
+        "vehicle_attribute_recognition",
+        "vehicle_trajectory_prediction",
+        "pedestrian_cyclist_pose_estimation",
+        "pedestrian_cyclist_intent_recognition",
+        "traffic_risk_graph_inference",
+    ]
+
+    for module_name, expected_class in zip(modules, STRUCTURED_PROCESSOR_CLASSES):
+        module = importlib.import_module(f"core.applications.{module_name}")
+        assert module.__all__ == ["Structured_Processor"]
+        assert module.Structured_Processor is expected_class
+        assert not hasattr(module, "Application")
+
+
+@pytest.mark.unit
+def test_structured_processors_are_independent_and_schema_free():
+    assert all(cls.__bases__ == (object,) for cls in STRUCTURED_PROCESSOR_CLASSES)
 
     base_payload = {
         "task": {
@@ -135,7 +158,7 @@ def test_structured_applications_are_independent_and_schema_free():
 
 
 @pytest.mark.unit
-def test_structured_applications_resolve_weight_aliases(monkeypatch, tmp_path):
+def test_structured_processors_resolve_weight_aliases(monkeypatch, tmp_path):
     weight_file = tmp_path / "service_weight.pt"
     weight_file.write_bytes(b"weight")
 
@@ -144,20 +167,20 @@ def test_structured_applications_resolve_weight_aliases(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Context, "get_file_path", staticmethod(fake_get_file_path))
 
-    for application_cls in APPLICATION_CLASSES:
-        application = application_cls(non_trt_weights="service_weight.pt",
-                                      trt_weights="service_weight.engine",
-                                      trt_plugin_library="libplugins.so")
-        assert application.non_trt_weights == str(weight_file)
-        assert application.trt_weights.endswith("service_weight.engine")
-        assert application.trt_plugin_library.endswith("libplugins.so")
-        assert application.model.weights == str(weight_file)
-        assert application.model.model["exists"] is True
-        assert "loaded" in application.model.model
+    for structured_processor_cls in STRUCTURED_PROCESSOR_CLASSES:
+        structured_processor = structured_processor_cls(non_trt_weights="service_weight.pt",
+                                                        trt_weights="service_weight.engine",
+                                                        trt_plugin_library="libplugins.so")
+        assert structured_processor.non_trt_weights == str(weight_file)
+        assert structured_processor.trt_weights.endswith("service_weight.engine")
+        assert structured_processor.trt_plugin_library.endswith("libplugins.so")
+        assert structured_processor.model.weights == str(weight_file)
+        assert structured_processor.model.model["exists"] is True
+        assert "loaded" in structured_processor.model.model
 
 
 @pytest.mark.unit
-def test_structured_applications_tensor_rt_paths_are_explicitly_unimplemented(monkeypatch, tmp_path):
+def test_structured_processors_tensor_rt_paths_are_explicitly_unimplemented(monkeypatch, tmp_path):
     def fake_get_file_path(file_path):
         return str(tmp_path / file_path)
 
@@ -171,8 +194,8 @@ def test_structured_applications_tensor_rt_paths_are_explicitly_unimplemented(mo
     monkeypatch.setattr(Context, "get_file_path", staticmethod(fake_get_file_path))
     monkeypatch.setattr(Context, "get_parameter", classmethod(lambda cls, param, default=None, direct=True: fake_get_parameter(param, default, direct)))
 
-    for application_cls in APPLICATION_CLASSES:
+    for structured_processor_cls in STRUCTURED_PROCESSOR_CLASSES:
         with pytest.raises(NotImplementedError):
-            application_cls(non_trt_weights="service_weight.pt",
-                            trt_weights="service_weight.engine",
-                            trt_plugin_library="libplugins.so")
+            structured_processor_cls(non_trt_weights="service_weight.pt",
+                                     trt_weights="service_weight.engine",
+                                     trt_plugin_library="libplugins.so")

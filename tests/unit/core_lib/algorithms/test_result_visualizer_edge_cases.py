@@ -432,15 +432,33 @@ def test_multiple_roi_visualizer_uses_default_image_when_rendering_fails(monkeyp
 
 
 @pytest.mark.unit
-def test_traffic_service_frame_visualization_config_uses_registered_hooks():
-    config = YamlOps.read_yaml("config/visualization_configs/traffic_service_frame_visualization_config.yaml")
+def test_driving_perception_visualization_config_uses_registered_hooks():
+    config = YamlOps.read_yaml("config/visualization_configs/driving_perception_visualization_config.yaml")
+    expected_services = {
+        "traffic-object-detection",
+        "road-context-segmentation",
+        "traffic-signal-recognition",
+        "vehicle-reidentification-tracking",
+        "vehicle-attribute-recognition",
+        "vehicle-trajectory-prediction",
+        "pedestrian-cyclist-pose-estimation",
+        "pedestrian-cyclist-intent-recognition",
+        "traffic-risk-graph-inference",
+    }
+    image_services = set()
 
-    assert len(config) == 9
     for visualization in config:
-        assert visualization["type"] == "image"
         assert isinstance(visualization["variables"], list)
         assert ClassFactory.is_exists(ClassType.RESULT_VISUALIZER, visualization["hook_name"])
-        assert isinstance(ast.literal_eval(visualization["hook_params"]), dict)
+        hook_params = visualization.get("hook_params")
+        if hook_params:
+            hook_params = ast.literal_eval(hook_params)
+            assert isinstance(hook_params, dict)
+            service = hook_params.get("service")
+            if visualization["type"] == "image" and service in expected_services:
+                image_services.add(service)
+
+    assert image_services == expected_services
 
 
 @pytest.mark.unit

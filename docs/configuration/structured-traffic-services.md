@@ -9,9 +9,9 @@ the workflow definition.
 - Service catalog `input` and `output` labels describe payload form, not business meaning.
 - Use generic form labels such as `frame`, `bbox`, `text`, `segmentation`, `track`, `attribute`, `trajectory`, `pose`,
   and `graph`.
-- Processor templates keep `INPUT_SERVICES: []` for these services. With an empty list, `structured_processor` reads the
-  current DAG node's real predecessor services at runtime, which keeps user-defined DAG composition flexible.
-- Each application lives in its own `dependency/core/applications/<service>/` folder and exports `Application` through
+- `structured_processor` reads the current DAG node's real predecessor services at runtime, so input collection follows
+  the DAG the user submits instead of a service-local override parameter.
+- Each service implementation lives in its own `dependency/core/applications/<service>/` folder and exports `Structured_Processor` through
   that folder's `__init__.py`.
 - Service outputs use the same record shape for every label: each label maps to a list of records, and each record has
   `frame_index` plus an `items` list. Business-specific details belong inside each item.
@@ -20,7 +20,7 @@ the workflow definition.
 
 All services below use `PROCESSOR_NAME=structured_processor`.
 
-The processor calls each application with:
+The processor calls each `Structured_Processor` with:
 
 ```python
 {
@@ -36,7 +36,7 @@ The processor calls each application with:
 }
 ```
 
-Each application returns only service-specific outputs:
+Each `Structured_Processor` returns only service-specific outputs:
 
 ```python
 {
@@ -62,8 +62,8 @@ Each application returns only service-specific outputs:
 ```
 
 `structured_profile` stores the processor-created `profile` as scenario data for scheduler and debugging consumers.
-Each application follows the same wrapper pattern as the existing detector/classifier services: the top-level service
-accepts `trt_weights`, `trt_plugin_library`, `non_trt_weights`, and `device`, then selects
+Each service implementation follows the same wrapper pattern as the existing detector/classifier services: the top-level
+`Structured_Processor` accepts `trt_weights`, `trt_plugin_library`, `non_trt_weights`, and `device`, then selects
 `*_with_tensorrt` or `*_without_tensorrt` according to `USE_TENSORRT`. TensorRT classes are present as explicit stubs and
 raise `NotImplementedError` until engine implementations are added.
 Model/backend status belongs to service logs, health checks, or model manifests instead of per-task profile content.
@@ -99,10 +99,10 @@ These hooks are categorized by drawing method instead of by service name:
 | `text_frame` | text records, optionally anchored to another service by key | pedestrian or cyclist intent recognition |
 | `event_frame` | graph/event summaries | traffic risk graph inference |
 
-`config/visualization_configs/traffic_service_frame_visualization_config.yaml` configures one image visualization per
-service in the recommended traffic DAG. The hooks only name the service/output to inspect; they do not encode DAG
-membership. Users can upload or adapt the same config for any runtime DAG whose services expose compatible structured
-outputs.
+`config/visualization_configs/driving_perception_visualization_config.yaml` includes one image visualization per service
+in the recommended traffic DAG plus supporting DAG/runtime visualizations. The hooks only name the service/output to
+inspect; they do not encode DAG membership. Users can upload or adapt the same config for any runtime DAG whose services
+expose compatible structured outputs.
 
 ## Recommended Review DAG
 

@@ -1,3 +1,3 @@
-from .vehicle_trajectory_prediction import VehicleTrajectoryPrediction as Application
+from .vehicle_trajectory_prediction import VehicleTrajectoryPrediction as Structured_Processor
 
-__all__ = ["Application"]
+__all__ = ["Structured_Processor"]

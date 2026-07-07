@@ -403,8 +403,8 @@ def test_roi_classifier_processor_resets_cache_uses_roi_ids_and_handles_missing_
 
 
 @pytest.mark.unit
-def test_structured_processor_collects_named_inputs_and_saves_profile(monkeypatch):
-    class FakeApplication:
+def test_structured_processor_collects_dag_predecessor_inputs_and_saves_profile(monkeypatch):
+    class FakeStructuredProcessor:
         flops = 333.0
 
         def __init__(self):
@@ -416,14 +416,12 @@ def test_structured_processor_collects_named_inputs_and_saves_profile(monkeypatc
                 "graph": [{"frame_index": None, "items": [{"type": "near_miss"}]}],
             }
 
-    application = FakeApplication()
+    structured_processor = FakeStructuredProcessor()
     frames = [np.ones((4, 6, 3), dtype=np.uint8)]
 
     def fake_get_parameter(name, default=None, direct=True):
         if name == "SCENARIOS_EXTRACTORS":
             return ["structured_profile"]
-        if name == "INPUT_SERVICES":
-            return ["detector", "road"]
         return default
 
     def fake_get_algorithm(algorithm, al_name=None, **kwargs):
@@ -433,7 +431,11 @@ def test_structured_processor_collects_named_inputs_and_saves_profile(monkeypatc
 
     monkeypatch.setattr(structured_module.Context, "get_parameter", staticmethod(fake_get_parameter))
     monkeypatch.setattr(structured_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
-    monkeypatch.setattr(structured_module.Context, "get_instance", staticmethod(lambda name: application))
+    def fake_get_instance(name):
+        assert name == "Structured_Processor"
+        return structured_processor
+
+    monkeypatch.setattr(structured_module.Context, "get_instance", staticmethod(fake_get_instance))
     monkeypatch.setattr(structured_module.FileOps, "get_task_file_in_temp", staticmethod(lambda task: "payload.bin"))
     monkeypatch.setattr(structured_module.cv2, "VideoCapture", lambda path: FakeVideoCapture(frames))
     monkeypatch.setattr(structured_module, "Timer", DummyTimer)
@@ -483,8 +485,8 @@ def test_structured_processor_collects_named_inputs_and_saves_profile(monkeypatc
     result_task = processor(task)
 
     assert result_task is task
-    assert application.payload["inputs"]["detector"] == detector_content
-    assert application.payload["inputs"]["road"] == road_content
+    assert structured_processor.payload["inputs"]["detector"] == detector_content
+    assert structured_processor.payload["inputs"]["road"] == road_content
     assert task.get_current_content()["outputs"]["graph"] == [{"frame_index": None, "items": [{"type": "near_miss"}]}]
     assert task.get_scenario_data("structured") == {
         "structured_profile": content_profile()

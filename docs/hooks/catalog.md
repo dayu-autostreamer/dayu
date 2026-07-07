@@ -246,7 +246,7 @@ that appear in templates, environment variables, and visualization configs.
 | Generator schedule lifecycle        | `GEN_BSO_NAME`, `GEN_ASO_NAME`, `GEN_BSTO_NAME`                                                                                       |
 | Scheduler core                      | `SCH_CONFIG_EXTRACTION_NAME`, `SCH_SCENARIO_RETRIEVAL_NAME`, `SCH_POLICY_RETRIEVAL_NAME`, `SCH_STARTUP_POLICY_NAME`, `SCH_AGENT_NAME` |
 | Scheduler source/deployment helpers | `SCH_SELECTION_POLICY_NAME`, `SCH_INITIAL_DEPLOYMENT_POLICY_NAME`, `SCH_REDEPLOYMENT_POLICY_NAME`                                     |
-| Processor                           | `PROCESSOR_NAME`, `PRO_QUEUE_NAME`, `SCENARIOS_EXTRACTORS`                                                                            |
+| Processor                           | `PROCESSOR_NAME`, `STRUCTURED_PROCESSOR_PARAMETERS`, `PRO_QUEUE_NAME`, `SCENARIOS_EXTRACTORS`                                         |
 | Monitor                             | `MONITORS`                                                                                                                            |
 | Visualization                       | `hook_name` and optional `hook_params` in visualization YAML                                                                          |
 

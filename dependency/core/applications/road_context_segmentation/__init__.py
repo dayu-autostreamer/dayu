@@ -1,3 +1,3 @@
-from .road_context_segmentation import RoadContextSegmentation as Application
+from .road_context_segmentation import RoadContextSegmentation as Structured_Processor
 
-__all__ = ["Application"]
+__all__ = ["Structured_Processor"]

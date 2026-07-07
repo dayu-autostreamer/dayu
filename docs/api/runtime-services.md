@@ -48,10 +48,10 @@ Operational notes:
 - All processor implementations store inference content as `{"service", "outputs", "profile"}`. `outputs` is keyed by
   generic form labels such as `bbox`, `text`, `segmentation`, `track`, `attribute`, `trajectory`, `pose`, or `graph`;
   each label maps to records with `frame_index` and `items`.
-- `structured_processor` is a generic processor shell for services whose `Application` consumes upstream content envelopes
+- `structured_processor` is a generic processor shell for services whose `Structured_Processor` consumes upstream content envelopes
   and returns only service-specific `outputs`. The processor wraps those outputs with `service` and a compact
   `profile` containing `frame_count`.
-- Structured application services should not encode DAG membership or shared DAG schemas in their outputs. Users compose
+- Structured processor services should not encode DAG membership or shared DAG schemas in their outputs. Users compose
   services into DAGs at runtime through the service catalog and workflow definition.
 
 ## Scheduler Service

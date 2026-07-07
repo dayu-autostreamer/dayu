@@ -197,7 +197,7 @@ Common families:
 | Generator lifecycle | `GEN_BSO_NAME`, `GEN_ASO_NAME`, `GEN_BSTO_NAME` |
 | Generator data path | `GEN_FILTER_NAME`, `GEN_PROCESS_NAME`, `GEN_COMPRESS_NAME`, `GEN_GETTER_NAME`, `GEN_GETTER_FILTER_NAME` |
 | Scheduler | `SCH_CONFIG_EXTRACTION_NAME`, `SCH_AGENT_NAME`, `SCH_SELECTION_POLICY_NAME` |
-| Processor | `PROCESSOR_NAME`, `PRO_QUEUE_NAME`, `SCENARIOS_EXTRACTORS` |
+| Processor | `PROCESSOR_NAME`, `STRUCTURED_PROCESSOR_PARAMETERS`, `PRO_QUEUE_NAME`, `SCENARIOS_EXTRACTORS` |
 | Monitor | `MONITORS` |
 
 For the full hook catalog, see [`../hooks/catalog.md`](../hooks/catalog.md).

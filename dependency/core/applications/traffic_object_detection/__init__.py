@@ -1,3 +1,3 @@
-from .traffic_object_detection import TrafficObjectDetection as Application
+from .traffic_object_detection import TrafficObjectDetection as Structured_Processor
 
-__all__ = ["Application"]
+__all__ = ["Structured_Processor"]

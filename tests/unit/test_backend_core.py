@@ -1,4 +1,3 @@
-import ast
 import copy
 import gzip
 import importlib
@@ -175,8 +174,14 @@ def test_structured_traffic_example_dag_and_templates_remain_flexible(backend_co
             item["name"]: item["value"]
             for item in processor_yaml["pod-template"]["env"]
         }
+        assert set(env) == {
+            "PROCESSOR_NAME",
+            "STRUCTURED_PROCESSOR_PARAMETERS",
+            "SCENARIOS_EXTRACTORS",
+            "PRO_QUEUE_NAME",
+            "USE_TENSORRT",
+        }
         assert env["PROCESSOR_NAME"] == "structured_processor"
-        assert ast.literal_eval(env["INPUT_SERVICES"]) == []
 
 
 @pytest.mark.unit

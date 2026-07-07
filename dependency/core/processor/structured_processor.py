@@ -12,11 +12,7 @@ class StructuredProcessor(Processor):
     def __init__(self):
         super().__init__()
 
-        self.application = Context.get_instance('Application')
-        self.input_services = Context.get_parameter('INPUT_SERVICES', default='[]', direct=False) or []
-        if isinstance(self.input_services, str):
-            self.input_services = [self.input_services]
-
+        self.structured_processor = Context.get_instance('Structured_Processor')
         self.frame_size = None
 
     def __call__(self, task: Task):
@@ -43,8 +39,8 @@ class StructuredProcessor(Processor):
             'inputs': self._collect_inputs(task),
         }
 
-        with Timer(f'Structured Application / {task.get_flow_index()} / {len(image_list)} frame'):
-            result = self.application(payload)
+        with Timer(f'Structured Processor / {task.get_flow_index()} / {len(image_list)} frame'):
+            result = self.structured_processor(payload)
 
         outputs = convert_ndarray_to_list(result)
         self.validate_outputs(outputs)
@@ -72,9 +68,8 @@ class StructuredProcessor(Processor):
         return image_list
 
     def _collect_inputs(self, task: Task):
-        input_services = self.input_services or task.get_dag().get_prev_nodes(task.get_flow_index())
         inputs = {}
-        for service_name in input_services:
+        for service_name in task.get_dag().get_prev_nodes(task.get_flow_index()):
             try:
                 inputs[service_name] = task.get_service(service_name).get_content_data()
             except KeyError:
@@ -83,4 +78,4 @@ class StructuredProcessor(Processor):
 
     @property
     def flops(self):
-        return getattr(self.application, 'flops', 0)
+        return getattr(self.structured_processor, 'flops', 0)

@@ -1,3 +1,3 @@
-from .pedestrian_cyclist_pose_estimation import PedestrianCyclistPoseEstimation as Application
+from .pedestrian_cyclist_pose_estimation import PedestrianCyclistPoseEstimation as Structured_Processor
 
-__all__ = ["Application"]
+__all__ = ["Structured_Processor"]

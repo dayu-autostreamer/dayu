@@ -1,3 +1,3 @@
-from .pedestrian_cyclist_intent_recognition import PedestrianCyclistIntentRecognition as Application
+from .pedestrian_cyclist_intent_recognition import PedestrianCyclistIntentRecognition as Structured_Processor
 
-__all__ = ["Application"]
+__all__ = ["Structured_Processor"]
