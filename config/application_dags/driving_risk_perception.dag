@@ -1,7 +1,7 @@
 {
   "format": "dayu.application-dag",
   "version": 1,
-  "dag_name": "traffic risk monitoring",
+  "dag_name": "driving risk perception",
   "dag": {
     "_start": [
       "traffic-object-detection",
