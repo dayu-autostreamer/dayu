@@ -66,19 +66,26 @@ our [development tutorial](https://dayu-autostreamer.github.io/docs/developer-gu
 
 ## Implementation Documentation
 
-Dayu now keeps implementation-facing technical documentation in the repository, while the public website remains the
-best place for tutorials and end-user walkthroughs.
+Dayu uses two documentation surfaces:
+
+- the [project documentation site](https://dayu-autostreamer.github.io/docs/) for public onboarding, tutorials,
+  preparation, UI walkthroughs, case studies, and community pages
+- repository docs under [`docs/`](docs/README.md) for implementation-facing API contracts, templates, hooks,
+  datasource behavior, lifecycle details, tests, and maintainer guidance
 
 | If you want to...                                             | Start here                                                                                          |
 |---------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
+| follow end-user deployment tutorials                          | [project documentation site](https://dayu-autostreamer.github.io/docs/)                             |
+| get oriented in this repository                               | [`docs/repository-quickstart.md`](docs/repository-quickstart.md)                                    |
+| understand Dayu's core terms and runtime contracts            | [`docs/concepts.md`](docs/concepts.md)                                                              |
 | understand the system design                                  | [`docs/architecture/README.md`](docs/architecture/README.md)                                        |
 | understand how policies, templates, and env vars fit together | [`docs/configuration/README.md`](docs/configuration/README.md)                                      |
 | inspect backend and runtime APIs                              | [`docs/api/README.md`](docs/api/README.md)                                                          |
+| operate install, query, redeploy, or cleanup flows            | [`docs/operations/README.md`](docs/operations/README.md)                                            |
 | understand the hook model and built-in aliases                | [`docs/hooks/README.md`](docs/hooks/README.md) and [`docs/hooks/catalog.md`](docs/hooks/catalog.md) |
 | work on datasource playback and manifests                     | [`docs/datasource/README.md`](docs/datasource/README.md)                                            |
 | navigate the repository as a contributor                      | [`docs/development/README.md`](docs/development/README.md)                                          |
 | understand test layers and where to add coverage              | [`docs/testing/README.md`](docs/testing/README.md)                                                  |
-| follow end-user deployment tutorials                          | [project documentation site](https://dayu-autostreamer.github.io/docs/)                             |
 
 The repository docs index lives at [`docs/README.md`](docs/README.md).
 
@@ -189,7 +196,8 @@ If you want to contribute code, docs, or tests:
 
 - read [CONTRIBUTING](CONTRIBUTING.md) for the patch and review workflow
 - use the repository docs under [`docs/`](docs/README.md) as the implementation-facing reference
-- use the dayu [homepage](https://dayu-autostreamer.github.io) for tutorial-oriented content and end-user guidance
+- use the Dayu [documentation site](https://dayu-autostreamer.github.io/docs/) for tutorial-oriented content and
+  end-user guidance
 
 Thanks for the following contributors:
 

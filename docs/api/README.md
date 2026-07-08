@@ -13,6 +13,7 @@ This section documents the service interfaces used by Dayu. It follows the imple
 | Distributor | Stores task results, exposes incremental result queries, exports logs | FastAPI, internal | `dependency/core/distributor/distributor_server.py` |
 | HTTP video source | Per-source data feeder for simulated `http_video` sources | FastAPI, dynamic internal API | `datasource/http_video.py` |
 | RTSP stream source | Manifest-driven RTSP clip streamer for simulated `rtsp_video` sources | Internal process with RTSP output, no repository-managed HTTP API | `datasource/rtsp_video.py` |
+| V4L2 video source | Real-camera generator getter for `v4l2_video` datasource configs | Internal generator hook, no datasource-supervisor HTTP API | `dependency/core/lib/algorithms/data_getter/v4l2_video_getter.py` |
 | Datasource supervisor | Polls backend datasource state and starts or stops source processes | Internal loop, no public HTTP API | `datasource/datasource_server.py` |
 | Generator | Pulls source data, requests schedules, and submits tasks | Internal entrypoint, no public HTTP API | `dependency/core/generator/generator_server.py` |
 | Monitor | Samples resource data and posts it to scheduler | Internal loop, no public HTTP API | `dependency/core/monitor/monitor.py` |
@@ -59,6 +60,7 @@ flowchart LR
 ## Related Documents
 
 - [`../datasource/README.md`](../datasource/README.md): datasource dataset layout, manifest schema, and frame-indexing behavior shared by `http_video` and `rtsp_video`.
+- [`../operations/README.md`](../operations/README.md): install/query/uninstall lifecycle behavior around backend APIs.
 
 ## Stability Notes
 

@@ -47,8 +47,11 @@ At install time:
 This file is the root of the platform catalog. It defines:
 
 - namespace and image defaults
+- Kubernetes API cache TTL
+- file mount defaults
 - log export and retention defaults
 - datasource defaults
+- default cloud-side processor backup behavior
 - scheduler policy catalog import
 - service catalog import
 - default result/system visualization config import
@@ -59,7 +62,8 @@ If you need to understand what the frontend is browsing or what the backend can 
 
 This file tells Dayu which templates belong together as one installable policy family.
 
-Example:
+The current policy catalog is larger than the three examples below. Treat this table as a shape example, then inspect
+`template/scheduler_policies.yaml` for the exact current installable ids.
 
 | Policy id | Scheduler template | Dependent templates |
 | --- | --- | --- |
@@ -68,6 +72,19 @@ Example:
 | `hei` | `template/scheduler/hei.yaml` | `generator-base.yaml`, `controller-for-evaluation.yaml`, `distributor-base.yaml`, `monitor-base.yaml` |
 
 This is the main install-time switch between policy families.
+
+Current catalog families include:
+
+| Family | Policy ids |
+| --- | --- |
+| Static and simple baselines | `fixed`, `cloud-only-policy`, `edge-only-policy`, `dynamic-policy`, `fc` |
+| Video/configuration research baselines | `steady`, `madeye`, `adamec`, `gecko`, `casva`, `cevas`, `chameleon`, `crave`, `model-switch`, `deepva`, `offline-profiling`, `online-profiling` |
+| Hierarchical embodied intelligence | `hei`, `hei-macro-only`, `hei-micro-only`, `hei-synchronous` |
+| Hedger and ablations | `hedger`, `hedger-offloading-benchmark`, `hedger-deployment-benchmark`, `hedger-no-graph-encoder`, `hedger-flat`, `hedger-deployment-only`, `hedger-offloading-only` |
+
+Most entries use a `dependency:` map for generator/controller/distributor/monitor templates. A few legacy entries still
+use top-level `generator`, `controller`, `distributor`, and `monitor` keys; `TemplateHelper.load_policy_apply_yaml()`
+supports both shapes.
 
 ### `template/services.yaml`
 
@@ -179,6 +196,20 @@ That is why adding a new service usually requires updating both `template/servic
 Application code should remain service-local under `dependency/core/applications/<service>/`; DAG membership is decided by
 the user-selected workflow at runtime, not by hard-coded schema names inside the service implementation.
 
+## Processor Deployment Controls
+
+Processor manifests are generated per logical service and target node. For each service, `backend/template_helper.py`
+can create one cloud-only processor CR and one edge-only processor CR per selected edge node.
+
+`template/base.yaml` controls the default cloud processor backup:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `default-cloud-processor-backup` | `true` | Create one cloud-side backup processor for every logical service unless disabled. |
+
+When the field is `false`, backend skips default cloud backups but still honors an exact cloud hostname returned by a
+scheduler deployment plan. This keeps "no default backup" separate from "cloud is forbidden."
+
 ## Runtime Env Naming Conventions
 
 The hook system uses a consistent env-driven naming model.
@@ -212,6 +243,9 @@ Datasource configuration happens at two levels:
 | Source-runtime manifest | `<dataset>/http_video/manifest.json`, `<dataset>/rtsp_video/manifest.json` | Defines clip order, frame counts, and frame-index continuity for runtime playback |
 
 The backend-facing YAML says which logical sources exist. The manifest says how a concrete dataset is played.
+Repository datasource examples currently cover simulated `http_video`, simulated `rtsp_video`, and real-camera
+`v4l2_video` source modes. `v4l2_video` is selected by generator hook configuration and does not use the
+`http_video`/`rtsp_video` manifest layout.
 
 See [`../datasource/README.md`](../datasource/README.md) for the exact manifest contract.
 
@@ -241,3 +275,4 @@ When changing configuration surfaces, mature repositories keep the data model, c
 3. If you add a new hook alias, update templates or visualization configs that should expose it and document it in [`../hooks/catalog.md`](../hooks/catalog.md).
 4. If you change datasource config shape or manifest semantics, update both backend-facing examples and [`../datasource/README.md`](../datasource/README.md).
 5. If you change a backend-facing contract, update the API docs in [`../api/`](../api/README.md).
+6. If you change install, uninstall, redeployment, or cleanup behavior, update [`../operations/README.md`](../operations/README.md).

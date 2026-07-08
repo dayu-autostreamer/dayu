@@ -17,6 +17,8 @@
 - Update dockerfile building to support concise modification of ultra parameters.
 - Unify input/output interface format of processors (`processor`).
 
+---
+
 ## v1.3
 
 ### Features

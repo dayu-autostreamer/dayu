@@ -38,13 +38,17 @@ Implementation entrypoint: `dependency/core/processor/processor_server.py`
 | `POST` | `/predict_local` | Queue a task that does not require an uploaded file. | Form field `data` | Empty `200` response after background enqueue |
 | `POST` | `/predict_and_return` | Process a task synchronously and return the serialized result. | Multipart with `file` and serialized `data` | Serialized task string or `null` |
 | `GET` | `/queue_length` | Return current queue size. | None | Integer |
+| `POST` | `/queue_clear` | Preview or remove queued processor tasks. | Form field `data` with JSON such as `{"dry_run": true, "max_count": 10, "reason": "manual_queue_clear"}` | Queue clear summary with matched, cleared, remaining, and dropped task metadata |
 | `GET` | `/model_flops` | Return the processor model FLOPs value. | None | Numeric FLOPs value |
+| `GET` | `/model_memory` | Return the processor process RSS in bytes. | None | Integer memory usage |
 
 Operational notes:
 
 - `PROCESSOR_NAME` selects the processor implementation.
 - `PRO_QUEUE_NAME` selects the queue strategy.
 - A background thread drains the task queue and posts results back to controller through `/process_return_task`.
+- `/queue_clear` supports dry-run previews when the selected queue exposes `get_all_without_drop()`. Destructive clears
+  prefer a queue-level `drain(max_count=...)` method and otherwise fall back to repeated `get()` calls.
 - All processor implementations store inference content as `{"service", "outputs", "profile"}`. `outputs` is keyed by
   generic form labels such as `bbox`, `text`, `segmentation`, `track`, `attribute`, `trajectory`, `pose`, or `graph`;
   each label maps to records with `frame_index` and `items`.
@@ -145,6 +149,14 @@ The `/source` request JSON includes the generator-selected hook names:
 
 The service resolves those hook names dynamically, applies frame filtering, frame processing, and compression, then returns the generated file through `/<source-path>/file`.
 
+## V4L2 Video Getter
+
+Implementation entrypoint: `dependency/core/lib/algorithms/data_getter/v4l2_video_getter.py`
+
+`v4l2_video` is used for real-camera datasource configs such as `config/datasource_configs/real_camera.yaml`. It is a
+generator data getter rather than a datasource-supervisor service, so it does not expose a repository-managed HTTP API
+or use the `http_video`/`rtsp_video` manifest layout.
+
 ## Internal Non-HTTP Entry Points
 
 These runtime components are important for understanding the system but do not expose repository-managed public HTTP routes:
@@ -156,3 +168,4 @@ These runtime components are important for understanding the system but do not e
 | Datasource supervisor | Polls backend `/datasource_state` and starts or stops local source processes. | `datasource/datasource_server.py` |
 | RTSP stream source | Reads `rtsp_video/manifest.json` through `VideoDataset` and streams clips to the configured RTSP address. | `datasource/rtsp_video.py` |
 | Video dataset loader | Loads manifest-driven clip order, `video_root`, and frame-index metadata for both `http_video` and `rtsp_video`. | `datasource/video_dataset.py` |
+| V4L2 getter | Opens a local camera device from `source.url` and creates generator tasks directly. | `dependency/core/lib/algorithms/data_getter/v4l2_video_getter.py` |

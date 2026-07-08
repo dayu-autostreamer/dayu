@@ -134,11 +134,18 @@ For test-layer guidance, see [`../testing/README.md`](../testing/README.md).
 
 Repository quality improves fastest when docs stay close to code. For Dayu, treat docs updates as part of the feature:
 
+Dayu has a public Docusaurus documentation site and this repository `docs/` tree. Keep full end-user walkthroughs,
+installation narratives, UI screenshots, case studies, and community pages on the website. Keep code-coupled contracts,
+schemas, aliases, lifecycle details, test guidance, and maintainer notes in this repository. If a change needs both,
+write the tutorial flow on the website and link to the exact repository reference page for the low-level contract.
+
 | Change type | Update these docs |
 | --- | --- |
 | Route or response changes | `docs/api/` |
 | Hook lifecycle, aliases, or parameters | `docs/hooks/` |
 | Datasource manifest or playback changes | `docs/datasource/` |
+| Core vocabulary, task envelope, or DAG/service semantics | `docs/concepts.md` and the affected reference doc |
+| Install, uninstall, redeployment, or cleanup behavior | `docs/operations/README.md` |
 | Repository workflow, test strategy, or contributor path changes | `docs/development/` or `docs/testing/` |
 | Big-picture architecture or deployment composition changes | `docs/architecture/` and `docs/configuration/` |
 
@@ -147,7 +154,10 @@ Repository quality improves fastest when docs stay close to code. For Dayu, trea
 | If you are doing this... | Read this first |
 | --- | --- |
 | understanding the platform at a high level | [`../architecture/README.md`](../architecture/README.md) |
+| entering the repository for the first time | [`../repository-quickstart.md`](../repository-quickstart.md) |
+| aligning on Dayu terms and runtime contracts | [`../concepts.md`](../concepts.md) |
 | changing templates or env-driven behavior | [`../configuration/README.md`](../configuration/README.md) |
 | modifying backend or runtime APIs | [`../api/README.md`](../api/README.md) |
+| debugging install/query/cleanup behavior | [`../operations/README.md`](../operations/README.md) |
 | adding a policy or hook | [`../hooks/README.md`](../hooks/README.md) |
 | adding tests | [`../testing/README.md`](../testing/README.md) |

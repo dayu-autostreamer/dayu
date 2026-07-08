@@ -143,6 +143,9 @@ flowchart TD
 5. Expose it through a template, env variable, or visualization YAML.
 6. Update [`catalog.md`](./catalog.md) so the alias is documented.
 
+Before finishing, compare registered aliases against the catalog. A quick local check is to grep for
+`@ClassFactory.register` under `dependency/core/` and confirm every alias appears in [`catalog.md`](./catalog.md).
+
 ### Document constructor parameters
 
 - Use `<TYPE>_PARAMETERS` for env-driven hooks.
@@ -160,6 +163,8 @@ flowchart TD
 - `dependency/core/lib/algorithms/__init__.py` skips optional algorithm packages when a dependency is missing. A hook can exist in the repository but still be unavailable at runtime if its optional dependency is not installed.
 - Some hooks are research-oriented and rely on offline assets or model files under mounted volumes.
 - `obj_velocity` is registered as a scenario extractor alias but its implementation is currently a placeholder.
+- A scheduler hook can exist without being exposed as an installable policy in `template/scheduler_policies.yaml`. Treat
+  the policy catalog as the install-time source of truth.
 
 ## Next Step
 

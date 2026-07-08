@@ -12,6 +12,11 @@ Dayu is a cloud-edge stream analytics platform for DAG-based AI pipelines. Its c
 - executing multi-stage AI services across heterogeneous nodes
 - collecting result and system telemetry for visualization and export
 
+The core of the project is the separation between a stable runtime skeleton and dynamically selected policy/application
+behavior. Backend, generator, scheduler, controller, processor, distributor, and monitor keep the execution loop stable;
+templates, catalogs, and hooks decide which datasource, service DAG, processor implementations, scheduling policy, and
+visualizers are active for one install.
+
 In practice, Dayu combines three ideas:
 
 - a control plane for installation, datasource selection, runtime status, and visualization
@@ -28,6 +33,30 @@ Mature distributed systems are easier to reason about when you separate control-
 | Source plane | `datasource/datasource_server.py`, `datasource/http_video.py`, `datasource/rtsp_video.py`, `datasource/video_dataset.py` | Source simulation, manifest-driven playback, and source-process lifecycle |
 | Runtime collaboration plane | `generator`, `scheduler`, `controller`, `processor`, `distributor`, `monitor` | Task creation, scheduling, transport, inference, result persistence, and resource reporting |
 | Extension plane | `dependency/core/lib/algorithms/`, `dependency/core/applications/`, `template/processor/*.yaml` | Scheduling policies, runtime hooks, application services, visualization plugins |
+
+## Lifecycle At A Glance
+
+Dayu has a two-layer deployment lifecycle:
+
+```mermaid
+flowchart LR
+    START["dayu.sh ACTION=start"] --> SUPPORT["Support layer\nbackend/frontend/datasource/redis"]
+    SUPPORT --> INSTALL["Backend /install\npolicy + datasource + DAG + nodes"]
+    INSTALL --> RUNTIME["Runtime layer\ngenerator/scheduler/controller/processor/distributor/monitor"]
+    RUNTIME --> QUERY["Backend /submit_query"]
+    QUERY --> RESULTS["Result + system visualization"]
+    RUNTIME --> REDEPLOY["Processor redeployment loop"]
+    RUNTIME --> STOP["Backend /stop_service"]
+    STOP --> CLEAN["dayu.sh ACTION=stop fallback cleanup"]
+```
+
+Key boundaries:
+
+- `dayu.sh` starts the platform support layer. It does not choose an application DAG or scheduler policy.
+- Backend `/install` renders and applies runtime components for one selected policy/datasource/DAG/node mapping.
+- Backend `/submit_query` opens one datasource label and starts result collection.
+- Processor redeployment refreshes processor resources while preserving the same install session identity.
+- Backend `/stop_service` is the graceful runtime uninstall path; `dayu.sh ACTION=stop` also performs shell-level cleanup.
 
 ## The Five-Layer Model In The Repository
 
@@ -110,6 +139,24 @@ More concretely:
 | Distributor | durable result storage, incremental result queries, export files | operator workflows |
 | Monitor | resource sampling | task-level scheduling decisions |
 
+## Runtime Content Contract
+
+Processor services exchange a single content envelope:
+
+```json
+{
+  "service": "service-name",
+  "outputs": {},
+  "profile": {
+    "frame_count": 0
+  }
+}
+```
+
+This contract is intentionally narrow. Applications return service-specific `outputs`, and processor shells add the
+envelope and compact profile. The scheduler and visualizers should consume this shape instead of relying on
+service-local ad hoc fields.
+
 ## Extension Seams
 
 The repository is intentionally structured around a few long-lived extension seams:
@@ -123,7 +170,10 @@ The repository is intentionally structured around a few long-lived extension sea
 
 ## Where To Go Next
 
+- [`../repository-quickstart.md`](../repository-quickstart.md): repository-local orientation and validation path
+- [`../concepts.md`](../concepts.md): vocabulary shared by code, templates, APIs, and tests
 - [`../configuration/README.md`](../configuration/README.md): how the YAML and env configuration model works
 - [`../api/README.md`](../api/README.md): route-level API references
 - [`../hooks/README.md`](../hooks/README.md): hook lifecycle and registration model
+- [`../operations/README.md`](../operations/README.md): start/stop, install, query, redeploy, and cleanup behavior
 - [`../development/README.md`](../development/README.md): contributor-oriented repository map and workflows

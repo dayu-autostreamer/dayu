@@ -82,7 +82,7 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | `POST` | `/dag_workflow` | Add or update a DAG workflow. | JSON body with `dag_name` and `dag` | `{state, msg}` |
 | `DELETE` | `/dag_workflow` | Delete a DAG workflow by id. | JSON body with `dag_id` | `{state, msg}` |
 | `GET` | `/datasource` | List uploaded datasource configurations. | None | Array of datasource config objects |
-| `POST` | `/datasource` | Upload a datasource YAML config file. | `multipart/form-data` with `file` | `{state, msg}` |
+| `POST` | `/datasource` | Upload one or more datasource YAML config files. | `multipart/form-data` with `file` or files | `{state, msg, results}` |
 | `DELETE` | `/datasource` | Delete a datasource config by label. | JSON body with `source_label` | `{state, msg}` |
 
 ### Deployment and query lifecycle
@@ -94,7 +94,7 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | `GET` | `/install_state` | Check whether the stack is installed. | None | `{state: "install"|"uninstall"}` |
 | `POST` | `/submit_query` | Open datasource playback for a datasource label and begin result collection. | JSON body with `source_label` | `{state, msg}` |
 | `POST` | `/stop_query` | Stop datasource playback and clear in-memory task results. | None | `{state, msg}` |
-| `GET` | `/query_state` | Get query state for the current datasource. | None | `{state, source_label}` |
+| `GET` | `/query_state` | Get query state for the current datasource. | None | `{state: "open"|"close"|"disabled", source_label}` |
 | `GET` | `/source_list` | List active source ids and labels for the currently opened datasource. | None | Array of `{id, label}` |
 | `GET` | `/datasource_state` | Return the datasource supervisor view of the current datasource state. | None | `{state: "open"|"close", ...config}` |
 | `POST` | `/reset_datasource` | Force datasource state to closed in backend memory. | None | `null` |
@@ -183,8 +183,10 @@ The backend fetches scheduler resource data once, renders the configured system 
 
 - `POST /install` assumes the requested scheduler policy, datasource configuration, DAG workflow, and edge nodes all already exist and are mutually compatible.
 - `POST /stop_service` is retryable. Backend clears the local YAML cache and install-state ConfigMap only after runtime resource deletion succeeds; failed uninstall attempts keep the recorded state for the next retry.
+- `POST /datasource` returns `state: "partial"` when only some uploaded files are accepted. The `results` array carries per-file status details.
 - `POST /submit_query` only works after install-time deployment has completed and a datasource config exists for the requested label.
 - `POST /submit_query` is idempotent for the already-open datasource label. Opening a different datasource while one is active fails until `/stop_query` closes the current one.
 - `POST /stop_query` is idempotent and succeeds when the datasource is already closed.
+- `GET /query_state` returns `disabled` when `template/base.yaml` sets `datasource.use-simulation=false`.
 - `GET /source_list`, `GET /task_result`, and `GET /datasource_state` are runtime-state dependent. They return empty collections or closed state when no datasource is active.
 - Visualization config upload uses YAML validation in backend memory. The file is accepted only if each visualization entry contains a valid `name`, `type`, `variables`, and `size`, plus valid hook metadata when present.

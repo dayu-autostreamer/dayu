@@ -56,18 +56,24 @@ generator / scheduler / controller / processor / distributor / monitor 这组运
 
 ## 项目文档
 
-仓库内已经开始维护实现导向的技术文档；而公开文档站点仍然更适合教程和上手说明。
+Dayu 使用两个文档入口：
+
+- [项目文档站点](https://dayu-autostreamer.github.io/docs/)：负责公开上手、安装准备、教程、UI 操作说明、案例和社区页面
+- 仓库内 [`docs/`](docs/README.md)：负责贴近代码的 API 契约、模板配置、hook、datasource、生命周期、测试和维护者说明
 
 | 如果你想...                  | 从这里开始                                                                                             |
 |--------------------------|---------------------------------------------------------------------------------------------------|
+| 按教程部署和使用系统               | [项目文档站点](https://dayu-autostreamer.github.io/docs/)                                               |
+| 快速进入仓库和本地校验路径          | [`docs/repository-quickstart.md`](docs/repository-quickstart.md)                                  |
+| 理解 Dayu 的核心概念和运行时契约    | [`docs/concepts.md`](docs/concepts.md)                                                            |
 | 理解系统整体结构                 | [`docs/architecture/README.md`](docs/architecture/README.md)                                      |
 | 理解策略、模板与 env 变量如何组成部署    | [`docs/configuration/README.md`](docs/configuration/README.md)                                    |
 | 查看后端和运行时 API             | [`docs/api/README.md`](docs/api/README.md)                                                        |
+| 运维 install、query、redeploy 或清理流程 | [`docs/operations/README.md`](docs/operations/README.md)                                          |
 | 理解 hook 机制和内置 alias      | [`docs/hooks/README.md`](docs/hooks/README.md) 与 [`docs/hooks/catalog.md`](docs/hooks/catalog.md) |
 | 修改 datasource 与 manifest | [`docs/datasource/README.md`](docs/datasource/README.md)                                          |
 | 作为贡献者快速理解仓库结构            | [`docs/development/README.md`](docs/development/README.md)                                        |
 | 理解测试分层与新增测试位置            | [`docs/testing/README.md`](docs/testing/README.md)                                                |
-| 按教程部署和使用系统               | [项目文档站点](https://dayu-autostreamer.github.io/docs/)                                               |
 
 仓库内文档索引位于 [`docs/README.md`](docs/README.md)。
 
@@ -175,7 +181,7 @@ python tools/log_analysis.py --log path/to/exported-log.json.gz --slo-seconds 2.
 
 - 请先阅读 [CONTRIBUTING](CONTRIBUTING.md) 了解补丁和 review 流程
 - 以仓库内 [`docs/`](docs/README.md) 中的实现文档为主要技术参考
-- 以公开文档站点作为教程和终端用户说明的入口
+- 以 [项目文档站点](https://dayu-autostreamer.github.io/docs/) 作为教程和终端用户说明的入口
 
 感谢以下开发者对大禹系统的贡献：
 

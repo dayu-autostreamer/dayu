@@ -2,6 +2,16 @@
 
 This document mirrors the datasource runtime guide so datasource contracts are discoverable from the repository-level `docs/` index.
 
+Dayu currently has two datasource patterns:
+
+| Pattern | Source modes | Main paths |
+| --- | --- | --- |
+| Manifest-driven simulated playback | `http_video`, `rtsp_video` | `datasource/http_video.py`, `datasource/rtsp_video.py`, `datasource/video_dataset.py` |
+| Direct camera capture | `v4l2_video` | `dependency/core/lib/algorithms/data_getter/v4l2_video_getter.py` |
+
+The manifest contract below applies to `http_video` and `rtsp_video`. `v4l2_video` reads from a local camera device
+declared in the backend-facing datasource config and does not use dataset manifests.
+
 ## Unified Dataset Layout
 
 `http_video` and `rtsp_video` use the same dataset organization:
@@ -102,6 +112,12 @@ That means:
 - reads the ordered clip sequence from `rtsp_video/manifest.json`
 - streams the listed clips in manifest order to RTSP
 - reuses the same underlying `data/` media files as `http_video`
+
+### `v4l2_video`
+
+- reads frames from a local V4L2 device path such as `/dev/video0`
+- is configured by backend-facing datasource YAML, for example `config/datasource_configs/real_camera.yaml`
+- creates generator tasks directly and does not require a dataset `manifest.json`
 
 ## Recommended Practice
 
