@@ -85,7 +85,13 @@ def server_context(monkeypatch):
         raise AssertionError(f"Unexpected algorithm request: {algorithm}")
 
     monkeypatch.setattr(processor_server_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
-    monkeypatch.setattr(processor_server_module.Context, "get_parameter", staticmethod(lambda name: "9004"))
+
+    def fake_get_parameter(name, default=None, **kwargs):
+        if name == "PROCESSOR_SERVICE_NAME":
+            return default
+        return "9004"
+
+    monkeypatch.setattr(processor_server_module.Context, "get_parameter", staticmethod(fake_get_parameter))
     monkeypatch.setattr(processor_server_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
     monkeypatch.setattr(processor_server_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
     monkeypatch.setattr(
@@ -189,6 +195,99 @@ def test_processor_server_process_return_service_serializes_processed_task_and_c
             "frame_count": 0,
         },
     }
+
+
+@pytest.mark.unit
+def test_processor_server_clear_queue_supports_preview_and_bounded_removal(server_context, monkeypatch):
+    server = server_context.server
+    first = build_task(["detector"], "detector", file_path="first.bin")
+    second = build_task(["detector"], "detector", file_path="second.bin")
+    removed = []
+
+    monkeypatch.setattr(
+        processor_server_module.FileOps,
+        "remove_task_file_in_temp",
+        lambda current_task: removed.append(current_task.get_file_path()),
+    )
+
+    server_context.queue.put(first)
+    server_context.queue.put(second)
+
+    preview = asyncio.run(server.clear_queue('{"dry_run": true, "max_count": 1, "reason": "preview"}'))
+    assert preview["ok"] is True
+    assert preview["dry_run"] is True
+    assert preview["matched_count"] == 1
+    assert preview["cleared_count"] == 0
+    assert preview["remaining_count"] == 2
+    assert preview["dropped_tasks"] == [
+        {"source_id": 3, "task_id": 4, "flow_index": "detector", "file_path": "first.bin"}
+    ]
+    assert removed == []
+
+    cleared = asyncio.run(server.clear_queue('{"max_count": "1", "reason": "drop-one"}'))
+    assert cleared["ok"] is True
+    assert cleared["dry_run"] is False
+    assert cleared["matched_count"] == 1
+    assert cleared["cleared_count"] == 1
+    assert cleared["remaining_count"] == 1
+    assert removed == ["first.bin"]
+
+    cleared_rest = asyncio.run(server.clear_queue("{}"))
+    assert cleared_rest["matched_count"] == 1
+    assert cleared_rest["remaining_count"] == 0
+    assert removed == ["first.bin", "second.bin"]
+
+
+@pytest.mark.unit
+def test_processor_server_clear_queue_reports_invalid_requests_and_legacy_queue_fallback(server_context, monkeypatch):
+    server = server_context.server
+
+    invalid = asyncio.run(server.clear_queue("{not-json"))
+    assert invalid["ok"] is False
+    assert "invalid queue clear request" in invalid["error"]
+
+    server.task_queue = SimpleNamespace(size=lambda: 0)
+    unsupported_preview = asyncio.run(server.clear_queue('{"dry_run": true}'))
+    assert unsupported_preview == {
+        "ok": False,
+        "error": "queue does not support dry_run preview",
+    }
+
+    class LegacyQueue:
+        def __init__(self, items):
+            self.items = list(items)
+
+        def get(self):
+            if not self.items:
+                return None
+            return self.items.pop(0)
+
+        def size(self):
+            return len(self.items)
+
+    first = build_task(["detector"], "detector", file_path="legacy-first.bin")
+    second = build_task(["detector"], "detector", file_path="legacy-second.bin")
+    removed = []
+
+    def fake_remove(current_task):
+        removed.append(current_task.get_file_path())
+        if current_task.get_file_path() == "legacy-first.bin":
+            raise RuntimeError("remove failed")
+
+    monkeypatch.setattr(processor_server_module.FileOps, "remove_task_file_in_temp", fake_remove)
+    server.task_queue = LegacyQueue([first, second])
+
+    response = asyncio.run(server.clear_queue('{"max_count": 3, "reason": "legacy"}'))
+
+    assert response["ok"] is True
+    assert response["matched_count"] == 2
+    assert response["cleared_count"] == 2
+    assert response["remaining_count"] == 0
+    assert [record["file_path"] for record in response["dropped_tasks"]] == [
+        "legacy-first.bin",
+        "legacy-second.bin",
+    ]
+    assert removed == ["legacy-first.bin", "legacy-second.bin"]
 
 
 @pytest.mark.unit

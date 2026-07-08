@@ -127,6 +127,95 @@ def test_processor_base_initializes_extractors_saves_scenarios_and_enforces_abst
 
 
 @pytest.mark.unit
+def test_processor_content_helpers_enforce_the_runtime_envelope_contract():
+    profile = processor_base_module.Processor.make_profile("3")
+    outputs = {
+        "bbox": [
+            {
+                "frame_index": 0,
+                "items": [{"bbox": [0, 1, 2, 3], "score": 0.7}],
+            }
+        ],
+        "text": [{"frame_index": 1, "items": []}],
+    }
+
+    content = processor_base_module.Processor.make_content("detector", outputs, profile)
+
+    assert profile == {"frame_count": 3}
+    assert content == {"service": "detector", "outputs": outputs, "profile": profile}
+    assert processor_base_module.Processor.output_records(content, "bbox") == outputs["bbox"]
+    assert processor_base_module.Processor.output_records(content, "missing") == []
+    assert processor_base_module.Processor.output_items(content, "bbox") == [{"bbox": [0, 1, 2, 3], "score": 0.7}]
+
+    with pytest.raises(ValueError, match="must be a list of records"):
+        processor_base_module.Processor.output_records(
+            {"service": "detector", "outputs": {"bbox": "bad"}, "profile": content_profile()},
+            "bbox",
+        )
+
+    records, total = processor_base_module.Processor.detection_to_bbox_records(
+        [
+            [],
+            [
+                np.array([[0.4, 1.6, 2.2, 3.8], [10, 11, 12, 13]]),
+                np.array([0.75]),
+                np.array(["car"]),
+                np.array(["object-9"]),
+            ],
+        ]
+    )
+
+    assert total == 2
+    assert records == [
+        {"frame_index": 0, "items": []},
+        {
+            "frame_index": 1,
+            "items": [
+                {"bbox": [0, 2, 2, 4], "score": 0.75, "label": "car", "object_id": "object-9"},
+                {"bbox": [10, 11, 12, 13], "score": 0.0, "label": "", "object_id": 1},
+            ],
+        },
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        (None, "must be a dictionary"),
+        ({"outputs": {}, "profile": content_profile()}, "missing required field 'service'"),
+        ({"service": "detector", "profile": content_profile()}, "missing required field 'outputs'"),
+        ({"service": "detector", "outputs": {}}, "missing required field 'profile'"),
+        ({"service": "detector", "outputs": [], "profile": content_profile()}, "outputs must be a dictionary"),
+        ({"service": "detector", "outputs": {"": []}, "profile": content_profile()}, "output labels"),
+        ({"service": "detector", "outputs": {1: []}, "profile": content_profile()}, "output labels"),
+        ({"service": "detector", "outputs": {"bbox": {}}, "profile": content_profile()}, "must be a list"),
+        ({"service": "detector", "outputs": {"bbox": ["bad"]}, "profile": content_profile()}, "records must be"),
+        (
+            {"service": "detector", "outputs": {"bbox": [{"items": []}]}, "profile": content_profile()},
+            "require 'frame_index'",
+        ),
+        (
+            {
+                "service": "detector",
+                "outputs": {"bbox": [{"frame_index": 0, "items": {}}]},
+                "profile": content_profile(),
+            },
+            "require list 'items'",
+        ),
+        ({"service": "detector", "outputs": {}, "profile": []}, "profile.*dictionary"),
+        (
+            {"service": "detector", "outputs": {}, "profile": {"frame_count": 1, "model_loaded": True}},
+            "profile fields",
+        ),
+    ],
+)
+def test_processor_content_validation_rejects_malformed_envelopes(content, match):
+    with pytest.raises(ValueError, match=match):
+        processor_base_module.Processor.validate_content(content)
+
+
+@pytest.mark.unit
 def test_detector_processor_reads_frames_runs_detector_and_saves_scenario(patch_processor_scenarios, monkeypatch):
     class FakeDetector:
         flops = 321.0
