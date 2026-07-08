@@ -90,6 +90,136 @@ def test_controller_health_check_reports_success_and_failure(controller_under_te
 
 
 @pytest.mark.unit
+def test_controller_clear_processor_queues_filters_services_and_aggregates_results(controller_under_test, monkeypatch):
+    controller_module, controller = controller_under_test
+    force_refresh_calls = []
+    request_calls = []
+
+    monkeypatch.setattr(controller_module.PortInfo, "force_refresh", staticmethod(lambda: force_refresh_calls.append(True)))
+    monkeypatch.setattr(
+        controller_module.PortInfo,
+        "get_service_ports_dict",
+        staticmethod(lambda device: {"face-detection": 31000, "gender-classification": 32000}),
+    )
+
+    def fake_request(**kwargs):
+        request_calls.append(kwargs)
+        if kwargs["url"].endswith(":31000/queue_clear"):
+            return {"ok": True, "cleared_count": 2, "matched_count": 3, "remaining_count": 1}
+        return {"ok": True, "cleared_count": 1, "matched_count": 1, "remaining_count": 0}
+
+    monkeypatch.setattr(controller_module, "http_request", fake_request)
+
+    response = controller.clear_processor_queues(
+        {
+            "services": "face-detection",
+            "timeout_s": "bad",
+            "max_count": 5,
+            "dry_run": True,
+            "reason": "scheduler_pressure",
+        }
+    )
+
+    assert force_refresh_calls == [True]
+    assert response == {
+        "ok": True,
+        "device": "edgex1",
+        "service_count": 1,
+        "matched_count": 3,
+        "cleared_count": 2,
+        "remaining_count": 1,
+        "services": {
+            "face-detection": {"ok": True, "cleared_count": 2, "matched_count": 3, "remaining_count": 1}
+        },
+    }
+    assert request_calls == [
+        {
+            "url": "http://10.0.0.1:31000/queue_clear",
+            "method": controller_module.NetworkAPIMethod.PROCESSOR_CLEAR_QUEUE,
+            "timeout": 5.0,
+            "data": {
+                "data": '{"reason": "scheduler_pressure", "max_count": 5, "dry_run": true}',
+            },
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_controller_clear_processor_queues_handles_bad_request_shapes_and_failed_processors(
+    controller_under_test,
+    monkeypatch,
+):
+    controller_module, controller = controller_under_test
+    request_calls = []
+
+    monkeypatch.setattr(controller_module.PortInfo, "force_refresh", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        controller_module.PortInfo,
+        "get_service_ports_dict",
+        staticmethod(lambda device: {"face-detection": 31000, "gender-classification": 32000}),
+    )
+
+    def fake_request(**kwargs):
+        request_calls.append(kwargs)
+        if kwargs["url"].endswith(":31000/queue_clear"):
+            return None
+        return {"ok": True, "cleared_count": "4", "matched_count": "6", "remaining_count": "2"}
+
+    monkeypatch.setattr(controller_module, "http_request", fake_request)
+
+    response = controller.clear_processor_queues(["not", "a", "dict"])
+
+    assert response["service_count"] == 2
+    assert response["matched_count"] == 6
+    assert response["cleared_count"] == 4
+    assert response["remaining_count"] == 2
+    assert response["services"]["face-detection"] == {
+        "ok": False,
+        "error": "processor queue clear request failed",
+    }
+    assert response["services"]["gender-classification"]["ok"] is True
+    assert [call["timeout"] for call in request_calls] == [5.0, 5.0]
+    assert all(
+        call["data"] == {
+            "data": '{"reason": "controller_processor_queue_clear", "max_count": null, "dry_run": false}',
+        }
+        for call in request_calls
+    )
+
+
+@pytest.mark.unit
+def test_controller_service_filter_and_local_service_error_branches(controller_under_test, monkeypatch, tmp_path):
+    controller_module, controller = controller_under_test
+    task = FakeTask()
+
+    assert controller._normalize_service_filter(["face-detection", 7]) == {"face-detection", "7"}
+
+    monkeypatch.setattr(
+        controller_module.Controller,
+        "record_execute_ts",
+        staticmethod(lambda cur_task, is_end=False: None),
+    )
+    monkeypatch.setattr(controller_module.PortInfo, "force_refresh", staticmethod(lambda: None))
+
+    monkeypatch.setattr(controller_module.PortInfo, "get_service_ports_dict", staticmethod(lambda device: {}))
+    monkeypatch.setattr(controller_module.KubeConfig, "get_service_nodes_dict", staticmethod(lambda: {}))
+    assert controller.send_task_to_service(task, "face-detection") == "error"
+
+    monkeypatch.setattr(
+        controller_module.PortInfo,
+        "get_service_ports_dict",
+        staticmethod(lambda device: {"face-detection": 31000}),
+    )
+    monkeypatch.setenv("NAMESPACE", "dayu")
+    monkeypatch.setattr(
+        controller_module.Context,
+        "get_temporary_file_path",
+        staticmethod(lambda file_path: str(tmp_path / file_path)),
+    )
+    assert controller.send_task_to_service(task, "face-detection") == "error"
+
+
+@pytest.mark.unit
 def test_send_task_to_service_executes_locally_when_processor_and_file_exist(controller_under_test, monkeypatch, tmp_path):
     controller_module, controller = controller_under_test
     task = FakeTask()
