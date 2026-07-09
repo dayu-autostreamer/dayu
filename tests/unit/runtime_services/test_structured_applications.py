@@ -14,6 +14,9 @@ from core.applications.road_context_segmentation.road_context_segmentation impor
 from core.applications.traffic_detection.traffic_detection import TrafficDetection
 from core.applications.risk_graph_generation.risk_graph_generation import RiskGraphGeneration
 from core.applications.traffic_signal_recognition.traffic_signal_recognition import TrafficSignalRecognition
+from core.applications.traffic_signal_recognition.traffic_signal_recognition_without_tensorrt import (
+    TrafficSignalRecognitionWithoutTensorRT,
+)
 from core.applications.vehicle_attribute_recognition.vehicle_attribute_recognition import VehicleAttributeRecognition
 from core.applications.vehicle_tracking.vehicle_tracking import (
     VehicleTracking,
@@ -199,3 +202,83 @@ def test_structured_processors_tensor_rt_paths_are_explicitly_unimplemented(monk
             structured_processor_cls(non_trt_weights="service_weight.pt",
                                      trt_weights="service_weight.engine",
                                      trt_plugin_library="libplugins.so")
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_requires_upstream_traffic_light_bbox():
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+
+    result = processor({
+        "frames": [frame],
+        "inputs": {
+            "traffic-detection": content("traffic-detection", {
+                "bbox": [{"frame_index": 0, "items": [
+                    {"label": "car", "category": "car", "bbox": [10, 10, 30, 30], "score": 0.9},
+                    {"label": "traffic_sign", "category": "traffic_sign", "bbox": [40, 10, 60, 30], "score": 0.8},
+                ]}]
+            })
+        },
+    })
+
+    assert result == {"text": []}
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_runs_model_only_on_traffic_light_crops():
+    class Boxes:
+        xyxy = [[1, 1, 6, 8]]
+        conf = [0.93]
+        cls = [1]
+
+    class Result:
+        names = {0: "red", 1: "green"}
+        boxes = Boxes()
+
+    class Detector:
+        def __init__(self):
+            self.sources = []
+
+        def predict(self, source, **kwargs):
+            self.sources.append(source)
+            return [Result()]
+
+    detector = Detector()
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+
+    result = processor({
+        "frames": [frame],
+        "inputs": {
+            "traffic-detection": content("traffic-detection", {
+                "bbox": [{"frame_index": 0, "items": [
+                    {"object_id": "car-0", "label": "car", "category": "car", "bbox": [0, 0, 20, 20], "score": 0.9},
+                    {"object_id": "light-0", "label": "traffic_light", "category": "traffic_light",
+                     "bbox": [10, 20, 30, 60], "score": 0.88},
+                    {"object_id": "sign-0", "label": "traffic_sign", "category": "traffic_sign",
+                     "bbox": [40, 20, 60, 60], "score": 0.77},
+                ]}]
+            })
+        },
+    })
+
+    assert len(detector.sources) == 1
+    assert detector.sources[0].shape == (40, 20, 3)
+    assert result == {"text": [{
+        "frame_index": 0,
+        "items": [{
+            "frame_id": 0,
+            "signal_id": "traffic-signal-0-0",
+            "source_object_id": "light-0",
+            "bbox": [10, 20, 30, 60],
+            "label": "traffic_light",
+            "type": "traffic_light",
+            "text": "green",
+            "state": "green",
+            "score": 0.93,
+            "source_score": 0.88,
+            "model_label": "green",
+            "frame_index": 0,
+        }],
+    }]}

@@ -2,6 +2,7 @@ import os
 
 class TrafficSignalRecognition:
     service_name = 'traffic-signal-recognition'
+    signal_categories = {'traffic_light'}
 
     def __init__(self, weights='', device=0, confidence_threshold=0.25):
         self.weights = weights
@@ -17,7 +18,7 @@ class TrafficSignalRecognition:
             'weight_path': weight_path,
             'exists': os.path.exists(weight_path),
             'loaded': False,
-            'backend': 'upstream-bbox-rule',
+            'backend': 'upstream-traffic-light-crop',
             'error': '',
         }
         if not model['exists']:
@@ -28,7 +29,7 @@ class TrafficSignalRecognition:
             detector = YOLO(weight_path)
             model.update({
                 'loaded': True,
-                'backend': 'ultralytics-yolo',
+                'backend': 'ultralytics-yolo-crop',
                 'model': detector,
             })
         except Exception as exc:  # pragma: no cover - depends on optional runtime packages.
@@ -37,85 +38,87 @@ class TrafficSignalRecognition:
 
     def __call__(self, payload):
         signals = self._infer_with_model(payload)
-        if signals is None:
-            signals = self._fallback_signals(payload)
-
         return {'text': self._text_records(signals)}
 
     def _infer_with_model(self, payload):
         if not (self.model and self.model.get('loaded')):
-            return None
+            return []
         frames = payload.get('frames') or []
         if not frames:
             return []
+        detections = self._filter_detections(self._all_items(payload.get('inputs'), 'bbox'), self.signal_categories)
+        if not detections:
+            return []
         detector = self.model.get('model')
         signals = []
-        for frame_id, frame in zip(self._frame_ids(payload), frames):
+        for index, detection in enumerate(detections):
+            crop = self._crop_for_detection(frames, detection)
+            if crop is None:
+                continue
             try:
                 results = detector.predict(
-                    source=frame,
+                    source=crop,
                     verbose=False,
                     conf=self.confidence_threshold,
                     device=self._ultralytics_device(),
                 )
             except Exception as exc:  # pragma: no cover - hardware/runtime dependent.
                 self.model['error'] = str(exc)
-                return None
-            if not results:
                 continue
-            result = results[0]
-            names = result.names if hasattr(result, 'names') else getattr(detector, 'names', {})
-            boxes = getattr(result, 'boxes', None)
-            if boxes is None:
+            state, score, model_label = self._best_state(results, detector)
+            if not state:
                 continue
-            xyxy = self._tensor_to_list(boxes.xyxy)
-            scores = self._tensor_to_list(boxes.conf)
-            classes = self._tensor_to_list(boxes.cls)
-            for index, (box, score, class_index) in enumerate(zip(xyxy, scores, classes)):
-                state = names.get(int(class_index), str(int(class_index))) if isinstance(names, dict) else str(int(class_index))
-                signals.append({
-                    'frame_id': int(frame_id),
-                    'signal_id': f'traffic-signal-{int(frame_id)}-{index}',
-                    'bbox': [int(round(value)) for value in box[:4]],
-                    'label': 'traffic_light',
-                    'type': 'traffic_light',
-                    'text': state.replace('-', '_'),
-                    'state': state.replace('-', '_'),
-                    'score': round(float(score), 4),
-                    'model_label': state,
-                })
+            frame_id = detection.get('frame_id', detection.get('frame_index', 0))
+            signals.append({
+                'frame_id': frame_id,
+                'signal_id': f'traffic-signal-{int(frame_id)}-{index}',
+                'source_object_id': detection.get('object_id'),
+                'bbox': detection.get('bbox', []),
+                'label': 'traffic_light',
+                'type': 'traffic_light',
+                'text': state,
+                'state': state,
+                'score': round(float(score), 4),
+                'source_score': round(float(detection.get('score', 0.0)), 4),
+                'model_label': model_label,
+            })
         return signals
 
-    def _fallback_signals(self, payload):
-        detections = self._all_items(payload.get('inputs'), 'bbox')
-        signal_detections = self._filter_detections(detections, {'traffic_light', 'traffic_sign'})
-        signals = []
+    def _crop_for_detection(self, frames, detection):
+        frame_id = int(detection.get('frame_id', detection.get('frame_index', 0)))
+        if frame_id < 0 or frame_id >= len(frames):
+            return None
+        bbox = detection.get('bbox') or []
+        if len(bbox) != 4:
+            return None
+        frame = frames[frame_id]
+        height, width = frame.shape[:2]
+        x1, y1, x2, y2 = [int(round(value)) for value in bbox]
+        x1 = max(0, min(width - 1, x1))
+        x2 = max(0, min(width, x2))
+        y1 = max(0, min(height - 1, y1))
+        y2 = max(0, min(height, y2))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return frame[y1:y2, x1:x2]
 
-        if signal_detections:
-            for detection in signal_detections:
-                category = detection.get('category')
-                state = 'red' if category == 'traffic_light' else 'stop'
-                signals.append({
-                    'frame_id': detection.get('frame_id', detection.get('frame_index', 0)),
-                    'bbox': detection.get('bbox', []),
-                    'label': category,
-                    'type': category,
-                    'text': state,
-                    'state': state,
-                    'score': round(float(detection.get('score', 0.8)), 3),
-                })
-        else:
-            for frame_id in self._frame_ids(payload)[:1]:
-                signals.append({
-                    'frame_id': frame_id,
-                    'bbox': [],
-                    'label': 'traffic_light',
-                    'type': 'traffic_light',
-                    'text': 'red',
-                    'state': 'red',
-                    'score': 0.75,
-                })
-        return signals
+    def _best_state(self, results, detector):
+        if not results:
+            return '', 0.0, ''
+        result = results[0]
+        names = result.names if hasattr(result, 'names') else getattr(detector, 'names', {})
+        boxes = getattr(result, 'boxes', None)
+        if boxes is None:
+            return '', 0.0, ''
+        scores = self._tensor_to_list(boxes.conf)
+        classes = self._tensor_to_list(boxes.cls)
+        if not scores or not classes:
+            return '', 0.0, ''
+        best_index = max(range(len(scores)), key=lambda index: float(scores[index]))
+        class_index = int(classes[best_index])
+        model_label = names.get(class_index, str(class_index)) if isinstance(names, dict) else str(class_index)
+        state = model_label.replace('-', '_')
+        return state, float(scores[best_index]), model_label
 
     @staticmethod
     def _all_items(inputs, key):
@@ -155,13 +158,6 @@ class TrafficSignalRecognition:
             {'frame_index': frame_index, 'items': grouped[frame_index]}
             for frame_index in sorted(grouped)
         ]
-
-    @staticmethod
-    def _frame_ids(payload):
-        hashes = (payload.get('task') or {}).get('hash_data') or []
-        if hashes:
-            return list(range(len(hashes)))
-        return list(range(len(payload.get('frames') or [])))
 
     def _ultralytics_device(self):
         if self.device is None:
