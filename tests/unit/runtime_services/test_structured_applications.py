@@ -21,6 +21,9 @@ from core.applications.vehicle_attribute_recognition.vehicle_attribute_recogniti
 from core.applications.vehicle_tracking.vehicle_tracking import (
     VehicleTracking,
 )
+from core.applications.vehicle_tracking.vehicle_tracking_without_tensorrt import (
+    VehicleTrackingWithoutTensorRT,
+)
 from core.applications.vehicle_trajectory_prediction.vehicle_trajectory_prediction import VehicleTrajectoryPrediction
 
 
@@ -158,6 +161,60 @@ def test_structured_processors_are_independent_and_schema_free():
         for records in result.values():
             assert isinstance(records, list)
             assert all("frame_index" in record and isinstance(record.get("items"), list) for record in records)
+
+
+@pytest.mark.unit
+def test_vehicle_tracking_uses_reid_embeddings_to_keep_track_identity(monkeypatch):
+    processor = VehicleTrackingWithoutTensorRT(match_score_threshold=0.30, high_score_threshold=0.30)
+
+    def fake_embedding(_payload, detection):
+        object_id = detection.get("object_id", "")
+        if "alpha" in object_id:
+            return [1.0, 0.0, 0.0]
+        if "bravo" in object_id:
+            return [0.0, 1.0, 0.0]
+        return [0.0, 0.0, 1.0]
+
+    monkeypatch.setattr(processor, "_embedding_for_detection", fake_embedding)
+
+    payload = {
+        "task": {"hash_data": ["frame-0", "frame-1", "frame-2"]},
+        "frames": [np.zeros((160, 260, 3), dtype=np.uint8) for _ in range(3)],
+        "inputs": {
+            "traffic-detection": content("traffic-detection", {
+                "bbox": [
+                    {"frame_index": 0, "items": [
+                        {"object_id": "alpha-0", "label": "car", "category": "car",
+                         "bbox": [10, 40, 50, 80], "score": 0.9},
+                        {"object_id": "bravo-0", "label": "car", "category": "car",
+                         "bbox": [210, 40, 250, 80], "score": 0.9},
+                    ]},
+                    {"frame_index": 1, "items": [
+                        {"object_id": "alpha-1", "label": "car", "category": "car",
+                         "bbox": [95, 40, 135, 80], "score": 0.9},
+                        {"object_id": "bravo-1", "label": "car", "category": "car",
+                         "bbox": [125, 40, 165, 80], "score": 0.9},
+                    ]},
+                    {"frame_index": 2, "items": [
+                        {"object_id": "alpha-2", "label": "car", "category": "car",
+                         "bbox": [180, 40, 220, 80], "score": 0.9},
+                        {"object_id": "bravo-2", "label": "car", "category": "car",
+                         "bbox": [50, 40, 90, 80], "score": 0.9},
+                    ]},
+                ]
+            }, frame_count=3),
+        },
+    }
+
+    result = processor(payload)
+    tracks = result["track"][0]["items"]
+    assert len(tracks) == 2
+
+    by_source = {track["source_object_id"]: track for track in tracks}
+    assert by_source["alpha-0"]["frames"] == [0, 1, 2]
+    assert by_source["alpha-0"]["bboxes"] == [[10, 40, 50, 80], [95, 40, 135, 80], [180, 40, 220, 80]]
+    assert by_source["bravo-0"]["frames"] == [0, 1, 2]
+    assert by_source["bravo-0"]["bboxes"] == [[210, 40, 250, 80], [125, 40, 165, 80], [50, 40, 90, 80]]
 
 
 @pytest.mark.unit

@@ -11,7 +11,13 @@ pod-template:
           'trt_weights':'vehicle_tracking.engine',
           'trt_plugin_library':'libmyplugins.so',
           'non_trt_weights':'vehicle_tracking.pt',
-          'device':0
+          'device':0,
+          'high_score_threshold':0.35,
+          'low_score_threshold':0.10,
+          'new_track_threshold':0.35,
+          'match_score_threshold':0.35,
+          'secondary_iou_threshold':0.25,
+          'max_age':8
         }
     - name: SCENARIOS_EXTRACTORS
       value: >

@@ -75,7 +75,7 @@ Model/backend status belongs to service logs, health checks, or model manifests 
 | `traffic-detection` | `[frame]` | `[bbox]` | Ultralytics YOLO detection, with COCO traffic-class mapping | `bbox` records with item-level boxes, labels, scores, and object ids |
 | `road-context-segmentation` | `[frame]` | `[segmentation]` | OpenCV lane/drivable/crosswalk adapter; YOLOP checkpoint is staged and checksumable | `segmentation` records with item-level polygons or polylines |
 | `traffic-signal-recognition` | `[bbox]` | `[text]` | Ultralytics YOLO state recognition on upstream `traffic_light` crops | `text` records with item-level signal state text and source boxes; empty when upstream detection has no `traffic_light` candidate |
-| `vehicle-tracking` | `[bbox]` | `[track]` | IoU plus crop-histogram tracking adapter; FastReID checkpoint is staged and checksumable | `track` records with item-level track ids and history |
+| `vehicle-tracking` | `[bbox]` | `[track]` | MobileNetV2 ReID embeddings with Kalman motion state and two-stage bbox association | `track` records with item-level track ids, bbox history, direction, and speed |
 | `vehicle-attribute-recognition` | `[bbox]` | `[attribute]` | EfficientNet-B0 checkpoint trained for vehicle type classification | `attribute` records with item-level vehicle attributes |
 | `vehicle-trajectory-prediction` | `[segmentation, track, attribute]` | `[trajectory]` | PIE-trained sequence GRU over normalized bbox history | `trajectory` records with item-level future points and risk hints |
 | `pedestrian-pose-estimation` | `[bbox]` | `[pose]` | Optional MMPose RTMPose if `non_trt_config` is provided; geometric pose adapter otherwise | `pose` records with item-level keypoints and source boxes |
@@ -83,6 +83,19 @@ Model/backend status belongs to service logs, health checks, or model manifests 
 | `risk-graph-generation` | `[segmentation, text, trajectory]` | `[graph]` | DoTA-trained risk MLP over graph-derived tabular features | `graph` records with item-level nodes, edges, events, and summary |
 
 Model parameter staging is recorded in `.model/dag1_model_parameters.yaml`.
+
+### Vehicle Tracking Backend
+
+`vehicle-tracking` follows a tracking-by-detection design. It does not run a detector internally; it consumes upstream
+`bbox` records, keeps only `car`, `bus`, `truck`, and `motorcycle`, extracts a lightweight MobileNetV2 appearance
+embedding from each vehicle crop, and associates detections across frames with Kalman-predicted motion, IoU, and ReID
+cosine similarity. Low-confidence detections can still recover an existing track by IoU, but new tracks are created only
+from higher-confidence detections.
+
+The default `vehicle_tracking.pt` is the TorchVision MobileNetV2 ImageNet-1K checkpoint used as a compact appearance
+feature extractor. It is directly deployable and does not need task-specific training to run. For best identity stability
+on traffic cameras, fine-tune the same backbone on vehicle ReID labels such as VeRi-776, VehicleID, CityFlow, or
+BDD100K-style tracking IDs, then save the resulting state dict as `vehicle_tracking.pt`.
 
 ## Service Result Visualization
 
