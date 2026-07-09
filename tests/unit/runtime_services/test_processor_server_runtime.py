@@ -195,6 +195,24 @@ def test_processor_server_process_task_service_records_duration_and_sends_result
 
 
 @pytest.mark.unit
+def test_processor_server_process_task_service_skips_none_result(server_context, monkeypatch):
+    server = server_context.server
+    task = build_task(["detector"], "detector")
+    durations = []
+
+    def fake_record(current_task, is_end, sub_tag="real_execute"):
+        durations.append((current_task.get_task_id(), is_end, sub_tag))
+        return 0.75 if is_end else 0
+
+    monkeypatch.setattr(processor_server_module.TimeEstimator, "record_dag_ts", staticmethod(fake_record))
+    monkeypatch.setattr(server_context, "processor", lambda current_task: None)
+    server.processor = lambda current_task: None
+
+    assert server.process_task_service(task) is None
+    assert durations == [(4, False, "real_execute")]
+
+
+@pytest.mark.unit
 def test_processor_server_process_return_service_serializes_processed_task_and_cleans_temp_file(
     server_context, monkeypatch
 ):
