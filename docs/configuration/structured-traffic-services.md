@@ -74,7 +74,7 @@ Model/backend status belongs to service logs, health checks, or model manifests 
 | --- | --- | --- | --- | --- |
 | `traffic-detection` | `[frame]` | `[bbox]` | Ultralytics YOLO detection, with COCO traffic-class mapping | `bbox` records with item-level boxes, labels, scores, and object ids |
 | `road-context-segmentation` | `[frame]` | `[segmentation]` | OpenCV lane/drivable/crosswalk adapter; YOLOP checkpoint is staged and checksumable | `segmentation` records with item-level polygons or polylines |
-| `traffic-signal-recognition` | `[frame, bbox]` | `[text]` | Ultralytics YOLO state recognition on upstream `traffic_light` crops | `text` records with item-level signal state text and source boxes; empty when upstream detection has no `traffic_light` candidate |
+| `traffic-signal-recognition` | `[bbox]` | `[text]` | Ultralytics YOLO state recognition on upstream `traffic_light` crops | `text` records with item-level signal state text and source boxes; empty when upstream detection has no `traffic_light` candidate |
 | `vehicle-tracking` | `[bbox]` | `[track]` | IoU plus crop-histogram tracking adapter; FastReID checkpoint is staged and checksumable | `track` records with item-level track ids and history |
 | `vehicle-attribute-recognition` | `[bbox]` | `[attribute]` | EfficientNet-B0 checkpoint trained for vehicle type classification | `attribute` records with item-level vehicle attributes |
 | `vehicle-trajectory-prediction` | `[segmentation, track, attribute]` | `[trajectory]` | PIE-trained sequence GRU over normalized bbox history | `trajectory` records with item-level future points and risk hints |
@@ -113,7 +113,7 @@ flowchart LR
     Start["_start"]
     T1["traffic-detection\nframe -> bbox"]
     T2["road-context-segmentation\nframe -> segmentation"]
-    T3["traffic-signal-recognition\nframe,bbox -> text"]
+    T3["traffic-signal-recognition\nbbox -> text"]
     T4["vehicle-tracking\nbbox -> track"]
     T5["vehicle-attribute-recognition\nbbox -> attribute"]
     T6["vehicle-trajectory-prediction\nsegmentation,track,attribute -> trajectory"]

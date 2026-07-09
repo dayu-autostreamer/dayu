@@ -154,7 +154,7 @@
   service: traffic-signal-recognition
   name: traffic signal recognition
   description: traffic light state recognition from upstream detection boxes
-  input: [frame, bbox]
+  input: [bbox]
   output: [text]
   yaml: traffic-signal-recognition.yaml
 
