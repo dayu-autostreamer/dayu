@@ -2,7 +2,9 @@ from core.lib.common import Context, LOGGER
 
 
 class TrafficSignalRecognition:
-    def __init__(self, trt_weights='', trt_plugin_library='', non_trt_weights='', device=0, confidence_threshold=0.25):
+    def __init__(self, trt_weights='', trt_plugin_library='', non_trt_weights='', device=0, confidence_threshold=0.25,
+                 temporal_reuse=True, reuse_iou_threshold=0.40, reuse_hist_correlation=0.95,
+                 reuse_value_delta=0.08):
         use_tensorrt = Context.get_parameter('USE_TENSORRT', default=False, direct=False)
         self.trt_weights = Context.get_file_path(trt_weights) if trt_weights else ''
         self.trt_plugin_library = Context.get_file_path(trt_plugin_library) if trt_plugin_library else ''
@@ -36,6 +38,10 @@ class TrafficSignalRecognition:
                 weights=self.non_trt_weights,
                 device=self.device,
                 confidence_threshold=confidence_threshold,
+                temporal_reuse=temporal_reuse,
+                reuse_iou_threshold=reuse_iou_threshold,
+                reuse_hist_correlation=reuse_hist_correlation,
+                reuse_value_delta=reuse_value_delta,
             )
 
         self.flops = getattr(self.model, 'flops', 0)

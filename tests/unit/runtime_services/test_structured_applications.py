@@ -59,6 +59,59 @@ def content(service_name, outputs, frame_count=1):
     }
 
 
+class SignalDetector:
+    class Boxes:
+        def __init__(self, class_index=None, score=0.93):
+            self.conf = [] if class_index is None else [score]
+            self.cls = [] if class_index is None else [class_index]
+
+    class Result:
+        names = {0: "red", 1: "green", 2: "yellow"}
+
+        def __init__(self, class_index=None, score=0.93):
+            self.boxes = SignalDetector.Boxes(class_index, score)
+
+    class_indices = {"red": 0, "green": 1, "yellow": 2}
+
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.sources = []
+
+    def predict(self, source, **kwargs):
+        self.sources.append(source)
+        outcome = self.outcomes[min(len(self.sources) - 1, len(self.outcomes) - 1)]
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome is None:
+            return [self.Result()]
+        label, score = outcome if isinstance(outcome, tuple) else (outcome, 0.93)
+        return [self.Result(self.class_indices[label], score)]
+
+
+def traffic_signal_payload(frames, items_by_frame):
+    return {
+        "frames": frames,
+        "inputs": {
+            "traffic-detection": content("traffic-detection", {
+                "bbox": [
+                    {"frame_index": frame_index, "items": items}
+                    for frame_index, items in items_by_frame
+                ],
+            }, frame_count=len(frames)),
+        },
+    }
+
+
+def traffic_light(object_id, bbox=None, score=0.88):
+    return {
+        "object_id": object_id,
+        "label": "traffic_light",
+        "category": "traffic_light",
+        "bbox": bbox or [10, 20, 30, 60],
+        "score": score,
+    }
+
+
 @pytest.mark.unit
 def test_structured_processor_exports_are_named_explicitly():
     modules = [
@@ -339,3 +392,183 @@ def test_traffic_signal_recognition_runs_model_only_on_traffic_light_crops():
             "frame_index": 0,
         }],
     }]}
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_reuses_one_adjacent_frame_without_changing_output_contract():
+    detector = SignalDetector(["green"])
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frames = [np.zeros((100, 120, 3), dtype=np.uint8) for _ in range(2)]
+
+    result = processor(traffic_signal_payload(frames, [
+        (0, [traffic_light("light-0")]),
+        (1, [traffic_light("light-1", bbox=[11, 20, 31, 60], score=0.86)]),
+    ]))
+
+    assert len(detector.sources) == 1
+    items = [item for record in result["text"] for item in record["items"]]
+    assert [item["signal_id"] for item in items] == ["traffic-signal-0-0", "traffic-signal-1-1"]
+    assert [item["source_object_id"] for item in items] == ["light-0", "light-1"]
+    assert items[1]["bbox"] == [11, 20, 31, 60]
+    assert items[1]["source_score"] == 0.86
+    assert [item["state"] for item in items] == ["green", "green"]
+    assert set(items[1]) == {
+        "frame_id", "frame_index", "signal_id", "source_object_id", "bbox", "label", "type",
+        "text", "state", "score", "source_score", "model_label",
+    }
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_reused_result_cannot_seed_another_reuse():
+    detector = SignalDetector(["green", "red"])
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frames = [np.zeros((100, 120, 3), dtype=np.uint8) for _ in range(3)]
+
+    result = processor(traffic_signal_payload(frames, [
+        (frame_index, [traffic_light(f"light-{frame_index}")])
+        for frame_index in range(3)
+    ]))
+
+    items = [item for record in result["text"] for item in record["items"]]
+    assert len(detector.sources) == 2
+    assert [item["state"] for item in items] == ["green", "green", "red"]
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_color_change_breaks_reuse():
+    detector = SignalDetector(["red", "green"])
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frames = [np.zeros((100, 120, 3), dtype=np.uint8) for _ in range(2)]
+    frames[0][20:60, 10:30] = [0, 0, 255]
+    frames[1][20:60, 10:30] = [0, 255, 0]
+
+    result = processor(traffic_signal_payload(frames, [
+        (0, [traffic_light("light-0")]),
+        (1, [traffic_light("light-1")]),
+    ]))
+
+    items = [item for record in result["text"] for item in record["items"]]
+    assert len(detector.sources) == 2
+    assert [item["state"] for item in items] == ["red", "green"]
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_low_iou_breaks_reuse():
+    detector = SignalDetector(["green", "red"])
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frames = [np.zeros((100, 120, 3), dtype=np.uint8) for _ in range(2)]
+
+    result = processor(traffic_signal_payload(frames, [
+        (0, [traffic_light("light-0")]),
+        (1, [traffic_light("light-1", bbox=[70, 20, 90, 60])]),
+    ]))
+
+    items = [item for record in result["text"] for item in record["items"]]
+    assert len(detector.sources) == 2
+    assert [item["state"] for item in items] == ["green", "red"]
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_does_not_bridge_missing_candidate_frames():
+    detector = SignalDetector(["green", "red"])
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frames = [np.zeros((100, 120, 3), dtype=np.uint8) for _ in range(3)]
+
+    result = processor(traffic_signal_payload(frames, [
+        (0, [traffic_light("light-0")]),
+        (1, []),
+        (2, [traffic_light("light-2")]),
+    ]))
+
+    items = [item for record in result["text"] for item in record["items"]]
+    assert len(detector.sources) == 2
+    assert [item["state"] for item in items] == ["green", "red"]
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_adjacent_matching_is_one_to_one():
+    detector = SignalDetector(["green", "red"])
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frames = [np.zeros((100, 120, 3), dtype=np.uint8) for _ in range(2)]
+
+    result = processor(traffic_signal_payload(frames, [
+        (0, [traffic_light("light-0")]),
+        (1, [traffic_light("light-1a"), traffic_light("light-1b")]),
+    ]))
+
+    items = [item for record in result["text"] for item in record["items"]]
+    assert len(detector.sources) == 2
+    assert [item["signal_id"] for item in items] == [
+        "traffic-signal-0-0", "traffic-signal-1-1", "traffic-signal-1-2",
+    ]
+    assert [item["state"] for item in items] == ["green", "green", "red"]
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_reuses_empty_results_only_once():
+    detector = SignalDetector([None, None])
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frames = [np.zeros((100, 120, 3), dtype=np.uint8) for _ in range(3)]
+
+    result = processor(traffic_signal_payload(frames, [
+        (frame_index, [traffic_light(f"light-{frame_index}")])
+        for frame_index in range(3)
+    ]))
+
+    assert len(detector.sources) == 2
+    assert result == {"text": []}
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_reuse_cache_does_not_cross_tasks():
+    detector = SignalDetector(["green", "red"])
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+
+    first_result = processor(traffic_signal_payload([frame], [(0, [traffic_light("task-1-light")])]))
+    second_result = processor(traffic_signal_payload([frame], [(0, [traffic_light("task-2-light")])]))
+
+    assert len(detector.sources) == 2
+    assert first_result["text"][0]["items"][0]["state"] == "green"
+    assert second_result["text"][0]["items"][0]["state"] == "red"
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_inference_errors_do_not_enter_reuse_cache():
+    detector = SignalDetector([RuntimeError("predict failed"), "green"])
+    processor = TrafficSignalRecognitionWithoutTensorRT()
+    processor.model = {"loaded": True, "model": detector}
+    frames = [np.zeros((100, 120, 3), dtype=np.uint8) for _ in range(2)]
+
+    result = processor(traffic_signal_payload(frames, [
+        (0, [traffic_light("light-0")]),
+        (1, [traffic_light("light-1")]),
+    ]))
+
+    assert len(detector.sources) == 2
+    assert processor.model["error"] == "predict failed"
+    assert result["text"][0]["frame_index"] == 1
+    assert result["text"][0]["items"][0]["source_object_id"] == "light-1"
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_wrapper_passes_temporal_reuse_parameters():
+    processor = TrafficSignalRecognition(
+        temporal_reuse=False,
+        reuse_iou_threshold=0.5,
+        reuse_hist_correlation=0.9,
+        reuse_value_delta=0.1,
+    )
+
+    assert processor.model.temporal_reuse is False
+    assert processor.model.reuse_iou_threshold == 0.5
+    assert processor.model.reuse_hist_correlation == 0.9
+    assert processor.model.reuse_value_delta == 0.1

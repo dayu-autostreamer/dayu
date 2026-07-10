@@ -74,7 +74,7 @@ Model/backend status belongs to service logs, health checks, or model manifests 
 | --- | --- | --- | --- | --- |
 | `traffic-detection` | `[frame]` | `[bbox]` | Ultralytics YOLO detection, with COCO traffic-class mapping | `bbox` records with item-level boxes, labels, scores, and object ids |
 | `road-context-segmentation` | `[frame]` | `[segmentation]` | OpenCV lane/drivable/crosswalk adapter; YOLOP checkpoint is staged and checksumable | `segmentation` records with item-level polygons or polylines |
-| `traffic-signal-recognition` | `[bbox]` | `[text]` | Ultralytics YOLO state recognition on upstream `traffic_light` crops | `text` records with item-level signal state text and source boxes; empty when upstream detection has no `traffic_light` candidate |
+| `traffic-signal-recognition` | `[bbox]` | `[text]` | Ultralytics YOLO state recognition with guarded task-local reuse on adjacent `traffic_light` crops | `text` records with item-level signal state text and current-frame source boxes; empty when upstream detection has no `traffic_light` candidate |
 | `vehicle-tracking` | `[bbox]` | `[track]` | MobileNetV2 ReID embeddings with Kalman motion state and two-stage bbox association | `track` records with item-level track ids, bbox history, direction, and speed |
 | `vehicle-attribute-recognition` | `[bbox]` | `[attribute]` | EfficientNet-B0 checkpoint trained for vehicle type classification | `attribute` records with item-level vehicle attributes |
 | `vehicle-trajectory-prediction` | `[segmentation, track, attribute]` | `[trajectory]` | PIE-trained sequence GRU over normalized bbox history | `trajectory` records with item-level future points and risk hints |
@@ -83,6 +83,24 @@ Model/backend status belongs to service logs, health checks, or model manifests 
 | `risk-graph-generation` | `[segmentation, text, trajectory]` | `[graph]` | DoTA-trained risk MLP over graph-derived tabular features | `graph` records with item-level nodes, edges, events, and summary |
 
 Model parameter staging is recorded in `.model/dag1_model_parameters.yaml`.
+
+### Traffic Signal Recognition Temporal Reuse
+
+`traffic-signal-recognition` keeps its `[bbox] -> [text]` contract unchanged while avoiding redundant state-model calls
+inside one task. The service follows the actual frame indices present in the task and does not read or assume a fixed
+frame buffer size. A one-frame task therefore follows the original per-crop inference path.
+
+Only model results produced for the immediately preceding frame are eligible for reuse. Candidate boxes are associated
+one-to-one by descending IoU (`reuse_iou_threshold`, default `0.40`), then guarded by a normalized 16-by-4 HSV
+histogram correlation (`reuse_hist_correlation`, default `0.95`) and normalized mean-value difference
+(`reuse_value_delta`, default `0.08`). A reused result cannot seed another reuse, so a stable sequence follows an
+infer/reuse/infer/reuse pattern. Empty model results use the same one-step rule. Missing candidate frames, non-adjacent
+frame indices, invalid crops, and inference errors break reuse.
+
+The cache exists only during one application call and is discarded when that task finishes. Reuse never crosses tasks,
+pods, or devices. Reused classifications are attached to the current detection's `frame_id`, `source_object_id`, `bbox`,
+`source_score`, and candidate-order-derived `signal_id`; no tracking or cache metadata is added to the output. Existing
+upstream bbox fields are sufficient, so `traffic-detection` does not need to emit additional association metadata.
 
 ### Vehicle Tracking Backend
 

@@ -11,7 +11,11 @@ pod-template:
           'trt_weights':'traffic_signal_recognition.engine',
           'trt_plugin_library':'libmyplugins.so',
           'non_trt_weights':'traffic_signal_recognition.pt',
-          'device':0
+          'device':0,
+          'temporal_reuse':True,
+          'reuse_iou_threshold':0.40,
+          'reuse_hist_correlation':0.95,
+          'reuse_value_delta':0.08
         }
     - name: SCENARIOS_EXTRACTORS
       value: >

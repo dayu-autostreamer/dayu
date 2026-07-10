@@ -153,7 +153,7 @@
 - id: traffic-signal-recognition
   service: traffic-signal-recognition
   name: traffic signal recognition
-  description: traffic light state recognition from upstream detection boxes
+  description: traffic light state recognition with task-local adjacent-frame inference reuse
   input: [bbox]
   output: [text]
   yaml: traffic-signal-recognition.yaml
