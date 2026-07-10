@@ -372,7 +372,7 @@ export default {
 					if (!Array.isArray(tasks)) return;
 
 					const validTasks = tasks
-						.filter((task) => task?.task_id && Array.isArray(task.data))
+						.filter((task) => task?.task_id !== null && task?.task_id !== undefined && Array.isArray(task.data))
 						.map((task) => ({
 							task_id: task.task_id,
 							data: task.data.map((item) => ({

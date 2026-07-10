@@ -16,6 +16,7 @@
 - Set default cloud processor as options to permit edge-only processors (`backend`).
 - Update dockerfile building to support concise modification of ultra parameters.
 - Unify input/output interface format of processors (`processor`).
+- Add Gantt visualization to display task result (`frontend`/`backend`).
 
 ---
 

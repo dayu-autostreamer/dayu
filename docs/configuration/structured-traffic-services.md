@@ -135,6 +135,16 @@ in the recommended traffic DAG plus supporting DAG/runtime visualizations. The h
 inspect; they do not encode DAG membership. Users can upload or adapt the same config for any runtime DAG whose services
 expose compatible structured outputs.
 
+The same config includes two task Gantt views. `service_gantt` groups each task interval by service and accepts an optional
+`services` list; when omitted, it uses every business service in the current task DAG and excludes the `_start` and `_end`
+sentinels. `service_device_gantt` requires one `service` and uses the task's deployment snapshot for its device lanes, while
+placing the task interval on the service's actual `execute_device`. Both hooks read the absolute `execute_start` and
+`execute_end` timestamps stored in each service's `tmp_data`. This is the controller-to-controller `execute_time` interval,
+which includes processor queue waiting and system overhead; it deliberately does not use the narrower `real_execute_time`
+interval. Comparing absolute intervals across devices assumes their clocks are synchronized.
+The Gantt template centers the raw `task_id` inside every interval bar. If an interval becomes narrower than a readable
+character after zooming, the bar remains time-accurate and the tooltip still exposes the complete task ID.
+
 ## Recommended Review DAG
 
 The repository includes this example as `config/application_dags/driving_risk_perception.dag`.

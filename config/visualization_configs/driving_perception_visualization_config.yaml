@@ -87,3 +87,18 @@
   variables: [ "Object Number" ]
   hook_name: obj_num
   size: 1
+- name: Service Task Gantt
+  type: gantt
+  x_axis: Time
+  y_axis: Service
+  variables: [ "Service Task Timeline" ]
+  hook_name: service_gantt
+  size: 3
+- name: Traffic Detection Device Task Gantt
+  type: gantt
+  x_axis: Time
+  y_axis: Device
+  variables: [ "Service Device Task Timeline" ]
+  hook_name: service_device_gantt
+  hook_params: '{"service": "traffic-detection"}'
+  size: 3
