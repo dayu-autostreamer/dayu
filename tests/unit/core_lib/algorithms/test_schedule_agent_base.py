@@ -37,29 +37,40 @@ def test_base_agent_initializes_policy_hooks_and_delegates_plans(monkeypatch):
 
     def fake_get_algorithm(name, **kwargs):
         policy_calls.append((name, kwargs["system"], kwargs["agent_id"]))
-        return lambda info, name=name: {"policy": name, "info": info}
+        if name == "SCH_SELECTION_POLICY":
+            return lambda info: {"policy": name, "info": info}
+        return lambda info: {"detector": ["edge-a"]}
 
     monkeypatch.setattr(base_agent_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
 
-    agent = base_agent_module.BaseAgent(system="scheduler-system", agent_id=7)
+    system = SimpleNamespace(cloud_device="cloud-a")
+    agent = base_agent_module.BaseAgent(system=system, agent_id=7)
 
     assert policy_calls == [
-        ("SCH_SELECTION_POLICY", "scheduler-system", 7),
-        ("SCH_INITIAL_DEPLOYMENT_POLICY", "scheduler-system", 7),
-        ("SCH_REDEPLOYMENT_POLICY", "scheduler-system", 7),
+        ("SCH_SELECTION_POLICY", system, 7),
+        ("SCH_INITIAL_DEPLOYMENT_POLICY", system, 7),
+        ("SCH_REDEPLOYMENT_POLICY", system, 7),
     ]
     assert agent.get_source_selection_plan({"source": 1}) == {
         "policy": "SCH_SELECTION_POLICY",
         "info": {"source": 1},
     }
-    assert agent.get_initial_deployment_plan({"dag": "a"}) == {
-        "policy": "SCH_INITIAL_DEPLOYMENT_POLICY",
-        "info": {"dag": "a"},
+    deployment_info = {
+        "dag": {"detector": {}},
+        "node_set": ["edge-a"],
     }
-    assert agent.get_redeployment_plan({"resource": "b"}) == {
-        "policy": "SCH_REDEPLOYMENT_POLICY",
-        "info": {"resource": "b"},
+    assert agent.get_initial_deployment_plan(deployment_info) == {
+        "detector": ["edge-a"],
     }
+    assert agent.get_redeployment_plan(deployment_info) == {
+        "detector": ["edge-a"],
+    }
+
+    agent.redeployment_policy = lambda info: {
+        "detector": ["edge-a"], "stale-service": ["edge-a"],
+    }
+    with pytest.raises(ValueError, match="outside the current DAG"):
+        agent.get_redeployment_plan(deployment_info)
     assert agent.should_generate({"source_id": 7}) == {
         "generate": True,
         "reason": "default_allow",

@@ -1,17 +1,43 @@
 import threading
 
-from core.lib.common import Context, LOGGER, ResourceLockManager, KubeConfig, TaskConstant
-from core.lib.network import NodeInfo
+from core.lib.common import Context, LOGGER, ResourceLockManager
+from core.lib.scheduling.deployment_plan import validate_plan
+from core.lib.runtime import RuntimeContext
+
+from .runtime_directory import RuntimeDirectoryError, create_runtime_directory_store
+from .task_lease import create_task_lease_store
 
 
 class Scheduler:
-    def __init__(self):
+    def __init__(self, runtime_context=None, runtime_directory=None, task_lease_store=None):
         self.schedule_table = {}
         self.resource_table = {}
 
         self.resource_lock_manager = ResourceLockManager()
+        self._runtime_state_lock = threading.RLock()
 
-        self.cloud_device = NodeInfo.get_cloud_node()
+        self.runtime_context = runtime_context or RuntimeContext.get_default()
+        initial_directory = runtime_directory
+        if initial_directory is None:
+            initial_directory = self.runtime_context.bootstrap.get("runtime_directory")
+        if initial_directory is None:
+            bootstrap_routes = self.runtime_context.bootstrap.get("runtime_routes")
+            if bootstrap_routes:
+                initial_directory = {
+                    "install_id": self.runtime_context.install_id,
+                    "revision": self.runtime_context.directory_revision,
+                    "routes": bootstrap_routes,
+                }
+        if runtime_directory is not None and hasattr(runtime_directory, "snapshot_model"):
+            self.runtime_directory = runtime_directory
+        else:
+            self.runtime_directory = create_runtime_directory_store(
+                self.runtime_context,
+                initial=initial_directory,
+            )
+        self.task_leases = task_lease_store or create_task_lease_store(self.runtime_context)
+
+        self.cloud_device = self.runtime_context.cloud_node or self.runtime_context.local_node
 
         self.config_extraction = Context.get_algorithm('SCH_CONFIG_EXTRACTION')
         self.scenario_retrieval = Context.get_algorithm('SCH_SCENARIO_RETRIEVAL')
@@ -52,27 +78,100 @@ class Scheduler:
             LOGGER.debug('No schedule plan, use startup policy')
             plan = self.get_startup_policy(info)
 
-        if not KubeConfig.check_services_running():
-            plan = self.set_backup_offloading_plan(plan)
-            LOGGER.debug('[Backup Offloading Plan] Processor not in running state (maybe in redeployment), '
-                         'using backup offloading plan (all cloud).')
-
         # LOGGER.info(f'[Schedule Plan] Source {source_id}: {plan}')
 
         return plan
 
-    def set_backup_offloading_plan(self, plan):
-        for service_name in plan['dag']:
-            if service_name != TaskConstant.START.value:
-                plan['dag'][service_name]['service']['execute_device'] = self.cloud_device
+    def runtime_directory_snapshot(self):
+        return self.runtime_directory.snapshot()
 
-        return plan
+    def runtime_directory_revision(self):
+        return self.runtime_directory.snapshot_model().revision
+
+    def runtime_routes(self, component=None, target_node=None, logical_service=None):
+        return [
+            route.to_dict()
+            for route in self.runtime_directory.snapshot_model().find(
+                component=component,
+                target_node=target_node,
+                logical_service=logical_service,
+            )
+        ]
+
+    def runtime_service_nodes(self):
+        return self.runtime_directory.snapshot_model().processor_deployment()
+
+    def runtime_nodes_for_service(self, logical_service):
+        return list(self.runtime_service_nodes().get(str(logical_service), []))
+
+    def runtime_edge_nodes(self):
+        context_nodes = self.runtime_context.edge_nodes()
+        if context_nodes:
+            return context_nodes
+        return self.runtime_directory.snapshot_model().edge_nodes(self.cloud_device)
+
+    def resolve_runtime_route(self, component, target_node=None, logical_service=None):
+        return self.runtime_directory.snapshot_model().resolve(
+            component=component,
+            target_node=target_node,
+            logical_service=logical_service,
+        ).to_dict()
+
+    def compact_runtime_routes(self, plan, source_device=""):
+        return self.runtime_directory.compact_routes_for_plan(
+            plan,
+            source_device=source_device,
+            cloud_node=self.cloud_device,
+        )
+
+    def replace_runtime_directory(self, directory, expected_revision):
+        with self._runtime_state_lock:
+            return self.runtime_directory.replace(directory, expected_revision)
+
+    def propose_runtime_directory(self, directory, base_revision, proposal_id=None, ttl_seconds=60.0):
+        with self._runtime_state_lock:
+            return self.runtime_directory.propose(
+                directory,
+                base_revision=base_revision,
+                proposal_id=proposal_id,
+                ttl_seconds=ttl_seconds,
+            )
+
+    def commit_runtime_directory(self, proposal_id, expected_revision):
+        with self._runtime_state_lock:
+            return self.runtime_directory.commit(proposal_id, expected_revision)
+
+    def reject_runtime_directory(self, proposal_id, reason=""):
+        with self._runtime_state_lock:
+            return self.runtime_directory.reject(proposal_id, reason)
+
+    def clear_runtime_directory(self, install_id):
+        with self._runtime_state_lock:
+            return self.runtime_directory.clear(install_id)
+
+    def acquire_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
+        with self._runtime_state_lock:
+            return self.task_leases.acquire(
+                revision=revision,
+                root_uuid=root_uuid,
+                active_revision=self.runtime_directory_revision(),
+                ttl_seconds=ttl_seconds,
+            )
+
+    def renew_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
+        return self.task_leases.renew(revision, root_uuid, ttl_seconds=ttl_seconds)
+
+    def release_task_lease(self, revision, root_uuid):
+        return self.task_leases.release(revision, root_uuid)
+
+    def count_task_leases(self, revision):
+        return self.task_leases.count(revision)
 
     def update_scheduler_scenario(self, task):
         source_id = task.get_source_id()
         if source_id not in self.schedule_table:
             LOGGER.warning(f'Scheduler agent for source {source_id} not exists!')
-            return
+            return False
         scenario = self.get_scenario_from_task(task)
         policy = self.get_policy_from_task(task)
         agent = self.schedule_table[source_id]
@@ -80,6 +179,7 @@ class Scheduler:
         agent.update_policy(policy)
         agent.update_task(task)
         # LOGGER.info(f'[Update Scenario] Source {source_id}: {scenario}')
+        return True
 
     def register_resource_table(self, device):
         if device in self.resource_table:
@@ -113,12 +213,18 @@ class Scheduler:
     def get_initial_deployment_plan(self, source_id, data):
         agent = self.schedule_table[source_id]
         plan = agent.get_initial_deployment_plan(data)
-        return plan
+        try:
+            return validate_plan(plan, data, cloud_node=self.cloud_device)
+        except ValueError as exc:
+            raise RuntimeDirectoryError(str(exc)) from exc
 
     def get_redeployment_plan(self, source_id, data):
         agent = self.schedule_table[source_id]
         plan = agent.get_redeployment_plan(data)
-        return plan
+        try:
+            return validate_plan(plan, data, cloud_node=self.cloud_device)
+        except ValueError as exc:
+            raise RuntimeDirectoryError(str(exc)) from exc
 
     @staticmethod
     def _normalize_generation_decision(decision):
@@ -147,7 +253,21 @@ class Scheduler:
                 "generate": True,
                 "reason": "default_allow_no_hook",
             }
-        return self._normalize_generation_decision(hook(data))
+        decision = self._normalize_generation_decision(hook(data))
+        revision = self.runtime_directory_revision()
+        for action in decision.get("actions") or []:
+            if not isinstance(action, dict) or action.get("type") != "clear_processor_queues":
+                continue
+            devices = action.get("target_devices") or action.get("devices") or []
+            if isinstance(devices, str):
+                devices = [devices]
+            routes = []
+            for device in devices:
+                routes.extend(self.runtime_routes(component="controller", target_node=str(device)))
+                routes.extend(self.runtime_routes(component="processor", target_node=str(device)))
+            action["runtime_directory_revision"] = revision
+            action["runtime_routes"] = routes
+        return decision
 
     def get_schedule_overhead(self):
         overheads = []

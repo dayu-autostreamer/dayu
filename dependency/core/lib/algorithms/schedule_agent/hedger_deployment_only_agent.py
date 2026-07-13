@@ -1,6 +1,6 @@
 import abc
 
-from core.lib.common import ClassFactory, ClassType, KubeConfig, LOGGER, TaskConstant
+from core.lib.common import ClassFactory, ClassType, LOGGER, TaskConstant
 from core.lib.content import Task
 from core.lib.algorithms.shared.hedger_ablation import HedgerDeploymentOnly
 
@@ -43,7 +43,7 @@ class HedgerDeploymentOnlyAgent(HedgerAblationAgentBase, abc.ABC):
         deployment_version = self.hedger.get_active_deployment_version()
         policy = {}
         policy.update(configuration)
-        service_info = KubeConfig.get_service_nodes_dict()
+        service_info = self.system.runtime_service_nodes()
         for service_name in dag:
             if service_name in service_info and service_name in offloading and offloading[service_name] in all_devices:
                 dag[service_name]['service']['execute_device'] = offloading[service_name]

@@ -1,0 +1,470 @@
+"""Canonical models shared by the Dayu managed-runtime control plane.
+
+The objects in this module deliberately contain no Kubernetes clients.  They
+describe Dayu's committed runtime directory and can therefore be serialized,
+hashed and exchanged with runtime processes without exposing Kubernetes API
+objects to those processes.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from copy import deepcopy
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
+
+_DNS_1035_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
+_LABEL_VALUE_RE = re.compile(r"^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$")
+_VALID_POSITIONS = frozenset({"cloud", "edge"})
+
+
+def canonical_json(value: Any) -> str:
+    """Return the stable JSON representation used for hashes and CAS records."""
+
+    if hasattr(value, "to_dict"):
+        value = value.to_dict()
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def canonical_hash(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _require_text(name: str, value: Any, *, max_length: int = 253) -> str:
+    value = str(value or "").strip()
+    if not value:
+        raise ValueError(f"{name} must be non-empty")
+    if len(value) > max_length:
+        raise ValueError(f"{name} must not exceed {max_length} characters")
+    return value
+
+
+def _optional_text(value: Any, *, max_length: int = 253) -> str:
+    value = str(value or "").strip()
+    if len(value) > max_length:
+        raise ValueError(f"value must not exceed {max_length} characters")
+    return value
+
+
+def _dns_fragment(value: str) -> str:
+    value = re.sub(r"[^a-z0-9-]+", "-", str(value).lower())
+    value = re.sub(r"-+", "-", value).strip("-")
+    if not value or not value[0].isalpha():
+        value = f"runtime-{value}" if value else "runtime"
+    return value
+
+
+@dataclass(frozen=True)
+class RuntimeSlot:
+    """Stable logical identity of one runtime worker, independent of revision."""
+
+    component: str
+    target_node: str
+    position: str
+    logical_service: str = ""
+    source_id: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "component", _require_text("component", self.component, max_length=63))
+        object.__setattr__(self, "target_node", _require_text("target_node", self.target_node))
+        position = str(self.position or "").strip().lower()
+        if position not in _VALID_POSITIONS:
+            raise ValueError(f"position must be one of {sorted(_VALID_POSITIONS)}, got {self.position!r}")
+        object.__setattr__(self, "position", position)
+        object.__setattr__(self, "logical_service", _optional_text(self.logical_service))
+        object.__setattr__(self, "source_id", _optional_text(self.source_id, max_length=63))
+
+        if self.component == "processor" and not self.logical_service:
+            raise ValueError("processor slots require logical_service")
+        if self.component == "generator" and not self.source_id:
+            raise ValueError("generator slots require source_id")
+
+    @property
+    def logical_key(self) -> str:
+        return "/".join((
+            self.component,
+            self.logical_service,
+            self.source_id,
+            self.position,
+            self.target_node,
+        ))
+
+    def to_dict(self) -> Dict[str, str]:
+        result = {
+            "component": self.component,
+            "target_node": self.target_node,
+            "position": self.position,
+        }
+        if self.logical_service:
+            result["logical_service"] = self.logical_service
+        if self.source_id:
+            result["source_id"] = self.source_id
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeSlot":
+        return cls(
+            component=data.get("component", ""),
+            target_node=data.get("target_node", data.get("targetNode", "")),
+            position=data.get("position", ""),
+            logical_service=data.get("logical_service", data.get("logicalService", "")),
+            source_id=data.get("source_id", data.get("sourceID", "")),
+        )
+
+    def runtime_name(self, revision: int) -> str:
+        """Build a collision-resistant DNS-1035 RuntimeService name.
+
+        A digest of the unsanitized logical key prevents aliases such as
+        ``edge_x1`` and ``edge-x1`` from collapsing to the same Kubernetes name.
+        """
+
+        revision = int(revision)
+        if revision < 1:
+            raise ValueError("revision must be positive")
+
+        parts = [self.component]
+        if self.logical_service:
+            parts.append(self.logical_service)
+        if self.source_id:
+            parts.extend(("source", self.source_id))
+        parts.append(self.target_node)
+        readable = _dns_fragment("-".join(parts))
+        digest = canonical_hash(self.to_dict())[:10]
+        suffix = f"-{digest}-r{revision}"
+        readable = readable[: 63 - len(suffix)].rstrip("-")
+        if not readable:
+            readable = "runtime"
+        name = f"{readable}{suffix}"
+        if len(name) > 63 or not _DNS_1035_RE.fullmatch(name):
+            raise ValueError(f"generated RuntimeService name is not DNS-1035: {name!r}")
+        return name
+
+
+@dataclass(frozen=True)
+class RuntimeEndpoint:
+    dns_name: str
+    port: int
+    runtime_service_uid: str = ""
+    service_uid: str = ""
+    pod_uid: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "dns_name", _require_text("dns_name", self.dns_name))
+        port = int(self.port)
+        if port < 1 or port > 65535:
+            raise ValueError("port must be in range 1..65535")
+        object.__setattr__(self, "port", port)
+        for name in ("runtime_service_uid", "service_uid", "pod_uid"):
+            object.__setattr__(self, name, str(getattr(self, name) or ""))
+
+    @property
+    def url_authority(self) -> str:
+        return f"{self.dns_name}:{self.port}"
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {"dns_name": self.dns_name, "port": self.port}
+        for key in ("runtime_service_uid", "service_uid", "pod_uid"):
+            value = getattr(self, key)
+            if value:
+                result[key] = value
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeEndpoint":
+        return cls(
+            dns_name=data.get("dns_name", data.get("dnsName", "")),
+            port=data.get("port", 0),
+            runtime_service_uid=data.get("runtime_service_uid", data.get("runtimeServiceUID", "")),
+            service_uid=data.get("service_uid", data.get("serviceUID", "")),
+            pod_uid=data.get("pod_uid", data.get("podUID", "")),
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeUnit:
+    slot: RuntimeSlot
+    runtime_id: str
+    runtime_revision: int
+    spec_hash: str
+    endpoint: Optional[RuntimeEndpoint] = None
+    rollout_hash: str = ""
+    runtime_service_uid: str = ""
+    pod_name: str = ""
+    pod_uid: str = ""
+
+    def __post_init__(self):
+        runtime_id = _require_text("runtime_id", self.runtime_id, max_length=63)
+        if not _DNS_1035_RE.fullmatch(runtime_id):
+            raise ValueError(f"runtime_id is not a DNS-1035 label: {runtime_id!r}")
+        object.__setattr__(self, "runtime_id", runtime_id)
+        revision = int(self.runtime_revision)
+        if revision < 1:
+            raise ValueError("runtime_revision must be positive")
+        object.__setattr__(self, "runtime_revision", revision)
+        spec_hash = str(self.spec_hash or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", spec_hash):
+            raise ValueError("spec_hash must be a lowercase SHA-256 hex digest")
+        object.__setattr__(self, "spec_hash", spec_hash)
+        rollout_hash = str(self.rollout_hash or "").lower()
+        if rollout_hash and not re.fullmatch(r"[0-9a-f]{64}", rollout_hash):
+            raise ValueError("rollout_hash must be empty or a lowercase SHA-256 hex digest")
+        object.__setattr__(self, "rollout_hash", rollout_hash)
+        object.__setattr__(self, "runtime_service_uid", str(self.runtime_service_uid or ""))
+        object.__setattr__(self, "pod_name", str(self.pod_name or ""))
+        object.__setattr__(self, "pod_uid", str(self.pod_uid or ""))
+
+    @property
+    def logical_key(self) -> str:
+        return self.slot.logical_key
+
+    def with_observed_spec_hash(self, observed_spec_hash: str) -> "RuntimeUnit":
+        """Return the committed unit using Sedna's authoritative spec hash.
+
+        A renderer may populate ``spec_hash`` with a deterministic Dayu-side
+        transaction fingerprint before the object exists.  Once Sedna has
+        reconciled the RuntimeService, only ``status.observedSpecHash`` is
+        authoritative; callers must replace the provisional value through this
+        method instead of attempting to reproduce Go's struct serialization.
+        """
+
+        return RuntimeUnit(
+            slot=self.slot,
+            runtime_id=self.runtime_id,
+            runtime_revision=self.runtime_revision,
+            spec_hash=observed_spec_hash,
+            endpoint=self.endpoint,
+            rollout_hash=self.rollout_hash,
+            runtime_service_uid=self.runtime_service_uid,
+            pod_name=self.pod_name,
+            pod_uid=self.pod_uid,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            **self.slot.to_dict(),
+            "runtime_id": self.runtime_id,
+            "runtime_revision": self.runtime_revision,
+            "spec_hash": self.spec_hash,
+        }
+        if self.endpoint is not None:
+            result.update(self.endpoint.to_dict())
+        return result
+
+    def to_state_dict(self) -> Dict[str, Any]:
+        """Serialize control-plane ownership fields without publishing them as routes."""
+        result = self.to_dict()
+        if self.rollout_hash:
+            result["rollout_hash"] = self.rollout_hash
+        resource_identity = {
+            key: value for key, value in {
+                "runtime_service_uid": self.runtime_service_uid,
+                "pod_name": self.pod_name,
+                "pod_uid": self.pod_uid,
+            }.items() if value
+        }
+        if resource_identity:
+            result["resource_identity"] = resource_identity
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeUnit":
+        slot_data = data.get("slot") or data
+        endpoint = data.get("endpoint")
+        if endpoint is None and (data.get("dns_name") or data.get("dnsName")):
+            endpoint = data
+        resource_identity = data.get("resource_identity", data.get("resourceIdentity", {})) or {}
+        return cls(
+            slot=RuntimeSlot.from_dict(slot_data),
+            runtime_id=data.get("runtime_id", data.get("runtimeID", "")),
+            runtime_revision=data.get("runtime_revision", data.get("runtimeRevision", 0)),
+            spec_hash=data.get("spec_hash", data.get("specHash", "")),
+            endpoint=RuntimeEndpoint.from_dict(endpoint) if endpoint else None,
+            rollout_hash=data.get("rollout_hash", data.get("rolloutHash", "")),
+            runtime_service_uid=resource_identity.get(
+                "runtime_service_uid", resource_identity.get("runtimeServiceUID", "")
+            ),
+            pod_name=resource_identity.get("pod_name", resource_identity.get("podName", "")),
+            pod_uid=resource_identity.get("pod_uid", resource_identity.get("podUID", "")),
+        )
+
+
+def _normalize_routes(routes: Iterable[RuntimeUnit]) -> Tuple[RuntimeUnit, ...]:
+    by_key: Dict[str, RuntimeUnit] = {}
+    runtime_ids = set()
+    for unit in routes:
+        if not isinstance(unit, RuntimeUnit):
+            unit = RuntimeUnit.from_dict(unit)
+        if unit.logical_key in by_key:
+            raise ValueError(f"duplicate runtime slot {unit.logical_key!r}")
+        if unit.runtime_id in runtime_ids:
+            raise ValueError(f"duplicate runtime_id {unit.runtime_id!r}")
+        by_key[unit.logical_key] = unit
+        runtime_ids.add(unit.runtime_id)
+    return tuple(by_key[key] for key in sorted(by_key))
+
+
+@dataclass(frozen=True)
+class RuntimeDirectory:
+    install_id: str
+    revision: int
+    routes: Tuple[RuntimeUnit, ...] = field(default_factory=tuple)
+
+    def __post_init__(self):
+        install_id = _require_text("install_id", self.install_id, max_length=63)
+        if not _LABEL_VALUE_RE.fullmatch(install_id):
+            raise ValueError("install_id must be a valid Kubernetes label value")
+        object.__setattr__(self, "install_id", install_id)
+        revision = int(self.revision)
+        if revision < 0:
+            raise ValueError("directory revision must be non-negative")
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "routes", _normalize_routes(self.routes))
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_hash(self._content_dict())
+
+    @property
+    def directory_revision(self) -> int:
+        return self.revision
+
+    @property
+    def nodes(self) -> Tuple[str, ...]:
+        return tuple(sorted({unit.slot.target_node for unit in self.routes}))
+
+    @property
+    def deployment(self) -> Dict[str, list]:
+        deployment: Dict[str, set] = {}
+        for unit in self.routes:
+            service = unit.slot.logical_service
+            if not service:
+                continue
+            deployment.setdefault(service, set()).add(unit.slot.target_node)
+        return {service: sorted(nodes) for service, nodes in sorted(deployment.items())}
+
+    def get(self, slot_or_key: Any) -> Optional[RuntimeUnit]:
+        key = slot_or_key.logical_key if isinstance(slot_or_key, RuntimeSlot) else str(slot_or_key)
+        return next((unit for unit in self.routes if unit.logical_key == key), None)
+
+    def _content_dict(self) -> Dict[str, Any]:
+        return {
+            "install_id": self.install_id,
+            "directory_revision": self.revision,
+            "nodes": list(self.nodes),
+            "deployment": self.deployment,
+            "routes": [unit.to_dict() for unit in self.routes],
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = self._content_dict()
+        # ``revision`` is the compact runtime API spelling.  The explicit
+        # ``directory_revision`` prevents it being confused with a unit's
+        # RuntimeService revision in persisted control-plane records.
+        result["revision"] = self.revision
+        result["hash"] = self.content_hash
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeDirectory":
+        raw_routes = data.get("routes")
+        if raw_routes is None:
+            entries = data.get("entries") or {}
+            raw_routes = entries.values() if isinstance(entries, Mapping) else entries
+        return cls(
+            install_id=data.get("install_id", data.get("installID", "")),
+            revision=data.get("directory_revision", data.get("revision", 0)),
+            routes=tuple(RuntimeUnit.from_dict(item) for item in (raw_routes or ())),
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeSession:
+    install_id: str
+    operation_id: str
+    phase: str = "new"
+    next_runtime_revision: int = 1
+    active_directory_revision: int = 0
+    active: Tuple[RuntimeUnit, ...] = field(default_factory=tuple)
+    pending: Tuple[RuntimeUnit, ...] = field(default_factory=tuple)
+    retired: Tuple[RuntimeUnit, ...] = field(default_factory=tuple)
+    source_label: str = ""
+    policy_id: str = ""
+    source_deploy: Any = field(default_factory=list)
+    last_error: str = ""
+    updated_at: str = ""
+
+    def __post_init__(self):
+        install_id = _require_text("install_id", self.install_id, max_length=63)
+        if not _LABEL_VALUE_RE.fullmatch(install_id):
+            raise ValueError("install_id must be a valid Kubernetes label value")
+        object.__setattr__(self, "install_id", install_id)
+        object.__setattr__(self, "operation_id", _require_text("operation_id", self.operation_id, max_length=128))
+        next_revision = int(self.next_runtime_revision)
+        if next_revision < 1:
+            raise ValueError("next_runtime_revision must be positive")
+        object.__setattr__(self, "next_runtime_revision", next_revision)
+        phase = _require_text("phase", self.phase, max_length=63)
+        object.__setattr__(self, "phase", phase)
+        directory_revision = int(self.active_directory_revision)
+        if directory_revision < 0:
+            raise ValueError("active_directory_revision must be non-negative")
+        object.__setattr__(self, "active_directory_revision", directory_revision)
+        object.__setattr__(self, "active", _normalize_routes(self.active))
+        object.__setattr__(self, "pending", _normalize_routes(self.pending))
+        object.__setattr__(self, "retired", _normalize_routes(self.retired))
+        object.__setattr__(self, "source_label", str(self.source_label or ""))
+        object.__setattr__(self, "policy_id", str(self.policy_id or ""))
+        object.__setattr__(self, "last_error", str(self.last_error or ""))
+        object.__setattr__(self, "updated_at", str(self.updated_at or ""))
+        # Reject non-JSON session context at the model boundary, and detach it
+        # from caller-owned dictionaries before it is persisted.
+        object.__setattr__(self, "source_deploy", json.loads(canonical_json(self.source_deploy)))
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_hash(self.to_dict())
+
+    @property
+    def directory(self) -> RuntimeDirectory:
+        return RuntimeDirectory(
+            install_id=self.install_id,
+            revision=self.active_directory_revision,
+            routes=self.active,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "install_id": self.install_id,
+            "operation_id": self.operation_id,
+            "phase": self.phase,
+            "next_runtime_revision": self.next_runtime_revision,
+            "active_directory_revision": self.active_directory_revision,
+            "active": [unit.to_state_dict() for unit in self.active],
+            "pending": [unit.to_state_dict() for unit in self.pending],
+            "retired": [unit.to_state_dict() for unit in self.retired],
+            "source_label": self.source_label,
+            "policy_id": self.policy_id,
+            "source_deploy": deepcopy(self.source_deploy),
+            "last_error": self.last_error,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeSession":
+        return cls(
+            install_id=data.get("install_id", data.get("installID", "")),
+            operation_id=data.get("operation_id", data.get("operationID", "")),
+            phase=data.get("phase", "new"),
+            next_runtime_revision=data.get("next_runtime_revision", data.get("nextRuntimeRevision", 1)),
+            active_directory_revision=data.get("active_directory_revision", data.get("activeDirectoryRevision", 0)),
+            active=tuple(RuntimeUnit.from_dict(item) for item in (data.get("active") or ())),
+            pending=tuple(RuntimeUnit.from_dict(item) for item in (data.get("pending") or ())),
+            retired=tuple(RuntimeUnit.from_dict(item) for item in (data.get("retired") or ())),
+            source_label=data.get("source_label", data.get("sourceLabel", "")),
+            policy_id=data.get("policy_id", data.get("policyID", "")),
+            source_deploy=data.get("source_deploy", data.get("sourceDeploy", [])),
+            last_error=data.get("last_error", data.get("lastError", "")),
+            updated_at=data.get("updated_at", data.get("updatedAt", "")),
+        )

@@ -22,7 +22,7 @@ class FakeCleaner:
 
 
 class FakeController:
-    def check_processor_health(self):
+    def check_processor_health(self, request=None):
         return False
 
     @staticmethod

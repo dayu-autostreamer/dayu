@@ -27,7 +27,9 @@ class Task:
                  task_uuid: str = '',
                  parent_uuid: str = '',
                  root_uuid: str = '',
-                 deployment_version: int = 0):
+                 deployment_version: int = 0,
+                 runtime_directory_revision: int = 0,
+                 runtime_routes=None):
 
         # unique uuid for each duplicated task
         self.__task_uuid = task_uuid or str(uuid.uuid4())
@@ -58,6 +60,14 @@ class Task:
         # Deployment policy version used when this task was generated.
         # Version 0 means the scheduler does not distinguish deployment versions.
         self.__deployment_version = 0 if deployment_version is None else deployment_version
+        # Exact runtime addresses are a control-plane snapshot, independent of
+        # the scheduling algorithm's deployment_version.  Keeping both fields
+        # prevents route identity from being accidentally coupled to Hedger's
+        # policy feedback/version semantics.
+        self.__runtime_directory_revision = (
+            0 if runtime_directory_revision is None else int(runtime_directory_revision)
+        )
+        self.__runtime_routes = copy.deepcopy(runtime_routes) if runtime_routes else {}
 
         # current service name in dag (work as pointer)
         self.__cur_flow_index = flow_index
@@ -192,6 +202,18 @@ class Task:
 
     def set_deployment_version(self, deployment_version):
         self.__deployment_version = 0 if deployment_version is None else deployment_version
+
+    def get_runtime_directory_revision(self):
+        return self.__runtime_directory_revision
+
+    def set_runtime_directory_revision(self, revision):
+        self.__runtime_directory_revision = 0 if revision is None else int(revision)
+
+    def get_runtime_routes(self):
+        return self.__runtime_routes
+
+    def set_runtime_routes(self, runtime_routes):
+        self.__runtime_routes = copy.deepcopy(runtime_routes) if runtime_routes else {}
 
     def get_flow_index(self):
         return self.__cur_flow_index
@@ -481,6 +503,8 @@ class Task:
             'dag': self.get_dag().to_dict() if self.get_dag() else None,
             'deployment': self.get_deployment(),
             'deployment_version': self.get_deployment_version(),
+            'runtime_directory_revision': self.get_runtime_directory_revision(),
+            'runtime_routes': self.get_runtime_routes(),
             'cur_flow_index': self.get_flow_index(),
             'past_flow_index': self.get_past_flow_index(),
             'meta_data': self.get_metadata(),
@@ -503,6 +527,10 @@ class Task:
         task.set_dag(DAG.from_dict(dag_dict['dag'])) if 'dag' in dag_dict and dag_dict['dag'] else None
         task.set_deployment(dag_dict['deployment']) if 'deployment' in dag_dict else None
         task.set_deployment_version(dag_dict['deployment_version']) if 'deployment_version' in dag_dict else None
+        task.set_runtime_directory_revision(
+            dag_dict.get('runtime_directory_revision', 0)
+        )
+        task.set_runtime_routes(dag_dict.get('runtime_routes', {}))
         task.set_flow_index(dag_dict['cur_flow_index']) if 'cur_flow_index' in dag_dict else None
         task.set_past_flow_index(dag_dict['past_flow_index']) if 'past_flow_index' in dag_dict else None
         task.set_metadata(dag_dict['meta_data']) if 'meta_data' in dag_dict else None

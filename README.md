@@ -40,9 +40,8 @@ Dayu is composed of five layers:
 - **Basic System Layer**: This layer adopts the `KubeEdge` architecture and is deployed on all distributed nodes across
   the cloud-edge environment. `KubeEdge` is the `Kubernetes` extension proposed by Huawei for edge scenarios and can be
   well deployed on devices with limited resources and low performance.
-- **Intermediate Interface Layer**: This layer is designed to offer customized service installation and component
-  communication, through modifying and expanding official interface component `Sedna` and communication component
-  `Edgemesh`.
+- **Intermediate Interface Layer**: This layer exposes Sedna `RuntimeService` as the immutable application-worker API
+  and uses EdgeMesh's exact Service/Pod identity acknowledgement as the activation barrier.
 - **System Support Layer**: This layer is designed to offer interactive ui (frontend), automatic installation (backend),
   and simulation datasource (datasource) for users.
 - **Collaboration Scheduling Layer**: This layer is composed of functional components independently developed by us to
@@ -100,10 +99,15 @@ Dayu is designed around the following ecosystem:
 - [EdgeMesh](https://github.com/kubeedge/edgemesh)
 - [TensorRT](https://github.com/NVIDIA/TensorRT)
 
-Dayu also depends on the maintained companion work around Sedna and EdgeMesh integration:
+`dayu-sedna` and `dayu-edgemesh` are released as a matched pair for each supported Dayu version. Use the following
+compatibility matrix when installing or upgrading a deployment:
 
-- [dayu-sedna](https://github.com/dayu-autostreamer/dayu-sedna)
-- [dayu-edgemesh](https://github.com/dayu-autostreamer/dayu-edgemesh)
+| Dayu version    | dayu-sedna version                                                                                                                         | dayu-edgemesh version                                                                                                                            |
+|-----------------|--------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| `v1.4`          | [`v1.1`](https://github.com/dayu-autostreamer/dayu-sedna/tree/v1.1)                                                                        | [`v1.1`](https://github.com/dayu-autostreamer/dayu-edgemesh/tree/v1.1)                                                                           |
+| `v1.0` - `v1.3` | [`v1.0`](https://github.com/dayu-autostreamer/dayu-sedna/tree/v1.0) or [`v1.1`](https://github.com/dayu-autostreamer/dayu-sedna/tree/v1.1) | [`v1.0`](https://github.com/dayu-autostreamer/dayu-edgemesh/tree/v1.0) or [`v1.1`](https://github.com/dayu-autostreamer/dayu-edgemesh/tree/v1.1) |
+
+`dayu-sedna` and `dayu-edgemesh` must use the same minor version: pair `v1.0` with `v1.0`, or `v1.1` with `v1.1`.
 
 ## Local Testing
 

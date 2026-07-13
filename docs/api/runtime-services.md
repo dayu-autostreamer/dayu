@@ -9,7 +9,12 @@ This document describes the internal APIs used by Dayu runtime components. These
 | Task payload | Internal services exchange serialized `Task` strings produced by `Task.serialize()`. |
 | File transfer | Binary task content is sent as `multipart/form-data` with a `file` field plus a `data` field containing the serialized task. |
 | Scheduler/resource updates | Scheduler endpoints often receive JSON encoded into a form field named `data`. |
-| Compatibility | Several endpoints use `GET` while still reading form or JSON request bodies. Clients in this repository depend on that behavior. |
+| Runtime bootstrap | `DAYU_RUNTIME_BOOTSTRAP` supplies immutable install context and static infrastructure endpoints; it is never a Kubernetes discovery cache. |
+| Exact task routing | `Task` serializes `runtime_directory_revision`, `runtime_routes`, and `root_uuid`. Controller/processor routes must be complete exact identities. |
+| Task drain | Runtime services acquire/renew/release a Scheduler lease keyed by `(runtime_directory_revision, root_uuid)`. |
+
+Runtime service code does not import Kubernetes, load a kubeconfig, or discover Pods, Nodes, or Services. Missing or
+ambiguous task routes fail closed.
 
 ## Controller Service
 
@@ -17,15 +22,18 @@ Implementation entrypoint: `dependency/core/controller/controller_server.py`
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `POST` | `/check` | Check whether the processor layer is reachable and healthy. | None | `{status: "ok"|"not ok"}` |
+| `POST` | `/check` | Check processors referenced by exact local runtime routes. | Optional form `data` with JSON containing `runtime_routes` | `{status: "ok"|"not ok"}` |
 | `POST` | `/submit_task` | Accept a new task from generator or another controller. | Multipart with `file` and serialized `data` | Empty `200` response after background enqueue |
 | `POST` | `/process_return_task` | Accept a processed task returned by processor. | Form field `data` with serialized task | Empty `200` response after background enqueue |
+| `POST` | `/processor_queues_clear` | Fan out a dry-run or destructive queue-clear request through exact local processor routes. | Form `data` with `{runtime_routes,services?,timeout_s?,reason?,max_count?,dry_run?}` | Aggregate `{ok,device,service_count,matched_count,cleared_count,remaining_count,services}` |
 
 Operational notes:
 
 - On startup the controller clears its temp directory.
 - If `DELETE_TEMP_FILES` is enabled, a `FileCleaner` thread removes stale temp files.
 - `submit_task` stores the uploaded file in the temp directory and forwards the task into the controller pipeline asynchronously.
+- Controller resolves downstream controller/processor targets only from the Task's exact route snapshot and renews the
+  Task lease as work advances. Missing route or failed renewal stops forwarding.
 
 ## Processor Service
 
@@ -47,6 +55,8 @@ Operational notes:
 - `PROCESSOR_NAME` selects the processor implementation.
 - `PRO_QUEUE_NAME` selects the queue strategy.
 - A background thread drains the task queue and posts results back to controller through `/process_return_task`.
+- Processor validates the exact task route and keeps its lease renewed throughout execution; it does not resolve
+  service placement from local or cluster state. A full TTL without a confirmed heartbeat fails closed.
 - `/queue_clear` supports dry-run previews when the selected queue exposes `get_all_without_drop()`. Destructive clears
   prefer a queue-level `drain(max_count=...)` method and otherwise fall back to repeated `get()` calls.
 - All processor implementations store inference content as `{"service", "outputs", "profile"}`. `outputs` is keyed by
@@ -64,15 +74,64 @@ Implementation entrypoint: `dependency/core/scheduler/scheduler_server.py`
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `GET` | `/schedule` | Generate a schedule plan for one source. | Form field `data` with JSON object | `{plan, deployment}` |
+| `GET` | `/schedule` | Generate a schedule plan plus exact routes for one source. | Form field `data` with JSON object | `{plan,deployment,deployment_version,runtime_directory_revision,runtime_routes}` |
 | `GET` | `/overhead` | Get average scheduler overhead across agents. | None | Number of seconds |
-| `POST` | `/scenario` | Update scheduler state with a processed task scenario. | Form field `data` with serialized task | `null` |
+| `POST` | `/scenario` | Update scheduler state with a processed task scenario. | Form field `data` with serialized task | `{accepted: boolean}` |
 | `POST` | `/resource` | Update scheduler resource table for one device. | Form field `data` with JSON `{"device","resource"}` | `null` |
 | `GET` | `/resource` | Get the full scheduler resource table. | None | Object keyed by device |
 | `GET` | `/resource_lock` | Acquire resource ownership for a monitor probe such as bandwidth. | Form field `data` with JSON `{"resource","device"}` | `{holder}` |
 | `GET` | `/source_nodes_selection` | Generate source-to-edge-node selection plan. | Form field `data` with JSON array | `{plan}` |
-| `GET` | `/initial_deployment` | Generate initial deployment plan. | Form field `data` with JSON array | `{plan}` |
-| `GET` | `/redeployment` | Generate redeployment plan. | Form field `data` with JSON array | `{plan}` |
+| `GET` | `/initial_deployment` | Generate initial deployment plan. | Form field `data` with JSON array | `{plan: {service: [node, ...]}}` |
+| `GET` | `/redeployment` | Generate redeployment plan. | Form field `data` with JSON array | `{plan: {service: [node, ...]}}` |
+| `GET` | `/generation_admission` | Decide whether one source may generate the next task. | Form field `data` with source request JSON | Policy-specific admission response |
+
+Initial-deployment and redeployment policies have one canonical result contract: each key is a logical service name and
+its value is a JSON list of target node names. Scheduler unions node lists for the same logical service across sources.
+Node-to-services maps and scalar node values are invalid; Backend does not guess their orientation or repair an
+incomplete plan. Scheduler and policy plugins enforce this shared contract through
+`dependency/core/lib/scheduling/deployment_plan.py`. After validation, Backend may add the exact cloud node to every
+service when `default-cloud-processor-backup` is enabled; this changes the published desired deployment, not the
+Scheduler API response contract.
+
+### RuntimeDirectory control API
+
+These endpoints are internal control-plane contracts. Backend is the only publisher; runtime readers consume
+committed snapshots and task routes.
+
+| Method | Path | Purpose | Request | Response |
+| --- | --- | --- | --- | --- |
+| `GET` | `/runtime-directory` | Read the canonical committed snapshot. | None | `{install_id,directory_revision,nodes,deployment,routes,hash}` |
+| `PUT` | `/runtime-directory` | Publish the initial snapshot with CAS. | Form `data` containing `{directory,expected_revision}` | Canonical committed snapshot |
+| `DELETE` | `/runtime-directory` | Atomically clear the exact install's active snapshot and all indexed pending proposals after leases drain. | Form `data` containing `{install_id}` | `{cleared,install_id,previous_revision}` |
+| `POST` | `/runtime-directory/proposals` | Persist a candidate next revision. | Form `data` containing `{directory,base_revision,proposal_id,ttl_seconds}` | Proposal record |
+| `POST` | `/runtime-directory/proposals/{proposal_id}/commit` | Commit a persisted proposal against the expected active revision. | Form `data` containing `{expected_revision}` | Canonical committed snapshot |
+| `POST` | `/runtime-directory/proposals/{proposal_id}/reject` | Reject an uncommitted proposal. | Optional form `data` containing `{reason}` | Rejection record |
+
+The directory validates positive revisions, unique logical slots/runtime ids, canonical node/deployment summaries, and
+its content hash. Processor routes require a logical service and a complete endpoint tuple. Publication conflicts
+return `409`; missing proposal/state returns `404`; invalid content returns `422`. In managed mode, the active snapshot
+and unexpired proposals are Redis-backed and survive Scheduler Pod replacement. A production Scheduler without the
+bootstrap Redis endpoint fails at startup; an in-memory store is available only through explicit test/local-harness
+injection.
+
+`DELETE /runtime-directory` is install-id guarded: clearing another install returns `409`, while clearing already
+absent directory/proposal state succeeds with `previous_revision: 0`. One Redis script reads the install-scoped
+proposal index and deletes the active snapshot, every indexed pending proposal, and the index atomically. Task-lease
+keys are intentionally separate and retain their lease-derived expiry.
+
+### Task lease API
+
+| Method | Path | Purpose | Request | Response |
+| --- | --- | --- | --- | --- |
+| `GET` | `/runtime-directory/task-leases?revision=N` | Count unexpired leases for one revision. | Query `revision` | `{revision,count}` |
+| `POST` | `/runtime-directory/task-leases` | Acquire a lease only for the currently active revision. | Form `data` with `{revision,root_uuid,ttl_seconds}` | `{revision,root_uuid,expires_at}` |
+| `PUT` | `/runtime-directory/task-leases` | Renew an existing unexpired lease. | Form `data` with `{revision,root_uuid,ttl_seconds}` | `{revision,root_uuid,expires_at}` |
+| `DELETE` | `/runtime-directory/task-leases` | Release an existing lease. | Form `data` with `{revision,root_uuid}` | `{revision,root_uuid,expires_at,released}` |
+
+Production Scheduler stores directories/proposals and leases in Redis, scoped by install id and revision. Redis uses
+a host-mounted AOF with synchronous fsync, and normal uninstall atomically clears the active snapshot and all pending
+proposals after drain. Expired lease entries are pruned on access. In-memory storage is reserved for explicit
+test/local-harness injection; it is never an automatic production fallback.
 
 `/schedule` expects data close to:
 
@@ -90,6 +149,8 @@ Implementation entrypoint: `dependency/core/scheduler/scheduler_server.py`
 ```
 
 Different `GEN_BSO` implementations may append scheduler-specific fields such as `skip_count`, `frame`, or `hash_code`.
+The schedule is not usable unless Scheduler can also return an active positive directory revision and unambiguous
+exact routes required by the plan; otherwise `/schedule` returns `503`.
 
 ## Distributor Service
 
@@ -106,7 +167,11 @@ Implementation entrypoint: `dependency/core/distributor/distributor_server.py`
 | `POST` | `/clear_database` | Clear the result database. | None | `null` |
 | `GET` | `/is_database_empty` | Check whether the result database contains records. | None | Boolean |
 
-Compatibility note:
+Distributor releases the task lease only after the result is durably stored and Scheduler returns
+`{"accepted": true}` for the scenario update. A release transport failure is logged and left to TTL expiry so a
+control-plane drain remains conservative.
+
+Implementation note:
 
 - `/result`, `/file`, and `/result_by_time` are implemented as `GET` routes but still expect a JSON request body. This is an implementation detail that callers inside the repository currently rely on.
 
@@ -163,7 +228,7 @@ These runtime components are important for understanding the system but do not e
 
 | Component | Behavior | Main code path |
 | --- | --- | --- |
-| Generator | Instantiates the configured generator type and starts its run loop. | `dependency/core/generator/generator_server.py` |
+| Generator | Waits for schedulable exact routes, acquires the revision lease, copies routes into Task, and starts its run loop. | `dependency/core/generator/generator_server.py` |
 | Monitor | Periodically samples `MON_PRAM` hooks and posts resource data to scheduler. | `dependency/core/monitor/monitor.py` |
 | Datasource supervisor | Polls backend `/datasource_state` and starts or stops local source processes. | `datasource/datasource_server.py` |
 | RTSP stream source | Reads `rtsp_video/manifest.json` through `VideoDataset` and streams clips to the configured RTSP address. | `datasource/rtsp_video.py` |

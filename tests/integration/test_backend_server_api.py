@@ -8,6 +8,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from runtime_model import RuntimeDirectory, RuntimeSlot, RuntimeUnit
+
+
+def _active_directory():
+    slot = RuntimeSlot(
+        "processor", "edge-a", "edge", logical_service="face-detection"
+    )
+    return RuntimeDirectory(
+        "install-api",
+        1,
+        (RuntimeUnit(slot, slot.runtime_name(1), 1, "a" * 64),),
+    )
+
 
 class FakeStreamResponse:
     def __init__(self, payload: bytes):
@@ -57,6 +70,9 @@ class FakeBackendCore:
         self.source_open = False
         self.source_label = ""
         self.inner_datasource = True
+        self.runtime_orchestrator = type("RuntimeView", (), {
+            "active_directory": staticmethod(_active_directory),
+        })()
         self._export_payload = gzip.compress(json.dumps([{"task_id": 1}]).encode("utf-8"))
 
     def parse_base_info(self):
@@ -118,11 +134,6 @@ class FakeBackendCore:
 def backend_client(monkeypatch):
     backend_server_module = importlib.import_module("backend_server")
     monkeypatch.setattr(backend_server_module, "BackendCore", FakeBackendCore)
-    monkeypatch.setattr(
-        backend_server_module.KubeHelper,
-        "check_pod_name",
-        staticmethod(lambda name, namespace: name == "face-detection"),
-    )
 
     backend = backend_server_module.BackendServer()
     with TestClient(backend.app) as client:

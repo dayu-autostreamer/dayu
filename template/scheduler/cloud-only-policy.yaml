@@ -21,33 +21,11 @@ pod-template:
           'fixed_type':'hostname'
         }
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
-      value: fixed
-    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
-      value: >
-        {
-          'policy':{
-            "vehicle-detection": [],
-            "pedestrian-detection": [],
-            "category-identification": [],
-            "license-plate-recognition": [],
-            "exposure-identification": []
-          }
-        }
+      value: cloud
     - name: SCH_REDEPLOYMENT_POLICY_NAME
-      value: fixed
-    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
-      value: >
-        {
-          'policy':{
-            "vehicle-detection": [],
-            "pedestrian-detection": [],
-            "category-identification": [],
-            "license-plate-recognition": [],
-            "exposure-identification": []
-          }
-        }
+      value: cloud
     - name: SCH_AGENT_NAME
-      value: fixed
+      value: cloud
     - name: SCH_AGENT_PARAMETERS
       value: >
         {
@@ -56,13 +34,6 @@ pod-template:
             'fps': 6,
             'encoding': 'mp4v',
             'buffer_size': 2
-          },
-          'offloading':{
-            'pedestrian-detection':'cloud.kubeedge',
-            'exposure-identification':'cloud.kubeedge',
-            'vehicle-detection':'cloud.kubeedge',
-            'category-identification':'cloud.kubeedge',
-            'license-plate-recognition':'cloud.kubeedge'
           }
         }
 port-open:

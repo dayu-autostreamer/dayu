@@ -1,662 +1,301 @@
-import copy
-import importlib
+import threading
 from types import SimpleNamespace
 
 import pytest
 
-
-def _processor_doc(name):
-    return {
-        "apiVersion": "sedna.io/v1alpha1",
-        "kind": "JointMultiEdgeService",
-        "metadata": {"name": name, "namespace": "dayu"},
-        "spec": {"edgeWorker": []},
-    }
+from runtime_model import RuntimeDirectory, RuntimeEndpoint, RuntimeSlot, RuntimeUnit
 
 
-def _doc_names(docs):
-    return [doc["metadata"]["name"] for doc in docs]
+def _unit(component, port, revision=1):
+    slot = RuntimeSlot(component, "cloud-a", "cloud")
+    runtime_id = slot.runtime_name(revision)
+    return RuntimeUnit(
+        slot=slot,
+        runtime_id=runtime_id,
+        runtime_revision=revision,
+        spec_hash="a" * 64,
+        endpoint=RuntimeEndpoint(
+            dns_name=f"{runtime_id}.dayu.svc.cluster.local",
+            port=port,
+            runtime_service_uid=f"{component}-runtime-uid",
+            service_uid=f"{component}-service-uid",
+            pod_uid=f"{component}-pod-uid",
+        ),
+    )
 
 
-class FakeThread:
-    def __init__(self, target):
-        self.target = target
-        self.started = False
+def _directory(revision=1):
+    return RuntimeDirectory(
+        install_id="install-a",
+        revision=revision,
+        routes=(_unit("scheduler", 9001, revision), _unit("distributor", 9003, revision)),
+    )
 
-    def start(self):
-        self.started = True
+
+class FakeOrchestrator:
+    def __init__(self):
+        self.directory = _directory()
+        self.session = SimpleNamespace(
+            phase="active", policy_id="policy-a", install_id="install-a"
+        )
+        self.install_calls = []
+        self.uninstall_calls = 0
+        self.redeploy_calls = []
+        self.install_error = None
+        self.uninstall_error = None
+        self.redeploy_error = None
+        self.changed = True
+
+    def install(self, **kwargs):
+        self.install_calls.append(kwargs)
+        if self.install_error:
+            raise self.install_error
+        return self.directory
+
+    def uninstall(self):
+        self.uninstall_calls += 1
+        if self.uninstall_error:
+            raise self.uninstall_error
+
+    def current_session(self):
+        return self.session
+
+    def redeploy(self, policy):
+        self.redeploy_calls.append(policy)
+        if self.redeploy_error:
+            raise self.redeploy_error
+        return self.changed
+
+    def recover(self):
+        return self.session
+
+    def active_directory(self):
+        return self.directory
 
 
 @pytest.fixture
-def backend_core_instance(mounted_runtime, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "check_pod_name",
-        staticmethod(lambda *args, **kwargs: False),
-    )
-    return backend_core_module.BackendCore()
+def backend_core_instance(mounted_runtime):
+    from backend_core import BackendCore
+
+    instance = BackendCore()
+    instance.runtime_orchestrator = FakeOrchestrator()
+    return instance
 
 
-@pytest.mark.unit
-def test_parse_and_apply_templates_runs_two_stage_install_and_starts_cycle_thread(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    source_deploy = [{"source": {"id": 0, "name": "camera-0"}, "dag": {}, "node_set": ["edge1"]}]
-    first_docs = [_processor_doc("scheduler"), _processor_doc("monitor")]
-    second_docs = [_processor_doc("controller"), _processor_doc("generator"), _processor_doc("processor-face")]
-    saved_docs = []
-    install_calls = []
-    install_records = []
-    created_threads = []
+def test_install_delegates_transaction_and_binds_directory_urls(backend_core_instance, monkeypatch):
+    started = []
 
-    def finetune_yaml_parameters(yaml_dict, deploy, scopes):
-        if scopes == ["controller", "generator", "processor"]:
-            deploy[0]["source"]["source_device"] = "edge1"
-            return copy.deepcopy(second_docs)
-        return copy.deepcopy(first_docs)
+    class FakeThread:
+        def __init__(self, **kwargs):
+            started.append(kwargs)
 
-    backend_core_instance.template_helper = SimpleNamespace(
-        load_policy_apply_yaml=lambda policy: {"scheduler": {"policy": policy["id"]}},
-        load_application_apply_yaml=lambda service_dict: service_dict,
-        finetune_yaml_parameters=finetune_yaml_parameters,
+        def start(self):
+            started[-1]["started"] = True
+
+    import backend_core as backend_core_module
+
+    monkeypatch.setattr(backend_core_module.threading, "Thread", FakeThread)
+    policy = {"id": "policy-a"}
+    source_deploy = [{"source": {"id": 0}, "dag": {}, "node_set": ["edge-a"]}]
+
+    ok, message = backend_core_instance.parse_and_apply_templates(
+        policy, source_deploy, source_label="source-a"
     )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "extract_service_from_source_deployment",
-        lambda deploy: {"face-detection": {"yaml": "face.yaml", "node": ["edge1"]}},
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "install_yaml_templates",
-        lambda docs: install_calls.append(copy.deepcopy(docs)) or (True, ""),
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "save_component_yaml",
-        lambda docs: saved_docs.append(copy.deepcopy(docs)),
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "save_install_record",
-        lambda install_id, source_label, policy_id, state, docs: install_records.append(
-            {
-                "install_id": install_id,
-                "source_label": source_label,
-                "policy_id": policy_id,
-                "state": state,
-                "docs": copy.deepcopy(docs),
-            }
-        ),
-    )
-    monkeypatch.setattr(backend_core_module.time, "sleep", lambda seconds: None)
+
+    assert (ok, message) == (True, "Install services successfully")
+    assert backend_core_instance.runtime_orchestrator.install_calls == [{
+        "policy": policy,
+        "source_deploy": source_deploy,
+        "source_label": "source-a",
+    }]
+    assert backend_core_instance.resource_url.endswith(":9001/resource")
+    assert backend_core_instance.result_url.endswith(":9003/result")
+    assert started[0]["name"] == "dayu-runtime-redeployment-install-a"
+    assert started[0]["daemon"] is True
+    assert started[0]["started"] is True
+    assert started[0]["args"][1] == "install-a"
+
+
+def test_install_failure_is_reported_without_starting_rollout_loop(backend_core_instance, monkeypatch):
+    backend_core_instance.runtime_orchestrator.install_error = RuntimeError("activation failed")
+    import backend_core as backend_core_module
+
     monkeypatch.setattr(
         backend_core_module.threading,
         "Thread",
-        lambda target: created_threads.append(FakeThread(target)) or created_threads[-1],
+        lambda **kwargs: pytest.fail("rollout loop must not start after failed install"),
     )
 
-    result, msg = backend_core_instance.parse_and_apply_templates(
-        {"id": "fixed"},
-        copy.deepcopy(source_deploy),
-        source_label="source-config-0",
-    )
+    ok, message = backend_core_instance.parse_and_apply_templates({}, [])
 
-    assert (result, msg) == (True, "Install services successfully")
-    assert [_doc_names(docs) for docs in install_calls] == [
-        ["scheduler", "monitor"],
-        ["controller", "generator", "processor-face"],
-    ]
-    assert [_doc_names(docs) for docs in saved_docs] == [
-        ["scheduler", "monitor"],
-        ["scheduler", "monitor", "controller", "generator", "processor-face"],
-    ]
-    assert all(
-        doc["metadata"]["labels"]["dayu.io/runtime-scope"] == "installation"
-        for docs in install_calls
-        for doc in docs
-    )
-    assert all(
-        doc["metadata"]["annotations"]["dayu.io/source-label"] == "source-config-0"
-        for docs in install_calls
-        for doc in docs
-    )
-    assert [record["state"] for record in install_records] == ["installing", "installing", "installed"]
-    assert len({record["install_id"] for record in install_records}) == 1
-    assert backend_core_instance.installed_running_state is True
-    assert backend_core_instance.is_cycle_deploy is True
-    assert backend_core_instance.yaml_dict == {
-        "scheduler": {"policy": "fixed"},
-        "processor": {"face-detection": {"yaml": "face.yaml", "node": ["edge1"]}},
-    }
-    assert backend_core_instance.source_deploy == [
-        {"source": {"id": 0, "name": "camera-0", "source_device": "edge1"}, "dag": {}, "node_set": ["edge1"]}
-    ]
-    assert created_threads and created_threads[0].target == backend_core_instance.run_cycle_deploy
-    assert created_threads[0].started is True
+    assert ok is False
+    assert "activation failed" in message
+    assert backend_core_instance._redeployment_stop_event is None
 
 
-@pytest.mark.unit
-def test_parse_and_apply_templates_handles_first_stage_timeout(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    first_docs = [_processor_doc("scheduler")]
-    saved_docs = []
-    install_records = []
-
-    backend_core_instance.template_helper = SimpleNamespace(
-        load_policy_apply_yaml=lambda policy: {"scheduler": {"policy": policy["id"]}},
-        load_application_apply_yaml=lambda service_dict: service_dict,
-        finetune_yaml_parameters=lambda yaml_dict, deploy, scopes: copy.deepcopy(first_docs),
-    )
-    monkeypatch.setattr(backend_core_instance, "extract_service_from_source_deployment", lambda deploy: {})
-    monkeypatch.setattr(
-        backend_core_instance,
-        "install_yaml_templates",
-        lambda docs: (_ for _ in ()).throw(backend_core_module.timeout_exceptions.FunctionTimedOut()),
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "save_component_yaml",
-        lambda docs: saved_docs.append(copy.deepcopy(docs)),
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "save_install_record",
-        lambda install_id, source_label, policy_id, state, docs: install_records.append(state),
-    )
-
-    result, msg = backend_core_instance.parse_and_apply_templates({"id": "fixed"}, [])
-
-    assert (result, msg) == (False, "first-stage install timeout after 100 seconds")
-    assert [_doc_names(docs) for docs in saved_docs] == [["scheduler"]]
-    assert install_records == ["installing", "failed"]
-    assert backend_core_instance.installed_running_state is False
-    assert backend_core_instance.is_cycle_deploy is False
-
-
-@pytest.mark.unit
-def test_parse_and_apply_templates_handles_second_stage_exception(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    first_docs = [_processor_doc("scheduler")]
-    second_docs = [_processor_doc("controller"), _processor_doc("processor-face")]
-    saved_docs = []
-    install_records = []
-    install_count = {"count": 0}
-
-    backend_core_instance.template_helper = SimpleNamespace(
-        load_policy_apply_yaml=lambda policy: {"scheduler": {"policy": policy["id"]}},
-        load_application_apply_yaml=lambda service_dict: service_dict,
-        finetune_yaml_parameters=lambda yaml_dict, deploy, scopes: copy.deepcopy(
-            first_docs if scopes == ["scheduler", "distributor", "monitor"] else second_docs
-        ),
-    )
-    monkeypatch.setattr(backend_core_instance, "extract_service_from_source_deployment", lambda deploy: {})
-
-    def install_yaml_templates(docs):
-        install_count["count"] += 1
-        if install_count["count"] == 2:
-            raise RuntimeError("boom")
-        return True, ""
-
-    monkeypatch.setattr(backend_core_instance, "install_yaml_templates", install_yaml_templates)
-    monkeypatch.setattr(
-        backend_core_instance,
-        "save_component_yaml",
-        lambda docs: saved_docs.append(copy.deepcopy(docs)),
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "save_install_record",
-        lambda install_id, source_label, policy_id, state, docs: install_records.append(state),
-    )
-    monkeypatch.setattr(backend_core_module.time, "sleep", lambda seconds: None)
-
-    result, msg = backend_core_instance.parse_and_apply_templates({"id": "fixed"}, [])
-
-    assert (result, msg) == (False, "unexpected system error, please refer to logs in backend")
-    assert install_count["count"] == 2
-    assert [_doc_names(docs) for docs in saved_docs] == [
-        ["scheduler"],
-        ["scheduler", "controller", "processor-face"],
-    ]
-    assert install_records == ["installing", "installing", "failed"]
-    assert backend_core_instance.installed_running_state is False
-    assert backend_core_instance.is_cycle_deploy is False
-
-
-@pytest.mark.unit
-def test_parse_and_delete_templates_waits_for_lock_and_handles_timeout(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    sleep_calls = []
-    backend_core_instance.uninstall_lock = True
-    backend_core_instance.is_cycle_deploy = True
-
-    def fake_sleep(seconds):
-        sleep_calls.append(seconds)
-        backend_core_instance.uninstall_lock = False
-
-    monkeypatch.setattr(backend_core_module.time, "sleep", fake_sleep)
-    monkeypatch.setattr(backend_core_instance, "read_runtime_component_docs", lambda: [_processor_doc("processor-face")])
-    monkeypatch.setattr(backend_core_instance, "read_install_record", lambda: {})
-    monkeypatch.setattr(backend_core_instance, "save_install_record", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        backend_core_instance,
-        "uninstall_yaml_templates",
-        lambda docs: (_ for _ in ()).throw(backend_core_module.timeout_exceptions.FunctionTimedOut()),
-    )
-
-    result, msg = backend_core_instance.parse_and_delete_templates()
-
-    assert (result, msg) == (False, "timeout after 200 seconds")
-    assert sleep_calls[0] == 0.5
-    assert backend_core_instance.is_cycle_deploy is False
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("original_docs", "operate_outcome_factory", "expected"),
-    [
-        (None, lambda backend_core_module: None, (False, "")),
-        ([_processor_doc("processor-face")], lambda backend_core_module: (False, "apply failed"), (False, "apply failed")),
-        (
-            [_processor_doc("processor-face")],
-            lambda backend_core_module: RuntimeError("broken"),
-            (False, "unexpected system error, please refer to logs in backend"),
-        ),
-        (
-            [_processor_doc("processor-face")],
-            lambda backend_core_module: backend_core_module.timeout_exceptions.FunctionTimedOut(),
-            (
-                False,
-                "processor redeployment timeout; add=['processor-new'], "
-                "update=['processor-face'], delete=[]",
-            ),
-        ),
-        ([_processor_doc("processor-face")], lambda backend_core_module: (True, ""), (True, "")),
-    ],
-)
-def test_parse_and_redeploy_services_handles_state_and_failures(
-    backend_core_instance,
-    monkeypatch,
-    original_docs,
-    operate_outcome_factory,
-    expected,
+def test_backend_startup_recovery_rebinds_active_directory_and_restarts_rollout_loop(
+    backend_core_instance, monkeypatch
 ):
-    backend_core_module = importlib.import_module("backend_core")
-    operate_outcome = operate_outcome_factory(backend_core_module)
-    update_docs = [_processor_doc("processor-face"), _processor_doc("processor-new")]
-    monkeypatch.setattr(backend_core_instance, "read_component_yaml", lambda: copy.deepcopy(original_docs))
-
-    if original_docs is not None:
-        monkeypatch.setattr(
-            backend_core_instance,
-            "check_and_update_docs_list",
-            lambda current_docs, new_docs: (
-                current_docs + [_processor_doc("processor-new")],
-                [_processor_doc("processor-new")],
-                [_processor_doc("processor-face")],
-                [],
-            ),
-        )
-
-        def operate_processors(docs_to_update, docs_to_add, docs_to_delete):
-            if isinstance(operate_outcome, BaseException):
-                raise operate_outcome
-            return operate_outcome
-
-        monkeypatch.setattr(backend_core_instance, "operate_processors", operate_processors)
-
-    assert backend_core_instance.parse_and_redeploy_services(update_docs) == expected
-
-
-@pytest.mark.unit
-def test_operate_processors_waits_for_deleted_and_started_pods(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    delete_checks = iter([True, False])
-    start_checks = iter([False, True])
-    observed = {"delete": [], "start": []}
-    sleep_calls = []
-
+    started = []
     monkeypatch.setattr(
         backend_core_instance,
-        "update_processors",
-        lambda docs: (True, "", ["processor-update"]),
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "install_processors",
-        lambda docs: (True, "", ["processor-add"]),
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "uninstall_processors",
-        lambda docs: (True, "", ["processor-delete"]),
-    )
-    monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "check_pods_with_string_exists",
-        staticmethod(
-            lambda namespace, include_str_list=None: observed["delete"].append(list(include_str_list)) or next(delete_checks)
-        ),
-    )
-    monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "check_specific_pods_running",
-        staticmethod(
-            lambda namespace, names: observed["start"].append(list(names)) or next(start_checks)
-        ),
-    )
-    monkeypatch.setattr(backend_core_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
-
-    result = backend_core_instance.operate_processors(
-        [_processor_doc("processor-update")],
-        [_processor_doc("processor-add")],
-        [_processor_doc("processor-delete")],
+        "_start_redeployment_loop",
+        lambda install_id: started.append(install_id),
     )
 
-    assert result == (True, "")
-    assert observed["delete"] == [["processor-delete", "processor-update"], ["processor-delete", "processor-update"]]
-    assert observed["start"] == [["processor-add", "processor-update"], ["processor-add", "processor-update"]]
-    assert sleep_calls == [1, 1]
+    backend_core_instance._recover_runtime_session()
+
+    assert backend_core_instance.resource_url.endswith(":9001/resource")
+    assert backend_core_instance.result_url.endswith(":9003/result")
+    assert started == ["install-a"]
 
 
-@pytest.mark.unit
-def test_processor_resource_helpers_filter_support_components_and_surface_errors(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    applied_docs = []
-    deleted_docs = []
-    yaml_docs = [_processor_doc("backend"), _processor_doc("processor-face")]
-
-    monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "apply_custom_resources",
-        staticmethod(lambda docs: applied_docs.append([doc["metadata"]["name"] for doc in docs]) or True),
-    )
-    monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "delete_custom_resources",
-        staticmethod(lambda docs: deleted_docs.append([doc["metadata"]["name"] for doc in docs]) or True),
+@pytest.mark.parametrize("phase", ["clearing-directory", "finalizing-uninstall"])
+def test_backend_startup_recovery_finishes_interrupted_uninstall(backend_core_instance, phase):
+    backend_core_instance.runtime_orchestrator.session = SimpleNamespace(
+        phase=phase,
+        policy_id="policy-a",
+        install_id="install-a",
+        last_error="",
     )
 
-    assert backend_core_instance.update_processors(copy.deepcopy(yaml_docs)) == (True, "", ["processor-face"])
-    assert backend_core_instance.install_processors(copy.deepcopy(yaml_docs)) == (True, "", ["processor-face"])
-    assert backend_core_instance.uninstall_processors(copy.deepcopy(yaml_docs)) == (True, "", ["processor-face"])
-    assert applied_docs == [["processor-face"], ["processor-face"]]
-    assert deleted_docs == [["processor-face"], ["processor-face"]]
+    backend_core_instance._recover_runtime_session()
 
-    assert backend_core_instance.install_processors([_processor_doc("backend")]) == (
-        True,
-        "no processors need to be installed.",
-        [],
-    )
-
-    monkeypatch.setattr(backend_core_module.KubeHelper, "apply_custom_resources", staticmethod(lambda docs: False))
-    monkeypatch.setattr(backend_core_module.KubeHelper, "delete_custom_resources", staticmethod(lambda docs: False))
-
-    assert backend_core_instance.update_processors([_processor_doc("processor-face")]) == (
-        False,
-        "kubernetes api error.",
-        [],
-    )
-    assert backend_core_instance.install_processors([_processor_doc("processor-face")]) == (
-        False,
-        "kubernetes api error.",
-        [],
-    )
-    assert backend_core_instance.uninstall_processors([_processor_doc("processor-face")]) == (
-        False,
-        "kubernetes api error.",
-        [],
-    )
+    assert backend_core_instance.runtime_orchestrator.uninstall_calls == 1
 
 
-@pytest.mark.unit
-def test_yaml_template_helpers_wait_for_cluster_state(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    running_checks = iter([False, True])
-    install_checks = iter([True, False])
-    sleep_calls = []
+def test_uninstall_delegates_drain_and_clears_only_runtime_bindings(backend_core_instance):
+    backend_core_instance._bind_runtime_urls(_directory())
+    stop_event = threading.Event()
+    backend_core_instance._redeployment_stop_event = stop_event
+    backend_core_instance._redeployment_thread = object()
 
-    monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "apply_custom_resources",
-        staticmethod(lambda docs: True),
-    )
-    monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "delete_custom_resources",
-        staticmethod(lambda docs: True),
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "check_pods_running_state",
-        lambda: next(running_checks),
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "check_install_state",
-        lambda: next(install_checks),
-    )
-    monkeypatch.setattr(backend_core_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
-    backend_core_instance.installed_running_state = True
+    result = backend_core_instance.parse_and_delete_templates()
 
-    assert backend_core_instance.install_yaml_templates(None) == (
-        False,
-        "yaml data is lost, fail to install resources",
-    )
-    assert backend_core_instance.uninstall_yaml_templates(None) == (
-        False,
-        "yaml docs is lost, fail to delete resources",
-    )
-    assert backend_core_instance.install_yaml_templates([_processor_doc("processor-face")]) == (True, "")
-    assert backend_core_instance.uninstall_yaml_templates([_processor_doc("processor-face")]) == (True, "")
-    assert backend_core_instance.installed_running_state is False
-    assert sleep_calls == [1, 1]
-
-
-@pytest.mark.unit
-def test_backend_core_validation_and_url_helpers_cover_guard_branches(backend_core_instance, monkeypatch, tmp_path):
-    backend_core_module = importlib.import_module("backend_core")
-    backend_core_instance.inner_datasource = True
-
-    inner_datasource_path = tmp_path / "inner_datasource.yaml"
-    inner_datasource_path.write_text(
-        "\n".join(
-            [
-                "source_name: demo",
-                "source_type: video",
-                "source_mode: http_video",
-                "source_list:",
-                "  - name: camera-a",
-                "    dir: /data/camera-a",
-                "    metadata: {fps: 25}",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    axis_visualization_path = tmp_path / "viz.yaml"
-    axis_visualization_path.write_text(
-        "\n".join(
-            [
-                "- name: Delay",
-                "  type: curve",
-                "  variables: [delay]",
-                "  size: 1",
-                "  x_axis: timestamp",
-                "  y_axis: value",
-                "  hook_name: delay_chart",
-                "  hook_params: \"{}\"",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    assert backend_core_instance.check_datasource_config(str(tmp_path / "missing.txt")) is None
-    assert backend_core_instance.check_visualization_config(str(tmp_path / "missing.txt")) is None
-    assert backend_core_instance.check_datasource_config(str(inner_datasource_path))["source_list"][0]["dir"] == "/data/camera-a"
-    assert backend_core_instance.check_visualization_config(str(axis_visualization_path))[0]["x_axis"] == "timestamp"
-
-    monkeypatch.setattr(
-        backend_core_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: (_ for _ in ()).throw(RuntimeError(f"missing {component}"))),
-    )
-    monkeypatch.setattr(backend_core_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
-    monkeypatch.setattr(backend_core_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.8"))
-
-    backend_core_instance.get_resource_url()
-    backend_core_instance.get_result_url()
-    backend_core_instance.get_log_url()
-
+    assert result == (True, "Uninstall services successfully")
+    assert backend_core_instance.runtime_orchestrator.uninstall_calls == 1
+    assert stop_event.is_set() is True
+    assert backend_core_instance._redeployment_stop_event is None
+    assert backend_core_instance._redeployment_thread is None
     assert backend_core_instance.resource_url is None
     assert backend_core_instance.result_url is None
+    assert backend_core_instance.result_file_url is None
     assert backend_core_instance.log_fetch_url is None
-    assert backend_core_instance.get_file_result("artifact.bin") == ""
-    assert backend_core_instance.open_result_log_export_stream() is None
 
 
-@pytest.mark.unit
-def test_run_get_result_retries_missing_and_empty_batches_before_success(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    url_states = iter(["missing", "empty", "success"])
-    http_payloads = []
-    parsed_batches = []
+def test_uninstall_failure_preserves_error_and_stops_redeployment(backend_core_instance):
+    backend_core_instance.runtime_orchestrator.uninstall_error = RuntimeError("leases still active")
+    stop_event = threading.Event()
+    backend_core_instance._redeployment_stop_event = stop_event
 
-    def get_result_url():
-        state = next(url_states)
-        if state == "missing":
-            backend_core_instance.result_url = None
-            backend_core_instance.result_file_url = None
-        else:
-            backend_core_instance.result_url = "http://cloud/result"
-            backend_core_instance.result_file_url = "http://cloud/file"
+    ok, message = backend_core_instance.parse_and_delete_templates()
 
-    def fake_http_request(url, method=None, json=None, **kwargs):
-        http_payloads.append(copy.deepcopy(json))
-        if len(http_payloads) == 1:
+    assert ok is False
+    assert "leases still active" in message
+    assert stop_event.is_set() is True
+    assert backend_core_instance._redeployment_stop_event is None
+
+
+def test_redeploy_requires_managed_session_and_current_policy(backend_core_instance):
+    backend_core_instance.runtime_orchestrator.session = None
+    assert backend_core_instance.parse_and_redeploy_services() == (
+        False, "no managed runtime session exists"
+    )
+
+    backend_core_instance.runtime_orchestrator.session = SimpleNamespace(
+        phase="active", policy_id="missing", install_id="install-a"
+    )
+    backend_core_instance.schedulers = []
+    assert backend_core_instance.parse_and_redeploy_services() == (
+        False, "scheduler policy 'missing' does not exist"
+    )
+
+
+def test_redeploy_uses_session_policy_and_rebinds_only_after_commit(backend_core_instance):
+    policy = {"id": "policy-a"}
+    backend_core_instance.schedulers = [policy]
+    backend_core_instance.runtime_orchestrator.directory = _directory(revision=2)
+
+    assert backend_core_instance.parse_and_redeploy_services() == (
+        True, "Redeployment succeeded"
+    )
+    assert backend_core_instance.runtime_orchestrator.redeploy_calls == [policy]
+    assert "-r2.dayu.svc.cluster.local:9001" in backend_core_instance.resource_url
+
+    backend_core_instance.runtime_orchestrator.changed = False
+    backend_core_instance.resource_url = "keep-current-binding"
+    assert backend_core_instance.parse_and_redeploy_services(policy) == (
+        True, "Deployment is unchanged"
+    )
+    assert backend_core_instance.resource_url == "keep-current-binding"
+
+
+def test_redeploy_failure_does_not_replace_active_urls(backend_core_instance):
+    backend_core_instance.resource_url = "active-url"
+    backend_core_instance.runtime_orchestrator.redeploy_error = RuntimeError("proposal conflict")
+
+    ok, message = backend_core_instance.parse_and_redeploy_services({"id": "policy-a"})
+
+    assert ok is False
+    assert "proposal conflict" in message
+    assert backend_core_instance.resource_url == "active-url"
+
+
+def test_runtime_url_binding_rejects_missing_or_ambiguous_infrastructure_route(
+        backend_core_instance,
+):
+    processor_slot = RuntimeSlot(
+        "processor", "edge-a", "edge", logical_service="face-detection"
+    )
+    processor = RuntimeUnit(
+        processor_slot,
+        processor_slot.runtime_name(1),
+        1,
+        "b" * 64,
+    )
+    bad_directory = RuntimeDirectory("install-a", 1, (processor,))
+
+    with pytest.raises(RuntimeError, match="scheduler"):
+        backend_core_instance._bind_runtime_urls(bad_directory)
+
+
+def test_reinstall_invalidates_old_sleeping_redeployment_worker(
+        backend_core_instance, monkeypatch,
+):
+    import backend_core as backend_core_module
+
+    workers = []
+
+    class FakeThread:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            workers.append(self)
+
+        def start(self):
             return None
-        return {"time_ticket": 7, "result": ["task-result"]}
 
-    monkeypatch.setattr(backend_core_module.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(backend_core_instance, "get_result_url", get_result_url)
-    monkeypatch.setattr(backend_core_module, "http_request", fake_http_request)
-    monkeypatch.setattr(
-        backend_core_instance,
-        "parse_task_result",
-        lambda results: parsed_batches.append(results) or setattr(backend_core_instance, "is_get_result", False),
-    )
+    monkeypatch.setattr(backend_core_module.threading, "Thread", FakeThread)
+    backend_core_instance.processor_redeployment_interval_s = 1
 
-    backend_core_instance.is_get_result = True
-    backend_core_instance.run_get_result()
+    assert backend_core_instance.parse_and_apply_templates({}, [])[0] is True
+    old_event, old_install_id = workers[0].kwargs["args"]
+    assert old_event.is_set() is False
 
-    assert http_payloads == [{"time_ticket": 0, "size": 0}, {"time_ticket": 0, "size": 0}]
-    assert parsed_batches == [["task-result"]]
-    assert backend_core_instance.result_url == "http://cloud/result"
-    assert backend_core_instance.result_file_url == "http://cloud/file"
+    assert backend_core_instance.parse_and_apply_templates({}, [])[0] is True
+    assert old_event.is_set() is True
+    assert backend_core_instance._redeployment_stop_event is workers[1].kwargs["args"][0]
+
+    redeploy_count = len(backend_core_instance.runtime_orchestrator.redeploy_calls)
+    workers[0].kwargs["target"](old_event, old_install_id)
+    assert len(backend_core_instance.runtime_orchestrator.redeploy_calls) == redeploy_count
 
 
-@pytest.mark.unit
-def test_run_cycle_deploy_skips_missing_config_then_updates_after_success(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    sleep_calls = []
-    finetune_calls = []
-    updated_docs = []
-    redeploy_docs = [_processor_doc("processor-face")]
-    current_docs = [_processor_doc("processor-current")]
+def test_redeployment_wait_is_event_interruptible(backend_core_instance, monkeypatch):
+    event = threading.Event()
+    waits = []
+    monkeypatch.setattr(event, "wait", lambda timeout: waits.append(timeout) or True)
+    monkeypatch.setattr("backend_core.time.monotonic", lambda: 12.0)
+    backend_core_instance.processor_redeployment_interval_s = 5.0
 
-    def fake_sleep(seconds):
-        sleep_calls.append(seconds)
-        if len(sleep_calls) == 2:
-            backend_core_instance.yaml_dict = {"scheduler": {"policy": "fixed"}}
-            backend_core_instance.source_deploy = [{"source": {"id": 0}, "dag": {}, "node_set": ["edge1"]}]
-
-    def parse_and_redeploy_services(docs):
-        backend_core_instance.is_cycle_deploy = False
-        return True, ""
-
-    backend_core_instance.is_cycle_deploy = True
-    backend_core_instance.yaml_dict = None
-    backend_core_instance.source_deploy = None
-    backend_core_instance.processor_redeployment_interval_s = 7.0
-    backend_core_instance.template_helper = SimpleNamespace(
-        finetune_yaml_parameters=lambda yaml_dict, source_deploy, scopes, current_docs=None: finetune_calls.append(
-            {"scopes": tuple(scopes), "current_docs": copy.deepcopy(current_docs)}
-        ) or copy.deepcopy(redeploy_docs)
-    )
-
-    monkeypatch.setattr(backend_core_module.time, "sleep", fake_sleep)
-    monkeypatch.setattr(backend_core_instance, "read_component_yaml", lambda: copy.deepcopy(current_docs))
-    monkeypatch.setattr(backend_core_instance, "read_install_record", lambda: {})
-    monkeypatch.setattr(backend_core_instance, "save_install_record", lambda *args, **kwargs: None)
-    monkeypatch.setattr(backend_core_instance, "check_pods_running_state", lambda: True)
-    monkeypatch.setattr(
-        backend_core_instance,
-        "parse_and_redeploy_services",
-        parse_and_redeploy_services,
-    )
-    monkeypatch.setattr(
-        backend_core_instance,
-        "update_component_yaml",
-        lambda docs: updated_docs.append(copy.deepcopy(docs)),
-    )
-
-    backend_core_instance.run_cycle_deploy()
-
-    assert sleep_calls[0] == 5
-    assert sleep_calls[1] == pytest.approx(7.0, abs=0.01)
-    assert len(sleep_calls) == 2
-    assert finetune_calls == [{"scopes": ("processor",), "current_docs": current_docs}]
-    assert [_doc_names(docs) for docs in updated_docs] == [["processor-face"]]
-    assert updated_docs[0][0]["metadata"]["labels"]["dayu.io/runtime-scope"] == "installation"
-    assert backend_core_instance.uninstall_lock is False
-
-
-@pytest.mark.unit
-def test_run_cycle_deploy_survives_redeployment_timeout(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    sleep_calls = []
-    parse_calls = []
-    updated_docs = []
-    redeploy_docs = [_processor_doc("processor-face")]
-    current_docs = [_processor_doc("processor-current")]
-
-    def fake_sleep(seconds):
-        sleep_calls.append(seconds)
-
-    def parse_and_redeploy_services(docs):
-        parse_calls.append(copy.deepcopy(docs))
-        if len(parse_calls) == 1:
-            raise backend_core_module.timeout_exceptions.FunctionTimedOut()
-        backend_core_instance.is_cycle_deploy = False
-        return True, ""
-
-    backend_core_instance.is_cycle_deploy = True
-    backend_core_instance.yaml_dict = {"scheduler": {"policy": "fixed"}}
-    backend_core_instance.source_deploy = [{"source": {"id": 0}, "dag": {}, "node_set": ["edge1"]}]
-    backend_core_instance.processor_redeployment_interval_s = 3.0
-    backend_core_instance.template_helper = SimpleNamespace(
-        finetune_yaml_parameters=lambda yaml_dict, source_deploy, scopes, current_docs=None: copy.deepcopy(
-            redeploy_docs
-        )
-    )
-
-    monkeypatch.setattr(backend_core_module.time, "sleep", fake_sleep)
-    monkeypatch.setattr(backend_core_instance, "read_component_yaml", lambda: copy.deepcopy(current_docs))
-    monkeypatch.setattr(backend_core_instance, "read_install_record", lambda: {})
-    monkeypatch.setattr(backend_core_instance, "save_install_record", lambda *args, **kwargs: None)
-    monkeypatch.setattr(backend_core_instance, "check_pods_running_state", lambda: True)
-    monkeypatch.setattr(backend_core_instance, "parse_and_redeploy_services", parse_and_redeploy_services)
-    monkeypatch.setattr(
-        backend_core_instance,
-        "update_component_yaml",
-        lambda docs: updated_docs.append(copy.deepcopy(docs)),
-    )
-
-    backend_core_instance.run_cycle_deploy()
-
-    assert len(parse_calls) == 2
-    assert sleep_calls[0] == 5
-    assert sleep_calls[1] == pytest.approx(3.0, abs=0.01)
-    assert len(sleep_calls) == 2
-    assert [_doc_names(docs) for docs in updated_docs] == [["processor-face"]]
-    assert updated_docs[0][0]["metadata"]["labels"]["dayu.io/runtime-scope"] == "installation"
-    assert backend_core_instance.uninstall_lock is False
+    assert backend_core_instance._wait_until_next_redeployment_cycle(event, 10.0) is True
+    assert waits == [3.0]

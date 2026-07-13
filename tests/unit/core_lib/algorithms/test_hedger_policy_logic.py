@@ -8,6 +8,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from core.lib.common import TaskConstant
+from core.lib.runtime import RuntimeContext
 from core.lib.algorithms.shared.hedger.hedger import Hedger
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointLoadCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingStageCfg
@@ -126,8 +127,13 @@ def build_checkpoint_cfg(root_dir: str, *, load=None, save=None) -> HedgerCheckp
 @pytest.fixture(autouse=True)
 def hedger_test_runtime(monkeypatch):
     monkeypatch.setattr(
-        "core.lib.algorithms.shared.hedger.hedger_config.NodeInfo.get_cloud_node",
-        staticmethod(lambda: "cloud.kubeedge"),
+        RuntimeContext,
+        "get_default",
+        staticmethod(lambda: RuntimeContext({
+            "local_node": "cloud.kubeedge",
+            "cloud_node": "cloud.kubeedge",
+            "nodes": {"cloud.kubeedge": {"role": "cloud"}},
+        })),
     )
     monkeypatch.setattr(
         "core.lib.algorithms.shared.hedger.hedger.Context.get_file_path",
@@ -1467,10 +1473,8 @@ def test_hedger_agent_get_schedule_plan_tolerates_missing_default_mappings(monke
     agent.default_configuration = None
     agent.default_offloading = None
     agent.hedger = hedger
-
-    monkeypatch.setattr(
-        "core.lib.algorithms.schedule_agent.hedger_agent.KubeConfig.get_service_nodes_dict",
-        lambda: {"svc-a": {}, "svc-b": {}},
+    agent.system = types.SimpleNamespace(
+        runtime_service_nodes=lambda: {"svc-a": {}, "svc-b": {}}
     )
 
     policy = agent.get_schedule_plan(
@@ -1507,10 +1511,8 @@ def test_hedger_agent_get_schedule_plan_forces_default_offloading_during_latency
     agent.default_configuration = None
     agent.default_offloading = {"svc-a": "edge-a", "svc-b": "edge-a"}
     agent.hedger = hedger
-
-    monkeypatch.setattr(
-        "core.lib.algorithms.schedule_agent.hedger_agent.KubeConfig.get_service_nodes_dict",
-        lambda: {"svc-a": {}, "svc-b": {}},
+    agent.system = types.SimpleNamespace(
+        runtime_service_nodes=lambda: {"svc-a": {}, "svc-b": {}}
     )
 
     policy = agent.get_schedule_plan(

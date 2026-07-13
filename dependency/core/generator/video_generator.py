@@ -1,6 +1,6 @@
 import time
 
-from core.lib.common import ClassType, ClassFactory, Context, LOGGER, KubeConfig, HealthChecker
+from core.lib.common import ClassType, ClassFactory, Context, LOGGER
 
 from .generator import Generator
 
@@ -28,27 +28,14 @@ class VideoGenerator(Generator):
         # healthy, request a fresh scheduler decision before ingesting data.
         self.after_schedule_operation(self, None)
 
-        services_ready = False
         initial_schedule_pending = True
         while True:
-            if not KubeConfig.check_services_running():
-                services_ready = False
-                initial_schedule_pending = True
-                LOGGER.debug("Services not in running state, wait for service deployment..")
-                time.sleep(0.5)
-                continue
-
-            if not services_ready:
-                if not HealthChecker.check_processors_health():
-                    LOGGER.debug("Processors are not healthy yet, wait before requesting scheduler decisions..")
+            if initial_schedule_pending:
+                LOGGER.debug('[Scheduling Request] Request an initial routable scheduling policy.')
+                if not self.request_schedule_policy():
+                    LOGGER.debug('[Runtime Directory] Exact routes are not ready; postpone data ingestion.')
                     time.sleep(0.5)
                     continue
-                services_ready = True
-                initial_schedule_pending = True
-
-            if initial_schedule_pending:
-                LOGGER.debug('[Scheduling Request] Request an initial scheduling policy after services become healthy.')
-                self.request_schedule_policy()
                 self.cumulative_scheduling_frame_count = 0
                 initial_schedule_pending = False
 
@@ -63,7 +50,10 @@ class VideoGenerator(Generator):
             scheduling_threshold = self.request_scheduling_interval * self.raw_meta_data.get('fps', 0)
             if self.cumulative_scheduling_frame_count > scheduling_threshold:
                 LOGGER.debug(f'[Scheduling Request] Request a Scheduling policy from scheduler.')
-                self.request_schedule_policy()
+                if not self.request_schedule_policy():
+                    LOGGER.debug('[Runtime Directory] Updated scheduling policy is not routable; postpone ingestion.')
+                    time.sleep(0.5)
+                    continue
                 self.cumulative_scheduling_frame_count = 0
 
             # Ingest the next chunk/frame from the source.

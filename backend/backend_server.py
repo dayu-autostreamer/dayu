@@ -15,7 +15,6 @@ from core.lib.common import LOGGER, Counter, Queue, FileOps
 from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
 
 from backend_core import BackendCore
-from kube_helper import KubeHelper
 
 
 class BackendServer:
@@ -188,14 +187,14 @@ class BackendServer:
         :return:
         ["face_detection", "..."]
         """
-        service_list = [service['id'] for service in self.server.services]
-        current_service_list = []
-
-        if self.server.check_pods_running_state():
-            for service_id in service_list:
-                if KubeHelper.check_pod_name(service_id, namespace=self.server.namespace):
-                    current_service_list.append(service_id)
-        return current_service_list
+        directory = self.server.runtime_orchestrator.active_directory()
+        if directory is None:
+            return []
+        return sorted({
+            unit.slot.logical_service
+            for unit in directory.routes
+            if unit.slot.component == 'processor' and unit.slot.logical_service
+        })
 
     async def get_dag_workflows(self):
         """
@@ -354,21 +353,38 @@ class BackendServer:
         try:
             if service == 'null':
                 return []
-            info = KubeHelper.get_service_info(service_name=service, namespace=self.server.namespace)
+            metrics = self.server.runtime_orchestrator.runtime_metrics(logical_service=service)
 
             self.server.get_resource_url()
-            if not self.server.resource_url:
-                return []
-            resource_data = http_request(self.server.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE)
-            if resource_data:
-                bandwidth = '-'
-                for hostname in resource_data:
-                    single_resource_info = resource_data[hostname]
-                    if 'available_bandwidth' in single_resource_info and single_resource_info[
-                        'available_bandwidth'] != -1:
-                        bandwidth = f"{single_resource_info['available_bandwidth']:.2f}Mbps"
-                for single_info in info:
-                    single_info['bandwidth'] = bandwidth
+            resource_data = http_request(
+                self.server.resource_url,
+                method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE,
+            ) if self.server.resource_url else {}
+            info = []
+            for metric in metrics.values():
+                hostname = metric.get('node', '')
+                usage = metric.get('usage') or {}
+                cpu = ', '.join(
+                    str(values.get('cpu')) for values in usage.values() if values.get('cpu')
+                ) or '-'
+                memory = ', '.join(
+                    str(values.get('memory')) for values in usage.values() if values.get('memory')
+                ) or '-'
+                node_resource = resource_data.get(hostname, {}) if isinstance(resource_data, dict) else {}
+                bandwidth_value = node_resource.get('available_bandwidth')
+                bandwidth = (
+                    f'{float(bandwidth_value):.2f}Mbps'
+                    if isinstance(bandwidth_value, (int, float)) and bandwidth_value >= 0 else '-'
+                )
+                info.append({
+                    'ip': (metric.get('node_info') or {}).get('address', ''),
+                    'hostname': hostname,
+                    'cpu': cpu,
+                    'memory': memory,
+                    'bandwidth': bandwidth,
+                    'age': metric.get('created_at', ''),
+                })
+            info.sort(key=lambda item: item['hostname'])
         except Exception as e:
             LOGGER.exception(e)
             return []
@@ -538,10 +554,11 @@ class BackendServer:
         if source_config is None:
             return {'state': 'fail', 'msg': 'Install services failed: datasource configuration not exists'}
 
-        if len(source_config) != len(dag_list) != len(node_set_list):
+        source_list = source_config.get('source_list') or []
+        if not (len(source_list) == len(dag_list) == len(node_set_list)):
             return {'state': 'fail', 'msg': 'Install services failed: datasource mapping failed'}
 
-        for source, dag_id, node_set in zip(source_config['source_list'], dag_list, node_set_list):
+        for source, dag_id, node_set in zip(copy.deepcopy(source_list), dag_list, node_set_list):
 
             dag = self.server.find_dag_by_id(dag_id)
             if dag is None:
@@ -591,8 +608,6 @@ class BackendServer:
             msg = 'unexpected system error, please refer to logs in backend'
 
         if result:
-            self.server.clear_yaml_docs()
-            self.server.clear_install_record()
             return {'state': 'success', 'msg': 'Uninstall services successfully'}
         else:
             return {'state': 'fail', 'msg': f'Uninstall services failed: {msg}'}

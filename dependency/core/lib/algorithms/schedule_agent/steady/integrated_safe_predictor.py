@@ -2,6 +2,7 @@ import numpy as np
 import math
 import json
 import copy
+import re
 
 from .accuracy_prediction import AccuracyPrediction2fps, AccuracyPrediction2reso, resolution_wh
 from .correct_record import CorrectRecord
@@ -228,6 +229,46 @@ class CorrectedPredictor():
             dict_data = {}
         return dict_data
 
+    @staticmethod
+    def _execution_profile_value(profile, resolution, role):
+        """Resolve an execution profile by role, never by cluster hostname.
+
+        New knowledge bases should use ``execute_role=edge|cloud``. Existing
+        device-labelled profiles remain readable only when the device label
+        itself unambiguously declares its role (for example ``edge7`` or
+        ``cloud-a``); arbitrary hostnames must be migrated instead of guessed.
+        """
+        role = str(role).strip().lower()
+        matches = []
+        for key, value in (profile or {}).items():
+            fields = {}
+            for part in str(key).split('#'):
+                if '=' in part:
+                    name, field_value = part.split('=', 1)
+                    fields[name] = field_value
+            if fields.get('resolution') != str(resolution):
+                continue
+            explicit_role = str(fields.get('execute_role') or '').lower()
+            if explicit_role:
+                if explicit_role == role:
+                    matches.append(value)
+                continue
+            device = str(fields.get('execute_device') or '').lower()
+            tokens = [token for token in re.split(r'[^a-z0-9]+', device) if token]
+            inferred_role = ''
+            if any(token.startswith('cloud') for token in tokens):
+                inferred_role = 'cloud'
+            elif any(token.startswith('edge') for token in tokens):
+                inferred_role = 'edge'
+            if inferred_role == role:
+                matches.append(value)
+        if len(matches) != 1:
+            raise KeyError(
+                f"execution profile requires exactly one execute_role={role!s} "
+                f"entry for resolution={resolution!s}; found {len(matches)}"
+            )
+        return matches[0]
+
     def update_corrctor(self, context_info, conf_info, task_info):
 
         if 'real_exe_detect' in task_info:
@@ -291,15 +332,12 @@ class CorrectedPredictor():
         return acc
 
     def exe_pre_detect(self, context_info, conf_info, if_correct, cur_coeff_window=None):
-
-        #  "execute_device=edge4#resolution=540p": 0.01659703254699707,
-        key = ''
-        if conf_info['edge_serv_num'] > 0:
-            key = f"execute_device=edge4#resolution={conf_info['resolution']}"
-        else:
-            key = f"execute_device=cloud.kubeedge#resolution={conf_info['resolution']}"
-
-        delay = self.exe_pre_detect_dict[key]
+        role = 'edge' if conf_info['edge_serv_num'] > 0 else 'cloud'
+        delay = self._execution_profile_value(
+            self.exe_pre_detect_dict,
+            conf_info['resolution'],
+            role,
+        )
 
         if if_correct:
             coeff_window = {}
@@ -313,15 +351,12 @@ class CorrectedPredictor():
         return delay
 
     def exe_pre_classify(self, context_info, conf_info, if_correct, cur_coeff_window=None):
-
-        #  "execute_device=edge4#resolution=540p": 0.01659703254699707,
-        key = ''
-        if conf_info['edge_serv_num'] > 1:
-            key = f"execute_device=edge4#resolution={conf_info['resolution']}"
-        else:
-            key = f"execute_device=cloud.kubeedge#resolution={conf_info['resolution']}"
-
-        delay = (self.exe_pre_classify_dict[key]) * context_info['obj_num']
+        role = 'edge' if conf_info['edge_serv_num'] > 1 else 'cloud'
+        delay = self._execution_profile_value(
+            self.exe_pre_classify_dict,
+            conf_info['resolution'],
+            role,
+        ) * context_info['obj_num']
 
         if if_correct:
             coeff_window = {}

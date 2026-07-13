@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext, RuntimeLeaseUnavailable
 
 
 class StopGeneratorLoop(RuntimeError):
@@ -23,6 +24,38 @@ def build_dag_deployment(execute_device="edge-node"):
     }
 
 
+def runtime_route(component, node, port, logical_service=""):
+    slot = {"component": component, "target_node": node}
+    if logical_service:
+        slot["logical_service"] = logical_service
+    return {
+        "slot": slot,
+        "runtime_id": f"{component}-{logical_service or 'runtime'}-{node}",
+        "runtime_revision": 1,
+        "endpoint": {
+            "dns_name": node,
+            "port": port,
+            "runtime_service_uid": f"rs-{component}-{node}",
+            "service_uid": f"svc-{component}-{node}",
+            "pod_uid": f"pod-{component}-{node}",
+        },
+    }
+
+
+def runtime_routes(node="edge-node"):
+    return [
+        runtime_route("controller", node, 9002),
+        runtime_route("processor", node, 9004, "face-detection"),
+    ]
+
+
+@pytest.fixture(autouse=True)
+def reset_runtime_context():
+    RuntimeContext.reset_default()
+    yield
+    RuntimeContext.reset_default()
+
+
 def patch_generator_runtime(monkeypatch, generator_module, hooks, video_generator_module=None):
     def fake_get_algorithm(algorithm, al_name=None, **kwargs):
         try:
@@ -36,14 +69,19 @@ def patch_generator_runtime(monkeypatch, generator_module, hooks, video_generato
 
     monkeypatch.setenv("ALL_EDGE_DEVICES", "['edge-node', 'edge-target']")
     monkeypatch.setenv("REQUEST_SCHEDULING_INTERVAL", "1")
-    monkeypatch.setattr(generator_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
-    monkeypatch.setattr(generator_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(generator_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
-    monkeypatch.setattr(
-        generator_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: {"scheduler": 9001, "controller": 9002}[component]),
-    )
+    monkeypatch.setenv("DAYU_RUNTIME_BOOTSTRAP", json.dumps({
+        "local_node": "edge-node",
+        "cloud_node": "cloud-node",
+        "nodes": {
+            "edge-node": {"role": "edge", "address": "edge-node"},
+            "edge-target": {"role": "edge", "address": "edge-target"},
+            "cloud-node": {"role": "cloud", "address": "cloud-node"},
+        },
+        "endpoints": {
+            "scheduler": {"fqdn": "cloud-node", "port": 9001},
+        },
+    }))
+    RuntimeContext.reset_default()
 
 
 @pytest.mark.unit
@@ -75,7 +113,11 @@ def test_generator_request_schedule_policy_and_generate_task_follow_hook_contrac
 
     def fake_http_request(url, method=None, data=None, **kwargs):
         captured_request.update(url=url, method=method, data=data)
-        return {"plan": {"buffer_size": 2}}
+        return {
+            "plan": {"buffer_size": 2},
+            "runtime_directory_revision": 1,
+            "runtime_routes": runtime_routes("edge-node"),
+        }
 
     monkeypatch.setattr(generator_module, "http_request", fake_http_request)
 
@@ -103,7 +145,7 @@ def test_generator_request_schedule_policy_and_generate_task_follow_hook_contrac
     assert task.get_raw_metadata() == {"fps": 25, "buffer_size": 1}
     assert task.get_hash_data() == [11, 12, 13]
 
-    generator.request_schedule_policy()
+    assert generator.request_schedule_policy() is True
 
     assert captured_request["url"] == "http://cloud-node:9001/schedule"
     assert captured_request["method"] == "GET"
@@ -111,7 +153,17 @@ def test_generator_request_schedule_policy_and_generate_task_follow_hook_contrac
         "source_id": 7,
         "meta_data": {"fps": 25, "buffer_size": 1},
     }
-    assert hook_calls["after"] == {"plan": {"buffer_size": 2}}
+    assert hook_calls["after"]["plan"] == {"buffer_size": 2}
+    routed_task = generator.generate_task(
+        task_id=4,
+        task_dag=generator.task_dag,
+        service_deployment={},
+        meta_data={"fps": 15},
+        compressed_path="payload.bin",
+        hash_codes=[],
+    )
+    assert routed_task.get_runtime_directory_revision() == 1
+    assert routed_task.get_runtime_routes() == runtime_routes("edge-node")
 
 
 @pytest.mark.unit
@@ -138,6 +190,14 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
     uploaded = {}
 
     def fake_http_request(url, method=None, data=None, files=None, **kwargs):
+        if url.endswith("/runtime-directory/task-leases"):
+            payload = json.loads(data["data"])
+            call_order.append(("lease", payload["root_uuid"]))
+            return {
+                "revision": payload["revision"],
+                "root_uuid": payload["root_uuid"],
+                "expires_at": 123.0,
+            }
         uploaded.update(url=url, method=method, data=data, files=files)
 
     monkeypatch.setattr(generator_module, "http_request", fake_http_request)
@@ -151,6 +211,8 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
         metadata={"fps": 10},
         task_dag=build_dag_deployment(execute_device="edge-target"),
     )
+    generator.runtime_directory_revision = 1
+    generator.runtime_routes = runtime_routes("edge-target")
 
     payload_path = tmp_path / "payload.bin"
     payload_path.write_bytes(b"payload")
@@ -174,7 +236,11 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
     generator.submit_task_to_controller(task)
 
     file_name, file_handle, content_type = uploaded["files"]["file"]
-    assert call_order == [("bsto", 5), ("record", 5)]
+    assert call_order == [
+        ("bsto", 5),
+        ("lease", task.get_root_uuid()),
+        ("record", 5),
+    ]
     assert uploaded["url"] == "http://edge-target:9002/submit_task"
     assert uploaded["method"] == "POST"
     assert uploaded["data"]["data"] == task.serialize()
@@ -185,6 +251,55 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
 
     with pytest.raises(AssertionError, match="Task is empty when submit to controller"):
         generator.submit_task_to_controller(None)
+
+
+@pytest.mark.unit
+def test_generator_submit_fails_closed_when_task_lease_is_not_confirmed(monkeypatch, tmp_path):
+    generator_module = importlib.import_module("core.generator.generator")
+    hooks = {
+        "GEN_BSO": lambda system: {},
+        "GEN_ASO": lambda system, response: None,
+        "GEN_GETTER": lambda system: None,
+        "GEN_BSTO": lambda system, task: None,
+    }
+    patch_generator_runtime(monkeypatch, generator_module, hooks)
+
+    calls = []
+    monkeypatch.setattr(
+        generator_module,
+        "http_request",
+        lambda **kwargs: calls.append(kwargs) or None,
+    )
+
+    class DummyGenerator(generator_module.Generator):
+        def run(self):
+            raise NotImplementedError
+
+    generator = DummyGenerator(
+        source_id=1,
+        metadata={"fps": 10},
+        task_dag=build_dag_deployment(execute_device="edge-target"),
+    )
+    generator.runtime_directory_revision = 1
+    generator.runtime_routes = runtime_routes("edge-target")
+    payload_path = tmp_path / "payload.bin"
+    payload_path.write_bytes(b"payload")
+    task = generator.generate_task(
+        task_id=6,
+        task_dag=Task.extract_dag_from_dag_deployment(
+            build_dag_deployment(execute_device="edge-target")
+        ),
+        service_deployment={},
+        meta_data={},
+        compressed_path=str(payload_path),
+        hash_codes=[],
+    )
+    task.set_flow_index("face-detection")
+
+    with pytest.raises(RuntimeLeaseUnavailable, match="not confirmed"):
+        generator.submit_task_to_controller(task)
+    assert len(calls) == 1
+    assert calls[0]["url"].endswith("/runtime-directory/task-leases")
 
 
 @pytest.mark.unit
@@ -240,8 +355,6 @@ def test_video_generator_run_requests_initial_schedule_after_health_before_data_
     schedule_requests = []
     data_getter_calls = []
 
-    service_states = iter([False, True, True, True, True])
-    health_states = iter([False, True])
     getter_states = iter([False, True, True])
 
     def after_schedule(system, scheduler_response):
@@ -270,16 +383,6 @@ def test_video_generator_run_requests_initial_schedule_after_health_before_data_
 
     patch_generator_runtime(monkeypatch, generator_module, hooks, video_generator_module=video_generator_module)
 
-    monkeypatch.setattr(
-        video_generator_module.KubeConfig,
-        "check_services_running",
-        staticmethod(lambda: next(service_states)),
-    )
-    monkeypatch.setattr(
-        video_generator_module.HealthChecker,
-        "check_processors_health",
-        staticmethod(lambda: next(health_states)),
-    )
     monkeypatch.setattr(video_generator_module.time, "sleep", lambda *_args, **_kwargs: None)
 
     generator = video_generator_module.VideoGenerator(
@@ -296,6 +399,7 @@ def test_video_generator_run_requests_initial_schedule_after_health_before_data_
         request_count["value"] += 1
         if request_count["value"] >= 2:
             raise StopGeneratorLoop
+        return True
 
     monkeypatch.setattr(generator, "request_schedule_policy", fake_request_schedule_policy)
 

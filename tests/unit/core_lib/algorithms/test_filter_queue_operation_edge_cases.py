@@ -76,6 +76,7 @@ def test_casva_after_schedule_operation_keeps_local_execution_without_scheduler_
     system = SimpleNamespace(
         task_dag=task.get_dag(),
         local_device="edge-a",
+        cloud_device="cloud-a",
         meta_data={"fps": 10},
         service_deployment={},
     )
@@ -90,7 +91,6 @@ def test_casva_after_schedule_operation_keeps_local_execution_without_scheduler_
 
     dag_deployment = Task.extract_dag_deployment_from_dag(build_task().get_dag())
     dag_deployment["detector"]["service"]["execute_device"] = "edge-b"
-    monkeypatch.setattr(after_schedule_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
     system.meta_data = {"fps": 10, "qp": 31}
 
     operation(system, {"plan": {"fps": 5, "dag": dag_deployment}, "deployment": {"detector": ["edge-b"]}})

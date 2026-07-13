@@ -249,8 +249,6 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
         meta_data={"fps": 10, "buffer_size": 2},
         service_deployment={},
     )
-    monkeypatch.setattr(after_schedule_simple_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(after_schedule_casva_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
 
     after_schedule_module.SimpleASOperation()(system, None)
     assert all(
@@ -275,6 +273,7 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
     casva_system = SimpleNamespace(
         task_dag=build_task().get_dag(),
         local_device="edge-a",
+        cloud_device="cloud-a",
         meta_data={"fps": 10},
         service_deployment={},
     )

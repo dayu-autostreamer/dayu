@@ -3,8 +3,9 @@ import os
 
 from core.lib.common import ClassFactory, ClassType, Context, LOGGER, EncodeOps, VideoOps, Queue, FileOps, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
-from core.lib.network import NodeInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, PortInfo, http_request
+from core.lib.network import NetworkAPIPath, NetworkAPIMethod, http_request
 from core.lib.content import Task
+from core.lib.runtime import RuntimeEndpoint
 
 from .base_agent import BaseAgent
 import time
@@ -29,6 +30,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
                  best_num: int = 5, threshold=0.1,
                  profile_window=16, segment_size=4, calculate_time=1):
         super().__init__(system, agent_id)
+        self.system = system
 
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
@@ -39,7 +41,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         self.fps_list = system.fps_list.copy()
         self.resolution_list = system.resolution_list.copy()
 
-        self.local_device = NodeInfo.get_local_device()
+        self.local_device = system.runtime_context.local_node
 
         self.schedule_knobs = {'resolution': self.resolution_list,
                                'fps': self.fps_list}
@@ -222,11 +224,14 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
     def execute_analytics(self, frames):
         if not self.processor_address:
-            processor_hostname = NodeInfo.get_cloud_node()
-            processor_port = PortInfo.get_service_port(self.local_device, self.current_analytics)
-            self.processor_address = merge_address(NodeInfo.hostname2ip(processor_hostname),
-                                                   port=processor_port,
-                                                   path=NetworkAPIPath.PROCESSOR_PROCESS_RETURN)
+            route = self.system.resolve_runtime_route(
+                'processor',
+                target_node=self.cloud_device,
+                logical_service=self.current_analytics,
+            )
+            self.processor_address = RuntimeEndpoint.from_value(route).url(
+                NetworkAPIPath.PROCESSOR_PROCESS_RETURN
+            )
 
         cur_path = self.compress_video(frames)
 

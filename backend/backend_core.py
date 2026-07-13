@@ -5,21 +5,17 @@ import shutil
 import tempfile
 import threading
 import re
-import uuid
 from collections import deque
-from func_timeout import func_set_timeout as timeout
-import func_timeout.exceptions as timeout_exceptions
 
 import os
 import time
-import yaml
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant, TaskConstant, \
+from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, TaskConstant, \
     ConfigBoundInstanceCache
-from core.lib.network import http_request, NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod
+from core.lib.network import http_request, NetworkAPIPath, NetworkAPIMethod
 from core.lib.estimation import Timer
 
-from kube_helper import KubeHelper
+from runtime_orchestrator import RuntimeOrchestrator
 from template_helper import TemplateHelper
 
 
@@ -28,16 +24,6 @@ def _indent_json_block(text, prefix='    '):
 
 
 class BackendCore:
-    RUNTIME_SCOPE_LABEL = 'dayu.io/runtime-scope'
-    RUNTIME_SCOPE_INSTALLATION = 'installation'
-    MANAGED_BY_LABEL = 'app.kubernetes.io/managed-by'
-    PART_OF_LABEL = 'app.kubernetes.io/part-of'
-    INSTALL_ID_LABEL = 'dayu.io/install-id'
-    COMPONENT_LABEL = 'dayu.io/component'
-    SOURCE_LABEL_ANNOTATION = 'dayu.io/source-label'
-    POLICY_ID_ANNOTATION = 'dayu.io/policy-id'
-    INSTALL_RECORD_NAME = 'dayu-runtime-install-state'
-
     def __init__(self):
 
         self.template_helper = TemplateHelper(Context.get_default_file_path())
@@ -88,19 +74,14 @@ class BackendCore:
         self.task_results = {}
 
         self.is_get_result = False
-        self.is_cycle_deploy = False
-
-        self.yaml_dict = None
-        self.source_deploy = None
-
-        self.installed_running_state = False
-        self.install_state = False
-
-        self.cur_yaml_docs = None
-        self.save_yaml_path = 'resources.yaml'
-        self.current_install_id = ''
-        self.current_source_label = ''
-        self.current_policy_id = ''
+        self._redeployment_lock = threading.Lock()
+        self._redeployment_stop_event = None
+        self._redeployment_thread = None
+        self.runtime_orchestrator = RuntimeOrchestrator(self.template_helper, self.namespace)
+        redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=20, direct=False)
+        self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
+        if os.getenv('DAYU_RUNTIME_CONTROL_PLANE', '').lower() == 'true':
+            self._recover_runtime_session()
         self.system_log_store_path = 'system_log_store.jsonl'
         self.system_log_lock = threading.Lock()
         self.system_log_retention_records = max(
@@ -113,16 +94,7 @@ class BackendCore:
         )
         self.system_log_record_count = self._count_jsonl_records(self.system_log_store_path)
 
-        # Lock for uninstall operations to prevent inconsistent states
-        self.uninstall_lock = False
-        redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=20, direct=False)
-        self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
-        self._last_processor_redeploy_applied = False
-
         self.default_visualization_image = 'default_visualization.png'
-
-        self.system_support_components = ['backend', 'frontend', 'datasource', 'redis']
-        self.function_components = ['generator', 'scheduler', 'controller', 'distributor', 'monitor']
 
     def parse_base_info(self):
         try:
@@ -136,6 +108,35 @@ class BackendCore:
         except KeyError as e:
             LOGGER.warning(f'Parse base info failed: {str(e)}')
 
+    def _recover_runtime_session(self):
+        """Resume the compact lifecycle record after a backend Pod restart."""
+        try:
+            session = self.runtime_orchestrator.recover()
+            if session is None:
+                return
+            if session.phase in {'clearing-directory', 'finalizing-uninstall'}:
+                # Drain already completed before either phase is persisted.
+                # Recovery resumes the exact remaining uninstall boundary and
+                # cannot re-open task admission.
+                self.runtime_orchestrator.uninstall()
+                return
+            if session.phase != 'active':
+                LOGGER.warning(
+                    f'[Runtime Recovery] Session {session.install_id} requires operator cleanup: '
+                    f'phase={session.phase}, error={session.last_error}'
+                )
+                return
+            directory = self.runtime_orchestrator.active_directory()
+            if directory is None:
+                raise RuntimeError('recovered active session has no RuntimeDirectory')
+            self._bind_runtime_urls(directory)
+            self._start_redeployment_loop(session.install_id)
+        except Exception as exc:
+            # Keep the management API available for inspection/uninstall even
+            # when an external dependency is unavailable during process start.
+            LOGGER.warning(f'[Runtime Recovery] Managed runtime recovery failed: {exc}')
+            LOGGER.exception(exc)
+
     def get_log_file_name(self):
         base_info = self.template_helper.load_base_info()
         load_file_name = base_info['log-file-name']
@@ -143,576 +144,57 @@ class BackendCore:
             return None
         return load_file_name.split('.')[0]
 
-    @staticmethod
-    def _component_name_from_doc(doc):
-        name = doc.get('metadata', {}).get('name', '')
-        return 'processor' if name.startswith('processor-') else name
-
-    def annotate_runtime_docs(self, docs, install_id, source_label='', policy_id=''):
-        for doc in docs or []:
-            if not isinstance(doc, dict):
-                continue
-            metadata = doc.setdefault('metadata', {})
-            labels = metadata.setdefault('labels', {})
-            annotations = metadata.setdefault('annotations', {})
-            labels.update({
-                self.PART_OF_LABEL: 'dayu',
-                self.MANAGED_BY_LABEL: 'dayu-backend',
-                self.RUNTIME_SCOPE_LABEL: self.RUNTIME_SCOPE_INSTALLATION,
-                self.INSTALL_ID_LABEL: str(install_id),
-                self.COMPONENT_LABEL: self._component_name_from_doc(doc),
-            })
-            annotations.update({
-                self.SOURCE_LABEL_ANNOTATION: str(source_label or ''),
-                self.POLICY_ID_ANNOTATION: str(policy_id or ''),
-            })
-        return docs
-
-    @staticmethod
-    def _resource_refs_from_docs(docs):
-        refs = []
-        for doc in docs or []:
-            if not isinstance(doc, dict):
-                continue
-            metadata = doc.get('metadata', {})
-            refs.append({
-                'apiVersion': doc.get('apiVersion', ''),
-                'kind': doc.get('kind', ''),
-                'namespace': metadata.get('namespace', ''),
-                'name': metadata.get('name', ''),
-            })
-        return refs
-
-    def save_install_record(self, install_id, source_label, policy_id, state, docs):
-        data = {
-            'install_id': str(install_id or ''),
-            'source_label': str(source_label or ''),
-            'policy_id': str(policy_id or ''),
-            'state': str(state or ''),
-            'resources': json.dumps(self._resource_refs_from_docs(docs), ensure_ascii=False),
-            'docs_yaml': yaml.safe_dump_all(docs or [], allow_unicode=True),
-        }
-        try:
-            saved = KubeHelper.upsert_configmap(self.namespace, self.INSTALL_RECORD_NAME, data)
-        except Exception as e:
-            LOGGER.warning(f'[Install State] Failed to persist install record ConfigMap: {str(e)}')
-            LOGGER.exception(e)
-            return
-        if not saved:
-            LOGGER.warning('[Install State] Failed to persist install record ConfigMap.')
-
-    def read_install_record(self):
-        try:
-            return KubeHelper.read_configmap(self.namespace, self.INSTALL_RECORD_NAME) or {}
-        except Exception as e:
-            LOGGER.warning(f'[Install State] Failed to read install record ConfigMap: {str(e)}')
-            LOGGER.exception(e)
-            return {}
-
-    def clear_install_record(self):
-        try:
-            deleted = KubeHelper.delete_configmap(self.namespace, self.INSTALL_RECORD_NAME)
-        except Exception as e:
-            LOGGER.warning(f'[Install State] Failed to delete install record ConfigMap: {str(e)}')
-            LOGGER.exception(e)
-            deleted = True
-        if not deleted:
-            LOGGER.warning('[Install State] Failed to delete install record ConfigMap.')
-        self.current_install_id = ''
-        self.current_source_label = ''
-        self.current_policy_id = ''
-
-    def docs_from_install_record(self):
-        record = self.read_install_record()
-        docs_yaml = record.get('docs_yaml')
-        if not docs_yaml:
-            return None
-        try:
-            docs = [doc for doc in yaml.safe_load_all(docs_yaml) if doc is not None]
-            return docs or None
-        except Exception as e:
-            LOGGER.warning(f'[Install State] Failed to parse install record docs: {str(e)}')
-            LOGGER.exception(e)
-            return None
-
-    def list_runtime_component_docs(self):
-        try:
-            base_info = self.template_helper.load_base_info()
-            crd_meta = base_info['crd-meta']
-            return KubeHelper.list_custom_resources(
-                namespace=self.namespace,
-                api_version=crd_meta['api-version'],
-                kind=crd_meta['kind'],
-                label_selector=f'{self.RUNTIME_SCOPE_LABEL}={self.RUNTIME_SCOPE_INSTALLATION}',
-            )
-        except Exception as e:
-            LOGGER.warning(f'[Install State] Failed to list runtime resources: {str(e)}')
-            LOGGER.exception(e)
-            return []
-
-    def read_runtime_component_docs(self):
-        docs = self.list_runtime_component_docs()
-        if docs:
-            return docs
-        docs = self.read_component_yaml()
-        if docs:
-            return docs
-        return self.docs_from_install_record()
-
     def parse_and_apply_templates(self, policy, source_deploy, source_label=''):
-        install_id = str(uuid.uuid4())
-        policy_id = policy.get('id', '')
-        self.current_install_id = install_id
-        self.current_source_label = source_label
-        self.current_policy_id = policy_id
-
-        yaml_dict = {}
-
-        yaml_dict.update(self.template_helper.load_policy_apply_yaml(policy))
-
-        service_dict = self.extract_service_from_source_deployment(source_deploy)
-        yaml_dict.update({'processor': self.template_helper.load_application_apply_yaml(service_dict)})
-
-        self.yaml_dict = yaml_dict
-
-        first_stage_components = ['scheduler', 'distributor', 'monitor']
-        second_stage_components = ['controller', 'generator', 'processor']
-
-        LOGGER.info(f'[First Deployment Stage] deploy components:{first_stage_components}')
-        first_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
-                                                                        copy.deepcopy(source_deploy),
-                                                                        scopes=first_stage_components)
-        self.annotate_runtime_docs(first_docs_list, install_id, source_label, policy_id)
-        self.save_install_record(install_id, source_label, policy_id, 'installing', first_docs_list)
-        result = False
+        """Install one transactional managed-runtime session."""
         try:
-            result, msg = self.install_yaml_templates(first_docs_list)
-        except timeout_exceptions.FunctionTimedOut:
-            LOGGER.warning('Parse and apply templates failed: first-stage install timeout after 100 seconds')
-            result = False
-            msg = 'first-stage install timeout after 100 seconds'
-        except Exception as e:
-            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            LOGGER.exception(e)
-            result = False
-            msg = 'unexpected system error, please refer to logs in backend'
-        finally:
-            self.save_component_yaml(first_docs_list)
-            if not result:
-                self.save_install_record(install_id, source_label, policy_id, 'failed', first_docs_list)
-        if not result:
-            return False, msg
-        # Wait for scheduler to be ready
-        time.sleep(3)
+            directory = self.runtime_orchestrator.install(
+                policy=policy,
+                source_deploy=source_deploy,
+                source_label=source_label,
+            )
+        except Exception as exc:
+            LOGGER.warning(f'Managed runtime install failed: {exc}')
+            LOGGER.exception(exc)
+            return False, str(exc)
 
-        LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
-        second_stage_source_deploy = copy.deepcopy(source_deploy)
-        second_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
-                                                                         second_stage_source_deploy,
-                                                                         scopes=second_stage_components)
-        self.annotate_runtime_docs(second_docs_list, install_id, source_label, policy_id)
-        all_docs_list = first_docs_list + second_docs_list
-        self.save_install_record(install_id, source_label, policy_id, 'installing', all_docs_list)
-        # Persist source_device selected during generator planning so later
-        # processor-only redeployment requests keep the scheduler context.
-        self.source_deploy = second_stage_source_deploy
-        result = False
-        try:
-            result, msg = self.install_yaml_templates(second_docs_list)
-        except timeout_exceptions.FunctionTimedOut:
-            LOGGER.warning('Parse and apply templates failed: second-stage install timeout after 100 seconds')
-            result = False
-            msg = 'second-stage install timeout after 100 seconds'
-        except Exception as e:
-            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            LOGGER.exception(e)
-            result = False
-            msg = 'unexpected system error, please refer to logs in backend'
-        finally:
-            self.save_component_yaml(all_docs_list)
-            if not result:
-                self.save_install_record(install_id, source_label, policy_id, 'failed', all_docs_list)
-
-        if not result:
-            return False, msg
-
-        self.installed_running_state = True
-        self.save_install_record(install_id, source_label, policy_id, 'installed', all_docs_list)
-
-        # Start cycle deployment
-        self.is_cycle_deploy = True
-        threading.Thread(target=self.run_cycle_deploy).start()
-
+        self._bind_runtime_urls(directory)
+        self._start_redeployment_loop(directory.install_id)
         return True, 'Install services successfully'
 
     def parse_and_delete_templates(self):
-        # Wait for uninstall lock release
-        while self.uninstall_lock:
-            time.sleep(0.5)
-            continue
-
-        # End cycle deployment
-        self.is_cycle_deploy = False
-
-        docs = self.read_runtime_component_docs()
-        install_record = self.read_install_record()
-        install_id = install_record.get('install_id', self.current_install_id)
-        source_label = install_record.get('source_label', self.current_source_label)
-        policy_id = install_record.get('policy_id', self.current_policy_id)
-        if docs:
-            self.save_install_record(install_id, source_label, policy_id, 'uninstalling', docs)
+        """Stop generators, drain exact task leases and remove the session."""
+        self._stop_redeployment_loop()
         try:
-            result, msg = self.uninstall_yaml_templates(docs)
-        except timeout_exceptions.FunctionTimedOut:
-            msg = 'timeout after 200 seconds'
-            result = False
-            LOGGER.warning(f'Uninstall services failed: {msg}')
-        except Exception as e:
-            LOGGER.warning(f'Uninstall services failed: {str(e)}')
-            LOGGER.exception(e)
-            result = False
-            msg = 'unexpected system error, please refer to logs in backend'
+            self.runtime_orchestrator.uninstall()
+        except Exception as exc:
+            LOGGER.warning(f'Managed runtime uninstall failed: {exc}')
+            LOGGER.exception(exc)
+            return False, str(exc)
+        self.resource_url = None
+        self.result_url = None
+        self.result_file_url = None
+        self.log_fetch_url = None
+        return True, 'Uninstall services successfully'
 
-        if not result and docs:
-            self.save_install_record(install_id, source_label, policy_id, 'failed', docs)
-
-        return result, msg
-
-    def parse_and_redeploy_services(self, update_docs):
-        self._last_processor_redeploy_applied = False
-        original_docs = self.read_component_yaml()
-        if not original_docs:
-            msg = 'no valid components yaml docs found.'
-            LOGGER.warning(msg)
-            return False, ''
-
-        _, docs_to_add, docs_to_update, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
-        add_names = [doc['metadata']['name'] for doc in docs_to_add]
-        update_names = [doc['metadata']['name'] for doc in docs_to_update]
-        delete_names = [doc['metadata']['name'] for doc in docs_to_delete]
-        change_count = len(add_names) + len(update_names) + len(delete_names)
-        LOGGER.debug(
-            f"[Redeployment] processor change set: add={add_names}, "
-            f"update={update_names}, delete={delete_names}"
-        )
-
-        if change_count == 0:
-            LOGGER.debug('[Redeployment] No processor changes detected, skip redeployment.')
-            return True, ''
-
+    def parse_and_redeploy_services(self, policy=None):
+        """Publish a processor rollout; unchanged plans are a successful no-op."""
+        session = self.runtime_orchestrator.current_session()
+        if session is None:
+            return False, 'no managed runtime session exists'
+        policy = policy or self.find_scheduler_policy_by_id(session.policy_id)
+        if policy is None:
+            return False, f'scheduler policy {session.policy_id!r} does not exist'
         try:
-            res, msg = self.operate_processors(docs_to_update, docs_to_add, docs_to_delete)
-        except timeout_exceptions.FunctionTimedOut as e:
-            msg = (
-                "processor redeployment timeout; "
-                f"add={add_names}, update={update_names}, delete={delete_names}"
-            )
-            LOGGER.warning(f"Redeploy processors failed: {msg}")
-            LOGGER.exception(e)
-            return False, msg
-        except Exception as e:
-            LOGGER.warning(f'Redeploy processors failed: {str(e)}')
-            LOGGER.exception(e)
-            return False, 'unexpected system error, please refer to logs in backend'
-
-        if not res:
-            return False, msg
-
-        self._last_processor_redeploy_applied = True
-        return True, ''
-
-    @timeout(300)
-    def operate_processors(self, docs_to_update, docs_to_add, docs_to_delete):
-        processor_update, processor_add, processor_delete = [], [], []
-        if docs_to_update:
-            res, msg, processor_update = self.update_processors(docs_to_update)
-            if not res:
-                return False, msg
-
-        if docs_to_add:
-            res, msg, processor_add = self.install_processors(docs_to_add)
-            if not res:
-                return False, msg
-
-        if docs_to_delete:
-            res, msg, processor_delete = self.uninstall_processors(docs_to_delete)
-            if not res:
-                return False, msg
-
-        processor_delete += processor_update
-        processor_add += processor_update
-        while KubeHelper.check_pods_with_string_exists(self.namespace, include_str_list=processor_delete):
-            time.sleep(1)
-
-        while not KubeHelper.check_specific_pods_running(self.namespace, processor_add):
-            time.sleep(1)
-
-        return True, ''
-
-    @timeout(200)
-    def update_processors(self, yaml_docs):
-        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
-                     not in (self.system_support_components + self.function_components)]
-        if not yaml_docs:
-            return True, 'no processors need to be installed.', []
-
-        processors = [doc['metadata']['name'] for doc in yaml_docs]
-        LOGGER.info(f'[Redeployment] update processors:{processors}')
-
-        _result = KubeHelper.delete_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.', []
-
-        _result = KubeHelper.apply_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.', []
-        return (_result, '', processors) if _result else (_result, 'kubernetes api error.', [])
-
-    @timeout(100)
-    def install_processors(self, yaml_docs):
-        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
-                     not in (self.system_support_components + self.function_components)]
-        if not yaml_docs:
-            return True, 'no processors need to be installed.', []
-
-        processors = [doc['metadata']['name'] for doc in yaml_docs]
-        LOGGER.info(f'[Redeployment] install processors: {processors}')
-        _result = KubeHelper.apply_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.', []
-        return (_result, '', processors) if _result else (_result, 'kubernetes api error.', [])
-
-    @timeout(200)
-    def uninstall_processors(self, yaml_docs):
-        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
-                     not in (self.system_support_components + self.function_components)]
-        if not yaml_docs:
-            return True, 'no processors need to be uninstalled.', []
-
-        processors = [doc['metadata']['name'] for doc in yaml_docs]
-        LOGGER.info(f'[Redeployment] uninstall processors: {processors}')
-        _result = KubeHelper.delete_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.', []
-        return (_result, '', processors) if _result else (_result, 'kubernetes api error.', [])
-
-    @timeout(100)
-    def install_yaml_templates(self, yaml_docs):
-        if not yaml_docs:
-            return False, 'yaml data is lost, fail to install resources'
-        _result = KubeHelper.apply_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.'
-        while not self.check_pods_running_state():
-            time.sleep(1)
-        return _result, '' if _result else 'kubernetes api error'
-
-    @timeout(200)
-    def uninstall_yaml_templates(self, yaml_docs):
-        if not yaml_docs:
-            return False, 'yaml docs is lost, fail to delete resources'
-        self.installed_running_state = False
-        _result = KubeHelper.delete_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.'
-        while self.check_install_state():
-            time.sleep(1)
-        return _result, '' if _result else 'kubernetes api error'
-
-    def check_and_update_docs_list(self, original_docs, update_docs):
-        """
-        Intelligently compares and categorizes Kubernetes resource configurations
-        :param original_docs: List of existing resource configurations
-        :param update_docs: List of new resource configurations
-        :return: Tuple containing:
-            - total_docs: Complete merged configuration
-            - resources_to_add: Resources to be created
-            - resources_to_update: Resources needing updates
-            - resources_to_delete: Resources to be deleted
-        """
-        # Create name-based dictionaries for efficient lookup
-        original_dict = {doc['metadata']['name']: doc for doc in original_docs}
-        update_dict = {doc['metadata']['name']: doc for doc in update_docs}
-
-        # Initialize change sets
-        resources_to_add = []
-        resources_to_update = []
-        resources_to_delete = []
-
-        # Detect resources to delete (present in original but missing in update)
-        for name in list(original_dict.keys()):
-            if name not in (self.system_support_components + self.function_components) and name not in update_dict:
-                resources_to_delete.append(original_dict[name])
-                original_dict.pop(name)
-
-        # Detect resources to add or update
-        for name, new_doc in update_dict.items():
-            if name not in original_dict:
-                # New resource found
-                resources_to_add.append(new_doc)
-                original_dict[name] = new_doc
-            else:
-                # Compare configuration changes
-                old_doc = original_dict[name]
-                if BackendCore.has_significant_changes(old_doc, new_doc):
-                    resources_to_update.append(new_doc)
-                    original_dict[name] = new_doc
-
-        # Generate merged configuration (updated state)
-        total_docs = list(original_dict.values())
-
-        return total_docs, resources_to_add, resources_to_update, resources_to_delete
-
-    @staticmethod
-    def has_significant_changes(old_doc, new_doc):
-        """
-        Detects if resource configurations have meaningful differences
-        Ignores metadata, status, and non-critical fields
-        """
-        # Basic type checks
-        if old_doc['kind'] != new_doc['kind']:
-            LOGGER.debug(f"Kind changed from {old_doc['kind']} to {new_doc['kind']}")
-            return True
-        if old_doc['apiVersion'] != new_doc['apiVersion']:
-            LOGGER.debug(f"API version changed from {old_doc['apiVersion']} to {new_doc['apiVersion']}")
-            return True
-
-        # Prepare comparison objects (deepcopy to avoid mutation)
-        old_spec = copy.deepcopy(old_doc.get('spec', {}))
-        new_spec = copy.deepcopy(new_doc.get('spec', {}))
-
-        # Remove fields that don't trigger redeployment
-        for spec in [old_spec, new_spec]:
-            # Remove log level fields
-            spec.pop('logLevel', None)
-
-            # Process worker configurations
-            for worker_type in ['cloudWorker', 'edgeWorker']:
-                if worker_type in spec:
-                    worker = spec[worker_type]
-
-                    worker_list = worker if isinstance(worker, list) else [worker]
-
-                    for worker_item in worker_list:
-                        if not isinstance(worker_item, dict):
-                            continue
-
-                        worker_item.pop('logLevel', None)
-                        worker_item.pop('mounts', None)
-
-                        if 'template' in worker_item and 'spec' in worker_item['template']:
-                            template_spec = worker_item['template']['spec']
-                            # Remove fields that don't require pod recreation
-                            template_spec.pop('dnsPolicy', None)
-                            template_spec.pop('serviceAccountName', None)
-                            template_spec.pop('restartPolicy', None)
-
-                            # Process container configurations
-                            for container in template_spec.get('containers', []):
-                                # Keep only deployment-critical fields
-                                retained_fields = {'image', 'ports', 'nodeName', 'command', 'args'}
-                                container_keys = list(container.keys())
-                                for key in container_keys:
-                                    if key not in retained_fields:
-                                        container.pop(key, None)
-
-        # Normalize for comparison
-        def normalize_spec(spec):
-            """Standardize spec for reliable comparison"""
-            # Sort edgeWorker list by nodeName
-            if 'edgeWorker' in spec and isinstance(spec['edgeWorker'], list):
-                spec['edgeWorker'] = sorted(
-                    spec['edgeWorker'],
-                    key=lambda x: x.get('template', {}).get('spec', {}).get('nodeName', '')
-                )
-            return json.dumps(spec, sort_keys=True, default=str)
-
-        # Perform comparison
-        old_normalized = normalize_spec(old_spec)
-        new_normalized = normalize_spec(new_spec)
-
-        has_changes = old_normalized != new_normalized
-        return has_changes
-
-    def save_component_yaml(self, docs_list):
-        self.cur_yaml_docs = copy.deepcopy(docs_list)
-        YamlOps.write_all_yaml(docs_list, self.save_yaml_path)
-
-    def read_component_yaml(self):
-        if self.cur_yaml_docs:
-            return copy.deepcopy(self.cur_yaml_docs)
-        elif os.path.exists(self.save_yaml_path):
-            return YamlOps.read_all_yaml(self.save_yaml_path)
-        else:
-            return None
-
-    def update_component_yaml(self, update_docs_list):
-        original_docs_list = self.read_component_yaml()
-        if not original_docs_list:
-            LOGGER.warning('No valid components yaml docs found.')
-            return
-        total_docs, _, _, _ = self.check_and_update_docs_list(original_docs_list, update_docs_list)
-        self.save_component_yaml(total_docs)
-
-    def extract_service_from_source_deployment(self, source_deploy):
-
-        def bfs_dag(dag_graph, id_to_name, node_set, extracted_dag, service_dict):
-            source_list = dag_graph[TaskConstant.START.value]
-            queue = deque(source_list)
-            visited = set(source_list)
-            while queue:
-                current_node = queue.popleft()
-                current_node_item = dag_graph[current_node]
-
-                service_id = current_node_item['id']
-                service = self.find_service_by_id(service_id)
-                service_name = service['service']
-                service_yaml = service['yaml']
-                id_to_name[service_id] = service_name
-
-                if service_id in service_dict:
-                    pre_node_list = service_dict[service_id]['node']
-                    service_dict[service_id]['node'] = list(set(pre_node_list + node_set))
-                else:
-                    service_dict[service_id] = {'service_name': service_name, 'yaml': service_yaml, 'node': node_set}
-                extracted_dag[current_node_item['id']]['service'] = service
-
-                for child_id in current_node_item['succ']:
-                    if child_id not in visited:
-                        queue.append(child_id)
-                        visited.add(child_id)
-
-        service_dict = {}
-
-        for s in source_deploy:
-            dag = s['dag']
-            node_set = s['node_set']
-            extracted_dag = copy.deepcopy(dag)
-            del extracted_dag[TaskConstant.START.value]
-
-            id_to_name = {}
-            bfs_dag(dag, id_to_name, node_set, extracted_dag, service_dict)
-
-            renamed_dag = {}
-            for old_key, node in extracted_dag.items():
-                old_id = node.get('id', old_key)
-                new_key = id_to_name.get(old_id, old_id)
-
-                node_new = copy.deepcopy(node)
-                node_new['id'] = new_key
-                if 'prev' in node_new:
-                    node_new['prev'] = [id_to_name.get(x, x) for x in node_new['prev']]
-                if 'succ' in node_new:
-                    node_new['succ'] = [id_to_name.get(x, x) for x in node_new['succ']]
-
-                renamed_dag[new_key] = node_new
-            s['dag'] = renamed_dag
-
-        return service_dict
-
-    def clear_yaml_docs(self):
-        self.cur_yaml_docs = None
-        FileOps.remove_file(self.save_yaml_path)
+            changed = self.runtime_orchestrator.redeploy(policy)
+        except Exception as exc:
+            LOGGER.warning(f'Managed processor rollout failed: {exc}')
+            LOGGER.exception(exc)
+            return False, str(exc)
+        if changed:
+            directory = self.runtime_orchestrator.active_directory()
+            if directory is not None:
+                self._bind_runtime_urls(directory)
+        return True, 'Redeployment succeeded' if changed else 'Deployment is unchanged'
 
     def find_service_by_id(self, service_id):
         for service in self.services:
@@ -771,22 +253,15 @@ class BackendCore:
     def fill_datasource_url(self, url, source_type, source_mode, source_id):
         if not self.inner_datasource:
             return url
-        source_hostname = KubeHelper.get_pod_node(SystemConstant.DATASOURCE.value, self.namespace)
-        if not source_hostname:
-            assert None, 'Datasource pod not exists.'
         source_protocol = source_mode.split('_')[0]
-        source_ip = NodeInfo.hostname2ip(source_hostname)
-        source_port = PortInfo.get_component_port(SystemConstant.DATASOURCE.value)
-        url = f'{source_protocol}://{source_ip}:{source_port}/{source_type}{source_id}'
+        datasource_fqdn = f'datasource-edge.{self.namespace}.svc.cluster.local'
+        return f'{source_protocol}://{datasource_fqdn}:8000/{source_type}{source_id}'
 
-        return url
+    def check_node_exist(self, node):
+        record = self.runtime_orchestrator.node_inventory().get(str(node))
+        return bool(record and record.get('ready'))
 
-    @staticmethod
-    def check_node_exist(node):
-        return node in NodeInfo.get_node_info()
-
-    @staticmethod
-    def get_edge_nodes():
+    def get_edge_nodes(self):
         def sort_key(item):
             name = item['name']
             patterns = [
@@ -802,24 +277,26 @@ class BackendCore:
                     return group, num
             return len(patterns), 0
 
-        node_role = NodeInfo.get_node_info_role()
-        edge_nodes = [{'name': node_name} for node_name in node_role if node_role[node_name] == 'edge']
+        inventory = self.runtime_orchestrator.node_inventory()
+        edge_nodes = [
+            {'name': node_name}
+            for node_name, record in inventory.items()
+            if record.get('role') == 'edge' and record.get('ready')
+        ]
         edge_nodes.sort(key=sort_key)
         return edge_nodes
 
     def check_install_state(self):
-        self.install_state = KubeHelper.check_pods_without_string_exists(
-            self.namespace,
-            exclude_str_list=self.system_support_components
-        )
-
-        return self.install_state
+        # Any CAS session owns RuntimeServices and must be uninstalled before a
+        # new transaction. Failed or recovering sessions are therefore still
+        # "installed" from the management UI's lifecycle perspective.
+        return self.runtime_orchestrator.current_session() is not None
 
     def check_pods_running_state(self):
-        return KubeHelper.check_pods_running(self.namespace)
+        return self.runtime_orchestrator.active_directory() is not None
 
     def check_simulation_datasource(self):
-        return KubeHelper.check_pod_name('datasource', namespace=self.namespace)
+        return bool(self.template_helper.load_base_info().get('datasource', {}).get('use-simulation'))
 
     def check_dag(self, dag):
 
@@ -895,13 +372,26 @@ class BackendCore:
             if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
         viz_functions = self.result_visualization_cache.sync_and_get(viz_configs, namespace='result_visualizer')
 
+        resource_snapshot = None
+        if any(config.get('hook_name') == 'service_queue_length' for config in viz_configs):
+            self.get_resource_url()
+            if self.resource_url:
+                resource_snapshot = http_request(
+                    self.resource_url,
+                    method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE,
+                )
+
         visualization_data = []
         for idx, (viz_config, viz_func) in enumerate(zip(viz_configs, viz_functions)):
             try:
                 if 'save_expense' in viz_config and viz_config['save_expense'] and not is_last:
                     visualization_data.append({"id": idx, "data": {v: None for v in viz_config['variables']}})
                 else:
-                    visualization_data.append({"id": idx, "data": viz_func(task)})
+                    if viz_config.get('hook_name') == 'service_queue_length':
+                        data = viz_func(task, resource=resource_snapshot)
+                    else:
+                        data = viz_func(task)
+                    visualization_data.append({"id": idx, "data": data})
             except Exception as e:
                 LOGGER.warning(f'Failed to load result visualization data: {str(e)}')
                 LOGGER.exception(e)
@@ -913,22 +403,30 @@ class BackendCore:
         viz_functions = self.system_visualization_cache.sync_and_get(viz_configs, namespace='system_visualizer')
 
         resource_snapshot = None
+        scheduling_overhead = None
         try:
-            # Fetch scheduler resources once to avoid duplicate requests in visualizers
+            # Fetch each scheduler snapshot once; visualizers are pure transforms.
             self.get_resource_url()
             if self.resource_url:
                 resource_snapshot = http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE)
+                scheduler_base = self.resource_url.rsplit(NetworkAPIPath.SCHEDULER_GET_RESOURCE, 1)[0]
+                scheduling_overhead = http_request(
+                    f'{scheduler_base}{NetworkAPIPath.SCHEDULER_OVERHEAD}',
+                    method=NetworkAPIMethod.SCHEDULER_OVERHEAD,
+                )
         except Exception as e:
             LOGGER.warning(f'Failed to fetch scheduler resource for system viz: {str(e)}')
             LOGGER.exception(e)
 
         visualization_data = []
-        for idx, viz_func in enumerate(viz_functions):
+        for idx, (viz_config, viz_func) in enumerate(zip(viz_configs, viz_functions)):
             try:
-                # Prefer passing shared resource snapshot when supported, fallback otherwise
-                try:
+                hook_name = viz_config.get('hook_name')
+                if hook_name in {'cpu_usage', 'memory_usage'}:
                     data = viz_func(resource=resource_snapshot)
-                except TypeError:
+                elif hook_name == 'schedule_overhead':
+                    data = viz_func(scheduling_overhead=scheduling_overhead)
+                else:
                     data = viz_func()
                 visualization_data.append({"id": idx, "data": data})
             except Exception as e:
@@ -1004,83 +502,92 @@ class BackendCore:
                 LOGGER.warning(f'Unexpected error occurred in getting task result: {str(e)}')
                 LOGGER.exception(e)
 
-    def _sleep_until_next_redeployment_cycle(self, cycle_started_t):
+    def _start_redeployment_loop(self, install_id):
+        """Replace the rollout worker with one scoped to this installation."""
+        install_id = str(install_id or '').strip()
+        if not install_id:
+            raise ValueError('redeployment loop requires an install_id')
+        with self._redeployment_lock:
+            if self._redeployment_stop_event is not None:
+                self._redeployment_stop_event.set()
+            if max(0.0, float(self.processor_redeployment_interval_s)) <= 0.0:
+                self._redeployment_stop_event = None
+                self._redeployment_thread = None
+                LOGGER.info('[Redeployment] Automatic processor rollout is disabled.')
+                return
+            stop_event = threading.Event()
+            thread = threading.Thread(
+                target=self.run_cycle_deploy,
+                args=(stop_event, install_id),
+                name=f'dayu-runtime-redeployment-{install_id}',
+                daemon=True,
+            )
+            self._redeployment_stop_event = stop_event
+            self._redeployment_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                stop_event.set()
+                self._redeployment_stop_event = None
+                self._redeployment_thread = None
+                raise
+
+    def _stop_redeployment_loop(self):
+        """Invalidate the current rollout worker before lifecycle mutation."""
+        with self._redeployment_lock:
+            if self._redeployment_stop_event is not None:
+                self._redeployment_stop_event.set()
+            self._redeployment_stop_event = None
+            self._redeployment_thread = None
+
+    def _wait_until_next_redeployment_cycle(self, stop_event, cycle_started_t):
         interval_s = max(0.0, float(self.processor_redeployment_interval_s))
         if interval_s <= 0.0:
-            return
+            return stop_event.is_set()
 
         elapsed_s = max(0.0, time.monotonic() - cycle_started_t)
         sleep_s = max(0.0, interval_s - elapsed_s)
-        if sleep_s > 0.0:
-            time.sleep(sleep_s)
+        return stop_event.wait(sleep_s) if sleep_s > 0.0 else stop_event.is_set()
 
-    def run_cycle_deploy(self):
-        time.sleep(5)
-        while self.is_cycle_deploy:
-            cycle_started_t = time.monotonic()
-            try:
-                if not self.yaml_dict or not self.source_deploy:
-                    LOGGER.debug('[Redeployment] Configuration is lacked, cancel redeployment request..')
-                elif not self.check_pods_running_state():
-                    LOGGER.debug('[Redeployment] Pods is in error state, cancel redeployment request..')
-                else:
-                    redeploy_docs_list = self.template_helper.finetune_yaml_parameters(
-                        copy.deepcopy(self.yaml_dict),
-                        copy.deepcopy(self.source_deploy),
-                        scopes=['processor'],
-                        current_docs=self.read_component_yaml(),
-                    )
-                    install_record = self.read_install_record()
-                    install_id = self.current_install_id or install_record.get('install_id', '')
-                    source_label = self.current_source_label or install_record.get('source_label', '')
-                    policy_id = self.current_policy_id or install_record.get('policy_id', '')
-                    self.annotate_runtime_docs(redeploy_docs_list, install_id, source_label, policy_id)
-
-                    self.uninstall_lock = True
-                    try:
-                        self._last_processor_redeploy_applied = None
-                        res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
-
-                        if res:
-                            if self._last_processor_redeploy_applied is not False:
-                                self.update_component_yaml(redeploy_docs_list)
-                                self.save_install_record(
-                                    install_id,
-                                    source_label,
-                                    policy_id,
-                                    'installed',
-                                    self.read_component_yaml(),
-                                )
-                                LOGGER.info('[Redeployment] Redeployment succeeded.')
-                            else:
-                                LOGGER.debug('[Redeployment] Redeployment skipped; no processor changes were applied.')
-                        else:
-                            LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
-                    finally:
-                        self.uninstall_lock = False
-
-            except timeout_exceptions.FunctionTimedOut as e:
-                self.uninstall_lock = False
-                LOGGER.warning(
-                    '[Redeployment] Timeout escaped redeployment cycle; keep redeployment thread alive.'
-                )
-                LOGGER.exception(e)
-            except Exception as e:
-                self.uninstall_lock = False
-                LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {str(e)}')
-                LOGGER.exception(e)
-            except BaseException as e:
-                if isinstance(e, (KeyboardInterrupt, SystemExit)):
-                    raise
-                self.uninstall_lock = False
-                LOGGER.warning(
-                    f'[Redeployment] Non-standard error occurred in redeployment: {str(e)}; '
-                    'keep redeployment thread alive.'
-                )
-                LOGGER.exception(e)
-
-            if self.is_cycle_deploy:
-                self._sleep_until_next_redeployment_cycle(cycle_started_t)
+    def run_cycle_deploy(self, stop_event, install_id):
+        interval = max(0.0, float(self.processor_redeployment_interval_s))
+        if interval <= 0:
+            LOGGER.info('[Redeployment] Automatic processor rollout is disabled.')
+            return
+        try:
+            while not stop_event.is_set():
+                cycle_started_t = time.monotonic()
+                try:
+                    # Serialize the final token check with stop/replacement. Once
+                    # uninstall returns from _stop_redeployment_loop, an old
+                    # worker can neither start nor repeat a redeployment call.
+                    with self._redeployment_lock:
+                        if self._redeployment_stop_event is not stop_event or stop_event.is_set():
+                            return
+                        session = self.runtime_orchestrator.current_session()
+                        if (
+                            session is None
+                            or session.phase != 'active'
+                            or session.install_id != install_id
+                        ):
+                            LOGGER.debug(
+                                '[Redeployment] Managed runtime session changed; stop rollout loop.'
+                            )
+                            return
+                        policy = self.find_scheduler_policy_by_id(session.policy_id)
+                        result, message = self.parse_and_redeploy_services(policy)
+                    if not result:
+                        LOGGER.warning(f'[Redeployment] {message}')
+                except Exception as exc:
+                    LOGGER.warning(f'[Redeployment] Unexpected rollout error: {exc}')
+                    LOGGER.exception(exc)
+                if self._wait_until_next_redeployment_cycle(stop_event, cycle_started_t):
+                    return
+        finally:
+            with self._redeployment_lock:
+                if self._redeployment_stop_event is stop_event:
+                    self._redeployment_stop_event = None
+                    self._redeployment_thread = None
 
     @staticmethod
     def _count_jsonl_records(file_path):
@@ -1193,7 +700,7 @@ class BackendCore:
 
     def get_system_parameters(self):
         # Skip system parameters retrieving when not installed
-        if not self.installed_running_state or not self.install_state:
+        if not self.check_install_state():
             return []
 
         # Backend-controlled timestamp and single resource fetch per request
@@ -1268,47 +775,41 @@ class BackendCore:
             LOGGER.exception(e)
             return None
 
-    def get_resource_url(self):
-        cloud_hostname = NodeInfo.get_cloud_node()
-        try:
-            scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        except Exception as e:
-            LOGGER.warning(f'Get resource url failed: {str(e)}')
-            LOGGER.exception(e)
-            return
+    @staticmethod
+    def _runtime_unit(directory, component):
+        matches = [unit for unit in directory.routes if unit.slot.component == component]
+        if len(matches) != 1 or matches[0].endpoint is None:
+            raise RuntimeError(f'RuntimeDirectory requires exactly one endpoint for {component!r}')
+        return matches[0]
 
-        self.resource_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                          port=scheduler_port,
-                                          path=NetworkAPIPath.SCHEDULER_GET_RESOURCE)
+    def _bind_runtime_urls(self, directory):
+        scheduler = self._runtime_unit(directory, 'scheduler').endpoint
+        distributor = self._runtime_unit(directory, 'distributor').endpoint
+        scheduler_base = f'http://{scheduler.dns_name}:{scheduler.port}'
+        distributor_base = f'http://{distributor.dns_name}:{distributor.port}'
+        self.resource_url = f'{scheduler_base}{NetworkAPIPath.SCHEDULER_GET_RESOURCE}'
+        self.result_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_RESULT}'
+        self.result_file_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_FILE}'
+        self.log_fetch_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_EXPORT_RESULT_LOG}'
+
+    def _refresh_runtime_urls(self):
+        directory = self.runtime_orchestrator.active_directory()
+        if directory is None:
+            return False
+        self._bind_runtime_urls(directory)
+        return True
+
+    def get_resource_url(self):
+        if not self.resource_url:
+            self._refresh_runtime_urls()
 
     def get_result_url(self):
-        cloud_hostname = NodeInfo.get_cloud_node()
-        try:
-            distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
-        except Exception as e:
-            LOGGER.warning(f'Get result url failed: {str(e)}')
-            LOGGER.exception(e)
-            return
-
-        self.result_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                        port=distributor_port,
-                                        path=NetworkAPIPath.DISTRIBUTOR_RESULT)
-        self.result_file_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                             port=distributor_port,
-                                             path=NetworkAPIPath.DISTRIBUTOR_FILE)
+        if not self.result_url or not self.result_file_url:
+            self._refresh_runtime_urls()
 
     def get_log_url(self):
-        cloud_hostname = NodeInfo.get_cloud_node()
-        try:
-            distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
-        except Exception as e:
-            LOGGER.warning(f'Get log url failed: {str(e)}')
-            LOGGER.exception(e)
-            return
-
-        self.log_fetch_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                           port=distributor_port,
-                                           path=NetworkAPIPath.DISTRIBUTOR_EXPORT_RESULT_LOG)
+        if not self.log_fetch_url:
+            self._refresh_runtime_urls()
 
     def get_file_result(self, file_name):
         if not self.result_file_url:

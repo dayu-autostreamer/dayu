@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import contextmanager
 import importlib
 from types import SimpleNamespace
 
@@ -6,6 +7,7 @@ import pytest
 
 from core.lib.common import Queue
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext, RuntimeLeaseUnavailable
 
 
 processor_server_module = importlib.import_module("core.processor.processor_server")
@@ -28,6 +30,19 @@ def build_task(service_names, flow_index, file_path="payload.bin"):
         metadata={"buffer_size": 1},
         raw_metadata={"buffer_size": 1},
         file_path=file_path,
+        runtime_directory_revision=1,
+        runtime_routes=[{
+            "slot": {"component": "controller", "target_node": "edge-node"},
+            "runtime_id": "controller-edge-node-r1",
+            "runtime_revision": 1,
+            "endpoint": {
+                "dns_name": "controller-edge-node.dayu.svc",
+                "port": 9002,
+                "runtime_service_uid": "rs-controller",
+                "service_uid": "svc-controller",
+                "pod_uid": "pod-controller",
+            },
+        }],
     )
 
 
@@ -80,6 +95,26 @@ class FakeBackgroundTasks:
         self.tasks.append((func, args, kwargs))
 
 
+class RecordingLeaseClient:
+    def __init__(self):
+        self.renewed = []
+
+    def renew(self, task):
+        self.renewed.append(
+            (task.get_runtime_directory_revision(), task.get_root_uuid())
+        )
+        return {
+            "revision": task.get_runtime_directory_revision(),
+            "root_uuid": task.get_root_uuid(),
+            "expires_at": 123.0,
+        }
+
+    @contextmanager
+    def keepalive(self, task):
+        self.renew(task)
+        yield
+
+
 @pytest.fixture
 def server_context(monkeypatch):
     fake_queue = Queue()
@@ -100,16 +135,18 @@ def server_context(monkeypatch):
         return "9004"
 
     monkeypatch.setattr(processor_server_module.Context, "get_parameter", staticmethod(fake_get_parameter))
-    monkeypatch.setattr(processor_server_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
-    monkeypatch.setattr(processor_server_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
-    monkeypatch.setattr(
-        processor_server_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: 9002),
-    )
+    monkeypatch.setenv("DAYU_RUNTIME_BOOTSTRAP", '{"local_node":"edge-node","cloud_node":"cloud-node"}')
+    RuntimeContext.reset_default()
     monkeypatch.setattr(processor_server_module.threading, "Thread", DummyThread)
     server = processor_server_module.ProcessorServer()
-    return SimpleNamespace(server=server, queue=fake_queue, processor=fake_processor)
+    lease_client = RecordingLeaseClient()
+    server.runtime_lease_client = lease_client
+    return SimpleNamespace(
+        server=server,
+        queue=fake_queue,
+        processor=fake_processor,
+        lease_client=lease_client,
+    )
 
 
 @pytest.mark.unit
@@ -183,11 +220,14 @@ def test_processor_server_process_task_service_records_duration_and_sends_result
             "frame_count": 0,
         },
     }
+    assert server_context.lease_client.renewed == [
+        (task.get_runtime_directory_revision(), task.get_root_uuid())
+    ]
     assert processed.get_service("detector").get_real_execute_time() == 0.75
     assert durations == [(4, False, "real_execute"), (4, True, "real_execute")]
     assert requests == [
         (
-            "http://edge-node:9002/process_return_task",
+            "http://controller-edge-node.dayu.svc:9002/process_return_task",
             "POST",
             {"data": {"data": processed.serialize()}},
         )
@@ -210,6 +250,23 @@ def test_processor_server_process_task_service_skips_none_result(server_context,
 
     assert server.process_task_service(task) is None
     assert durations == [(4, False, "real_execute")]
+
+
+@pytest.mark.unit
+def test_processor_fails_closed_before_execution_when_lease_renewal_fails(server_context):
+    server = server_context.server
+    task = build_task(["detector"], "detector")
+
+    class FailedLeaseClient:
+        @contextmanager
+        def keepalive(self, current_task):
+            raise RuntimeLeaseUnavailable("scheduler unavailable")
+            yield
+
+    server.runtime_lease_client = FailedLeaseClient()
+    with pytest.raises(RuntimeLeaseUnavailable, match="scheduler unavailable"):
+        server.process_task_service(task)
+    assert server_context.processor.calls == []
 
 
 @pytest.mark.unit

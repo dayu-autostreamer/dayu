@@ -4,6 +4,19 @@ from pathlib import Path
 import pytest
 
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext, RuntimeLeaseUnavailable, RuntimeResolver
+
+
+def controller_route(node):
+    return {
+        "slot": {"component": "controller", "target_node": node},
+        "runtime_id": f"controller-{node}",
+        "runtime_revision": 1,
+        "endpoint": {
+            "dns_name": f"controller-{node}.dayu.svc", "port": 30001,
+            "runtime_service_uid": f"rs-{node}", "service_uid": f"svc-{node}", "pod_uid": f"pod-{node}",
+        },
+    }
 
 
 class FakeTask:
@@ -14,6 +27,9 @@ class FakeTask:
         self.serialized = {"task": "serialized"}
         self.transmit_durations = []
         self.execute_durations = []
+        self.runtime_routes = [controller_route("edgex1"), controller_route("cloudx1")]
+        self.runtime_directory_revision = 1
+        self.root_uuid = "root-2"
 
     def get_source_id(self):
         return 1
@@ -38,6 +54,15 @@ class FakeTask:
 
     def serialize(self):
         return self.serialized
+
+    def get_runtime_routes(self):
+        return self.runtime_routes
+
+    def get_runtime_directory_revision(self):
+        return self.runtime_directory_revision
+
+    def get_root_uuid(self):
+        return self.root_uuid
 
     def save_transmit_time(self, duration):
         self.transmit_durations.append(duration)
@@ -84,6 +109,7 @@ def build_parallel_branch_task(branch_name, value, root_uuid="root-task-0"):
         raw_metadata={"buffer_size": 1},
         file_path="payload.bin",
         root_uuid=root_uuid,
+        runtime_directory_revision=1,
     )
     task.set_current_content({"branch": branch_name, "value": value})
     task.add_scenario({"branch": value})
@@ -96,23 +122,17 @@ def controller_under_test(monkeypatch):
     controller = object.__new__(controller_module.Controller)
     controller.task_coordinator = None
     controller.is_display = False
-    controller.controller_port = 30001
-    controller.distributor_port = 30002
-    controller.distributor_hostname = "cloudx1"
     controller.distribute_address = "http://10.0.0.9:30002/distribute"
     controller.local_device = "edgex1"
     controller.cloud_device = "cloudx1"
 
-    monkeypatch.setattr(
-        controller_module.NodeInfo,
-        "hostname2ip",
-        staticmethod(lambda hostname: {"edgex1": "10.0.0.1", "cloudx1": "10.0.0.9"}.get(hostname, "10.0.0.5")),
-    )
-    monkeypatch.setattr(
-        controller_module,
-        "merge_address",
-        lambda ip, port=None, path=None, protocol="http": f"{protocol}://{ip}:{port}/{path.strip('/')}",
-    )
+    controller.runtime_context = RuntimeContext({"local_node": "edgex1", "cloud_node": "cloudx1"})
+    controller.runtime_resolver = RuntimeResolver(controller.runtime_context)
+    controller.runtime_lease_client = type(
+        "LeaseClient",
+        (),
+        {"renew": lambda self, task: {"revision": 1, "root_uuid": task.get_root_uuid()}},
+    )()
     return controller_module, controller
 
 
@@ -249,6 +269,28 @@ def test_submit_task_start_stage_returns_transmit_when_all_children_transmit(con
 
 
 @pytest.mark.unit
+def test_controller_does_not_advance_when_lease_renewal_fails(controller_under_test, monkeypatch):
+    _, controller = controller_under_test
+    task = FakeTask(service_name="face-detection", stage_device="edgex1")
+    forwarded = []
+
+    class FailedLeaseClient:
+        def renew(self, current_task):
+            raise RuntimeLeaseUnavailable("scheduler unavailable")
+
+    controller.runtime_lease_client = FailedLeaseClient()
+    monkeypatch.setattr(
+        controller,
+        "send_task_to_service",
+        lambda *args, **kwargs: forwarded.append((args, kwargs)),
+    )
+
+    with pytest.raises(RuntimeLeaseUnavailable, match="scheduler unavailable"):
+        controller.submit_task(task)
+    assert forwarded == []
+
+
+@pytest.mark.unit
 def test_process_return_waits_when_parallel_tasks_cannot_be_retrieved():
     controller_module = importlib.import_module("core.controller.controller")
     controller = object.__new__(controller_module.Controller)
@@ -261,6 +303,11 @@ def test_process_return_waits_when_parallel_tasks_cannot_be_retrieved():
             return None
 
     controller.task_coordinator = BrokenCoordinator()
+    controller.runtime_lease_client = type(
+        "LeaseClient",
+        (),
+        {"renew": lambda self, task: {"revision": 1, "root_uuid": task.get_root_uuid()}},
+    )()
     submitted_tasks = []
     controller.submit_task = lambda task: submitted_tasks.append(task) or "execute"
 

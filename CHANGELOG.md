@@ -4,16 +4,22 @@
 
 ## v1.4 (In Development)
 
+### Breaking Changes
+Replace application `JointMultiEdgeService` generation and edge-side Kubernetes discovery with immutable Sedna `RuntimeService` resources, Scheduler-owned exact `RuntimeDirectory` routes, and revision task leases. Runtime workers no longer ship the Kubernetes Python client or accept legacy discovery/cache configuration.
+
 ### Features
+- Add transactional scheduler-first installation, RuntimeDirectory proposal/CAS publication, Redis-backed restart recovery, lease-aware drain, and exact-UID runtime retirement (`backend`/`scheduler`).
+- Restrict Kubernetes access to the singleton backend with namespace-local lifecycle RBAC and a per-namespace cluster observer binding (`backend`).
+- Unify all deployment policies on the validated `logical service -> node list` contract and add explicit cloud-only deployment/scheduling policies with no fixed cloud hostname (`scheduler`).
 
 ### Bug Fix
-- Fix possible failure in install/uninstall applications with multi-layer fallback including kubernetes label and configmap (`backend`).
+- Fix possible failure in install/uninstall with one crash-recoverable ConfigMap CAS session and exact RuntimeService ownership identities (`backend`).
 
 ### Minor Update
 - Add more services: traffic-detection, road-context-segmentation, traffic-signal-recognition, vehicle-tracking, vehicle-attribute-recognition, vehicle-trajectory-prediction, pedestrian-pose-estimation, pedestrian-intent-recognition, risk-graph-generation (`processor`).
 - Change input/output format of processors from value to list (`processor`).
 - Add import/export of dag in DAG Orchestrain frontend page (`frontend`).
-- Set default cloud processor as options to permit edge-only processors (`backend`).
+- Set default cloud processor backup as optional: Backend can add one exact cloud RuntimeService per logical service after strict Scheduler-plan validation, consistently for install and redeploy (`backend`).
 - Update dockerfile building to support concise modification of ultra parameters.
 - Unify input/output interface format of processors (`processor`).
 - Add Gantt visualization to display task result (`frontend`/`backend`).
@@ -114,4 +120,3 @@ The basic structure of tasks in dayu is updated from linear pipeline to topologi
 - Easy to deploy on distributed systems and scalable to heterogeneous devices based on KubeEdge.
 - Support heterogeneous hook function extensions for research of different topics (like data configuration, task offloading, video encoding, and so on) and implementation of different methods (for baseline comparison).
 - Include our latest work on video configuration and task offloading: hierarchical-EI, a two-phase hierarchical scheduling framework based on Embodied Intelligence. It helps adjust system configuration with low cost and high scenario adaption.  [(link)](template/scheduler/hei.yaml)
-

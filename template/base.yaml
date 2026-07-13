@@ -20,16 +20,28 @@ log-export:
     retention-records: 100000
     # compact the append-only store after it exceeds retention by this many records
     compact-interval: 10000
-# pod permission configuration for dayu containers
-pod-permission:
-  service-account: worker-admin
-  cluster-role-binding: worker-admin-binding
-# crd meta information of dayu containers (as specified in sedna/JointMultiEdgeService)
-crd-meta:
+# Backend is the only Dayu process allowed to access the Kubernetes API.
+backend-rbac:
+  service-account: dayu-backend
+  role: dayu-backend-runtime-manager
+  role-binding: dayu-backend-runtime-manager-binding
+  cluster-role: dayu-backend-cluster-observer
+  cluster-role-binding: dayu-backend-cluster-observer-binding
+# Bootstrap services are still created through Sedna JMES. Application runtime
+# workers are always rendered as sedna.io/v1alpha1 RuntimeService resources.
+support-crd-meta:
   api-version: sedna.io/v1alpha1
   kind: JointMultiEdgeService
-# cache ttl for kubernetes API objects in dayu containers, support never/<duration>. never means always use cached objects without refreshing except Non-hitting; <duration> is a cache refreshing ttl seconds, e.g., 5.0.
-kube-cache-ttl: 5.0
+# RuntimeService orchestration and task-drain controls.
+runtime:
+  activation-timeout-seconds: 300
+  operation-timeout-seconds: 900
+  # Backend owns the only node inventory snapshot; runtime workers never query it.
+  inventory-ttl-seconds: 30
+  # Must exceed lease TTL + quiet window so a failed release can expire safely.
+  drain-timeout-seconds: 3900
+  drain-quiet-window-seconds: 10
+  lease-ttl-seconds: 3600
 # default image meta information for dayu containers, <registry>/<repository>/<image_name>:<tag>
 default-image-meta:
   registry: repo:5000
@@ -37,9 +49,10 @@ default-image-meta:
   tag: v1.4
 # default file mount prefix for dayu containers
 default-file-mount-prefix: "/data/dayu-files"
-# whether to create one cloud-side backup processor for each logical service by default.
-# false: deploy cloud processors only when the scheduler plan explicitly selects the cloud hostname.
-default-cloud-processor-backup: true
+# When true, Backend adds one cloud RuntimeService to every logical processor
+# after validating the Scheduler plan. False uses the exact plan unchanged;
+# an exact cloud hostname explicitly returned by Scheduler is always valid.
+default-cloud-processor-backup: false
 # datasource configuration
 datasource:
   # true/false, use a simulation datasource container or use a real datasource

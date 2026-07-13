@@ -1,17 +1,80 @@
-import copy
 import importlib
 
 import pytest
 
-from core.lib.common import TaskConstant, YamlOps
+
+def _env(container):
+    return {item["name"]: item.get("value") for item in container.get("env", [])}
 
 
-def build_source_deploy():
-    dag = {
-        TaskConstant.START.value: {"succ": ["face-detection"], "prev": []},
-        "face-detection": {"succ": [], "prev": [TaskConstant.START.value]},
-    }
-    return [
+def _helper_and_policy(mounted_runtime):
+    module = importlib.import_module("template_helper")
+    helper = module.TemplateHelper(str(mounted_runtime))
+    policy = next(item for item in helper.load_base_info()["scheduler-policies"] if item["id"] == "fixed")
+    return helper, helper.load_policy_apply_yaml(policy)
+
+
+@pytest.mark.unit
+def test_runtime_renderer_wrapper_emits_tokenless_runtime_service(mounted_runtime):
+    helper, templates = _helper_and_policy(mounted_runtime)
+
+    rendered = helper.render_runtime_service(
+        templates["controller"],
+        {"component": "controller", "target_node": "edge-a", "position": "edge"},
+        revision=3,
+        install_id="install-a",
+        extra_env={"DAYU_RUNTIME_BOOTSTRAP": "{}"},
+    )
+
+    manifest = rendered.manifest
+    assert manifest["apiVersion"] == "sedna.io/v1alpha1"
+    assert manifest["kind"] == "RuntimeService"
+    assert manifest["metadata"]["namespace"] == "dayu"
+    assert manifest["spec"]["targetNode"] == "edge-a"
+    assert manifest["spec"]["deploymentRevision"] == 3
+    assert manifest["spec"]["endpoint"] == {"port": 9000}
+    pod_spec = manifest["spec"]["podTemplate"]["spec"]
+    assert pod_spec["automountServiceAccountToken"] is False
+    assert "serviceAccountName" not in pod_spec
+    assert "nodeName" not in pod_spec
+
+    container = pod_spec["containers"][0]
+    env = _env(container)
+    assert container["image"] == "repo:5000/dayuhub/controller:v1.4"
+    assert env["DAYU_RUNTIME_BOOTSTRAP"] == "{}"
+    assert env["NODE_NAME"] == "edge-a"
+    assert env["GUNICORN_PORT"] == "9000"
+    assert not ({"KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "KUBE_CACHE_TTL"} & set(env))
+    assert rendered.unit.endpoint.dns_name.endswith(".dayu.svc.cluster.local")
+
+
+@pytest.mark.unit
+def test_create_runtime_renderer_uses_base_namespace_log_level_and_mount_prefix(mounted_runtime):
+    helper, templates = _helper_and_policy(mounted_runtime)
+    renderer = helper.create_runtime_renderer("install-b")
+
+    rendered = renderer.render(
+        templates["monitor"],
+        importlib.import_module("runtime_model").RuntimeSlot("monitor", "cloud-a", "cloud"),
+        revision=1,
+    )
+
+    manifest = rendered.manifest
+    container = manifest["spec"]["podTemplate"]["spec"]["containers"][0]
+    env = _env(container)
+    assert manifest["metadata"]["labels"]["dayu.io/install-id"] == "install-b"
+    assert env["LOG_LEVEL"] == "DEBUG"
+    temp_volume = next(
+        volume for volume in manifest["spec"]["podTemplate"]["spec"]["volumes"]
+        if volume["name"] == "temporary-directory"
+    )
+    assert temp_volume["hostPath"]["path"] == "/data/dayu-files/temp"
+
+
+@pytest.mark.unit
+def test_generator_renderer_wrapper_creates_one_exactly_placed_runtime_per_source(mounted_runtime):
+    helper, templates = _helper_and_policy(mounted_runtime)
+    raw = [
         {
             "source": {
                 "id": 7,
@@ -20,554 +83,55 @@ def build_source_deploy():
                 "source_type": "video",
                 "metadata": {"fps": 25},
             },
-            "node_set": ["edgex1", "edgex2"],
-            "dag": dag,
-        }
-    ]
-
-
-def set_default_cloud_processor_backup(mounted_runtime, enabled):
-    base_path = mounted_runtime / "base.yaml"
-    old_value = "true" if not enabled else "false"
-    new_value = "true" if enabled else "false"
-    base_path.write_text(
-        base_path.read_text(encoding="utf-8").replace(
-            f"default-cloud-processor-backup: {old_value}",
-            f"default-cloud-processor-backup: {new_value}",
-        ),
-        encoding="utf-8",
-    )
-
-
-@pytest.mark.unit
-def test_template_helper_loads_policy_and_application_yaml_from_template_catalog(mounted_runtime):
-    template_helper_module = importlib.import_module("template_helper")
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-
-    policy = YamlOps.read_yaml(mounted_runtime / "scheduler_policies.yaml")[0]
-    policy_docs = helper.load_policy_apply_yaml(policy)
-
-    assert set(policy_docs) == {"scheduler", "generator", "controller", "distributor", "monitor"}
-    assert policy_docs["scheduler"]["position"] == "cloud"
-    assert policy_docs["generator"]["pod-template"]["image"] == "generator"
-
-    service_dict = {
-        "face-detection": {
-            "yaml": "face-detection.yaml",
-            "service_name": "face-detection",
-            "node": ["edgex1"],
-        }
-    }
-    loaded_services = helper.load_application_apply_yaml(copy.deepcopy(service_dict))
-
-    assert loaded_services["face-detection"]["service"]["pod-template"]["image"] == "face-detection"
-
-
-@pytest.mark.unit
-def test_template_helper_dispatches_only_requested_scopes(monkeypatch, mounted_runtime):
-    template_helper_module = importlib.import_module("template_helper")
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-
-    called = []
-    monkeypatch.setattr(helper, "get_all_selected_edge_nodes", lambda yaml_dict: ["edgex1"])
-    monkeypatch.setattr(template_helper_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
-    monkeypatch.setattr(helper, "finetune_generator_yaml", lambda yaml_doc, source_deploy: called.append("generator") or "GEN")
-    monkeypatch.setattr(helper, "finetune_controller_yaml", lambda yaml_doc, edge_nodes, cloud_node: called.append("controller") or "CTRL")
-    monkeypatch.setattr(helper, "finetune_distributor_yaml", lambda yaml_doc, cloud_node: called.append("distributor") or "DIST")
-    monkeypatch.setattr(helper, "finetune_scheduler_yaml", lambda yaml_doc, cloud_node: called.append("scheduler") or "SCH")
-    monkeypatch.setattr(helper, "finetune_monitor_yaml", lambda yaml_doc, edge_nodes, cloud_node: called.append("monitor") or "MON")
-    monkeypatch.setattr(helper, "finetune_processor_yaml", lambda yaml_doc, cloud_node, source_deploy: called.append("processor") or ["PROC"])
-
-    yaml_dict = {
-        "generator": {},
-        "controller": {},
-        "distributor": {},
-        "scheduler": {},
-        "monitor": {},
-        "processor": {},
-    }
-
-    docs = helper.finetune_yaml_parameters(yaml_dict, build_source_deploy(), scopes=["generator", "processor"])
-
-    assert docs == ["GEN", "PROC"]
-    assert called == ["generator", "processor"]
-
-
-@pytest.mark.unit
-def test_template_helper_adds_controller_for_selected_source_node_outside_processing_nodes(monkeypatch, mounted_runtime):
-    template_helper_module = importlib.import_module("template_helper")
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-
-    recorded = {}
-
-    def record_generator(yaml_doc, source_deploy):
-        source_deploy[0]["source"]["source_device"] = "edgex3"
-        return "GEN"
-
-    def record_controller(yaml_doc, edge_nodes, cloud_node):
-        recorded["controller"] = list(edge_nodes)
-        return "CTRL"
-
-    def record_monitor(yaml_doc, edge_nodes, cloud_node):
-        recorded["monitor"] = list(edge_nodes)
-        return "MON"
-
-    monkeypatch.setattr(helper, "get_all_selected_edge_nodes", lambda yaml_dict: ["edgex1"])
-    monkeypatch.setattr(template_helper_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
-    monkeypatch.setattr(helper, "finetune_generator_yaml", record_generator)
-    monkeypatch.setattr(helper, "finetune_controller_yaml", record_controller)
-    monkeypatch.setattr(helper, "finetune_monitor_yaml", record_monitor)
-
-    yaml_dict = {
-        "generator": {},
-        "controller": {},
-        "monitor": {},
-        "processor": {"svc-a": {"node": ["edgex1"]}},
-    }
-
-    docs = helper.finetune_yaml_parameters(yaml_dict, build_source_deploy(), scopes=["generator", "controller", "monitor"])
-
-    assert docs == ["GEN", "CTRL", "MON"]
-    assert recorded["controller"] == ["edgex1", "edgex3"]
-    assert recorded["monitor"] == ["edgex1"]
-
-
-@pytest.mark.unit
-def test_template_helper_finetunes_controller_and_monitor_nodes_and_jetpack_env(mounted_runtime, monkeypatch):
-    template_helper_module = importlib.import_module("template_helper")
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_kubernetes_endpoint",
-        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
-    )
-
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-
-    controller_doc = YamlOps.read_yaml(mounted_runtime / "controller" / "controller-base.yaml")
-    controller_manifest = helper.finetune_controller_yaml(controller_doc, ["edgex1", "edgex2"], "cloudx1")
-
-    assert [worker["template"]["spec"]["nodeName"] for worker in controller_manifest["spec"]["edgeWorker"]] == [
-        "edgex1",
-        "edgex2",
-    ]
-    assert controller_manifest["spec"]["cloudWorker"]["template"]["spec"]["nodeName"] == "cloudx1"
-
-    monitor_doc = YamlOps.read_yaml(mounted_runtime / "monitor" / "monitor-base.yaml")
-    monkeypatch.setattr(
-        helper,
-        "get_device_jetpack_major_version",
-        lambda node_name: {"edgex1": 5, "edgex2": -1}[node_name],
-    )
-    monitor_manifest = helper.finetune_monitor_yaml(monitor_doc, ["edgex1", "edgex2"], "cloudx1")
-
-    edge_workers = monitor_manifest["spec"]["edgeWorker"]
-    first_env = {item["name"]: item["value"] for item in edge_workers[0]["template"]["spec"]["containers"][0]["env"]}
-    second_env = {item["name"]: item["value"] for item in edge_workers[1]["template"]["spec"]["containers"][0]["env"]}
-
-    assert edge_workers[0]["template"]["spec"]["containers"][0]["image"].endswith("-jp5")
-    assert edge_workers[1]["template"]["spec"]["containers"][0]["image"].endswith(":v1.4")
-    assert first_env["JETPACK"] == "5"
-    assert second_env["JETPACK"] == "-1"
-    assert monitor_manifest["spec"]["cloudWorker"]["template"]["spec"]["nodeName"] == "cloudx1"
-
-
-@pytest.mark.unit
-def test_template_helper_finetunes_processor_manifests_per_cloud_and_selected_edge_node(mounted_runtime, monkeypatch):
-    template_helper_module = importlib.import_module("template_helper")
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_kubernetes_endpoint",
-        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
-    )
-
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-    monkeypatch.setattr(helper, "request_deployment_decision", lambda source_deploy: {"face-detection": ["edgex2", "ghost"]})
-    monkeypatch.setattr(helper, "get_device_jetpack_major_version", lambda node_name: 5 if node_name == "edgex2" else -1)
-
-    service_dict = {
-        "face-detection": {
-            "service_name": "face-detection",
-            "node": ["edgex1", "edgex2"],
-            "service": YamlOps.read_yaml(mounted_runtime / "processor" / "face-detection.yaml"),
-        }
-    }
-
-    manifests = helper.finetune_processor_yaml(service_dict, "cloudx1", build_source_deploy())
-
-    assert len(manifests) == 2
-
-    cloud_manifest = next(doc for doc in manifests if doc["metadata"]["name"] == "processor-face-detection-cloudx1")
-    edge_manifest = next(doc for doc in manifests if doc["metadata"]["name"] == "processor-face-detection-edgex2")
-
-    cloud_env = {
-        item["name"]: item["value"]
-        for item in cloud_manifest["spec"]["cloudWorker"]["template"]["spec"]["containers"][0]["env"]
-    }
-    edge_env = {
-        item["name"]: item["value"]
-        for item in edge_manifest["spec"]["edgeWorker"][0]["template"]["spec"]["containers"][0]["env"]
-    }
-
-    assert "edgeWorker" not in cloud_manifest["spec"]
-    assert "cloudWorker" not in edge_manifest["spec"]
-    assert cloud_manifest["spec"]["cloudWorker"]["template"]["spec"]["nodeName"] == "cloudx1"
-    assert edge_manifest["spec"]["edgeWorker"][0]["template"]["spec"]["nodeName"] == "edgex2"
-    assert cloud_env["PROCESSOR_SERVICE_NAME"] == "processor-face-detection"
-    assert edge_env["PROCESSOR_SERVICE_NAME"] == "processor-face-detection"
-    assert edge_env["JETPACK"] == "5"
-
-
-@pytest.mark.unit
-def test_template_helper_skips_default_cloud_backup_when_disabled(mounted_runtime, monkeypatch):
-    template_helper_module = importlib.import_module("template_helper")
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_kubernetes_endpoint",
-        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
-    )
-    set_default_cloud_processor_backup(mounted_runtime, False)
-
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-    monkeypatch.setattr(helper, "request_deployment_decision", lambda source_deploy: {"face-detection": ["edgex2"]})
-    monkeypatch.setattr(helper, "get_device_jetpack_major_version", lambda node_name: 5)
-
-    service_dict = {
-        "face-detection": {
-            "service_name": "face-detection",
-            "node": ["edgex1", "edgex2"],
-            "service": YamlOps.read_yaml(mounted_runtime / "processor" / "face-detection.yaml"),
-        }
-    }
-
-    manifests = helper.finetune_processor_yaml(service_dict, "cloudx1", build_source_deploy())
-    manifest_names = {doc["metadata"]["name"] for doc in manifests}
-
-    assert manifest_names == {"processor-face-detection-edgex2"}
-    assert "cloudWorker" not in manifests[0]["spec"]
-
-
-@pytest.mark.unit
-def test_template_helper_honors_scheduler_cloud_target_when_default_backup_disabled(mounted_runtime, monkeypatch):
-    template_helper_module = importlib.import_module("template_helper")
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_kubernetes_endpoint",
-        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
-    )
-    set_default_cloud_processor_backup(mounted_runtime, False)
-
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-    monkeypatch.setattr(
-        helper,
-        "request_deployment_decision",
-        lambda source_deploy: {"face-detection": ["cloudx1", "edgex2"]},
-    )
-    monkeypatch.setattr(helper, "get_device_jetpack_major_version", lambda node_name: 5)
-
-    service_dict = {
-        "face-detection": {
-            "service_name": "face-detection",
-            "node": ["edgex1", "edgex2"],
-            "service": YamlOps.read_yaml(mounted_runtime / "processor" / "face-detection.yaml"),
-        }
-    }
-
-    manifests = helper.finetune_processor_yaml(service_dict, "cloudx1", build_source_deploy())
-    manifest_names = {doc["metadata"]["name"] for doc in manifests}
-    cloud_manifest = next(doc for doc in manifests if doc["metadata"]["name"] == "processor-face-detection-cloudx1")
-
-    assert manifest_names == {"processor-face-detection-cloudx1", "processor-face-detection-edgex2"}
-    assert cloud_manifest["spec"]["cloudWorker"]["template"]["spec"]["nodeName"] == "cloudx1"
-
-
-@pytest.mark.unit
-def test_template_helper_uses_cloud_only_initial_processor_deployment_when_plan_is_unavailable(
-    mounted_runtime,
-    monkeypatch,
-):
-    template_helper_module = importlib.import_module("template_helper")
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_kubernetes_endpoint",
-        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
-    )
-
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-    monkeypatch.setattr(helper, "request_deployment_decision", lambda source_deploy: None)
-
-    service_dict = {
-        "face-detection": {
-            "service_name": "face-detection",
-            "node": ["edgex1", "edgex2"],
-            "service": YamlOps.read_yaml(mounted_runtime / "processor" / "face-detection.yaml"),
-        }
-    }
-
-    manifests = helper.finetune_processor_yaml(service_dict, "cloudx1", build_source_deploy())
-
-    assert [doc["metadata"]["name"] for doc in manifests] == ["processor-face-detection-cloudx1"]
-    assert "cloudWorker" in manifests[0]["spec"]
-    assert "edgeWorker" not in manifests[0]["spec"]
-
-
-@pytest.mark.unit
-def test_template_helper_skips_initial_cloud_fallback_when_default_backup_disabled(
-    mounted_runtime,
-    monkeypatch,
-):
-    template_helper_module = importlib.import_module("template_helper")
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_kubernetes_endpoint",
-        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
-    )
-    set_default_cloud_processor_backup(mounted_runtime, False)
-
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-    monkeypatch.setattr(helper, "request_deployment_decision", lambda source_deploy: None)
-
-    service_dict = {
-        "face-detection": {
-            "service_name": "face-detection",
-            "node": ["edgex1", "edgex2"],
-            "service": YamlOps.read_yaml(mounted_runtime / "processor" / "face-detection.yaml"),
-        }
-    }
-
-    manifests = helper.finetune_processor_yaml(service_dict, "cloudx1", build_source_deploy())
-
-    assert manifests == []
-
-
-@pytest.mark.unit
-def test_template_helper_preserves_current_processor_deployment_when_redeployment_plan_is_unavailable(
-    mounted_runtime,
-    monkeypatch,
-):
-    template_helper_module = importlib.import_module("template_helper")
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_kubernetes_endpoint",
-        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
-    )
-
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-    monkeypatch.setattr(helper, "request_deployment_decision", lambda source_deploy: None)
-    monkeypatch.setattr(helper, "get_device_jetpack_major_version", lambda node_name: -1)
-
-    service_dict = {
-        "face-detection": {
-            "service_name": "face-detection",
-            "node": ["edgex1", "edgex2"],
-            "service": YamlOps.read_yaml(mounted_runtime / "processor" / "face-detection.yaml"),
-        }
-    }
-    current_docs = [
-        {
-            "apiVersion": "sedna.io/v1alpha1",
-            "kind": "JointMultiEdgeService",
-            "metadata": {"name": "processor-face-detection-edgex1"},
-            "spec": {
-                "edgeWorker": [
-                    {
-                        "template": {
-                            "spec": {
-                                "nodeName": "edgex1",
-                                "containers": [
-                                    {
-                                        "env": [
-                                            {
-                                                "name": "PROCESSOR_SERVICE_NAME",
-                                                "value": "processor-face-detection",
-                                            }
-                                        ]
-                                    }
-                                ],
-                            }
-                        }
-                    }
-                ]
+            "node_set": ["edge-a", "edge-b"],
+            "dag": {
+                "_start": ["detect"],
+                "detect": {
+                    "id": "face-detection-pure",
+                    "prev": [],
+                    "succ": ["classify"],
+                },
+                "classify": {
+                    "id": "gender-classification-roi",
+                    "prev": ["detect"],
+                    "succ": [],
+                },
             },
         }
     ]
+    normalized, _ = helper.normalize_source_deploy(raw)
 
-    manifests = helper.finetune_processor_yaml(
-        service_dict,
-        "cloudx1",
-        build_source_deploy(),
-        current_docs=current_docs,
+    rendered = helper.render_generator_runtime_services(
+        templates["generator"],
+        normalized,
+        revision=4,
+        install_id="install-c",
+        selected_nodes={7: "edge-b"},
+        common_env={"DAYU_RUNTIME_BOOTSTRAP": "bootstrap"},
     )
 
-    manifest_names = {doc["metadata"]["name"] for doc in manifests}
-
-    assert manifest_names == {"processor-face-detection-cloudx1", "processor-face-detection-edgex1"}
+    assert len(rendered) == 1
+    manifest = rendered[0].manifest
+    assert manifest["spec"]["component"] == "generator"
+    assert manifest["spec"]["targetNode"] == "edge-b"
+    assert "endpoint" not in manifest["spec"]
+    container = manifest["spec"]["podTemplate"]["spec"]["containers"][0]
+    env = _env(container)
+    assert env["SOURCE_ID"] == "7"
+    assert env["ALL_EDGE_DEVICES"] == "['edge-a', 'edge-b']"
+    assert "face-detection" in env["DAG"]
+    assert "gender-classification" in env["DAG"]
+    assert env["DAYU_RUNTIME_BOOTSTRAP"] == "bootstrap"
 
 
 @pytest.mark.unit
-def test_template_helper_keeps_cloud_only_processor_state_when_redeployment_plan_is_unavailable(
-    mounted_runtime,
-    monkeypatch,
-):
-    template_helper_module = importlib.import_module("template_helper")
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_kubernetes_endpoint",
-        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
-    )
+def test_runtime_renderer_wrapper_rejects_position_mismatch(mounted_runtime):
+    helper, templates = _helper_and_policy(mounted_runtime)
 
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-    monkeypatch.setattr(helper, "request_deployment_decision", lambda source_deploy: None)
-
-    service_dict = {
-        "face-detection": {
-            "service_name": "face-detection",
-            "node": ["edgex1", "edgex2"],
-            "service": YamlOps.read_yaml(mounted_runtime / "processor" / "face-detection.yaml"),
-        }
-    }
-    current_docs = [
-        {
-            "apiVersion": "sedna.io/v1alpha1",
-            "kind": "JointMultiEdgeService",
-            "metadata": {"name": "processor-face-detection-cloudx1"},
-            "spec": {
-                "cloudWorker": {
-                    "template": {
-                        "spec": {
-                            "nodeName": "cloudx1",
-                            "containers": [
-                                {
-                                    "env": [
-                                        {
-                                            "name": "PROCESSOR_SERVICE_NAME",
-                                            "value": "processor-face-detection",
-                                        }
-                                    ]
-                                }
-                            ],
-                        }
-                    }
-                }
-            },
-        }
-    ]
-
-    manifests = helper.finetune_processor_yaml(
-        service_dict,
-        "cloudx1",
-        build_source_deploy(),
-        current_docs=current_docs,
-    )
-
-    manifest_names = {doc["metadata"]["name"] for doc in manifests}
-
-    assert manifest_names == {"processor-face-detection-cloudx1"}
-
-
-@pytest.mark.unit
-def test_template_helper_drops_cloud_only_current_state_when_default_backup_disabled(
-    mounted_runtime,
-    monkeypatch,
-):
-    template_helper_module = importlib.import_module("template_helper")
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_kubernetes_endpoint",
-        staticmethod(lambda: {"address": "10.0.0.1", "port": 6443}),
-    )
-    set_default_cloud_processor_backup(mounted_runtime, False)
-
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-    monkeypatch.setattr(helper, "request_deployment_decision", lambda source_deploy: None)
-
-    service_dict = {
-        "face-detection": {
-            "service_name": "face-detection",
-            "node": ["edgex1", "edgex2"],
-            "service": YamlOps.read_yaml(mounted_runtime / "processor" / "face-detection.yaml"),
-        }
-    }
-    current_docs = [
-        {
-            "apiVersion": "sedna.io/v1alpha1",
-            "kind": "JointMultiEdgeService",
-            "metadata": {"name": "processor-face-detection-cloudx1"},
-            "spec": {
-                "cloudWorker": {
-                    "template": {
-                        "spec": {
-                            "nodeName": "cloudx1",
-                            "containers": [
-                                {
-                                    "env": [
-                                        {
-                                            "name": "PROCESSOR_SERVICE_NAME",
-                                            "value": "processor-face-detection",
-                                        }
-                                    ]
-                                }
-                            ],
-                        }
-                    }
-                }
-            },
-        }
-    ]
-
-    manifests = helper.finetune_processor_yaml(
-        service_dict,
-        "cloudx1",
-        build_source_deploy(),
-        current_docs=current_docs,
-    )
-
-    assert manifests == []
-
-
-@pytest.mark.unit
-def test_template_helper_handles_invalid_image_selection_redeployment_and_jetpack_fallbacks(mounted_runtime, monkeypatch):
-    template_helper_module = importlib.import_module("template_helper")
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-
-    with pytest.raises(ValueError, match="illegal"):
-        helper.process_image("registry/repository/image:tag:extra")
-
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "check_pods_with_string_exists",
-        staticmethod(lambda namespace, include_str_list: namespace == "dayu" and include_str_list == ["processor"]),
-    )
-    monkeypatch.setattr(
-        template_helper_module.KubeHelper,
-        "get_node_jetpack_labels",
-        staticmethod(lambda node_name: {"jetpack_major": "broken"}),
-    )
-
-    assert helper.check_is_redeployment() is True
-    assert helper.get_device_jetpack_major_version("edgex1") == -1
-    assert set(
-        helper.get_all_selected_edge_nodes(
-            {"processor": {"svc-a": {"node": ["edgex1", "edgex2"]}, "svc-b": {"node": ["edgex2"]}}}
+    with pytest.raises(ValueError, match="cannot render"):
+        helper.render_runtime_service(
+            templates["generator"],
+            {"component": "generator", "target_node": "cloud-a", "position": "cloud", "source_id": "7"},
+            revision=1,
+            install_id="install-d",
         )
-    ) == {"edgex1", "edgex2"}
-
-
-@pytest.mark.unit
-def test_template_helper_source_selection_returns_none_when_scheduler_is_unavailable(mounted_runtime, monkeypatch):
-    template_helper_module = importlib.import_module("template_helper")
-    helper = template_helper_module.TemplateHelper(str(mounted_runtime))
-
-    requests = []
-    monkeypatch.setattr(template_helper_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
-    monkeypatch.setattr(template_helper_module.NodeInfo, "get_all_edge_nodes", staticmethod(lambda: ["edgex1", "edgex2"]))
-    monkeypatch.setattr(template_helper_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.8"))
-    monkeypatch.setattr(template_helper_module.PortInfo, "force_refresh", staticmethod(lambda: requests.append("refresh")))
-    monkeypatch.setattr(template_helper_module.PortInfo, "get_component_port", staticmethod(lambda component: 9001))
-    monkeypatch.setattr(template_helper_module, "http_request", lambda **kwargs: requests.append(kwargs) or None)
-
-    selection_plan = helper.request_source_selection_decision(build_source_deploy())
-
-    assert selection_plan is None
-    request = next(item for item in requests if isinstance(item, dict))
-    assert request["method"] == template_helper_module.NetworkAPIMethod.SCHEDULER_SELECT_SOURCE_NODES
-    assert "all_edge_nodes" in request["data"]["data"]

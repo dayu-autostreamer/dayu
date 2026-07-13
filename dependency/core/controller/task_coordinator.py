@@ -1,16 +1,23 @@
 import redis
 
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context, SystemConstant
-from core.lib.network import NodeInfo, PortInfo
+from core.lib.common import LOGGER, Context
+from core.lib.runtime import RuntimeContext, RuntimeEndpoint, RuntimeResolver
 
 
 class TaskCoordinator:
-    def __init__(self):
+    def __init__(self, runtime_context=None, redis_endpoint=None):
         self.max_connections = Context.get_parameter('MAX_REDIS_CONNECTIONS', '10', direct=False)
         self.storage_timeout = Context.get_parameter('REDIS_STORAGE_TIMEOUT', '3600', direct=False)
-        self.pool = redis.ConnectionPool(host=NodeInfo.hostname2ip(NodeInfo.get_cloud_node()),
-                                         port=PortInfo.get_component_port(SystemConstant.REDIS.value),
+        runtime_context = runtime_context or RuntimeContext.get_default()
+        endpoint = RuntimeEndpoint.from_value(redis_endpoint, component="redis") if redis_endpoint else None
+        endpoint = endpoint or RuntimeResolver(runtime_context).resolve(
+            "redis", target_node=runtime_context.cloud_node or None
+        )
+        if not endpoint.fqdn or not endpoint.port:
+            raise ValueError("redis bootstrap endpoint requires fqdn and port")
+        self.pool = redis.ConnectionPool(host=endpoint.fqdn,
+                                         port=endpoint.port,
                                          max_connections=self.max_connections)
         self.redis = redis.Redis(connection_pool=self.pool)
         self.lock_prefix = 'dayu:dag:lock'

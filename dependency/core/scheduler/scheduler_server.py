@@ -1,15 +1,20 @@
 import json
 
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, HTTPException
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 from core.lib.content import Task
-from core.lib.common import KubeConfig
+from core.lib.scheduling.deployment_plan import dag_services
 
 from .scheduler import Scheduler
+from .runtime_directory import (
+    RuntimeDirectoryConflict,
+    RuntimeDirectoryError,
+    RuntimeDirectoryNotFound,
+)
 
 
 class SchedulerServer:
@@ -62,6 +67,46 @@ class SchedulerServer:
                      self.check_generation_admission,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_GENERATION_ADMISSION]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY,
+                     self.get_runtime_directory,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_GET_RUNTIME_DIRECTORY]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY,
+                     self.put_runtime_directory,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_PUT_RUNTIME_DIRECTORY]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY,
+                     self.clear_runtime_directory,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_CLEAR_RUNTIME_DIRECTORY]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_PROPOSALS,
+                     self.propose_runtime_directory,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_PROPOSE_RUNTIME_DIRECTORY]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_PROPOSAL_COMMIT,
+                     self.commit_runtime_directory,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_COMMIT_RUNTIME_DIRECTORY]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_PROPOSAL_REJECT,
+                     self.reject_runtime_directory,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_REJECT_RUNTIME_DIRECTORY]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_LEASES,
+                     self.count_task_leases,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_COUNT_TASK_LEASES]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_LEASES,
+                     self.acquire_task_lease,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_ACQUIRE_TASK_LEASE]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_LEASES,
+                     self.renew_task_lease,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_RENEW_TASK_LEASE]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_LEASES,
+                     self.release_task_lease,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_RELEASE_TASK_LEASE]),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -84,13 +129,117 @@ class SchedulerServer:
             if deployment_version is None:
                 deployment_version = 0
 
+        try:
+            runtime_routes = self.scheduler.compact_runtime_routes(
+                plan,
+                source_device=data.get('source_device', ''),
+            )
+        except RuntimeDirectoryError as exc:
+            raise HTTPException(status_code=503, detail=f'no valid runtime route for schedule plan: {exc}')
+
         response = {
             'plan': plan,
-            'deployment': KubeConfig.get_service_nodes_dict(),
+            'deployment': self.scheduler.runtime_service_nodes(),
             'deployment_version': deployment_version,
+            'runtime_directory_revision': self.scheduler.runtime_directory_revision(),
+            'runtime_routes': runtime_routes,
         }
 
         return response
+
+    @staticmethod
+    def _translate_runtime_error(exc):
+        if isinstance(exc, RuntimeDirectoryNotFound):
+            return HTTPException(status_code=404, detail=str(exc))
+        if isinstance(exc, RuntimeDirectoryConflict):
+            return HTTPException(status_code=409, detail=str(exc))
+        return HTTPException(status_code=422, detail=str(exc))
+
+    async def get_runtime_directory(self):
+        return self.scheduler.runtime_directory_snapshot()
+
+    async def put_runtime_directory(self, data: str = Form(...)):
+        payload = json.loads(data)
+        directory = payload.get('directory', payload)
+        expected_revision = payload.get('expected_revision', payload.get('expectedRevision'))
+        try:
+            return self.scheduler.replace_runtime_directory(directory, expected_revision)
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    async def clear_runtime_directory(self, data: str = Form(...)):
+        payload = json.loads(data)
+        try:
+            return self.scheduler.clear_runtime_directory(payload.get('install_id'))
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    async def propose_runtime_directory(self, data: str = Form(...)):
+        payload = json.loads(data)
+        try:
+            return self.scheduler.propose_runtime_directory(
+                payload.get('directory'),
+                base_revision=payload.get('base_revision', payload.get('baseRevision')),
+                proposal_id=payload.get('proposal_id', payload.get('proposalID')),
+                ttl_seconds=payload.get('ttl_seconds', payload.get('ttlSeconds', 60.0)),
+            )
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    async def commit_runtime_directory(self, proposal_id: str, data: str = Form(...)):
+        payload = json.loads(data)
+        try:
+            return self.scheduler.commit_runtime_directory(
+                proposal_id,
+                payload.get('expected_revision', payload.get('expectedRevision')),
+            )
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    async def reject_runtime_directory(self, proposal_id: str, data: str = Form('{}')):
+        payload = json.loads(data)
+        try:
+            return self.scheduler.reject_runtime_directory(proposal_id, payload.get('reason', ''))
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    async def count_task_leases(self, revision: int):
+        try:
+            return {'revision': revision, 'count': self.scheduler.count_task_leases(revision)}
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    async def acquire_task_lease(self, data: str = Form(...)):
+        payload = json.loads(data)
+        try:
+            return self.scheduler.acquire_task_lease(
+                payload.get('revision', payload.get('runtime_directory_revision')),
+                payload.get('root_uuid', payload.get('rootUUID')),
+                payload.get('ttl_seconds', payload.get('ttlSeconds', 60.0)),
+            )
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    async def renew_task_lease(self, data: str = Form(...)):
+        payload = json.loads(data)
+        try:
+            return self.scheduler.renew_task_lease(
+                payload.get('revision', payload.get('runtime_directory_revision')),
+                payload.get('root_uuid', payload.get('rootUUID')),
+                payload.get('ttl_seconds', payload.get('ttlSeconds', 60.0)),
+            )
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    async def release_task_lease(self, data: str = Form(...)):
+        payload = json.loads(data)
+        try:
+            return self.scheduler.release_task_lease(
+                payload.get('revision', payload.get('runtime_directory_revision')),
+                payload.get('root_uuid', payload.get('rootUUID')),
+            )
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
 
     async def get_schedule_overhead(self):
         return self.scheduler.get_schedule_overhead()
@@ -105,7 +254,9 @@ class SchedulerServer:
     async def update_object_scenario(self, data: str = Form(...)):
         task = Task.deserialize(data)
 
-        self.scheduler.update_scheduler_scenario(task)
+        return {
+            'accepted': bool(self.scheduler.update_scheduler_scenario(task)),
+        }
 
     async def update_resource_state(self, data: str = Form(...)):
         data = json.loads(data)
@@ -141,11 +292,13 @@ class SchedulerServer:
         for source_data in data:
             source_id = source_data['source']['id']
             self.scheduler.register_schedule_table(source_id=source_id)
-            source_plan = self.scheduler.get_initial_deployment_plan(source_id, source_data)
-            plan.update(
-                {node: list(set(plan[node] + source_plan[node])) if node in plan else source_plan[node]
-                 for node in source_plan}
-            )
+            try:
+                source_plan = self.scheduler.get_initial_deployment_plan(source_id, source_data)
+                self._merge_deployment_plan(
+                    plan, source_plan, allowed_services=dag_services(source_data),
+                )
+            except (RuntimeDirectoryError, ValueError) as exc:
+                raise self._translate_runtime_error(exc)
 
         return {'plan': plan}
 
@@ -155,10 +308,48 @@ class SchedulerServer:
         for source_data in data:
             source_id = source_data['source']['id']
             self.scheduler.register_schedule_table(source_id=source_id)
-            source_plan = self.scheduler.get_redeployment_plan(source_id, source_data)
-            plan.update(
-                {node: list(set(plan[node] + source_plan[node])) if node in plan else source_plan[node]
-                 for node in source_plan}
-            )
+            try:
+                source_plan = self.scheduler.get_redeployment_plan(source_id, source_data)
+                self._merge_deployment_plan(
+                    plan, source_plan, allowed_services=dag_services(source_data),
+                )
+            except (RuntimeDirectoryError, ValueError) as exc:
+                raise self._translate_runtime_error(exc)
 
         return {'plan': plan}
+
+    @staticmethod
+    def _merge_deployment_plan(plan, source_plan, allowed_services):
+        """Merge the sole deployment contract: service -> JSON node list."""
+        if not isinstance(source_plan, dict):
+            raise RuntimeDirectoryError("deployment policy must return an object")
+        allowed_services = {str(service) for service in allowed_services}
+        actual_services = {str(service) for service in source_plan}
+        unknown = sorted(actual_services - allowed_services)
+        missing = sorted(allowed_services - actual_services)
+        if unknown:
+            raise RuntimeDirectoryError(
+                f"deployment policy returned services outside the current DAG: {unknown}"
+            )
+        if missing:
+            raise RuntimeDirectoryError(
+                f"deployment policy omitted current DAG services: {missing}"
+            )
+        for raw_service, raw_nodes in source_plan.items():
+            service = str(raw_service or "").strip()
+            if not service:
+                raise RuntimeDirectoryError("deployment policy returned an empty service name")
+            if not isinstance(raw_nodes, list):
+                raise RuntimeDirectoryError(
+                    f"deployment policy for service {service!r} must return a JSON node list"
+                )
+            nodes = [str(node or "").strip() for node in raw_nodes]
+            if any(not node for node in nodes):
+                raise RuntimeDirectoryError(
+                    f"deployment policy for service {service!r} returned an empty node name"
+                )
+            if not nodes:
+                raise RuntimeDirectoryError(
+                    f"deployment policy for service {service!r} returned no target nodes"
+                )
+            plan[service] = sorted(set(plan.get(service, ())) | set(nodes))

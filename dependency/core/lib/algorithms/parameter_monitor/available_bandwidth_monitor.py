@@ -5,8 +5,8 @@ from func_timeout import func_set_timeout as timeout
 
 from .base_monitor import BaseMonitor
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, Context, SystemConstant, NodeRoleConstant
-from core.lib.network import NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod, http_request
+from core.lib.common import ClassFactory, ClassType, LOGGER, Context, NodeRoleConstant
+from core.lib.network import NetworkAPIPath, NetworkAPIMethod, http_request
 
 __all__ = ('AvailableBandwidthMonitor',)
 
@@ -17,16 +17,21 @@ class AvailableBandwidthMonitor(BaseMonitor, abc.ABC):
         super().__init__(system)
         self.name = 'available_bandwidth'
 
-        self.local_device = NodeInfo.get_local_device()
+        self.local_device = system.local_device
         self.permitted_device = ''
 
-        self.is_server = NodeInfo.get_node_role(NodeInfo.get_local_device()) == NodeRoleConstant.CLOUD.value
+        context = system.runtime_context
+        self.is_server = (
+            self.local_device == context.cloud_node
+            or context.node_role(self.local_device) == NodeRoleConstant.CLOUD.value
+        )
         if self.is_server:
             self.iperf3_ports = [Context.get_parameter('GUNICORN_PORT')]
             self.run_iperf_server()
         else:
-            self.iperf3_port = PortInfo.get_component_port(SystemConstant.MONITOR.value)
-            self.iperf3_server_ip = NodeInfo.hostname2ip(NodeInfo.get_cloud_node())
+            monitor_endpoint = context.resolve_static_endpoint('monitor', target_node=context.cloud_node)
+            self.iperf3_port = monitor_endpoint.port
+            self.iperf3_server_ip = monitor_endpoint.fqdn
             try:
                 self.request_for_bandwidth_permission()
             except Exception as e:
@@ -56,15 +61,12 @@ class AvailableBandwidthMonitor(BaseMonitor, abc.ABC):
 
     @timeout(60)
     def request_for_bandwidth_permission(self):
-        scheduler_hostname = NodeInfo.get_cloud_node()
-        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        scheduler_address = merge_address(NodeInfo.hostname2ip(scheduler_hostname),
-                                          port=scheduler_port,
-                                          path=NetworkAPIPath.SCHEDULER_GET_RESOURCE_LOCK)
+        scheduler_address = self.system.scheduler_endpoint.url(NetworkAPIPath.SCHEDULER_GET_RESOURCE_LOCK)
         response = None
         while not response:
             response = http_request(scheduler_address,
                                     method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE_LOCK,
+                                    timeout=2,
                                     data={'data': json.dumps(
                                         {'resource': 'available_bandwidth', 'device': self.local_device})})
 
@@ -80,21 +82,18 @@ class AvailableBandwidthMonitor(BaseMonitor, abc.ABC):
                          f' permitted:{self.permitted_device}), skip available bandwidth monitor..')
             return -1
 
-        @timeout(2)
-        def fetch_bandwidth_by_iperf3():
-            result = client.run()
-            return result
-
         client = iperf3.Client()
         client.duration = 1
         client.server_hostname = self.iperf3_server_ip
         client.port = self.iperf3_port
         client.protocol = 'tcp'
 
+        @timeout(2)
+        def fetch_bandwidth_by_iperf3():
+            return client.run()
+
         try:
             result_info = fetch_bandwidth_by_iperf3()
-
-            del client
 
             if result_info.error:
                 LOGGER.warning(f'resource monitor iperf3 error: {result_info.error}')

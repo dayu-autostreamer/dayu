@@ -8,7 +8,7 @@ This document explains how Dayu's current code structure maps to the test pyrami
 | --- | --- | --- |
 | Control plane | Backend APIs, install/query orchestration, visualization config handling | `backend/` |
 | Runtime services | Generator, scheduler, controller, processor, distributor, monitor | `dependency/core/` |
-| Shared runtime library | Hook registry, context resolution, DAG/task types, network helpers, algorithms | `dependency/core/lib/` |
+| Shared runtime library | Hook registry, context resolution, DAG/task types, scheduling contracts, network helpers, algorithms | `dependency/core/lib/` |
 | Source adapters | `http_video`, `rtsp_video`, dataset readers, datasource API | `datasource/` |
 | Service entrypoints | Container-facing `main.py` launchers for components | `components/` |
 | Deployment templates | YAML-driven runtime composition and hook selection | `template/` |
@@ -50,6 +50,7 @@ The `core_lib` unit tree should now mirror the production package layout more di
 | `dependency/core/lib/common/` | `tests/unit/core_lib/common/` |
 | `dependency/core/lib/content/` | `tests/unit/core_lib/content/` |
 | `dependency/core/lib/network/` | `tests/unit/core_lib/network/` |
+| `dependency/core/lib/scheduling/` | `tests/unit/core_lib/scheduling/` |
 | `dependency/core/lib/estimation/` | `tests/unit/core_lib/estimation/` |
 | `dependency/core/lib/solver/` | `tests/unit/core_lib/solver/` |
 | `dependency/core/lib/algorithms/` | `tests/unit/core_lib/algorithms/` |
@@ -102,20 +103,24 @@ For `dependency/core/lib/` outside `algorithms/`, the current state is now much 
 | Area | Status | Notes |
 | --- | --- | --- |
 | `common/class_factory.py`, `common/context.py` | Strong direct coverage | Hook registration, lookup, env/config resolution, and error branches are tested directly |
-| `common/cache.py`, `common/config.py`, `common/queue.py`, `common/resource.py`, `common/service.py`, `common/utils.py`, `common/health.py`, `common/record.py`, `common/instance.py` | Strong direct coverage | Runtime helper contracts are covered with isolated unit tests |
+| `common/cache.py`, `common/config.py`, `common/queue.py`, `common/resource.py`, `common/service.py`, `common/utils.py`, `common/record.py`, `common/instance.py` | Strong direct coverage | Runtime helper contracts are covered with isolated unit tests |
 | `common/counter.py`, `common/encode_ops.py`, `common/hash_ops.py`, `common/name.py`, `common/video_ops.py`, `common/yaml_ops.py`, `common/file_ops.py` | Direct coverage added | Serialization, naming, media conversion, filesystem helpers, and temp-file lifecycle now have dedicated unit tests |
-| `common/kube.py` | Good unit coverage, not fully exhaustive | Pod-to-service topology, cache refresh behavior, running-state checks, and metrics parsing are unit-tested; real cluster behavior still belongs to heavier integration tests |
+| `runtime/model.py`, `runtime/context.py`, `runtime/resolver.py`, `runtime/lease.py` | Strong direct coverage | Bootstrap parsing, immutable endpoint identities, exact task routes, scheduler-backed lease identities, ambiguity rejection, and fail-closed behavior are unit-tested without a Kubernetes client |
+| `scheduling/deployment_plan.py` | Strong direct coverage | Canonical service-to-node-list normalization, complete DAG coverage, candidate scoping, explicit cloud identity, and invalid-plan rejection are tested independently from policy implementations |
 | `content/service.py`, `content/dag.py`, `content/task.py` | Strong direct coverage | DAG extraction, service timing, and task lifecycle are exercised directly |
-| `network/client.py`, `network/node.py`, `network/port.py` | Good direct coverage | HTTP requests, node identity parsing, NodePort cache behavior, and service-port lookup are covered |
+| `network/client.py`, `network/api.py`, `network/utils.py` | Good direct coverage | HTTP behavior, API constants, and pure address utilities are covered; topology and ports are no longer discovered in runtime workers |
 | `solver/*` | Good direct coverage | Longest path, LCA, and intermediate node logic have dedicated tests |
 | `estimation/time_estimation.py`, `estimation/accuracy_estimation.py`, `estimation/overhead_estimation.py`, `estimation/model_flops_estimation.py` | Direct coverage added | Timing tickets, accuracy math, overhead logs, and FLOPs fallback behavior are now unit-tested |
 | `common/log.py`, `common/constant.py`, `network/api.py`, `network/utils.py`, package `__init__.py` exports | Mostly trivial / indirectly covered | These are thin constants or re-export layers and do not need the same density of tests |
+
+`tests/unit/core_lib/test_runtime_kubernetes_boundary.py` is an architectural guard: it parses every runtime Python module and requirement file and fails if a Kubernetes client import, `KubeConfig`, `NodeInfo`, `PortConfig`, `PortInfo`, `force_refresh`, or a legacy processor-Pod deletion hook is reintroduced.
 
 ## Runtime Service Contracts
 
 For service-layer code, the most useful unit tests are not “does FastAPI work” or “does OpenCV decode real video.” Mature projects usually focus on consumer contracts instead:
 
 - `processor` unit tests should prove how a task is read, how upstream content is consumed, how model/tracker/classifier dependencies are invoked, and how results/scenarios are written back into the task.
+- task-lease tests should prove Generator acquire, Controller/Processor renew, Distributor release ordering, and fail-closed behavior without contacting Kubernetes.
 - structured application unit tests should prove each application service can be instantiated independently, returns only
   service-specific `outputs`, and does not encode DAG membership or shared DAG schemas.
 - `monitor` unit tests should prove how monitor workers are instantiated, scheduled, joined, and posted to the scheduler API.
@@ -129,12 +134,24 @@ This is now reflected in `tests/unit/runtime_services/`, which gives Dayu a clea
 
 For backend code, mature open source projects also usually keep orchestration tests close to the control plane instead of mixing them into generic helper tests. Dayu can follow that pattern with `tests/unit/backend/`, where the important contracts are:
 
-- deployment state machines such as install, uninstall, and redeploy flows
+- pure RuntimeService rendering and immutable runtime/session models
+- fixed-GVR create/watch/delete behavior, including watch expiration and exact status identity binding
+- ConfigMap `resourceVersion` compare-and-swap and corruption/conflict handling
+- scheduler-first install, activation/publication readback, proposal/commit/drain/delete rollout, and
+  generator-first/scheduler-last uninstall ordering
+- strict deployment-plan validation plus optional cloud-backup composition across initial install and redeploy
+- backend-owned node/agent preflight and batched exact-Pod-UID telemetry joins
 - polling loops such as result fetching and cycle deploy control
 - config validation, snapshot export, and state persistence helpers
 - backend-only failure handling that should not require component or end-to-end tests
 
-So the answer to “is everything outside `algorithms/` covered?” is now: almost all meaningful runtime logic is covered directly, but not literally every environment-specific branch is exhausted. The remaining light spots are mostly Kubernetes/live-environment failure paths and other code that is better protected by integration coverage than by brittle mocks.
+So the answer to “is everything outside `algorithms/` covered?” is now: almost all meaningful runtime logic is covered directly. Kubernetes/live-environment failure paths belong exclusively to the backend control plane; runtime worker tests use injected bootstrap and directory snapshots instead of cluster mocks.
+
+The performance boundary is reviewable even without a live cluster: runtime modules cannot import the Kubernetes
+package, rendered Pods cannot receive a service-account token, task-routed components cannot resolve from bootstrap,
+and backend telemetry tests assert batched list behavior rather than per-worker calls. A live environment is still
+useful for measuring Sedna/EdgeMesh activation latency, but it is not needed to prove that edge Python processes have no
+Kubernetes call path.
 
 ## Recommended Test Logic
 
@@ -154,6 +171,6 @@ Even after strengthening hook tests, these areas are still good future targets:
 - Scheduler research agents and policy families under `dependency/core/lib/algorithms/schedule_agent/`.
 - More monitor and visualization hook permutations.
 - Processor scenario-extraction chains and queue strategies.
-- Live-cluster Kubernetes integration checks, if the project later adopts a stable test cluster fixture.
+- Live-cluster backend control-plane integration checks, if the project later adopts a stable test cluster fixture.
 - Frontend unit tests around configuration workflows.
-- Real external-system tests for Kubernetes or container lifecycle, if the project later adds a heavier integration environment.
+- Real external-system tests for backend-owned RuntimeService lifecycle, if the project later adds a heavier integration environment.

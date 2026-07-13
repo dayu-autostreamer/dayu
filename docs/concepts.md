@@ -99,6 +99,14 @@ A scheduler policy is an install-time catalog entry in `template/scheduler_polic
 
 The policy id is what backend `/install` receives as `policy_id`.
 
+Initial-deployment and redeployment hooks return one canonical shape: each current-DAG logical service maps to a
+non-empty JSON list of exact candidate node names. `dependency/core/lib/scheduling/deployment_plan.py` owns extraction,
+normalization, and validation of this contract for both Scheduler and every policy family. It rejects missing or extra
+services, scalar placements, empty targets, and nodes outside the selected source's candidate set. Scheduler and policy
+plugins never infer cloud placement. After the plan is valid, Backend may apply the independent
+`default-cloud-processor-backup` control by adding the exact resolved cloud node to every logical service. That
+operational replica does not relax or rewrite the Scheduler policy contract.
+
 ## Hook Alias
 
 A hook alias is a runtime-selectable implementation registered with `ClassFactory`. Templates and visualization configs
@@ -128,19 +136,67 @@ Datasource configuration has two layers:
 `source_mode` selects the generator getter family. Repository examples include simulated `http_video`, simulated
 `rtsp_video`, and real-camera `v4l2_video`.
 
-## Deployment Resource
+## Runtime Slot, Unit, And Revision
 
-Runtime components are rendered as Sedna `JointMultiEdgeService` resources by `backend/template_helper.py`. Backend
-annotates runtime resources with labels such as:
+A runtime slot is the stable logical identity of one worker. It combines component, target node, position, and, when
+applicable, logical service or source id. A runtime unit is one immutable Sedna `RuntimeService` incarnation of that
+slot at a positive deployment revision.
 
-- `app.kubernetes.io/part-of=dayu`
-- `app.kubernetes.io/managed-by=dayu-backend`
-- `dayu.io/runtime-scope=installation`
-- `dayu.io/install-id=<uuid>`
-- `dayu.io/component=<component>`
+Every application worker is rendered as `sedna.io/v1alpha1`, kind `RuntimeService`. A RuntimeService owns one
+single-replica Pod and, for routable components, one ClusterIP Service. The backend publishes a unit only after Sedna
+observes the immutable spec and reports both `Activated=True` and `Ready=True` for the exact RuntimeService UID, Service
+UID, and Pod UID. Updating a unit in place is not a deployment operation; a changed spec creates a new revision.
 
-Those labels make uninstall recoverable from live Kubernetes state even if the backend-local `resources.yaml` cache is
-missing.
+`JointMultiEdgeService` remains a support-layer mechanism used by `dayu.sh` for backend, frontend, Redis, and optional
+datasource resources. It is not an application runtime resource.
+
+## Runtime Directory
+
+`RuntimeDirectory` is the Scheduler-owned route authority. Each committed snapshot contains:
+
+- one installation id and monotonically increasing directory revision
+- canonical node and logical processor deployment views
+- one exact route per active runtime slot
+- immutable RuntimeService/Service/Pod identities for every endpoint route
+- a canonical content hash used for readback verification
+
+The first directory is published only after the complete runtime is activated. Later processor changes use a
+proposal followed by compare-and-swap commit against the expected base revision. Missing or ambiguous routes fail
+closed; a worker never falls back to Kubernetes discovery or a bootstrap endpoint.
+
+Production Scheduler persists the active snapshot and expiring proposals in Redis; task leases use install/revision-
+scoped Redis ZSETs. The support Redis uses a host-mounted append-only file with synchronous fsync, so this state survives
+Scheduler or Redis Pod replacement while the cloud-node host path is retained. Process memory is used only by tests or
+an explicitly constructed local harness. A production Scheduler with no bootstrap Redis endpoint fails at startup.
+
+After generators stop and all relevant revisions drain, backend calls `DELETE /runtime-directory` with the exact
+install id. Scheduler atomically removes the active snapshot, every pending proposal tracked by the install-scoped
+proposal index, and the index itself; an install-id mismatch is rejected. The request is idempotent when this state is
+already absent. Task-lease keys are separate and remain bounded by their lease-derived expiry.
+
+## Runtime Session
+
+Backend persists the control-plane transaction in the `dayu-runtime-session` ConfigMap. The compact record includes
+the install/operation ids, phase, active directory revision, active/pending/retired RuntimeService identities, and
+normalized source deployment. Writes use ConfigMap `resourceVersion` compare-and-swap, so concurrent backend lifecycle
+operations cannot silently overwrite each other.
+
+This ConfigMap is the backend transaction record. Runtime routing is read from Scheduler, and there is no backend-local
+manifest file or cache to refresh.
+
+## Runtime Bootstrap And Task Lease
+
+`DAYU_RUNTIME_BOOTSTRAP` contains immutable install context and support endpoints needed to start a worker. It does not
+contain a mutable route cache. Generator obtains exact routes from Scheduler and copies the committed directory
+revision and routes into each `Task`.
+
+The task is protected by a lease keyed by `(directory_revision, root_uuid)`. Generator acquires it before first
+submission; controller and processor renew it; distributor releases it only after durable result persistence and a
+successful scheduler scenario acknowledgement. A rollout or uninstall waits for the old revision's lease count to
+stay at zero before deleting its RuntimeServices.
+
+Runtime Pods set `automountServiceAccountToken: false`. Runtime code therefore has no Kubernetes package, kubeconfig,
+Pod/Node/Service discovery, topology cache, or forced-refresh API.
 
 ## Query
 

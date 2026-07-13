@@ -6,7 +6,7 @@ This guide is for contributors who need to change code in the repository and wan
 
 | Path | Purpose | Typical changes |
 | --- | --- | --- |
-| `backend/` | Backend control plane, deployment orchestration, visualization and log export | API changes, install/query lifecycle, visualization config handling |
+| `backend/` | Backend control plane and the only Python Kubernetes client boundary | RuntimeService/session orchestration, API changes, install/query lifecycle, telemetry, visualization |
 | `frontend/` | Vue-based UI for DAG management, deployment, runtime visualization | operator workflows, forms, dashboards, routing |
 | `datasource/` | Datasource supervisor, `http_video`, `rtsp_video`, dataset loader | source playback behavior, manifests, source-process lifecycle |
 | `components/` | Container-facing entrypoints for runtime services | packaging or service bootstrap changes |
@@ -16,7 +16,8 @@ This guide is for contributors who need to change code in the repository and wan
 | `dependency/core/monitor/` | Resource sampling loop | monitor orchestration |
 | `dependency/core/processor/` | Processor service shells and inference orchestration | processor behavior, queueing, scenario extraction |
 | `dependency/core/scheduler/` | Scheduler shell and per-source agent orchestration | runtime scheduling behavior |
-| `dependency/core/lib/` | Shared runtime library: hooks, content model, network helpers, estimators | reusable runtime helpers and most extensibility points |
+| `dependency/core/lib/` | Shared runtime library: hooks, content/task routes, scheduling contracts, pure runtime context/resolver/lease client, network helpers, estimators | reusable runtime helpers and most extensibility points; never Kubernetes discovery |
+| `dependency/core/lib/scheduling/` | Stable contracts shared by Scheduler and scheduling plugins | deployment-plan shape, candidate scoping, normalization, and validation |
 | `dependency/core/applications/` | Concrete AI application implementations | detector, classifier, tracker, service-specific logic |
 | `template/` | Deployment composition and default runtime env | scheduler families, processor templates, default visualizers |
 | `build/` and `docker-bake.hcl` | Dockerfiles plus the declarative image build matrix | image packaging, platform/tag matrix, JetPack build variants |
@@ -47,10 +48,33 @@ This means most behavioral changes should land in the runtime package, not in `c
 Usually touch:
 
 - `backend/backend_server.py` for route behavior
-- `backend/backend_core.py` for orchestration and state management
-- `backend/template_helper.py` if deployment rendering changes
+- `backend/backend_core.py` for operator/query coordination
+- `backend/runtime_orchestrator.py` for the transactional install/rollout/drain/uninstall state machine
+- `backend/runtime_service_client.py` for the fixed Sedna RuntimeService GVR and condition watch
+- `backend/runtime_session_store.py` for ConfigMap CAS persistence
+- `backend/cluster_client.py` for backend-owned inventory, preflight, and batched Pod metrics
+- `backend/template_helper.py` for pure catalog/source normalization
+- `backend/runtime_renderer.py` for pure immutable RuntimeService rendering
 - `docs/api/backend.md` if the route contract changes
-- `tests/unit/` or `tests/integration/` for coverage
+- `tests/unit/backend/` or `tests/integration/` for coverage
+
+Do not add Kubernetes imports to `dependency/core/`, a service-account token to a RuntimeService Pod, or a caller-owned
+cache refresh switch. Runtime topology is represented by `RuntimeDirectory` and exact routes copied into `Task`.
+
+### Change runtime routing or rollout
+
+Usually touch:
+
+- `dependency/core/scheduler/runtime_directory.py` and Scheduler APIs for directory CAS/publication
+- `dependency/core/scheduler/task_lease.py` for drain ownership
+- `dependency/core/lib/runtime/` and `content/task.py` for bootstrap, exact route, and task identity contracts
+- generator/controller/processor/distributor consumers for acquire/renew/release ordering
+- `backend/runtime_orchestrator.py` for proposal/commit/drain/delete ordering
+- [`../api/runtime-services.md`](../api/runtime-services.md), [`../operations/README.md`](../operations/README.md), and
+  backend/runtime service unit tests
+
+Preserve these invariants: activate before publication, CAS before traffic moves, generator-first shutdown, scheduler-last
+deletion, and zero leases for the quiet window before retirement.
 
 ### Add or change a hook
 
@@ -61,6 +85,10 @@ Usually touch:
 - one or more templates under `template/` to expose the new alias
 - [`../hooks/README.md`](../hooks/README.md) and [`../hooks/catalog.md`](../hooks/catalog.md)
 - unit tests under `tests/unit/`
+
+Deployment policies and schedule agents are plugins, but their public deployment-plan contract is not an algorithm
+implementation. Keep that contract in `dependency/core/lib/scheduling/deployment_plan.py`; Scheduler and every policy
+family must import the same validator instead of defining local normalization or fallback rules.
 
 ### Add or change a processor service
 
@@ -145,7 +173,7 @@ write the tutorial flow on the website and link to the exact repository referenc
 | Hook lifecycle, aliases, or parameters | `docs/hooks/` |
 | Datasource manifest or playback changes | `docs/datasource/` |
 | Core vocabulary, task envelope, or DAG/service semantics | `docs/concepts.md` and the affected reference doc |
-| Install, uninstall, redeployment, or cleanup behavior | `docs/operations/README.md` |
+| Install, uninstall, redeployment, drain, or cleanup behavior | `docs/operations/README.md` |
 | Repository workflow, test strategy, or contributor path changes | `docs/development/` or `docs/testing/` |
 | Big-picture architecture or deployment composition changes | `docs/architecture/` and `docs/configuration/` |
 

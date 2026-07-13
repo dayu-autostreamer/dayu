@@ -44,26 +44,91 @@ check_and_create_namespace() {
 }
 
 create_service_account() {
-    echo "$(green_text [DAYU]) Creating service account and cluster role binding..."
-    kubectl -n "$NAMESPACE" create serviceaccount "$SERVICE_ACCOUNT"
-    if ! kubectl get clusterrolebinding "$CLUSTER_ROLE_BINDING" > /dev/null 2>&1; then
-        kubectl create clusterrolebinding "$CLUSTER_ROLE_BINDING" --clusterrole=cluster-admin --serviceaccount="$NAMESPACE:$SERVICE_ACCOUNT"
-    else
-        PATCH_JSON="[{\"op\": \"add\", \"path\": \"/subjects/-\", \"value\": {\"kind\": \"ServiceAccount\", \"name\": \"$SERVICE_ACCOUNT\", \"namespace\": \"$NAMESPACE\"}}]"
-        kubectl patch clusterrolebinding "$CLUSTER_ROLE_BINDING" --type='json' -p="$PATCH_JSON"
-    fi
+    echo "$(green_text [DAYU]) Creating the backend-only Kubernetes service account..."
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: $BACKEND_SERVICE_ACCOUNT
+  namespace: $NAMESPACE
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: $NAMESPACE
+  name: $BACKEND_ROLE
+rules:
+  - apiGroups: ["sedna.io"]
+    resources: ["runtimeservices"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "delete"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: $NAMESPACE
+  name: $BACKEND_ROLE_BINDING
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: $BACKEND_ROLE
+subjects:
+  - kind: ServiceAccount
+    name: $BACKEND_SERVICE_ACCOUNT
+    namespace: $NAMESPACE
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: $BACKEND_CLUSTER_ROLE
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: $BACKEND_CLUSTER_ROLE_BINDING
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: $BACKEND_CLUSTER_ROLE
+subjects:
+  - kind: ServiceAccount
+    name: $BACKEND_SERVICE_ACCOUNT
+    namespace: $NAMESPACE
+EOF
 }
 
 create_redis() {
   echo "$(green_text [DAYU]) Creating redis ..."
       kubectl -n "$NAMESPACE" apply -f - <<EOF
-apiVersion: $API_VERSION
-kind: $KIND
+apiVersion: $SUPPORT_API_VERSION
+kind: $SUPPORT_KIND
 metadata:
   name: redis
   namespace: $NAMESPACE
 spec:
   cloudWorker:
+    mounts:
+      - name: redis-runtime-state
+        source:
+          type: hostPath
+          hostPath:
+            path: runtime-state/$NAMESPACE/redis
+            pathType: DirectoryOrCreate
+            prefix: $DEFAULT_FILE_MOUNT_PREFIX
+        target:
+          path: /data
     logLevel:
       level: "DEBUG"
     template:
@@ -72,11 +137,13 @@ spec:
           - image: $REGISTRY/redis:latest
             imagePullPolicy: Always
             name: redis
+            args: ["--appendonly", "yes", "--appendfsync", "always", "--dir", "/data"]
             ports:
               - containerPort: 6379
         dnsPolicy: ClusterFirstWithHostNet
+        enableServiceLinks: false
         nodeName: $CLOUD_NODE
-        serviceAccountName: $SERVICE_ACCOUNT
+        automountServiceAccountToken: false
   serviceConfig:
     port: 6379
     pos: cloud
@@ -88,8 +155,8 @@ create_datasource() {
   if [ "$DATASOURCE_USE_SIMULATION" = "true" ]; then
     echo "$(green_text [DAYU]) Creating datasource ..."
     kubectl -n "$NAMESPACE" apply -f - <<EOF
-apiVersion: $API_VERSION
-kind: $KIND
+apiVersion: $SUPPORT_API_VERSION
+kind: $SUPPORT_KIND
 metadata:
   name: datasource
   namespace: $NAMESPACE
@@ -124,22 +191,19 @@ spec:
                   value: "4"
                 - name: PLAY_MODE
                   value: "$DATASOURCE_PLAY_MODE"
-                - name: KUBERNETES_SERVICE_HOST
-                  value: "$KUBERNETES_SERVICE_HOST"
-                - name: KUBERNETES_SERVICE_PORT
-                  value: "$KUBERNETES_SERVICE_PORT"
+                - name: DAYU_BACKEND_ENDPOINT
+                  value: "http://backend-cloud.$NAMESPACE.svc.cluster.local:8000"
                 - name: GUNICORN_PORT
                   value: "8000"
-                - name: KUBE_CACHE_TTL
-                  value: "$KUBE_CACHE_TTL"
               image: $REGISTRY/$REPOSITORY/datasource:$TAG
               imagePullPolicy: Always
               name: datasource
               ports:
                 - containerPort: 8000
           dnsPolicy: ClusterFirstWithHostNet
+          enableServiceLinks: false
           nodeName: $DATASOURCE_NODE
-          serviceAccountName: $SERVICE_ACCOUNT
+          automountServiceAccountToken: false
   serviceConfig:
     port: 8000
     pos: edge
@@ -154,8 +218,8 @@ EOF
 create_backend() {
   echo "$(green_text [DAYU]) Creating backend ..."
       kubectl -n "$NAMESPACE" apply -f - <<EOF
-apiVersion: $API_VERSION
-kind: $KIND
+apiVersion: $SUPPORT_API_VERSION
+kind: $SUPPORT_KIND
 metadata:
   name: backend
   namespace: $NAMESPACE
@@ -186,8 +250,10 @@ spec:
           - env:
             - name: GUNICORN_PORT
               value: "8000"
-            - name: KUBE_CACHE_TTL
-              value: "$KUBE_CACHE_TTL"
+            - name: CLOUD_NODE_NAME
+              value: "$CLOUD_NODE"
+            - name: DAYU_RUNTIME_CONTROL_PLANE
+              value: "true"
             - name: SYSTEM_LOG_RETENTION_RECORDS
               value: "$SYSTEM_LOG_RETENTION_RECORDS"
             - name: SYSTEM_LOG_COMPACT_INTERVAL
@@ -198,8 +264,9 @@ spec:
             ports:
               - containerPort: 8000
         dnsPolicy: ClusterFirstWithHostNet
+        enableServiceLinks: false
         nodeName: $CLOUD_NODE
-        serviceAccountName: $SERVICE_ACCOUNT
+        serviceAccountName: $BACKEND_SERVICE_ACCOUNT
   serviceConfig:
     port: 8000
     pos: cloud
@@ -212,8 +279,8 @@ create_frontend() {
   echo "$(green_text [DAYU]) Creating frontend ..."
   BACKEND_PORT=$(get_service_nodeport "backend-cloud" "$NAMESPACE")
       kubectl -n "$NAMESPACE" apply -f - <<EOF
-apiVersion: $API_VERSION
-kind: $KIND
+apiVersion: $SUPPORT_API_VERSION
+kind: $SUPPORT_KIND
 metadata:
   name: frontend
   namespace: $NAMESPACE
@@ -243,8 +310,9 @@ spec:
             ports:
               - containerPort: 8000
         dnsPolicy: ClusterFirstWithHostNet
+        enableServiceLinks: false
         nodeName: $CLOUD_NODE
-        serviceAccountName: $SERVICE_ACCOUNT
+        automountServiceAccountToken: false
   serviceConfig:
     port: 8000
     pos: cloud
@@ -291,20 +359,11 @@ start_system() {
 }
 
 delete_service_account() {
-  INDEX=$(kubectl get clusterrolebinding "$CLUSTER_ROLE_BINDING" -o json | jq '.subjects | to_entries | map(select(.value.kind == "ServiceAccount" and .value.name == "'"$SERVICE_ACCOUNT"'" and .value.namespace == "'"$NAMESPACE"'")) | .[0].key')
-
-  if [[ $INDEX != "null" ]]; then
-      PATCH_JSON="[{\"op\": \"remove\", \"path\": \"/subjects/$INDEX\"}]"
-      kubectl patch clusterrolebinding "$CLUSTER_ROLE_BINDING" --type='json' -p="$PATCH_JSON"
-      echo "$(green_text [DAYU]) Delete service account $SERVICE_ACCOUNT from $CLUSTER_ROLE_BINDING."
-
-      SUBJECTS_JSON=$(kubectl get clusterrolebinding "worker-admin-binding" -o json)
-      COUNT=$(echo "$SUBJECTS_JSON" | jq '.subjects | if . then [.[] | select(.kind == "ServiceAccount")] | length else 0 end')
-      if [[ "$COUNT" -eq 0 ]]; then
-        kubectl delete clusterrolebinding "$CLUSTER_ROLE_BINDING"
-        echo "$(green_text [DAYU]) Delete clusterrolebinding $CLUSTER_ROLE_BINDING since no other service accounts are left."
-    fi
-  fi
+  kubectl delete clusterrolebinding "$BACKEND_CLUSTER_ROLE_BINDING" --ignore-not-found=true
+  kubectl delete clusterrole "$BACKEND_CLUSTER_ROLE" --ignore-not-found=true
+  kubectl delete rolebinding "$BACKEND_ROLE_BINDING" -n "$NAMESPACE" --ignore-not-found=true
+  kubectl delete role "$BACKEND_ROLE" -n "$NAMESPACE" --ignore-not-found=true
+  kubectl delete serviceaccount "$BACKEND_SERVICE_ACCOUNT" -n "$NAMESPACE" --ignore-not-found=true
 }
 
 stop_system() {
@@ -313,7 +372,8 @@ stop_system() {
     local mesh_wait="${MESH_WAIT_SEC:-30}"
     local pod_wait="${POD_WAIT_SEC:-120}"
     local ns_wait="${NS_WAIT_SEC:-120}"
-    local graceful_wait="${GRACEFUL_STOP_WAIT_SEC:-240}"
+    local graceful_wait="${GRACEFUL_STOP_WAIT_SEC:-$((RUNTIME_DRAIN_TIMEOUT + 60))}"
+    local force_runtime_stop="${FORCE_RUNTIME_STOP:-false}"
     local wait_mesh_rules="${WAIT_EDGEMESH_RULES:-true}"
     local app_resources=""
 
@@ -400,9 +460,9 @@ stop_system() {
 
     _list_dayu_app_resources() {
         local namespace="$1"
-        kubectl get "${KIND}" -n "${namespace}" \
+        kubectl get runtimeservices.sedna.io -n "${namespace}" \
             -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
-            | grep -Ev '^(backend|frontend|datasource|redis)$' || true
+            || true
     }
 
     # ---------------- helper: list Ready edgemesh-agent pods (ns/pod) ----------------
@@ -531,10 +591,18 @@ stop_system() {
     app_resources="$(_list_dayu_app_resources "${ns}")"
 
     echo "$(green_text [DAYU]) (0/6) Try graceful uninstall for deployed services..."
-    _try_backend_stop_service "${ns}" || true
+    if ! _try_backend_stop_service "${ns}"; then
+        if [[ -n "${app_resources}" ]] && ! _bool_is_true "${force_runtime_stop}"; then
+            echo "$(red_text [DAYU]) Runtime drain did not complete; preserve the namespace and RuntimeServices."
+            echo "Set FORCE_RUNTIME_STOP=true only when abandoning in-flight tasks is intentional."
+            return 1
+        fi
+        echo "$(yellow_text [DAYU]) FORCE_RUNTIME_STOP enabled; abandon remaining task leases."
+    fi
 
-    echo "$(green_text [DAYU]) (1/6) Delete DAYU custom resources ($KIND) to stop controllers from recreating Services..."
-    kubectl delete "${KIND}" -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    echo "$(green_text [DAYU]) (1/6) Delete RuntimeServices, then bootstrap resources..."
+    kubectl delete runtimeservices.sedna.io -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    kubectl delete "${SUPPORT_KIND}" -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
 
     echo "$(green_text [DAYU]) (2/6) Delete Services/Endpoints..."
     kubectl delete svc -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
@@ -565,7 +633,6 @@ stop_system() {
 
     echo "$(green_text [DAYU]) (5/6) Delete service account binding..."
     delete_service_account || true
-    kubectl delete sa -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
     kubectl delete role,rolebinding -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
 
     echo "$(green_text [DAYU]) (6/6) Delete namespace '${ns}'..."
@@ -655,11 +722,15 @@ import_config() {
 
     NAMESPACE=$(yq e '.namespace' "$TMP_FILE")
     LOG_LEVEL=$(yq e '.log-level' "$TMP_FILE")
-    SERVICE_ACCOUNT=$(yq e '.pod-permission.service-account' "$TMP_FILE")
-    CLUSTER_ROLE_BINDING=$(yq e '.pod-permission.cluster-role-binding' "$TMP_FILE")
-    API_VERSION=$(yq e '.crd-meta.api-version' "$TMP_FILE")
-    KIND=$(yq e '.crd-meta.kind' "$TMP_FILE")
-    KUBE_CACHE_TTL=$(yq e '.kube-cache-ttl' "$TMP_FILE")
+    BACKEND_SERVICE_ACCOUNT=$(yq e '.backend-rbac.service-account' "$TMP_FILE")
+    BACKEND_ROLE=$(yq e '.backend-rbac.role' "$TMP_FILE")
+    BACKEND_ROLE_BINDING=$(yq e '.backend-rbac.role-binding' "$TMP_FILE")
+    # Cluster-scoped RBAC names are deployment-specific. Otherwise stopping a
+    # second namespace could revoke the first namespace's backend access.
+    BACKEND_CLUSTER_ROLE="$(yq e '.backend-rbac.cluster-role' "$TMP_FILE")-${NAMESPACE}"
+    BACKEND_CLUSTER_ROLE_BINDING="$(yq e '.backend-rbac.cluster-role-binding' "$TMP_FILE")-${NAMESPACE}"
+    SUPPORT_API_VERSION=$(yq e '.support-crd-meta.api-version' "$TMP_FILE")
+    SUPPORT_KIND=$(yq e '.support-crd-meta.kind' "$TMP_FILE")
     REGISTRY=$(yq e '.default-image-meta.registry' "$TMP_FILE")
     REPOSITORY=$(yq e '.default-image-meta.repository' "$TMP_FILE")
     TAG=$(yq e '.default-image-meta.tag' "$TMP_FILE")
@@ -670,6 +741,7 @@ import_config() {
     DATASOURCE_PLAY_MODE=$(yq e '.datasource.play-mode' "$TMP_FILE")
     SYSTEM_LOG_RETENTION_RECORDS=$(yq e '.log-export.system.retention-records' "$TMP_FILE")
     SYSTEM_LOG_COMPACT_INTERVAL=$(yq e '.log-export.system.compact-interval' "$TMP_FILE")
+    RUNTIME_DRAIN_TIMEOUT=$(yq e '.runtime.drain-timeout-seconds' "$TMP_FILE")
 
     rm "$TMP_FILE"
 
@@ -721,33 +793,19 @@ get_master_details() {
 
 }
 
-get_kubernetes_service_endpoint() {
-    local namespace=default
-
-    local api_endpoint=$(kubectl get ep kubernetes --namespace "$namespace" -o jsonpath='{.subsets[0].addresses[0].ip}')
-    local api_port=$(kubectl get ep kubernetes --namespace "$namespace" -o jsonpath='{.subsets[0].ports[0].port}')
-
-    if [[ -z "$api_endpoint" || -z "$api_port" ]]; then
-        echo "Failed to retrieve Kubernetes $(red_text endpoint) information. Try 'kubectl get ep kubernetes --n $namespace' to debug."
-        return 1
-    fi
-
-    KUBERNETES_SERVICE_HOST=$api_endpoint
-    KUBERNETES_SERVICE_PORT=$api_port
-
-}
-
 display_config() {
     echo "----------------------------------------"
     echo "        Configuration Imported"
     echo "----------------------------------------"
     echo "  Namespace: $NAMESPACE"
     echo "  Log Level: $LOG_LEVEL"
-    echo "  Service Account: $SERVICE_ACCOUNT"
-    echo "  Cluster Role Binding: $CLUSTER_ROLE_BINDING"
-    echo "  API Version: $API_VERSION"
-    echo "  Kind: $KIND"
-    echo "  Kube Cache TTL: $KUBE_CACHE_TTL"
+    echo "  Backend Service Account: $BACKEND_SERVICE_ACCOUNT"
+    echo "  Backend Role: $BACKEND_ROLE"
+    echo "  Backend Role Binding: $BACKEND_ROLE_BINDING"
+    echo "  Backend Cluster Role: $BACKEND_CLUSTER_ROLE"
+    echo "  Backend Cluster Role Binding: $BACKEND_CLUSTER_ROLE_BINDING"
+    echo "  Support API Version: $SUPPORT_API_VERSION"
+    echo "  Support Kind: $SUPPORT_KIND"
     echo "  Registry: $REGISTRY"
     echo "  Repository: $REPOSITORY"
     echo "  Tag: $TAG"
@@ -758,8 +816,6 @@ display_config() {
     echo "  Datasource Play Mode: $DATASOURCE_PLAY_MODE"
     echo "  Master Node: $CLOUD_NODE"
     echo "  Master Node IP: $CLOUD_IP"
-    echo "  Kubernetes Service Host: $KUBERNETES_SERVICE_HOST"
-    echo "  Kubernetes Service Port: $KUBERNETES_SERVICE_PORT"
     echo "----------------------------------------"
 }
 
@@ -779,7 +835,6 @@ prepare() {
   check_install_yq
   import_config
   get_master_details
-  get_kubernetes_service_endpoint
   display_config
   check_official_namespace
 }

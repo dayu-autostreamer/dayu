@@ -23,7 +23,7 @@ the authoritative details here.
 | New to Dayu as a user | [Documentation site](https://dayu-autostreamer.github.io/docs/) | Public introduction, preparation, tutorial, developer guide, and case-study flow. |
 | New to the repository | [`repository-quickstart.md`](./repository-quickstart.md) | Code-facing reading path, local checks, and implementation landmarks. |
 | Need the vocabulary | [`concepts.md`](./concepts.md) | Defines DAGs, services, processor templates, task content, policies, hooks, datasources, and queries. |
-| Operating a running Dayu system | [`operations/`](./operations/README.md) | Start/stop behavior, backend install lifecycle, redeployment, uninstall recovery, and useful checks. |
+| Operating a running Dayu system | [`operations/`](./operations/README.md) | Managed-runtime prerequisites, RBAC, install/publication, rollout drain, safe stop, and useful checks. |
 | Changing code | [`development/`](./development/README.md) | Repository map, common change workflows, and docs/tests to update with code changes. |
 | Adding coverage | [`testing/`](./testing/README.md) | Test pyramid and where new tests should live. |
 
@@ -31,10 +31,10 @@ the authoritative details here.
 
 | Section | Description |
 | --- | --- |
-| [`architecture/`](./architecture/README.md) | System mental model, control-plane/runtime flow, extension seams, and runtime ownership. |
+| [`architecture/`](./architecture/README.md) | Control-plane ownership, RuntimeService activation, RuntimeDirectory/task-route flow, and extension seams. |
 | [`configuration/`](./configuration/README.md) | How templates, catalogs, env vars, datasource configs, visualization configs, and deployment knobs shape a runtime install. |
 | [`configuration/structured-traffic-services.md`](./configuration/structured-traffic-services.md) | Structured traffic service contract and the reviewable driving-risk DAG. |
-| [`api/`](./api/README.md) | Backend control-plane APIs and internal runtime service APIs. |
+| [`api/`](./api/README.md) | Backend control-plane APIs plus RuntimeDirectory, lease, and internal runtime service APIs. |
 | [`datasource/`](./datasource/README.md) | Dataset layout, manifest schema, and frame-index behavior for source playback. |
 | [`hooks/`](./hooks/README.md) | Hook system overview, configuration model, lifecycle, and extension guidance. |
 | [`hooks/catalog.md`](./hooks/catalog.md) | Alias-by-alias catalog of registered hook implementations and their roles. |

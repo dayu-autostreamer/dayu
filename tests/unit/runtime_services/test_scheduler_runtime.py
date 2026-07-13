@@ -5,9 +5,27 @@ from types import SimpleNamespace
 import pytest
 
 from core.lib.content import Task
+from core.scheduler.runtime_directory import RuntimeDirectoryStore
+from core.scheduler.task_lease import InMemoryTaskLeaseStore
 
 
 scheduler_module = importlib.import_module("core.scheduler.scheduler")
+
+
+class FakeRuntimeContext:
+    bootstrap = {}
+    install_id = "test-install"
+    directory_revision = 0
+    cloud_node = "cloud-node"
+    local_node = "edge-node"
+
+    @staticmethod
+    def resolve_static_endpoint(component, required=True, **kwargs):
+        return None
+
+    @staticmethod
+    def edge_nodes():
+        return ["edge-node"]
 
 
 def build_task(source_id=7):
@@ -61,10 +79,10 @@ class FakeAgent:
         return {"selected": data["node_set"][0]}
 
     def get_initial_deployment_plan(self, data):
-        return {"initial": data["node_set"]}
+        return {service: list(data["node_set"]) for service in data["dag"]}
 
     def get_redeployment_plan(self, data):
-        return {"redeploy": data["node_set"]}
+        return {service: list(data["node_set"]) for service in data["dag"]}
 
     def should_generate(self, data):
         return {"generate": data.get("allow", True), "reason": "fake_agent"}
@@ -84,7 +102,7 @@ class DummyThread:
 
 
 @pytest.mark.unit
-def test_scheduler_initializes_algorithms_and_handles_schedule_fallback_and_backup(monkeypatch):
+def test_scheduler_initializes_algorithms_and_handles_schedule_fallback(monkeypatch):
     config_calls = []
     agent = FakeAgent()
 
@@ -107,11 +125,13 @@ def test_scheduler_initializes_algorithms_and_handles_schedule_fallback_and_back
         raise AssertionError(f"Unexpected algorithm request: {name}")
 
     monkeypatch.setattr(scheduler_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
-    monkeypatch.setattr(scheduler_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(scheduler_module.KubeConfig, "check_services_running", staticmethod(lambda: False))
     monkeypatch.setattr(scheduler_module.threading, "Thread", DummyThread)
 
-    scheduler = scheduler_module.Scheduler()
+    scheduler = scheduler_module.Scheduler(
+        runtime_context=FakeRuntimeContext(),
+        runtime_directory=RuntimeDirectoryStore(),
+        task_lease_store=InMemoryTaskLeaseStore(),
+    )
     scheduler.register_schedule_table(7)
 
     assert config_calls == ["config"]
@@ -120,7 +140,7 @@ def test_scheduler_initializes_algorithms_and_handles_schedule_fallback_and_back
     assert agent.ran is True
 
     plan = scheduler.get_schedule_plan({"source_id": 7})
-    assert plan["dag"]["detector"]["service"]["execute_device"] == "cloud-node"
+    assert plan["dag"]["detector"]["service"]["execute_device"] == "edge-node"
     assert plan["dag"]["_start"]["service"]["execute_device"] == "edge-node"
 
 
@@ -138,16 +158,18 @@ def test_scheduler_updates_scenarios_resources_and_supports_plans_and_overhead(m
         raise AssertionError(f"Unexpected algorithm request: {name}")
 
     monkeypatch.setattr(scheduler_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
-    monkeypatch.setattr(scheduler_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-
-    scheduler = scheduler_module.Scheduler()
+    scheduler = scheduler_module.Scheduler(
+        runtime_context=FakeRuntimeContext(),
+        runtime_directory=RuntimeDirectoryStore(),
+        task_lease_store=InMemoryTaskLeaseStore(),
+    )
     agent_a = FakeAgent()
     agent_b = FakeAgent()
     scheduler.schedule_table = {1: agent_a, 2: agent_b}
 
     task = build_task(source_id=1)
-    scheduler.update_scheduler_scenario(task)
-    scheduler.update_scheduler_scenario(build_task(source_id=99))
+    assert scheduler.update_scheduler_scenario(task) is True
+    assert scheduler.update_scheduler_scenario(build_task(source_id=99)) is False
 
     scheduler.register_resource_table("edge-node")
     scheduler.register_resource_table("edge-node")
@@ -161,8 +183,9 @@ def test_scheduler_updates_scenarios_resources_and_supports_plans_and_overhead(m
     assert agent_b.resources == [("edge-node", {"cpu": 0.5})]
     assert scheduler.get_scheduler_resource() == {"edge-node": {"cpu": 0.5}}
     assert scheduler.get_source_node_selection_plan(1, {"node_set": ["edgex1"]}) == {"selected": "edgex1"}
-    assert scheduler.get_initial_deployment_plan(1, {"node_set": ["edgex1"]}) == {"initial": ["edgex1"]}
-    assert scheduler.get_redeployment_plan(1, {"node_set": ["edgex1"]}) == {"redeploy": ["edgex1"]}
+    deployment_info = {"node_set": ["edgex1"], "dag": {"detector": {}}}
+    assert scheduler.get_initial_deployment_plan(1, deployment_info) == {"detector": ["edgex1"]}
+    assert scheduler.get_redeployment_plan(1, deployment_info) == {"detector": ["edgex1"]}
     assert scheduler.should_generate(1, {"allow": False}) == {"generate": False, "reason": "fake_agent"}
     assert scheduler.get_schedule_overhead() == 0.2
 
@@ -188,10 +211,13 @@ def test_scheduler_resource_lock_passthrough_and_existing_registration(monkeypat
         raise AssertionError(f"Unexpected algorithm request: {name}")
 
     monkeypatch.setattr(scheduler_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
-    monkeypatch.setattr(scheduler_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
     monkeypatch.setattr(scheduler_module, "ResourceLockManager", FakeLockManager)
 
-    scheduler = scheduler_module.Scheduler()
+    scheduler = scheduler_module.Scheduler(
+        runtime_context=FakeRuntimeContext(),
+        runtime_directory=RuntimeDirectoryStore(),
+        task_lease_store=InMemoryTaskLeaseStore(),
+    )
     scheduler.schedule_table[5] = FakeAgent()
     scheduler.register_schedule_table(5)
 

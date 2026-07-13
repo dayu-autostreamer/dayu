@@ -7,8 +7,9 @@ from datetime import datetime
 
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
-from core.lib.common import LOGGER, FileNameConstant, FileOps, SystemConstant, Context
-from core.lib.network import http_request, NodeInfo, merge_address, NetworkAPIMethod, NetworkAPIPath, PortInfo
+from core.lib.common import LOGGER, FileNameConstant, FileOps, Context
+from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
+from core.lib.runtime import RuntimeContext, RuntimeLeaseClient, RuntimeLeaseError
 
 
 def _indent_json_block(text, prefix='    '):
@@ -31,15 +32,16 @@ class Distributor:
     _DEFAULT_RESULT_LOG_EXPORT_BATCH_SIZE = 500 # Batch size used when generating compressed export files
     _DEFAULT_RESULT_LOG_RETENTION_RECORDS = 0 # Keep the latest N task results in distributor storage to avoid unbounded growth
     _DEFAULT_RESULT_LOG_RETENTION_PRUNE_INTERVAL = 200 # Prune stale result records every N writes
+    _SCHEDULER_REQUEST_TIMEOUT_SECONDS = 5.0
 
     def __init__(self):
-        self.scheduler_hostname = NodeInfo.get_cloud_node()
-        self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        self.scheduler_address = merge_address(
-            NodeInfo.hostname2ip(self.scheduler_hostname),
-            port=self.scheduler_port,
-            path=NetworkAPIPath.SCHEDULER_SCENARIO
+        self.runtime_context = RuntimeContext.get_default()
+        self.runtime_lease_client = RuntimeLeaseClient(
+            self.runtime_context,
+            requester=http_request,
         )
+        self.scheduler_endpoint = self.runtime_context.resolve_static_endpoint('scheduler')
+        self.scheduler_address = self.scheduler_endpoint.url(NetworkAPIPath.SCHEDULER_SCENARIO)
         self.record_path = FileNameConstant.DISTRIBUTOR_RECORD.value
         self.result_log_export_batch_size = max(
             1,
@@ -138,7 +140,23 @@ class Distributor:
         LOGGER.info(f'[Distribute Data] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 
         self.save_task_record(cur_task)
-        self.send_scenario_to_scheduler(cur_task)
+        if not self.send_scenario_to_scheduler(cur_task):
+            LOGGER.warning(
+                f'[Runtime Task Lease] Scheduler scenario was not acknowledged; '
+                f'retain lease until TTL. source={cur_task.get_source_id()} '
+                f'task={cur_task.get_task_id()}'
+            )
+            return
+        try:
+            self.runtime_lease_client.release(cur_task)
+        except RuntimeLeaseError as exc:
+            # A failed release is deliberately not retried or emulated.  The
+            # scheduler lease remains until its TTL and therefore keeps the old
+            # RuntimeDirectory revision safe to drain conservatively.
+            LOGGER.warning(
+                f'[Runtime Task Lease] Release failed; retain until TTL. '
+                f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}: {exc}'
+            )
 
     def save_task_record(self, cur_task: Task):
         """
@@ -184,14 +202,20 @@ class Distributor:
         LOGGER.info(f'[Send Scenario] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 
         try:
-            http_request(
+            response = http_request(
                 url=self.scheduler_address,
                 method=NetworkAPIMethod.SCHEDULER_SCENARIO,
+                timeout=self._SCHEDULER_REQUEST_TIMEOUT_SECONDS,
                 data={'data': cur_task.serialize()})
+            if not isinstance(response, dict) or response.get('accepted') is not True:
+                LOGGER.warning('Scheduler did not acknowledge the scenario update.')
+                return False
+            return True
 
         except Exception as e:
             LOGGER.warning(f"Send scenario to scheduler failed: {e}")
             LOGGER.exception(e)
+            return False
 
     @staticmethod
     def record_transmit_ts(cur_task):

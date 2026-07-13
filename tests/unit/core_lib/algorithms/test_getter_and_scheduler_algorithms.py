@@ -319,8 +319,8 @@ def test_scheduler_helper_algorithms_cover_base_contracts_selection_and_retrieva
     assert casva_scenario["segment_size"] == 1.25
     assert casva_scenario["content_dynamics"] == 0.4
 
-    monkeypatch.setattr(selection_base_module.NodeInfo, "get_all_edge_nodes", staticmethod(lambda: ["edge-a", "edge-b", "edge-c"]))
-    selector = selection_base_module.BaseSelectionPolicy(scope="all_edge_nodes")
+    selection_system = SimpleNamespace(runtime_edge_nodes=lambda: ["edge-a", "edge-b", "edge-c"])
+    selector = selection_base_module.BaseSelectionPolicy(system=selection_system, scope="all_edge_nodes")
     assert selector.get_candidate_node_set({"node_set": ["edge-a", "edge-b"], "all_edge_nodes": ["edge-b", "edge-c"]}) == [
         "edge-b",
         "edge-c",

@@ -3,6 +3,7 @@ import importlib
 import pytest
 
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext
 
 
 def build_join_task(past_flow_index, current_flow_index="join", root_uuid="root-task-0"):
@@ -176,9 +177,6 @@ def test_task_coordinator_initializes_redis_clients_from_runtime_configuration(m
             }.get(name, default)
         ),
     )
-    monkeypatch.setattr(task_coordinator_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
-    monkeypatch.setattr(task_coordinator_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.9"))
-    monkeypatch.setattr(task_coordinator_module.PortInfo, "get_component_port", staticmethod(lambda component: 6379))
     monkeypatch.setattr(
         task_coordinator_module.redis,
         "ConnectionPool",
@@ -186,11 +184,16 @@ def test_task_coordinator_initializes_redis_clients_from_runtime_configuration(m
     )
     monkeypatch.setattr(task_coordinator_module.redis, "Redis", lambda connection_pool: {"redis": connection_pool})
 
-    coordinator = task_coordinator_module.TaskCoordinator()
+    coordinator = task_coordinator_module.TaskCoordinator(
+        runtime_context=RuntimeContext({
+            "cloud_node": "cloudx1",
+            "endpoints": {"redis": {"fqdn": "redis.dayu.svc", "port": 6379}},
+        })
+    )
 
     assert coordinator.max_connections == "12"
     assert coordinator.storage_timeout == "900"
-    assert pool_calls == [{"host": "10.0.0.9", "port": 6379, "max_connections": "12"}]
+    assert pool_calls == [{"host": "redis.dayu.svc", "port": 6379, "max_connections": "12"}]
     assert coordinator.redis == {"redis": {"pool": pool_calls[0]}}
 
 

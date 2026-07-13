@@ -64,12 +64,20 @@ class FakeBackendCoreManagement:
         self.customized_source_result_visualization_configs = {}
         self.resource_url = None
         self.install_state = False
+        self.runtime_orchestrator = type("RuntimeView", (), {
+            "runtime_metrics": staticmethod(lambda logical_service=None: {
+                "processor-face-detection-edge-a-r1": {
+                    "node": "edge-a",
+                    "node_info": {"address": "10.0.0.8"},
+                    "usage": {"processor": {"cpu": "25m", "memory": "64Mi"}},
+                    "created_at": "2026-07-12T00:00:00Z",
+                }
+            }),
+        })()
         self.install_result = (True, "ok")
         self.install_exception = None
         self.uninstall_result = (True, "ok")
         self.run_get_result_called = False
-        self.clear_yaml_docs_calls = 0
-        self.clear_install_record_calls = 0
         self.query_lock = threading.Lock()
         self.applied_templates = []
         self.datasource_config_to_return = {
@@ -136,12 +144,6 @@ class FakeBackendCoreManagement:
     def parse_and_delete_templates(self):
         return self.uninstall_result
 
-    def clear_yaml_docs(self):
-        self.clear_yaml_docs_calls += 1
-
-    def clear_install_record(self):
-        self.clear_install_record_calls += 1
-
     def check_install_state(self):
         return self.install_state
 
@@ -195,11 +197,6 @@ def management_backend(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(backend_server_module, "BackendCore", FakeBackendCoreManagement)
     monkeypatch.setattr(backend_server_module.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(
-        backend_server_module.KubeHelper,
-        "get_service_info",
-        staticmethod(lambda service_name, namespace: [{"hostname": "edge-a", "age": "1m"}]),
-    )
     monkeypatch.setattr(
         backend_server_module,
         "http_request",
@@ -336,14 +333,10 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
 
     uninstall_result = asyncio.run(backend.uninstall_service())
     assert uninstall_result["state"] == "success"
-    assert backend.server.clear_yaml_docs_calls == 1
-    assert backend.server.clear_install_record_calls == 1
 
     backend.server.uninstall_result = (False, "still running")
     failed_uninstall = asyncio.run(backend.uninstall_service())
     assert failed_uninstall["state"] == "fail"
-    assert backend.server.clear_yaml_docs_calls == 1
-    assert backend.server.clear_install_record_calls == 1
 
 
 @pytest.mark.integration
@@ -391,7 +384,14 @@ def test_backend_server_covers_query_state_visualization_and_service_info(manage
     assert failed_upload_viz.json()["state"] == "fail"
 
     service_info = asyncio.run(backend.get_service_info("face-detection"))
-    assert service_info == [{"hostname": "edge-a", "age": "1m", "bandwidth": "12.34Mbps"}]
+    assert service_info == [{
+        "ip": "10.0.0.8",
+        "hostname": "edge-a",
+        "cpu": "25m",
+        "memory": "64Mi",
+        "bandwidth": "12.34Mbps",
+        "age": "2026-07-12T00:00:00Z",
+    }]
     assert asyncio.run(backend.get_service_info("null")) == []
 
     stop_result = asyncio.run(backend.stop_query())
@@ -425,19 +425,21 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
 
 @pytest.mark.integration
 def test_backend_server_covers_disabled_query_state_and_service_info_fallbacks(management_backend, monkeypatch):
-    backend_server_module, backend, client, _ = management_backend
+    _, backend, client, _ = management_backend
 
     backend.server.inner_datasource = False
     assert client.get("/query_state").json() == {"state": "disabled", "source_label": ""}
 
     backend.server.resource_url = None
     monkeypatch.setattr(backend.server, "get_resource_url", lambda: None)
-    assert asyncio.run(backend.get_service_info("face-detection")) == []
+    without_scheduler_resource = asyncio.run(backend.get_service_info("face-detection"))
+    assert without_scheduler_resource[0]["hostname"] == "edge-a"
+    assert without_scheduler_resource[0]["bandwidth"] == "-"
 
     monkeypatch.setattr(
-        backend_server_module.KubeHelper,
-        "get_service_info",
-        staticmethod(lambda service_name, namespace: (_ for _ in ()).throw(RuntimeError("boom"))),
+        backend.server.runtime_orchestrator,
+        "runtime_metrics",
+        lambda logical_service=None: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     assert asyncio.run(backend.get_service_info("face-detection")) == []
 

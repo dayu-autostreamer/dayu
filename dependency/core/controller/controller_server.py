@@ -81,9 +81,13 @@ class ControllerServer:
                                             max_delete_per_round=200)
             self.file_cleaner.start()
 
-    async def check_processor_health(self):
+    async def check_processor_health(self, data: str = Form("{}")):
         """check if processor is healthy"""
-        return {'status': 'ok'} if self.controller.check_processor_health() else {'status': 'not ok'}
+        try:
+            request = json.loads(data) if isinstance(data, str) and data else {}
+        except Exception as exc:
+            return {'status': 'not ok', 'error': f'invalid processor health request: {exc}'}
+        return {'status': 'ok'} if self.controller.check_processor_health(request) else {'status': 'not ok'}
 
     async def submit_task(self, backtask: BackgroundTasks, file: UploadFile = File(...), data: str = Form(...)):
         file_data = await file.read()

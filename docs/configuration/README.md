@@ -12,6 +12,7 @@ Dayu is configured through a combination of catalog files, component templates, 
 | `template/{scheduler,generator,controller,distributor,monitor,processor}/*.yaml` | Component deployment templates and runtime env vars | platform maintainers |
 | `config/datasource_configs/*.yaml` | User- or operator-selectable datasource examples | operators, demos, tests |
 | `config/visualization_configs/*.yaml` | Example visualization configs for result pages | operators, demo maintainers |
+| `config/service_yamls/example.yaml` | Illustrative renderer output for review, not an install input or lifecycle record | maintainers |
 | `template/result-visualizations.yaml` and `template/system-visualizations.yaml` | Default visualization configuration shipped by the platform | platform maintainers |
 | `dependency/core/lib/algorithms/` plus env vars | Runtime hook implementation selection | runtime developers |
 
@@ -29,7 +30,7 @@ flowchart LR
     USER["selected policy + datasource + DAG + nodes"] --> HELPER["TemplateHelper"]
     COMP --> HELPER
     PROC --> HELPER
-    HELPER --> MANIFEST["rendered deployment docs"]
+    HELPER --> MANIFEST["rendered RuntimeService specs"]
 ```
 
 At install time:
@@ -38,7 +39,32 @@ At install time:
 2. `scheduler_policies.yaml` maps a policy id to one scheduler template plus its dependent component templates.
 3. `services.yaml` maps service ids to processor templates.
 4. Frontend-selected datasource config, DAG workflow, and target nodes are injected into the template rendering step.
-5. Backend emits deployment documents and installs them through the Kubernetes helper layer.
+5. Backend compiles immutable RuntimeService specs, submits them through its single control-plane client, and publishes exact endpoints through the Scheduler RuntimeDirectory only after activation.
+
+Application templates are logical inputs, not Kubernetes documents. `TemplateHelper` normalizes catalogs and source
+deployment, and `RuntimeServiceRenderer` deterministically renders fixed `sedna.io/v1alpha1` `RuntimeService` objects.
+Neither helper loads cluster configuration. All Kubernetes calls are owned by backend orchestration.
+
+[`config/service_yamls/example.yaml`](../../config/service_yamls/example.yaml) shows the resulting RuntimeService shape,
+including a routable processor and an endpointless generator. Do not apply or edit that file as an install mechanism:
+backend generates real names, install ids, revisions, images, bootstrap, and target nodes transactionally.
+
+### RuntimeDirectory task leases
+
+Runtime workers never query Kubernetes. The backend injects the scheduler
+endpoint and `lease_ttl_seconds` into `DAYU_RUNTIME_BOOTSTRAP`; the optional
+`DAYU_RUNTIME_LEASE_TTL_SECONDS` environment variable provides the same TTL
+when constructing a runtime context outside the normal renderer.
+
+Each task is pinned to the immutable pair
+`(runtime_directory_revision, root_uuid)`. The Generator must acquire that
+lease before its first submission, Controllers renew it whenever they receive
+or advance the task, and Processors maintain a renewal heartbeat throughout execution.
+After the Distributor has durably stored the result and the Scheduler has
+acknowledged its scenario update, it releases the lease. Any acquire or renew
+outcome that is not explicitly acknowledged stops task progress. A failed
+release is only logged and leaves the lease to expire naturally, which keeps
+the corresponding RuntimeServices protected during drain.
 
 ## Global Catalogs
 
@@ -47,7 +73,9 @@ At install time:
 This file is the root of the platform catalog. It defines:
 
 - namespace and image defaults
-- Kubernetes API cache TTL
+- the backend-only service account and minimal cluster RBAC names
+- the support-layer `JointMultiEdgeService` API version and kind
+- RuntimeService activation, operation, drain, and task-lease deadlines
 - file mount defaults
 - log export and retention defaults
 - datasource defaults
@@ -57,6 +85,45 @@ This file is the root of the platform catalog. It defines:
 - default result/system visualization config import
 
 If you need to understand what the frontend is browsing or what the backend can install, start here.
+
+Control-plane fields:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `backend-rbac.service-account` | `dayu-backend` | The only Dayu ServiceAccount allowed to call Kubernetes. |
+| `backend-rbac.role` | `dayu-backend-runtime-manager` | Namespace-local RuntimeService, session, and metrics permissions. |
+| `backend-rbac.role-binding` | `dayu-backend-runtime-manager-binding` | Namespace-local binding for the backend ServiceAccount. |
+| `backend-rbac.cluster-role` | `dayu-backend-cluster-observer` | Base name for read-only Node and managed-agent Pod inventory. `dayu.sh` appends the namespace. |
+| `backend-rbac.cluster-role-binding` | `dayu-backend-cluster-observer-binding` | Base name for the namespace-specific cluster observer binding. |
+| `support-crd-meta.api-version` | `sedna.io/v1alpha1` | API used only to create support-layer resources. |
+| `support-crd-meta.kind` | `JointMultiEdgeService` | Kind used only for backend/frontend/Redis/datasource bootstrap. |
+
+Runtime control fields:
+
+| Field | Default (seconds) | Meaning |
+| --- | ---: | --- |
+| `runtime.activation-timeout-seconds` | `300` | Maximum wait for exact Sedna `Activated` and dynamic `Ready` conditions. |
+| `runtime.operation-timeout-seconds` | `900` | Backend-to-scheduler decision/publication request budget. |
+| `runtime.inventory-ttl-seconds` | `30` | Backend-owned node snapshot TTL; callers cannot force refresh it. |
+| `runtime.drain-timeout-seconds` | `3900` | Maximum retirement wait; must exceed lease TTL plus the quiet window so failed releases can expire safely. |
+| `runtime.drain-quiet-window-seconds` | `10` | Required continuous zero-lease interval before deletion. |
+| `runtime.lease-ttl-seconds` | `3600` | Lease TTL injected into runtime bootstrap. |
+
+There are intentionally no runtime Kubernetes endpoint, selector, cache TTL, warm-up, or refresh settings. Such a
+setting would reintroduce cluster discovery into application processes and violates the architecture; the renderer
+rejects templates that attempt to define one instead of silently stripping or accepting it.
+
+### Support Redis durability
+
+`dayu.sh` mounts Redis `/data` from
+`<default-file-mount-prefix>/runtime-state/<namespace>/redis` on the cloud node and starts Redis with
+`--appendonly yes --appendfsync always --dir /data`. This persists Scheduler's active RuntimeDirectory, expiring
+proposals, and task leases across Scheduler/Redis Pod replacement. The path is namespace-scoped but node-local: keep it
+writable and durable, and explicitly migrate it if the support Redis moves to another cloud node.
+
+Normal uninstall uses Scheduler's install-scoped proposal index to atomically delete the active directory key, every
+pending proposal, and the index itself only after lease drain. Task-lease key expiry bounds the remaining transient
+state. Forced shell cleanup does not provide that transactional guarantee and does not erase the host directory.
 
 ### `template/scheduler_policies.yaml`
 
@@ -82,9 +149,8 @@ Current catalog families include:
 | Hierarchical embodied intelligence | `hei`, `hei-macro-only`, `hei-micro-only`, `hei-synchronous` |
 | Hedger and ablations | `hedger`, `hedger-offloading-benchmark`, `hedger-deployment-benchmark`, `hedger-no-graph-encoder`, `hedger-flat`, `hedger-deployment-only`, `hedger-offloading-only` |
 
-Most entries use a `dependency:` map for generator/controller/distributor/monitor templates. A few legacy entries still
-use top-level `generator`, `controller`, `distributor`, and `monitor` keys; `TemplateHelper.load_policy_apply_yaml()`
-supports both shapes.
+Entries use a `dependency:` map for generator/controller/distributor/monitor templates. Keep this shape canonical when
+adding or reviewing policy definitions.
 
 ### `template/services.yaml`
 
@@ -198,17 +264,34 @@ the user-selected workflow at runtime, not by hard-coded schema names inside the
 
 ## Processor Deployment Controls
 
-Processor manifests are generated per logical service and target node. For each service, `backend/template_helper.py`
-can create one cloud-only processor CR and one edge-only processor CR per selected edge node.
+Processor RuntimeServices are generated from the validated scheduler placement plus any Backend-configured cloud
+backup. For each desired slot, backend compares the stable rollout hash with the active unit; a placement, image,
+template, mount, or effective environment change creates a new immutable RuntimeService revision.
 
-`template/base.yaml` controls the default cloud processor backup:
+Every initial-deployment and redeployment policy is normalized through
+`dependency/core/lib/scheduling/deployment_plan.py`. The accepted shape is exactly
+`logical service -> non-empty JSON node list`, covering every current-DAG service and only candidate nodes.
+
+`template/base.yaml` controls whether Backend composes a default cloud replica after that validation:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `default-cloud-processor-backup` | `true` | Create one cloud-side backup processor for every logical service unless disabled. |
+| `default-cloud-processor-backup` | `false` | `true` adds the exact Backend-resolved cloud node to every logical service placement; `false` uses the validated Scheduler plan unchanged. |
 
-When the field is `false`, backend skips default cloud backups but still honors an exact cloud hostname returned by a
-scheduler deployment plan. This keeps "no default backup" separate from "cloud is forbidden."
+This option applies identically to initial deployment and redeployment. It is an additive replica policy, not a repair
+path: Scheduler must still return every current-DAG service with at least one valid target, and unknown services,
+missing services, empty lists, or invalid nodes still fail before Backend adds the cloud node. If Scheduler already
+selected the exact cloud hostname, set normalization prevents a duplicate RuntimeService. Setting the option to
+`false` does not forbid cloud placement; an exact cloud hostname returned by Scheduler remains legal. The built-in
+`cloud-only-policy` continues to select `system.cloud_device` explicitly. Despite the option's historical “backup”
+name, the cloud RuntimeService is activated and published as a normal routable replica rather than a dormant standby.
+
+## Runtime Pod Security Boundary
+
+The renderer always sets `automountServiceAccountToken: false`, omits `serviceAccountName`, and renders mounts as native
+Pod `volumes`/`volumeMounts`. It rejects a logical template that contains Kubernetes discovery/cache env variables.
+Do not add projected service-account-token volumes or Kubernetes clients to runtime images. Cluster inspection,
+RuntimeService watches, metrics joins, and session persistence belong in backend only.
 
 ## Runtime Env Naming Conventions
 

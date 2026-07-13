@@ -39,7 +39,8 @@ generator / scheduler / controller / processor / distributor / monitor 这组运
 
 - **基础系统层**：该层采用 `KubeEdge` 架构，部署在云边环境的所有分布式节点上。`KubeEdge` 是华为为边缘场景提出的
   `Kubernetes` 扩展，能很好地部署在资源有限、性能低下的设备上。
-- **中间接口层**：通过修改和扩展官方接口组件 `Sedna` 和通信组件 `Edgemesh`，提供定制化服务安装和组件通信。
+- **中间接口层**：以 Sedna `RuntimeService` 作为不可变应用 worker API，并以 EdgeMesh 对精确
+  Service/Pod 身份的确认作为激活屏障。
 - **系统支持层**：为用户提供交互式界面（前端）、自动安装（后端）和模拟数据源（数据源）。
 - **协同调度层**：由我们自主开发的功能组件组成，完成流水线任务执行和调度协作等功能。
 - **应用服务层**：接收用户定义的服务应用。只要用户根据平台定义的接口需求开发服务，就可以以容器形式嵌入平台并完成云边节点之间的执行。
@@ -61,19 +62,19 @@ Dayu 使用两个文档入口：
 - [项目文档站点](https://dayu-autostreamer.github.io/docs/)：负责公开上手、安装准备、教程、UI 操作说明、案例和社区页面
 - 仓库内 [`docs/`](docs/README.md)：负责贴近代码的 API 契约、模板配置、hook、datasource、生命周期、测试和维护者说明
 
-| 如果你想...                  | 从这里开始                                                                                             |
-|--------------------------|---------------------------------------------------------------------------------------------------|
-| 按教程部署和使用系统               | [项目文档站点](https://dayu-autostreamer.github.io/docs/)                                               |
-| 快速进入仓库和本地校验路径          | [`docs/repository-quickstart.md`](docs/repository-quickstart.md)                                  |
-| 理解 Dayu 的核心概念和运行时契约    | [`docs/concepts.md`](docs/concepts.md)                                                            |
-| 理解系统整体结构                 | [`docs/architecture/README.md`](docs/architecture/README.md)                                      |
-| 理解策略、模板与 env 变量如何组成部署    | [`docs/configuration/README.md`](docs/configuration/README.md)                                    |
-| 查看后端和运行时 API             | [`docs/api/README.md`](docs/api/README.md)                                                        |
+| 如果你想...                         | 从这里开始                                                                                             |
+|---------------------------------|---------------------------------------------------------------------------------------------------|
+| 按教程部署和使用系统                      | [项目文档站点](https://dayu-autostreamer.github.io/docs/)                                               |
+| 快速进入仓库和本地校验路径                   | [`docs/repository-quickstart.md`](docs/repository-quickstart.md)                                  |
+| 理解 Dayu 的核心概念和运行时契约             | [`docs/concepts.md`](docs/concepts.md)                                                            |
+| 理解系统整体结构                        | [`docs/architecture/README.md`](docs/architecture/README.md)                                      |
+| 理解策略、模板与 env 变量如何组成部署           | [`docs/configuration/README.md`](docs/configuration/README.md)                                    |
+| 查看后端和运行时 API                    | [`docs/api/README.md`](docs/api/README.md)                                                        |
 | 运维 install、query、redeploy 或清理流程 | [`docs/operations/README.md`](docs/operations/README.md)                                          |
-| 理解 hook 机制和内置 alias      | [`docs/hooks/README.md`](docs/hooks/README.md) 与 [`docs/hooks/catalog.md`](docs/hooks/catalog.md) |
-| 修改 datasource 与 manifest | [`docs/datasource/README.md`](docs/datasource/README.md)                                          |
-| 作为贡献者快速理解仓库结构            | [`docs/development/README.md`](docs/development/README.md)                                        |
-| 理解测试分层与新增测试位置            | [`docs/testing/README.md`](docs/testing/README.md)                                                |
+| 理解 hook 机制和内置 alias             | [`docs/hooks/README.md`](docs/hooks/README.md) 与 [`docs/hooks/catalog.md`](docs/hooks/catalog.md) |
+| 修改 datasource 与 manifest        | [`docs/datasource/README.md`](docs/datasource/README.md)                                          |
+| 作为贡献者快速理解仓库结构                   | [`docs/development/README.md`](docs/development/README.md)                                        |
+| 理解测试分层与新增测试位置                   | [`docs/testing/README.md`](docs/testing/README.md)                                                |
 
 仓库内文档索引位于 [`docs/README.md`](docs/README.md)。
 
@@ -86,10 +87,14 @@ Dayu 使用两个文档入口：
 - [EdgeMesh](https://github.com/kubeedge/edgemesh)
 - [TensorRT](https://github.com/NVIDIA/TensorRT)
 
-与 Dayu 部署模型强相关的配套工程还包括：
+`dayu-sedna` 和 `dayu-edgemesh` 会针对受支持的 Dayu 版本成对发布。安装或升级时请使用以下版本兼容矩阵：
 
-- [dayu-sedna](https://github.com/dayu-autostreamer/dayu-sedna)
-- [dayu-edgemesh](https://github.com/dayu-autostreamer/dayu-edgemesh)
+| Dayu 版本         | dayu-sedna 版本                                                                                                                             | dayu-edgemesh 版本                                                                                                                                |
+|-----------------|-------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
+| `v1.4`          | [`v1.1`](https://github.com/dayu-autostreamer/dayu-sedna/tree/v1.1)                                                                       | [`v1.1`](https://github.com/dayu-autostreamer/dayu-edgemesh/tree/v1.1)                                                                          |
+| `v1.0` - `v1.3` | [`v1.0`](https://github.com/dayu-autostreamer/dayu-sedna/tree/v1.0) 或 [`v1.1`](https://github.com/dayu-autostreamer/dayu-sedna/tree/v1.1) | [`v1.0`](https://github.com/dayu-autostreamer/dayu-edgemesh/tree/v1.0) 或 [`v1.1`](https://github.com/dayu-autostreamer/dayu-edgemesh/tree/v1.1) |
+
+`dayu-sedna` 和 `dayu-edgemesh` 必须使用相同的次版本：`v1.0` 与 `v1.0` 配套，或 `v1.1` 与 `v1.1` 配套。
 
 ## 本地测试
 

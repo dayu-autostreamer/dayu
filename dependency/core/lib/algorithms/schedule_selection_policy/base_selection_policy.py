@@ -1,7 +1,6 @@
 import abc
 
 from core.lib.common import LOGGER
-from core.lib.network import NodeInfo
 
 
 class BaseSelectionPolicy(metaclass=abc.ABCMeta):
@@ -33,7 +32,7 @@ class BaseSelectionPolicy(metaclass=abc.ABCMeta):
         if self.scope == 'all_edge_nodes':
             all_edge_nodes = info.get('all_edge_nodes')
             if all_edge_nodes is None:
-                all_edge_nodes = NodeInfo.get_all_edge_nodes()
+                all_edge_nodes = self.system.runtime_edge_nodes()
             return list(dict.fromkeys(all_edge_nodes or []))
 
         LOGGER.warning(

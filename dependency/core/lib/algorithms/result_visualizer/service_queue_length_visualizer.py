@@ -1,15 +1,8 @@
 import abc
 
-from core.lib.common import ClassFactory, ClassType, KubeConfig, ServiceConfig, SystemConstant
+from core.lib.common import ClassFactory, ClassType
 from core.lib.content import Task
-from core.lib.network import (
-    http_request,
-    NodeInfo,
-    PortInfo,
-    NetworkAPIPath,
-    NetworkAPIMethod,
-    merge_address,
-)
+from core.lib.runtime import RuntimeResolver
 
 from .base_visualizer import BaseVisualizer
 
@@ -18,32 +11,6 @@ __all__ = ("ServiceQueueLengthVisualizer",)
 
 @ClassFactory.register(ClassType.RESULT_VISUALIZER, alias="service_queue_length")
 class ServiceQueueLengthVisualizer(BaseVisualizer, abc.ABC):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.resource_url = None
-
-    def get_resource_url(self):
-        cloud_hostname = NodeInfo.get_cloud_node()
-        try:
-            scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        except AssertionError:
-            self.resource_url = None
-            return
-
-        self.resource_url = merge_address(
-            NodeInfo.hostname2ip(cloud_hostname),
-            port=scheduler_port,
-            path=NetworkAPIPath.SCHEDULER_GET_RESOURCE,
-        )
-
-    def request_resource_info(self):
-        self.get_resource_url()
-        return (
-            http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE)
-            if self.resource_url
-            else None
-        )
-
     @staticmethod
     def _extract_queue_length(resource, device_name, service_name):
         if not isinstance(resource, dict):
@@ -72,40 +39,26 @@ class ServiceQueueLengthVisualizer(BaseVisualizer, abc.ABC):
         return f"{device_name}/{pod_name[:16]}...{pod_name[-12:]}" if device_name else pod_name
 
     @staticmethod
-    def _list_service_replicas(service_name):
-        try:
-            KubeConfig.force_refresh()
-        except Exception:
-            return []
-
+    def _list_service_replicas(service_name, task):
         replicas = []
         seen = set()
-        for node_name in KubeConfig.get_nodes_for_service(service_name):
-            for pod_name in KubeConfig.get_pods_on_node(node_name):
-                if ServiceConfig.map_pod_name_to_service(pod_name) != service_name:
-                    continue
-                key = (node_name, pod_name)
-                if key in seen:
-                    continue
-                seen.add(key)
-                replicas.append(
-                    {
-                        "device": node_name,
-                        "pod_name": pod_name,
-                    }
-                )
+        for route in RuntimeResolver.list_routes(task, component='processor', logical_service=service_name):
+            pod_name = route.endpoint_pod_uid or route.runtime_id
+            key = (route.target_node, pod_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            replicas.append({"device": route.target_node, "pod_name": pod_name})
 
         replicas.sort(key=lambda item: (item.get("device", ""), item.get("pod_name", "")))
         return replicas
 
-    def __call__(self, task: Task):
-        _ = task
-        resource = self.request_resource_info()
+    def __call__(self, task: Task, resource=None, **_):
         result = {}
 
         for service_name in self.variables:
             records = []
-            for replica in self._list_service_replicas(service_name):
+            for replica in self._list_service_replicas(service_name, task):
                 device_name = replica.get("device", "")
                 pod_name = replica.get("pod_name", "")
                 records.append(

@@ -20,9 +20,11 @@ If the task is "install Dayu for the first time" or "run the public tutorial," s
 
 Dayu turns user intent into a coordinated cloud-edge runtime:
 
-1. `dayu.sh` starts the platform support layer: backend, frontend, datasource supervisor, Redis, and shared permissions.
-2. Backend `/install` combines a scheduler policy, datasource config, DAG workflow, service catalog, and templates.
-3. Runtime components coordinate stream tasks: generator, scheduler, controller, processor, distributor, and monitor.
+1. `dayu.sh` starts the platform support layer and backend-only Kubernetes RBAC.
+2. Backend `/install` combines a scheduler policy, datasource config, DAG workflow, service catalog, and templates into
+   immutable Sedna RuntimeServices.
+3. Scheduler publishes a Redis-backed, versioned RuntimeDirectory; runtime components coordinate tasks through exact
+   task routes and revision leases without Kubernetes discovery.
 4. Backend query and visualization APIs expose the running system to the frontend and operators.
 
 For the exact vocabulary and contract boundaries, read [`concepts.md`](./concepts.md) before changing code.
@@ -86,8 +88,14 @@ flowchart LR
     DAG["application DAG"] --> INST
     SVC["services.yaml"] --> INST
     TPL["component + processor templates"] --> INST
-    INST --> KUBE["JointMultiEdgeService resources"]
+    INST --> RTS["Immutable RuntimeService revisions"]
+    RTS --> ACT["Sedna + EdgeMesh exact activation"]
+    ACT --> DIR["Scheduler RuntimeDirectory"]
+    DIR --> TASK["Exact task routes + revision leases"]
 ```
+
+The support layer may use `JointMultiEdgeService`; application workers do not. Backend modules under `backend/runtime_*`
+are the sole cluster-access path, while `dependency/core/lib/runtime/` is deliberately pure Python.
 
 ## Documentation Boundary
 

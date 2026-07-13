@@ -69,10 +69,10 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `GET` | `/policy` | List available scheduler policies from `template/scheduler_policies.yaml`. | None | Array of `{policy_id, policy_name}` |
-| `GET` | `/installed_service` | List currently installed service ids based on running pods. | None | Array of service ids |
+| `GET` | `/installed_service` | List logical processor service ids from the committed RuntimeDirectory. | None | Array of service ids |
 | `GET` | `/service` | List services declared in `template/services.yaml`. | None | Array of service metadata |
-| `GET` | `/service_info/{service}` | Get runtime information for a deployed service. | Path parameter `service` | Service-specific runtime info from Kubernetes |
-| `GET` | `/edge_node` | List known edge nodes. | None | Array of edge node descriptors |
+| `GET` | `/service_info/{service}` | Get batch telemetry for exact active processor Pod UIDs of one logical service. | Path parameter `service` | Array of `{ip,hostname,cpu,memory,bandwidth,age}` |
+| `GET` | `/edge_node` | List Ready edge nodes from backend's owned inventory snapshot. | None | Array of `{name}` |
 
 ### DAG and datasource management
 
@@ -90,8 +90,8 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `POST` | `/install` | Resolve policy + datasource mapping and deploy the runtime stack. | JSON body described below | `{state, msg}` |
-| `POST` | `/stop_service` | Uninstall deployed runtime components discovered from Kubernetes runtime labels. | None | `{state, msg}` |
-| `GET` | `/install_state` | Check whether the stack is installed. | None | `{state: "install"|"uninstall"}` |
+| `POST` | `/stop_service` | Stop generators, drain revision leases, atomically clear the install-scoped directory/proposals, delete the other exact units, and delete scheduler last. | None | `{state, msg}` |
+| `GET` | `/install_state` | Check whether a runtime session owns resources; failed/recovering sessions remain `install` until safely uninstalled. | None | `{state: "install"|"uninstall"}` |
 | `POST` | `/submit_query` | Open datasource playback for a datasource label and begin result collection. | JSON body with `source_label` | `{state, msg}` |
 | `POST` | `/stop_query` | Stop datasource playback and clear in-memory task results. | None | `{state, msg}` |
 | `GET` | `/query_state` | Get query state for the current datasource. | None | `{state: "open"|"close"|"disabled", source_label}` |
@@ -116,11 +116,23 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 }
 ```
 
-During install, backend labels every application runtime `JointMultiEdgeService` with
-`dayu.io/runtime-scope=installation` and records the install snapshot in the
-`dayu-runtime-install-state` ConfigMap. The local `resources.yaml` file is only a backend-side cache for
-redeployment diffs and diagnostics; uninstall must be recoverable from Kubernetes state even if that local file is
-missing.
+During install, backend creates immutable `sedna.io/v1alpha1` `RuntimeService` objects. Scheduler is activated first,
+then supplies source-selection and initial-deployment plans. Backend validates the deployment plan and, when
+`default-cloud-processor-backup` is enabled, adds the resolved cloud node to every logical processor placement. It
+activates the remaining workers and publishes RuntimeDirectory revision 1 only after all exact identities are Ready
+and Activated.
+
+The `dayu-runtime-session` ConfigMap is the compact transaction record. Its `resourceVersion` is the compare-and-swap
+token for lifecycle changes. Runtime routing is authoritative in Scheduler's committed RuntimeDirectory; no local YAML
+file participates in install, redeploy, or uninstall.
+
+### Runtime telemetry cost
+
+`GET /service_info/{service}` starts from exact Pod name/UID identities already bound into the active runtime session.
+Backend performs one server-side-label-filtered namespaced Pod list and, when available, one equally filtered metrics
+API list, then joins by UID and reuses its node-inventory snapshot. It does not list RuntimeServices, Services, or Nodes
+per worker. Runtime Pods do not serve this
+request and never call Kubernetes.
 
 ### Runtime data, visualization, and logs
 
@@ -179,10 +191,19 @@ The backend fetches scheduler resource data once, renders the configured system 
 ]
 ```
 
-## Compatibility Notes
+## Behavioral Notes
 
 - `POST /install` assumes the requested scheduler policy, datasource configuration, DAG workflow, and edge nodes all already exist and are mutually compatible.
-- `POST /stop_service` is retryable. Backend clears the local YAML cache and install-state ConfigMap only after runtime resource deletion succeeds; failed uninstall attempts keep the recorded state for the next retry.
+- `POST /install` fails closed if any selected target lacks a Ready Sedna LC/EdgeMesh agent, if activation identity is
+  incomplete, or if RuntimeDirectory readback differs from the published revision/hash.
+- `POST /stop_service` is retryable. Backend removes `dayu-runtime-session` only after lease drain and all exact
+  RuntimeService deletions plus RuntimeDirectory cleanup succeed; a failed attempt preserves the session and error.
+  `clearing-directory` is persisted before Scheduler cleanup and retains every not-yet-deleted non-Scheduler UID. Its
+  retry repeats the install-id-guarded, idempotent directory clear while Scheduler is still live, then deletes those
+  route targets. Backend accepts either the exact DELETE acknowledgement or an empty revision-0 directory readback after
+  an ambiguous/lost response. Once clear and route-target deletion succeed, it persists `finalizing-uninstall` with only
+  Scheduler identities; retries from this phase use Kubernetes UID deletion plus ConfigMap CAS and never call a
+  Scheduler that may already be gone.
 - `POST /datasource` returns `state: "partial"` when only some uploaded files are accepted. The `results` array carries per-file status details.
 - `POST /submit_query` only works after install-time deployment has completed and a datasource config exists for the requested label.
 - `POST /submit_query` is idempotent for the already-open datasource label. Opening a different datasource while one is active fails until `/stop_query` closes the current one.

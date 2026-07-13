@@ -1,7 +1,9 @@
 import importlib
+import json
 from pathlib import Path
 
 import pytest
+from core.lib.runtime import RuntimeContext
 
 
 def build_source_list():
@@ -16,10 +18,13 @@ def configure_runtime(monkeypatch, module, tmp_path):
     monkeypatch.setenv("REQUEST_INTERVAL", "1")
     monkeypatch.setenv("START_INTERVAL", "0")
     monkeypatch.setenv("GUNICORN_PORT", "19010")
+    monkeypatch.setenv("DAYU_RUNTIME_BOOTSTRAP", json.dumps({
+        "local_node": "edge-node",
+        "cloud_node": "cloud-node",
+        "endpoints": {"backend": {"fqdn": "backend.dayu.svc", "port": 9000}},
+    }))
+    RuntimeContext.reset_default()
     monkeypatch.chdir(Path(module.__file__).resolve().parent)
-    monkeypatch.setattr(module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
-    monkeypatch.setattr(module.PortInfo, "get_component_port", staticmethod(lambda component: 9000))
     monkeypatch.setattr(module.Context, "get_file_path", staticmethod(lambda modal: str(tmp_path / modal)))
 
 

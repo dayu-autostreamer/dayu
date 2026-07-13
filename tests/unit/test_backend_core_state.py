@@ -1,262 +1,159 @@
-import copy
-import importlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-import yaml
-
 from core.lib.common import Queue
+from core.lib.content import Task
+from runtime_model import RuntimeDirectory, RuntimeEndpoint, RuntimeSlot, RuntimeUnit
 
 
-@pytest.fixture
-def backend_core_instance(mounted_runtime, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "check_pod_name",
-        staticmethod(lambda *args, **kwargs: False),
-    )
-    return backend_core_module.BackendCore()
+def _directory():
+    def unit(component, port):
+        slot = RuntimeSlot(component, "cloud-a", "cloud")
+        runtime_id = slot.runtime_name(4)
+        return RuntimeUnit(
+            slot,
+            runtime_id,
+            4,
+            "a" * 64,
+            RuntimeEndpoint(
+                f"{runtime_id}.dayu.svc.cluster.local",
+                port,
+                runtime_service_uid=f"{component}-runtime-uid",
+                service_uid=f"{component}-service-uid",
+                pod_uid=f"{component}-pod-uid",
+            ),
+        )
+
+    return RuntimeDirectory("install-a", 4, (unit("scheduler", 9001), unit("distributor", 9003)))
 
 
-@pytest.mark.unit
-def test_component_yaml_state_machine_updates_adds_and_clears_docs(backend_core_instance, monkeypatch, tmp_path):
+def _backend(mounted_runtime):
+    from backend_core import BackendCore
+
+    return BackendCore()
+
+
+def test_backend_core_log_snapshot_compaction_and_record_count(
+        mounted_runtime, monkeypatch, tmp_path,
+):
+    backend = _backend(mounted_runtime)
     monkeypatch.chdir(tmp_path)
-    backend_core_instance.save_yaml_path = str(tmp_path / "resources.yaml")
-    original_docs = [
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "scheduler"}, "spec": {"logLevel": {"level": "INFO"}}},
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-a"}, "spec": {"image": "old"}},
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-b"}, "spec": {"image": "keep"}},
-    ]
-    update_docs = [
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "scheduler"}, "spec": {"logLevel": {"level": "DEBUG"}}},
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-a"}, "spec": {"image": "new"}},
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-c"}, "spec": {"image": "add"}},
-    ]
+    backend.system_log_store_path = str(tmp_path / "system.jsonl")
+    backend.system_log_retention_records = 2
+    backend.system_log_compact_interval = 1
 
-    total_docs, docs_to_add, docs_to_update, docs_to_delete = backend_core_instance.check_and_update_docs_list(
-        copy.deepcopy(original_docs),
-        copy.deepcopy(update_docs),
-    )
+    for second in range(4):
+        backend._append_system_log_snapshot({"timestamp": f"10:00:0{second}", "data": [second]})
+    backend.system_log_record_count = 4
 
-    assert [doc["metadata"]["name"] for doc in docs_to_add] == ["processor-c"]
-    assert [doc["metadata"]["name"] for doc in docs_to_update] == ["processor-a"]
-    assert [doc["metadata"]["name"] for doc in docs_to_delete] == ["processor-b"]
-    assert sorted(doc["metadata"]["name"] for doc in total_docs) == ["processor-a", "processor-c", "scheduler"]
+    assert backend._count_jsonl_records(backend.system_log_store_path) == 4
+    backend._maybe_compact_system_log_store_locked()
 
-    backend_core_instance.save_component_yaml(original_docs)
-    assert backend_core_instance.read_component_yaml()[1]["metadata"]["name"] == "processor-a"
-
-    backend_core_instance.update_component_yaml(update_docs)
-    updated_names = sorted(doc["metadata"]["name"] for doc in backend_core_instance.read_component_yaml())
-    assert updated_names == ["processor-a", "processor-c", "scheduler"]
-
-    backend_core_instance.clear_yaml_docs()
-    assert backend_core_instance.read_component_yaml() is None
+    lines = Path(backend.system_log_store_path).read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["timestamp"] for line in lines] == ["10:00:02", "10:00:03"]
+    assert backend.system_log_record_count == 2
 
 
-@pytest.mark.unit
-def test_component_yaml_diff_deletes_cloud_processor_when_backup_is_removed(backend_core_instance):
-    original_docs = [
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "scheduler"}, "spec": {}},
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-face-cloudx1"}, "spec": {}},
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-face-edgex1"}, "spec": {}},
-    ]
-    update_docs = [
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "scheduler"}, "spec": {}},
-        {"apiVersion": "v1", "kind": "Joint", "metadata": {"name": "processor-face-edgex1"}, "spec": {}},
-    ]
+def test_backend_core_urls_are_bound_only_from_active_runtime_directory(
+        mounted_runtime, monkeypatch, tmp_path,
+):
+    import backend_core as backend_core_module
 
-    total_docs, docs_to_add, docs_to_update, docs_to_delete = backend_core_instance.check_and_update_docs_list(
-        copy.deepcopy(original_docs),
-        copy.deepcopy(update_docs),
-    )
+    backend = _backend(mounted_runtime)
+    backend.runtime_orchestrator = SimpleNamespace(active_directory=lambda: _directory())
 
-    assert docs_to_add == []
-    assert docs_to_update == []
-    assert [doc["metadata"]["name"] for doc in docs_to_delete] == ["processor-face-cloudx1"]
-    assert sorted(doc["metadata"]["name"] for doc in total_docs) == ["processor-face-edgex1", "scheduler"]
+    backend.get_resource_url()
+    backend.get_result_url()
+    backend.get_log_url()
 
-
-@pytest.mark.unit
-def test_runtime_docs_are_labelled_and_recoverable_from_install_record(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
-    docs = [
-        {
-            "apiVersion": "sedna.io/v1alpha1",
-            "kind": "JointMultiEdgeService",
-            "metadata": {"name": "processor-face-edgex1", "namespace": "dayu"},
-            "spec": {},
-        }
-    ]
-
-    backend_core_instance.annotate_runtime_docs(
-        docs,
-        install_id="install-1",
-        source_label="source-config-0",
-        policy_id="fixed",
-    )
-
-    metadata = docs[0]["metadata"]
-    assert metadata["labels"]["dayu.io/runtime-scope"] == "installation"
-    assert metadata["labels"]["dayu.io/component"] == "processor"
-    assert metadata["labels"]["dayu.io/install-id"] == "install-1"
-    assert metadata["annotations"]["dayu.io/source-label"] == "source-config-0"
-    assert metadata["annotations"]["dayu.io/policy-id"] == "fixed"
-
-    monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "read_configmap",
-        staticmethod(lambda namespace, name: {"docs_yaml": yaml.safe_dump_all(docs)}),
-    )
-    recovered_docs = backend_core_instance.docs_from_install_record()
-
-    assert recovered_docs[0]["metadata"]["name"] == "processor-face-edgex1"
-    assert recovered_docs[0]["metadata"]["labels"]["dayu.io/runtime-scope"] == "installation"
-
-
-@pytest.mark.unit
-def test_runtime_doc_reader_prefers_kubernetes_label_discovery(backend_core_instance, monkeypatch):
-    cluster_docs = [
-        {
-            "apiVersion": "sedna.io/v1alpha1",
-            "kind": "JointMultiEdgeService",
-            "metadata": {"name": "scheduler", "namespace": "dayu"},
-            "spec": {},
-        }
-    ]
-    file_docs = [
-        {
-            "apiVersion": "sedna.io/v1alpha1",
-            "kind": "JointMultiEdgeService",
-            "metadata": {"name": "processor-file", "namespace": "dayu"},
-            "spec": {},
-        }
-    ]
-
-    monkeypatch.setattr(backend_core_instance, "list_runtime_component_docs", lambda: copy.deepcopy(cluster_docs))
-    monkeypatch.setattr(backend_core_instance, "read_component_yaml", lambda: copy.deepcopy(file_docs))
-
-    assert backend_core_instance.read_runtime_component_docs()[0]["metadata"]["name"] == "scheduler"
-
-
-@pytest.mark.unit
-def test_backend_core_log_snapshot_compaction_and_record_count(backend_core_instance, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    backend_core_instance.system_log_store_path = str(tmp_path / "system.jsonl")
-    backend_core_instance.system_log_retention_records = 2
-    backend_core_instance.system_log_compact_interval = 1
-
-    backend_core_instance._append_system_log_snapshot({"timestamp": "10:00:00", "data": [1]})
-    backend_core_instance._append_system_log_snapshot({"timestamp": "10:00:01", "data": [2]})
-    backend_core_instance._append_system_log_snapshot({"timestamp": "10:00:02", "data": [3]})
-    backend_core_instance._append_system_log_snapshot({"timestamp": "10:00:03", "data": [4]})
-    backend_core_instance.system_log_record_count = 4
-
-    assert backend_core_instance._count_jsonl_records(backend_core_instance.system_log_store_path) == 4
-
-    backend_core_instance._maybe_compact_system_log_store_locked()
-    lines = Path(backend_core_instance.system_log_store_path).read_text(encoding="utf-8").splitlines()
-
-    assert len(lines) == 2
-    assert json.loads(lines[0])["timestamp"] == "10:00:02"
-    assert json.loads(lines[1])["timestamp"] == "10:00:03"
-    assert backend_core_instance.system_log_record_count == 2
-
-
-@pytest.mark.unit
-def test_backend_core_url_helpers_stream_fetch_and_parse_task_results(backend_core_instance, monkeypatch, tmp_path):
-    backend_core_module = importlib.import_module("backend_core")
-    monkeypatch.chdir(tmp_path)
-
-    monkeypatch.setattr(backend_core_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
-    monkeypatch.setattr(backend_core_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.8"))
-    monkeypatch.setattr(
-        backend_core_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: 9000 if component == "scheduler" else 9002),
-    )
-
-    backend_core_instance.get_resource_url()
-    backend_core_instance.get_result_url()
-    backend_core_instance.get_log_url()
-
-    assert backend_core_instance.resource_url == "http://10.0.0.8:9000/resource"
-    assert backend_core_instance.result_url == "http://10.0.0.8:9002/result"
-    assert backend_core_instance.result_file_url == "http://10.0.0.8:9002/file"
-    assert backend_core_instance.log_fetch_url == "http://10.0.0.8:9002/export_result_log"
+    assert backend.resource_url.endswith(":9001/resource")
+    assert backend.result_url.endswith(":9003/result")
+    assert backend.result_file_url.endswith(":9003/file")
+    assert backend.log_fetch_url.endswith(":9003/export_result_log")
 
     class FakeResponse:
         def __init__(self, chunks):
             self.chunks = chunks
 
         def iter_content(self, chunk_size=8192):
-            for chunk in self.chunks:
-                yield chunk
-
-    requests = []
+            yield from self.chunks
 
     def fake_http_request(url, method=None, **kwargs):
-        requests.append((url, method, kwargs))
         if url.endswith("/file"):
             return FakeResponse([b"chunk-", b"data"])
         if url.endswith("/export_result_log"):
             return FakeResponse([b"gzip-data"])
         return None
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(backend_core_module, "http_request", fake_http_request)
+    assert Path(backend.get_file_result("artifact.bin")).read_bytes() == b"chunk-data"
+    assert backend.open_result_log_export_stream() is not None
 
-    downloaded = backend_core_instance.get_file_result("artifact.bin")
-    assert Path(downloaded).read_bytes() == b"chunk-data"
-    assert backend_core_instance.open_result_log_export_stream() is not None
 
-    task = importlib.import_module("core.lib.content").Task(
+def test_task_result_queue_remains_data_plane_only(mounted_runtime, monkeypatch, tmp_path):
+    import backend_core as backend_core_module
+
+    backend = _backend(mounted_runtime)
+    monkeypatch.chdir(tmp_path)
+    dag = Task.extract_dag_from_dag_deployment({
+        "detector": {
+            "service": {"service_name": "detector", "execute_device": "edge-a"},
+            "next_nodes": [],
+        }
+    })
+    task = Task(
         source_id=3,
         task_id=5,
-        source_device="edge-node",
-        all_edge_devices=["edge-node"],
-        dag=importlib.import_module("core.lib.content").Task.extract_dag_from_dag_deployment(
-            {"detector": {"service": {"service_name": "detector", "execute_device": "edge-node"}, "next_nodes": []}}
-        ),
+        source_device="edge-a",
+        all_edge_devices=["edge-a"],
+        dag=dag,
         flow_index="detector",
         metadata={"buffer_size": 1},
         raw_metadata={"buffer_size": 1},
         file_path="artifact.bin",
     )
-    monkeypatch.setattr(task, "get_delay_info", lambda: "delay-info")
-    monkeypatch.setattr(backend_core_module.Task, "deserialize", classmethod(lambda cls, data: task))
-    backend_core_instance.task_results = {3: Queue()}
-    backend_core_instance.source_open = True
-
-    backend_core_instance.parse_task_result([task.serialize(), "", None])
-    vis_calls = []
-    removed = []
-    monkeypatch.setattr(backend_core_instance, "prepare_result_visualization_data", lambda cur_task, is_last=False: vis_calls.append((cur_task.get_task_id(), is_last)) or [{"frame": 1}])
-    monkeypatch.setattr(backend_core_instance, "get_file_result", lambda file_name: file_name)
-    monkeypatch.setattr(backend_core_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
-
-    results = backend_core_instance.fetch_visualization_data(3)
-
-    assert vis_calls == [(5, True)]
-    assert removed == ["artifact.bin"]
-    assert results == [{"task_id": 5, "data": [{"frame": 1}]}]
-
-
-@pytest.mark.unit
-def test_backend_core_install_state_and_log_name_behaviors(backend_core_instance, monkeypatch):
-    backend_core_module = importlib.import_module("backend_core")
+    task.set_flow_index("_end")
+    backend.task_results = {3: Queue()}
+    backend.source_open = True
+    monkeypatch.setattr(task, "get_delay_info", lambda: {})
     monkeypatch.setattr(
-        backend_core_module.KubeHelper,
-        "check_pods_without_string_exists",
-        staticmethod(lambda namespace, exclude_str_list=None: True),
+        backend_core_module.Task,
+        "deserialize",
+        classmethod(lambda cls, value: task),
     )
 
-    backend_core_instance.template_helper = SimpleNamespace(load_base_info=lambda: {"log-file-name": "dayu.log"})
-    assert backend_core_instance.get_log_file_name() == "dayu"
-    assert backend_core_instance.check_install_state() is True
-    assert backend_core_instance.install_state is True
+    backend.parse_task_result([task.serialize(), "", None])
+    monkeypatch.setattr(backend, "get_file_result", lambda file_name: file_name)
+    monkeypatch.setattr(
+        backend,
+        "prepare_result_visualization_data",
+        lambda current, is_last=False: [{"frame": current.get_task_id()}],
+    )
+    monkeypatch.setattr(backend_core_module.FileOps, "remove_file", lambda path: None)
 
-    backend_core_instance.template_helper = SimpleNamespace(load_base_info=lambda: {"log-file-name": ""})
-    assert backend_core_instance.get_log_file_name() is None
+    assert backend.fetch_visualization_data(3) == [{
+        "task_id": 5,
+        "data": [{"frame": 5}],
+    }]
+
+
+def test_install_state_is_derived_from_runtime_session(mounted_runtime):
+    backend = _backend(mounted_runtime)
+    state = {"session": SimpleNamespace(phase="active"), "directory": _directory()}
+    backend.runtime_orchestrator = SimpleNamespace(
+        current_session=lambda: state["session"],
+        active_directory=lambda: state["directory"],
+    )
+
+    assert backend.check_install_state() is True
+    assert backend.check_pods_running_state() is True
+
+    state["session"] = SimpleNamespace(phase="failed")
+    state["directory"] = None
+    assert backend.check_install_state() is True
+    assert backend.check_pods_running_state() is False
+
+    backend.template_helper = SimpleNamespace(load_base_info=lambda: {"log-file-name": "dayu.log"})
+    assert backend.get_log_file_name() == "dayu"

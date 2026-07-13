@@ -1,10 +1,12 @@
 import abc
 
+from core.lib.scheduling.deployment_plan import validate_plan
 from core.lib.common import Context
 
 
 class BaseAgent(metaclass=abc.ABCMeta):
     def __init__(self, system, agent_id):
+        self.cloud_device = str(getattr(system, 'cloud_device', '') or '')
         self.source_selection_policy = Context.get_algorithm('SCH_SELECTION_POLICY',
                                                              system=system, agent_id=agent_id)
         self.initial_deployment_policy = Context.get_algorithm('SCH_INITIAL_DEPLOYMENT_POLICY',
@@ -34,10 +36,18 @@ class BaseAgent(metaclass=abc.ABCMeta):
         return self.source_selection_policy(info)
 
     def get_initial_deployment_plan(self, info):
-        return self.initial_deployment_policy(info)
+        return validate_plan(
+            self.initial_deployment_policy(info),
+            info,
+            cloud_node=self.cloud_device,
+        )
 
     def get_redeployment_plan(self, info):
-        return self.redeployment_policy(info)
+        return validate_plan(
+            self.redeployment_policy(info),
+            info,
+            cloud_node=self.cloud_device,
+        )
 
     def should_generate(self, info):
         return {

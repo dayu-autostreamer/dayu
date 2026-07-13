@@ -24,8 +24,8 @@ that appear in templates, environment variables, and visualization configs.
 | `SCH_REDEPLOYMENT_POLICY`       | `__call__(info)`                                                    |
 | `PRO_SCENARIO`                  | `__call__(result, task)`                                            |
 | `MON_PRAM`                      | `__call__()` returning a thread that updates `system.resource_info` |
-| `RESULT_VISUALIZER`             | `__call__(task)`                                                    |
-| `SYSTEM_VISUALIZER`             | `__call__()` or `__call__(resource=...)`                            |
+| `RESULT_VISUALIZER`             | `__call__(task, resource=None)`                                     |
+| `SYSTEM_VISUALIZER`             | `__call__(resource=..., scheduling_overhead=...)`                   |
 
 ## Generator Hooks
 
@@ -145,7 +145,8 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias    | Module                                                                                                  | Purpose                                                            | Notes                                                                 |
 |----------|---------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------|-----------------------------------------------------------------------|
-| `fixed`  | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/fixed_initial_deployment_policy.py`  | Apply a fixed deployment map from inline config or a mounted file. | Filters deployment targets against the selected node set.             |
+| `fixed`  | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/fixed_initial_deployment_policy.py`  | Apply a fixed deployment map from inline config or a mounted file. | Emits only current-DAG services and rejects missing, empty, or non-candidate placements. |
+| `cloud`  | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/cloud_initial_deployment_policy.py` | Explicitly deploy every current-DAG service to `system.cloud_device`. | Used by `cloud-only-policy`; does not depend on an empty-list fallback. |
 | `full`   | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/full_initial_deployment_policy.py`   | Deploy all services to all selected nodes.                         | Simple high-availability baseline.                                    |
 | `random` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/random_initial_deployment_policy.py` | Randomly distribute services across selected nodes.                | Supports optional `max_service_num`.                                  |
 | `hedger` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/hedger_initial_deployment_policy.py` | Ask the Hedger subsystem for an initial deployment plan.           | Falls back to default deployment when Hedger does not produce a plan. |
@@ -158,12 +159,13 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias    | Module                                                                                      | Purpose                                                              | Notes                                                       |
 |----------|---------------------------------------------------------------------------------------------|----------------------------------------------------------------------|-------------------------------------------------------------|
-| `fixed`  | `dependency/core/lib/algorithms/schedule_redeployment_policy/fixed_redeployment_policy.py`  | Apply a fixed redeployment map from inline config or a mounted file. | Filters targets against the current node set.               |
-| `non`    | `dependency/core/lib/algorithms/schedule_redeployment_policy/non_redeployment_policy.py`    | Keep the current deployment returned by `KubeConfig`.                | No-op redeployment strategy.                                |
+| `fixed`  | `dependency/core/lib/algorithms/schedule_redeployment_policy/fixed_redeployment_policy.py`  | Apply a fixed redeployment map from inline config or a mounted file. | Emits only current-DAG services and rejects missing, empty, or non-candidate placements. |
+| `cloud`  | `dependency/core/lib/algorithms/schedule_redeployment_policy/cloud_redeployment_policy.py` | Keep every current-DAG service explicitly on `system.cloud_device`. | Used by `cloud-only-policy`; the returned hostname is exact. |
+| `non`    | `dependency/core/lib/algorithms/schedule_redeployment_policy/non_redeployment_policy.py`    | Keep the active processor deployment from `RuntimeDirectory`.        | No-op redeployment strategy; performs no cluster discovery. |
 | `hedger` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_redeployment_policy.py` | Ask the Hedger subsystem for a redeployment plan.                    | Falls back to default deployment when no plan is available. |
 | `deepva` | `dependency/core/lib/algorithms/schedule_redeployment_policy/deepva_redeployment_policy.py` | Apply DeepVA redeployment behavior. | Used by the DeepVA policy family. |
-| `dynamic` | `dependency/core/lib/algorithms/schedule_redeployment_policy/dynamic_redeployment_policy.py` | Apply redeployment behavior paired with the dynamic bandwidth/load agent. | Experimental baseline. |
-| `offline_profiling` | `dependency/core/lib/algorithms/schedule_redeployment_policy/offline_profiling_redeployment_policy.py` | Use offline latency/profile information for redeployment. | Paired with `offline_profiling` agent templates. |
+| `dynamic` | `dependency/core/lib/algorithms/schedule_redeployment_policy/dynamic_redeployment_policy.py` | Convert the latest exact offloading decision into a current-DAG deployment plan. | Uses one snapshot plus an explicit validated fallback; it does not poll or assume a cloud hostname. |
+| `offline_profiling` | `dependency/core/lib/algorithms/schedule_redeployment_policy/offline_profiling_redeployment_policy.py` | Use offline latency/profile information for redeployment. | Covers every current-DAG service and uses the injected cloud identity when no edge candidate exists. |
 | `online_profiling` | `dependency/core/lib/algorithms/schedule_redeployment_policy/online_profiling_redeployment_policy.py` | Use online profiling feedback for redeployment. | Paired with `online_profiling` agent templates. |
 | `latency_matrix_collector` | `dependency/core/lib/algorithms/schedule_redeployment_policy/latency_matrix_collector_redeployment_policy.py` | Collect or apply latency-matrix-oriented redeployment decisions. | Template exists even though it is not currently in `scheduler_policies.yaml`. |
 | `hedger-deployment-only` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_deployment_only_redeployment_policy.py` | Hedger deployment-only redeployment variant. | Research/benchmark-oriented variant. |
@@ -175,9 +177,10 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias       | Module                                                                   | Purpose                                                                                        | Notes                                                                                        |
 |-------------|--------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------|
+| `cloud`     | `dependency/core/lib/algorithms/schedule_agent/cloud_agent.py`           | Keep the source stage on its selected edge and schedule every non-source DAG stage on `system.cloud_device`. | Used by `cloud-only-policy`; no cloud hostname is hard-coded.                                 |
 | `fixed`     | `dependency/core/lib/algorithms/schedule_agent/fixed_agent.py`           | Apply fixed configuration and fixed offloading decisions.                                      | Static baseline policy.                                                                      |
 | `fc`        | `dependency/core/lib/algorithms/schedule_agent/fc_agent.py`              | Feedback controller that adjusts resolution based on a sliding delay window.                   | Implements the Feedback Controlling policy family.                                           |
-| `steady`    | `dependency/core/lib/algorithms/schedule_agent/steady_agent.py`          | Steady baseline that searches configuration and pipeline split from resource/scenario context. | Uses mounted knowledge-base and record files.                                                |
+| `steady`    | `dependency/core/lib/algorithms/schedule_agent/steady_agent.py`          | Steady baseline that searches configuration and pipeline split from resource/scenario context. | Execution profiles use `execute_role=edge|cloud`; no Kubernetes node hostname is assumed.    |
 | `madeye`    | `dependency/core/lib/algorithms/schedule_agent/madeye_agent.py`          | MadEye-style policy search over FPS, resolution, buffer size, and edge service count.          | Uses feedback-aware search assets.                                                           |
 | `adamec`    | `dependency/core/lib/algorithms/schedule_agent/adamec_agent.py`          | AdaMEC-style policy search over configuration and pipeline split.                              | Uses mounted knowledge-base assets.                                                          |
 | `gecko`     | `dependency/core/lib/algorithms/schedule_agent/gecko_agent.py`           | Gecko-style policy search over configuration and pipeline split.                               | Uses mounted knowledge-base assets.                                                          |
@@ -237,9 +240,9 @@ that appear in templates, environment variables, and visualization configs.
 | `memory_usage`        | `dependency/core/lib/algorithms/parameter_monitor/memory_usage_monitor.py`        | Report host memory utilization via `psutil`.                                       |
 | `memory_capacity`     | `dependency/core/lib/algorithms/parameter_monitor/memory_capacity_monitor.py`     | Report total host memory capacity in GB.                                           |
 | `available_bandwidth` | `dependency/core/lib/algorithms/parameter_monitor/available_bandwidth_monitor.py` | Measure cloud-edge bandwidth using `iperf3` and a scheduler-managed resource lock. |
-| `queue_length`        | `dependency/core/lib/algorithms/parameter_monitor/queue_length_monitor.py`        | Query per-service processor queue lengths from local processor pods.               |
-| `model_flops`         | `dependency/core/lib/algorithms/parameter_monitor/model_flops_monitor.py`         | Query per-service model FLOPs from local processor pods.                           |
-| `model_memory`        | `dependency/core/lib/algorithms/parameter_monitor/model_memory_monitor.py`        | Read per-service memory usage from Kubernetes metrics.                             |
+| `queue_length`        | `dependency/core/lib/algorithms/parameter_monitor/queue_length_monitor.py`        | Query queue lengths through exact local processor routes from `RuntimeDirectory`.  |
+| `model_flops`         | `dependency/core/lib/algorithms/parameter_monitor/model_flops_monitor.py`         | Query model FLOPs through exact local processor routes from `RuntimeDirectory`.    |
+| `model_memory`        | `dependency/core/lib/algorithms/parameter_monitor/model_memory_monitor.py`        | Query processor-reported RSS through exact routes and retain the observed maximum. |
 | `cpu_flops`           | `dependency/core/lib/algorithms/parameter_monitor/cpu_flops_monitor.py`           | Estimate host CPU peak FLOPs from `lscpu`.                                         |
 | `gpu_flops`           | `dependency/core/lib/algorithms/parameter_monitor/gpu_flops_monitor.py`           | Estimate GPU FLOPs using CUDA device metadata.                                     |
 | `gpu_usage`           | `dependency/core/lib/algorithms/parameter_monitor/gpu_usage_monitor.py`           | Report GPU usage using NVML, `nvidia-smi`, Jetson sysfs, or `tegrastats`.          |
@@ -265,7 +268,7 @@ that appear in templates, environment variables, and visualization configs.
 | `multiple_obj_num`         | `dependency/core/lib/algorithms/result_visualizer/multiple_object_number_visualizer.py`   | Render mean object counts for requested DAG services as curve values.         |
 | `e2e_delay`                | `dependency/core/lib/algorithms/result_visualizer/end_to_end_delay_visualizer.py`         | Render total task delay as a curve value.                                     |
 | `service_processing_delay` | `dependency/core/lib/algorithms/result_visualizer/service_processing_delay_visualizer.py` | Render per-service execution time for requested DAG nodes.                    |
-| `service_queue_length`     | `dependency/core/lib/algorithms/result_visualizer/service_queue_length_visualizer.py`     | Render current queue lengths for all live replicas of requested services.     |
+| `service_queue_length`     | `dependency/core/lib/algorithms/result_visualizer/service_queue_length_visualizer.py`     | Join Task exact processor routes with the backend-prefetched resource snapshot. |
 | `service_gantt`            | `dependency/core/lib/algorithms/result_visualizer/service_gantt_visualizer.py`            | Render task execute intervals on service lanes; `services` defaults to all business DAG services. |
 | `service_device_gantt`     | `dependency/core/lib/algorithms/result_visualizer/service_device_gantt_visualizer.py`     | Render one service's task execute intervals on its deployed-device lanes.     |
 | `dag_deployment`           | `dependency/core/lib/algorithms/result_visualizer/dag_deployment_topology_visualizer.py`  | Render the deployment topology of the current DAG.                            |
@@ -275,9 +278,9 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias               | Module                                                                             | Purpose                                            |
 |---------------------|------------------------------------------------------------------------------------|----------------------------------------------------|
-| `cpu_usage`         | `dependency/core/lib/algorithms/system_visualizer/cpu_usage_visualizer.py`         | Render scheduler-reported CPU usage per device.    |
-| `memory_usage`      | `dependency/core/lib/algorithms/system_visualizer/memory_usage_visualizer.py`      | Render scheduler-reported memory usage per device. |
-| `schedule_overhead` | `dependency/core/lib/algorithms/system_visualizer/schedule_overhead_visualizer.py` | Render scheduler overhead in milliseconds.         |
+| `cpu_usage`         | `dependency/core/lib/algorithms/system_visualizer/cpu_usage_visualizer.py`         | Render CPU usage from one backend-prefetched resource snapshot.    |
+| `memory_usage`      | `dependency/core/lib/algorithms/system_visualizer/memory_usage_visualizer.py`      | Render memory usage from one backend-prefetched resource snapshot. |
+| `schedule_overhead` | `dependency/core/lib/algorithms/system_visualizer/schedule_overhead_visualizer.py` | Render backend-prefetched scheduler overhead in milliseconds.      |
 
 ## Configuration Cheat Sheet
 

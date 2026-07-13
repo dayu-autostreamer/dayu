@@ -1,5 +1,5 @@
 import abc
-from core.lib.common import ClassFactory, ClassType, KubeConfig, Context, ConfigLoader, TaskConstant
+from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, TaskConstant
 from core.lib.estimation import OverheadEstimator
 
 from .base_agent import BaseAgent
@@ -13,6 +13,7 @@ class FixedAgent(BaseAgent, abc.ABC):
     def __init__(self, system, agent_id: int, configuration=None, offloading=None):
         super().__init__(system, agent_id)
 
+        self.system = system
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
 
@@ -45,7 +46,7 @@ class FixedAgent(BaseAgent, abc.ABC):
             source_edge_device = info['source_device']
             all_edge_devices = info['all_edge_devices']
             all_devices = [*all_edge_devices, cloud_device]
-            service_info = KubeConfig.get_service_nodes_dict()
+            service_info = self.system.runtime_service_nodes()
 
             dag = info['dag']
 

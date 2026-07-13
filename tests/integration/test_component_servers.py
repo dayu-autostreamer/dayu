@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 from core.lib.common import Queue, FileOps
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
+from core.lib.runtime import RuntimeContext
+from core.scheduler.runtime_directory import RuntimeDirectoryConflict, RuntimeDirectoryError
 
 
 def build_task(flow_index="face-detection", execute_device="edge-node", file_path="payload.bin"):
@@ -59,6 +61,7 @@ class FakeScheduler:
 
     def update_scheduler_scenario(self, task):
         self.scenario_tasks.append(task)
+        return True
 
     def register_resource_table(self, device):
         self.resource_table.setdefault(device, {})
@@ -77,13 +80,98 @@ class FakeScheduler:
         return data["node_set"][0]
 
     def get_initial_deployment_plan(self, source_id, data):
-        return {"edge-node": ["face-detection"]}
+        return {"face-detection": ["edge-node"]}
 
     def get_redeployment_plan(self, source_id, data):
-        return {"edge-node": ["face-detection"]}
+        return {"face-detection": ["edge-node"]}
 
     def should_generate(self, source_id, data):
         return {"generate": data.get("allow", True), "reason": "fake_scheduler"}
+
+    @staticmethod
+    def runtime_service_nodes():
+        return {"face-detection": ["edge-node"]}
+
+    @staticmethod
+    def runtime_directory_revision():
+        return 3
+
+    @staticmethod
+    def clear_runtime_directory(install_id):
+        if not install_id:
+            raise RuntimeDirectoryError("runtime directory clear requires install_id")
+        if install_id != "install-integration":
+            raise RuntimeDirectoryConflict(
+                "runtime directory install_id does not match clear request"
+            )
+        return {
+            "cleared": True,
+            "install_id": install_id,
+            "previous_revision": 3,
+        }
+
+    @staticmethod
+    def compact_runtime_routes(plan, source_device=""):
+        common = {
+            "target_node": "edge-node",
+            "deployment_revision": 3,
+            "install_id": "install-integration",
+        }
+        return [
+            {
+                **common,
+                "component": "controller",
+                "runtime_id": "controller-edge-node-r3",
+                "fqdn": "controller-edge-node-r3.dayu.svc.cluster.local",
+                "port": 9002,
+                "runtime_service_uid": "controller-runtime-uid",
+                "service_uid": "controller-service-uid",
+                "endpoint_pod_uid": "controller-pod-uid",
+            },
+            {
+                **common,
+                "component": "processor",
+                "logical_service": "face-detection",
+                "runtime_id": "processor-face-detection-edge-node-r3",
+                "fqdn": "processor-face-detection-edge-node-r3.dayu.svc.cluster.local",
+                "port": 9004,
+                "runtime_service_uid": "processor-runtime-uid",
+                "service_uid": "processor-service-uid",
+                "endpoint_pod_uid": "processor-pod-uid",
+            },
+        ]
+
+
+def test_scheduler_deployment_plan_merge_has_one_service_to_nodes_contract():
+    scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
+    plan = {}
+
+    scheduler_server_module.SchedulerServer._merge_deployment_plan(
+        plan, {"detector": ["edge-b", "edge-a"]}, allowed_services={"detector"},
+    )
+    scheduler_server_module.SchedulerServer._merge_deployment_plan(
+        plan, {"detector": ["edge-a"], "tracker": ["edge-b"]},
+        allowed_services={"detector", "tracker"},
+    )
+
+    assert plan == {
+        "detector": ["edge-a", "edge-b"],
+        "tracker": ["edge-b"],
+    }
+    with pytest.raises(RuntimeDirectoryError, match="JSON node list"):
+        scheduler_server_module.SchedulerServer._merge_deployment_plan(
+            {}, {"detector": "edge-a"}, allowed_services={"detector"},
+        )
+    with pytest.raises(RuntimeDirectoryError, match="outside the current DAG"):
+        scheduler_server_module.SchedulerServer._merge_deployment_plan(
+            {}, {"detector": ["edge-a"], "unknown": ["edge-a"]},
+            allowed_services={"detector"},
+        )
+    with pytest.raises(RuntimeDirectoryError, match="omitted current DAG services"):
+        scheduler_server_module.SchedulerServer._merge_deployment_plan(
+            {}, {"detector": ["edge-a"]},
+            allowed_services={"detector", "tracker"},
+        )
 
 
 class FakeProcessor:
@@ -116,11 +204,6 @@ class FakeProcessor:
 def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monkeypatch):
     scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
     monkeypatch.setattr(scheduler_server_module, "Scheduler", FakeScheduler)
-    monkeypatch.setattr(
-        scheduler_server_module.KubeConfig,
-        "get_service_nodes_dict",
-        staticmethod(lambda: {"face-detection": ["edge-node"]}),
-    )
 
     server = scheduler_server_module.SchedulerServer()
 
@@ -145,6 +228,10 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert schedule_response.status_code == 200
         assert schedule_response.json()["plan"]["buffer_size"] == 2
         assert schedule_response.json()["deployment"] == {"face-detection": ["edge-node"]}
+        assert schedule_response.json()["runtime_directory_revision"] == 3
+        assert {route["component"] for route in schedule_response.json()["runtime_routes"]} == {
+            "controller", "processor",
+        }
 
         assert client.get("/overhead").json() == 0.0123
 
@@ -177,21 +264,52 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert select_response.status_code == 200
         assert select_response.json() == {"plan": {"1": "edge-node"}}
 
+        deployment_source = [{
+            "source": {"id": 1},
+            "node_set": ["edge-node"],
+            "dag": {"face-detection": {}},
+        }]
         initial_response = client.request(
             "GET",
             "/initial_deployment",
-            data={"data": json.dumps([{"source": {"id": 1}, "node_set": ["edge-node"], "dag": {}}])},
+            data={"data": json.dumps(deployment_source)},
         )
         assert initial_response.status_code == 200
-        assert initial_response.json() == {"plan": {"edge-node": ["face-detection"]}}
+        assert initial_response.json() == {"plan": {"face-detection": ["edge-node"]}}
 
         redeployment_response = client.request(
             "GET",
             "/redeployment",
-            data={"data": json.dumps([{"source": {"id": 1}, "node_set": ["edge-node"], "dag": {}}])},
+            data={"data": json.dumps(deployment_source)},
         )
         assert redeployment_response.status_code == 200
-        assert redeployment_response.json() == {"plan": {"edge-node": ["face-detection"]}}
+        assert redeployment_response.json() == {"plan": {"face-detection": ["edge-node"]}}
+
+        clear_response = client.request(
+            "DELETE",
+            "/runtime-directory",
+            data={"data": json.dumps({"install_id": "install-integration"})},
+        )
+        assert clear_response.status_code == 200
+        assert clear_response.json() == {
+            "cleared": True,
+            "install_id": "install-integration",
+            "previous_revision": 3,
+        }
+
+        missing_identity = client.request(
+            "DELETE",
+            "/runtime-directory",
+            data={"data": json.dumps({})},
+        )
+        assert missing_identity.status_code == 422
+
+        wrong_identity = client.request(
+            "DELETE",
+            "/runtime-directory",
+            data={"data": json.dumps({"install_id": "another-install"})},
+        )
+        assert wrong_identity.status_code == 409
 
 
 @pytest.mark.integration
@@ -199,20 +317,11 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
     processor_server_module = importlib.import_module("core.processor.processor_server")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(processor_server_module.ProcessorServer, "loop_process", lambda self: None)
+    runtime_context = RuntimeContext({"local_node": "edge-node"})
     monkeypatch.setattr(
-        processor_server_module.NodeInfo,
-        "get_local_device",
-        staticmethod(lambda: "edge-node"),
-    )
-    monkeypatch.setattr(
-        processor_server_module.NodeInfo,
-        "hostname2ip",
-        staticmethod(lambda hostname: hostname),
-    )
-    monkeypatch.setattr(
-        processor_server_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: 9002),
+        processor_server_module.RuntimeContext,
+        "get_default",
+        staticmethod(lambda: runtime_context),
     )
 
     fake_queue = Queue()
@@ -228,6 +337,20 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
     monkeypatch.setenv("GUNICORN_PORT", "9004")
 
     server = processor_server_module.ProcessorServer()
+    renewed = []
+    class Lease:
+        @staticmethod
+        def keepalive(task):
+            class Guard:
+                def __enter__(self):
+                    renewed.append(task.get_root_uuid())
+
+                def __exit__(self, *_args):
+                    return False
+
+            return Guard()
+
+    server.runtime_lease_client = Lease()
     task = build_task(file_path="processor-input.bin")
 
     with TestClient(server.app) as client:
@@ -279,6 +402,7 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
         }
         assert client.get("/queue_length").json() == 0
         assert client.get("/model_flops").json() == 321.0
+        assert len(renewed) == 2
 
 
 @pytest.mark.integration
@@ -286,31 +410,42 @@ def test_distributor_server_persists_records_and_queries_incrementally(monkeypat
     distributor_server_module = importlib.import_module("core.distributor.distributor_server")
     distributor_module = importlib.import_module("core.distributor.distributor")
     monkeypatch.chdir(tmp_path)
+    runtime_context = RuntimeContext({
+        "cloud_node": "cloud-node",
+        "endpoints": {
+            "scheduler": {
+                "component": "scheduler",
+                "target_node": "cloud-node",
+                "fqdn": "scheduler-cloud.dayu.svc.cluster.local",
+                "port": 9001,
+            }
+        },
+    })
     monkeypatch.setattr(
-        distributor_module.NodeInfo,
-        "get_cloud_node",
-        staticmethod(lambda: "cloud-node"),
-    )
-    monkeypatch.setattr(
-        distributor_module.NodeInfo,
-        "hostname2ip",
-        staticmethod(lambda hostname: hostname),
-    )
-    monkeypatch.setattr(
-        distributor_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: 9001),
+        distributor_module.RuntimeContext,
+        "get_default",
+        staticmethod(lambda: runtime_context),
     )
 
     scheduler_calls = []
-    monkeypatch.setattr(
-        distributor_module,
-        "http_request",
-        lambda url, method=None, **kwargs: scheduler_calls.append((url, method, kwargs)) or None,
-    )
+    def fake_scheduler_request(url, method=None, **kwargs):
+        scheduler_calls.append((url, method, kwargs))
+        if url.endswith("/scenario"):
+            return {"accepted": True}
+        if url.endswith("/runtime-directory/task-leases"):
+            payload = json.loads(kwargs["data"]["data"])
+            return {
+                "revision": payload["revision"],
+                "root_uuid": payload["root_uuid"],
+                "released": True,
+            }
+        return None
+
+    monkeypatch.setattr(distributor_module, "http_request", fake_scheduler_request)
 
     server = distributor_server_module.DistributorServer()
     task = build_task(flow_index="_end", file_path="distributor-output.bin")
+    task.set_runtime_directory_revision(1)
     TimeEstimator.record_dag_ts(task, is_end=False, sub_tag="transmit")
 
     with TestClient(server.app) as client:
@@ -324,6 +459,7 @@ def test_distributor_server_persists_records_and_queries_incrementally(monkeypat
             )
         assert distribute_response.status_code == 200
         assert scheduler_calls, "Distributor should forward scenario updates to scheduler"
+        assert any(url.endswith("/runtime-directory/task-leases") for url, _, _ in scheduler_calls)
 
         result_response = client.request("GET", "/result", json={"time_ticket": 0, "size": 10})
         assert result_response.status_code == 200
@@ -356,7 +492,7 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
     execute_records = []
 
     class FakeController:
-        def check_processor_health(self):
+        def check_processor_health(self, request=None):
             return True
 
         @staticmethod

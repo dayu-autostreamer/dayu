@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from core.lib.runtime import RuntimeContext, RuntimeEndpoint
 
 
 casva_bsto_module = importlib.import_module("core.lib.algorithms.before_submit_task_operation.casva_operation")
@@ -107,12 +108,13 @@ def test_available_bandwidth_monitor_retries_permission_and_handles_client_error
         available_bandwidth_module.AvailableBandwidthMonitor
     )
     permission_monitor.local_device = "edge-a"
+    permission_monitor.system = SimpleNamespace(
+        scheduler_endpoint=RuntimeEndpoint(
+            component="scheduler", fqdn="scheduler.dayu.svc.cluster.local", port=9000
+        )
+    )
 
     responses = iter([None, None, {"holder": "edge-a"}])
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
-    monkeypatch.setattr(available_bandwidth_module.PortInfo, "get_component_port", staticmethod(lambda component: 5201))
-    monkeypatch.setattr(available_bandwidth_module, "merge_address", lambda *args, **kwargs: "http://scheduler/lock")
     monkeypatch.setattr(available_bandwidth_module, "http_request", lambda *args, **kwargs: next(responses))
     permission_monitor.request_for_bandwidth_permission()
     assert permission_monitor.permitted_device == "edge-a"
@@ -215,12 +217,6 @@ def test_base_monitor_and_available_bandwidth_init_cover_runtime_contracts(monke
     warnings = []
     exceptions = []
 
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_local_device", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(
-        available_bandwidth_module.NodeInfo,
-        "get_node_role",
-        staticmethod(lambda device: available_bandwidth_module.NodeRoleConstant.CLOUD.value),
-    )
     monkeypatch.setattr(available_bandwidth_module.Context, "get_parameter", staticmethod(lambda key, default=None: 5201))
     monkeypatch.setattr(
         available_bandwidth_module.AvailableBandwidthMonitor,
@@ -228,15 +224,17 @@ def test_base_monitor_and_available_bandwidth_init_cover_runtime_contracts(monke
         lambda self: started_ports.extend(self.iperf3_ports),
     )
 
-    server_monitor = available_bandwidth_module.AvailableBandwidthMonitor(SimpleNamespace(resource_info={}))
+    server_context = RuntimeContext({
+        "local_node": "cloud-node",
+        "cloud_node": "cloud-node",
+        "nodes": {"cloud-node": {"role": "cloud"}},
+    })
+    server_monitor = available_bandwidth_module.AvailableBandwidthMonitor(SimpleNamespace(
+        resource_info={}, local_device="cloud-node", runtime_context=server_context
+    ))
     assert server_monitor.is_server is True
     assert started_ports == [5201]
 
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_node_role", staticmethod(lambda device: "edge"))
-    monkeypatch.setattr(available_bandwidth_module.PortInfo, "get_component_port", staticmethod(lambda component: 7777))
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.9"))
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
     monkeypatch.setattr(
         available_bandwidth_module.AvailableBandwidthMonitor,
         "request_for_bandwidth_permission",
@@ -245,10 +243,28 @@ def test_base_monitor_and_available_bandwidth_init_cover_runtime_contracts(monke
     monkeypatch.setattr(available_bandwidth_module.LOGGER, "warning", lambda message: warnings.append(message))
     monkeypatch.setattr(available_bandwidth_module.LOGGER, "exception", lambda exc: exceptions.append(str(exc)))
 
-    client_monitor = available_bandwidth_module.AvailableBandwidthMonitor(SimpleNamespace(resource_info={}))
+    client_context = RuntimeContext({
+        "local_node": "edge-node",
+        "cloud_node": "cloud-node",
+        "nodes": {
+            "cloud-node": {"role": "cloud"},
+            "edge-node": {"role": "edge"},
+        },
+        "endpoints": {
+            "monitor": {
+                "component": "monitor",
+                "target_node": "cloud-node",
+                "fqdn": "monitor-cloud.dayu.svc.cluster.local",
+                "port": 7777,
+            }
+        },
+    })
+    client_monitor = available_bandwidth_module.AvailableBandwidthMonitor(SimpleNamespace(
+        resource_info={}, local_device="edge-node", runtime_context=client_context
+    ))
     assert client_monitor.is_server is False
     assert client_monitor.iperf3_port == 7777
-    assert client_monitor.iperf3_server_ip == "10.0.0.9"
+    assert client_monitor.iperf3_server_ip == "monitor-cloud.dayu.svc.cluster.local"
     assert any("Request bandwidth resource permission failed" in message for message in warnings)
     assert exceptions == ["permission denied"]
 

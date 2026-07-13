@@ -2,42 +2,80 @@ import json
 import os
 
 from core.lib.estimation import TimeEstimator
-from core.lib.network import http_request, merge_address, NodeInfo, PortInfo, NetworkAPIPath, NetworkAPIMethod
-from core.lib.common import LOGGER, Context, SystemConstant, KubeConfig, TaskConstant, FileOps
+from core.lib.network import http_request, NetworkAPIPath, NetworkAPIMethod
+from core.lib.common import LOGGER, Context, TaskConstant, FileOps
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext, RuntimeLeaseClient, RuntimeResolver
 
 from .task_coordinator import TaskCoordinator
 
 
 class Controller:
     def __init__(self):
-        self.task_coordinator = TaskCoordinator()
+        self.runtime_context = RuntimeContext.get_default()
+        self.runtime_resolver = RuntimeResolver(self.runtime_context)
+        self.runtime_lease_client = RuntimeLeaseClient(
+            self.runtime_context,
+            requester=http_request,
+        )
+        self.task_coordinator = TaskCoordinator(runtime_context=self.runtime_context)
 
         self.is_display = Context.get_parameter('DISPLAY', direct=False)
 
-        self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
-        self.distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
-        self.distributor_hostname = NodeInfo.get_cloud_node()
-        self.distribute_address = merge_address(NodeInfo.hostname2ip(self.distributor_hostname),
-                                                port=self.distributor_port,
-                                                path=NetworkAPIPath.DISTRIBUTOR_DISTRIBUTE)
+        self.local_device = self.runtime_context.local_node
+        self.cloud_device = self.runtime_context.cloud_node
+        self.distribute_address = self.runtime_resolver.resolve_url(
+            "distributor",
+            path=NetworkAPIPath.DISTRIBUTOR_DISTRIBUTE,
+            target_node=self.cloud_device or None,
+        )
 
-        self.local_device = NodeInfo.get_local_device()
-        self.cloud_device = NodeInfo.get_cloud_node()
+    def _get_runtime_resolver(self):
+        resolver = getattr(self, "runtime_resolver", None)
+        if resolver is None:
+            context = getattr(self, "runtime_context", None) or RuntimeContext.get_default()
+            resolver = RuntimeResolver(context)
+            self.runtime_resolver = resolver
+        return resolver
 
-    def check_processor_health(self):
-        PortInfo.force_refresh()
-        service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
-        LOGGER.debug(f'[HEALTH CHECK] health checking services: {service_ports_dict.keys()}')
-        for service, service_port in service_ports_dict.items():
-            processor_health_address = merge_address(NodeInfo.hostname2ip(self.local_device),
-                                                     port=service_port,
-                                                     path=NetworkAPIPath.PROCESSOR_HEALTH)
+    def _renew_task_lease(self, task):
+        client = getattr(self, "runtime_lease_client", None)
+        if client is None:
+            context = getattr(self, "runtime_context", None) or RuntimeContext.get_default()
+            client = RuntimeLeaseClient(context, requester=http_request)
+            self.runtime_lease_client = client
+        return client.renew(task)
+
+    @staticmethod
+    def _routes_from_request(request):
+        if not isinstance(request, dict):
+            return None
+        directory = request.get("runtime_directory", request.get("runtimeDirectory"))
+        if isinstance(directory, dict):
+            return directory.get("routes", directory.get("runtime_routes", directory.get("runtimeRoutes")))
+        return request.get("runtime_routes", request.get("runtimeRoutes"))
+
+    def check_processor_health(self, request=None):
+        routes = self._routes_from_request(request)
+        processors = self._get_runtime_resolver().list_routes(
+            routes or {}, component="processor", target_node=self.local_device
+        )
+        try:
+            processors = [endpoint.validate_exact() for endpoint in processors]
+        except ValueError as exc:
+            LOGGER.warning(f'[HEALTH CHECK] Invalid exact processor route: {exc}')
+            return False
+        if not processors:
+            LOGGER.warning('[HEALTH CHECK] Exact processor routes are required for health checking.')
+            return False
+        LOGGER.debug(f'[HEALTH CHECK] health checking services: {[route.logical_service for route in processors]}')
+        for endpoint in processors:
+            processor_health_address = endpoint.url(NetworkAPIPath.PROCESSOR_HEALTH)
             response = http_request(url=processor_health_address, method=NetworkAPIMethod.PROCESSOR_HEALTH)
             if not response or response.get('status') != 'ok':
-                LOGGER.debug(f'[HEALTH CHECK] service {service} processor health check failed.')
+                LOGGER.debug(f'[HEALTH CHECK] service {endpoint.logical_service} processor health check failed.')
                 return False
-            LOGGER.debug(f'[HEALTH CHECK] service {service} processor health check succeed.')
+            LOGGER.debug(f'[HEALTH CHECK] service {endpoint.logical_service} processor health check succeed.')
         return True
 
     @staticmethod
@@ -69,25 +107,44 @@ class Controller:
             "dry_run": bool(request.get("dry_run", False)),
         }
 
-        PortInfo.force_refresh()
-        service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
+        routes = self._routes_from_request(request)
+        processors = self._get_runtime_resolver().list_routes(
+            routes or {}, component="processor", target_node=self.local_device
+        )
+        try:
+            processors = [endpoint.validate_exact() for endpoint in processors]
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "device": self.local_device,
+                "error": f"invalid exact processor runtime_routes: {exc}",
+                "service_count": 0,
+                "matched_count": 0,
+                "cleared_count": 0,
+                "remaining_count": 0,
+                "services": {},
+            }
         if service_filter is not None:
-            service_ports_dict = {
-                service: port for service, port in service_ports_dict.items()
-                if service in service_filter
+            processors = [endpoint for endpoint in processors if endpoint.logical_service in service_filter]
+        if not processors:
+            return {
+                "ok": False,
+                "device": self.local_device,
+                "error": "exact processor runtime_routes are required",
+                "service_count": 0,
+                "matched_count": 0,
+                "cleared_count": 0,
+                "remaining_count": 0,
+                "services": {},
             }
 
         results = {}
         total_cleared = 0
         total_matched = 0
         total_remaining = 0
-        local_ip = NodeInfo.hostname2ip(self.local_device)
-        for service, service_port in service_ports_dict.items():
-            processor_address = merge_address(
-                local_ip,
-                port=service_port,
-                path=NetworkAPIPath.PROCESSOR_CLEAR_QUEUE,
-            )
+        for endpoint in processors:
+            service = endpoint.logical_service
+            processor_address = endpoint.url(NetworkAPIPath.PROCESSOR_CLEAR_QUEUE)
             response = http_request(
                 url=processor_address,
                 method=NetworkAPIMethod.PROCESSOR_CLEAR_QUEUE,
@@ -107,13 +164,14 @@ class Controller:
             total_remaining += int(response.get("remaining_count") or 0)
 
         LOGGER.warning(
-            f"[Processor Queue Clear] device={self.local_device}, services={list(service_ports_dict.keys())}, "
+            f"[Processor Queue Clear] device={self.local_device}, "
+            f"services={[endpoint.logical_service for endpoint in processors]}, "
             f"matched={total_matched}, cleared={total_cleared}, remaining={total_remaining}"
         )
         return {
             "ok": True,
             "device": self.local_device,
-            "service_count": len(service_ports_dict),
+            "service_count": len(processors),
             "matched_count": total_matched,
             "cleared_count": total_cleared,
             "remaining_count": total_remaining,
@@ -122,9 +180,13 @@ class Controller:
 
     def send_task_to_other_device(self, cur_task: Task, device: str = ''):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
-        controller_address = merge_address(NodeInfo.hostname2ip(device),
-                                           port=self.controller_port,
-                                           path=NetworkAPIPath.CONTROLLER_TASK)
+        controller_address = self._get_runtime_resolver().resolve_url(
+            "controller",
+            path=NetworkAPIPath.CONTROLLER_TASK,
+            task=cur_task,
+            target_node=device,
+            exact=True,
+        )
 
         http_request(url=controller_address,
                      method=NetworkAPIMethod.CONTROLLER_TASK,
@@ -139,35 +201,20 @@ class Controller:
     def send_task_to_service(self, cur_task: Task, service: str = ''):
         self.record_execute_ts(cur_task=cur_task, is_end=False)
 
-        service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
-
-        # Force refresh port cache and retry once
-        if service not in service_ports_dict:
-            PortInfo.force_refresh()
-            service_ports_dict = PortInfo.get_service_ports_dict(self.local_device)
-
-        if service not in service_ports_dict:
-            service_deployment = KubeConfig.get_service_nodes_dict()
-            if service not in service_deployment or not service_deployment[service] or \
-                    self.cloud_device not in service_deployment[service]:
-                LOGGER.warning(f'[Service Not Exist] Service {service} does not exist in {self.local_device} '
-                               f'({self.local_device} has service: {service_ports_dict.keys()}).')
-                return 'error'
-
-            LOGGER.warning(f'[Service Not In Current Device] Service {service} does not exist in {self.local_device} '
-                           f'({self.local_device} has service: {service_ports_dict.keys()}, '
-                           f'Service {service} running on {service_deployment[service]})). '
-                           f'Transmit to cloud device {self.cloud_device} as default.')
-
-            cur_task.set_current_stage_device(self.cloud_device)
-            self.erase_execute_ts(cur_task)
-            self.erase_transmit_ts(cur_task)
-            self.submit_task(cur_task=cur_task)
-            return 'transmit'
-
-        service_address = merge_address(NodeInfo.hostname2ip(self.local_device),
-                                        port=service_ports_dict[service],
-                                        path=NetworkAPIPath.PROCESSOR_PROCESS_LOCAL)
+        try:
+            service_address = self._get_runtime_resolver().resolve_url(
+                "processor",
+                path=NetworkAPIPath.PROCESSOR_PROCESS_LOCAL,
+                task=cur_task,
+                target_node=self.local_device,
+                logical_service=service,
+                exact=True,
+            )
+        except (LookupError, ValueError) as exc:
+            LOGGER.error(
+                f'[Runtime Route Missing] Refuse to reroute service {service} on {self.local_device}: {exc}'
+            )
+            return 'error'
 
         if not os.path.exists(FileOps.get_task_file_in_temp(cur_task)):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
@@ -208,6 +255,11 @@ class Controller:
             LOGGER.warning('Current task is None')
             return 'error'
 
+        # This method is the controller's receive/advance boundary.  Renew
+        # before every branch decision so an old RuntimeDirectory revision is
+        # never drained while the task is being forwarded or merged.
+        self._renew_task_lease(cur_task)
+
         LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
                     f'current service: {cur_task.get_flow_index()} dst device: {cur_task.get_current_stage_device()} '
                     f'current device: {self.local_device}')
@@ -233,6 +285,8 @@ class Controller:
     def process_return(self, cur_task):
         """step to next step and submit task"""
         assert cur_task, 'Current task is None'
+
+        self._renew_task_lease(cur_task)
 
         LOGGER.info(f'[Process Return] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 

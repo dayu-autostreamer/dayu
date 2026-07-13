@@ -1,6 +1,6 @@
 import abc
 import random
-from core.lib.common import ClassFactory, ClassType, KubeConfig, Context, ConfigLoader, TaskConstant, LOGGER
+from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, TaskConstant, LOGGER
 from core.lib.estimation import OverheadEstimator
 
 from .base_agent import BaseAgent
@@ -143,7 +143,7 @@ class DynamicAgent(BaseAgent, abc.ABC):
             
             # 对每个服务进行判断
             for service_name in dag:
-                # _end节点固定在cloud.kubeedge（即cloud_device）
+                # _end is fixed to the injected runtime cloud device.
                 if service_name == '_end':
                     dag[service_name]['service']['execute_device'] = cloud_device
                     offloading_policy[service_name] = cloud_device

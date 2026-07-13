@@ -1,12 +1,12 @@
+import copy
 import json
 
-from core.lib.common import Context, LOGGER, SystemConstant
+from core.lib.common import Context, LOGGER
 from core.lib.content import Task
-from core.lib.network import merge_address
-from core.lib.network import NodeInfo, PortInfo
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.network import http_request
 from core.lib.estimation import TimeEstimator
+from core.lib.runtime import RuntimeContext, RuntimeLeaseClient, RuntimeResolver
 
 
 class Generator:
@@ -23,23 +23,34 @@ class Generator:
         # Optional scheduler-supplied deployment version for attributing task feedback.
         # Version 0 means the scheduler does not distinguish deployment versions.
         self.deployment_version = 0
+        self.runtime_directory_revision = 0
+        self.runtime_routes = {}
         # raw_meta_data contains meta configuration of source
         self.raw_meta_data = metadata.copy()
         # meta_data contains data configuration decisions
         self.meta_data = metadata.copy()
 
         """distributed devices information"""
-        self.local_device = NodeInfo.get_local_device()
-        self.cloud_device = NodeInfo.get_cloud_node()
-        self.all_edge_devices = Context.get_parameter('ALL_EDGE_DEVICES', direct=False)
+        self.runtime_context = RuntimeContext.get_default()
+        self.runtime_resolver = RuntimeResolver(self.runtime_context)
+        self.runtime_lease_client = RuntimeLeaseClient(
+            self.runtime_context,
+            requester=http_request,
+        )
+        self.local_device = self.runtime_context.local_node
+        self.cloud_device = self.runtime_context.cloud_node
+        self.all_edge_devices = (
+            Context.get_parameter('ALL_EDGE_DEVICES', direct=False)
+            or self.runtime_context.edge_nodes()
+        )
         self.task_dag = Task.set_execute_device(self.task_dag, self.local_device)
 
         """network communication base information"""
-        self.scheduler_hostname = self.cloud_device
-        self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
-        self.schedule_address = merge_address(NodeInfo.hostname2ip(self.scheduler_hostname),
-                                              port=self.scheduler_port, path=NetworkAPIPath.SCHEDULER_SCHEDULE)
+        self.schedule_address = self.runtime_resolver.resolve_url(
+            "scheduler",
+            path=NetworkAPIPath.SCHEDULER_SCHEDULE,
+            target_node=self.cloud_device or None,
+        )
 
         """hook functions"""
         self.before_schedule_operation = Context.get_algorithm('GEN_BSO')
@@ -53,7 +64,101 @@ class Generator:
         response = http_request(url=self.schedule_address,
                                 method=NetworkAPIMethod.SCHEDULER_SCHEDULE,
                                 data={'data': json.dumps(params)})
+        if response is None:
+            return self.runtime_routes_ready()
+        if not self._accept_runtime_directory(response):
+            return False
         self.after_schedule_operation(self, response)
+        return self.runtime_routes_ready()
+
+    @staticmethod
+    def _extract_runtime_directory(response):
+        if not isinstance(response, dict):
+            return None, None
+        directory = response.get("runtime_directory", response.get("runtimeDirectory"))
+        directory = directory if isinstance(directory, dict) else {}
+        revision = response.get(
+            "runtime_directory_revision",
+            response.get("runtimeDirectoryRevision", directory.get("revision")),
+        )
+        routes = response.get(
+            "runtime_routes",
+            response.get("runtimeRoutes", directory.get("routes")),
+        )
+        return revision, routes
+
+    def _accept_runtime_directory(self, response):
+        revision, routes = self._extract_runtime_directory(response)
+        try:
+            revision = int(revision)
+        except (TypeError, ValueError):
+            LOGGER.error("[Runtime Directory] Scheduler response has no valid directory revision.")
+            return False
+        if revision < 1:
+            LOGGER.error("[Runtime Directory] Directory revision must be positive.")
+            return False
+        if revision < self.runtime_directory_revision:
+            LOGGER.warning(
+                f"[Runtime Directory] Ignore stale scheduler response revision {revision}; "
+                f"current revision is {self.runtime_directory_revision}."
+            )
+            return False
+        try:
+            endpoints = RuntimeResolver.list_routes(routes or {})
+        except (TypeError, ValueError) as exc:
+            LOGGER.error(f"[Runtime Directory] Invalid scheduler routes: {exc}")
+            return False
+        if not endpoints:
+            LOGGER.error("[Runtime Directory] Scheduler returned an empty exact-route snapshot.")
+            return False
+        try:
+            for endpoint in endpoints:
+                if endpoint.component in RuntimeResolver.TASK_ROUTED_COMPONENTS:
+                    endpoint.validate_exact()
+        except ValueError as exc:
+            LOGGER.error(f"[Runtime Directory] Incomplete exact route identity: {exc}")
+            return False
+        if revision == self.runtime_directory_revision and self.runtime_routes and routes != self.runtime_routes:
+            LOGGER.error(
+                f"[Runtime Directory] Revision {revision} changed contents; reject non-immutable snapshot."
+            )
+            return False
+
+        self.runtime_directory_revision = revision
+        self.runtime_routes = copy.deepcopy(routes)
+        return True
+
+    def runtime_routes_ready(self):
+        """Check that the accepted snapshot can route the current DAG exactly."""
+        if self.runtime_directory_revision < 1 or not self.runtime_routes:
+            return False
+        try:
+            devices = set()
+            for node_name, node in self.task_dag.nodes.items():
+                if node_name in ("_start", "_end"):
+                    continue
+                service = node.service
+                service_name = service.get_service_name()
+                device = service.get_execute_device()
+                devices.add(device)
+                self.runtime_resolver.resolve(
+                    "processor",
+                    task=self.runtime_routes,
+                    target_node=device,
+                    logical_service=service_name,
+                    exact=True,
+                )
+            for device in devices:
+                self.runtime_resolver.resolve(
+                    "controller",
+                    task=self.runtime_routes,
+                    target_node=device,
+                    exact=True,
+                )
+        except (LookupError, ValueError) as exc:
+            LOGGER.error(f"[Runtime Directory] Current scheduling plan is not exactly routable: {exc}")
+            return False
+        return bool(devices)
 
     @staticmethod
     def record_total_start_ts(cur_task: Task):
@@ -76,6 +181,8 @@ class Generator:
                     dag=task_dag,
                     deployment=service_deployment,
                     deployment_version=self.deployment_version,
+                    runtime_directory_revision=self.runtime_directory_revision,
+                    runtime_routes=self.runtime_routes,
                     metadata=meta_data,
                     raw_metadata=self.raw_meta_data,
                     hash_data=hash_codes,
@@ -86,11 +193,19 @@ class Generator:
 
         self.before_submit_task_operation(self, cur_task)
 
+        # Acquiring against the active revision is the admission boundary for
+        # a new task.  RuntimeLeaseClient raises on every ambiguous outcome, so
+        # no task is submitted when the scheduler cannot prove the lease.
+        self.runtime_lease_client.acquire(cur_task)
+
         dst_device = cur_task.get_current_stage_device()
-        controller_ip = NodeInfo.hostname2ip(dst_device)
-        controller_address = merge_address(controller_ip,
-                                           port=self.controller_port,
-                                           path=NetworkAPIPath.CONTROLLER_TASK)
+        controller_address = self.runtime_resolver.resolve_url(
+            "controller",
+            path=NetworkAPIPath.CONTROLLER_TASK,
+            task=cur_task,
+            target_node=dst_device,
+            exact=True,
+        )
         self.record_transmit_start_ts(cur_task)
         http_request(url=controller_address,
                      method=NetworkAPIMethod.CONTROLLER_TASK,

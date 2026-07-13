@@ -1,9 +1,8 @@
 import abc
-import copy
-
 from .base_redeployment_policy import BaseRedeploymentPolicy
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, ConfigLoader, Context
+from core.lib.scheduling.deployment_plan import fixed_plan
 
 __all__ = ('FixedRedeploymentPolicy',)
 
@@ -15,6 +14,7 @@ class FixedRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
         Args:
             policy: {'service1':['node1', 'node2'], 'service2':['node2', 'node3']}
         """
+        self.cloud_device = str(getattr(system, "cloud_device", "") or "")
         if policy is None:
             self.fixed_policy = {}
         elif isinstance(policy, dict):
@@ -26,22 +26,7 @@ class FixedRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
 
     def __call__(self, info):
         source_id = info['source']['id']
-        dag = info['dag']
-        node_set = info['node_set']
-
-        deploy_plan = copy.deepcopy(self.fixed_policy)
-
-        all_services = list(dag.keys())
-        for service in all_services:
-            if service in deploy_plan:
-                intersection_nodes = list(set(deploy_plan[service]) & set(node_set))
-                deploy_plan[service] = intersection_nodes
-            else:
-                LOGGER.warning(
-                    f"[Redeployment] (source {source_id}) Service '{service}' is missing in fixed policy; "
-                    "skip edge redeployment for this service."
-                )
-
+        deploy_plan = fixed_plan(self.fixed_policy, info, self.cloud_device)
 
         LOGGER.info(f'[Redeployment] (source {source_id}) Deploy policy: {deploy_plan}')
 

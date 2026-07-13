@@ -4,15 +4,13 @@ import time
 
 from .base_getter_filter import BaseDataGetterFilter
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, SystemConstant
+from core.lib.common import ClassFactory, ClassType, LOGGER
 from core.lib.network import (
     NetworkAPIPath,
     NetworkAPIMethod,
-    NodeInfo,
-    PortInfo,
-    merge_address,
     http_request,
 )
+from core.lib.runtime import RuntimeContext, RuntimeResolver
 
 __all__ = ('SchedulerPermittedDataGetterFilter',)
 
@@ -38,12 +36,11 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
         self._completed_action_targets = set()
         self._action_attempt_timestamps = {}
 
-        scheduler_hostname = NodeInfo.get_cloud_node()
-        scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
-        self.scheduler_address = merge_address(
-            NodeInfo.hostname2ip(scheduler_hostname),
-            port=scheduler_port,
+        self.runtime_context = RuntimeContext.get_default()
+        self.runtime_resolver = RuntimeResolver(self.runtime_context)
+        self.scheduler_address = self.runtime_resolver.resolve_url(
+            "scheduler",
+            target_node=self.runtime_context.cloud_node or None,
             path=NetworkAPIPath.SCHEDULER_GENERATION_ADMISSION,
         )
 
@@ -86,7 +83,17 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
                 attempts.pop(stale_key, None)
         return True
 
-    def _clear_processor_queues_from_action(self, action: dict):
+    @staticmethod
+    def _action_routes(action, system):
+        directory = action.get("runtime_directory", action.get("runtimeDirectory"))
+        if isinstance(directory, dict) and directory.get("routes") is not None:
+            return directory.get("routes")
+        routes = action.get("runtime_routes", action.get("runtimeRoutes"))
+        if routes is not None:
+            return routes
+        return getattr(system, "runtime_routes", None)
+
+    def _clear_processor_queues_from_action(self, action: dict, system):
         command_id = str(action.get("command_id") or "")
         target_devices = action.get("target_devices") or action.get("devices") or []
         if isinstance(target_devices, str):
@@ -112,14 +119,27 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
                 continue
 
             try:
-                controller_port = getattr(self, "controller_port", None)
-                if controller_port is None:
-                    controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
-                controller_address = merge_address(
-                    NodeInfo.hostname2ip(device),
-                    port=controller_port,
+                routes = self._action_routes(action, system)
+                controller_address = self.runtime_resolver.resolve_url(
+                    "controller",
                     path=NetworkAPIPath.CONTROLLER_CLEAR_PROCESSOR_QUEUES,
+                    task=routes,
+                    target_node=device,
+                    exact=True,
                 )
+                request = dict(request)
+                request["runtime_directory_revision"] = action.get(
+                    "runtime_directory_revision",
+                    action.get("runtimeDirectoryRevision", getattr(system, "runtime_directory_revision", 0)),
+                )
+                request["runtime_routes"] = [
+                    endpoint.validate_exact().to_dict()
+                    for endpoint in self.runtime_resolver.list_routes(
+                        routes or {}, component="processor", target_node=device
+                    )
+                ]
+                if not request["runtime_routes"]:
+                    raise LookupError(f"no exact processor routes for {device}")
                 response = http_request(
                     url=controller_address,
                     method=NetworkAPIMethod.CONTROLLER_CLEAR_PROCESSOR_QUEUES,
@@ -149,7 +169,7 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
                 f"remaining={response.get('remaining_count')}."
             )
 
-    def _execute_scheduler_actions(self, response: dict):
+    def _execute_scheduler_actions(self, response: dict, system):
         actions = response.get("actions") or response.get("commands") or []
         if isinstance(actions, dict):
             actions = [actions]
@@ -161,7 +181,7 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
                 continue
             action_type = str(action.get("type") or "").strip().lower()
             if action_type == "clear_processor_queues":
-                self._clear_processor_queues_from_action(action)
+                self._clear_processor_queues_from_action(action, system)
 
     def __call__(self, system):
         payload = {
@@ -186,7 +206,7 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
             )
             return self.fail_open
 
-        self._execute_scheduler_actions(response)
+        self._execute_scheduler_actions(response, system)
 
         generate = bool(response.get("generate", response.get("allow", True)))
         if not generate:

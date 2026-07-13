@@ -7,6 +7,7 @@ import pytest
 
 from core.lib.common import TaskConstant
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext, RuntimeEndpoint
 
 
 parameter_base_module = importlib.import_module("core.lib.algorithms.parameter_monitor.base_monitor")
@@ -74,6 +75,15 @@ def build_visualization_task():
         metadata={"buffer_size": 2, "resolution": "720p"},
         raw_metadata={"buffer_size": 2, "resolution": "1080p"},
         file_path="sample.mp4",
+        runtime_directory_revision=1,
+        runtime_routes=[
+            {"component": "processor", "logical_service": "detector", "target_node": "edge-a",
+             "runtime_id": "processor-detector-edge-a-0", "fqdn": "detector-a", "port": 9000},
+            {"component": "processor", "logical_service": "detector", "target_node": "edge-b",
+             "runtime_id": "processor-detector-edge-b-0", "fqdn": "detector-b", "port": 9000},
+            {"component": "processor", "logical_service": "classifier", "target_node": "edge-b",
+             "runtime_id": "processor-classifier-edge-b-0", "fqdn": "classifier-b", "port": 9000},
+        ],
     )
     task.get_service("detector").set_content_data(
         {
@@ -137,7 +147,14 @@ def test_base_visualizer_and_monitor_contracts_raise_or_update_resources():
         def get_parameter_value(self):
             return 42
 
-    system = SimpleNamespace(resource_info={})
+    endpoints = [
+        RuntimeEndpoint(component="processor", target_node="edge-a", logical_service="detector", fqdn="detector", port=31000),
+        RuntimeEndpoint(component="processor", target_node="edge-a", logical_service="face", fqdn="face", port=31001),
+    ]
+    system = SimpleNamespace(
+        resource_info={}, local_device="edge-a",
+        runtime_routes=lambda component=None, target_node=None: endpoints,
+    )
     monitor = DemoMonitor(system)
     thread = monitor()
     thread.run()
@@ -151,59 +168,31 @@ def test_local_and_remote_parameter_monitors_collect_expected_values(monkeypatch
     monkeypatch.setattr(psutil, "cpu_percent", lambda: 12.5)
     monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(percent=61.5, total=8e9))
 
-    system = SimpleNamespace(resource_info={})
+    endpoints = [
+        RuntimeEndpoint(component="processor", target_node="edge-a", logical_service="detector", fqdn="detector", port=31000),
+        RuntimeEndpoint(component="processor", target_node="edge-a", logical_service="face", fqdn="face", port=31001),
+    ]
+    system = SimpleNamespace(
+        resource_info={}, local_device="edge-a",
+        runtime_routes=lambda component=None, target_node=None: endpoints,
+    )
     assert cpu_usage_module.CPUUsageMonitor(system).get_parameter_value() == 12.5
     assert memory_usage_module.MemoryUsageMonitor(system).get_parameter_value() == 0.615
     assert memory_capacity_module.MemoryCapacityMonitor(system).get_parameter_value() == 8.0
 
-    monkeypatch.setattr(model_flops_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-a"))
-    monkeypatch.setattr(model_flops_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.2"))
-    monkeypatch.setattr(model_flops_module.PortInfo, "get_service_ports_dict", staticmethod(lambda device: {"detector": 31000}))
-    monkeypatch.setattr(model_flops_module, "http_request", lambda address, method=None: 3e9)
-    assert model_flops_module.ModelFlopsMonitor(system).get_parameter_value() == {"detector": 3.0}
+    monkeypatch.setattr(model_flops_module, "http_request", lambda address, method=None, **kwargs: 3e9)
+    assert model_flops_module.ModelFlopsMonitor(system).get_parameter_value() == {"detector": 3.0, "face": 3.0}
 
-    monkeypatch.setattr(queue_length_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-a"))
-    monkeypatch.setattr(queue_length_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.2"))
-    monkeypatch.setattr(queue_length_module.PortInfo, "get_service_ports_dict", staticmethod(lambda device: {"detector": 31000}))
-    monkeypatch.setattr(queue_length_module, "http_request", lambda address, method=None: 7)
-    assert queue_length_module.QueueLengthMonitor(system).get_parameter_value() == {"detector": 7}
+    monkeypatch.setattr(queue_length_module, "http_request", lambda address, method=None, **kwargs: 7)
+    assert queue_length_module.QueueLengthMonitor(system).get_parameter_value() == {"detector": 7, "face": 7}
 
-    monkeypatch.setattr(model_memory_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-a"))
-    monkeypatch.setattr(model_memory_module.KubeConfig, "force_refresh", staticmethod(lambda: None))
-    monkeypatch.setattr(model_memory_module.KubeConfig, "get_pods_on_node", staticmethod(lambda device: ["processor-face-edge-a-0"]))
-    spec_memory = {"processor-face-edge-a-0": 3_000_000_000}
-    metrics_memory = {"processor-face-edge-a-0": 2_000_000_000}
-    monkeypatch.setattr(
-        model_memory_module.KubeConfig,
-        "get_pod_memory_from_spec",
-        staticmethod(lambda pods: dict(spec_memory)),
-    )
-    monkeypatch.setattr(
-        model_memory_module.KubeConfig,
-        "get_pod_memory_from_metrics",
-        staticmethod(lambda pods: dict(metrics_memory)),
-    )
-    monkeypatch.setattr(model_memory_module.ServiceConfig, "map_pod_name_to_service", staticmethod(lambda pod: "face"))
-    monkeypatch.setattr(model_memory_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.2"))
-    monkeypatch.setattr(
-        model_memory_module.PortInfo,
-        "get_service_ports_dict",
-        staticmethod(lambda device: {"face": 31000, "detector": 31001}),
-    )
     monkeypatch.setattr(
         model_memory_module,
         "http_request",
-        lambda address, method=None, timeout=None: 1_000_000_000 if address.endswith(":31000/model_memory") else 5_000_000_000,
+        lambda address, method=None, timeout=None: 1_000_000_000 if "face" in address else 5_000_000_000,
     )
     model_memory_monitor = model_memory_module.ModelMemoryMonitor(system)
-    assert model_memory_monitor.get_parameter_value() == {"face": 3.0, "detector": 5.0}
-
-    spec_memory["processor-face-edge-a-0"] = 1_000_000_000
-    metrics_memory["processor-face-edge-a-0"] = 4_000_000_000
-    assert model_memory_monitor.get_parameter_value() == {"face": 4.0, "detector": 5.0}
-
-    metrics_memory["processor-face-edge-a-0"] = 2_000_000_000
-    assert model_memory_monitor.get_parameter_value() == {"face": 4.0, "detector": 5.0}
+    assert model_memory_monitor.get_parameter_value() == {"face": 1.0, "detector": 5.0}
 
 
 @pytest.mark.unit
@@ -286,21 +275,32 @@ def test_cpu_gpu_and_bandwidth_monitors_cover_success_and_fallback_paths(monkeyp
     )
     monkeypatch.setitem(sys.modules, "iperf3", fake_iperf3)
 
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_local_device", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_node_role", staticmethod(lambda hostname: "cloud"))
     monkeypatch.setattr(available_bandwidth_module.Context, "get_parameter", staticmethod(lambda key: 9000))
     monkeypatch.setattr(available_bandwidth_module.threading, "Thread", DummyThread)
-    server_monitor = available_bandwidth_module.AvailableBandwidthMonitor(system)
+    server_context = RuntimeContext({"local_node": "cloud-a", "cloud_node": "cloud-a", "nodes": {"cloud-a": {"role": "cloud"}}})
+    server_system = SimpleNamespace(resource_info={}, local_device="cloud-a", runtime_context=server_context)
+    server_monitor = available_bandwidth_module.AvailableBandwidthMonitor(server_system)
     assert server_monitor.get_parameter_value() == -1
     assert started_threads == [(9000,)]
 
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-a"))
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_node_role", staticmethod(lambda hostname: "edge"))
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
-    monkeypatch.setattr(available_bandwidth_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(available_bandwidth_module.PortInfo, "get_component_port", staticmethod(lambda component: 5201))
-    monkeypatch.setattr(available_bandwidth_module, "http_request", lambda address, method=None, data=None: {"holder": "edge-a"})
-    client_monitor = available_bandwidth_module.AvailableBandwidthMonitor(system)
+    monkeypatch.setattr(
+        available_bandwidth_module,
+        "http_request",
+        lambda address, method=None, data=None, **kwargs: {"holder": "edge-a"},
+    )
+    client_context = RuntimeContext({
+        "local_node": "edge-a", "cloud_node": "cloud-a",
+        "nodes": {"edge-a": {"role": "edge"}, "cloud-a": {"role": "cloud"}},
+        "endpoints": {
+            "monitor": {"component": "monitor", "target_node": "cloud-a", "fqdn": "10.0.0.1", "port": 5201},
+            "scheduler": {"fqdn": "10.0.0.1", "port": 31000},
+        },
+    })
+    client_system = SimpleNamespace(
+        resource_info={}, local_device="edge-a", runtime_context=client_context,
+        scheduler_endpoint=client_context.resolve_static_endpoint("scheduler"),
+    )
+    client_monitor = available_bandwidth_module.AvailableBandwidthMonitor(client_system)
     assert client_monitor.permitted_device == "edge-a"
     assert client_monitor.get_parameter_value() == 88.0
     client_monitor.permitted_device = "other-edge"
@@ -308,68 +308,34 @@ def test_cpu_gpu_and_bandwidth_monitors_cover_success_and_fallback_paths(monkeyp
 
 
 @pytest.mark.unit
-def test_system_visualizers_fetch_resource_snapshots_and_overhead(monkeypatch):
-    monkeypatch.setattr(cpu_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(cpu_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
-    monkeypatch.setattr(cpu_visualizer_module.PortInfo, "get_component_port", staticmethod(lambda component: 31000))
-    monkeypatch.setattr(cpu_visualizer_module, "http_request", lambda address, method=None: {"edge-a": {"cpu_usage": 33.0}})
-
+def test_system_visualizers_consume_prefetched_resource_and_overhead():
     cpu_visualizer = cpu_visualizer_module.CPUUsageVisualizer(variables=["edge-a", "edge-b"])
-    cpu_visualizer.get_resource_url()
-    assert cpu_visualizer.resource_url == "http://10.0.0.1:31000/resource"
-    assert cpu_visualizer() == {"edge-a": 33.0, "edge-b": 0}
+    assert cpu_visualizer(resource={"edge-a": {"cpu_usage": 33.0}}) == {
+        "edge-a": 33.0,
+        "edge-b": 0,
+    }
     assert cpu_visualizer(resource={"edge-x": {"cpu_usage": 12.0}}) == {"edge-a": 0, "edge-b": 0}
 
-    monkeypatch.setattr(memory_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(memory_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
-    monkeypatch.setattr(memory_visualizer_module.PortInfo, "get_component_port", staticmethod(lambda component: 31000))
     memory_visualizer = memory_visualizer_module.MemoryUsageVisualizer(variables=[])
     assert memory_visualizer(resource=None) == {"no device": 0}
     assert memory_visualizer(resource={"edge-a": {"memory_usage": 44.0}}) == {"edge-a": 44.0}
 
-    monkeypatch.setattr(overhead_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(overhead_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
-    monkeypatch.setattr(overhead_visualizer_module.PortInfo, "get_component_port", staticmethod(lambda component: 31000))
-    monkeypatch.setattr(overhead_visualizer_module, "http_request", lambda address, method=None: 0.125)
     overhead_visualizer = overhead_visualizer_module.ScheduleOverheadVisualizer(variables=["overhead"])
-    assert overhead_visualizer() == {"overhead": 125.0}
+    assert overhead_visualizer(scheduling_overhead=0.125) == {"overhead": 125.0}
 
 
 @pytest.mark.unit
-def test_system_visualizers_cover_missing_scheduler_ports_and_default_views(monkeypatch):
-    monkeypatch.setattr(cpu_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(cpu_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
-    monkeypatch.setattr(
-        cpu_visualizer_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: (_ for _ in ()).throw(AssertionError("missing scheduler"))),
-    )
+def test_system_visualizers_cover_missing_snapshots_and_default_views():
     cpu_visualizer = cpu_visualizer_module.CPUUsageVisualizer(variables=["edge-a"])
-    assert cpu_visualizer.request_resource_info() is None
     assert cpu_visualizer(resource=None) == {"edge-a": 0}
     cpu_visualizer.variables = []
     assert cpu_visualizer(resource={"edge-a": {"cpu_usage": 12.0}}) == {"edge-a": 12.0}
 
-    monkeypatch.setattr(memory_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(memory_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
-    monkeypatch.setattr(
-        memory_visualizer_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: (_ for _ in ()).throw(AssertionError("missing scheduler"))),
-    )
     memory_visualizer = memory_visualizer_module.MemoryUsageVisualizer(variables=["edge-a"])
-    assert memory_visualizer.request_resource_info() is None
     assert memory_visualizer(resource=None) == {"edge-a": 0}
     memory_visualizer.variables = []
     assert memory_visualizer(resource={"edge-a": {"memory_usage": 22.0}}) == {"edge-a": 22.0}
 
-    monkeypatch.setattr(overhead_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(overhead_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
-    monkeypatch.setattr(
-        overhead_visualizer_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: (_ for _ in ()).throw(AssertionError("missing scheduler"))),
-    )
     overhead_visualizer = overhead_visualizer_module.ScheduleOverheadVisualizer(variables=["overhead"])
     assert overhead_visualizer() == {"overhead": 0}
 
@@ -461,12 +427,11 @@ def test_result_visualizers_render_task_data_and_fallback_images(monkeypatch):
     }
     assert drawn_multi == [[[1, 1, 5, 5]]]
 
-    monkeypatch.setattr(dag_deployment_module.KubeConfig, "get_nodes_for_service", staticmethod(lambda service: ["edge-a", "edge-b"]))
     deployment = dag_deployment_module.DAGDeploymentTopologyVisualizer(variables=["topology"])(task)["topology"]
     assert "execute_device" not in deployment["detector"]["service"]
     assert deployment["detector"]["service"]["data"] == "edge-a\nedge-b"
 
-    monkeypatch.setattr(dag_offloading_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
+    task.get_dag().get_end_node().service.set_execute_device("cloud-a")
     offloading = dag_offloading_module.DAGOffloadingTopologyVisualizer(variables=["offloading"])(task)["offloading"]
     assert offloading["detector"]["service"]["data"] == "edge-a"
     assert offloading["classifier"]["service"]["data"] == "cloud-a"
@@ -483,37 +448,15 @@ def test_result_visualizers_render_task_data_and_fallback_images(monkeypatch):
 
 
 @pytest.mark.unit
-def test_service_queue_length_visualizer_renders_replica_queue_bars(monkeypatch):
-    monkeypatch.setattr(service_queue_visualizer_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(service_queue_visualizer_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.1"))
-    monkeypatch.setattr(service_queue_visualizer_module.PortInfo, "get_component_port", staticmethod(lambda component: 31000))
-    monkeypatch.setattr(
-        service_queue_visualizer_module,
-        "http_request",
-        lambda address, method=None: {
+def test_service_queue_length_visualizer_renders_replica_queue_bars():
+    visualizer = service_queue_visualizer_module.ServiceQueueLengthVisualizer(variables=["detector", "classifier"])
+    result = visualizer(
+        build_visualization_task(),
+        resource={
             "edge-a": {"queue_length": {"detector": 7}},
             "edge-b": {"queue_length": {"detector": 2, "classifier": 5}},
         },
     )
-    monkeypatch.setattr(service_queue_visualizer_module.KubeConfig, "force_refresh", staticmethod(lambda: None))
-    monkeypatch.setattr(
-        service_queue_visualizer_module.KubeConfig,
-        "get_nodes_for_service",
-        staticmethod(lambda service_name: ["edge-a", "edge-b"] if service_name == "detector" else ["edge-b"]),
-    )
-    monkeypatch.setattr(
-        service_queue_visualizer_module.KubeConfig,
-        "get_pods_on_node",
-        staticmethod(
-            lambda node_name: {
-                "edge-a": ["processor-detector-edge-a-0", "processor-other-edge-a-0"],
-                "edge-b": ["processor-detector-edge-b-0", "processor-classifier-edge-b-0"],
-            }.get(node_name, [])
-        ),
-    )
-
-    visualizer = service_queue_visualizer_module.ServiceQueueLengthVisualizer(variables=["detector", "classifier"])
-    result = visualizer(build_visualization_task())
 
     assert [item["pod_name"] for item in result["detector"]] == [
         "processor-detector-edge-a-0",

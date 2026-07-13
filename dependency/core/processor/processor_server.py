@@ -6,11 +6,12 @@ from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from core.lib.common import Context, SystemConstant
+from core.lib.common import Context
 from core.lib.common import LOGGER, FileOps
-from core.lib.network import NodeInfo, PortInfo, http_request, merge_address, NetworkAPIMethod, NetworkAPIPath
+from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
+from core.lib.runtime import RuntimeContext, RuntimeLeaseClient, RuntimeResolver
 
 
 class ProcessorServer:
@@ -67,12 +68,14 @@ class ProcessorServer:
 
         self.task_queue = Context.get_algorithm('PRO_QUEUE')
 
-        self.local_device = NodeInfo.get_local_device()
+        self.runtime_context = RuntimeContext.get_default()
+        self.runtime_resolver = RuntimeResolver(self.runtime_context)
+        self.runtime_lease_client = RuntimeLeaseClient(
+            self.runtime_context,
+            requester=http_request,
+        )
+        self.local_device = self.runtime_context.local_node
         self.processor_port = Context.get_parameter('GUNICORN_PORT')
-        self.controller_port = PortInfo.get_component_port(SystemConstant.CONTROLLER.value)
-        self.controller_address = merge_address(NodeInfo.hostname2ip(self.local_device),
-                                                port=self.controller_port,
-                                                path=NetworkAPIPath.CONTROLLER_RETURN)
 
         threading.Thread(target=self.loop_process, name="ProcessorLoop", daemon=True).start()
 
@@ -109,7 +112,8 @@ class ProcessorServer:
                     f'task {cur_task.get_task_id()}')
         FileOps.save_task_file_in_temp(cur_task, file_data)
 
-        new_task = self.processor(cur_task)
+        with self.runtime_lease_client.keepalive(cur_task):
+            new_task = self.processor(cur_task)
         current_content = new_task.get_current_content() if new_task else None
         output_labels = []
         if isinstance(current_content, dict) and isinstance(current_content.get('outputs'), dict):
@@ -243,8 +247,11 @@ class ProcessorServer:
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
 
-        TimeEstimator.record_dag_ts(task, is_end=False, sub_tag='real_execute')
-        new_task = self.processor(task)
+        # Processor execution is a hard safety boundary. Keep renewing while
+        # inference runs so a long stage cannot outlive its directory lease.
+        with self.runtime_lease_client.keepalive(task):
+            TimeEstimator.record_dag_ts(task, is_end=False, sub_tag='real_execute')
+            new_task = self.processor(task)
         if new_task is None:
             LOGGER.warning(f'[Monitor Task] Processor returned no task. '
                            f'Source: {task.get_source_id()} / Task: {task.get_task_id()}')
@@ -258,6 +265,12 @@ class ProcessorServer:
         return new_task
 
     def send_result_back_to_controller(self, task):
-
-        http_request(url=self.controller_address, method=NetworkAPIMethod.CONTROLLER_RETURN,
+        controller_address = self.runtime_resolver.resolve_url(
+            "controller",
+            path=NetworkAPIPath.CONTROLLER_RETURN,
+            task=task,
+            target_node=self.local_device,
+            exact=True,
+        )
+        http_request(url=controller_address, method=NetworkAPIMethod.CONTROLLER_RETURN,
                      data={'data': task.serialize()})

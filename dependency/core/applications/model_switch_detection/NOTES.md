@@ -34,7 +34,7 @@
     ```
 
 3. When testing Docker image builds, you may not be able to pass parameters when instantiating the object
-   (the application will eventually be started in k8s via YAML).
+   (the application will eventually be started from an immutable RuntimeService spec).
    You can write a parameterless test class that inherits the parameterized class, then modify the app root `__init__.py`
    to export the parameterless test class:
     ```
@@ -85,9 +85,12 @@
     ENV SERVICE_NAME="processor-model-switch-detection"
     ENV DETECTOR_PARAMETERS="{'key':'value'}"
     ENV PRO_QUEUE_NAME="simple"
-    ENV NAMESPACE="aaa"
-    ENV KUBERNETES_SERVICE_HOST="xxx"
-    ENV KUBERNETES_SERVICE_PORT="xxx"
+    ENV NAMESPACE="dayu"
+    ENV NODE_NAME="edge-node"
+    ENV GUNICORN_PORT="9000"
+
+    # DAYU_RUNTIME_BOOTSTRAP is injected by the backend RuntimeService renderer.
+    # Application code must not add Kubernetes credentials or discover ports.
 
     WORKDIR /app
     COPY  ${code_dir}/* /app/

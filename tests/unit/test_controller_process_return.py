@@ -34,6 +34,7 @@ def build_parallel_branch_task(branch_name, value, root_uuid="root-task-0"):
         raw_metadata={"buffer_size": 1},
         file_path="payload.bin",
         root_uuid=root_uuid,
+        runtime_directory_revision=1,
     )
     task.set_current_content({"branch": branch_name, "value": value})
     task.add_scenario({"branch": value})
@@ -52,11 +53,20 @@ class RecordingTaskCoordinator:
         return list(self.stored_tasks)
 
 
+class SuccessfulLeaseClient:
+    def renew(self, task):
+        return {
+            "revision": task.get_runtime_directory_revision(),
+            "root_uuid": task.get_root_uuid(),
+        }
+
+
 @pytest.mark.unit
 def test_process_return_waits_until_all_parallel_branches_arrive():
     controller_module = importlib.import_module("core.controller.controller")
     controller = object.__new__(controller_module.Controller)
     controller.task_coordinator = RecordingTaskCoordinator()
+    controller.runtime_lease_client = SuccessfulLeaseClient()
 
     submitted_tasks = []
     controller.submit_task = lambda task: submitted_tasks.append(task) or "execute"
@@ -77,6 +87,7 @@ def test_process_return_merges_parallel_branch_results_before_submitting():
     controller_module = importlib.import_module("core.controller.controller")
     controller = object.__new__(controller_module.Controller)
     controller.task_coordinator = RecordingTaskCoordinator()
+    controller.runtime_lease_client = SuccessfulLeaseClient()
 
     submitted_tasks = []
     controller.submit_task = lambda task: submitted_tasks.append(task) or "execute"

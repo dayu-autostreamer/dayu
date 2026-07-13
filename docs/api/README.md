@@ -7,7 +7,7 @@ This section documents the service interfaces used by Dayu. It follows the imple
 | Component | Role | Interface type | Main code path |
 | --- | --- | --- | --- |
 | Backend | Control plane for policies, DAGs, datasource configs, deployment, runtime visualization, and log export | FastAPI, operator-facing | `backend/backend_server.py` |
-| Scheduler | Produces runtime plans and stores resource state | FastAPI, internal | `dependency/core/scheduler/scheduler_server.py` |
+| Scheduler | Produces plans, owns the versioned RuntimeDirectory/CAS, and stores task leases/resource state | FastAPI, internal | `dependency/core/scheduler/scheduler_server.py` |
 | Controller | Receives tasks from generators and processor returns | FastAPI, internal | `dependency/core/controller/controller_server.py` |
 | Processor | Per-service inference entrypoint and async worker loop | FastAPI, internal | `dependency/core/processor/processor_server.py` |
 | Distributor | Stores task results, exposes incremental result queries, exports logs | FastAPI, internal | `dependency/core/distributor/distributor_server.py` |
@@ -24,10 +24,11 @@ This section documents the service interfaces used by Dayu. It follows the imple
 | --- | --- |
 | Transport | FastAPI services with permissive CORS enabled on all routes. |
 | Authentication | No built-in authentication or authorization layer is implemented in the current codebase. |
+| Kubernetes boundary | Backend alone uses the Kubernetes Python client. Runtime APIs consume bootstrap, directory snapshots, and exact task routes. |
 | Error style | Mixed. Many backend control-plane endpoints return `{state, msg}`; some runtime endpoints return plain values, arrays, serialized tasks, file streams, or `null`. |
 | Binary payloads | Internal task transfer uses `multipart/form-data` with `file` for the binary payload and `data` for a serialized `Task`. |
 | Serialized tasks | Internal services exchange `Task.serialize()` payloads. The exact schema is an internal contract defined in `core.lib.content.Task`. |
-| GET with request body | Some internal endpoints currently use `GET` and still read JSON or form data from the request body. Documented behavior should be preserved for compatibility until a coordinated cleanup happens. |
+| GET with request body | Some non-runtime endpoints currently use `GET` with JSON/form data. The method and body documented here are the canonical current contract and must change together with all callers. |
 | Visualization configs | Visualization hook selection is data-driven from YAML configs and not hard-coded in backend route handlers. |
 
 ## Runtime Flow
@@ -38,7 +39,7 @@ flowchart LR
     BE --> DS["Datasource Supervisor"]
     DS --> HVS["HTTP Video Source"]
     DS --> RVS["RTSP Stream Source"]
-    G["Generator"] --> SCH["Scheduler"]
+    G["Generator"] --> SCH["Scheduler\nRuntimeDirectory + leases"]
     G --> CTRL["Controller"]
     HVS --> G
     RVS --> G
@@ -49,6 +50,10 @@ flowchart LR
     BE --> DIST
     MON["Monitor"] --> SCH
 ```
+
+Generator acquires a revision/root-task lease before submission, controller and processor renew it, and distributor
+releases it after durable completion. Exact controller/processor identities travel in the serialized Task; no runtime
+API performs Kubernetes discovery.
 
 ## Documents In This Section
 

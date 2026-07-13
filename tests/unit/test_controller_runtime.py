@@ -1,343 +1,131 @@
 import importlib
-from pathlib import Path
+import json
 
 import pytest
 
+from core.lib.runtime import RuntimeContext, RuntimeResolver
+
+
+def route(component, node, port, service=""):
+    slot = {"component": component, "target_node": node}
+    if service:
+        slot["logical_service"] = service
+    return {
+        "slot": slot,
+        "runtime_id": f"{component}-{service or 'runtime'}-{node}",
+        "runtime_revision": 3,
+        "endpoint": {
+            "dns_name": f"{component}-{service or 'runtime'}-{node}.dayu.svc",
+            "port": port,
+            "runtime_service_uid": f"rs-{component}-{node}",
+            "service_uid": f"svc-{component}-{node}",
+            "pod_uid": f"pod-{component}-{node}",
+        },
+    }
+
 
 class FakeTask:
-    def __init__(self, service_name="face-detection", stage_device="edgex1", file_path="payload.bin"):
-        self.service_name = service_name
-        self.stage_device = stage_device
+    def __init__(self, service="face-detection", node="edgex1", routes=None, file_path="payload.bin"):
+        self.service = service
+        self.node = node
+        self.routes = routes or []
         self.file_path = file_path
-        self.serialized = {"task": "serialized"}
         self.transmit_durations = []
         self.execute_durations = []
 
-    def get_source_id(self):
-        return 1
-
-    def get_task_id(self):
-        return 2
-
-    def get_flow_index(self):
-        return self.service_name
-
-    def get_current_service_info(self):
-        return self.service_name, {}
-
-    def get_current_stage_device(self):
-        return self.stage_device
-
-    def set_current_stage_device(self, device):
-        self.stage_device = device
-
-    def get_file_path(self):
-        return self.file_path
-
-    def serialize(self):
-        return self.serialized
-
-    def save_transmit_time(self, duration):
-        self.transmit_durations.append(duration)
-
-    def save_execute_time(self, duration):
-        self.execute_durations.append(duration)
+    def get_source_id(self): return 1
+    def get_task_id(self): return 2
+    def get_flow_index(self): return self.service
+    def get_current_service_info(self): return self.service, {}
+    def get_current_stage_device(self): return self.node
+    def set_current_stage_device(self, node): self.node = node
+    def get_file_path(self): return self.file_path
+    def get_runtime_routes(self): return self.routes
+    def serialize(self): return '{"task":"serialized"}'
+    def save_transmit_time(self, value): self.transmit_durations.append(value)
+    def save_execute_time(self, value): self.execute_durations.append(value)
 
 
 @pytest.fixture
-def controller_under_test(monkeypatch):
-    controller_module = importlib.import_module("core.controller.controller")
-    controller = object.__new__(controller_module.Controller)
+def controller_under_test():
+    module = importlib.import_module("core.controller.controller")
+    controller = object.__new__(module.Controller)
     controller.task_coordinator = None
     controller.is_display = False
-    controller.controller_port = 30001
-    controller.distributor_port = 30002
-    controller.distributor_hostname = "cloudx1"
-    controller.distribute_address = "http://10.0.0.9:30002/distribute"
     controller.local_device = "edgex1"
     controller.cloud_device = "cloudx1"
-
-    monkeypatch.setattr(
-        controller_module.NodeInfo,
-        "hostname2ip",
-        staticmethod(lambda hostname: {"edgex1": "10.0.0.1", "cloudx1": "10.0.0.9"}.get(hostname, "10.0.0.5")),
-    )
-    monkeypatch.setattr(
-        controller_module,
-        "merge_address",
-        lambda ip, port=None, path=None, protocol="http": f"{protocol}://{ip}:{port}/{path.strip('/')}",
-    )
-    return controller_module, controller
+    controller.distribute_address = "http://distributor.dayu.svc:9003/distribute"
+    controller.runtime_context = RuntimeContext({"local_node": "edgex1", "cloud_node": "cloudx1"})
+    controller.runtime_resolver = RuntimeResolver(controller.runtime_context)
+    return module, controller
 
 
 @pytest.mark.unit
-def test_controller_health_check_reports_success_and_failure(controller_under_test, monkeypatch):
-    controller_module, controller = controller_under_test
-    monkeypatch.setattr(controller_module.PortInfo, "force_refresh", staticmethod(lambda: None))
-    monkeypatch.setattr(
-        controller_module.PortInfo,
-        "get_service_ports_dict",
-        staticmethod(lambda device: {"svc-a": 31000, "svc-b": 32000}),
-    )
-
+def test_controller_health_and_queue_clear_use_explicit_processor_routes(controller_under_test, monkeypatch):
+    module, controller = controller_under_test
+    routes = [route("processor", "edgex1", 31000, "face"), route("processor", "edgex1", 32000, "gender")]
     responses = iter([{"status": "ok"}, {"status": "ok"}])
-    monkeypatch.setattr(controller_module, "http_request", lambda **kwargs: next(responses))
-    assert controller.check_processor_health() is True
+    monkeypatch.setattr(module, "http_request", lambda **kwargs: next(responses))
+    assert controller.check_processor_health({"runtime_routes": routes}) is True
+    assert controller.check_processor_health({}) is False
 
-    responses = iter([{"status": "ok"}, {"status": "fail"}])
-    monkeypatch.setattr(controller_module, "http_request", lambda **kwargs: next(responses))
-    assert controller.check_processor_health() is False
-
-
-@pytest.mark.unit
-def test_controller_clear_processor_queues_filters_services_and_aggregates_results(controller_under_test, monkeypatch):
-    controller_module, controller = controller_under_test
-    force_refresh_calls = []
-    request_calls = []
-
-    monkeypatch.setattr(controller_module.PortInfo, "force_refresh", staticmethod(lambda: force_refresh_calls.append(True)))
-    monkeypatch.setattr(
-        controller_module.PortInfo,
-        "get_service_ports_dict",
-        staticmethod(lambda device: {"face-detection": 31000, "gender-classification": 32000}),
-    )
-
-    def fake_request(**kwargs):
-        request_calls.append(kwargs)
-        if kwargs["url"].endswith(":31000/queue_clear"):
-            return {"ok": True, "cleared_count": 2, "matched_count": 3, "remaining_count": 1}
-        return {"ok": True, "cleared_count": 1, "matched_count": 1, "remaining_count": 0}
-
-    monkeypatch.setattr(controller_module, "http_request", fake_request)
-
-    response = controller.clear_processor_queues(
-        {
-            "services": "face-detection",
-            "timeout_s": "bad",
-            "max_count": 5,
-            "dry_run": True,
-            "reason": "scheduler_pressure",
-        }
-    )
-
-    assert force_refresh_calls == [True]
-    assert response == {
-        "ok": True,
-        "device": "edgex1",
-        "service_count": 1,
-        "matched_count": 3,
-        "cleared_count": 2,
-        "remaining_count": 1,
-        "services": {
-            "face-detection": {"ok": True, "cleared_count": 2, "matched_count": 3, "remaining_count": 1}
-        },
-    }
-    assert request_calls == [
-        {
-            "url": "http://10.0.0.1:31000/queue_clear",
-            "method": controller_module.NetworkAPIMethod.PROCESSOR_CLEAR_QUEUE,
-            "timeout": 5.0,
-            "data": {
-                "data": '{"reason": "scheduler_pressure", "max_count": 5, "dry_run": true}',
-            },
-        }
-    ]
+    calls = []
+    monkeypatch.setattr(module, "http_request", lambda **kwargs: calls.append(kwargs) or {
+        "ok": True, "cleared_count": 2, "matched_count": 3, "remaining_count": 1,
+    })
+    result = controller.clear_processor_queues({
+        "runtime_routes": routes, "services": "face", "timeout_s": "bad", "dry_run": True,
+    })
+    assert result["ok"] is True and result["service_count"] == 1
+    assert calls[0]["url"] == "http://processor-face-edgex1.dayu.svc:31000/queue_clear"
+    assert json.loads(calls[0]["data"]["data"])["dry_run"] is True
+    assert controller.clear_processor_queues({})["ok"] is False
 
 
 @pytest.mark.unit
-def test_controller_clear_processor_queues_handles_bad_request_shapes_and_failed_processors(
-    controller_under_test,
-    monkeypatch,
-):
-    controller_module, controller = controller_under_test
-    request_calls = []
-
-    monkeypatch.setattr(controller_module.PortInfo, "force_refresh", staticmethod(lambda: None))
-    monkeypatch.setattr(
-        controller_module.PortInfo,
-        "get_service_ports_dict",
-        staticmethod(lambda device: {"face-detection": 31000, "gender-classification": 32000}),
-    )
-
-    def fake_request(**kwargs):
-        request_calls.append(kwargs)
-        if kwargs["url"].endswith(":31000/queue_clear"):
-            return None
-        return {"ok": True, "cleared_count": "4", "matched_count": "6", "remaining_count": "2"}
-
-    monkeypatch.setattr(controller_module, "http_request", fake_request)
-
-    response = controller.clear_processor_queues(["not", "a", "dict"])
-
-    assert response["service_count"] == 2
-    assert response["matched_count"] == 6
-    assert response["cleared_count"] == 4
-    assert response["remaining_count"] == 2
-    assert response["services"]["face-detection"] == {
-        "ok": False,
-        "error": "processor queue clear request failed",
-    }
-    assert response["services"]["gender-classification"]["ok"] is True
-    assert [call["timeout"] for call in request_calls] == [5.0, 5.0]
-    assert all(
-        call["data"] == {
-            "data": '{"reason": "controller_processor_queue_clear", "max_count": null, "dry_run": false}',
-        }
-        for call in request_calls
-    )
-
-
-@pytest.mark.unit
-def test_controller_service_filter_and_local_service_error_branches(controller_under_test, monkeypatch, tmp_path):
-    controller_module, controller = controller_under_test
-    task = FakeTask()
-
-    assert controller._normalize_service_filter(["face-detection", 7]) == {"face-detection", "7"}
-
-    monkeypatch.setattr(
-        controller_module.Controller,
-        "record_execute_ts",
-        staticmethod(lambda cur_task, is_end=False: None),
-    )
-    monkeypatch.setattr(controller_module.PortInfo, "force_refresh", staticmethod(lambda: None))
-
-    monkeypatch.setattr(controller_module.PortInfo, "get_service_ports_dict", staticmethod(lambda device: {}))
-    monkeypatch.setattr(controller_module.KubeConfig, "get_service_nodes_dict", staticmethod(lambda: {}))
+def test_controller_processor_delivery_requires_exact_task_route(controller_under_test, monkeypatch, tmp_path):
+    module, controller = controller_under_test
+    task = FakeTask(routes=[route("processor", "edgex1", 31000, "face-detection")])
+    monkeypatch.setattr(module.Controller, "record_execute_ts", staticmethod(lambda *args, **kwargs: None))
+    monkeypatch.setattr(module.Context, "get_temporary_file_path", staticmethod(lambda path: str(tmp_path / path)))
     assert controller.send_task_to_service(task, "face-detection") == "error"
 
-    monkeypatch.setattr(
-        controller_module.PortInfo,
-        "get_service_ports_dict",
-        staticmethod(lambda device: {"face-detection": 31000}),
-    )
-    monkeypatch.setenv("NAMESPACE", "dayu")
-    monkeypatch.setattr(
-        controller_module.Context,
-        "get_temporary_file_path",
-        staticmethod(lambda file_path: str(tmp_path / file_path)),
-    )
-    assert controller.send_task_to_service(task, "face-detection") == "error"
-
-
-@pytest.mark.unit
-def test_send_task_to_service_executes_locally_when_processor_and_file_exist(controller_under_test, monkeypatch, tmp_path):
-    controller_module, controller = controller_under_test
-    task = FakeTask()
-    temp_file = tmp_path / "dayu" / task.get_file_path()
-    temp_file.parent.mkdir(parents=True, exist_ok=True)
-    temp_file.write_bytes(b"payload")
-
-    execute_record = []
-    request_calls = []
-
-    monkeypatch.setenv("NAMESPACE", "dayu")
-    monkeypatch.setattr(
-        controller_module.Context,
-        "get_temporary_file_path",
-        staticmethod(lambda file_path: str(tmp_path / file_path)),
-    )
-    monkeypatch.setattr(
-        controller_module.PortInfo,
-        "get_service_ports_dict",
-        staticmethod(lambda device: {"face-detection": 31000}),
-    )
-    monkeypatch.setattr(controller_module, "http_request", lambda **kwargs: request_calls.append(kwargs) or {"state": "ok"})
-    monkeypatch.setattr(
-        controller_module.Controller,
-        "record_execute_ts",
-        staticmethod(lambda cur_task, is_end=False: execute_record.append((cur_task.get_task_id(), is_end))),
-    )
-
+    payload = tmp_path / "dayu" / "payload.bin"
+    payload.parent.mkdir(parents=True, exist_ok=True)
+    payload.write_bytes(b"payload")
+    calls = []
+    monkeypatch.setattr(module, "http_request", lambda **kwargs: calls.append(kwargs))
     assert controller.send_task_to_service(task, "face-detection") == "execute"
-    assert execute_record == [(2, False)]
-    assert request_calls[0]["method"] == controller_module.NetworkAPIMethod.PROCESSOR_PROCESS_LOCAL
-    assert request_calls[0]["data"] == {"data": task.serialize()}
+    assert calls[0]["url"] == "http://processor-face-detection-edgex1.dayu.svc:31000/predict_local"
+
+    missing = FakeTask(routes=[route("processor", "cloudx1", 31000, "face-detection")])
+    assert controller.send_task_to_service(missing, "face-detection") == "error"
+    assert missing.get_current_stage_device() == "edgex1"
 
 
 @pytest.mark.unit
-def test_send_task_to_service_transmits_to_cloud_when_service_only_exists_remotely(controller_under_test, monkeypatch):
-    controller_module, controller = controller_under_test
+def test_controller_remote_delivery_uses_task_controller_identity(controller_under_test, monkeypatch, tmp_path):
+    module, controller = controller_under_test
+    task = FakeTask(node="cloudx1", routes=[route("controller", "cloudx1", 9002)])
+    payload = tmp_path / "dayu" / "payload.bin"
+    payload.parent.mkdir(parents=True, exist_ok=True)
+    payload.write_bytes(b"payload")
+    monkeypatch.setattr(module.Context, "get_temporary_file_path", staticmethod(lambda path: str(tmp_path / path)))
+    monkeypatch.setattr(module.Controller, "record_transmit_ts", staticmethod(lambda *args, **kwargs: None))
+    calls = []
+    monkeypatch.setattr(module, "http_request", lambda **kwargs: calls.append(kwargs))
+    controller.send_task_to_other_device(task, "cloudx1")
+    assert calls[0]["url"] == "http://controller-runtime-cloudx1.dayu.svc:9002/submit_task"
+
+
+@pytest.mark.unit
+def test_controller_timestamp_helpers_preserve_behavior(controller_under_test, monkeypatch):
+    module, _ = controller_under_test
     task = FakeTask()
-    submit_calls = []
-    erased = []
-    force_refresh_calls = []
-
-    monkeypatch.setattr(
-        controller_module.PortInfo,
-        "get_service_ports_dict",
-        staticmethod(lambda device: {}),
-    )
-    monkeypatch.setattr(controller_module.PortInfo, "force_refresh", staticmethod(lambda: force_refresh_calls.append(True)))
-    monkeypatch.setattr(
-        controller_module.KubeConfig,
-        "get_service_nodes_dict",
-        staticmethod(lambda: {"face-detection": ["cloudx1"]}),
-    )
-    monkeypatch.setattr(controller, "submit_task", lambda cur_task: submit_calls.append(cur_task) or "transmit")
-    monkeypatch.setattr(
-        controller_module.Controller,
-        "erase_execute_ts",
-        staticmethod(lambda cur_task: erased.append(("execute", cur_task.get_task_id()))),
-    )
-    monkeypatch.setattr(
-        controller_module.Controller,
-        "erase_transmit_ts",
-        staticmethod(lambda cur_task: erased.append(("transmit", cur_task.get_task_id()))),
-    )
-
-    assert controller.send_task_to_service(task, "face-detection") == "transmit"
-    assert force_refresh_calls == [True]
-    assert task.get_current_stage_device() == "cloudx1"
-    assert submit_calls == [task]
-    assert erased == [("execute", 2), ("transmit", 2)]
-
-
-@pytest.mark.unit
-def test_submit_task_routes_end_remote_and_missing_task_branches(controller_under_test, monkeypatch):
-    controller_module, controller = controller_under_test
-    events = []
-
-    end_task = FakeTask(service_name=controller_module.TaskConstant.END.value)
-    remote_task = FakeTask(stage_device="cloudx1")
-    local_task = FakeTask()
-
-    monkeypatch.setattr(controller, "send_task_to_distributor", lambda cur_task: events.append(("distribute", cur_task)))
-    monkeypatch.setattr(controller, "send_task_to_other_device", lambda cur_task, device: events.append(("remote", device)))
-    monkeypatch.setattr(controller, "send_task_to_service", lambda cur_task, service: events.append(("service", service)) or "execute")
-
-    assert controller.submit_task(None) == "error"
-    assert controller.submit_task(end_task) == "transmit"
-    assert controller.submit_task(remote_task) == "transmit"
-    assert controller.submit_task(local_task) == "execute"
-    assert events == [
-        ("distribute", end_task),
-        ("remote", "cloudx1"),
-        ("service", "face-detection"),
-    ]
-
-
-@pytest.mark.unit
-def test_controller_records_and_erases_stage_timestamps(controller_under_test, monkeypatch):
-    controller_module, _ = controller_under_test
-    task = FakeTask()
-
-    erase_calls = []
-    monkeypatch.setattr(
-        controller_module.TimeEstimator,
-        "record_dag_ts",
-        staticmethod(lambda cur_task, is_end=False, sub_tag=None: 1.25 if sub_tag == "transmit" else 0.5),
-    )
-    monkeypatch.setattr(
-        controller_module.TimeEstimator,
-        "erase_dag_ts",
-        staticmethod(lambda cur_task, is_end=False, sub_tag=None: erase_calls.append((sub_tag, is_end))),
-    )
-
-    controller_module.Controller.record_transmit_ts(task, is_end=True)
-    controller_module.Controller.record_execute_ts(task, is_end=True)
-    controller_module.Controller.erase_transmit_ts(task)
-    controller_module.Controller.erase_execute_ts(task)
-
+    monkeypatch.setattr(module.TimeEstimator, "record_dag_ts", staticmethod(
+        lambda task, is_end=False, sub_tag=None: 1.25 if sub_tag == "transmit" else 0.5
+    ))
+    module.Controller.record_transmit_ts(task, is_end=True)
+    module.Controller.record_execute_ts(task, is_end=True)
     assert task.transmit_durations == [1.25]
     assert task.execute_durations == [0.5]
-    assert erase_calls == [("transmit", False), ("transmit", True), ("execute", False)]

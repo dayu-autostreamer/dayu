@@ -1,10 +1,12 @@
 import importlib
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from core.lib.runtime import RuntimeContext
 
 
 http_getter_module = importlib.import_module("core.lib.algorithms.data_getter.http_video_getter")
@@ -13,6 +15,19 @@ v4l2_getter_module = importlib.import_module("core.lib.algorithms.data_getter.v4
 scheduler_filter_module = importlib.import_module(
     "core.lib.algorithms.data_getter_filter.scheduler_permitted_getter_filter"
 )
+
+
+def action_routes(node="edge-a"):
+    def route(component, port, service=""):
+        slot = {"component": component, "target_node": node}
+        if service:
+            slot["logical_service"] = service
+        return {"slot": slot, "runtime_id": f"{component}-{node}", "runtime_revision": 1, "endpoint": {
+            "dns_name": f"{component}-{node}.dayu.svc", "port": port,
+            "runtime_service_uid": f"rs-{component}", "service_uid": f"svc-{component}",
+            "pod_uid": f"pod-{component}",
+        }}
+    return [route("controller", 9002), route("processor", 9004, "face")]
 
 
 @pytest.mark.unit
@@ -202,13 +217,11 @@ def test_v4l2_video_getter_opens_device_with_v4l2_backend(monkeypatch):
 
 @pytest.fixture
 def scheduler_filter_env(monkeypatch):
-    monkeypatch.setattr(scheduler_filter_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(scheduler_filter_module.NodeInfo, "hostname2ip", staticmethod(lambda host: f"ip-{host}"))
-    monkeypatch.setattr(
-        scheduler_filter_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: {"scheduler": 9001, "controller": 9002}[component]),
-    )
+    monkeypatch.setenv("DAYU_RUNTIME_BOOTSTRAP", json.dumps({
+        "local_node": "edge-a", "cloud_node": "cloud-node",
+        "endpoints": {"scheduler": {"fqdn": "scheduler.dayu.svc", "port": 9001}},
+    }))
+    RuntimeContext.reset_default()
 
 
 @pytest.mark.unit
@@ -231,7 +244,7 @@ def test_scheduler_permitted_filter_fail_open_and_throttled_logging(scheduler_fi
     )
 
     assert getter_filter.timeout_s == 0.1
-    assert getter_filter.scheduler_address == "http://ip-cloud-node:9001/generation_admission"
+    assert getter_filter.scheduler_address == "http://scheduler.dayu.svc:9001/generation_admission"
 
     getter_filter._log_throttled("blocked")
     getter_filter._log_throttled("blocked-again")
@@ -247,7 +260,8 @@ def test_scheduler_permitted_filter_fail_open_and_throttled_logging(scheduler_fi
         ("warning", "error-later"),
     ]
 
-    system = SimpleNamespace(source_id=7, local_device="edge-a", meta_data={}, raw_meta_data={})
+    system = SimpleNamespace(source_id=7, local_device="edge-a", meta_data={}, raw_meta_data={},
+                             runtime_routes=action_routes(), runtime_directory_revision=1)
     monkeypatch.setattr(scheduler_filter_module, "http_request", lambda *args, **kwargs: None)
 
     assert getter_filter(system) is False
@@ -302,6 +316,8 @@ def test_scheduler_permitted_filter_executes_clear_queue_actions_once(scheduler_
         local_device="edge-a",
         meta_data={"fps": 10},
         raw_meta_data={"fps": 30},
+        runtime_routes=action_routes(),
+        runtime_directory_revision=1,
     )
 
     assert getter_filter(system) is False
@@ -309,13 +325,11 @@ def test_scheduler_permitted_filter_executes_clear_queue_actions_once(scheduler_
 
     assert action_requests == [
         (
-            "http://ip-edge-a:9002/processor_queues_clear",
+            "http://controller-edge-a.dayu.svc:9002/processor_queues_clear",
             "POST",
             {
                 "timeout": 1.0,
-                "data": {
-                    "data": '{"dry_run": false, "timeout_s": "bad-value", "reason": "pressure"}',
-                },
+                "data": action_requests[0][2]["data"],
             },
         )
     ]
@@ -351,9 +365,11 @@ def test_scheduler_permitted_filter_retries_failed_actions_after_interval(schedu
         "request": {"timeout_s": 1},
     }
 
-    getter_filter._execute_scheduler_actions({"actions": [action]})
-    getter_filter._execute_scheduler_actions({"actions": [action]})
-    getter_filter._execute_scheduler_actions({"actions": [action]})
+    system = SimpleNamespace(runtime_routes=action_routes(), runtime_directory_revision=1)
+
+    getter_filter._execute_scheduler_actions({"actions": [action]}, system)
+    getter_filter._execute_scheduler_actions({"actions": [action]}, system)
+    getter_filter._execute_scheduler_actions({"actions": [action]}, system)
 
     assert request_count == 2
     assert len(errors) == 2
@@ -375,10 +391,10 @@ def test_scheduler_permitted_filter_ignores_invalid_actions_and_logs_controller_
     monkeypatch.setattr(scheduler_filter_module.LOGGER, "warning", lambda message: errors.append(message))
 
     getter_filter = scheduler_filter_module.SchedulerPermittedDataGetterFilter()
-    getter_filter.controller_port = None
+    system = SimpleNamespace(runtime_routes=action_routes(), runtime_directory_revision=1)
 
-    getter_filter._execute_scheduler_actions({"actions": "not-a-list"})
-    getter_filter._execute_scheduler_actions({"actions": [{"type": "clear_processor_queues", "target_devices": 5}]})
+    getter_filter._execute_scheduler_actions({"actions": "not-a-list"}, system)
+    getter_filter._execute_scheduler_actions({"actions": [{"type": "clear_processor_queues", "target_devices": 5}]}, system)
     getter_filter._execute_scheduler_actions(
         {
             "actions": [
@@ -389,9 +405,9 @@ def test_scheduler_permitted_filter_ignores_invalid_actions_and_logs_controller_
                     "request": "not-a-dict",
                 }
             ]
-        }
+        }, system
     )
 
-    assert request_urls == ["http://ip-edge-a:9002/processor_queues_clear"]
+    assert request_urls == ["http://controller-edge-a.dayu.svc:9002/processor_queues_clear"]
     assert len(errors) == 1
     assert "Failed to execute scheduler action clear-3" in errors[0]

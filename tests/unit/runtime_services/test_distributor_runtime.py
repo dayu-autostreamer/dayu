@@ -9,6 +9,7 @@ import pytest
 from fastapi import BackgroundTasks
 
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext, RuntimeLeaseUnavailable
 
 
 distributor_module = importlib.import_module("core.distributor.distributor")
@@ -32,6 +33,7 @@ def build_task(source_id=1, task_id=1, file_path="payload.bin"):
         metadata={"buffer_size": 1},
         raw_metadata={"buffer_size": 1},
         file_path=file_path,
+        runtime_directory_revision=1,
     )
 
 
@@ -81,17 +83,37 @@ def distributor_instance(monkeypatch, tmp_path):
     ))
     monkeypatch.setattr(distributor_module, "datetime", FakeDateTime)
     monkeypatch.setattr(distributor_module.Context, "get_parameter", staticmethod(fake_get_parameter))
-    monkeypatch.setattr(distributor_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(distributor_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.8"))
-    monkeypatch.setattr(distributor_module.PortInfo, "get_component_port", staticmethod(lambda component: 9001))
+    runtime_context = RuntimeContext({
+        "cloud_node": "cloud-node",
+        "endpoints": {
+            "scheduler": {
+                "component": "scheduler",
+                "target_node": "cloud-node",
+                "fqdn": "scheduler-cloud.dayu.svc.cluster.local",
+                "port": 9001,
+            }
+        },
+    })
+    monkeypatch.setattr(
+        distributor_module.RuntimeContext,
+        "get_default",
+        staticmethod(lambda: runtime_context),
+    )
     monkeypatch.setattr(distributor_module.Distributor, "record_total_end_ts", staticmethod(lambda task: None))
 
     requests = []
-    monkeypatch.setattr(
-        distributor_module,
-        "http_request",
-        lambda url, method=None, **kwargs: requests.append((url, method, kwargs)),
-    )
+    def fake_http_request(url, method=None, **kwargs):
+        requests.append((url, method, kwargs))
+        if url.endswith("/runtime-directory/task-leases"):
+            payload = json.loads(kwargs["data"]["data"])
+            return {
+                "revision": payload["revision"],
+                "root_uuid": payload["root_uuid"],
+                "released": True,
+            }
+        return {"accepted": True}
+
+    monkeypatch.setattr(distributor_module, "http_request", fake_http_request)
 
     distributor = distributor_module.Distributor()
     return SimpleNamespace(instance=distributor, db_path=db_path, requests=requests)
@@ -164,13 +186,24 @@ def test_distributor_records_transmit_time_and_forwards_scenario(distributor_ins
 
     assert durations == [(True, "transmit")]
     assert task.get_service("detector").get_transmit_time() == 0.25
-    assert distributor_instance.requests == [
-        (
-            "http://10.0.0.8:9001/scenario",
-            "POST",
-            {"data": {"data": task.serialize()}},
-        )
-    ]
+    assert distributor_instance.requests[0] == (
+        "http://scheduler-cloud.dayu.svc.cluster.local:9001/scenario",
+        "POST",
+        {
+            "timeout": distributor._SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+            "data": {"data": task.serialize()},
+        },
+    )
+    release_url, release_method, release_kwargs = distributor_instance.requests[1]
+    assert release_url == (
+        "http://scheduler-cloud.dayu.svc.cluster.local:9001"
+        "/runtime-directory/task-leases"
+    )
+    assert release_method == "DELETE"
+    assert json.loads(release_kwargs["data"]["data"]) == {
+        "revision": 1,
+        "root_uuid": task.get_root_uuid(),
+    }
 
 
 @pytest.mark.unit
@@ -221,6 +254,31 @@ def test_distributor_handles_empty_queries_scheduler_failures_and_export_cleanup
         distributor.create_result_log_export_file()
 
     assert removed_paths == [str(export_path), str(snapshot_path)]
+
+
+@pytest.mark.unit
+def test_distributor_keeps_lease_until_ttl_when_release_is_not_confirmed(
+    distributor_instance, monkeypatch
+):
+    distributor = distributor_instance.instance
+    warnings = []
+
+    class FailedLeaseClient:
+        def release(self, task):
+            raise RuntimeLeaseUnavailable("scheduler unavailable")
+
+    distributor.runtime_lease_client = FailedLeaseClient()
+    monkeypatch.setattr(
+        distributor_module.LOGGER,
+        "warning",
+        lambda message: warnings.append(message),
+    )
+
+    task = build_task(task_id=12)
+    distributor.distribute_data(task)
+
+    assert distributor.query_all_result()["size"] == 1
+    assert any("retain until TTL" in message for message in warnings)
 
 
 @pytest.mark.unit
