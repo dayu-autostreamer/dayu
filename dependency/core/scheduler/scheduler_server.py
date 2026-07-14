@@ -279,7 +279,10 @@ class SchedulerServer:
         for source_data in data:
             source_id = int(source_data['source']['id'])
             self.scheduler.register_schedule_table(source_id=source_id)
-            source_plan = self.scheduler.get_source_node_selection_plan(source_id, source_data)
+            try:
+                source_plan = self.scheduler.get_source_node_selection_plan(source_id, source_data)
+            except (RuntimeDirectoryError, ValueError) as exc:
+                raise self._translate_runtime_error(exc)
             plan[source_id] = source_plan
 
         # LOGGER.info(f'[Source Node Selection] (all sources) Selection policy: {plan}')

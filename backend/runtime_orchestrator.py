@@ -19,6 +19,12 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from core.lib.common import LOGGER, TaskConstant
 from core.lib.network import NetworkAPIMethod, NetworkAPIPath, http_request
+from core.lib.scheduling.source_selection import (
+    ALL_EDGE_NODES,
+    SOURCE_CANDIDATE_NODES_FIELD,
+    SOURCE_SELECTION_SCOPE_FIELD,
+    selection_scope_from_template,
+)
 
 from cluster_client import ClusterClient
 from runtime_model import RuntimeDirectory, RuntimeEndpoint, RuntimeSession, RuntimeSlot, RuntimeUnit
@@ -245,12 +251,21 @@ class RuntimeOrchestrator:
             if str(node)
         }))
 
-    def _preflight_nodes(
-        self,
-        inventory: Mapping[str, Mapping[str, Any]],
-        target_nodes: Iterable[str],
-        validate_agents: bool = True,
-    ) -> None:
+    @staticmethod
+    def _source_candidate_nodes(
+        source_deploy: Sequence[Mapping[str, Any]],
+    ) -> Tuple[str, ...]:
+        return tuple(sorted({
+            str(node)
+            for source_info in source_deploy or ()
+            for node in (source_info.get(SOURCE_CANDIDATE_NODES_FIELD) or ())
+            if str(node)
+        }))
+
+    @staticmethod
+    def _validate_inventory_targets(
+        inventory: Mapping[str, Mapping[str, Any]], target_nodes: Iterable[str],
+    ) -> Tuple[str, ...]:
         targets = tuple(sorted({str(node) for node in target_nodes if str(node)}))
         missing = [node for node in targets if node not in inventory]
         not_ready = [node for node in targets if node in inventory and not inventory[node].get("ready")]
@@ -258,20 +273,97 @@ class RuntimeOrchestrator:
             raise RuntimePreflightError(
                 f"runtime target validation failed: missing={missing}, not_ready={not_ready}"
             )
-        if not validate_agents:
-            return
-        report = self.cluster.validate_managed_agents(targets)
-        if not report.get("ok"):
-            details = []
-            for name, state in (report.get("agents") or {}).items():
-                if state.get("missing_nodes") or state.get("not_ready_nodes"):
-                    details.append(
-                        f"{name}(missing={state.get('missing_nodes')}, not_ready={state.get('not_ready_nodes')})"
-                    )
+        return targets
+
+    @staticmethod
+    def _ensure_managed_agent_targets(
+        report: Mapping[str, Any], target_nodes: Iterable[str],
+    ) -> None:
+        targets = {str(node) for node in target_nodes if str(node)}
+        details = []
+        agents = report.get("agents") or {}
+        for name in ("sedna_lc", "edgemesh_agent"):
+            state = agents.get(name) or {}
+            missing = sorted(targets & set(state.get("missing_nodes") or ()))
+            not_ready = sorted(targets & set(state.get("not_ready_nodes") or ()))
+            if missing or not_ready:
+                details.append(f"{name}(missing={missing}, not_ready={not_ready})")
+        if len(agents) < 2:
+            details.append("managed-agent report is incomplete")
+        if details:
             raise RuntimePreflightError(
                 "managed RuntimeService prerequisites are not Ready on every target node: "
                 + "; ".join(details)
             )
+
+    @staticmethod
+    def _managed_agent_nodes(report: Mapping[str, Any]) -> set:
+        agents = report.get("agents") or {}
+        ready_sets = []
+        for name in ("sedna_lc", "edgemesh_agent"):
+            state = agents.get(name)
+            if not isinstance(state, Mapping):
+                raise RuntimePreflightError(f"managed-agent report omitted {name!r}")
+            ready_sets.append({str(node) for node in (state.get("ready_nodes") or ()) if str(node)})
+        return set.intersection(*ready_sets) if ready_sets else set()
+
+    def _authorize_source_candidates(
+        self,
+        inventory: Mapping[str, Mapping[str, Any]],
+        source_deploy: Sequence[Mapping[str, Any]],
+        scope: str,
+        cloud_node: str,
+    ) -> list:
+        processor_candidates = set(self._selected_nodes(source_deploy))
+        if not processor_candidates:
+            raise RuntimePreflightError("at least one processor candidate node is required")
+        required_targets = processor_candidates | {cloud_node}
+        self._validate_inventory_targets(inventory, required_targets)
+
+        non_edge = sorted(
+            node for node in processor_candidates
+            if (inventory.get(node) or {}).get("role") != "edge"
+        )
+        if non_edge:
+            raise RuntimePreflightError(
+                f"generator/processor edge candidates must be edge nodes: {non_edge}"
+            )
+
+        ready_edges = {
+            name for name, record in inventory.items()
+            if record.get("role") == "edge" and record.get("ready")
+        }
+        probe_targets = required_targets | (ready_edges if scope == ALL_EDGE_NODES else set())
+        report = self.cluster.validate_managed_agents(probe_targets)
+        self._ensure_managed_agent_targets(report, required_targets)
+        managed_nodes = self._managed_agent_nodes(report)
+
+        shared_source_candidates = sorted(ready_edges & managed_nodes)
+        authorized = copy.deepcopy(list(source_deploy))
+        for source_info in authorized:
+            if scope == ALL_EDGE_NODES:
+                candidates = list(shared_source_candidates)
+            else:
+                candidates = list(source_info.get("node_set") or ())
+            if not candidates:
+                raise RuntimePreflightError(
+                    f"source {_source_id(source_info)!r} has no Ready managed-agent-covered source candidates"
+                )
+            source_info[SOURCE_CANDIDATE_NODES_FIELD] = candidates
+            source_info[SOURCE_SELECTION_SCOPE_FIELD] = scope
+        return authorized
+
+    def _preflight_nodes(
+        self,
+        inventory: Mapping[str, Mapping[str, Any]],
+        target_nodes: Iterable[str],
+        validate_agents: bool = True,
+    ) -> None:
+        targets = self._validate_inventory_targets(inventory, target_nodes)
+        if not validate_agents:
+            return
+        report = self.cluster.validate_managed_agents(targets)
+        self._ensure_managed_agent_targets(report, targets)
 
     @staticmethod
     def _compact_inventory(
@@ -468,7 +560,14 @@ class RuntimeOrchestrator:
                     f"source selection plan omitted source {source_id!r}; implicit placement is forbidden"
                 )
             value = str(value)
-            candidates = {str(node) for node in (source_info.get("node_set") or ())}
+            candidates = {
+                str(node)
+                for node in (source_info.get(SOURCE_CANDIDATE_NODES_FIELD) or ())
+            }
+            if not candidates:
+                raise RuntimeOrchestrationError(
+                    f"source {_source_id(source_info)!r} has no authorized source candidate set"
+                )
             if value not in candidates:
                 raise RuntimeOrchestrationError(
                     f"source {source_id!r} selected unexpected node {value!r}; candidates={sorted(candidates)}"
@@ -568,7 +667,7 @@ class RuntimeOrchestrator:
         source_nodes = set(source_selection.values())
         # Controller/monitor routes are topology infrastructure, not placement
         # by-products. A later scheduler decision may move a processor to any
-        # preflighted source candidate, so every candidate must be routable in
+        # immutable processor candidate, so every such node must be routable in
         # the initial atomic directory even when revision 1 does not use it.
         candidate_nodes = set(self._selected_nodes(source_deploy))
         runtime_nodes = sorted(processor_nodes | source_nodes | candidate_nodes | {cloud_node})
@@ -898,34 +997,29 @@ class RuntimeOrchestrator:
             if stored is not None:
                 raise RuntimeOrchestrationError("a runtime session already exists; uninstall it before installing")
             operation_deadline = self._clock() + self.operation_timeout
+            templates, normalized_sources = self._logical_templates(
+                self.template_helper, policy, source_deploy,
+            )
+            source_scope = selection_scope_from_template(templates["scheduler"])
             inventory = self._refresh_inventory()
             cloud_node = self._cloud_node(inventory)
-            selected_nodes = self._selected_nodes(source_deploy)
-            if not selected_nodes:
-                raise RuntimePreflightError("at least one source candidate node is required")
-            non_edge_sources = sorted(
-                node for node in selected_nodes
-                if (inventory.get(node) or {}).get("role") != "edge"
+            normalized_sources = self._authorize_source_candidates(
+                inventory, normalized_sources, source_scope, cloud_node,
             )
-            if non_edge_sources:
-                raise RuntimePreflightError(
-                    f"generator source candidates must be edge nodes: {non_edge_sources}"
-                )
-            self._preflight_nodes(inventory, set(selected_nodes) | {cloud_node})
+            processor_candidates = set(self._selected_nodes(normalized_sources))
+            source_candidates = set(self._source_candidate_nodes(normalized_sources))
+            permitted_runtime_nodes = processor_candidates | source_candidates | {cloud_node}
 
             install_id = str(uuid.uuid4())
             operation_id = str(uuid.uuid4())
             revision = 1
-            templates, normalized_sources = self._logical_templates(
-                self.template_helper, policy, source_deploy,
-            )
             renderer = self.template_helper.create_runtime_renderer(install_id)
             scheduler_preview = renderer.render(
                 templates["scheduler"], RuntimeSlot("scheduler", cloud_node, "cloud"), revision,
             )
             bootstrap = self._bootstrap(
                 install_id, cloud_node, cloud_node, inventory,
-                set(selected_nodes) | {cloud_node}, (scheduler_preview.unit,),
+                permitted_runtime_nodes, (scheduler_preview.unit,),
             )
             scheduler_rendered = renderer.render(
                 templates["scheduler"], RuntimeSlot("scheduler", cloud_node, "cloud"), revision,
@@ -978,10 +1072,10 @@ class RuntimeOrchestrator:
                 # cloud node.  ``_deployment`` rejects any node outside that
                 # exact set, so checking managed agents again would only issue
                 # two more cluster-wide Pod lists on every install.
-                if not target_nodes.issubset(set(selected_nodes) | {cloud_node}):
+                if not target_nodes.issubset(permitted_runtime_nodes):
                     raise RuntimePreflightError(
                         f"scheduler selected targets outside the preflight snapshot: "
-                        f"{sorted(target_nodes - (set(selected_nodes) | {cloud_node}))}"
+                        f"{sorted(target_nodes - permitted_runtime_nodes)}"
                     )
                 rendered, enriched = self._render_initial(
                     renderer, templates, enriched, source_selection, deployment,

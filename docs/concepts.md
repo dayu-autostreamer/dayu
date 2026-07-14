@@ -99,10 +99,18 @@ A scheduler policy is an install-time catalog entry in `template/scheduler_polic
 
 The policy id is what backend `/install` receives as `policy_id`.
 
+Source placement and processor placement have separate permission sets. `node_set` is the immutable per-source
+processor candidate set. Backend also persists `source_candidate_nodes`: for `selected_edge_nodes` it is that source's
+`node_set`; for `all_edge_nodes` it is every Ready edge node covered by Ready Sedna LC and EdgeMesh agents in the one
+install-time cluster snapshot. Scheduler policies consume this injected list and never discover or expand it. Backend
+validates the returned source against `source_candidate_nodes`, so a generator may legally run outside the processor
+set without weakening the control-plane boundary. A fixed hostname or position outside its permitted list fails
+explicitly; it is never replaced with the first node.
+
 Initial-deployment and redeployment hooks return one canonical shape: each current-DAG logical service maps to a
 non-empty JSON list of exact candidate node names. `dependency/core/lib/scheduling/deployment_plan.py` owns extraction,
 normalization, and validation of this contract for both Scheduler and every policy family. It rejects missing or extra
-services, scalar placements, empty targets, and nodes outside the selected source's candidate set. Scheduler and policy
+services, scalar placements, empty targets, and nodes outside the processor candidate set. Scheduler and policy
 plugins never infer cloud placement. After the plan is valid, Backend may apply the independent
 `default-cloud-processor-backup` control by adding the exact resolved cloud node to every logical service. That
 operational replica does not relax or rewrite the Scheduler policy contract.

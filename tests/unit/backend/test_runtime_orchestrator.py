@@ -66,9 +66,10 @@ class FakeClock:
 
 
 class FakeCluster:
-    def __init__(self, nodes=None, agents_ok=True, events=None):
+    def __init__(self, nodes=None, agents_ok=True, managed_nodes=None, events=None):
         self.nodes = copy.deepcopy(nodes or inventory())
         self.agents_ok = agents_ok
+        self.managed_nodes = None if managed_nodes is None else set(managed_nodes)
         self.events = events if events is not None else []
         self.inventory_calls = 0
         self.preflight_calls = []
@@ -82,7 +83,19 @@ class FakeCluster:
         targets = tuple(sorted(targets))
         self.preflight_calls.append(targets)
         if self.agents_ok:
-            return {"ok": True, "agents": {}}
+            ready = set(targets) if self.managed_nodes is None else set(targets) & self.managed_nodes
+            missing = sorted(set(targets) - ready)
+            return {
+                "ok": not missing,
+                "agents": {
+                    name: {
+                        "missing_nodes": missing,
+                        "not_ready_nodes": [],
+                        "ready_nodes": sorted(ready),
+                    }
+                    for name in ("sedna_lc", "edgemesh_agent")
+                },
+            }
         return {
             "ok": False,
             "agents": {
@@ -175,9 +188,13 @@ class FakeRenderer:
 
 
 class FakeTemplateHelper:
-    def __init__(self, clock=None, default_cloud_processor_backup=False):
+    def __init__(
+            self, clock=None, default_cloud_processor_backup=False,
+            source_selection_scope="selected_edge_nodes",
+    ):
         self.clock = clock
         self.default_cloud_processor_backup = default_cloud_processor_backup
+        self.source_selection_scope = source_selection_scope
 
     def load_base_info(self):
         return {
@@ -194,14 +211,20 @@ class FakeTemplateHelper:
             },
         }
 
-    @staticmethod
-    def load_policy_apply_yaml(policy):
-        return {
+    def load_policy_apply_yaml(self, policy):
+        templates = {
             component: {"component": component}
             for component in (
                 "scheduler", "generator", "controller", "distributor", "monitor",
             )
         }
+        templates["scheduler"]["pod-template"] = {
+            "env": [{
+                "name": "SCH_SELECTION_POLICY_PARAMETERS",
+                "value": repr({"scope": self.source_selection_scope}),
+            }],
+        }
+        return templates
 
     @staticmethod
     def normalize_source_deploy(sources):
@@ -432,17 +455,21 @@ class FakeScheduler:
 
 def make_orchestrator(
         initial_plan, *, agents_ok=True, initial_put_ack=True, clock=None,
-        default_cloud_processor_backup=False,
+        default_cloud_processor_backup=False, source_selection_scope="selected_edge_nodes",
+        managed_nodes=None,
 ):
     events = []
     clock = clock or FakeClock()
-    cluster = FakeCluster(agents_ok=agents_ok, events=events)
+    cluster = FakeCluster(
+        agents_ok=agents_ok, managed_nodes=managed_nodes, events=events,
+    )
     runtime = FakeRuntimeClient(events)
     sessions = FakeSessionStore()
     scheduler = FakeScheduler(initial_plan, events, initial_put_ack=initial_put_ack)
     orchestrator = RuntimeOrchestrator(
         FakeTemplateHelper(
             default_cloud_processor_backup=default_cloud_processor_backup,
+            source_selection_scope=source_selection_scope,
         ),
         "dayu",
         cluster_client=cluster,
@@ -550,7 +577,21 @@ def test_install_fails_before_create_when_managed_agents_do_not_cover_targets():
     assert sessions.stored is None
 
 
-def test_install_rejects_non_edge_generator_candidates_before_runtime_creation():
+def test_install_rejects_invalid_source_scope_before_kubernetes_snapshot():
+    orchestrator, cluster, runtime, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]}, source_selection_scope="cluster",
+    )
+
+    with pytest.raises(ValueError, match="source selection scope"):
+        install(orchestrator, "detect")
+
+    assert cluster.inventory_calls == 0
+    assert cluster.preflight_calls == []
+    assert runtime.created == {}
+    assert sessions.stored is None
+
+
+def test_install_rejects_non_edge_processor_candidates_before_runtime_creation():
     orchestrator, cluster, runtime, sessions, _, _ = make_orchestrator(
         {"detect": ["edge-a"]},
     )
@@ -561,6 +602,82 @@ def test_install_rejects_non_edge_generator_candidates_before_runtime_creation()
 
     assert runtime.created == {}
     assert sessions.stored is None
+
+
+def test_selected_edge_scope_rejects_scheduler_source_outside_processor_candidates():
+    orchestrator, cluster, runtime, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    cluster.nodes["edge-c"] = {
+        "name": "edge-c", "role": "edge", "address": "10.0.0.4",
+        "ready": True, "labels": {},
+    }
+    scheduler.source_plan = {"1": "edge-c"}
+
+    with pytest.raises(RuntimeOrchestrationError, match="selected unexpected node 'edge-c'"):
+        install(orchestrator, "detect")
+
+    assert sessions.stored.session.phase == "failed"
+    assert cluster.preflight_calls == [("cloud-a", "edge-a", "edge-b")]
+    assert not any(
+        manifest["spec"]["component"] == "generator"
+        for manifest in runtime.created.values()
+    )
+
+
+def test_all_edge_scope_allows_source_outside_processor_candidates_from_one_snapshot():
+    orchestrator, cluster, _, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]}, source_selection_scope="all_edge_nodes",
+    )
+    cluster.nodes["edge-c"] = {
+        "name": "edge-c", "role": "edge", "address": "10.0.0.4",
+        "ready": True, "labels": {},
+    }
+    scheduler.source_plan = {"1": "edge-c"}
+
+    directory = install(orchestrator, "detect")
+
+    assert directory.deployment == {"detect": ["edge-a"]}
+    assert next(
+        unit.slot.target_node for unit in directory.routes
+        if unit.slot.component == "generator"
+    ) == "edge-c"
+    assert {
+        unit.slot.target_node for unit in directory.routes
+        if unit.slot.component == "controller"
+    } == {"cloud-a", "edge-a", "edge-b", "edge-c"}
+    persisted_source = sessions.stored.session.source_deploy[0]
+    assert persisted_source["node_set"] == ["edge-a", "edge-b"]
+    assert persisted_source["source_candidate_nodes"] == ["edge-a", "edge-b", "edge-c"]
+    assert persisted_source["source_selection_scope"] == "all_edge_nodes"
+    selection_payload = next(
+        payload for _, path, payload, _ in scheduler.calls
+        if path == "/source_nodes_selection"
+    )
+    assert selection_payload[0]["source_candidate_nodes"] == [
+        "edge-a", "edge-b", "edge-c",
+    ]
+    assert cluster.inventory_calls == 1
+    assert cluster.preflight_calls == [("cloud-a", "edge-a", "edge-b", "edge-c")]
+
+
+def test_all_edge_scope_excludes_optional_nodes_without_managed_agents():
+    orchestrator, cluster, _, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+        source_selection_scope="all_edge_nodes",
+        managed_nodes={"cloud-a", "edge-a", "edge-b"},
+    )
+    cluster.nodes["edge-c"] = {
+        "name": "edge-c", "role": "edge", "address": "10.0.0.4",
+        "ready": True, "labels": {},
+    }
+
+    install(orchestrator, "detect")
+
+    assert sessions.stored.session.source_deploy[0]["source_candidate_nodes"] == [
+        "edge-a", "edge-b",
+    ]
+    assert cluster.preflight_calls == [("cloud-a", "edge-a", "edge-b", "edge-c")]
 
 
 @pytest.mark.parametrize(

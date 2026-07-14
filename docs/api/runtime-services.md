@@ -80,7 +80,7 @@ Implementation entrypoint: `dependency/core/scheduler/scheduler_server.py`
 | `POST` | `/resource` | Update scheduler resource table for one device. | Form field `data` with JSON `{"device","resource"}` | `null` |
 | `GET` | `/resource` | Get the full scheduler resource table. | None | Object keyed by device |
 | `GET` | `/resource_lock` | Acquire resource ownership for a monitor probe such as bandwidth. | Form field `data` with JSON `{"resource","device"}` | `{holder}` |
-| `GET` | `/source_nodes_selection` | Generate source-to-edge-node selection plan. | Form field `data` with JSON array | `{plan}` |
+| `GET` | `/source_nodes_selection` | Generate a source-to-edge-node selection plan within Backend-authorized candidates. | Form field `data` with JSON array containing `node_set`, `source_candidate_nodes`, and `source_selection_scope` | `{plan}` |
 | `GET` | `/initial_deployment` | Generate initial deployment plan. | Form field `data` with JSON array | `{plan: {service: [node, ...]}}` |
 | `GET` | `/redeployment` | Generate redeployment plan. | Form field `data` with JSON array | `{plan: {service: [node, ...]}}` |
 | `GET` | `/generation_admission` | Decide whether one source may generate the next task. | Form field `data` with source request JSON | Policy-specific admission response |
@@ -92,6 +92,12 @@ incomplete plan. Scheduler and policy plugins enforce this shared contract throu
 `dependency/core/lib/scheduling/deployment_plan.py`. After validation, Backend may add the exact cloud node to every
 service when `default-cloud-processor-backup` is enabled; this changes the published desired deployment, not the
 Scheduler API response contract.
+
+Source selection has a separate contract in `dependency/core/lib/scheduling/source_selection.py`. `node_set` contains
+processor candidates; `source_candidate_nodes` contains the exact generator permission set resolved and persisted by
+Backend. `selected_edge_nodes` selects from the former and `all_edge_nodes` selects from the latter. Scheduler never
+queries Kubernetes or `RuntimeContext` to expand either set, and Backend independently rejects a returned source that
+is not in the persisted source permission list.
 
 ### RuntimeDirectory control API
 

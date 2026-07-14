@@ -104,12 +104,6 @@ class Scheduler:
     def runtime_nodes_for_service(self, logical_service):
         return list(self.runtime_service_nodes().get(str(logical_service), []))
 
-    def runtime_edge_nodes(self):
-        context_nodes = self.runtime_context.edge_nodes()
-        if context_nodes:
-            return context_nodes
-        return self.runtime_directory.snapshot_model().edge_nodes(self.cloud_device)
-
     def resolve_runtime_route(self, component, target_node=None, logical_service=None):
         return self.runtime_directory.snapshot_model().resolve(
             component=component,

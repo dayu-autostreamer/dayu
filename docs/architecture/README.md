@@ -116,6 +116,8 @@ Key points:
 - scheduler policies are catalog entries that point at one scheduler template plus its dependent component templates
 - processor services are catalog entries that point at processor templates
 - datasource choice, DAG choice, and selected nodes are injected at install time
+- processor `node_set` and generator `source_candidate_nodes` are separate immutable permissions; `all_edge_nodes`
+  is resolved by Backend from the single Node/Sedna/EdgeMesh snapshot and may place a source outside the processor set
 - `TemplateHelper` and `RuntimeServiceRenderer` are pure: they do not load cluster configuration or call Kubernetes
 - `ClusterClient` loads in-cluster configuration once and owns the sole reusable `ApiClient`; `RuntimeServiceClient`
   and `RuntimeSessionStore` require its injected API handles and cannot create independent clients; runtime

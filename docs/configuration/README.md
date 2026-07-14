@@ -262,6 +262,23 @@ That is why adding a new service usually requires updating both `template/servic
 Application code should remain service-local under `dependency/core/applications/<service>/`; DAG membership is decided by
 the user-selected workflow at runtime, not by hard-coded schema names inside the service implementation.
 
+## Source Node Selection Controls
+
+Source placement is intentionally independent from processor placement. The install request's `node_set` remains the
+processor candidate set. Backend derives a separate immutable `source_candidate_nodes` permission list from the
+scheduler template's `SCH_SELECTION_POLICY_PARAMETERS.scope`:
+
+| Scope | Permitted generator nodes |
+| --- | --- |
+| `selected_edge_nodes` | That source's normalized `node_set` |
+| `all_edge_nodes` | Ready edge nodes that have both a Ready Sedna LC and a Ready EdgeMesh agent in Backend's single install snapshot |
+
+Backend persists this resolved list in `dayu-runtime-session`, passes it to Scheduler, and validates Scheduler's source
+decision against it. Scheduler does not call Kubernetes or expand the list from local runtime state. The fixed policy
+is fail-closed: an invalid type, out-of-range position, or hostname outside the resolved candidates fails installation
+instead of silently selecting the first node. This lets a camera-facing generator run on a node outside the processor
+set while retaining exact control-plane authorization.
+
 ## Processor Deployment Controls
 
 Processor RuntimeServices are generated from the validated scheduler placement plus any Backend-configured cloud

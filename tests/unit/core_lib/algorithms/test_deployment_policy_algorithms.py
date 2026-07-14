@@ -192,50 +192,54 @@ def test_initial_and_redeployment_policies_cover_full_random_and_non_redeploymen
 @pytest.mark.unit
 def test_selection_policies_cover_invalid_configuration_and_empty_candidates(monkeypatch):
     warnings = []
-    monkeypatch.setattr(fixed_selection_module.LOGGER, "warning", lambda message: warnings.append(message))
     monkeypatch.setattr(random_selection_module.LOGGER, "warning", lambda message: warnings.append(message))
 
-    invalid_position = fixed_selection_module.FixedSelectionPolicy(
-        SimpleNamespace(), 1, fixed_value=-1, fixed_type="position"
-    )
-    invalid_hostname = fixed_selection_module.FixedSelectionPolicy(
-        SimpleNamespace(), 1, fixed_value=123, fixed_type="hostname"
-    )
-    invalid_type = fixed_selection_module.FixedSelectionPolicy(
-        SimpleNamespace(), 1, fixed_value="edge-a", fixed_type="region"
-    )
-
-    assert invalid_position.fixed_value == 0
-    assert invalid_hostname.fixed_value == ""
-    assert invalid_type.fixed_type == "position"
+    with pytest.raises(ValueError, match="non-negative integer"):
+        fixed_selection_module.FixedSelectionPolicy(
+            SimpleNamespace(), 1, fixed_value=-1, fixed_type="position"
+        )
+    with pytest.raises(ValueError, match="non-empty string"):
+        fixed_selection_module.FixedSelectionPolicy(
+            SimpleNamespace(), 1, fixed_value=123, fixed_type="hostname"
+        )
+    with pytest.raises(ValueError, match="position.*hostname"):
+        fixed_selection_module.FixedSelectionPolicy(
+            SimpleNamespace(), 1, fixed_value="edge-a", fixed_type="region"
+        )
 
     info = build_deployment_info()
-    fallback_position = fixed_selection_module.FixedSelectionPolicy(
+    invalid_position = fixed_selection_module.FixedSelectionPolicy(
         SimpleNamespace(), 1, fixed_value=9, fixed_type="position"
     )
-    fallback_hostname = fixed_selection_module.FixedSelectionPolicy(
+    invalid_hostname = fixed_selection_module.FixedSelectionPolicy(
         SimpleNamespace(), 1, fixed_value="missing", fixed_type="hostname"
     )
 
-    assert fallback_position(info) == "edge-a"
-    assert fallback_hostname(info) == "edge-a"
-    assert fixed_selection_module.FixedSelectionPolicy(SimpleNamespace(), 1)({"source": {"id": 1}, "node_set": []}) is None
+    with pytest.raises(ValueError, match="outside the permitted"):
+        invalid_position(info)
+    with pytest.raises(ValueError, match="not a permitted candidate"):
+        invalid_hostname(info)
+    with pytest.raises(ValueError, match="no permitted source candidate"):
+        fixed_selection_module.FixedSelectionPolicy(SimpleNamespace(), 1)({
+            "source": {"id": 1}, "node_set": [],
+        })
 
-    runtime_system = SimpleNamespace(runtime_edge_nodes=lambda: ["edge-b", "edge-c"])
-    selector = selection_base_module.BaseSelectionPolicy(system=runtime_system, scope="selected_edge_nodes")
+    selector = selection_base_module.BaseSelectionPolicy(scope="selected_edge_nodes")
     assert selector.get_candidate_node_set(info) == ["edge-a", "edge-b"]
     selector.scope = "all_edge_nodes"
-    assert selector.get_candidate_node_set({"node_set": ["edge-a"], "all_edge_nodes": None}) == ["edge-b", "edge-c"]
+    assert selector.get_candidate_node_set({
+        "node_set": ["edge-a"],
+        "source_candidate_nodes": ["edge-b", "edge-c"],
+    }) == ["edge-b", "edge-c"]
 
-    fallback_selector = selection_base_module.BaseSelectionPolicy(scope="source_bound")
-    assert fallback_selector.scope == "selected_edge_nodes"
-    assert fallback_selector.get_candidate_node_set(info) == ["edge-a", "edge-b"]
+    with pytest.raises(ValueError, match="source selection scope"):
+        selection_base_module.BaseSelectionPolicy(scope="source_bound")
 
     random_selector = random_selection_module.RandomSelectionPolicy(SimpleNamespace(), 1, scope="selected_edge_nodes")
     monkeypatch.setattr(random_selection_module.random, "choice", lambda seq: seq[-1])
     assert random_selector(info) == "edge-b"
     assert random_selector({"source": {"id": 2}, "node_set": []}) is None
-    assert any("illegal" in message or "not supported" in message or "empty" in message for message in warnings)
+    assert any("empty" in message for message in warnings)
 
 
 @pytest.mark.unit

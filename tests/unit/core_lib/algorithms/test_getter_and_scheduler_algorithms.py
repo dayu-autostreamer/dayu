@@ -319,15 +319,16 @@ def test_scheduler_helper_algorithms_cover_base_contracts_selection_and_retrieva
     assert casva_scenario["segment_size"] == 1.25
     assert casva_scenario["content_dynamics"] == 0.4
 
-    selection_system = SimpleNamespace(runtime_edge_nodes=lambda: ["edge-a", "edge-b", "edge-c"])
-    selector = selection_base_module.BaseSelectionPolicy(system=selection_system, scope="all_edge_nodes")
-    assert selector.get_candidate_node_set({"node_set": ["edge-a", "edge-b"], "all_edge_nodes": ["edge-b", "edge-c"]}) == [
+    selector = selection_base_module.BaseSelectionPolicy(scope="all_edge_nodes")
+    assert selector.get_candidate_node_set({
+        "node_set": ["edge-a", "edge-b"],
+        "source_candidate_nodes": ["edge-b", "edge-c"],
+    }) == [
         "edge-b",
         "edge-c",
     ]
-    fallback_selector = selection_base_module.BaseSelectionPolicy(scope="cluster")
-    assert fallback_selector.scope == "selected_edge_nodes"
-    assert fallback_selector.get_candidate_node_set({"node_set": ["edge-a", "edge-b"]}) == ["edge-a", "edge-b"]
+    with pytest.raises(ValueError, match="source selection scope"):
+        selection_base_module.BaseSelectionPolicy(scope="cluster")
 
     fixed_position = selection_policy_module.FixedSelectionPolicy(SimpleNamespace(), 1, fixed_value=1, fixed_type="position")
     assert fixed_position({"source": {"id": 1}, "node_set": ["edge-a", "edge-b"]}) == "edge-b"

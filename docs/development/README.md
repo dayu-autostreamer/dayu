@@ -17,7 +17,7 @@ This guide is for contributors who need to change code in the repository and wan
 | `dependency/core/processor/` | Processor service shells and inference orchestration | processor behavior, queueing, scenario extraction |
 | `dependency/core/scheduler/` | Scheduler shell and per-source agent orchestration | runtime scheduling behavior |
 | `dependency/core/lib/` | Shared runtime library: hooks, content/task routes, scheduling contracts, pure runtime context/resolver/lease client, network helpers, estimators | reusable runtime helpers and most extensibility points; never Kubernetes discovery |
-| `dependency/core/lib/scheduling/` | Stable contracts shared by Scheduler and scheduling plugins | deployment-plan shape, candidate scoping, normalization, and validation |
+| `dependency/core/lib/scheduling/` | Stable contracts shared by Backend, Scheduler and scheduling plugins | independent source/processor permissions, deployment-plan shape, normalization, and validation |
 | `dependency/core/applications/` | Concrete AI application implementations | detector, classifier, tracker, service-specific logic |
 | `template/` | Deployment composition and default runtime env | scheduler families, processor templates, default visualizers |
 | `build/` and `docker-bake.hcl` | Dockerfiles plus the declarative image build matrix | image packaging, platform/tag matrix, JetPack build variants |

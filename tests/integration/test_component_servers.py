@@ -264,6 +264,24 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert select_response.status_code == 200
         assert select_response.json() == {"plan": {"1": "edge-node"}}
 
+        def reject_fixed_source(source_id, data):
+            raise ValueError("fixed source node is not a permitted candidate")
+
+        server.scheduler.get_source_node_selection_plan = reject_fixed_source
+        rejected_source = client.request(
+            "GET",
+            "/source_nodes_selection",
+            data={"data": json.dumps([{
+                "source": {"id": 1},
+                "node_set": ["edge-node"],
+                "source_candidate_nodes": ["edge-node"],
+                "source_selection_scope": "selected_edge_nodes",
+                "dag": {},
+            }])},
+        )
+        assert rejected_source.status_code == 422
+        assert "not a permitted candidate" in rejected_source.json()["detail"]
+
         deployment_source = [{
             "source": {"id": 1},
             "node_set": ["edge-node"],

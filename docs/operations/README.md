@@ -82,11 +82,11 @@ durable local storage to preserve Scheduler directory and lease recovery across 
 
 `POST /install` accepts a datasource label, policy id, and per-source DAG/node selection. Backend then:
 
-1. normalizes catalog, DAG, source, and node inputs without contacting Kubernetes;
-2. obtains one backend-owned node snapshot and preflights Sedna LC plus EdgeMesh agent readiness for every candidate;
+1. normalizes catalog, DAG, source, processor-node inputs, and scheduler source-selection scope without contacting Kubernetes;
+2. obtains one backend-owned Node snapshot plus one Sedna LC and one EdgeMesh agent Pod snapshot; required processor/cloud targets must be covered, while `all_edge_nodes` source permissions contain only Ready, jointly covered edge nodes;
 3. creates a new install id/session and renders the scheduler RuntimeService at revision 1;
 4. waits for scheduler `Activated=True` and `Ready=True`, including observed spec hash and exact object identities;
-5. calls scheduler source-selection and initial-deployment policies;
+5. calls scheduler source-selection with the persisted `source_candidate_nodes` permission set, validates the result against that set, and independently validates initial processor placement against `node_set` plus the explicit cloud identity;
 6. renders, creates, and activates the remaining RuntimeServices;
 7. publishes RuntimeDirectory revision 1 to Scheduler's Redis-backed CAS store and reads it back to verify revision and canonical hash;
 8. commits the session as `active` in ConfigMap `dayu-runtime-session` using `resourceVersion` compare-and-swap.
@@ -189,7 +189,7 @@ is not erased; remove it only when the support Redis is stopped and abandonment 
 - backend telemetry batches exact Pod UID joins into one server-side-label-filtered Pod list and at most one equally
   filtered metrics list, while reusing its node inventory snapshot;
 - automatic redeploy reuses the same Backend-owned node TTL and does not repeat Sedna/EdgeMesh Agent Pod lists after
-  installation has validated every immutable candidate node.
+  installation has authorized the immutable processor and source candidate sets.
 
 There is therefore no normal runtime path that can issue Kubernetes calls from an edge worker, and no forced cache
 refresh path to regress into repeated lists. Keep `tests/unit/core_lib/test_runtime_kubernetes_boundary.py` passing to

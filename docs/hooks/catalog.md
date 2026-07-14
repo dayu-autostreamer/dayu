@@ -138,8 +138,8 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias    | Module                                                                                | Purpose                                               | Notes                                    |
 |----------|---------------------------------------------------------------------------------------|-------------------------------------------------------|------------------------------------------|
-| `fixed`  | `dependency/core/lib/algorithms/schedule_selection_policy/fixed_selection_policy.py`  | Choose a source node by fixed position or hostname.   | Supports `fixed_value`, `fixed_type`, and the scopes `selected_edge_nodes` / `all_edge_nodes`. |
-| `random` | `dependency/core/lib/algorithms/schedule_selection_policy/random_selection_policy.py` | Choose a source node randomly from the candidate set. | Supports only the scopes `selected_edge_nodes` / `all_edge_nodes`. |
+| `fixed`  | `dependency/core/lib/algorithms/schedule_selection_policy/fixed_selection_policy.py`  | Choose a source node by exact position or hostname.   | Supports `selected_edge_nodes` / `all_edge_nodes`; invalid or unavailable fixed values fail instead of falling back. |
+| `random` | `dependency/core/lib/algorithms/schedule_selection_policy/random_selection_policy.py` | Choose a source node randomly from the Backend-authorized source set. | Supports `selected_edge_nodes` / `all_edge_nodes`; it performs no topology discovery. |
 
 ### `SCH_INITIAL_DEPLOYMENT_POLICY`
 

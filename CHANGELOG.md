@@ -14,6 +14,7 @@ Replace application `JointMultiEdgeService` generation and edge-side Kubernetes 
 
 ### Bug Fix
 - Fix possible failure in install/uninstall with one crash-recoverable ConfigMap CAS session and exact RuntimeService ownership identities (`backend`).
+- Prevent source-selection scope from collapsing to the processor `node_set`, and reject invalid fixed source configuration instead of silently changing the selected source (`backend`/`scheduler`).
 
 ### Minor Update
 - Add more services: traffic-detection, road-context-segmentation, traffic-signal-recognition, vehicle-tracking, vehicle-attribute-recognition, vehicle-trajectory-prediction, pedestrian-pose-estimation, pedestrian-intent-recognition, risk-graph-generation (`processor`).

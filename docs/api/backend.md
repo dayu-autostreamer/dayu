@@ -123,8 +123,9 @@ activates the remaining workers and publishes RuntimeDirectory revision 1 only a
 and Activated.
 
 The `dayu-runtime-session` ConfigMap is the compact transaction record. Its `resourceVersion` is the compare-and-swap
-token for lifecycle changes. Runtime routing is authoritative in Scheduler's committed RuntimeDirectory; no local YAML
-file participates in install, redeploy, or uninstall.
+token for lifecycle changes. Its normalized `source_deploy` preserves both processor `node_set` and the exact
+`source_candidate_nodes`/`source_selection_scope` authorization used for the install. Runtime routing is authoritative
+in Scheduler's committed RuntimeDirectory; no local YAML file participates in install, redeploy, or uninstall.
 
 ### Runtime telemetry cost
 
@@ -193,8 +194,11 @@ The backend fetches scheduler resource data once, renders the configured system 
 
 ## Behavioral Notes
 
-- `POST /install` assumes the requested scheduler policy, datasource configuration, DAG workflow, and edge nodes all already exist and are mutually compatible.
-- `POST /install` fails closed if any selected target lacks a Ready Sedna LC/EdgeMesh agent, if activation identity is
+- `POST /install` treats each source `node_selected`/`node_set` as processor candidates. A policy with
+  `scope=all_edge_nodes` receives a separate Backend-authorized source set and may select a generator node outside the processor set;
+  `scope=selected_edge_nodes` uses the processor set for both roles.
+- `POST /install` fails closed if any required processor/cloud target lacks a Ready Sedna LC/EdgeMesh agent, if a fixed
+  source is outside the resolved source permission set, if activation identity is
   incomplete, or if RuntimeDirectory readback differs from the published revision/hash.
 - `POST /stop_service` is retryable. Backend removes `dayu-runtime-session` only after lease drain and all exact
   RuntimeService deletions plus RuntimeDirectory cleanup succeed; a failed attempt preserves the session and error.

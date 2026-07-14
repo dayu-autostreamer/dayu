@@ -355,10 +355,6 @@ class RuntimeDirectorySnapshot:
             result.setdefault(route.logical_service, []).append(route.target_node)
         return {service: sorted(set(nodes)) for service, nodes in sorted(result.items())}
 
-    def edge_nodes(self, cloud_node=""):
-        return sorted({route.target_node for route in self.routes if route.target_node and route.target_node != cloud_node})
-
-
 @dataclass(frozen=True)
 class DirectoryProposal:
     proposal_id: str
