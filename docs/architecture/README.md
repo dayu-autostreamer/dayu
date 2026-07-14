@@ -73,8 +73,8 @@ Key boundaries:
   previous directory revision, and only then deletes retired RuntimeServices.
 - Backend `/stop_service` stops generators first, drains all active/pending revisions, atomically clears the
   install-scoped active directory plus pending proposals, deletes the now-unroutable workers, and deletes scheduler last.
-  `dayu.sh ACTION=stop` refuses destructive fallback while runtimes remain unless
-  `FORCE_RUNTIME_STOP=true` explicitly abandons in-flight work.
+  `dayu.sh ACTION=stop` attempts that graceful path first, then always completes the administrative system teardown;
+  backend failure or unavailability never changes the public stop command.
 
 ## The Five-Layer Model In The Repository
 

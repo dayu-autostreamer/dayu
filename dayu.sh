@@ -372,8 +372,7 @@ stop_system() {
     local mesh_wait="${MESH_WAIT_SEC:-30}"
     local pod_wait="${POD_WAIT_SEC:-120}"
     local ns_wait="${NS_WAIT_SEC:-120}"
-    local graceful_wait="${GRACEFUL_STOP_WAIT_SEC:-$((RUNTIME_DRAIN_TIMEOUT + 60))}"
-    local force_runtime_stop="${FORCE_RUNTIME_STOP:-false}"
+    local graceful_wait="${GRACEFUL_STOP_WAIT_SEC:-240}"
     local wait_mesh_rules="${WAIT_EDGEMESH_RULES:-true}"
     local app_resources=""
 
@@ -592,12 +591,7 @@ stop_system() {
 
     echo "$(green_text [DAYU]) (0/6) Try graceful uninstall for deployed services..."
     if ! _try_backend_stop_service "${ns}"; then
-        if [[ -n "${app_resources}" ]] && ! _bool_is_true "${force_runtime_stop}"; then
-            echo "$(red_text [DAYU]) Runtime drain did not complete; preserve the namespace and RuntimeServices."
-            echo "Set FORCE_RUNTIME_STOP=true only when abandoning in-flight tasks is intentional."
-            return 1
-        fi
-        echo "$(yellow_text [DAYU]) FORCE_RUNTIME_STOP enabled; abandon remaining task leases."
+        echo "$(yellow_text [DAYU]) Backend graceful uninstall failed; continue with system cleanup."
     fi
 
     echo "$(green_text [DAYU]) (1/6) Delete RuntimeServices, then bootstrap resources..."
@@ -741,8 +735,6 @@ import_config() {
     DATASOURCE_PLAY_MODE=$(yq e '.datasource.play-mode' "$TMP_FILE")
     SYSTEM_LOG_RETENTION_RECORDS=$(yq e '.log-export.system.retention-records' "$TMP_FILE")
     SYSTEM_LOG_COMPACT_INTERVAL=$(yq e '.log-export.system.compact-interval' "$TMP_FILE")
-    RUNTIME_DRAIN_TIMEOUT=$(yq e '.runtime.drain-timeout-seconds' "$TMP_FILE")
-
     rm "$TMP_FILE"
 
 }

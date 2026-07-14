@@ -163,20 +163,17 @@ uninstall preserves a precise retry boundary and error. There is no local manife
 TEMPLATE=template ACTION=stop bash dayu.sh
 ```
 
-The script calls backend `/stop_service` before deleting the support layer. If RuntimeServices remain and graceful
-drain fails or backend is unavailable, the script preserves the namespace and exits non-zero. Only use the destructive
-override when abandoning in-flight tasks is intentional:
+The script gives backend `/stop_service` a bounded, best-effort opportunity to drain tasks and remove the managed
+runtime before deleting the support layer. `GRACEFUL_STOP_WAIT_SEC` may override the default 240-second budget. A
+backend failure, timeout, malformed response, or unavailable service is logged but never blocks `ACTION=stop`: the
+script continues by deleting RuntimeServices, support resources, Services/Endpoints, workloads, access bindings, and
+the namespace. This keeps the public stop interface independent of backend health, as in earlier Dayu versions.
 
-```bash
-FORCE_RUNTIME_STOP=true TEMPLATE=template ACTION=stop bash dayu.sh
-```
-
-The override deletes RuntimeServices and support resources without a successful lease drain. `WAIT_EDGEMESH_RULES=false`
-may skip the best-effort EdgeMesh iptables cleanup wait, but does not change runtime drain semantics. Forced cleanup
-also bypasses Scheduler's install-id-guarded directory/proposal deletion and leaves the host-mounted Redis directory
-intact. Because keys are install-id scoped, they cannot route a later install, but repeated forced stops can retain
-unreachable active snapshots. Pending proposals and task leases still age out through their own TTLs, but the host data
-is not erased; remove it only when the support Redis is stopped and abandonment is intentional.
+`WAIT_EDGEMESH_RULES=false` may skip the best-effort EdgeMesh iptables cleanup wait. When shell cleanup follows an
+unsuccessful graceful uninstall, Scheduler's install-id-guarded directory/proposal cleanup may not complete and the
+host-mounted Redis directory remains intact. Its keys are install-id scoped and cannot route a later installation;
+pending proposals and task leases expire through their own TTLs. Remove persisted Redis data manually only while the
+support Redis is stopped and discarding the old installation state is intentional.
 
 ## Why Edge Nodes Do Not Pay Kubernetes Discovery Cost
 

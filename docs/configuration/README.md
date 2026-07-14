@@ -123,7 +123,8 @@ writable and durable, and explicitly migrate it if the support Redis moves to an
 
 Normal uninstall uses Scheduler's install-scoped proposal index to atomically delete the active directory key, every
 pending proposal, and the index itself only after lease drain. Task-lease key expiry bounds the remaining transient
-state. Forced shell cleanup does not provide that transactional guarantee and does not erase the host directory.
+state. Fallback shell cleanup after an unsuccessful graceful uninstall does not provide that transactional guarantee
+and does not erase the host directory.
 
 ### `template/scheduler_policies.yaml`
 
