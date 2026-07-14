@@ -14,14 +14,20 @@ dayu::buildx::read_driver_opts() {
 
   _driver_opts_array=()
   if [[ -f "$driver_opts_file" ]]; then
-    local line key value
+    local line key value driver_opt
     while IFS= read -r line; do
       [[ -z "$line" || "$line" =~ ^# ]] && continue
       if [[ "$line" =~ = ]]; then
         key=$(echo "$line" | awk -F'=' '{gsub(/^[ \t]+|[ \t]+$/, "", $1); print $1}')
         value=$(echo "$line" | awk -F'=' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')
         value=$(echo "$value" | sed 's/^"\(.*\)"$/\1/')
-        _driver_opts_array+=(--driver-opt "$key=$value")
+        driver_opt="$key=$value"
+        # Buildx parses driver options as CSV. Keep comma-containing values,
+        # such as NO_PROXY, together as one quoted CSV field.
+        if [[ "$driver_opt" == *,* ]]; then
+          driver_opt="\"$driver_opt\""
+        fi
+        _driver_opts_array+=(--driver-opt "$driver_opt")
       fi
     done < "$driver_opts_file"
   fi
