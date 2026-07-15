@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import threading
 import time
@@ -27,7 +28,15 @@ from core.lib.scheduling.source_selection import (
 )
 
 from cluster_client import ClusterClient
-from runtime_model import RuntimeDirectory, RuntimeEndpoint, RuntimeSession, RuntimeSlot, RuntimeUnit
+from runtime_model import (
+    RuntimeCleanupRef,
+    RuntimeDirectory,
+    RuntimeEndpoint,
+    RuntimeRetirement,
+    RuntimeSession,
+    RuntimeSlot,
+    RuntimeUnit,
+)
 from runtime_service_client import RuntimeServiceCancelled, RuntimeServiceClient
 from runtime_session_store import RuntimeSessionConflict, RuntimeSessionStore, StoredRuntimeSession
 
@@ -46,6 +55,10 @@ class RuntimePublicationError(RuntimeOrchestrationError):
 
 class RuntimeOperationCancelled(RuntimeOrchestrationError):
     """A managed-runtime operation yielded to lifecycle cancellation."""
+
+
+class RuntimeRetirementPending(RuntimeOrchestrationError):
+    """A newer rollout is deferred while the previous revision retires."""
 
 
 def _utc_now() -> str:
@@ -74,7 +87,7 @@ def _source_id(source_info: Mapping[str, Any]) -> str:
 
 
 class RuntimeOrchestrator:
-    """Own install, rollout, directory publication, drain and retirement.
+    """Own install, rollout, directory publication and bounded retirement.
 
     Kubernetes clients are created lazily and share one ``ApiClient``.  A
     process lock plus ConfigMap compare-and-swap prevents two backend requests
@@ -95,7 +108,7 @@ class RuntimeOrchestrator:
         session_store: Optional[RuntimeSessionStore] = None,
         request=http_request,
         clock=time.monotonic,
-        sleeper=time.sleep,
+        wall_clock=time.time,
     ):
         self.template_helper = template_helper
         self.namespace = str(namespace or "").strip()
@@ -106,7 +119,7 @@ class RuntimeOrchestrator:
         self._sessions = session_store
         self._request = request
         self._clock = clock
-        self._sleep = sleeper
+        self._wall_clock = wall_clock
         self._lock = threading.RLock()
         # ``None`` is a valid, durable snapshot (there is no active session),
         # so it cannot also mean "not loaded". Keep that state explicit: the
@@ -132,26 +145,22 @@ class RuntimeOrchestrator:
         self.scheduler_request_timeout = float(
             runtime_config.get("scheduler-request-timeout-seconds", 30)
         )
-        self.drain_timeout = float(runtime_config.get("drain-timeout-seconds", 3600))
-        self.drain_quiet_window = float(runtime_config.get("drain-quiet-window-seconds", 10))
+        self.retirement_grace = float(
+            runtime_config.get("retirement-grace-seconds", 180)
+        )
         self.lease_ttl = float(runtime_config.get("lease-ttl-seconds", 3600))
         self.inventory_ttl = max(1.0, float(runtime_config.get("inventory-ttl-seconds", 30)))
-        if min(
+        timeouts = (
             self.activation_timeout,
             self.operation_timeout,
             self.scheduler_request_timeout,
-            self.drain_timeout,
+            self.retirement_grace,
             self.lease_ttl,
-        ) <= 0:
+        )
+        if any(not math.isfinite(value) or value <= 0 for value in timeouts):
             raise ValueError(
-                "runtime activation, operation, scheduler request, drain, and lease "
+                "runtime activation, operation, scheduler request, retirement, and lease "
                 "timeouts must be positive"
-            )
-        if self.drain_quiet_window < 0:
-            raise ValueError("runtime drain quiet window must not be negative")
-        if self.drain_timeout <= self.lease_ttl + self.drain_quiet_window:
-            raise ValueError(
-                "runtime drain timeout must exceed lease TTL plus the quiet window"
             )
 
     def _ensure_clients(self) -> None:
@@ -234,7 +243,7 @@ class RuntimeOrchestrator:
 
         Publication recovery belongs to :meth:`recover` and transaction
         boundaries. A management read must never wait behind a long old-route
-        drain after the new directory has already been committed.
+        retirement after the new directory has already been committed.
         """
         session = self.current_session()
         if session is None or session.phase != "active" or session.active_directory_revision < 1:
@@ -498,14 +507,24 @@ class RuntimeOrchestrator:
         }
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-    def _ensure_created(self, manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _ensure_created(
+        self,
+        manifest: Mapping[str, Any],
+        request_timeout_seconds: Optional[float] = None,
+    ) -> Mapping[str, Any]:
         try:
-            return self.runtime.create(manifest)
+            return self.runtime.create(
+                manifest,
+                request_timeout_seconds=request_timeout_seconds,
+            )
         except Exception as exc:
             if _status_code(exc) != 409:
                 raise
         name = str((manifest.get("metadata") or {}).get("name") or "")
-        existing = self.runtime.get(name)
+        existing = self.runtime.get(
+            name,
+            request_timeout_seconds=request_timeout_seconds,
+        )
         if (existing.get("spec") or {}) != (manifest.get("spec") or {}):
             raise RuntimeOrchestrationError(
                 f"RuntimeService {name!r} already exists with a different immutable spec"
@@ -527,6 +546,7 @@ class RuntimeOrchestrator:
         )
         if timeout_seconds <= 0:
             raise RuntimeOrchestrationError("RuntimeService activation deadline was exhausted")
+        deadline = self._clock() + timeout_seconds
         install_ids = {
             str(((item.manifest.get("metadata") or {}).get("labels") or {}).get(
                 self.INSTALL_LABEL,
@@ -541,7 +561,10 @@ class RuntimeOrchestrator:
         for item in rendered:
             self._raise_if_cancelled(cancel_event)
             try:
-                self._ensure_created(item.manifest)
+                self._ensure_created(
+                    item.manifest,
+                    request_timeout_seconds=self._remaining_timeout(deadline),
+                )
             except Exception:
                 # A synchronous Kubernetes request cannot be pre-empted, but
                 # cancellation wins over a transport error observed after the
@@ -554,7 +577,7 @@ class RuntimeOrchestrator:
             observed = self.runtime.wait_for_conditions(
                 expectations,
                 condition_types=("Ready", "Activated"),
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=self._remaining_timeout(deadline),
                 label_selector=(
                     f"{self.MANAGED_LABEL_SELECTOR},"
                     f"{self.INSTALL_LABEL}={install_id}"
@@ -977,7 +1000,7 @@ class RuntimeOrchestrator:
         directory: RuntimeDirectory,
         deadline: Optional[float] = None,
         cancel_event=None,
-    ) -> None:
+    ) -> Mapping[str, Any]:
         proposal_id = str(uuid.uuid4())
         publication_error = None
         try:
@@ -1006,13 +1029,19 @@ class RuntimeOrchestrator:
                 scheduler,
                 NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_PROPOSAL_COMMIT.format(proposal_id=proposal_id),
                 NetworkAPIMethod.SCHEDULER_COMMIT_RUNTIME_DIRECTORY,
-                {"expected_revision": int(base_revision)},
+                {
+                    "expected_revision": int(base_revision),
+                    "retirement_grace_seconds": self.retirement_grace,
+                },
                 timeout=timeout,
                 cancel_event=cancel_event,
             )
             if isinstance(response, Mapping) and response.get("hash") == directory.content_hash:
                 self._raise_if_cancelled(cancel_event)
-                return
+                return self._validate_retirement_status(
+                    response.get("retirement"),
+                    base_revision,
+                )
         except RuntimeOperationCancelled:
             raise
         except Exception as exc:
@@ -1027,7 +1056,12 @@ class RuntimeOrchestrator:
                 deadline=deadline,
                 cancel_event=cancel_event,
             ):
-                return
+                return self._retirement_status(
+                    scheduler,
+                    base_revision,
+                    operation_deadline=deadline,
+                    cancel_event=cancel_event,
+                )
         except RuntimeOperationCancelled:
             raise
         except Exception as exc:
@@ -1042,7 +1076,11 @@ class RuntimeOrchestrator:
             routes = session.pending
             revision = 1
         elif session.phase == "publishing-rollout":
-            retired_keys = {unit.logical_key for unit in session.retired}
+            retired_keys = {
+                unit.logical_key for unit in (
+                    session.retirement.units if session.retirement else ()
+                )
+            }
             routes = tuple(
                 unit for unit in session.active if unit.logical_key not in retired_keys
             ) + tuple(session.pending)
@@ -1071,10 +1109,31 @@ class RuntimeOrchestrator:
         self,
         session: RuntimeSession,
         directory: RuntimeDirectory,
+        retirement_status: Optional[Mapping[str, Any]] = None,
     ) -> RuntimeSession:
         revision_increment = 1
         if session.phase == "publishing":
             revision_increment = max(0, 2 - session.next_runtime_revision)
+        retirement = session.retirement
+        if session.phase == "publishing-rollout":
+            if retirement is None:
+                raise RuntimePublicationError(
+                    "rollout publication has no persisted retirement ownership"
+                )
+            status = self._validate_retirement_status(
+                retirement_status,
+                retirement.revision,
+                maximum_deadline=retirement.deadline,
+            )
+            # Scheduler owns the clock and creates this deadline in the same
+            # atomic commit that exposes N+1. Persist that exact value; a
+            # Backend crash or delayed response can recover it via status GET.
+            retirement = replace(
+                retirement,
+                deadline=status["deadline"],
+                fenced=status["retired"],
+                forced_count=status["revoked_count"],
+            )
         finalized = replace(
             session,
             phase="active",
@@ -1082,6 +1141,7 @@ class RuntimeOrchestrator:
             active_directory_revision=directory.revision,
             active=directory.routes,
             pending=(),
+            retirement=retirement,
             last_error="",
             updated_at=_utc_now(),
         )
@@ -1114,8 +1174,9 @@ class RuntimeOrchestrator:
                 deadline=deadline,
                 cancel_event=cancel_event,
             )
+            retirement_status = None
         else:
-            self._publish_rollout(
+            retirement_status = self._publish_rollout(
                 scheduler,
                 session.active_directory_revision,
                 directory,
@@ -1123,15 +1184,19 @@ class RuntimeOrchestrator:
                 cancel_event=cancel_event,
             )
         self._raise_if_cancelled(cancel_event)
-        return self._finalize_publication(session, directory)
+        return self._finalize_publication(
+            session,
+            directory,
+            retirement_status=retirement_status,
+        )
 
     def recover(self) -> Optional[RuntimeSession]:
         """Reconcile the only crash-sensitive Scheduler/ConfigMap boundary.
 
         Candidate resources and their immutable UIDs were persisted before the
         directory CAS, so recovery needs no Kubernetes discovery or per-Pod
-        probing. Old rollout resources remain in ``retired`` until the normal
-        drain path can prove their directory revision has no task leases.
+        probing. A committed old revision remains in ``retirement`` and is
+        reconciled independently from publication.
         """
 
         with self._lock:
@@ -1139,6 +1204,11 @@ class RuntimeOrchestrator:
             if stored is None:
                 return None
             session = stored.session
+            if session.phase == "activating-rollout":
+                session = self._restore_active_after_rollout_failure(
+                    session,
+                    "backend restarted before processor rollout publication",
+                )
             if session.phase in self._PUBLICATION_PHASES:
                 session = self._recover_publication(session)
             return session
@@ -1398,6 +1468,86 @@ class RuntimeOrchestrator:
         )
         return tuple(rendered), kept, retired
 
+    @staticmethod
+    def _merge_units(*groups: Iterable[RuntimeUnit]) -> Tuple[RuntimeUnit, ...]:
+        """Merge exact runtime ownership records by immutable resource name."""
+
+        units = {}
+        for group in groups:
+            for unit in group:
+                existing = units.get(unit.runtime_id)
+                if (
+                    existing is not None
+                    and existing.runtime_service_uid
+                    and unit.runtime_service_uid
+                    and existing.runtime_service_uid != unit.runtime_service_uid
+                ):
+                    raise RuntimeOrchestrationError(
+                        f"conflicting RuntimeService UIDs for {unit.runtime_id!r}"
+                    )
+                if existing is None or (
+                    not existing.runtime_service_uid and unit.runtime_service_uid
+                ):
+                    units[unit.runtime_id] = unit
+        return tuple(units[name] for name in sorted(units))
+
+    @staticmethod
+    def _merge_cleanup(*groups: Iterable[Any]) -> Tuple[RuntimeCleanupRef, ...]:
+        """Compact exact deletion ownership without retaining route payloads."""
+
+        refs = {}
+        for group in groups:
+            for value in group:
+                ref = (
+                    RuntimeCleanupRef.from_unit(value)
+                    if isinstance(value, RuntimeUnit)
+                    else value
+                )
+                if not isinstance(ref, RuntimeCleanupRef):
+                    ref = RuntimeCleanupRef.from_dict(ref)
+                existing = refs.get(ref.runtime_id)
+                if (
+                    existing is not None
+                    and existing.runtime_service_uid
+                    and ref.runtime_service_uid
+                    and existing.runtime_service_uid != ref.runtime_service_uid
+                ):
+                    raise RuntimeOrchestrationError(
+                        f"conflicting cleanup UIDs for {ref.runtime_id!r}"
+                    )
+                if existing is None or (
+                    not existing.runtime_service_uid and ref.runtime_service_uid
+                ):
+                    refs[ref.runtime_id] = ref
+        return tuple(refs[name] for name in sorted(refs))
+
+    def _restore_active_after_rollout_failure(
+        self,
+        session: RuntimeSession,
+        error: str,
+    ) -> RuntimeSession:
+        """Keep the committed old directory active and defer candidate cleanup."""
+
+        if session.phase != "activating-rollout":
+            return session
+        next_runtime_revision = max(
+            session.next_runtime_revision,
+            max(
+                (unit.runtime_revision + 1 for unit in session.pending),
+                default=session.next_runtime_revision,
+            ),
+        )
+        return self._save(replace(
+            session,
+            phase="active",
+            next_runtime_revision=next_runtime_revision,
+            pending=(),
+            retirement=None,
+            cleanup=self._merge_cleanup(session.cleanup, session.pending),
+            last_error=str(error or "processor rollout was interrupted before publication"),
+            updated_at=_utc_now(),
+        ))
+
     def redeploy(self, policy: Mapping[str, Any], cancel_event=None) -> bool:
         with self._lock:
             self._raise_if_cancelled(cancel_event)
@@ -1411,38 +1561,28 @@ class RuntimeOrchestrator:
             if stored is None or stored.session.phase != "active":
                 raise RuntimeOrchestrationError("processor rollout requires an active runtime session")
             session = stored.session
+            if session.retirement is not None:
+                if self._wall_clock() < session.retirement.deadline:
+                    raise RuntimeRetirementPending(
+                        "previous RuntimeDirectory revision is still retiring"
+                    )
+                # The durable deadline, not Scheduler availability or a stuck
+                # finalizer, is the upper bound on rollout serialization. Exact
+                # old identities remain owned by the asynchronous cleanup set.
+                LOGGER.warning(
+                    f"[Runtime Retirement] revision={session.retirement.revision} "
+                    "reached its deadline; release rollout gate and continue cleanup"
+                )
+                session = self._save(replace(
+                    session,
+                    retirement=None,
+                    cleanup=self._merge_cleanup(
+                        session.cleanup,
+                        session.retirement.units,
+                    ),
+                    updated_at=_utc_now(),
+                ))
             scheduler = self._scheduler_unit(session.active)
-            if session.retired:
-                try:
-                    self._drain(
-                        scheduler,
-                        session.active_directory_revision - 1,
-                        cancel_event=cancel_event,
-                    )
-                    self._delete_units(
-                        session.retired,
-                        session.install_id,
-                        cancel_event=cancel_event,
-                    )
-                    session = replace(
-                        session, retired=(), last_error="", updated_at=_utc_now(),
-                    )
-                    self._save(session)
-                except RuntimeOperationCancelled:
-                    # Cancellation is lifecycle control flow, not a failed
-                    # retirement attempt. Preserve the exact active/retired
-                    # snapshot for the uninstall transaction that follows.
-                    raise
-                except Exception as exc:
-                    self._save(replace(
-                        session,
-                        phase="active",
-                        last_error=f"retirement pending: {exc}",
-                        updated_at=_utc_now(),
-                    ))
-                    raise RuntimeOrchestrationError(
-                        "previous RuntimeDirectory retirement is still pending"
-                    ) from exc
             operation_deadline = self._clock() + self.operation_timeout
             self._raise_if_cancelled(cancel_event)
             inventory = self.node_inventory()
@@ -1468,10 +1608,10 @@ class RuntimeOrchestrator:
             )
             if normalized_sources != list(session.source_deploy):
                 raise RuntimeOrchestrationError("persisted normalized source deployment changed during rollout")
-            rendered, kept, retired = self._render_processor_candidates(
+            rendered, kept, retired_units = self._render_processor_candidates(
                 session, deployment, inventory, cloud_node, templates,
             )
-            if not rendered and not retired:
+            if not rendered and not retired_units:
                 return False
 
             pending_units = tuple(item.unit for item in rendered)
@@ -1480,7 +1620,6 @@ class RuntimeOrchestrator:
                 operation_id=str(uuid.uuid4()),
                 phase="activating-rollout",
                 pending=pending_units,
-                retired=retired,
                 updated_at=_utc_now(),
             )
             self._save(session)
@@ -1498,11 +1637,25 @@ class RuntimeOrchestrator:
                     revision=session.active_directory_revision + 1,
                     routes=candidate_units,
                 )
+                # Persist old-resource ownership immediately before the
+                # crash-sensitive directory CAS. The deadline is armed only
+                # after publication is durably observed, so proposal latency
+                # cannot consume task grace.
+                retirement = RuntimeRetirement(
+                    revision=session.active_directory_revision,
+                    units=retired_units,
+                    deadline=None,
+                    started_at=_utc_now(),
+                )
                 session = replace(
-                    session, phase="publishing-rollout", pending=activated, updated_at=_utc_now(),
+                    session,
+                    phase="publishing-rollout",
+                    pending=activated,
+                    retirement=retirement,
+                    updated_at=_utc_now(),
                 )
                 self._save(session)
-                self._publish_rollout(
+                retirement_status = self._publish_rollout(
                     scheduler,
                     session.active_directory_revision,
                     directory,
@@ -1510,23 +1663,19 @@ class RuntimeOrchestrator:
                     cancel_event=cancel_event,
                 )
                 self._raise_if_cancelled(cancel_event)
-                old_revision = session.active_directory_revision
-                session = self._finalize_publication(session, directory)
-                self._drain(scheduler, old_revision, cancel_event=cancel_event)
-                self._delete_units(
-                    retired,
-                    session.install_id,
-                    cancel_event=cancel_event,
+                self._finalize_publication(
+                    session,
+                    directory,
+                    retirement_status=retirement_status,
                 )
-                self._save(replace(session, retired=(), updated_at=_utc_now()))
                 return True
             except RuntimeOperationCancelled:
                 # Keep the last durable transaction boundary exactly as-is.
                 # Before publication this retains candidate ownership for
                 # uninstall; during publication it retains the recoverable
-                # ambiguous-CAS state; after publication it retains retired
-                # units for exact UID cleanup. Do not record cancellation as a
-                # runtime fault.
+                # ambiguous-CAS state; after publication it retains retirement
+                # ownership for exact UID cleanup. Do not record cancellation as
+                # a runtime fault.
                 LOGGER.info("managed processor rollout yielded to lifecycle cancellation")
                 raise
             except Exception as exc:
@@ -1537,53 +1686,283 @@ class RuntimeOrchestrator:
                         current is not None
                         and current.operation_id == session.operation_id
                         and current.phase != "active"):
-                        phase = (
-                            current.phase
-                            if current.phase in self._PUBLICATION_PHASES
-                            else "failed"
-                        )
-                        self._save(replace(
-                            current,
-                            phase=phase,
-                            last_error=str(exc),
-                            updated_at=_utc_now(),
-                        ))
-                    elif current is not None and current.phase == "active":
-                        # Publication was committed and session CAS succeeded;
-                        # only old-revision drain/deletion is pending.
-                        self._save(replace(
-                            current,
-                            phase="active",
-                            last_error=str(exc),
-                            updated_at=_utc_now(),
-                        ))
+                        if current.phase == "activating-rollout":
+                            self._restore_active_after_rollout_failure(
+                                current,
+                                str(exc),
+                            )
+                        else:
+                            self._save(replace(
+                                current,
+                                last_error=str(exc),
+                                updated_at=_utc_now(),
+                            ))
                 except Exception:
                     LOGGER.exception("failed to persist rollout failure state")
                 raise
 
-    def _lease_count(
+    @staticmethod
+    def _validate_retirement_status(
+        response: Any,
+        revision: int,
+        maximum_deadline: Optional[float] = None,
+    ) -> Mapping[str, Any]:
+        if not isinstance(response, Mapping):
+            raise RuntimeOrchestrationError(
+                "scheduler retirement status is unavailable"
+            )
+        try:
+            observed_revision = int(response.get("revision"))
+            count = int(response.get("count"))
+            observed_deadline = float(response.get("deadline"))
+            revoked_count = int(response.get("revoked_count", 0))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeOrchestrationError(
+                "scheduler retirement status is invalid"
+            ) from exc
+        if (
+            observed_revision != int(revision)
+            or count < 0
+            or revoked_count < 0
+            or not math.isfinite(observed_deadline)
+            or observed_deadline <= 0
+        ):
+            raise RuntimeOrchestrationError(
+                "scheduler retirement identity is invalid"
+            )
+        if (
+            maximum_deadline is not None
+            and observed_deadline > float(maximum_deadline)
+        ):
+            raise RuntimeOrchestrationError(
+                "scheduler extended an immutable retirement deadline"
+            )
+        return {
+            "revision": observed_revision,
+            "count": count,
+            "deadline": observed_deadline,
+            "retired": bool(response.get("retired")),
+            "revoked_count": revoked_count,
+        }
+
+    def _retirement_status(
         self,
         scheduler: RuntimeUnit,
         revision: int,
+        maximum_deadline: Optional[float] = None,
+        operation_deadline: Optional[float] = None,
         cancel_event=None,
-    ) -> int:
+    ) -> Mapping[str, Any]:
+        timeout = min(5, self.operation_timeout)
+        if operation_deadline is not None:
+            timeout = self._remaining_timeout(operation_deadline, timeout)
         response = self._scheduler_call(
             scheduler,
             NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_LEASES,
             NetworkAPIMethod.SCHEDULER_COUNT_TASK_LEASES,
-            None,
             params={"revision": int(revision)},
-            timeout=min(30, self.operation_timeout),
+            timeout=timeout,
             cancel_event=cancel_event,
         )
-        if not isinstance(response, Mapping):
-            raise RuntimeOrchestrationError("scheduler task-lease count is unavailable")
+        return self._validate_retirement_status(
+            response,
+            revision,
+            maximum_deadline=maximum_deadline,
+        )
+
+    def _retire_revision(
+        self,
+        scheduler: RuntimeUnit,
+        revision: int,
+        deadline: float,
+        cancel_event=None,
+    ) -> Mapping[str, Any]:
+        """Start or reconcile one immutable revision retirement."""
+
+        response = self._scheduler_call(
+            scheduler,
+            NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_LEASES,
+            NetworkAPIMethod.SCHEDULER_RETIRE_TASK_LEASES,
+            {"revision": int(revision), "deadline": float(deadline)},
+            timeout=min(5, self.operation_timeout),
+            cancel_event=cancel_event,
+        )
+        return self._validate_retirement_status(
+            response,
+            revision,
+            maximum_deadline=deadline,
+        )
+
+    def _reconcile_retirement_locked(
+        self,
+        session: RuntimeSession,
+        cancel_event=None,
+    ) -> bool:
+        retirement = session.retirement
+        if retirement is None:
+            return False
+        scheduler = self._scheduler_unit(session.active)
+        status = None
+        status_error = None
         try:
-            return int(response.get("count"))
-        except (TypeError, ValueError):
-            raise RuntimeOrchestrationError("scheduler task-lease count is invalid")
+            status = self._retirement_status(
+                scheduler,
+                retirement.revision,
+                maximum_deadline=retirement.deadline,
+                cancel_event=cancel_event,
+            )
+        except RuntimeOperationCancelled:
+            raise
+        except Exception as exc:
+            status_error = exc
+
+        if status is not None and status["deadline"] < retirement.deadline:
+            retirement = replace(retirement, deadline=status["deadline"])
+        deadline_reached = self._wall_clock() >= retirement.deadline
+        ready = bool(status and (status["count"] == 0 or status["retired"]))
+        if not ready and not deadline_reached:
+            error = str(status_error or "")
+            if error and session.last_error != error:
+                self._save(replace(
+                    session,
+                    retirement=retirement,
+                    last_error=error,
+                    updated_at=_utc_now(),
+                ))
+            elif status is not None and session.last_error and not session.cleanup:
+                self._save(replace(
+                    session,
+                    retirement=retirement,
+                    last_error="",
+                    updated_at=_utc_now(),
+                ))
+            return False
+
+        retirement = replace(
+            retirement,
+            fenced=bool(deadline_reached or (status and status["retired"])),
+            forced_count=(
+                status["revoked_count"] if status is not None
+                else retirement.forced_count
+            ),
+        )
+        try:
+            self._delete_units(
+                retirement.units,
+                session.install_id,
+                cancel_event=cancel_event,
+                timeout_seconds=30,
+            )
+        except RuntimeOperationCancelled:
+            raise
+        except Exception as exc:
+            # Resource finalizers are garbage-collection work, not a rollout
+            # lock. Keep exact ownership durable and release the one retirement
+            # slot once lease protection ended or its deadline elapsed.
+            self._save(replace(
+                session,
+                retirement=None,
+                cleanup=self._merge_cleanup(session.cleanup, retirement.units),
+                last_error=str(exc),
+                updated_at=_utc_now(),
+            ))
+            LOGGER.warning(
+                f"[Runtime Cleanup] deferred revision={retirement.revision}: {exc}"
+            )
+            return True
+
+        self._save(replace(
+            session,
+            retirement=None,
+            last_error="" if not session.cleanup else session.last_error,
+            updated_at=_utc_now(),
+        ))
+        LOGGER.info(
+            f"[Runtime Retirement] revision={retirement.revision} "
+            f"forced={retirement.fenced} revoked={retirement.forced_count} "
+            f"scheduler_acknowledged={status is not None}"
+        )
+        return True
+
+    def _reconcile_cleanup_locked(
+        self,
+        session: RuntimeSession,
+        cancel_event=None,
+    ) -> bool:
+        if not session.cleanup:
+            return False
+        try:
+            self._delete_units(
+                session.cleanup,
+                session.install_id,
+                cancel_event=cancel_event,
+                timeout_seconds=30,
+            )
+        except RuntimeOperationCancelled:
+            raise
+        except Exception as exc:
+            if session.last_error != str(exc):
+                self._save(replace(
+                    session,
+                    last_error=str(exc),
+                    updated_at=_utc_now(),
+                ))
+            LOGGER.warning(f"[Runtime Cleanup] exact-UID cleanup remains pending: {exc}")
+            return False
+        self._save(replace(
+            session,
+            cleanup=(),
+            last_error="",
+            updated_at=_utc_now(),
+        ))
+        return True
+
+    def reconcile_retirement(self, cancel_event=None) -> bool:
+        """Perform one bounded reconciliation tick without polling or sleeping."""
+
+        with self._lock:
+            self._raise_if_cancelled(cancel_event)
+            # Reconciliation is driven by the single backend-owned worker.
+            # Reuse the process snapshot instead of turning every one-second
+            # tick into a Kubernetes ConfigMap GET; CAS writes reload on a real
+            # conflict, and process recovery performs one deliberate reload.
+            stored = self._load()
+            if stored is None:
+                return False
+            session = stored.session
+            if session.phase in self._PUBLICATION_PHASES:
+                session = self._recover_publication(
+                    session,
+                    cancel_event=cancel_event,
+                )
+            if session.phase != "active":
+                return False
+            changed = False
+            if session.retirement is not None:
+                changed = self._reconcile_retirement_locked(
+                    session,
+                    cancel_event=cancel_event,
+                )
+                # Retirement and garbage collection are independent lanes.
+                # Always reload the latest in-process CAS result: retirement
+                # may just have moved its exact identities into ``cleanup``.
+                if self._stored is None:
+                    return changed
+                session = self._stored.session
+                if session.phase != "active":
+                    return changed
+            if session.cleanup:
+                changed = self._reconcile_cleanup_locked(
+                    session,
+                    cancel_event=cancel_event,
+                ) or changed
+            return changed
 
     def _clear_runtime_directory(self, scheduler: RuntimeUnit, install_id: str) -> None:
+        # This is an in-cluster metadata operation. Keep DELETE plus its
+        # ambiguity readback inside one short budget so Scheduler trouble does
+        # not consume the public uninstall window.
+        deadline = self._clock() + min(20, self.operation_timeout)
         clear_error = None
         try:
             response = self._scheduler_call(
@@ -1591,7 +1970,7 @@ class RuntimeOrchestrator:
                 NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY,
                 NetworkAPIMethod.SCHEDULER_CLEAR_RUNTIME_DIRECTORY,
                 {"install_id": str(install_id)},
-                timeout=min(30, self.operation_timeout),
+                timeout=self._remaining_timeout(deadline),
             )
             if (
                 isinstance(response, Mapping)
@@ -1607,7 +1986,7 @@ class RuntimeOrchestrator:
                 scheduler,
                 NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY,
                 NetworkAPIMethod.SCHEDULER_GET_RUNTIME_DIRECTORY,
-                timeout=min(30, self.operation_timeout),
+                timeout=self._remaining_timeout(deadline),
             )
             if isinstance(readback, Mapping) and (
                 int(readback.get("directory_revision", readback.get("revision", -1))) == 0
@@ -1619,44 +1998,42 @@ class RuntimeOrchestrator:
             "scheduler RuntimeDirectory clear was not durably observable"
         ) from clear_error
 
-    def _drain(self, scheduler: RuntimeUnit, revision: int, cancel_event=None) -> None:
-        deadline = self._clock() + self.drain_timeout
-        quiet_since = None
-        while self._clock() < deadline:
-            self._raise_if_cancelled(cancel_event)
-            count = self._lease_count(
-                scheduler,
-                revision,
-                cancel_event=cancel_event,
-            )
-            if count == 0:
-                quiet_since = quiet_since or self._clock()
-                if self._clock() - quiet_since >= self.drain_quiet_window:
-                    return
-            else:
-                quiet_since = None
-            sleep_seconds = min(1.0, max(0.05, self.drain_quiet_window / 4))
-            if cancel_event is not None:
-                if cancel_event.wait(sleep_seconds):
-                    self._raise_if_cancelled(cancel_event)
-            else:
-                self._sleep(sleep_seconds)
-        raise RuntimeOrchestrationError(
-            f"timed out draining tasks pinned to RuntimeDirectory revision {revision}"
-        )
-
     def _delete_units(
         self,
-        units: Iterable[RuntimeUnit],
+        units: Iterable[Any],
         install_id: str,
         cancel_event=None,
+        timeout_seconds: Optional[float] = None,
+        allow_active: bool = False,
     ) -> None:
         self._raise_if_cancelled(cancel_event)
+        units = tuple(units)
+        if not allow_active and self._stored is not None:
+            active_ids = {
+                unit.runtime_id for unit in self._stored.session.active
+            }
+            overlap = sorted(
+                unit.runtime_id for unit in units
+                if unit.runtime_id in active_ids
+            )
+            if overlap:
+                raise RuntimeOrchestrationError(
+                    f"refuse to garbage-collect active RuntimeServices: {overlap}"
+                )
+        total_timeout = (
+            float(timeout_seconds)
+            if timeout_seconds is not None
+            else min(self.activation_timeout, 120)
+        )
+        if not math.isfinite(total_timeout) or total_timeout <= 0:
+            raise RuntimeOrchestrationError("RuntimeService deletion deadline was exhausted")
+        deadline = self._clock() + total_timeout
         identities = {}
         unresolved = set()
         for unit in units:
+            endpoint = getattr(unit, "endpoint", None)
             uid = unit.runtime_service_uid or (
-                unit.endpoint.runtime_service_uid if unit.endpoint else None
+                endpoint.runtime_service_uid if endpoint else None
             )
             if unit.runtime_id in identities and identities[unit.runtime_id] != uid:
                 raise RuntimeOrchestrationError(
@@ -1673,7 +2050,10 @@ class RuntimeOrchestrator:
                 f"{self.INSTALL_LABEL}={str(install_id)}"
             )
             try:
-                response = self.runtime.list(label_selector=selector)
+                response = self.runtime.list(
+                    label_selector=selector,
+                    request_timeout_seconds=self._remaining_timeout(deadline),
+                )
             except Exception:
                 self._raise_if_cancelled(cancel_event)
                 raise
@@ -1699,11 +2079,7 @@ class RuntimeOrchestrator:
         try:
             self.runtime.delete_many(
                 identities,
-                timeout_seconds=min(self.activation_timeout, 120),
-                label_selector=(
-                    f"{self.MANAGED_LABEL_SELECTOR},"
-                    f"{self.INSTALL_LABEL}={str(install_id)}"
-                ),
+                timeout_seconds=self._remaining_timeout(deadline),
                 cancel_event=cancel_event,
             )
         except RuntimeServiceCancelled:
@@ -1711,190 +2087,174 @@ class RuntimeOrchestrator:
             raise
         self._raise_if_cancelled(cancel_event)
 
+    @staticmethod
+    def _owned_units(session: RuntimeSession) -> Tuple[RuntimeUnit, ...]:
+        retirement_units = session.retirement.units if session.retirement else ()
+        return RuntimeOrchestrator._merge_units(
+            session.active,
+            session.pending,
+            retirement_units,
+        )
+
+    def begin_uninstall(self) -> Optional[RuntimeSession]:
+        """Persist administrative stop intent without waiting for teardown."""
+
+        with self._lock:
+            stored = self._reload_for_transaction()
+            if stored is None:
+                return None
+            session = stored.session
+            if session.phase not in {"uninstalling", "finalizing-uninstall"}:
+                session = self._save(replace(
+                    session,
+                    operation_id=str(uuid.uuid4()),
+                    phase="uninstalling",
+                    last_error="",
+                    updated_at=_utc_now(),
+                ))
+            return session
+
     def uninstall(self) -> None:
+        """Stop the installation without allowing task leases to veto teardown."""
+
         with self._lock:
             stored = self._reload_for_transaction()
             if stored is None:
                 return
             session = stored.session
-            if session.phase in {"clearing-directory", "finalizing-uninstall"}:
-                finalizing_units = tuple({
-                                             unit.runtime_id: unit
-                                             for unit in (*session.active, *session.pending, *session.retired)
-                                         }.values())
-                schedulers = tuple(
-                    unit for unit in finalizing_units
-                    if unit.slot.component == "scheduler"
-                )
-                if not schedulers:
-                    raise RuntimeOrchestrationError(
-                        "finalizing uninstall contains no scheduler RuntimeService identity"
-                    )
-                try:
-                    if session.phase == "clearing-directory":
-                        self._clear_runtime_directory(schedulers[0], session.install_id)
-                        self._delete_units(
-                            (
-                                unit for unit in finalizing_units
-                                if unit.slot.component != "scheduler"
-                            ),
-                            session.install_id,
-                        )
-                        session = replace(
-                            session,
-                            phase="finalizing-uninstall",
-                            active=schedulers,
-                            pending=(),
-                            retired=(),
-                            last_error="",
-                            updated_at=_utc_now(),
-                        )
-                        self._save(session)
-                    self._delete_units(schedulers, session.install_id)
-                    expected = self._stored.resource_version if self._stored else None
-                    self.sessions.delete(expected_resource_version=expected)
-                    self._mark_snapshot_deleted()
-                    return
-                except Exception as exc:
-                    LOGGER.exception("managed RuntimeService uninstall finalization failed")
-                    self._save(replace(
-                        session,
-                        phase=session.phase,
-                        last_error=str(exc),
-                        updated_at=_utc_now(),
-                    ))
-                    raise
-            # Before initial publication, no Scheduler directory or task lease
-            # can exist.  This distinction is essential for cancellation while
-            # the scheduler itself is still activating: cleanup must not depend
-            # on calling an endpoint which has never become Ready.  A
-            # ``publishing`` session remains ambiguous and therefore follows the
-            # normal clear/readback path even with directory revision zero.
-            directory_may_be_published = (
-                session.active_directory_revision > 0
-                or session.phase in self._PUBLICATION_PHASES
+            all_units = self._owned_units(session)
+            schedulers = tuple(
+                unit for unit in all_units if unit.slot.component == "scheduler"
             )
-            drain_revisions = set()
-            if session.active_directory_revision > 0:
-                drain_revisions.add(session.active_directory_revision)
-            # A committed rollout can fail after the directory CAS but before
-            # old resources drain. Both the current and immediately previous
-            # revisions may still own live task leases in that state.
-            if session.retired and session.active_directory_revision > 1:
-                drain_revisions.add(session.active_directory_revision - 1)
-            if session.phase in self._PUBLICATION_PHASES:
-                drain_revisions.add(session.active_directory_revision + 1)
-            elif session.pending and (
-                session.active
-                or any(unit.slot.component == "generator" for unit in session.pending)
-            ):
-                # A pre-publication failed transaction is ambiguous but safe to
-                # drain: an unpublished revision has a zero lease count.
-                drain_revisions.add(session.active_directory_revision + 1)
-            session = replace(
-                session,
-                operation_id=str(uuid.uuid4()),
-                phase="uninstalling",
-                updated_at=_utc_now(),
-            )
-            self._save(session)
-            # Failed transactions can contain the same unit in active,
-            # pending, and retired.  Build one exact deletion set so cleanup is
-            # idempotent and never deletes the scheduler before a pending
-            # generator merely because the active directory is still empty.
-            all_units_by_id = {}
-            for unit in (*session.active, *session.pending, *session.retired):
-                existing = all_units_by_id.get(unit.runtime_id)
-                if existing is None or (
-                    existing.endpoint is None and unit.endpoint is not None):
-                    all_units_by_id[unit.runtime_id] = unit
-            all_units = tuple(all_units_by_id[name] for name in sorted(all_units_by_id))
-            schedulers = tuple(unit for unit in all_units if unit.slot.component == "scheduler")
             if not schedulers:
-                raise RuntimeOrchestrationError("runtime session contains no scheduler RuntimeService")
+                raise RuntimeOrchestrationError(
+                    "runtime session contains no scheduler RuntimeService"
+                )
             active_schedulers = tuple(
                 unit for unit in session.active if unit.slot.component == "scheduler"
             )
             scheduler = active_schedulers[0] if len(active_schedulers) == 1 else schedulers[0]
-            generators = tuple(unit for unit in all_units if unit.slot.component == "generator")
-            remaining = tuple(
+            generators = tuple(
+                unit for unit in all_units if unit.slot.component == "generator"
+            )
+            workers = tuple(
                 unit for unit in all_units
                 if unit.slot.component not in {"generator", "scheduler"}
             )
+
+            directory_may_be_published = (
+                session.active_directory_revision > 0
+                or session.phase in self._PUBLICATION_PHASES
+            )
+            revisions = set()
+            if session.active_directory_revision > 0:
+                revisions.add(session.active_directory_revision)
+            if session.retirement is not None:
+                revisions.add(session.retirement.revision)
+            if session.phase in self._PUBLICATION_PHASES:
+                revisions.add(session.active_directory_revision + 1)
+
+            if session.phase not in {"uninstalling", "finalizing-uninstall"}:
+                session = self._save(replace(
+                    session,
+                    operation_id=str(uuid.uuid4()),
+                    phase="uninstalling",
+                    last_error="",
+                    updated_at=_utc_now(),
+                ))
+
             try:
-                if not directory_may_be_published:
-                    # A cancelled/failed pre-publication install owns only
-                    # Kubernetes objects. Delete generators first, then every
-                    # other worker, persist the scheduler-only recovery
-                    # boundary, and delete scheduler last. No Scheduler HTTP
-                    # call is required in this state.
-                    self._delete_units(generators, session.install_id)
-                    self._delete_units(remaining, session.install_id)
-                    session = replace(
+                if session.phase != "finalizing-uninstall":
+                    # Stop task admission first. Uninstall intentionally does not
+                    # preserve in-flight work: this matches the public stop
+                    # contract and prevents stale leases from delaying teardown.
+                    self._delete_units(
+                        generators,
+                        session.install_id,
+                        timeout_seconds=30,
+                        allow_active=True,
+                    )
+                    if directory_may_be_published:
+                        fence_deadline = self._wall_clock()
+                        for revision in sorted(revisions):
+                            try:
+                                self._retire_revision(
+                                    scheduler,
+                                    revision,
+                                    fence_deadline,
+                                )
+                            except Exception as exc:
+                                LOGGER.warning(
+                                    f"[Runtime Uninstall] Could not fence revision {revision}; "
+                                    f"continue full teardown: {exc}"
+                                )
+                        try:
+                            self._clear_runtime_directory(
+                                scheduler,
+                                session.install_id,
+                            )
+                        except Exception as exc:
+                            # Full installation deletion is itself the final
+                            # fence. Scheduler unavailability must not turn task
+                            # state into an uninstall lock.
+                            LOGGER.warning(
+                                f"[Runtime Uninstall] Could not clear RuntimeDirectory; "
+                                f"continue exact UID teardown: {exc}"
+                            )
+                    session = self._save(replace(
                         session,
                         phase="finalizing-uninstall",
-                        active=schedulers,
-                        pending=(),
-                        retired=(),
                         last_error="",
                         updated_at=_utc_now(),
-                    )
-                    self._save(session)
-                    self._delete_units(schedulers, session.install_id)
-                    expected = self._stored.resource_version if self._stored else None
-                    self.sessions.delete(expected_resource_version=expected)
-                    self._mark_snapshot_deleted()
-                    return
+                    ))
 
-                # Stop producing new leases before waiting for existing tasks.
-                self._delete_units(generators, session.install_id)
-                for revision in sorted(drain_revisions):
-                    self._drain(scheduler, revision)
-                # Persist each irreversible boundary separately.  While the
-                # directory is being cleared the Scheduler must remain live;
-                # once finalizing-uninstall is stored, retries use Kubernetes
-                # deletion only and never call a Scheduler that may be gone.
-                session = replace(
-                    session,
-                    phase="clearing-directory",
-                    # Keep every not-yet-deleted UID in the CAS record. A crash
-                    # after directory clear can then finish Kubernetes cleanup
-                    # without discovery or stale routability.
-                    active=tuple(schedulers) + tuple(remaining),
-                    pending=(),
-                    retired=(),
-                    last_error="",
-                    updated_at=_utc_now(),
+                # Scheduler deletion is the definitive admission fence when its
+                # directory clear could not be acknowledged. Remove it before
+                # workers so no surviving control plane can route to resources
+                # that teardown has already removed.
+                self._delete_units(
+                    schedulers,
+                    session.install_id,
+                    timeout_seconds=60,
+                    allow_active=True,
                 )
-                self._save(session)
-                # Clear before deleting any route target. The Scheduler remains
-                # live for the clear/readback transaction and is deleted last.
-                self._clear_runtime_directory(scheduler, session.install_id)
-                self._delete_units(remaining, session.install_id)
-                session = replace(
-                    session,
-                    phase="finalizing-uninstall",
-                    active=schedulers,
-                    last_error="",
-                    updated_at=_utc_now(),
+                self._delete_units(
+                    tuple(workers) + tuple(session.cleanup),
+                    session.install_id,
+                    timeout_seconds=60,
+                    allow_active=True,
                 )
-                self._save(session)
-                self._delete_units(schedulers, session.install_id)
                 expected = self._stored.resource_version if self._stored else None
                 self.sessions.delete(expected_resource_version=expected)
                 self._mark_snapshot_deleted()
             except Exception as exc:
                 LOGGER.exception("managed RuntimeService uninstall failed")
-                self._save(replace(
-                    session,
-                    phase=(
-                        session.phase
-                        if session.phase in {"clearing-directory", "finalizing-uninstall"}
-                        else "failed"
-                    ),
-                    last_error=str(exc),
-                    updated_at=_utc_now(),
-                ))
+                try:
+                    stored = self._reload_for_transaction()
+                except Exception:
+                    LOGGER.exception("could not reload RuntimeSession after uninstall failure")
+                    raise exc
+                if stored is None or stored.session.install_id != session.install_id:
+                    # The CAS DELETE may have committed even if its response
+                    # was lost. Absence (or a newer installation) is
+                    # authoritative; never recreate an old session merely to
+                    # persist an uninstall error.
+                    return
+                current = stored.session
+                try:
+                    self._save(replace(
+                        current,
+                        phase=(
+                            "finalizing-uninstall"
+                            if current.phase == "finalizing-uninstall" else "uninstalling"
+                        ),
+                        last_error=str(exc),
+                        updated_at=_utc_now(),
+                    ))
+                except RuntimeSessionConflict:
+                    if self._stored is None:
+                        return
+                    raise
                 raise
 
     def sample_runtime_metrics(

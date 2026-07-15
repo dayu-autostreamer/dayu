@@ -6,6 +6,8 @@ from decimal import Decimal
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 from kubernetes import client, config
+
+from kubernetes_timeout import kubernetes_request_timeout
 from kubernetes.utils.quantity import parse_quantity
 
 
@@ -201,9 +203,15 @@ class ClusterClient:
         if not self.namespace:
             raise ValueError("namespace must be non-empty")
         if api_client is None and (core_api is None or custom_api is None):
+            configuration = client.Configuration.get_default_copy()
             if load_config:
-                config.load_incluster_config()
-            api_client = client.ApiClient()
+                config.load_incluster_config(client_configuration=configuration)
+            # urllib3 otherwise applies its own retry policy after the
+            # Kubernetes client's explicit request deadline. Lifecycle code
+            # owns retry/reconciliation, so one API call must consume at most
+            # one bounded request window.
+            configuration.retries = 0
+            api_client = client.ApiClient(configuration=configuration)
         self.api_client = api_client
         self.core = core_api or client.CoreV1Api(api_client)
         self.custom = custom_api or client.CustomObjectsApi(api_client)
@@ -212,16 +220,14 @@ class ClusterClient:
         self.runtime_selector = str(runtime_selector or "").strip()
         if not self.runtime_selector:
             raise ValueError("runtime_selector must be non-empty")
-        self.request_timeout = float(request_timeout_seconds)
-        if self.request_timeout <= 0:
-            raise ValueError("request_timeout_seconds must be positive")
+        self.request_timeout = kubernetes_request_timeout(request_timeout_seconds)
 
-    def _bounded_timeout(self, request_timeout_seconds: Optional[float] = None) -> float:
-        timeout = self.request_timeout if request_timeout_seconds is None else float(
-            request_timeout_seconds
+    def _bounded_timeout(self, request_timeout_seconds: Optional[float] = None) -> int:
+        timeout = (
+            self.request_timeout
+            if request_timeout_seconds is None
+            else kubernetes_request_timeout(request_timeout_seconds)
         )
-        if timeout <= 0:
-            raise ValueError("request_timeout_seconds must be positive")
         return min(self.request_timeout, timeout)
 
     def node_inventory(

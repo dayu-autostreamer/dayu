@@ -1,4 +1,4 @@
-"""Scheduler-backed task leases for safe RuntimeDirectory draining.
+"""Scheduler-backed task leases for bounded RuntimeDirectory retirement.
 
 The data plane never discovers Kubernetes resources.  A task carries the
 immutable RuntimeDirectory revision that routed it, and all lease operations
@@ -6,6 +6,7 @@ are sent to the scheduler endpoint injected in ``DAYU_RUNTIME_BOOTSTRAP``.
 """
 
 import json
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -26,6 +27,18 @@ class RuntimeLeaseIdentityError(RuntimeLeaseError):
 
 class RuntimeLeaseUnavailable(RuntimeLeaseError):
     """The scheduler did not confirm the requested lease operation."""
+
+
+class RuntimeLeaseRetired(RuntimeLeaseError):
+    """The task's immutable RuntimeDirectory revision has been fenced."""
+
+    def __init__(self, revision, deadline=None):
+        message = f"runtime directory revision {revision} is retired"
+        if deadline is not None:
+            message += f" at deadline {deadline}"
+        super().__init__(message)
+        self.revision = revision
+        self.deadline = deadline
 
 
 class RuntimeLeaseClient:
@@ -123,14 +136,48 @@ class RuntimeLeaseClient:
             raise RuntimeLeaseUnavailable(
                 "runtime task lease {} response identity mismatch".format(operation)
             )
+        if response.get("retired") is True:
+            raise RuntimeLeaseRetired(revision, response.get("deadline"))
         if operation == "release" and response.get("released") is not True:
             raise RuntimeLeaseUnavailable(
                 "runtime task lease release response is not acknowledged"
             )
-        if operation != "release" and response.get("expires_at") is None:
-            raise RuntimeLeaseUnavailable(
-                "runtime task lease {} response has no expiry".format(operation)
-            )
+        if operation != "release":
+            try:
+                expires_at = float(response["expires_at"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeLeaseUnavailable(
+                    "runtime task lease {} response has no valid expiry".format(
+                        operation
+                    )
+                ) from exc
+            try:
+                valid_for_seconds = float(response["valid_for_seconds"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeLeaseUnavailable(
+                    "runtime task lease {} response has no valid relative lifetime".format(
+                        operation
+                    )
+                ) from exc
+            if not math.isfinite(expires_at) or expires_at <= 0:
+                raise RuntimeLeaseUnavailable(
+                    "runtime task lease {} response has no valid expiry".format(
+                        operation
+                    )
+                )
+            if (
+                    not math.isfinite(valid_for_seconds)
+                    or valid_for_seconds <= 0
+                    or valid_for_seconds > self.ttl_seconds
+            ):
+                raise RuntimeLeaseUnavailable(
+                    "runtime task lease {} response has invalid relative lifetime".format(
+                        operation
+                    )
+                )
+            response = dict(response)
+            response["expires_at"] = expires_at
+            response["valid_for_seconds"] = valid_for_seconds
         return response
 
     def acquire(self, task):
@@ -163,28 +210,38 @@ class RuntimeLeaseClient:
 
         Component-boundary renewals protect normal forwarding, but inference
         may legitimately run longer than a configured TTL.  A daemon heartbeat
-        renews at most every 30 seconds. Transient failures are retried while
-        the last confirmed lease is still valid; crossing a full TTL without a
-        successful renewal fails closed when the operation returns.
+        renews at most every 30 seconds. Transient failures are retried only
+        while the last Scheduler-confirmed expiry remains valid. A retirement
+        fence is terminal and fails closed when the operation returns.
         """
 
-        self.renew(task)
+        initial = self.renew(task)
         stop = threading.Event()
+        now = self.clock()
         state = {
-            "last_success": self.clock(),
+            "valid_until": now + initial["valid_for_seconds"],
             "lost": None,
         }
-        interval = max(0.05, min(30.0, self.ttl_seconds / 3.0))
+        interval = max(
+            0.05,
+            min(30.0, initial["valid_for_seconds"] / 3.0),
+        )
 
         def heartbeat():
             while not stop.wait(interval):
                 try:
-                    self.renew(task)
-                    state["last_success"] = self.clock()
+                    response = self.renew(task)
+                    state["valid_until"] = (
+                        self.clock() + response["valid_for_seconds"]
+                    )
                     state["lost"] = None
+                except RuntimeLeaseRetired as exc:
+                    state["lost"] = exc
+                    state["valid_until"] = self.clock()
+                    return
                 except RuntimeLeaseError as exc:
                     state["lost"] = exc
-                    if self.clock() - state["last_success"] >= self.ttl_seconds:
+                    if self.clock() >= state["valid_until"]:
                         return
 
         thread = threading.Thread(
@@ -204,8 +261,10 @@ class RuntimeLeaseClient:
             thread.join(timeout=max(1.0, min(self.timeout_seconds + 1.0, 10.0)))
             if (
                     body_error is None
-                    and self.clock() - state["last_success"] >= self.ttl_seconds
+                    and self.clock() >= state["valid_until"]
             ):
+                if isinstance(state["lost"], RuntimeLeaseRetired):
+                    raise state["lost"]
                 raise RuntimeLeaseUnavailable(
                     "runtime task lease expired during a long-running operation"
                 ) from state["lost"]

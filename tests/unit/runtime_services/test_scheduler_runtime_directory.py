@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -9,8 +10,13 @@ from core.scheduler.runtime_directory import (
     RedisRuntimeDirectoryStore,
     create_runtime_directory_store,
 )
-from core.scheduler.task_lease import InMemoryTaskLeaseStore, create_task_lease_store
+from core.scheduler.task_lease import (
+    InMemoryTaskLeaseStore,
+    TaskLeaseRetired,
+    create_task_lease_store,
+)
 from core.scheduler.task_lease import RedisTaskLeaseStore
+from core.scheduler.scheduler import Scheduler
 from core.lib.runtime import RuntimeEndpoint
 
 
@@ -46,6 +52,7 @@ class FakeDirectoryRedis:
     def __init__(self):
         self.values = {}
         self.sets = {}
+        self.zsets = {}
 
     def get(self, key):
         return self.values.get(key)
@@ -57,9 +64,10 @@ class FakeDirectoryRedis:
         return True
 
     def delete(self, key):
-        existed = key in self.values or key in self.sets
+        existed = key in self.values or key in self.sets or key in self.zsets
         self.values.pop(key, None)
         self.sets.pop(key, None)
+        self.zsets.pop(key, None)
         return int(existed)
 
     def srem(self, key, value):
@@ -129,6 +137,68 @@ class FakeDirectoryRedis:
             del self.values[proposal_key]
             self.srem(proposal_index_key, proposal_key)
             return [2, directory_raw]
+        if script == RedisRuntimeDirectoryStore._COMMIT_WITH_RETIREMENT_SCRIPT:
+            assert len(keys) == 5 and len(args) == 3
+            (
+                active_key,
+                proposal_key,
+                proposal_index_key,
+                lease_key,
+                retirement_key,
+            ) = keys
+            proposal_raw = self.values.get(proposal_key)
+            if not proposal_raw:
+                self.srem(proposal_index_key, proposal_key)
+                return [0, "", ""]
+            proposal = json.loads(proposal_raw)
+            current = json.loads(self.values[active_key]) if active_key in self.values else {}
+            current_revision = int(current.get("revision", 0))
+            expected_revision = int(args[0])
+            if (
+                current_revision != expected_revision
+                or int(proposal["base_revision"]) != current_revision
+            ):
+                return [1, str(current_revision), ""]
+            now, requested_deadline = float(args[1]), float(args[2])
+            retirement = json.loads(self.values[retirement_key]) \
+                if retirement_key in self.values else {
+                    "deadline": requested_deadline,
+                    "retired": False,
+                    "revoked_count": 0,
+                }
+            retirement["deadline"] = min(
+                float(retirement["deadline"]), requested_deadline,
+            )
+            deadline = retirement["deadline"]
+            leases = self.zsets.setdefault(lease_key, {})
+            if retirement["retired"]:
+                leases.clear()
+            elif deadline <= now:
+                forced = {
+                    member: expiry for member, expiry in leases.items()
+                    if expiry >= deadline
+                }
+                retirement["revoked_count"] += len(forced)
+                retirement["retired"] = True
+                leases.clear()
+            else:
+                self.zsets[lease_key] = {
+                    member: min(expiry, deadline)
+                    for member, expiry in leases.items()
+                    if expiry > now
+                }
+                leases = self.zsets[lease_key]
+            self.values[retirement_key] = json.dumps(retirement)
+            directory_raw = json.dumps(proposal["directory"], separators=(",", ":"))
+            self.values[active_key] = directory_raw
+            del self.values[proposal_key]
+            self.srem(proposal_index_key, proposal_key)
+            status = {
+                "revision": expected_revision,
+                "count": len(leases),
+                **retirement,
+            }
+            return [2, directory_raw, json.dumps(status)]
         if script == RedisRuntimeDirectoryStore._CLEAR_SCRIPT:
             assert len(keys) == 2 and len(args) == 1
             active_key, proposal_index_key = keys
@@ -150,6 +220,110 @@ class FakeDirectoryRedis:
             self.srem(proposal_index_key, proposal_key)
             return [1, proposal_raw] if proposal_raw else [0, ""]
         raise AssertionError("unexpected Lua script")
+
+
+class FakeTaskLeaseRedis:
+    """Semantic Redis fake for the lease scripts' durable state transitions."""
+
+    def __init__(self, active_revision):
+        self.active_revision = active_revision
+        self.leases = {}
+        self.retirements = {}
+
+    @staticmethod
+    def _revision(key):
+        parts = key.split(":")
+        return int(parts[-2] if parts[-1] == "retirement" else parts[-1])
+
+    def _prune(self, revision, now):
+        self.leases[revision] = {
+            member: expiry
+            for member, expiry in self.leases.get(revision, {}).items()
+            if expiry > now
+        }
+
+    def _status(self, revision, now):
+        retirement = self.retirements.get(revision)
+        if retirement and not retirement["retired"] and retirement["deadline"] <= now:
+            self.leases[revision] = {
+                member: expiry
+                for member, expiry in self.leases.get(revision, {}).items()
+                if expiry >= retirement["deadline"]
+            }
+            retirement["revoked_count"] += len(self.leases.get(revision, {}))
+            self.leases[revision] = {}
+            retirement["retired"] = True
+        elif not (retirement and retirement["retired"]):
+            self._prune(revision, now)
+        return {
+            "count": len(self.leases.get(revision, {})),
+            "deadline": retirement["deadline"] if retirement else False,
+            "retired": bool(retirement and retirement["retired"]),
+            "revoked_count": retirement["revoked_count"] if retirement else 0,
+        }
+
+    def eval(self, script, key_count, *values):
+        keys = values[:key_count]
+        args = values[key_count:]
+        revision = self._revision(keys[-1] if script == RedisTaskLeaseStore._ACQUIRE_SCRIPT else keys[0])
+        if script == RedisTaskLeaseStore._ACQUIRE_SCRIPT:
+            assert key_count == 3
+            assert keys[0].endswith(":active")
+            requested, now, expiry, member, _ttl = args
+            if self.active_revision != int(requested):
+                return [0, str(self.active_revision)]
+            retirement = self.retirements.get(revision)
+            if retirement:
+                return [1, str(retirement["deadline"])]
+            self._prune(revision, float(now))
+            self.leases.setdefault(revision, {})[str(member)] = float(expiry)
+            return [2, str(expiry)]
+        if script == RedisTaskLeaseStore._RENEW_SCRIPT:
+            assert key_count == 3
+            assert keys[2].endswith(":active")
+            member, now, expiry, _ttl, requested_revision = args
+            if (
+                int(requested_revision) != self.active_revision
+                and revision not in self.retirements
+            ):
+                return [-2, str(self.active_revision)]
+            status = self._status(revision, float(now))
+            if status["retired"]:
+                return [-1, str(status["deadline"])]
+            if str(member) not in self.leases.get(revision, {}):
+                return [0, ""]
+            if status["deadline"] is not False:
+                expiry = min(float(expiry), status["deadline"])
+            self.leases[revision][str(member)] = float(expiry)
+            return [1, str(expiry)]
+        if script == RedisTaskLeaseStore._RELEASE_SCRIPT:
+            member, now = args
+            self._prune(revision, float(now))
+            if self.leases.get(revision, {}).pop(str(member), None) is not None:
+                return 1
+            return 2 if revision in self.retirements else 0
+        if script == RedisTaskLeaseStore._RETIRE_SCRIPT:
+            now, deadline = map(float, args)
+            retirement = self.retirements.setdefault(revision, {
+                "deadline": deadline,
+                "retired": False,
+                "revoked_count": 0,
+            })
+            retirement["deadline"] = min(retirement["deadline"], deadline)
+            if retirement["deadline"] <= now and not retirement["retired"]:
+                retirement["revoked_count"] += len(self.leases.get(revision, {}))
+                self.leases[revision] = {}
+                retirement["retired"] = True
+            elif not retirement["retired"]:
+                self._prune(revision, now)
+                self.leases[revision] = {
+                    member: min(expiry, retirement["deadline"])
+                    for member, expiry in self.leases.get(revision, {}).items()
+                }
+            return json.dumps(self._status(revision, now))
+        if script == RedisTaskLeaseStore._STATUS_SCRIPT:
+            return json.dumps(self._status(revision, float(args[0])))
+        raise AssertionError("unexpected task lease Lua script")
 
 
 @pytest.mark.unit
@@ -202,7 +376,7 @@ def test_directory_proposal_commit_and_strict_compact_routes():
 
 
 @pytest.mark.unit
-def test_task_leases_are_multi_tenant_and_old_revision_can_drain():
+def test_task_leases_are_multi_tenant_and_expire_without_retirement():
     now = [100.0]
     leases = InMemoryTaskLeaseStore(clock=lambda: now[0])
 
@@ -212,12 +386,82 @@ def test_task_leases_are_multi_tenant_and_old_revision_can_drain():
     with pytest.raises(RuntimeDirectoryConflict):
         leases.acquire(2, "late-old-task", active_revision=3)
 
-    # Existing revision-3 work can renew after revision 4 becomes active.
+    # A revision switch without an armed retirement fails closed. Once the
+    # deadline exists, existing work can renew only inside that bound.
+    with pytest.raises(RuntimeDirectoryConflict, match="active revision is 4"):
+        leases.renew(3, "task-a", ttl_seconds=30, active_revision=4)
+    leases.retire(3, deadline=125)
     leases.renew(3, "task-a", ttl_seconds=30)
     leases.release(3, "task-b")
     assert leases.count(3) == 1
     now[0] = 131.0
     assert leases.count(3) == 0
+
+
+@pytest.mark.unit
+def test_task_lease_retirement_is_bounded_and_idempotent():
+    now = [100.0]
+    leases = InMemoryTaskLeaseStore(clock=lambda: now[0])
+    leases.acquire(3, "task-a", active_revision=3, ttl_seconds=100)
+    leases.acquire(3, "task-b", active_revision=3, ttl_seconds=100)
+    leases.acquire(3, "naturally-expired", active_revision=3, ttl_seconds=10)
+
+    status = leases.retire(3, deadline=120)
+    assert status == {
+        "revision": 3,
+        "count": 3,
+        "deadline": 120.0,
+        "retired": False,
+        "revoked_count": 0,
+    }
+    assert leases.renew(3, "task-a", ttl_seconds=100)["expires_at"] == 120.0
+    with pytest.raises(TaskLeaseRetired, match="revision 3"):
+        leases.acquire(3, "late-task", active_revision=3)
+
+    # Recovery may repeat retirement, but it can only tighten the persisted
+    # deadline.  A stale caller cannot reopen the grace period.
+    assert leases.retire(3, deadline=140)["deadline"] == 120.0
+    assert leases.retire(3, deadline=115)["deadline"] == 115.0
+
+    # Reconciliation may run after the deadline. Only leases that were still
+    # valid at 115 are forced; the 10-second lease ended naturally beforehand.
+    now[0] = 130.0
+    assert leases.status(3) == {
+        "revision": 3,
+        "count": 0,
+        "deadline": 115.0,
+        "retired": True,
+        "revoked_count": 2,
+    }
+    with pytest.raises(TaskLeaseRetired, match="deadline 115.0"):
+        leases.renew(3, "task-a")
+    assert leases.release(3, "task-a")["already_released"] is True
+
+
+@pytest.mark.unit
+def test_immediate_retirement_revokes_only_one_revision():
+    now = [100.0]
+    leases = InMemoryTaskLeaseStore(clock=lambda: now[0])
+    leases.acquire(3, "old-task", active_revision=3, ttl_seconds=30)
+    leases.acquire(4, "new-task", active_revision=4, ttl_seconds=30)
+
+    assert leases.retire(3, deadline=now[0]) == {
+        "revision": 3,
+        "count": 0,
+        "deadline": 100.0,
+        "retired": True,
+        "revoked_count": 1,
+    }
+    assert leases.count(4) == 1
+
+
+@pytest.mark.unit
+def test_retirement_deadline_is_never_rounded_later():
+    leases = InMemoryTaskLeaseStore(clock=lambda: 100.0)
+    requested = 120.123456
+
+    assert leases.retire(3, deadline=requested)["deadline"] == 120.123
+    assert leases.status(3)["deadline"] <= requested
 
 
 @pytest.mark.unit
@@ -344,3 +588,165 @@ def test_redis_directory_survives_scheduler_restart_and_keeps_proposal_cas():
     assert second_restart.clear("test")["previous_revision"] == 0
     with pytest.raises(RuntimeDirectoryConflict, match="install_id"):
         second_restart.clear("another-install")
+
+
+@pytest.mark.unit
+def test_memory_scheduler_commit_switches_directory_and_arms_retirement_together():
+    now = [100.0]
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler._runtime_state_lock = threading.RLock()
+    scheduler._runtime_clock = lambda: now[0]
+    scheduler.runtime_directory = RuntimeDirectoryStore(
+        directory(1, [
+            route(
+                "processor", "edge-1", 1,
+                service="detector", suffix="processor",
+            ),
+        ]),
+        clock=lambda: now[0],
+    )
+    scheduler.task_leases = InMemoryTaskLeaseStore(clock=lambda: now[0])
+    scheduler.acquire_task_lease(1, "in-flight", ttl_seconds=100)
+    scheduler.propose_runtime_directory(
+        directory(2, [
+            route(
+                "processor", "cloud", 2,
+                service="detector", suffix="processor2",
+            ),
+        ]),
+        base_revision=1,
+        proposal_id="rollout",
+    )
+
+    with pytest.raises(
+        RuntimeDirectoryError,
+        match="retirement_grace_seconds must be finite and positive",
+    ):
+        scheduler.commit_runtime_directory(
+            "rollout",
+            expected_revision=1,
+            retirement_grace_seconds=float("nan"),
+        )
+    assert scheduler.runtime_directory_revision() == 1
+
+    committed = scheduler.commit_runtime_directory(
+        "rollout",
+        expected_revision=1,
+        retirement_grace_seconds=20,
+    )
+
+    assert committed["revision"] == 2
+    assert committed["retirement"] == {
+        "revision": 1,
+        "count": 1,
+        "deadline": 120.0,
+        "retired": False,
+        "revoked_count": 0,
+    }
+    assert scheduler.renew_task_lease(
+        1, "in-flight", ttl_seconds=100,
+    )["expires_at"] == 120.0
+    with pytest.raises(RuntimeDirectoryConflict, match="active revision is 2"):
+        scheduler.acquire_task_lease(1, "late", ttl_seconds=10)
+
+
+@pytest.mark.unit
+def test_redis_commit_atomically_clamps_old_revision_lease_scores():
+    redis = FakeDirectoryRedis()
+    store = RedisRuntimeDirectoryStore(
+        redis,
+        install_id="test",
+        clock=lambda: 100.0,
+    )
+    store.replace(
+        directory(1, [
+            route(
+                "processor", "edge-1", 1,
+                service="detector", suffix="processor",
+            ),
+        ]),
+        expected_revision=0,
+    )
+    store.propose(
+        directory(2, [
+            route(
+                "processor", "cloud", 2,
+                service="detector", suffix="processor2",
+            ),
+        ]),
+        base_revision=1,
+        proposal_id="rollout",
+    )
+    lease_key = "dayu:runtime-directory:task-leases:test:1"
+    retirement_key = f"{lease_key}:retirement"
+    redis.zsets[lease_key] = {
+        "long-running": 200.0,
+        "within-grace": 110.0,
+        "expired": 99.0,
+    }
+
+    committed = store.commit_with_retirement(
+        "rollout",
+        expected_revision=1,
+        retirement_grace_seconds=20,
+        lease_key=lease_key,
+        retirement_key=retirement_key,
+        now=100.0,
+    )
+
+    assert committed["revision"] == 2
+    assert committed["retirement"] == {
+        "revision": 1,
+        "count": 2,
+        "deadline": 120.0,
+        "retired": False,
+        "revoked_count": 0,
+    }
+    assert redis.zsets[lease_key] == {
+        "long-running": 120.0,
+        "within-grace": 110.0,
+    }
+    assert json.loads(redis.values[retirement_key]) == {
+        "deadline": 120.0,
+        "retired": False,
+        "revoked_count": 0,
+    }
+
+
+@pytest.mark.unit
+def test_redis_task_lease_retirement_survives_restart_and_checks_active_atomically():
+    now = [100.0]
+    redis = FakeTaskLeaseRedis(active_revision=3)
+    first = RedisTaskLeaseStore(redis, install_id="test", clock=lambda: now[0])
+
+    assert first.acquire(3, "task-a", active_revision=3, ttl_seconds=100)[
+        "expires_at"
+    ] == 200.0
+    assert first.acquire(3, "naturally-expired", active_revision=3, ttl_seconds=10)[
+        "valid_for_seconds"
+    ] == 10.0
+
+    # The Python caller still believes revision 3 is active, but the Redis Lua
+    # transaction observes the directory CAS performed by another replica.
+    redis.active_revision = 4
+    with pytest.raises(RuntimeDirectoryConflict, match="active revision is 4"):
+        first.acquire(3, "late-task", active_revision=3)
+    with pytest.raises(RuntimeDirectoryConflict, match="active revision is 4"):
+        first.renew(3, "task-a", ttl_seconds=100, active_revision=3)
+
+    assert first.retire(3, deadline=120)["deadline"] == 120.0
+    restarted = RedisTaskLeaseStore(redis, install_id="test", clock=lambda: now[0])
+    assert restarted.retire(3, deadline=140)["deadline"] == 120.0
+    assert restarted.renew(3, "task-a", ttl_seconds=100)["expires_at"] == 120.0
+
+    now[0] = 130.0
+    assert restarted.status(3) == {
+        "revision": 3,
+        "count": 0,
+        "deadline": 120.0,
+        "retired": True,
+        "revoked_count": 1,
+    }
+    with pytest.raises(TaskLeaseRetired, match="revision 3"):
+        restarted.renew(3, "task-a")
+    assert restarted.release(3, "task-a")["already_released"] is True

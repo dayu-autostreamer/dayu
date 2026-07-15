@@ -116,6 +116,8 @@ def test_client_uses_fixed_gvr_and_uid_guarded_delete():
         RUNTIME_GROUP, RUNTIME_VERSION, RUNTIME_PLURAL,
     )
     delete_kwargs = api.calls[1][1]
+    assert type(create_kwargs["_request_timeout"]) is int
+    assert type(delete_kwargs["_request_timeout"]) is int
     assert delete_kwargs["body"]["preconditions"] == {"uid": "runtime-uid"}
     assert delete_kwargs["body"]["propagationPolicy"] == "Foreground"
 
@@ -218,9 +220,11 @@ def test_wait_cancellation_bounds_list_and_watch_request_windows():
     assert result["runtime-a"]["metadata"]["resourceVersion"] == "4"
     list_kwargs = next(kwargs for operation, kwargs in api.calls if operation == "list")
     assert list_kwargs["_request_timeout"] == 2.0
+    assert type(list_kwargs["_request_timeout"]) is int
     watch_kwargs = watcher.stream_calls[0][1]
-    assert watch_kwargs["timeout_seconds"] == 2
-    assert watch_kwargs["_request_timeout"][1] > watch_kwargs["timeout_seconds"]
+    assert watch_kwargs["timeout_seconds"] == 1
+    assert watch_kwargs["_request_timeout"] == 2
+    assert type(watch_kwargs["_request_timeout"]) is int
 
 
 def test_wait_with_pre_cancelled_token_does_not_contact_kubernetes():
@@ -265,6 +269,14 @@ def test_wait_fails_fast_on_rejected_spec():
     client = RuntimeServiceClient("dayu", api=api)
     with pytest.raises(RuntimeServiceRejected, match="Invalid: bad spec"):
         client.wait_for_conditions({"runtime-a": 3})
+
+
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), 0, -1])
+def test_wait_rejects_non_finite_or_non_positive_deadlines(timeout):
+    client = RuntimeServiceClient("dayu", api=FakeAPI())
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        client.wait_for_conditions({"runtime-a": 3}, timeout_seconds=timeout)
 
 
 def test_wait_rejects_stale_observed_revision(monkeypatch):
@@ -319,7 +331,7 @@ def test_wait_replaces_snapshot_after_410_instead_of_retaining_deleted_ready_obj
     assert resumed.stream_calls[0][1]["resource_version"] == "5"
 
 
-def test_delete_many_uses_uid_guarded_deletes_and_one_shared_watch():
+def test_delete_many_accepts_uid_guarded_background_deletes_without_waiting_for_gc():
     first = runtime_obj("runtime-a", resource_version="3")
     second = runtime_obj("runtime-b", resource_version="3")
     first["metadata"]["uid"] = "uid-a"
@@ -329,26 +341,100 @@ def test_delete_many_uses_uid_guarded_deletes_and_one_shared_watch():
     deleted_second = runtime_obj("runtime-b", resource_version="5")
     deleted_first["metadata"]["uid"] = "uid-a"
     deleted_second["metadata"]["uid"] = "uid-b"
-    watcher = FakeWatch([
-        {"type": "DELETED", "object": deleted_first},
-        {"type": "DELETED", "object": deleted_second},
-    ])
     client = RuntimeServiceClient(
-        "dayu", api=api, watch_factory=lambda: watcher,
+        "dayu",
+        api=api,
+        watch_factory=lambda: pytest.fail("deletion acceptance must not start a watch"),
     )
 
     assert client.delete_many(
         {"runtime-a": "uid-a", "runtime-b": "uid-b"},
-        label_selector="app.kubernetes.io/managed-by=dayu-backend",
     ) is True
 
     deletes = [kwargs for operation, kwargs in api.calls if operation == "delete"]
     lists = [kwargs for operation, kwargs in api.calls if operation == "list"]
     assert [item["name"] for item in deletes] == ["runtime-a", "runtime-b"]
     assert [item["body"]["preconditions"]["uid"] for item in deletes] == ["uid-a", "uid-b"]
-    assert len(lists) == 1
-    assert len(watcher.stream_calls) == 1
-    assert watcher.stream_calls[0][1]["resource_version"] == "3"
+    assert all(item["body"]["propagationPolicy"] == "Background" for item in deletes)
+    assert lists == []
+
+
+def test_delete_many_shares_one_deadline_across_deletes_list_and_watch(monkeypatch):
+    class Clock:
+        now = 0.0
+
+    clock = Clock()
+    monkeypatch.setattr(
+        "runtime_service_client.time.monotonic",
+        lambda: clock.now,
+    )
+
+    first = runtime_obj("runtime-a", resource_version="3")
+    second = runtime_obj("runtime-b", resource_version="3")
+    first["metadata"]["uid"] = "uid-a"
+    second["metadata"]["uid"] = "uid-b"
+
+    class AdvancingAPI(FakeAPI):
+        def delete_namespaced_custom_object(self, **kwargs):
+            result = super().delete_namespaced_custom_object(**kwargs)
+            clock.now += 2.0
+            return result
+
+        def list_namespaced_custom_object(self, **kwargs):
+            result = super().list_namespaced_custom_object(**kwargs)
+            clock.now += 1.0
+            return result
+
+    api = AdvancingAPI([first, second])
+    client = RuntimeServiceClient(
+        "dayu",
+        api=api,
+        watch_factory=lambda: pytest.fail("deletion acceptance must not start a watch"),
+        request_timeout_seconds=30,
+    )
+
+    assert client.delete_many(
+        {"runtime-a": "uid-a", "runtime-b": "uid-b"},
+        timeout_seconds=10,
+    ) is True
+
+    deletes = [kwargs for operation, kwargs in api.calls if operation == "delete"]
+    assert [kwargs["_request_timeout"] for kwargs in deletes] == [10, 8]
+    assert all(operation != "list" for operation, _ in api.calls)
+
+
+def test_delete_many_stops_batch_when_shared_deadline_expires(monkeypatch):
+    class Clock:
+        now = 0.0
+
+    clock = Clock()
+    monkeypatch.setattr(
+        "runtime_service_client.time.monotonic",
+        lambda: clock.now,
+    )
+
+    class SlowDeleteAPI(FakeAPI):
+        def delete_namespaced_custom_object(self, **kwargs):
+            result = super().delete_namespaced_custom_object(**kwargs)
+            clock.now += 3.0
+            return result
+
+    api = SlowDeleteAPI()
+    client = RuntimeServiceClient(
+        "dayu",
+        api=api,
+        request_timeout_seconds=30,
+    )
+
+    with pytest.raises(RuntimeServiceTimeout, match="timed out deleting"):
+        client.delete_many(
+            {"runtime-a": "uid-a", "runtime-b": "uid-b"},
+            timeout_seconds=5,
+        )
+
+    deletes = [kwargs for operation, kwargs in api.calls if operation == "delete"]
+    assert [kwargs["_request_timeout"] for kwargs in deletes] == [5, 2]
+    assert all(operation != "list" for operation, _ in api.calls)
 
 
 def test_delete_many_treats_same_name_different_uid_as_replacement_not_target():
@@ -385,29 +471,27 @@ def test_delete_many_with_pre_cancelled_token_does_not_delete():
     assert api.calls == []
 
 
-def test_delete_many_cancellation_inside_watch_keeps_exact_uid_boundary():
+def test_delete_many_cancellation_between_requests_keeps_exact_uid_boundary():
     cancel_event = threading.Event()
-    target = runtime_obj("runtime-a", resource_version="3")
-    target["metadata"]["uid"] = "uid-a"
 
-    class CancellingWatch(FakeWatch):
-        def stream(self, func, **kwargs):
-            self.stream_calls.append((func, kwargs))
+    class CancellingAPI(FakeAPI):
+        def delete_namespaced_custom_object(self, **kwargs):
+            result = super().delete_namespaced_custom_object(**kwargs)
             cancel_event.set()
-            yield {"type": "DELETED", "object": copy.deepcopy(target)}
+            return result
 
-    api = FakeAPI([target])
-    watcher = CancellingWatch(())
-    client = RuntimeServiceClient("dayu", api=api, watch_factory=lambda: watcher)
+    api = CancellingAPI()
+    client = RuntimeServiceClient("dayu", api=api)
 
     with pytest.raises(RuntimeServiceCancelled, match="cancelled"):
         client.delete_many(
-            {"runtime-a": "uid-a"},
+            {"runtime-a": "uid-a", "runtime-b": "uid-b"},
             cancel_event=cancel_event,
         )
 
-    assert watcher.stopped is True
-    delete_kwargs = next(kwargs for operation, kwargs in api.calls if operation == "delete")
+    delete_calls = [kwargs for operation, kwargs in api.calls if operation == "delete"]
+    assert len(delete_calls) == 1
+    delete_kwargs = delete_calls[0]
     assert delete_kwargs["body"]["preconditions"] == {"uid": "uid-a"}
 
 
@@ -419,3 +503,25 @@ def test_delete_many_refuses_to_fall_back_to_name_only_deletion():
         client.delete_many({"runtime-a": None})
 
     assert api.calls == []
+
+
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), 0, -1])
+def test_delete_many_rejects_non_finite_or_non_positive_deadlines(timeout):
+    client = RuntimeServiceClient("dayu", api=FakeAPI())
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        client.delete_many({"runtime-a": "uid-a"}, timeout_seconds=timeout)
+
+
+def test_waiting_single_delete_treats_same_name_new_uid_as_target_absent():
+    replacement = runtime_obj("runtime-a", resource_version="8")
+    replacement["metadata"]["uid"] = "new-uid"
+    api = FakeAPI([replacement])
+    client = RuntimeServiceClient("dayu", api=api)
+
+    assert client.delete(
+        "runtime-a",
+        uid="old-uid",
+        wait=True,
+        timeout_seconds=2,
+    ) is True

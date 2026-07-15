@@ -23,7 +23,7 @@ the authoritative details here.
 | New to Dayu as a user | [Documentation site](https://dayu-autostreamer.github.io/docs/) | Public introduction, preparation, tutorial, developer guide, and case-study flow. |
 | New to the repository | [`repository-quickstart.md`](./repository-quickstart.md) | Code-facing reading path, local checks, and implementation landmarks. |
 | Need the vocabulary | [`concepts.md`](./concepts.md) | Defines DAGs, services, processor templates, task content, policies, hooks, datasources, and queries. |
-| Operating a running Dayu system | [`operations/`](./operations/README.md) | Managed-runtime prerequisites, RBAC, install/publication, rollout drain, safe stop, and useful checks. |
+| Operating a running Dayu system | [`operations/`](./operations/README.md) | Managed-runtime prerequisites, RBAC, install/publication, bounded rollout retirement, safe stop, and useful checks. |
 | Changing code | [`development/`](./development/README.md) | Repository map, common change workflows, and docs/tests to update with code changes. |
 | Adding coverage | [`testing/`](./testing/README.md) | Test pyramid and where new tests should live. |
 

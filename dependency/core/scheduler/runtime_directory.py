@@ -41,6 +41,28 @@ def _positive_int(value, field):
     return parsed
 
 
+def retirement_deadline(now, grace_seconds):
+    """Return the immutable millisecond deadline created by a directory commit."""
+
+    try:
+        now = float(now)
+        grace_seconds = float(grace_seconds)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeDirectoryError(
+            "retirement_grace_seconds must be numeric"
+        ) from exc
+    if not math.isfinite(now) or now <= 0:
+        raise RuntimeDirectoryError("runtime commit time must be finite and positive")
+    if not math.isfinite(grace_seconds) or grace_seconds <= 0:
+        raise RuntimeDirectoryError(
+            "retirement_grace_seconds must be finite and positive"
+        )
+    deadline = math.floor((now + grace_seconds) * 1000.0) / 1000.0
+    if deadline <= now:
+        raise RuntimeDirectoryError("retirement grace is too small")
+    return deadline
+
+
 def _canonical_json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -325,6 +347,16 @@ class RuntimeDirectorySnapshot:
         result["hash"] = self.content_hash
         return result
 
+    def compact_routes_for_plan(self, plan, source_device="", cloud_node=""):
+        """Resolve one schedule response from this exact immutable snapshot."""
+
+        return _compact_routes(
+            self,
+            plan,
+            source_device=source_device,
+            cloud_node=cloud_node,
+        )
+
     def find(self, component=None, target_node=None, logical_service=None):
         matches = []
         for route in self.routes:
@@ -608,6 +640,80 @@ end
 return {2, directory_raw}
 """
 
+    # Directory publication and old-revision lease fencing are one Redis
+    # transaction.  A Scheduler replica can therefore never observe N+1 as
+    # active while revision N has neither an immutable deadline nor clamped
+    # lease scores.
+    _COMMIT_WITH_RETIREMENT_SCRIPT = """
+local proposal_raw = redis.call('GET', KEYS[2])
+if not proposal_raw then
+  redis.call('SREM', KEYS[3], KEYS[2])
+  if redis.call('SCARD', KEYS[3]) == 0 then
+    redis.call('DEL', KEYS[3])
+  end
+  return {0, '', ''}
+end
+local proposal = cjson.decode(proposal_raw)
+local current_raw = redis.call('GET', KEYS[1])
+local current_revision = 0
+if current_raw then
+  local current = cjson.decode(current_raw)
+  current_revision = tonumber(current.revision or current.directory_revision or 0)
+end
+local expected_revision = tonumber(ARGV[1])
+if current_revision ~= expected_revision or tonumber(proposal.base_revision) ~= current_revision then
+  return {1, tostring(current_revision), ''}
+end
+
+local now = tonumber(ARGV[2])
+local requested_deadline = tonumber(ARGV[3])
+local retirement_raw = redis.call('GET', KEYS[5])
+local retirement = nil
+if retirement_raw then
+  retirement = cjson.decode(retirement_raw)
+else
+  retirement = {deadline=requested_deadline, retired=false, revoked_count=0}
+end
+if requested_deadline < tonumber(retirement.deadline) then
+  retirement.deadline = requested_deadline
+end
+local deadline = tonumber(retirement.deadline)
+if retirement.retired == true then
+  redis.call('DEL', KEYS[4])
+elseif deadline <= now then
+  redis.call('ZREMRANGEBYSCORE', KEYS[4], '-inf', '(' .. tostring(deadline))
+  local revoked = redis.call('ZCARD', KEYS[4])
+  redis.call('DEL', KEYS[4])
+  retirement.retired = true
+  retirement.revoked_count = tonumber(retirement.revoked_count or 0) + revoked
+else
+  redis.call('ZREMRANGEBYSCORE', KEYS[4], '-inf', now)
+  local leases = redis.call('ZRANGE', KEYS[4], 0, -1, 'WITHSCORES')
+  for index = 1, #leases, 2 do
+    if tonumber(leases[index + 1]) > deadline then
+      redis.call('ZADD', KEYS[4], deadline, leases[index])
+    end
+  end
+end
+redis.call('SET', KEYS[5], cjson.encode(retirement))
+
+local directory_raw = cjson.encode(proposal.directory)
+redis.call('SET', KEYS[1], directory_raw)
+redis.call('DEL', KEYS[2])
+redis.call('SREM', KEYS[3], KEYS[2])
+if redis.call('SCARD', KEYS[3]) == 0 then
+  redis.call('DEL', KEYS[3])
+end
+local status_raw = cjson.encode({
+  revision=expected_revision,
+  count=redis.call('ZCARD', KEYS[4]),
+  deadline=deadline,
+  retired=retirement.retired == true,
+  revoked_count=tonumber(retirement.revoked_count or 0)
+})
+return {2, directory_raw, status_raw}
+"""
+
     _CLEAR_SCRIPT = """
 local current_raw = redis.call('GET', KEYS[1])
 local current_revision = 0
@@ -792,6 +898,73 @@ return {1, proposal_raw}
                 f"proposal {proposal_id!r} cannot commit at current revision {value}"
             )
         return copy.deepcopy(self._decode_snapshot(value).to_dict())
+
+    def commit_with_retirement(
+            self,
+            proposal_id,
+            expected_revision,
+            retirement_grace_seconds,
+            lease_key,
+            retirement_key,
+            now=None,
+    ):
+        """Atomically commit N+1 and arm/clamp task leases for revision N."""
+
+        proposal_id = str(proposal_id)
+        expected_revision = int(expected_revision)
+        now = self._clock() if now is None else float(now)
+        deadline = retirement_deadline(now, retirement_grace_seconds)
+        result = self.redis.eval(
+            self._COMMIT_WITH_RETIREMENT_SCRIPT,
+            5,
+            self._active_key,
+            self._proposal_key(proposal_id),
+            self._proposal_index_key,
+            str(lease_key),
+            str(retirement_key),
+            expected_revision,
+            now,
+            deadline,
+        )
+        if not isinstance(result, (list, tuple)) or len(result) < 3:
+            raise RuntimeDirectoryError(
+                "Redis RuntimeDirectory retirement commit returned an invalid result"
+            )
+        code, directory_raw, retirement_raw = int(result[0]), result[1], result[2]
+        if code == 0:
+            raise RuntimeDirectoryNotFound(
+                f"proposal {proposal_id!r} does not exist or expired"
+            )
+        if code == 1:
+            raise RuntimeDirectoryConflict(
+                f"proposal {proposal_id!r} cannot commit at current revision {directory_raw}"
+            )
+        try:
+            status = json.loads(retirement_raw)
+            retirement = {
+                "revision": int(status["revision"]),
+                "count": int(status["count"]),
+                "deadline": float(status["deadline"]),
+                "retired": bool(status.get("retired")),
+                "revoked_count": int(status.get("revoked_count") or 0),
+            }
+        except (TypeError, ValueError, KeyError) as exc:
+            raise RuntimeDirectoryError(
+                "Redis RuntimeDirectory retirement status is corrupt"
+            ) from exc
+        if (
+                retirement["revision"] != expected_revision
+                or retirement["count"] < 0
+                or retirement["revoked_count"] < 0
+                or not math.isfinite(retirement["deadline"])
+                or retirement["deadline"] <= 0
+        ):
+            raise RuntimeDirectoryError(
+                "Redis RuntimeDirectory retirement status is invalid"
+            )
+        snapshot = copy.deepcopy(self._decode_snapshot(directory_raw).to_dict())
+        snapshot["retirement"] = retirement
+        return snapshot
 
     def reject(self, proposal_id, reason=""):
         proposal_id = str(proposal_id)

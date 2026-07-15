@@ -177,17 +177,26 @@ scoped Redis ZSETs. The support Redis uses a host-mounted append-only file with 
 Scheduler or Redis Pod replacement while the cloud-node host path is retained. Process memory is used only by tests or
 an explicitly constructed local harness. A production Scheduler with no bootstrap Redis endpoint fails at startup.
 
-After generators stop and all relevant revisions drain, backend calls `DELETE /runtime-directory` with the exact
-install id. Scheduler atomically removes the active snapshot, every pending proposal tracked by the install-scoped
-proposal index, and the index itself; an install-id mismatch is rejected. The request is idempotent when this state is
-already absent. Task-lease keys are separate and remain bounded by their lease-derived expiry.
+During uninstall, Backend stops generators, immediately fences every relevant revision with `deadline=now`, and then
+calls `DELETE /runtime-directory` with the exact install id without waiting for lease release. Scheduler atomically
+removes the active snapshot, every pending proposal tracked by the install-scoped proposal index, and the index itself;
+an install-id mismatch is rejected. The request is idempotent when this state is already absent. Task-lease keys are
+separate. Scheduler failure cannot make them an uninstall lock because Backend proceeds with complete exact-UID
+teardown. After the best-effort fence and clear, Scheduler itself is deleted before the remaining workers; this is the
+definitive admission fence when its metadata APIs were unavailable. RuntimeService deletion uses UID preconditions and
+`Background` propagation: lifecycle completion waits only for apiserver acceptance or proof that the exact UID is
+absent, while dependent-object garbage collection continues asynchronously.
 
 ## Runtime Session
 
 Backend persists the control-plane transaction in the `dayu-runtime-session` ConfigMap. The compact record includes
-the install/operation ids, phase, active directory revision, active/pending/retired RuntimeService identities, and
-normalized source deployment. Writes use ConfigMap `resourceVersion` compare-and-swap, so concurrent backend lifecycle
-operations cannot silently overwrite each other.
+the install/operation ids, phase, active directory revision, active/pending RuntimeService identities, normalized
+source deployment, at most one lease-protected retirement, and an exact-UID cleanup backlog. During the crash-sensitive
+`publishing-rollout` phase, the retirement first records the old revision and exact ownership with no deadline. The
+Scheduler proposal commit then atomically switches routes, creates the immutable deadline, and clamps old leases;
+Backend persists that returned deadline and fencing result when it finalizes the session. After the deadline, deletion
+failures move to `cleanup` so they remain owned and retryable without blocking a later rollout. Writes use ConfigMap
+`resourceVersion` compare-and-swap, so concurrent backend lifecycle operations cannot silently overwrite each other.
 
 This ConfigMap is the backend transaction record. Runtime routing is read from Scheduler, and there is no backend-local
 manifest file or cache to refresh.
@@ -200,8 +209,10 @@ revision and routes into each `Task`.
 
 The task is protected by a lease keyed by `(directory_revision, root_uuid)`. Generator acquires it before first
 submission; controller and processor renew it; distributor releases it only after durable result persistence and a
-successful scheduler scenario acknowledgement. A rollout or uninstall waits for the old revision's lease count to
-stay at zero before deleting its RuntimeServices.
+successful scheduler scenario acknowledgement. Redeployment gives the previous revision a bounded immutable deadline;
+normal completion permits immediate reclamation, while deadline expiry revokes any remainder and releases the rollout
+gate. Uninstall does not wait for lease count or expiry: it requests an immediate fence and proceeds with exact-UID
+administrative teardown.
 
 Runtime Pods set `automountServiceAccountToken: false`. Runtime code therefore has no Kubernetes package, kubeconfig,
 Pod/Node/Service discovery, topology cache, or forced-refresh API.

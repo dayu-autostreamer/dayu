@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 import threading
 import time
 from dataclasses import replace
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from runtime_model import (
+    RuntimeCleanupRef,
     RuntimeEndpoint,
     RuntimeSession,
     RuntimeSlot,
@@ -19,6 +21,7 @@ from runtime_orchestrator import (
     RuntimeOrchestrationError,
     RuntimeOrchestrator,
     RuntimePreflightError,
+    RuntimeRetirementPending,
 )
 from runtime_service_client import RuntimeServiceCancelled, RuntimeServiceClient
 from runtime_session_store import StoredRuntimeSession
@@ -133,7 +136,7 @@ class FakeRenderer:
         )
 
     def render(self, logical_template, slot, revision, extra_env=None, container_overrides=None):
-        runtime_id = slot.runtime_name(revision)
+        runtime_id = slot.runtime_name(revision, self.install_id)
         container = {
             "name": slot.component,
             "env": [
@@ -220,8 +223,7 @@ class FakeTemplateHelper:
                 "activation-timeout-seconds": 5,
                 "operation-timeout-seconds": 30,
                 "inventory-ttl-seconds": 1,
-                "drain-timeout-seconds": 40,
-                "drain-quiet-window-seconds": 0,
+                "retirement-grace-seconds": 10,
                 "lease-ttl-seconds": 30,
             },
         }
@@ -313,13 +315,13 @@ class FakeRuntimeClient:
         self.deleted = []
         self.delete_many_failures = {}
 
-    def create(self, manifest):
+    def create(self, manifest, request_timeout_seconds=None):
         name = manifest["metadata"]["name"]
         self.created[name] = copy.deepcopy(manifest)
         self.events.append(f"create:{manifest['spec']['component']}")
         return copy.deepcopy(manifest)
 
-    def get(self, name):
+    def get(self, name, request_timeout_seconds=None):
         return copy.deepcopy(self.created[name])
 
     def wait_for_conditions(self, expectations, **kwargs):
@@ -352,7 +354,7 @@ class FakeRuntimeClient:
             self.delete(name, uid=identities[name])
         return True
 
-    def list(self, label_selector=None):
+    def list(self, label_selector=None, request_timeout_seconds=None):
         install_id = ""
         for item in str(label_selector or "").split(","):
             if item.startswith("dayu.io/install-id="):
@@ -401,7 +403,10 @@ class FakeSessionStore:
 
 
 class FakeScheduler:
-    def __init__(self, initial_plan, events=None, initial_put_ack=True):
+    def __init__(
+            self, initial_plan, events=None, initial_put_ack=True,
+            wall_clock=None,
+    ):
         self.source_plan = {"1": "edge-a"}
         self.initial_plan = copy.deepcopy(initial_plan)
         self.redeployment_plan = copy.deepcopy(initial_plan)
@@ -411,6 +416,9 @@ class FakeScheduler:
         self.calls = []
         self.initial_put_ack = initial_put_ack
         self.lease_failures = 0
+        self.lease_counts = {}
+        self.retirements = {}
+        self.wall_clock = wall_clock or time.time
         self.clear_failures = 0
         self.clear_ack = True
 
@@ -418,6 +426,27 @@ class FakeScheduler:
     def _payload(kwargs):
         data = kwargs.get("data")
         return json.loads(data["data"]) if data else None
+
+    def _lease_status(self, revision):
+        revision = int(revision)
+        retirement = self.retirements.get(revision)
+        count = int(self.lease_counts.get(revision, 0))
+        if (
+            retirement is not None
+            and not retirement["retired"]
+            and self.wall_clock() >= retirement["deadline"]
+        ):
+            retirement["retired"] = True
+            retirement["revoked_count"] += count
+            self.lease_counts[revision] = 0
+            count = 0
+        return {
+            "revision": revision,
+            "count": count,
+            "deadline": retirement["deadline"] if retirement else None,
+            "retired": bool(retirement and retirement["retired"]),
+            "revoked_count": retirement["revoked_count"] if retirement else 0,
+        }
 
     def __call__(self, url, method, **kwargs):
         path = "/" + url.split("/", 3)[-1] if "/" in url.split(":9000", 1)[-1] else ""
@@ -457,17 +486,46 @@ class FakeScheduler:
                 "previous_revision": previous_revision,
             }
         if path == "/runtime-directory/proposals" and method == "POST":
-            self.proposals[payload["proposal_id"]] = copy.deepcopy(payload["directory"])
+            current_revision = int((self.directory or {}).get("revision") or 0)
+            if int(payload["base_revision"]) != current_revision:
+                raise RuntimeError("proposal base revision conflict")
+            self.proposals[payload["proposal_id"]] = copy.deepcopy(payload)
             return {"proposal_id": payload["proposal_id"]}
         if path.startswith("/runtime-directory/proposals/") and path.endswith("/commit"):
             proposal_id = path.split("/")[-2]
-            self.directory = self.proposals[proposal_id]
-            return {"hash": self.directory["hash"]}
+            proposal = self.proposals.pop(proposal_id)
+            revision = int(payload["expected_revision"])
+            assert revision == int(proposal["base_revision"])
+            assert revision == int((self.directory or {}).get("revision") or 0)
+            grace = float(payload["retirement_grace_seconds"])
+            deadline = math.floor((self.wall_clock() + grace) * 1000) / 1000
+            self.retirements.setdefault(revision, {
+                "deadline": deadline,
+                "retired": False,
+                "revoked_count": 0,
+            })
+            self.directory = proposal["directory"]
+            response = copy.deepcopy(self.directory)
+            response["retirement"] = self._lease_status(revision)
+            return response
         if path == "/runtime-directory/task-leases" and method == "GET":
             if self.lease_failures:
                 self.lease_failures -= 1
                 raise RuntimeError("scheduler lease API unavailable")
-            return {"count": 0}
+            return self._lease_status(kwargs["params"]["revision"])
+        if path == "/runtime-directory/task-leases" and method == "PATCH":
+            if self.lease_failures:
+                self.lease_failures -= 1
+                raise RuntimeError("scheduler lease API unavailable")
+            revision = int(payload["revision"])
+            deadline = float(payload["deadline"])
+            retirement = self.retirements.setdefault(revision, {
+                "deadline": deadline,
+                "retired": False,
+                "revoked_count": 0,
+            })
+            retirement["deadline"] = min(retirement["deadline"], deadline)
+            return self._lease_status(revision)
         raise AssertionError(f"unexpected scheduler request: {method} {path}")
 
 
@@ -483,7 +541,13 @@ def make_orchestrator(
     )
     runtime = FakeRuntimeClient(events)
     sessions = FakeSessionStore()
-    scheduler = FakeScheduler(initial_plan, events, initial_put_ack=initial_put_ack)
+    wall_clock = lambda: 1_000_000 + clock()
+    scheduler = FakeScheduler(
+        initial_plan,
+        events,
+        initial_put_ack=initial_put_ack,
+        wall_clock=wall_clock,
+    )
     orchestrator = RuntimeOrchestrator(
         FakeTemplateHelper(
             default_cloud_processor_backup=default_cloud_processor_backup,
@@ -495,7 +559,7 @@ def make_orchestrator(
         session_store=sessions,
         request=scheduler,
         clock=clock,
-        sleeper=lambda _: None,
+        wall_clock=wall_clock,
     )
     return orchestrator, cluster, runtime, sessions, scheduler, events
 
@@ -567,15 +631,14 @@ def test_lazy_snapshot_load_cannot_overwrite_a_transaction_reload():
     assert store.load_calls == 2
 
 
-def test_runtime_config_rejects_drain_budget_that_cannot_outlive_a_failed_lease():
+def test_runtime_config_requires_a_positive_retirement_grace():
     class InvalidTimeouts(FakeTemplateHelper):
         def load_base_info(self):
             value = super().load_base_info()
-            value["runtime"]["drain-timeout-seconds"] = 30
-            value["runtime"]["lease-ttl-seconds"] = 30
+            value["runtime"]["retirement-grace-seconds"] = 0
             return value
 
-    with pytest.raises(ValueError, match="must exceed lease TTL"):
+    with pytest.raises(ValueError, match="timeouts must be positive"):
         RuntimeOrchestrator(InvalidTimeouts(), "dayu")
 
 
@@ -819,9 +882,12 @@ def test_activation_checks_cancellation_between_individual_creates():
     original_create = runtime.create
     create_calls = []
 
-    def cancel_after_first_create(manifest):
+    def cancel_after_first_create(manifest, request_timeout_seconds=None):
         create_calls.append(manifest["metadata"]["name"])
-        result = original_create(manifest)
+        result = original_create(
+            manifest,
+            request_timeout_seconds=request_timeout_seconds,
+        )
         cancel_event.set()
         return result
 
@@ -846,7 +912,7 @@ def test_unresolved_deletion_checks_cancellation_after_identity_list():
     cancel_event = threading.Event()
     delete_many_called = []
 
-    def list_then_cancel(label_selector=None):
+    def list_then_cancel(label_selector=None, request_timeout_seconds=None):
         cancel_event.set()
         return {"items": []}
 
@@ -1067,7 +1133,7 @@ def test_initial_directory_uses_readback_when_put_ack_is_ambiguous():
     assert scheduler.directory["hash"] == directory.content_hash
 
 
-def test_redeploy_activates_candidate_then_proposes_commits_drains_and_deletes_retired():
+def test_redeploy_commit_atomically_arms_retirement_then_reconcile_deletes_old_units():
     orchestrator, _, runtime, sessions, scheduler, events = make_orchestrator(
         {"detect": ["edge-a"]},
     )
@@ -1092,136 +1158,375 @@ def test_redeploy_activates_candidate_then_proposes_commits_drains_and_deletes_r
         if event.startswith("scheduler:POST:/runtime-directory/proposals/")
         and event.endswith("/commit")
     )
-    drain = rollout_events.index("scheduler:GET:/runtime-directory/task-leases")
-    deletion = rollout_events.index("delete:processor")
-    assert candidate_activation < proposal < commit < drain < deletion
+    assert candidate_activation < proposal < commit
+    assert not any("/runtime-directory/task-leases" in event for event in rollout_events)
+    assert "delete:processor" not in rollout_events
+    commit_payload = next(
+        payload for method, path, payload, _ in scheduler.calls
+        if method == "POST" and path.endswith("/commit")
+    )
+    assert commit_payload == {
+        "expected_revision": 1,
+        "retirement_grace_seconds": 10.0,
+    }
+    assert scheduler.retirements[1]["deadline"] == 1_000_010
 
     active = sessions.stored.session
     assert active.phase == "active"
     assert active.active_directory_revision == 2
     assert active.next_runtime_revision == 3
-    assert active.retired == ()
+    assert active.retirement is not None
+    assert active.retirement.revision == 1
+    assert active.retirement.units == (old_processor,)
+    assert active.retirement.deadline == 1_000_010
     new_processor = next(
         unit for unit in active.active
         if unit.slot.component == "processor" and unit.slot.logical_service == "detect"
     )
     assert new_processor.slot.target_node == "cloud-a"
     assert new_processor.runtime_revision == 2
-    assert old_processor.runtime_id not in runtime.created
+    assert old_processor.runtime_id in runtime.created
     assert scheduler.directory["hash"] == active.directory.content_hash
 
+    reconcile_start = len(events)
+    assert orchestrator.reconcile_retirement() is True
 
-def test_committed_directory_and_inventory_reads_do_not_wait_for_post_publish_drain():
+    reconcile_events = events[reconcile_start:]
+    status = reconcile_events.index("scheduler:GET:/runtime-directory/task-leases")
+    deletion = reconcile_events.index("delete:processor")
+    assert status < deletion
+    assert sessions.stored.session.retirement is None
+    assert old_processor.runtime_id not in runtime.created
+
+
+def test_redeploy_and_committed_reads_do_not_wait_for_active_old_revision_leases():
+    orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    initial = install(orchestrator, "detect")
+    old_processor = next(
+        unit for unit in initial.routes if unit.slot.component == "processor"
+    )
+    scheduler.redeployment_plan = {"detect": ["cloud-a"]}
+    scheduler.lease_counts[1] = 1
+
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+    load_calls = sessions.load_calls
+    assert not any(
+        method == "PATCH" and path == "/runtime-directory/task-leases"
+        for method, path, _, _ in scheduler.calls
+    )
+    assert orchestrator.active_directory().revision == 2
+    assert orchestrator.active_directory() == sessions.stored.session.directory
+    assert orchestrator.node_inventory()["edge-a"]["ready"] is True
+    assert old_processor.runtime_id in runtime.created
+
+    assert orchestrator.reconcile_retirement() is False
+    assert sessions.load_calls == load_calls
+    assert sessions.stored.session.retirement is not None
+    assert old_processor.runtime_id in runtime.created
+
+
+def test_retirement_deadline_revokes_stuck_leases_and_completes_cleanup():
+    clock = FakeClock()
+    orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]}, clock=clock,
+    )
+    initial = install(orchestrator, "detect")
+    old_processor = next(
+        unit for unit in initial.routes if unit.slot.component == "processor"
+    )
+    scheduler.redeployment_plan = {"detect": ["cloud-a"]}
+    scheduler.lease_counts[1] = 2
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+
+    assert orchestrator.reconcile_retirement() is False
+    clock.value = orchestrator.retirement_grace
+    assert orchestrator.reconcile_retirement() is True
+
+    assert scheduler.retirements[1] == {
+        "deadline": 1_000_010,
+        "retired": True,
+        "revoked_count": 2,
+    }
+    assert sessions.stored.session.retirement is None
+    assert old_processor.runtime_id not in runtime.created
+
+
+def test_retirement_deadline_releases_rollout_gate_when_fence_and_cleanup_fail():
+    clock = FakeClock()
+    orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]}, clock=clock,
+    )
+    initial = install(orchestrator, "detect")
+    old_processor = next(
+        unit for unit in initial.routes if unit.slot.component == "processor"
+    )
+    scheduler.redeployment_plan = {"detect": ["cloud-a"]}
+    scheduler.lease_counts[1] = 1
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+
+    clock.value = orchestrator.retirement_grace
+    scheduler.lease_failures = 1
+    # Retirement and cleanup are separate lanes in one tick, so fail both the
+    # immediate retirement deletion and the independent cleanup retry.
+    runtime.delete_many_failures["processor"] = 2
+
+    assert orchestrator.reconcile_retirement() is True
+
+    deferred = sessions.stored.session
+    assert deferred.phase == "active"
+    assert deferred.retirement is None
+    assert deferred.cleanup == (RuntimeCleanupRef.from_unit(old_processor),)
+    assert deferred.last_error == "transient processor batch deletion failure"
+    assert old_processor.runtime_id in runtime.created
+
+    # The immutable deadline, rather than Scheduler/finalizer availability,
+    # releases the single-rollout gate. The current plan is therefore a normal
+    # no-op instead of another RuntimeRetirementPending failure.
+    assert orchestrator.redeploy({"id": "fixed"}) is False
+    assert sessions.stored.session.cleanup == (RuntimeCleanupRef.from_unit(old_processor),)
+
+    assert orchestrator.reconcile_retirement() is True
+    assert sessions.stored.session.cleanup == ()
+    assert old_processor.runtime_id not in runtime.created
+
+
+def test_pending_retirement_does_not_starve_existing_cleanup_backlog():
+    orchestrator, _, runtime, sessions, scheduler, events = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    scheduler.redeployment_plan = {"detect": ["cloud-a"]}
+    scheduler.lease_counts[1] = 1
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+
+    orphan_id = "processor-orphan-r9"
+    orphan_uid = f"runtime-{orphan_id}"
+    runtime.created[orphan_id] = {
+        "metadata": {"name": orphan_id, "uid": orphan_uid},
+        "spec": {"component": "processor"},
+    }
+    current = sessions.stored.session
+    orchestrator._save(replace(
+        current,
+        cleanup=(RuntimeCleanupRef(orphan_id, orphan_uid),),
+    ))
+    start = len(events)
+
+    assert orchestrator.reconcile_retirement() is True
+
+    reconcile_events = events[start:]
+    status = reconcile_events.index(
+        "scheduler:GET:/runtime-directory/task-leases"
+    )
+    cleanup = reconcile_events.index("delete:processor")
+    assert status < cleanup
+    assert sessions.stored.session.retirement is not None
+    assert sessions.stored.session.cleanup == ()
+    assert orphan_id not in runtime.created
+
+
+def test_activating_rollout_failure_restores_old_active_and_defers_candidate_cleanup():
+    orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    initial = install(orchestrator, "detect")
+    old_processor = next(
+        unit for unit in initial.routes if unit.slot.component == "processor"
+    )
+    scheduler.redeployment_plan = {"detect": ["cloud-a"]}
+    wait_for_conditions = runtime.wait_for_conditions
+
+    def fail_candidate_activation(expectations, **kwargs):
+        units = tuple(expectations.values())
+        if any(unit.slot.component == "processor" for unit in units):
+            raise RuntimeError("candidate activation failed")
+        return wait_for_conditions(expectations, **kwargs)
+
+    runtime.wait_for_conditions = fail_candidate_activation
+
+    with pytest.raises(RuntimeError, match="candidate activation failed"):
+        orchestrator.redeploy({"id": "fixed"})
+
+    restored = sessions.stored.session
+    assert restored.phase == "active"
+    assert restored.active_directory_revision == 1
+    assert restored.active == initial.routes
+    assert restored.pending == ()
+    assert restored.retirement is None
+    assert len(restored.cleanup) == 1
+    candidate = restored.cleanup[0]
+    expected_candidate_id = RuntimeSlot(
+        "processor", "cloud-a", "cloud", logical_service="detect",
+    ).runtime_name(2, initial.install_id)
+    assert candidate.runtime_id == expected_candidate_id
+    assert restored.next_runtime_revision == 3
+    assert restored.last_error == "candidate activation failed"
+    assert orchestrator.active_directory() == initial
+    assert old_processor.runtime_id in runtime.created
+    assert candidate.runtime_id in runtime.created
+
+    assert orchestrator.reconcile_retirement() is True
+    assert sessions.stored.session.cleanup == ()
+    assert old_processor.runtime_id in runtime.created
+    assert candidate.runtime_id not in runtime.created
+
+
+def test_failed_candidate_cleanup_cannot_force_the_next_rollout_to_reuse_its_name():
+    orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    scheduler.redeployment_plan = {"detect": ["cloud-a"]}
+    normal_wait = runtime.wait_for_conditions
+    failed_once = {"value": False}
+
+    def fail_first_candidate(expectations, **kwargs):
+        units = tuple(expectations.values())
+        if (
+            not failed_once["value"]
+            and any(unit.slot.component == "processor" for unit in units)
+        ):
+            failed_once["value"] = True
+            raise RuntimeError("candidate activation failed")
+        return normal_wait(expectations, **kwargs)
+
+    runtime.wait_for_conditions = fail_first_candidate
+    with pytest.raises(RuntimeError, match="candidate activation failed"):
+        orchestrator.redeploy({"id": "fixed"})
+
+    failed_candidate = sessions.stored.session.cleanup[0]
+    runtime.delete_many_failures["processor"] = 1
+    assert orchestrator.reconcile_retirement() is False
+    assert sessions.stored.session.cleanup == (failed_candidate,)
+
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+    active_candidate = next(
+        unit for unit in sessions.stored.session.active
+        if unit.slot.component == "processor"
+    )
+    assert failed_candidate.runtime_id.endswith("-r2")
+    assert active_candidate.runtime_revision == 3
+    assert failed_candidate.runtime_id != active_candidate.runtime_id
+    assert failed_candidate in sessions.stored.session.cleanup
+
+
+def test_cleanup_backlog_accepts_same_processor_slot_from_consecutive_revisions():
+    clock = FakeClock()
+    orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]}, clock=clock,
+    )
+    first = install(orchestrator, "detect")
+    revision_one = next(
+        unit for unit in first.routes if unit.slot.component == "processor"
+    )
+
+    scheduler.redeployment_plan = {"detect": ["cloud-a"]}
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+    revision_two = next(
+        unit for unit in sessions.stored.session.active
+        if unit.slot.component == "processor"
+    )
+    runtime.delete_many_failures["processor"] = 2
+    assert orchestrator.reconcile_retirement() is True
+    assert sessions.stored.session.cleanup == (
+        RuntimeCleanupRef.from_unit(revision_one),
+    )
+
+    scheduler.redeployment_plan = {"detect": ["edge-a"]}
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+    runtime.delete_many_failures["processor"] = 2
+    assert orchestrator.reconcile_retirement() is True
+
+    assert sessions.stored.session.cleanup == tuple(sorted(
+        (
+            RuntimeCleanupRef.from_unit(revision_one),
+            RuntimeCleanupRef.from_unit(revision_two),
+        ),
+        key=lambda unit: unit.runtime_id,
+    ))
+
+
+def test_rollout_grace_is_armed_after_slow_directory_publication():
+    clock = FakeClock()
+    orchestrator, _, _, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]}, clock=clock,
+    )
+    install(orchestrator, "detect")
+    scheduler.redeployment_plan = {"detect": ["cloud-a"]}
+    publish = orchestrator._publish_rollout
+
+    def slow_publish(*args, **kwargs):
+        clock.value += 5
+        return publish(*args, **kwargs)
+
+    orchestrator._publish_rollout = slow_publish
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+
+    assert sessions.stored.session.retirement.deadline == (
+        1_000_000 + 5 + orchestrator.retirement_grace
+    )
+
+
+def test_cleanup_refuses_to_delete_an_active_runtime_unit():
+    orchestrator, _, runtime, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    active_processor = next(
+        unit for unit in sessions.stored.session.active
+        if unit.slot.component == "processor"
+    )
+    deleted_before = list(runtime.deleted)
+
+    with pytest.raises(
+        RuntimeOrchestrationError,
+        match="refuse to garbage-collect active RuntimeServices",
+    ):
+        orchestrator._delete_units(
+            (active_processor,),
+            sessions.stored.session.install_id,
+        )
+
+    assert runtime.deleted == deleted_before
+    assert active_processor.runtime_id in runtime.created
+
+
+def test_redeploy_defers_immediately_while_previous_retirement_is_pending():
     orchestrator, _, _, sessions, scheduler, _ = make_orchestrator(
         {"detect": ["edge-a"]},
     )
     install(orchestrator, "detect")
     scheduler.redeployment_plan = {"detect": ["cloud-a"]}
-    drain_started = threading.Event()
-    release_drain = threading.Event()
-    result = {}
-    original_drain = orchestrator._drain
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+    calls_before = len(scheduler.calls)
 
-    def blocked_drain(scheduler_unit, revision, cancel_event=None):
-        drain_started.set()
-        assert release_drain.wait(2)
-        return original_drain(
-            scheduler_unit,
-            revision,
-            cancel_event=cancel_event,
-        )
-
-    orchestrator._drain = blocked_drain
-    worker = threading.Thread(
-        target=lambda: result.setdefault(
-            "redeploy", orchestrator.redeploy({"id": "fixed"}),
-        ),
-    )
-    worker.start()
-    try:
-        assert drain_started.wait(1)
-
-        reads = {}
-        reader = threading.Thread(
-            target=lambda: reads.update({
-                "directory": orchestrator.active_directory(),
-                "inventory": orchestrator.node_inventory(),
-            }),
-        )
-        reader.start()
-        reader.join(timeout=0.2)
-
-        assert reader.is_alive() is False
-        assert reads["directory"].revision == 2
-        assert reads["directory"] == sessions.stored.session.directory
-        assert reads["inventory"]["edge-a"]["ready"] is True
-    finally:
-        release_drain.set()
-        worker.join(timeout=2)
-
-    assert worker.is_alive() is False
-    assert result["redeploy"] is True
-
-
-def test_cancellation_during_previous_retirement_preserves_control_flow_and_snapshot():
-    orchestrator, _, _, sessions, _, _ = make_orchestrator(
-        {"detect": ["edge-a"]},
-    )
-    initial = install(orchestrator, "detect")
-    retired = next(unit for unit in initial.routes if unit.slot.component == "processor")
-    current = sessions.stored.session
-    sessions.revision += 1
-    sessions.stored = StoredRuntimeSession(
-        replace(current, retired=(retired,)),
-        str(sessions.revision),
-        "session-uid",
-    )
-    cancel_event = threading.Event()
-
-    def cancel_drain(*args, **kwargs):
-        cancel_event.set()
-        orchestrator._raise_if_cancelled(cancel_event)
-
-    orchestrator._drain = cancel_drain
-
-    with pytest.raises(RuntimeOperationCancelled, match="lifecycle operation"):
-        orchestrator.redeploy({"id": "fixed"}, cancel_event=cancel_event)
+    with pytest.raises(RuntimeRetirementPending, match="still retiring"):
+        orchestrator.redeploy({"id": "fixed"})
 
     preserved = sessions.stored.session
     assert preserved.phase == "active"
-    assert preserved.retired == (retired,)
-    assert preserved.last_error == ""
+    assert preserved.retirement is not None
+    assert len(scheduler.calls) == calls_before
 
 
-def test_drain_sleep_is_interrupted_by_cancellation_token():
-    orchestrator, _, _, sessions, _, _ = make_orchestrator(
+def test_cancelled_retirement_reconcile_does_no_scheduler_io():
+    orchestrator, _, _, sessions, scheduler, _ = make_orchestrator(
         {"detect": ["edge-a"]},
     )
     install(orchestrator, "detect")
-    scheduler = orchestrator._scheduler_unit(sessions.stored.session.active)
-    orchestrator.drain_quiet_window = 10
-    waits = []
-
-    class CancelOnWait:
-        def __init__(self):
-            self.cancelled = False
-
-        def is_set(self):
-            return self.cancelled
-
-        def wait(self, timeout):
-            waits.append(timeout)
-            self.cancelled = True
-            return True
+    scheduler.redeployment_plan = {"detect": ["cloud-a"]}
+    assert orchestrator.redeploy({"id": "fixed"}) is True
+    calls_before = len(scheduler.calls)
+    cancel_event = threading.Event()
+    cancel_event.set()
 
     with pytest.raises(RuntimeOperationCancelled, match="lifecycle operation"):
-        orchestrator._drain(
-            scheduler,
-            1,
-            cancel_event=CancelOnWait(),
-        )
+        orchestrator.reconcile_retirement(cancel_event=cancel_event)
 
-    assert waits == [1.0]
+    assert len(scheduler.calls) == calls_before
+    assert sessions.stored.session.retirement is not None
 
 
 def test_redeploy_keeps_default_cloud_backup_while_replacing_only_changed_edge_slot():
@@ -1257,9 +1562,12 @@ def test_redeploy_keeps_default_cloud_backup_while_replacing_only_changed_edge_s
     assert current_cloud.runtime_id == initial_cloud.runtime_id
     assert current_cloud.runtime_revision == initial_cloud.runtime_revision == 1
     assert current_edge.runtime_revision == 2
-    assert initial_edge.runtime_id not in runtime.created
+    assert initial_edge.runtime_id in runtime.created
     assert cluster.inventory_calls == inventory_calls
     assert cluster.preflight_calls == preflight_calls
+
+    assert orchestrator.reconcile_retirement() is True
+    assert initial_edge.runtime_id not in runtime.created
 
 
 @pytest.mark.parametrize("default_cloud_processor_backup", [False, True])
@@ -1289,7 +1597,7 @@ def test_redeploy_with_identical_exact_placement_is_a_noop(
     )
 
 
-def test_redeploy_keeps_committed_directory_active_and_retries_retirement_before_next_plan():
+def test_retirement_api_failure_keeps_committed_directory_active_and_retries_later():
     orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
         {"detect": ["edge-a"]},
     )
@@ -1300,36 +1608,44 @@ def test_redeploy_keeps_committed_directory_active_and_retries_retirement_before
     scheduler.redeployment_plan = {"detect": ["cloud-a"]}
     scheduler.lease_failures = 1
 
-    with pytest.raises(RuntimeError, match="lease API unavailable"):
-        orchestrator.redeploy({"id": "fixed"})
+    assert orchestrator.redeploy({"id": "fixed"}) is True
 
     committed = sessions.stored.session
     assert committed.phase == "active"
     assert committed.active_directory_revision == 2
-    assert committed.retired == (old_processor,)
+    assert committed.retirement.units == (old_processor,)
     assert old_processor.runtime_id in runtime.created
 
-    assert orchestrator.redeploy({"id": "fixed"}) is False
+    assert orchestrator.reconcile_retirement() is False
+    pending = sessions.stored.session
+    assert pending.phase == "active"
+    assert pending.last_error == "scheduler lease API unavailable"
+    assert old_processor.runtime_id in runtime.created
+    with pytest.raises(RuntimeRetirementPending):
+        orchestrator.redeploy({"id": "fixed"})
+
+    assert orchestrator.reconcile_retirement() is True
 
     recovered = sessions.stored.session
     assert recovered.phase == "active"
-    assert recovered.retired == ()
-    assert recovered.last_error == ""
+    assert recovered.retirement is None
     assert old_processor.runtime_id not in runtime.created
+    assert orchestrator.redeploy({"id": "fixed"}) is False
 
 
-def test_uninstall_stops_generators_then_drains_and_deletes_scheduler_last():
-    orchestrator, _, runtime, sessions, _, events = make_orchestrator(
+def test_uninstall_stops_generators_then_fences_and_deletes_scheduler_before_workers():
+    orchestrator, _, runtime, sessions, lease_scheduler, events = make_orchestrator(
         {"detect": ["edge-a"]},
     )
     install(orchestrator, "detect")
+    lease_scheduler.lease_counts[1] = 3
     start = len(events)
 
     orchestrator.uninstall()
 
     uninstall_events = events[start:]
     generator = uninstall_events.index("delete:generator")
-    drain = uninstall_events.index("scheduler:GET:/runtime-directory/task-leases")
+    fence = uninstall_events.index("scheduler:PATCH:/runtime-directory/task-leases")
     clear = uninstall_events.index("scheduler:DELETE:/runtime-directory")
     scheduler = len(uninstall_events) - 1 - uninstall_events[::-1].index("delete:scheduler")
     all_deletes = [index for index, event in enumerate(uninstall_events) if event.startswith("delete:")]
@@ -1337,8 +1653,10 @@ def test_uninstall_stops_generators_then_drains_and_deletes_scheduler_last():
         index for index, event in enumerate(uninstall_events)
         if event.startswith("delete:") and event not in {"delete:generator", "delete:scheduler"}
     ]
-    assert generator < drain < clear < min(route_target_deletes) < scheduler
-    assert scheduler == max(all_deletes)
+    assert generator < fence < clear < scheduler < min(route_target_deletes)
+    assert generator == min(all_deletes)
+    assert lease_scheduler.retirements[1]["retired"] is True
+    assert lease_scheduler.retirements[1]["revoked_count"] == 3
     assert sessions.deleted is True
     assert runtime.created == {}
 
@@ -1408,7 +1726,7 @@ def test_recover_promotes_initial_directory_committed_before_session_cas_without
     assert runtime.wait_batches == wait_batches
 
 
-def test_recover_promotes_committed_rollout_and_keeps_old_revision_for_drain():
+def test_recover_promotes_committed_rollout_and_keeps_old_revision_retirement():
     orchestrator, cluster, runtime, sessions, scheduler, _ = make_orchestrator(
         {"detect": ["edge-a"]},
     )
@@ -1428,7 +1746,7 @@ def test_recover_promotes_committed_rollout_and_keeps_old_revision_for_drain():
         operation_id="recover-rollout",
         phase="publishing-rollout",
         pending=(new_processor,),
-        retired=(old_processor,),
+        retirement=committed.retirement,
     )
     sessions.revision += 1
     sessions.stored = StoredRuntimeSession(
@@ -1443,7 +1761,8 @@ def test_recover_promotes_committed_rollout_and_keeps_old_revision_for_drain():
     assert recovered.phase == "active"
     assert recovered.active_directory_revision == 2
     assert recovered.directory.content_hash == committed.directory.content_hash
-    assert recovered.retired == (old_processor,)
+    assert recovered.retirement == committed.retirement
+    assert recovered.retirement.units == (old_processor,)
     assert cluster.inventory_calls == inventory_calls
     assert runtime.wait_batches == wait_batches
 
@@ -1454,9 +1773,6 @@ def test_redeploy_publication_recovery_propagates_cancellation_without_finalizin
     )
     install(orchestrator, "detect")
     old = sessions.stored.session
-    old_processor = next(
-        unit for unit in old.active if unit.slot.component == "processor"
-    )
     scheduler.redeployment_plan = {"detect": ["cloud-a"]}
     assert orchestrator.redeploy({"id": "fixed"}) is True
     committed = sessions.stored.session
@@ -1469,7 +1785,7 @@ def test_redeploy_publication_recovery_propagates_cancellation_without_finalizin
         operation_id="cancel-recovery",
         phase="publishing-rollout",
         pending=(new_processor,),
-        retired=(old_processor,),
+        retirement=committed.retirement,
     )
     sessions.revision += 1
     sessions.stored = StoredRuntimeSession(
@@ -1494,7 +1810,7 @@ def test_redeploy_publication_recovery_propagates_cancellation_without_finalizin
     assert sessions.stored.session.last_error == ""
 
 
-def test_uninstall_drains_current_and_retired_directory_revisions():
+def test_uninstall_immediately_fences_current_and_retiring_directory_revisions():
     orchestrator, _, _, sessions, scheduler, _ = make_orchestrator(
         {"detect": ["edge-a"]},
     )
@@ -1505,27 +1821,20 @@ def test_uninstall_drains_current_and_retired_directory_revisions():
     )
     scheduler.redeployment_plan = {"detect": ["cloud-a"]}
     orchestrator.redeploy({"id": "fixed"})
-    current = sessions.stored.session
-    sessions.revision += 1
-    sessions.stored = StoredRuntimeSession(
-        replace(current, retired=(old_processor,)),
-        str(sessions.revision),
-        "session-uid",
-    )
-    orchestrator._stored = None
+    assert sessions.stored.session.retirement.units == (old_processor,)
     call_start = len(scheduler.calls)
 
     orchestrator.uninstall()
 
     revisions = [
-        params["revision"]
-        for method, path, _, params in scheduler.calls[call_start:]
-        if method == "GET" and path == "/runtime-directory/task-leases"
+        payload["revision"]
+        for method, path, payload, _ in scheduler.calls[call_start:]
+        if method == "PATCH" and path == "/runtime-directory/task-leases"
     ]
     assert revisions == [1, 2]
 
 
-def test_uninstall_retry_after_scheduler_deleted_skips_drain_and_finishes_session_delete():
+def test_uninstall_retry_after_scheduler_deleted_skips_fence_and_finishes_session_delete():
     orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
         {"detect": ["edge-a"]},
     )
@@ -1536,13 +1845,9 @@ def test_uninstall_retry_after_scheduler_deleted_skips_drain_and_finishes_sessio
         orchestrator.uninstall()
 
     assert sessions.stored.session.phase == "finalizing-uninstall"
-    assert all(
-        unit.slot.component == "scheduler"
-        for unit in sessions.stored.session.active
-    )
-    lease_calls = len([
+    fence_calls = len([
         call for call in scheduler.calls
-        if call[1] == "/runtime-directory/task-leases"
+        if call[0] == "PATCH" and call[1] == "/runtime-directory/task-leases"
     ])
     clear_calls = len([
         call for call in scheduler.calls
@@ -1558,41 +1863,50 @@ def test_uninstall_retry_after_scheduler_deleted_skips_drain_and_finishes_sessio
     assert sessions.deleted is True
     assert len([
         call for call in scheduler.calls
-        if call[1] == "/runtime-directory/task-leases"
-    ]) == lease_calls
+        if call[0] == "PATCH" and call[1] == "/runtime-directory/task-leases"
+    ]) == fence_calls
     assert len([
         call for call in scheduler.calls
         if call[0] == "DELETE" and call[1] == "/runtime-directory"
     ]) == clear_calls
 
 
-def test_uninstall_retries_directory_clear_while_scheduler_is_still_live():
-    orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
+def test_uninstall_accepts_ambiguous_session_delete_when_readback_is_absent():
+    orchestrator, _, _, sessions, _, _ = make_orchestrator(
         {"detect": ["edge-a"]},
     )
     install(orchestrator, "detect")
-    scheduler.clear_failures = 1
+    delete = sessions.delete
 
-    with pytest.raises(RuntimeOrchestrationError, match="not durably observable"):
-        orchestrator.uninstall()
+    def delete_then_lose_response(expected_resource_version=None):
+        delete(expected_resource_version=expected_resource_version)
+        raise RuntimeError("ConfigMap DELETE response lost")
 
-    assert sessions.stored.session.phase == "clearing-directory"
-    assert any(
-        unit.slot.component == "processor"
-        for unit in sessions.stored.session.active
-    )
-    assert any(
-        manifest.get("spec", {}).get("component") == "scheduler"
-        for manifest in runtime.created.values()
-    )
+    sessions.delete = delete_then_lose_response
 
     orchestrator.uninstall()
 
     assert sessions.deleted is True
+    assert sessions.stored is None
+    assert orchestrator.current_session() is None
+
+
+def test_uninstall_continues_exact_teardown_when_scheduler_fence_and_clear_are_unavailable():
+    orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    scheduler.lease_failures = 1
+    scheduler.clear_failures = 1
+
+    orchestrator.uninstall()
+
+    assert sessions.deleted is True
+    assert runtime.created == {}
     assert len([
         call for call in scheduler.calls
         if call[0] == "DELETE" and call[1] == "/runtime-directory"
-    ]) == 2
+    ]) == 1
 
 
 def test_uninstall_accepts_empty_directory_readback_after_ambiguous_clear_ack():
@@ -1613,7 +1927,7 @@ def test_uninstall_accepts_empty_directory_readback_after_ambiguous_clear_ack():
     assert clear_calls[-1] == ("GET", "/runtime-directory")
 
 
-def test_uninstall_retries_route_target_deletion_from_cleared_directory_state():
+def test_uninstall_retries_route_target_deletion_from_finalizing_state():
     orchestrator, _, runtime, sessions, scheduler, _ = make_orchestrator(
         {"detect": ["edge-a"]},
     )
@@ -1624,7 +1938,7 @@ def test_uninstall_retries_route_target_deletion_from_cleared_directory_state():
         orchestrator.uninstall()
 
     failed = sessions.stored.session
-    assert failed.phase == "clearing-directory"
+    assert failed.phase == "finalizing-uninstall"
     assert scheduler.directory is None
     assert any(unit.slot.component == "processor" for unit in failed.active)
     assert any(

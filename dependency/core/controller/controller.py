@@ -257,7 +257,7 @@ class Controller:
 
         # This method is the controller's receive/advance boundary.  Renew
         # before every branch decision so an old RuntimeDirectory revision is
-        # never drained while the task is being forwarded or merged.
+        # not retired while the task is being forwarded or merged.
         self._renew_task_lease(cur_task)
 
         LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '

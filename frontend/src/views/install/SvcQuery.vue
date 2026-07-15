@@ -442,12 +442,7 @@ export default {
 				const data = await response.json();
 
 				if (data.state === 'success') {
-					this.install_state.uninstall();
-					this.selected = null;
-					this.selected_service = null;
-					this.urlData = [];
 					await this.syncInstallState();
-					await this.getServiceList();
 					ElMessage({
 						message: data.msg,
 						showClose: true,

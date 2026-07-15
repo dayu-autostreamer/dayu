@@ -108,6 +108,8 @@ class FakeBackendCoreManagement:
                     active_directory_revision=1,
                     active=(),
                     pending=(),
+                    retirement=None,
+                    cleanup=(),
                     last_error="",
                 ) if self.install_state else None
             ),
@@ -382,8 +384,12 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
     )
     assert failed_install["state"] == "fail"
 
+    backend.server.uninstall_result = (True, "Uninstall services started")
     uninstall_result = asyncio.run(backend.uninstall_service())
-    assert uninstall_result["state"] == "success"
+    assert uninstall_result == {
+        "state": "success",
+        "msg": "Uninstall services started",
+    }
     assert backend.server.close_query_calls == 1
 
     backend.server.uninstall_result = (False, "still running")
@@ -496,6 +502,9 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
         "active_directory_revision": 1,
         "active_runtime_count": 0,
         "pending_runtime_count": 0,
+        "cleanup_runtime_count": 0,
+        "retirement_revision": 0,
+        "retirement_deadline": None,
         "last_error": "",
     }
     backend.server.install_state = False
@@ -507,6 +516,9 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
         "active_directory_revision": 0,
         "active_runtime_count": 0,
         "pending_runtime_count": 0,
+        "cleanup_runtime_count": 0,
+        "retirement_revision": 0,
+        "retirement_deadline": None,
         "last_error": "",
     }
 
@@ -551,6 +563,8 @@ def test_session_snapshot_reads_are_offloaded_from_async_management_handlers(
         active_directory_revision=1,
         active=(),
         pending=(),
+        retirement=None,
+        cleanup=(),
         last_error="",
     )
 

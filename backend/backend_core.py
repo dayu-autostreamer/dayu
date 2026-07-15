@@ -15,7 +15,11 @@ from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, Queue, T
 from core.lib.network import connection_host, http_request, NetworkAPIPath, NetworkAPIMethod
 from core.lib.estimation import Timer
 
-from runtime_orchestrator import RuntimeOperationCancelled, RuntimeOrchestrator
+from runtime_orchestrator import (
+    RuntimeOperationCancelled,
+    RuntimeOrchestrator,
+    RuntimeRetirementPending,
+)
 from runtime_telemetry import RuntimeTelemetryCache
 from template_helper import TemplateHelper
 
@@ -120,9 +124,9 @@ class BackendCore:
         self._lifecycle_control_lock = threading.Lock()
         self._install_cancel_event = None
         self._stop_request_count = 0
-        self._redeployment_lock = threading.Lock()
-        self._redeployment_stop_event = None
-        self._redeployment_thread = None
+        self._runtime_reconcile_lock = threading.Lock()
+        self._runtime_reconcile_stop_event = None
+        self._runtime_reconcile_thread = None
         self.runtime_orchestrator = RuntimeOrchestrator(self.template_helper, self.namespace)
         redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=20, direct=False)
         self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
@@ -160,11 +164,12 @@ class BackendCore:
             session = self.runtime_orchestrator.recover()
             if session is None:
                 return
-            if session.phase in {'clearing-directory', 'finalizing-uninstall'}:
-                # Drain already completed before either phase is persisted.
-                # Recovery resumes the exact remaining uninstall boundary and
-                # cannot re-open task admission.
-                self.runtime_orchestrator.uninstall()
+            if session.phase in {'uninstalling', 'finalizing-uninstall'}:
+                # A durable uninstall intent must resume before this process
+                # can re-open query admission. The same lifecycle worker
+                # repeats each exact-UID boundary idempotently without blocking
+                # backend startup or management reads.
+                self._start_runtime_reconcile_loop(session.install_id)
                 return
             if session.phase != 'active':
                 LOGGER.warning(
@@ -177,7 +182,7 @@ class BackendCore:
                 raise RuntimeError('recovered active session has no RuntimeDirectory')
             self._bind_runtime_urls(directory)
             self.runtime_telemetry.start()
-            self._start_redeployment_loop(session.install_id)
+            self._start_runtime_reconcile_loop(session.install_id)
             with self.query_lock:
                 self._query_admission_enabled = True
         except Exception as exc:
@@ -199,6 +204,11 @@ class BackendCore:
         with self._lifecycle_control_lock:
             if self._stop_request_count:
                 return False, 'Install cancelled by lifecycle operation'
+            session = self.runtime_orchestrator.current_session()
+            if session is not None and session.phase in {
+                'uninstalling', 'finalizing-uninstall',
+            }:
+                return False, 'Uninstall is in progress'
             if self._install_cancel_event is not None:
                 return False, 'Another install operation is already in progress'
             self._install_cancel_event = cancel_event
@@ -235,7 +245,7 @@ class BackendCore:
                     return False, 'Install cancelled by lifecycle operation'
                 self._bind_runtime_urls(directory)
                 self.runtime_telemetry.start()
-                self._start_redeployment_loop(directory.install_id)
+                self._start_runtime_reconcile_loop(directory.install_id)
                 with self.query_lock:
                     self._query_admission_enabled = True
                 return True, 'Install services successfully'
@@ -244,35 +254,55 @@ class BackendCore:
                     self._install_cancel_event = None
 
     def parse_and_delete_templates(self):
-        """Stop generators, drain exact task leases and remove the session."""
+        """Fence task admission and remove the managed runtime session."""
         # Register stop before touching any other lifecycle state.  This both
         # interrupts an in-flight install and prevents an overlapping install
         # from registering a token until this stop request has settled.
         with self._lifecycle_control_lock:
+            if self._stop_request_count:
+                install_cancel_event = self._install_cancel_event
+                if install_cancel_event is not None:
+                    install_cancel_event.set()
+                return True, 'Uninstall services started'
             self._stop_request_count += 1
             install_cancel_event = self._install_cancel_event
             if install_cancel_event is not None:
                 install_cancel_event.set()
 
         try:
+            session = self.runtime_orchestrator.current_session()
+            uninstall_started = session is not None and session.phase in {
+                'uninstalling', 'finalizing-uninstall',
+            }
             # Query ownership belongs to the lifecycle controller, not to an
             # API caller. Closing and admission blocking in one short critical
             # section prevents a concurrent /submit_query from reopening while
-            # uninstall is draining the runtime.
+            # uninstall is fencing and removing the runtime.
             with self.query_lock:
                 self._query_admission_enabled = False
                 self._close_query_locked()
+            if uninstall_started:
+                self.runtime_telemetry.unbind()
+                self.resource_url = None
+                self.result_url = None
+                self.result_file_url = None
+                self.log_fetch_url = None
+                self._ensure_runtime_reconcile_loop(session.install_id)
+                return True, 'Uninstall services started'
             # Stop every producer of Scheduler/Kubernetes traffic before the
             # serialized uninstall transaction. A failed uninstall leaves its
             # session non-active, so telemetry deliberately remains unbound.
-            self._stop_redeployment_loop()
+            self._stop_runtime_reconcile_loop()
             self.runtime_telemetry.unbind()
-            self.runtime_orchestrator.uninstall()
+            session = self.runtime_orchestrator.begin_uninstall()
             self.resource_url = None
             self.result_url = None
             self.result_file_url = None
             self.log_fetch_url = None
-            return True, 'Uninstall services successfully'
+            if session is not None:
+                self._start_runtime_reconcile_loop(session.install_id)
+                return True, 'Uninstall services started'
+            return True, 'No managed services are installed'
         except Exception as exc:
             LOGGER.warning(f'Managed runtime uninstall failed: {exc}')
             LOGGER.exception(exc)
@@ -300,6 +330,8 @@ class BackendCore:
             )
         except RuntimeOperationCancelled:
             return False, 'Redeployment cancelled by lifecycle operation'
+        except RuntimeRetirementPending:
+            return False, 'Redeployment deferred while the previous revision retires'
         except Exception as exc:
             LOGGER.warning(f'Managed processor rollout failed: {exc}')
             LOGGER.exception(exc)
@@ -724,91 +756,107 @@ class BackendCore:
                     self.is_get_result = False
                     self._result_thread = None
 
-    def _start_redeployment_loop(self, install_id):
-        """Replace the rollout worker with one scoped to this installation."""
+    def _start_runtime_reconcile_loop(self, install_id):
+        """Start the single publication/retirement worker for one installation."""
         install_id = str(install_id or '').strip()
         if not install_id:
-            raise ValueError('redeployment loop requires an install_id')
-        with self._redeployment_lock:
-            if self._redeployment_stop_event is not None:
-                self._redeployment_stop_event.set()
-            if max(0.0, float(self.processor_redeployment_interval_s)) <= 0.0:
-                self._redeployment_stop_event = None
-                self._redeployment_thread = None
-                LOGGER.info('[Redeployment] Automatic processor rollout is disabled.')
-                return
+            raise ValueError('runtime reconcile loop requires an install_id')
+        with self._runtime_reconcile_lock:
+            if self._runtime_reconcile_stop_event is not None:
+                self._runtime_reconcile_stop_event.set()
             stop_event = threading.Event()
             thread = threading.Thread(
-                target=self.run_cycle_deploy,
+                target=self.run_runtime_reconcile,
                 args=(stop_event, install_id),
-                name=f'dayu-runtime-redeployment-{install_id}',
+                name=f'dayu-runtime-reconcile-{install_id}',
                 daemon=True,
             )
-            self._redeployment_stop_event = stop_event
-            self._redeployment_thread = thread
+            self._runtime_reconcile_stop_event = stop_event
+            self._runtime_reconcile_thread = thread
             try:
                 thread.start()
             except Exception:
                 stop_event.set()
-                self._redeployment_stop_event = None
-                self._redeployment_thread = None
+                self._runtime_reconcile_stop_event = None
+                self._runtime_reconcile_thread = None
                 raise
 
-    def _stop_redeployment_loop(self):
-        """Invalidate the current rollout worker before lifecycle mutation."""
-        with self._redeployment_lock:
-            if self._redeployment_stop_event is not None:
-                self._redeployment_stop_event.set()
-            self._redeployment_stop_event = None
-            self._redeployment_thread = None
+    def _ensure_runtime_reconcile_loop(self, install_id):
+        """Keep the existing lifecycle worker, or restore it if it exited."""
+        with self._runtime_reconcile_lock:
+            stop_event = self._runtime_reconcile_stop_event
+            running = stop_event is not None and not stop_event.is_set()
+        if not running:
+            self._start_runtime_reconcile_loop(install_id)
 
-    def run_cycle_deploy(self, stop_event, install_id):
+    def _stop_runtime_reconcile_loop(self):
+        """Invalidate the runtime worker before lifecycle mutation."""
+        with self._runtime_reconcile_lock:
+            if self._runtime_reconcile_stop_event is not None:
+                self._runtime_reconcile_stop_event.set()
+            self._runtime_reconcile_stop_event = None
+            self._runtime_reconcile_thread = None
+
+    def run_runtime_reconcile(self, stop_event, install_id):
         interval = max(0.0, float(self.processor_redeployment_interval_s))
         if interval <= 0:
             LOGGER.info('[Redeployment] Automatic processor rollout is disabled.')
-            return
+        next_rollout = time.monotonic() + interval if interval > 0 else None
         try:
-            # Installation already committed the initial deployment.  Waiting
-            # before the first reconciliation avoids racing the management API
-            # and gives stop/reinstall an interruptible cancellation boundary.
-            while not stop_event.wait(interval):
+            while not stop_event.wait(1.0):
                 try:
-                    # The lock protects only worker identity.  Never hold it
-                    # across scheduler/Kubernetes I/O: uninstall can invalidate
-                    # this token immediately and RuntimeOrchestrator serializes
-                    # any operation that was already in flight.
-                    with self._redeployment_lock:
-                        if self._redeployment_stop_event is not stop_event or stop_event.is_set():
+                    with self._runtime_reconcile_lock:
+                        if (
+                            self._runtime_reconcile_stop_event is not stop_event
+                            or stop_event.is_set()
+                        ):
                             return
                     session = self.runtime_orchestrator.current_session()
                     if (
                         session is None
-                        or session.phase != 'active'
                         or session.install_id != install_id
                     ):
                         LOGGER.debug(
-                            '[Redeployment] Managed runtime session changed; stop rollout loop.'
+                            '[Runtime Reconcile] Managed runtime session changed; stop worker.'
                         )
                         return
                     if stop_event.is_set():
                         return
+                    if session.phase in {'uninstalling', 'finalizing-uninstall'}:
+                        self.runtime_orchestrator.uninstall()
+                        if self.runtime_orchestrator.current_session() is None:
+                            return
+                        continue
+                    self.runtime_orchestrator.reconcile_retirement(
+                        cancel_event=stop_event,
+                    )
+                    session = self.runtime_orchestrator.current_session()
+                    if session is None or session.install_id != install_id:
+                        return
+                    if session.phase != 'active':
+                        continue
+                    if next_rollout is None or time.monotonic() < next_rollout:
+                        continue
                     policy = self.find_scheduler_policy_by_id(session.policy_id)
                     result, message = self.parse_and_redeploy_services(
                         policy,
                         cancel_event=stop_event,
                     )
+                    next_rollout = time.monotonic() + interval
                     if stop_event.is_set():
                         return
                     if not result:
                         LOGGER.warning(f'[Redeployment] {message}')
                 except Exception as exc:
-                    LOGGER.warning(f'[Redeployment] Unexpected rollout error: {exc}')
+                    if interval > 0:
+                        next_rollout = time.monotonic() + interval
+                    LOGGER.warning(f'[Runtime Reconcile] Unexpected error: {exc}')
                     LOGGER.exception(exc)
         finally:
-            with self._redeployment_lock:
-                if self._redeployment_stop_event is stop_event:
-                    self._redeployment_stop_event = None
-                    self._redeployment_thread = None
+            with self._runtime_reconcile_lock:
+                if self._runtime_reconcile_stop_event is stop_event:
+                    self._runtime_reconcile_stop_event = None
+                    self._runtime_reconcile_thread = None
 
     @staticmethod
     def _count_jsonl_records(file_path):
@@ -920,8 +968,8 @@ class BackendCore:
         return export_path
 
     def get_system_parameters(self):
-        # Session ownership is not readiness.  Never render/log telemetry from
-        # an activating, failed, draining, or uninstalling transaction.
+        # Session ownership is not readiness. Never render/log telemetry from
+        # any non-active lifecycle transaction.
         session = self.runtime_orchestrator.current_session()
         if session is None or session.phase != 'active':
             return []
@@ -950,7 +998,7 @@ class BackendCore:
         with self._lifecycle_control_lock:
             if self._install_cancel_event is not None:
                 self._install_cancel_event.set()
-        self._stop_redeployment_loop()
+        self._stop_runtime_reconcile_loop()
         with self.query_lock:
             self._query_admission_enabled = False
             self._close_query_locked()

@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from cluster_client import ClusterClient
@@ -86,6 +88,40 @@ def make_client(core=None, custom=None):
         custom_api=custom or FakeCustom(),
         load_config=False,
     )
+
+
+def test_owned_api_client_disables_urllib3_retries(monkeypatch):
+    configuration = SimpleNamespace(retries=None)
+    created = []
+    loaded = []
+
+    monkeypatch.setattr(
+        "cluster_client.client.Configuration.get_default_copy",
+        lambda: configuration,
+    )
+    monkeypatch.setattr(
+        "cluster_client.config.load_incluster_config",
+        lambda client_configuration: loaded.append(client_configuration),
+    )
+    monkeypatch.setattr(
+        "cluster_client.client.ApiClient",
+        lambda configuration: created.append(configuration) or object(),
+    )
+    monkeypatch.setattr(
+        "cluster_client.client.CoreV1Api",
+        lambda api_client: FakeCore(),
+    )
+    monkeypatch.setattr(
+        "cluster_client.client.CustomObjectsApi",
+        lambda api_client: FakeCustom(),
+    )
+
+    client = ClusterClient(namespace="dayu")
+
+    assert loaded == [configuration]
+    assert created == [configuration]
+    assert configuration.retries == 0
+    assert client.api_client is not None
 
 
 def test_node_inventory_uses_one_list_and_preserves_roles_readiness_and_capacity():
@@ -189,8 +225,10 @@ def test_runtime_metrics_request_timeout_is_explicit_and_capped_by_client_budget
         request_timeout_seconds=30,
     )
 
-    assert core.request_timeouts == [2.5, 4.0]
-    assert custom.calls[-1]["_request_timeout"] == 4.0
+    assert core.request_timeouts == [2, 4]
+    assert custom.calls[-1]["_request_timeout"] == 4
+    assert all(type(timeout) is int for timeout in core.request_timeouts)
+    assert type(custom.calls[-1]["_request_timeout"]) is int
 
 
 def test_explicit_empty_inventory_does_not_trigger_a_second_node_list():

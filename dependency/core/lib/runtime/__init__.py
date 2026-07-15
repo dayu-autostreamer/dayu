@@ -7,6 +7,7 @@ from .lease import (
     RuntimeLeaseClient,
     RuntimeLeaseError,
     RuntimeLeaseIdentityError,
+    RuntimeLeaseRetired,
     RuntimeLeaseUnavailable,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "RuntimeLeaseClient",
     "RuntimeLeaseError",
     "RuntimeLeaseIdentityError",
+    "RuntimeLeaseRetired",
     "RuntimeLeaseUnavailable",
 ]

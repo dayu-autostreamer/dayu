@@ -169,6 +169,20 @@ def test_rollout_hash_ignores_revision_bootstrap_and_runtime_name_but_tracks_wor
     assert changed.unit.rollout_hash != second.unit.rollout_hash
 
 
+def test_runtime_names_isolate_immediate_reinstall_from_background_garbage_collection():
+    slot = RuntimeSlot("processor", "edge-1", "edge", logical_service="face")
+    first_install = RuntimeServiceRenderer("dayu", "install-1").render(
+        processor_template(), slot, 1,
+    )
+    next_install = RuntimeServiceRenderer("dayu", "install-2").render(
+        processor_template(), slot, 1,
+    )
+
+    assert first_install.unit.runtime_id != next_install.unit.runtime_id
+    assert first_install.manifest["metadata"]["name"] == first_install.unit.runtime_id
+    assert next_install.manifest["metadata"]["name"] == next_install.unit.runtime_id
+
+
 def test_generator_renderer_creates_one_deterministic_runtime_per_source_even_on_same_node():
     logical = {
         "position": "edge",

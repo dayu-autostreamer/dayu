@@ -15,6 +15,7 @@ from .runtime_directory import (
     RuntimeDirectoryError,
     RuntimeDirectoryNotFound,
 )
+from .task_lease import TaskLeaseRetired
 
 
 class SchedulerServer:
@@ -107,6 +108,10 @@ class SchedulerServer:
                      self.release_task_lease,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_RELEASE_TASK_LEASE]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_LEASES,
+                     self.retire_task_leases,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_RETIRE_TASK_LEASES]),
         ], log_level='trace', timeout=6000)
 
         self.app.add_middleware(
@@ -130,7 +135,7 @@ class SchedulerServer:
                 deployment_version = 0
 
         try:
-            runtime_routes = self.scheduler.compact_runtime_routes(
+            runtime_state = self.scheduler.schedule_runtime_state(
                 plan,
                 source_device=data.get('source_device', ''),
             )
@@ -139,10 +144,11 @@ class SchedulerServer:
 
         response = {
             'plan': plan,
-            'deployment': self.scheduler.runtime_service_nodes(),
+            'deployment': runtime_state['deployment'],
             'deployment_version': deployment_version,
-            'runtime_directory_revision': self.scheduler.runtime_directory_revision(),
-            'runtime_routes': runtime_routes,
+            'runtime_directory_revision': runtime_state['revision'],
+            'runtime_directory_hash': runtime_state['hash'],
+            'runtime_routes': runtime_state['routes'],
         }
 
         return response
@@ -192,6 +198,10 @@ class SchedulerServer:
             return self.scheduler.commit_runtime_directory(
                 proposal_id,
                 payload.get('expected_revision', payload.get('expectedRevision')),
+                payload.get(
+                    'retirement_grace_seconds',
+                    payload.get('retirementGraceSeconds'),
+                ),
             )
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
@@ -205,31 +215,58 @@ class SchedulerServer:
 
     async def count_task_leases(self, revision: int):
         try:
-            return {'revision': revision, 'count': self.scheduler.count_task_leases(revision)}
+            return self.scheduler.task_lease_status(revision)
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    async def retire_task_leases(self, data: str = Form(...)):
+        payload = json.loads(data)
+        try:
+            return self.scheduler.retire_task_leases(
+                payload.get('revision', payload.get('runtime_directory_revision')),
+                payload.get('deadline'),
+            )
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
     async def acquire_task_lease(self, data: str = Form(...)):
         payload = json.loads(data)
+        revision = payload.get('revision', payload.get('runtime_directory_revision'))
+        root_uuid = payload.get('root_uuid', payload.get('rootUUID'))
         try:
             return self.scheduler.acquire_task_lease(
-                payload.get('revision', payload.get('runtime_directory_revision')),
-                payload.get('root_uuid', payload.get('rootUUID')),
+                revision,
+                root_uuid,
                 payload.get('ttl_seconds', payload.get('ttlSeconds', 60.0)),
             )
+        except TaskLeaseRetired as exc:
+            return self._retired_task_lease(exc, root_uuid)
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
     async def renew_task_lease(self, data: str = Form(...)):
         payload = json.loads(data)
+        revision = payload.get('revision', payload.get('runtime_directory_revision'))
+        root_uuid = payload.get('root_uuid', payload.get('rootUUID'))
         try:
             return self.scheduler.renew_task_lease(
-                payload.get('revision', payload.get('runtime_directory_revision')),
-                payload.get('root_uuid', payload.get('rootUUID')),
+                revision,
+                root_uuid,
                 payload.get('ttl_seconds', payload.get('ttlSeconds', 60.0)),
             )
+        except TaskLeaseRetired as exc:
+            return self._retired_task_lease(exc, root_uuid)
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
+
+    @staticmethod
+    def _retired_task_lease(exc, root_uuid):
+        return {
+            'revision': exc.revision,
+            'root_uuid': str(root_uuid or ''),
+            'retired': True,
+            'deadline': exc.deadline,
+        }
 
     async def release_task_lease(self, data: str = Form(...)):
         payload = json.loads(data)

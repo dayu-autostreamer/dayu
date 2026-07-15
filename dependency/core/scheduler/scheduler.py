@@ -1,11 +1,17 @@
 import threading
+import time
 
 from core.lib.common import Context, LOGGER, ResourceLockManager
 from core.lib.scheduling.deployment_plan import validate_plan
 from core.lib.runtime import RuntimeContext
 
-from .runtime_directory import RuntimeDirectoryError, create_runtime_directory_store
-from .task_lease import create_task_lease_store
+from .runtime_directory import (
+    RedisRuntimeDirectoryStore,
+    RuntimeDirectoryError,
+    create_runtime_directory_store,
+    retirement_deadline,
+)
+from .task_lease import RedisTaskLeaseStore, create_task_lease_store
 
 
 class Scheduler:
@@ -36,6 +42,11 @@ class Scheduler:
                 initial=initial_directory,
             )
         self.task_leases = task_lease_store or create_task_lease_store(self.runtime_context)
+        self._runtime_clock = (
+            getattr(self.task_leases, "clock", None)
+            or getattr(self.task_leases, "_clock", None)
+            or time.time
+        )
 
         self.cloud_device = self.runtime_context.cloud_node or self.runtime_context.local_node
 
@@ -118,6 +129,22 @@ class Scheduler:
             cloud_node=self.cloud_device,
         )
 
+    def schedule_runtime_state(self, plan, source_device=""):
+        """Return routes, deployment and revision from one directory snapshot."""
+
+        with self._runtime_state_lock:
+            snapshot = self.runtime_directory.snapshot_model()
+            return {
+                "revision": snapshot.revision,
+                "hash": snapshot.content_hash,
+                "deployment": snapshot.processor_deployment(),
+                "routes": snapshot.compact_routes_for_plan(
+                    plan,
+                    source_device=source_device,
+                    cloud_node=self.cloud_device,
+                ),
+            }
+
     def replace_runtime_directory(self, directory, expected_revision):
         with self._runtime_state_lock:
             return self.runtime_directory.replace(directory, expected_revision)
@@ -131,9 +158,62 @@ class Scheduler:
                 ttl_seconds=ttl_seconds,
             )
 
-    def commit_runtime_directory(self, proposal_id, expected_revision):
+    def commit_runtime_directory(
+        self,
+        proposal_id,
+        expected_revision,
+        retirement_grace_seconds,
+    ):
+        """Commit N+1 and establish the immutable retirement bound for N.
+
+        The shared lock is sufficient for the in-memory implementation. In
+        production both stores use Redis, where one Lua transaction performs
+        the directory CAS, retirement marker write, and lease-score clamp.
+        """
+
         with self._runtime_state_lock:
-            return self.runtime_directory.commit(proposal_id, expected_revision)
+            try:
+                expected_revision = int(expected_revision)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeDirectoryError(
+                    "retiring runtime directory revision must be an integer"
+                ) from exc
+            if expected_revision < 1:
+                raise RuntimeDirectoryError(
+                    "retiring runtime directory revision must be positive"
+                )
+            now = float(self._runtime_clock())
+            deadline = retirement_deadline(now, retirement_grace_seconds)
+            if (
+                isinstance(self.runtime_directory, RedisRuntimeDirectoryStore)
+                and isinstance(self.task_leases, RedisTaskLeaseStore)
+            ):
+                if (
+                    self.runtime_directory.install_id != self.task_leases.install_id
+                    or self.runtime_directory._active_key != self.task_leases._active_key
+                ):
+                    raise RuntimeDirectoryError(
+                        "runtime directory and task leases do not share one Redis scope"
+                    )
+                return self.runtime_directory.commit_with_retirement(
+                    proposal_id,
+                    expected_revision,
+                    retirement_grace_seconds,
+                    lease_key=self.task_leases._key(int(expected_revision)),
+                    retirement_key=self.task_leases._retirement_key(
+                        int(expected_revision)
+                    ),
+                    now=now,
+                )
+
+            directory = self.runtime_directory.commit(
+                proposal_id,
+                expected_revision,
+            )
+            status = self.task_leases.retire(expected_revision, deadline)
+            result = dict(directory)
+            result["retirement"] = status
+            return result
 
     def reject_runtime_directory(self, proposal_id, reason=""):
         with self._runtime_state_lock:
@@ -153,13 +233,32 @@ class Scheduler:
             )
 
     def renew_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
-        return self.task_leases.renew(revision, root_uuid, ttl_seconds=ttl_seconds)
+        # Existing work may renew an inactive revision only while the atomic
+        # directory commit's persisted retirement bound remains open.
+        with self._runtime_state_lock:
+            return self.task_leases.renew(
+                revision,
+                root_uuid,
+                ttl_seconds=ttl_seconds,
+                active_revision=self.runtime_directory_revision(),
+            )
 
     def release_task_lease(self, revision, root_uuid):
         return self.task_leases.release(revision, root_uuid)
 
     def count_task_leases(self, revision):
         return self.task_leases.count(revision)
+
+    def task_lease_status(self, revision):
+        return self.task_leases.status(revision)
+
+    def retire_task_leases(self, revision, deadline):
+        # Shares the directory state critical section so an in-memory
+        # Scheduler cannot admit a task while the same revision is fenced.
+        # Redis stores additionally enforce this ordering inside Lua across
+        # Scheduler replicas.
+        with self._runtime_state_lock:
+            return self.task_leases.retire(revision, deadline)
 
     def update_scheduler_scenario(self, task):
         source_id = task.get_source_id()

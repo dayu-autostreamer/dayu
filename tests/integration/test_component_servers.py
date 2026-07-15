@@ -10,6 +10,7 @@ from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
 from core.lib.runtime import RuntimeContext
 from core.scheduler.runtime_directory import RuntimeDirectoryConflict, RuntimeDirectoryError
+from core.scheduler.task_lease import TaskLeaseRetired
 
 
 def build_task(flow_index="face-detection", execute_device="edge-node", file_path="payload.bin"):
@@ -37,6 +38,7 @@ def build_task(flow_index="face-detection", execute_device="edge-node", file_pat
 class FakeScheduler:
     def __init__(self):
         self.schedule_calls = []
+        self.commit_calls = []
         self.resource_table = {}
         self.resource_locks = {}
         self.scenario_tasks = []
@@ -89,12 +91,59 @@ class FakeScheduler:
         return {"generate": data.get("allow", True), "reason": "fake_scheduler"}
 
     @staticmethod
+    def task_lease_status(revision):
+        return {
+            "revision": int(revision),
+            "count": 2,
+            "deadline": None,
+            "retired": False,
+            "revoked_count": 0,
+        }
+
+    @staticmethod
+    def retire_task_leases(revision, deadline):
+        return {
+            "revision": int(revision),
+            "count": 2,
+            "deadline": float(deadline),
+            "retired": False,
+            "revoked_count": 0,
+        }
+
+    @staticmethod
     def runtime_service_nodes():
         return {"face-detection": ["edge-node"]}
 
     @staticmethod
     def runtime_directory_revision():
         return 3
+
+    def commit_runtime_directory(
+        self,
+        proposal_id,
+        expected_revision,
+        retirement_grace_seconds,
+    ):
+        if retirement_grace_seconds is None:
+            raise RuntimeDirectoryError(
+                "retirement_grace_seconds must be finite and positive"
+            )
+        self.commit_calls.append((
+            proposal_id,
+            int(expected_revision),
+            float(retirement_grace_seconds),
+        ))
+        return {
+            "revision": 4,
+            "hash": "runtime-directory-hash-4",
+            "retirement": {
+                "revision": int(expected_revision),
+                "count": 2,
+                "deadline": 130.0,
+                "retired": False,
+                "revoked_count": 0,
+            },
+        }
 
     @staticmethod
     def clear_runtime_directory(install_id):
@@ -140,6 +189,18 @@ class FakeScheduler:
                 "endpoint_pod_uid": "processor-pod-uid",
             },
         ]
+
+    @classmethod
+    def schedule_runtime_state(cls, plan, source_device=""):
+        return {
+            "revision": 3,
+            "hash": "runtime-directory-hash-3",
+            "deployment": cls.runtime_service_nodes(),
+            "routes": cls.compact_runtime_routes(
+                plan,
+                source_device=source_device,
+            ),
+        }
 
 
 def test_scheduler_deployment_plan_merge_has_one_service_to_nodes_contract():
@@ -229,6 +290,7 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert schedule_response.json()["plan"]["buffer_size"] == 2
         assert schedule_response.json()["deployment"] == {"face-detection": ["edge-node"]}
         assert schedule_response.json()["runtime_directory_revision"] == 3
+        assert schedule_response.json()["runtime_directory_hash"] == "runtime-directory-hash-3"
         assert {route["component"] for route in schedule_response.json()["runtime_routes"]} == {
             "controller", "processor",
         }
@@ -303,6 +365,23 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert redeployment_response.status_code == 200
         assert redeployment_response.json() == {"plan": {"face-detection": ["edge-node"]}}
 
+        commit_response = client.post(
+            "/runtime-directory/proposals/proposal-4/commit",
+            data={"data": json.dumps({
+                "expected_revision": 3,
+                "retirement_grace_seconds": 30,
+            })},
+        )
+        assert commit_response.status_code == 200
+        assert commit_response.json()["retirement"]["revision"] == 3
+        assert server.scheduler.commit_calls == [("proposal-4", 3, 30.0)]
+
+        missing_grace = client.post(
+            "/runtime-directory/proposals/proposal-4/commit",
+            data={"data": json.dumps({"expected_revision": 3})},
+        )
+        assert missing_grace.status_code == 422
+
         clear_response = client.request(
             "DELETE",
             "/runtime-directory",
@@ -328,6 +407,47 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
             data={"data": json.dumps({"install_id": "another-install"})},
         )
         assert wrong_identity.status_code == 409
+
+        lease_status = client.get(
+            "/runtime-directory/task-leases",
+            params={"revision": 3},
+        )
+        assert lease_status.json() == {
+            "revision": 3,
+            "count": 2,
+            "deadline": None,
+            "retired": False,
+            "revoked_count": 0,
+        }
+
+        retirement = client.request(
+            "PATCH",
+            "/runtime-directory/task-leases",
+            data={"data": json.dumps({"revision": 3, "deadline": 123.0})},
+        )
+        assert retirement.status_code == 200
+        assert retirement.json()["deadline"] == 123.0
+
+        def retired_renew(*_args, **_kwargs):
+            raise TaskLeaseRetired(3, 123.0)
+
+        server.scheduler.renew_task_lease = retired_renew
+        retired = client.request(
+            "PUT",
+            "/runtime-directory/task-leases",
+            data={"data": json.dumps({
+                "revision": 3,
+                "root_uuid": "task-3",
+                "ttl_seconds": 60,
+            })},
+        )
+        assert retired.status_code == 200
+        assert retired.json() == {
+            "revision": 3,
+            "root_uuid": "task-3",
+            "retired": True,
+            "deadline": 123.0,
+        }
 
 
 @pytest.mark.integration
@@ -452,6 +572,13 @@ def test_distributor_server_persists_records_and_queries_incrementally(monkeypat
             return {"accepted": True}
         if url.endswith("/runtime-directory/task-leases"):
             payload = json.loads(kwargs["data"]["data"])
+            if method == "PUT":
+                return {
+                    "revision": payload["revision"],
+                    "root_uuid": payload["root_uuid"],
+                    "expires_at": 1000.0,
+                    "valid_for_seconds": payload["ttl_seconds"],
+                }
             return {
                 "revision": payload["revision"],
                 "root_uuid": payload["root_uuid"],

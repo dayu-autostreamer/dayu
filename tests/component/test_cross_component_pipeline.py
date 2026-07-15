@@ -164,16 +164,26 @@ class FakeScheduler:
             },
         ]
 
+    def schedule_runtime_state(self, plan, source_device=""):
+        return {
+            "revision": self.runtime_directory_revision(),
+            "hash": "component-runtime-directory",
+            "deployment": self.runtime_service_nodes(),
+            "routes": self.compact_runtime_routes(plan, source_device),
+        }
+
     def acquire_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
         self.leases.add((int(revision), str(root_uuid)))
         return {
             "revision": int(revision), "root_uuid": str(root_uuid), "expires_at": 9999999999.0,
+            "valid_for_seconds": float(ttl_seconds),
         }
 
     def renew_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
         assert (int(revision), str(root_uuid)) in self.leases
         return {
             "revision": int(revision), "root_uuid": str(root_uuid), "expires_at": 9999999999.0,
+            "valid_for_seconds": float(ttl_seconds),
         }
 
     def release_task_lease(self, revision, root_uuid):

@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +23,9 @@ class FakeCleaner:
 
 
 class FakeController:
+    def __init__(self):
+        self.runtime_context = SimpleNamespace(lease_ttl_seconds=3600.0)
+
     def check_processor_health(self, request=None):
         return False
 
@@ -34,14 +38,14 @@ class FakeController:
         return None
 
     def submit_task(self, task):
-        return None
+        return "transmit"
 
     def process_return(self, task):
-        return None
+        return ["transmit"]
 
 
 @pytest.mark.unit
-def test_controller_server_initialization_starts_instance_cleaner_when_delete_temp_files_is_enabled(monkeypatch):
+def test_controller_server_initialization_defers_temp_cleanup_to_lifespan(monkeypatch):
     controller_server_module = importlib.import_module("core.controller.controller_server")
     FakeCleaner.instances = []
     clear_calls = []
@@ -66,11 +70,10 @@ def test_controller_server_initialization_starts_instance_cleaner_when_delete_te
 
     server = controller_server_module.ControllerServer()
 
-    assert clear_calls == [True]
+    assert server.app is not None
     assert server.is_delete_temp_files is True
-    assert len(FakeCleaner.instances) == 1
-    assert FakeCleaner.instances[0].kwargs["folder"] == "/tmp/dayu/dayu"
-    assert FakeCleaner.instances[0].started == 1
+    assert clear_calls == []
+    assert FakeCleaner.instances == []
 
 
 @pytest.mark.unit
@@ -78,7 +81,6 @@ def test_controller_server_lifespan_creates_and_stops_app_cleaner(monkeypatch):
     controller_server_module = importlib.import_module("core.controller.controller_server")
     FakeCleaner.instances = []
     clear_calls = []
-    delete_flags = iter([False, True])
 
     monkeypatch.setattr(controller_server_module, "Controller", FakeController)
     monkeypatch.setattr(controller_server_module, "FileCleaner", FakeCleaner)
@@ -95,7 +97,7 @@ def test_controller_server_lifespan_creates_and_stops_app_cleaner(monkeypatch):
     monkeypatch.setattr(
         controller_server_module.Context,
         "get_parameter",
-        staticmethod(lambda name, default=None, direct=False: next(delete_flags) if name == "DELETE_TEMP_FILES" else default),
+        staticmethod(lambda name, default=None, direct=False: True if name == "DELETE_TEMP_FILES" else default),
     )
 
     server = controller_server_module.ControllerServer()
@@ -103,10 +105,89 @@ def test_controller_server_lifespan_creates_and_stops_app_cleaner(monkeypatch):
     with TestClient(server.app) as client:
         assert client.post("/check").json() == {"status": "not ok"}
 
-    assert clear_calls == [True, True, True]
+    assert clear_calls == [True, True]
     assert len(FakeCleaner.instances) == 1
+    assert FakeCleaner.instances[0].kwargs["folder"] == "/tmp/dayu/dayu"
+    assert FakeCleaner.instances[0].kwargs["ttl_seconds"] == 3600.0
     assert FakeCleaner.instances[0].started == 1
     assert FakeCleaner.instances[0].stopped == [{"join": True, "timeout": 3.0}]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("delete_enabled", "action", "should_remove"),
+    [
+        (True, "transmit", True),
+        (True, "execute", False),
+        (False, "transmit", False),
+    ],
+)
+def test_controller_submit_background_cleans_only_files_no_longer_needed(
+    monkeypatch, delete_enabled, action, should_remove
+):
+    controller_server_module = importlib.import_module("core.controller.controller_server")
+    server = object.__new__(controller_server_module.ControllerServer)
+    task = object()
+    calls = []
+    server.is_delete_temp_files = delete_enabled
+    server.controller = SimpleNamespace(
+        record_transmit_ts=lambda current_task, is_end: calls.append(("record", current_task, is_end)),
+        submit_task=lambda current_task: action,
+    )
+
+    monkeypatch.setattr(controller_server_module.Task, "deserialize", staticmethod(lambda data: task))
+    monkeypatch.setattr(
+        controller_server_module.FileOps,
+        "save_task_file_in_temp",
+        staticmethod(lambda current_task, data: calls.append(("save", current_task, data))),
+    )
+    monkeypatch.setattr(
+        controller_server_module.FileOps,
+        "remove_task_file_in_temp",
+        staticmethod(lambda current_task: calls.append(("remove", current_task))),
+    )
+
+    server.submit_task_background("task-data", b"file-data")
+
+    assert ("save", task, b"file-data") in calls
+    assert ("record", task, True) in calls
+    assert (("remove", task) in calls) is should_remove
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("delete_enabled", "actions", "should_remove"),
+    [
+        (True, ["transmit"], True),
+        (True, ["execute"], False),
+        (True, ["wait"], False),
+        (False, ["transmit"], False),
+    ],
+)
+def test_controller_return_background_preserves_files_needed_by_execute_or_join(
+    monkeypatch, delete_enabled, actions, should_remove
+):
+    controller_server_module = importlib.import_module("core.controller.controller_server")
+    server = object.__new__(controller_server_module.ControllerServer)
+    task = object()
+    calls = []
+    server.is_delete_temp_files = delete_enabled
+    server.controller = SimpleNamespace(
+        record_execute_ts=lambda current_task, is_end: calls.append(("record", current_task, is_end)),
+        process_return=lambda current_task: actions,
+    )
+
+    monkeypatch.setattr(controller_server_module.Task, "deserialize", staticmethod(lambda data: task))
+    monkeypatch.setattr(
+        controller_server_module.FileOps,
+        "remove_task_file_in_temp",
+        staticmethod(lambda current_task: calls.append(("remove", current_task))),
+    )
+
+    server.process_return_background("task-data")
+
+    assert ("record", task, True) in calls
+    assert (("remove", task) in calls) is should_remove
 
 
 @pytest.mark.unit

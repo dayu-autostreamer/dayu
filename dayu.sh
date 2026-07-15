@@ -359,29 +359,25 @@ start_system() {
 }
 
 delete_service_account() {
-  kubectl delete clusterrolebinding "$BACKEND_CLUSTER_ROLE_BINDING" --ignore-not-found=true
-  kubectl delete clusterrole "$BACKEND_CLUSTER_ROLE" --ignore-not-found=true
-  kubectl delete rolebinding "$BACKEND_ROLE_BINDING" -n "$NAMESPACE" --ignore-not-found=true
-  kubectl delete role "$BACKEND_ROLE" -n "$NAMESPACE" --ignore-not-found=true
-  kubectl delete serviceaccount "$BACKEND_SERVICE_ACCOUNT" -n "$NAMESPACE" --ignore-not-found=true
+  _kubectl_delete clusterrolebinding "$BACKEND_CLUSTER_ROLE_BINDING" --ignore-not-found=true
+  _kubectl_delete clusterrole "$BACKEND_CLUSTER_ROLE" --ignore-not-found=true
+  _kubectl_delete rolebinding "$BACKEND_ROLE_BINDING" -n "$NAMESPACE" --ignore-not-found=true
+  _kubectl_delete role "$BACKEND_ROLE" -n "$NAMESPACE" --ignore-not-found=true
+  _kubectl_delete serviceaccount "$BACKEND_SERVICE_ACCOUNT" -n "$NAMESPACE" --ignore-not-found=true
 }
 
 stop_system() {
     local ns="${NAMESPACE}"
-    local svc_wait="${SVC_WAIT_SEC:-120}"
     local mesh_wait="${MESH_WAIT_SEC:-30}"
-    local pod_wait="${POD_WAIT_SEC:-120}"
     local ns_wait="${NS_WAIT_SEC:-120}"
-    local graceful_wait="${GRACEFUL_STOP_WAIT_SEC:-240}"
+    # The backend command is asynchronous. Give its fast exact-UID teardown a
+    # short bounded window, then preserve the historical stop contract by
+    # continuing with shell cleanup instead of waiting on a broken control path.
+    local graceful_wait="${GRACEFUL_STOP_WAIT_SEC:-60}"
     local wait_mesh_rules="${WAIT_EDGEMESH_RULES:-true}"
     local app_resources=""
 
     echo "$(green_text [DAYU]) Stopping DAYU system in namespace ${ns}..."
-
-    if ! check_namespace_existence; then
-      echo "Namespace $(red_text "$NAMESPACE") does not exist. No need to clean up resources."
-        exit 1
-    fi
 
     # ---------------- helper: run a command with timeout (best-effort, portable) ----------------
     _run_with_timeout() {
@@ -420,31 +416,18 @@ stop_system() {
         return $?
     }
 
-    # ---------------- helper: wait until a namespaced resource kind becomes empty ----------------
-    _wait_empty() {
-        local kind="$1"
-        local namespace="$2"
-        local timeout="$3"
-
-        local start_ts
-        start_ts="$(date +%s)"
-
-        while true; do
-            local out cnt
-            out="$(kubectl get "${kind}" -n "${namespace}" --no-headers 2>/dev/null || true)"
-            cnt="$(printf '%s' "${out}" | wc -l | tr -d ' ')"
-
-            if [[ "${cnt}" == "0" ]]; then
-                return 0
-            fi
-
-            if (( $(date +%s) - start_ts > timeout )); then
-                echo "$(red_text [DAYU]) timeout waiting '${kind}' in '${namespace}' to be empty (still ${cnt})"
-                return 1
-            fi
-            sleep 2
-        done
+    _kubectl_read() {
+        _run_with_timeout 6 kubectl --request-timeout=5s "$@"
     }
+
+    _kubectl_delete() {
+        _run_with_timeout 11 kubectl --request-timeout=10s delete "$@" --wait=false
+    }
+
+    if ! _kubectl_read get namespace "${ns}" >/dev/null 2>&1; then
+        echo "Namespace $(red_text "$NAMESPACE") does not exist. No need to clean up resources."
+        exit 1
+    fi
 
     _bool_is_true() {
         case "${1:-}" in
@@ -459,7 +442,7 @@ stop_system() {
 
     _list_dayu_app_resources() {
         local namespace="$1"
-        kubectl get runtimeservices.sedna.io -n "${namespace}" \
+        _kubectl_read get runtimeservices.sedna.io -n "${namespace}" \
             -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
             || true
     }
@@ -467,7 +450,7 @@ stop_system() {
     # ---------------- helper: list Ready edgemesh-agent pods (ns/pod) ----------------
     _list_edgemesh_pods() {
         # Only consider Running/Ready pods to avoid kubectl exec hanging on terminating/unready agents.
-        kubectl get pods -A --no-headers \
+        _kubectl_read get pods -A --no-headers \
             -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,READY:.status.containerStatuses[0].ready 2>/dev/null \
           | awk '$2 ~ /^edgemesh-agent/ && $3=="Running" && $4=="true" {print $1"/"$2}'
     }
@@ -541,26 +524,32 @@ stop_system() {
         local backend_service="backend-cloud"
         local backend_port
         local backend_url
+        local backend_state_url
         local response=""
+        local state_response=""
+        local start_ts
 
         if [[ -z "${app_resources}" ]]; then
             echo "$(green_text [DAYU]) No deployed DAYU services found, skip graceful service uninstall."
             return 0
         fi
 
-        if ! kubectl get svc "${backend_service}" -n "${namespace}" >/dev/null 2>&1; then
+        if ! _kubectl_read get svc "${backend_service}" -n "${namespace}" >/dev/null 2>&1; then
             echo "$(yellow_text [DAYU]) Backend service '${backend_service}' not found, skip graceful service uninstall."
             return 1
         fi
 
-        backend_port="$(get_service_nodeport "${backend_service}" "${namespace}" 2>/dev/null || true)"
+        backend_port="$(_kubectl_read get svc "${backend_service}" -n "${namespace}" \
+            -o=jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
         if [[ -z "${backend_port}" ]]; then
             echo "$(yellow_text [DAYU]) Failed to resolve backend NodePort, skip graceful service uninstall."
             return 1
         fi
 
         backend_url="http://${CLOUD_IP}:${backend_port}/stop_service"
+        backend_state_url="http://${CLOUD_IP}:${backend_port}/install_state"
         echo "$(green_text [DAYU]) Try graceful service uninstall via backend API: ${backend_url}"
+        start_ts="$(date +%s)"
 
         if command -v curl >/dev/null 2>&1; then
             response="$(_run_with_timeout "${graceful_wait}" \
@@ -579,8 +568,23 @@ stop_system() {
         fi
 
         if printf '%s' "${response}" | grep -q '"state"[[:space:]]*:[[:space:]]*"success"'; then
-            echo "$(green_text [DAYU]) Backend graceful uninstall finished successfully."
-            return 0
+            while (( $(date +%s) - start_ts < graceful_wait )); do
+                if command -v curl >/dev/null 2>&1; then
+                    state_response="$(_run_with_timeout 5 \
+                        curl --silent --show-error --max-time 5 "${backend_state_url}" 2>/dev/null || true)"
+                else
+                    state_response="$(_run_with_timeout 5 \
+                        wget -qO- --timeout=5 "${backend_state_url}" 2>/dev/null || true)"
+                fi
+                if printf '%s' "${state_response}" \
+                    | grep -q '"state"[[:space:]]*:[[:space:]]*"uninstall"'; then
+                    echo "$(green_text [DAYU]) Backend graceful uninstall finished successfully."
+                    return 0
+                fi
+                sleep 2
+            done
+            echo "$(yellow_text [DAYU]) Backend graceful uninstall exceeded ${graceful_wait}s; continue with shell cleanup."
+            return 1
         fi
 
         echo "$(yellow_text [DAYU]) Backend graceful uninstall did not finish cleanly: ${response}"
@@ -595,26 +599,18 @@ stop_system() {
     fi
 
     echo "$(green_text [DAYU]) (1/6) Delete RuntimeServices, then bootstrap resources..."
-    kubectl delete runtimeservices.sedna.io -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
-    kubectl delete "${SUPPORT_KIND}" -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    _kubectl_delete runtimeservices.sedna.io -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    _kubectl_delete "${SUPPORT_KIND}" -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
 
     echo "$(green_text [DAYU]) (2/6) Delete Services/Endpoints..."
-    kubectl delete svc -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
-    kubectl delete endpoints -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
-    kubectl delete endpointslices -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
-    kubectl delete ingress -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
-
-    echo "$(green_text [DAYU]) Waiting service/endpoints to be empty..."
-    _wait_empty svc "${ns}" "${svc_wait}" || true
-    _wait_empty endpoints "${ns}" "${svc_wait}" || true
-    _wait_empty endpointslices "${ns}" "${svc_wait}" || true
+    _kubectl_delete svc -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    _kubectl_delete endpoints -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    _kubectl_delete endpointslices -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    _kubectl_delete ingress -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
 
     echo "$(green_text [DAYU]) (3/6) Delete workloads and remaining resources in namespace '${ns}'..."
-    kubectl delete deploy,sts,ds,rs,po,job,cronjob,hpa -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
-    kubectl delete cm,secret -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
-
-    echo "$(green_text [DAYU]) Waiting pods to be gone..."
-    _wait_empty pods "${ns}" "${pod_wait}" || true
+    _kubectl_delete deploy,sts,ds,rs,po,job,cronjob,hpa -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    _kubectl_delete cm,secret -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
 
     if [[ -n "${app_resources}" ]] && _bool_is_true "${wait_mesh_rules}"; then
         echo "$(green_text [DAYU]) (4/6) Waiting EdgeMesh to remove iptables rules for '${ns}'..."
@@ -627,10 +623,12 @@ stop_system() {
 
     echo "$(green_text [DAYU]) (5/6) Delete service account binding..."
     delete_service_account || true
-    kubectl delete role,rolebinding -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
+    _kubectl_delete role,rolebinding -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
 
     echo "$(green_text [DAYU]) (6/6) Delete namespace '${ns}'..."
-    kubectl delete namespace "${ns}" --ignore-not-found=true --wait=true --timeout="${ns_wait}s" 2>/dev/null || true
+    _run_with_timeout "$((ns_wait + 10))" \
+        kubectl --request-timeout=10s delete namespace "${ns}" \
+        --ignore-not-found=true --wait=true --timeout="${ns_wait}s" 2>/dev/null || true
 
     echo "$(green_text DAYU system stop successfully.)"
 }

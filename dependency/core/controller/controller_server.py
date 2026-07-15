@@ -15,33 +15,28 @@ from .controller import Controller
 class ControllerServer:
     def __init__(self):
         self.controller = Controller()
+        self.is_delete_temp_files = Context.get_parameter('DELETE_TEMP_FILES', direct=False)
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
-            # Startup
             FileOps.clear_task_temp_directory()
-            app.state.file_cleaner = None
-            is_delete_temp_files = Context.get_parameter('DELETE_TEMP_FILES', direct=False)
-
-            if is_delete_temp_files:
+            cleaner = None
+            if self.is_delete_temp_files:
                 cleaner = FileCleaner(
                     folder=FileOps.get_task_temp_directory(),
                     poll_seconds=30,
-                    ttl_seconds=120,
+                    ttl_seconds=self.controller.runtime_context.lease_ttl_seconds,
                     recursive=False,
                     max_delete_per_round=200
                 )
                 cleaner.start()
-                app.state.file_cleaner = cleaner
 
             try:
                 yield
             finally:
-                # Shutdown
-                FileOps.clear_task_temp_directory()
-                cleaner = getattr(app.state, "file_cleaner", None)
                 if cleaner:
                     cleaner.stop(join=True, timeout=3.0)
+                FileOps.clear_task_temp_directory()
 
         self.app = FastAPI(routes=[
             APIRoute(NetworkAPIPath.CONTROLLER_CHECK,
@@ -72,14 +67,6 @@ class ControllerServer:
             CORSMiddleware, allow_origins=["*"], allow_credentials=True,
             allow_methods=["*"], allow_headers=["*"],
         )
-
-        FileOps.clear_task_temp_directory()
-        self.is_delete_temp_files = Context.get_parameter('DELETE_TEMP_FILES', direct=False)
-        if self.is_delete_temp_files:
-            self.file_cleaner = FileCleaner(folder=FileOps.get_task_temp_directory(),
-                                            poll_seconds=30, ttl_seconds=120, recursive=False,
-                                            max_delete_per_round=200)
-            self.file_cleaner.start()
 
     async def check_processor_health(self, data: str = Form("{}")):
         """check if processor is healthy"""
@@ -113,7 +100,12 @@ class ControllerServer:
         # record end time of transmitting
         self.controller.record_transmit_ts(cur_task, is_end=True)
 
-        self.controller.submit_task(cur_task)
+        action = None
+        try:
+            action = self.controller.submit_task(cur_task)
+        finally:
+            if self.is_delete_temp_files and action != 'execute':
+                FileOps.remove_task_file_in_temp(cur_task)
 
     def process_return_background(self, data):
         """deal with tasks returned by the processor"""
@@ -121,4 +113,9 @@ class ControllerServer:
         # record end time of executing
         self.controller.record_execute_ts(cur_task, is_end=True)
 
-        self.controller.process_return(cur_task)
+        actions = ()
+        try:
+            actions = self.controller.process_return(cur_task)
+        finally:
+            if self.is_delete_temp_files and 'execute' not in actions and 'wait' not in actions:
+                FileOps.remove_task_file_in_temp(cur_task)

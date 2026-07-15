@@ -11,7 +11,7 @@ This document describes the internal APIs used by Dayu runtime components. These
 | Scheduler/resource updates | Scheduler endpoints often receive JSON encoded into a form field named `data`. |
 | Runtime bootstrap | `DAYU_RUNTIME_BOOTSTRAP` supplies immutable install context and static infrastructure endpoints; it is never a Kubernetes discovery cache. |
 | Exact task routing | `Task` serializes `runtime_directory_revision`, `runtime_routes`, and `root_uuid`. Controller/processor routes must be complete exact identities. |
-| Task drain | Runtime services acquire/renew/release a Scheduler lease keyed by `(runtime_directory_revision, root_uuid)`. |
+| Task ownership and retirement | Runtime services acquire/renew/release a Scheduler lease keyed by `(runtime_directory_revision, root_uuid)`; Backend may place one immutable deadline on an old revision. |
 
 Runtime service code does not import Kubernetes, load a kubeconfig, or discover Pods, Nodes, or Services. Missing or
 ambiguous task routes fail closed.
@@ -29,8 +29,10 @@ Implementation entrypoint: `dependency/core/controller/controller_server.py`
 
 Operational notes:
 
-- On startup the controller clears its temp directory.
-- If `DELETE_TEMP_FILES` is enabled, a `FileCleaner` thread removes stale temp files.
+- The FastAPI lifespan owns temp-file cleanup: it clears the temp directory at startup and shutdown, and is the only
+  place that starts or stops a `FileCleaner`.
+- If `DELETE_TEMP_FILES` is enabled, that single lifespan-managed cleaner uses the task-lease TTL, rather than a fixed
+  short timeout, so a legitimate long-running processor cannot lose its controller-side file mid-task.
 - `submit_task` stores the uploaded file in the temp directory and forwards the task into the controller pipeline asynchronously.
 - Controller resolves downstream controller/processor targets only from the Task's exact route snapshot and renews the
   Task lease as work advances. Missing route or failed renewal stops forwarding.
@@ -74,7 +76,7 @@ Implementation entrypoint: `dependency/core/scheduler/scheduler_server.py`
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `GET` | `/schedule` | Generate a schedule plan plus exact routes for one source. | Form field `data` with JSON object | `{plan,deployment,deployment_version,runtime_directory_revision,runtime_routes}` |
+| `GET` | `/schedule` | Generate a schedule plan plus exact routes for one source. | Form field `data` with JSON object | `{plan,deployment,deployment_version,runtime_directory_revision,runtime_directory_hash,runtime_routes}` |
 | `GET` | `/overhead` | Get average scheduler overhead across agents. | None | Number of seconds |
 | `POST` | `/scenario` | Update scheduler state with a processed task scenario. | Form field `data` with serialized task | `{accepted: boolean}` |
 | `POST` | `/resource` | Update scheduler resource table for one device. | Form field `data` with JSON `{"device","resource"}` | `null` |
@@ -106,11 +108,11 @@ committed snapshots and task routes.
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `GET` | `/runtime-directory` | Read the canonical committed snapshot. | None | `{install_id,directory_revision,nodes,deployment,routes,hash}` |
+| `GET` | `/runtime-directory` | Read the canonical committed snapshot. | None | `{install_id,revision,directory_revision,nodes,deployment,routes,hash}` |
 | `PUT` | `/runtime-directory` | Publish the initial snapshot with CAS. | Form `data` containing `{directory,expected_revision}` | Canonical committed snapshot |
-| `DELETE` | `/runtime-directory` | Atomically clear the exact install's active snapshot and all indexed pending proposals after leases drain. | Form `data` containing `{install_id}` | `{cleared,install_id,previous_revision}` |
+| `DELETE` | `/runtime-directory` | Atomically clear the exact install's active snapshot and all indexed pending proposals. It does not wait for task leases. | Form `data` containing `{install_id}` | `{cleared,install_id,previous_revision}` |
 | `POST` | `/runtime-directory/proposals` | Persist a candidate next revision. | Form `data` containing `{directory,base_revision,proposal_id,ttl_seconds}` | Proposal record |
-| `POST` | `/runtime-directory/proposals/{proposal_id}/commit` | Commit a persisted proposal against the expected active revision. | Form `data` containing `{expected_revision}` | Canonical committed snapshot |
+| `POST` | `/runtime-directory/proposals/{proposal_id}/commit` | Atomically commit a persisted proposal and bound retirement of its base revision. | Form `data` containing `{expected_revision,retirement_grace_seconds}` | Canonical committed snapshot plus `retirement={revision,count,deadline,retired,revoked_count}` |
 | `POST` | `/runtime-directory/proposals/{proposal_id}/reject` | Reject an uncommitted proposal. | Optional form `data` containing `{reason}` | Rejection record |
 
 The directory validates positive revisions, unique logical slots/runtime ids, canonical node/deployment summaries, and
@@ -129,15 +131,36 @@ keys are intentionally separate and retain their lease-derived expiry.
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `GET` | `/runtime-directory/task-leases?revision=N` | Count unexpired leases for one revision. | Query `revision` | `{revision,count}` |
-| `POST` | `/runtime-directory/task-leases` | Acquire a lease only for the currently active revision. | Form `data` with `{revision,root_uuid,ttl_seconds}` | `{revision,root_uuid,expires_at}` |
-| `PUT` | `/runtime-directory/task-leases` | Renew an existing unexpired lease. | Form `data` with `{revision,root_uuid,ttl_seconds}` | `{revision,root_uuid,expires_at}` |
+| `GET` | `/runtime-directory/task-leases?revision=N` | Read lease and retirement status for one revision. | Query `revision` | `{revision,count,deadline,retired,revoked_count}` |
+| `POST` | `/runtime-directory/task-leases` | Acquire a lease only for the currently active revision. | Form `data` with `{revision,root_uuid,ttl_seconds}` | `{revision,root_uuid,expires_at,valid_for_seconds}` |
+| `PUT` | `/runtime-directory/task-leases` | Renew an existing unexpired lease. | Form `data` with `{revision,root_uuid,ttl_seconds}` | `{revision,root_uuid,expires_at,valid_for_seconds}` |
 | `DELETE` | `/runtime-directory/task-leases` | Release an existing lease. | Form `data` with `{revision,root_uuid}` | `{revision,root_uuid,expires_at,released}` |
+| `PATCH` | `/runtime-directory/task-leases` | Establish or reconcile one revision's immutable retirement deadline. The effective deadline may only stay the same or move earlier. | Form `data` with `{revision,deadline}` | `{revision,count,deadline,retired,revoked_count}` |
+
+An acquire or renewal rejected by retirement returns
+`{revision,root_uuid,retired:true,deadline}` instead of an expiry; runtime clients treat it as a hard stop. Releasing a
+lease after its revision has retired is idempotent and reports it as already released.
+`expires_at` is the Scheduler's wall-clock timestamp and is retained for observability. Runtime clients validate
+`valid_for_seconds` and advance a local monotonic deadline from that relative duration, so lease safety does not
+depend on wall-clock synchronization between cloud and edge nodes.
+An inactive revision without a persisted retirement marker cannot renew: Scheduler rejects it fail-closed instead of
+assuming that a missing marker means an unbounded grace period.
 
 Production Scheduler stores directories/proposals and leases in Redis, scoped by install id and revision. Redis uses
-a host-mounted AOF with synchronous fsync, and normal uninstall atomically clears the active snapshot and all pending
-proposals after drain. Expired lease entries are pruned on access. In-memory storage is reserved for explicit
-test/local-harness injection; it is never an automatic production fallback.
+a host-mounted AOF with synchronous fsync. Redeployment's proposal commit is one Scheduler transaction: it changes the
+active directory from N to N+1, creates N's immutable retirement marker from Scheduler time, and clamps every N lease
+to that deadline before exposing the result. Backend persists the returned authoritative deadline and normal
+reconciliation reads status with `GET`; `PATCH` is reserved for uninstall's immediate fence. At the deadline Scheduler
+atomically revokes the remainder and marks the revision retired. Exact-UID `Background` DELETE failures move into the
+session's retryable cleanup backlog; an accepted request means the apiserver accepted the UID-guarded deletion or that
+the exact UID is already absent, not that every dependent object has physically disappeared. The cleanup lane advances
+independently from retirement and does not hold the next rollout gate. Normal uninstall sends `deadline=now` fences
+without waiting for lease release, attempts the install-scoped directory/proposal clear, and proceeds with exact-UID
+teardown even when Scheduler is unavailable. Scheduler is then deleted before the remaining workers as the definitive
+admission fence. Every RuntimeService name includes both an installation digest and its revision, so a new installation
+cannot reuse a name while an old installation's dependents are still being garbage-collected.
+Expired lease entries are pruned on access. In-memory storage is reserved for explicit test/local-harness injection;
+it is never an automatic production fallback.
 
 `/schedule` expects data close to:
 
@@ -175,7 +198,8 @@ Implementation entrypoint: `dependency/core/distributor/distributor_server.py`
 
 Distributor releases the task lease only after the result is durably stored and Scheduler returns
 `{"accepted": true}` for the scenario update. A release transport failure is logged and left to TTL expiry so a
-control-plane drain remains conservative.
+normal task remains fail-safe; a redeploy retirement deadline still places a hard upper bound on old-revision
+ownership.
 
 Implementation note:
 

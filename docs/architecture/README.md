@@ -48,8 +48,8 @@ flowchart LR
     RUNTIME --> DIRECTORY["Publish RuntimeDirectory revision 1"]
     DIRECTORY --> QUERY["Backend /submit_query"]
     QUERY --> RESULTS["Result + system visualization"]
-    DIRECTORY --> REDEPLOY["Activate -> propose -> commit -> drain -> delete"]
-    DIRECTORY --> STOP["Delete generators -> drain -> clear directory/proposals -> delete scheduler last"]
+    DIRECTORY --> REDEPLOY["Activate -> propose -> CAS commit -> return\nbounded retirement -> cleanup backlog"]
+    DIRECTORY --> STOP["Accept uninstall -> delete generators -> fence/clear\ndelete Scheduler (admission fence) -> delete workers"]
     STOP --> CLEAN["dayu.sh ACTION=stop support-layer cleanup"]
 ```
 
@@ -69,12 +69,18 @@ Key boundaries:
   valid. The policy result remains unchanged, while the published RuntimeDirectory records the operational replica's
   exact routable identity for subsequent scheduling.
 - Backend `/submit_query` opens one datasource label and starts result collection.
-- Processor redeployment creates a new immutable revision, commits it with compare-and-swap, drains task leases on the
-  previous directory revision, and only then deletes retired RuntimeServices.
-- Backend `/stop_service` stops generators first, drains all active/pending revisions, atomically clears the
-  install-scoped active directory plus pending proposals, deletes the now-unroutable workers, and deletes scheduler last.
-  `dayu.sh ACTION=stop` attempts that graceful path first, then always completes the administrative system teardown;
-  backend failure or unavailability never changes the public stop command.
+- Processor redeployment creates and activates a new immutable revision, persists exact ownership of replaced objects,
+  then uses one Scheduler transaction to commit the route CAS, create the previous revision's immutable deadline, and
+  clamp its leases. Backend persists the returned status, finalizes the active session, and returns immediately. The
+  unified reconcile worker observes lease status and later submits exact-UID `Background` deletion. A second rollout is
+  deferred only during that bounded lease-protection window. Failed deletion moves to a persisted cleanup lane that is
+  advanced independently, cannot be starved by continuous retirement, and does not block later rollouts.
+- Backend `/stop_service` accepts uninstall asynchronously and exposes progress through `/install_state`. Its worker
+  stops generators first, immediately fences every possibly published revision, and attempts the install-scoped
+  directory/proposal clear while Scheduler is live. It then deletes Scheduler as the definitive admission fence before
+  deleting the remaining workers by exact UID. It never waits for task leases to expire or release. `dayu.sh ACTION=stop`
+  attempts that backend path first, then always completes the administrative system teardown; backend
+  failure or unavailability never changes the public stop command.
 
 ## The Five-Layer Model In The Repository
 
@@ -138,9 +144,11 @@ Key points:
 - Scheduler stores the active RuntimeDirectory, proposals, and task leases in support Redis. `dayu.sh` mounts Redis
   `/data` on the cloud host and enables AOF with `appendfsync=always`, so Scheduler and Redis Pod replacement do not
   erase committed routing state when that host path remains available
-- graceful uninstall calls `DELETE /runtime-directory` with the exact install id after drain and before Scheduler
-  deletion. Redis uses the install-scoped proposal index to atomically delete the active snapshot, every pending
-  proposal, and the index itself. A mismatched install id fails closed; repeating an already-cleared request is safe
+- uninstall immediately fences the relevant task-lease revisions, then calls `DELETE /runtime-directory` with the
+  exact install id before Scheduler deletion. Redis uses the install-scoped proposal index to atomically delete the
+  active snapshot, every pending proposal, and the index itself. A mismatched install id fails closed; repeating an
+  already-cleared request is safe. If that metadata path fails, exact-UID Scheduler deletion is the final admission
+  fence and therefore precedes deletion of the remaining workers
 
 ## Runtime Routing And Task Ownership
 
@@ -156,7 +164,7 @@ sequenceDiagram
     participant W as Controller/Processor
     participant D as Distributor
     BE->>S: PUT revision 1 or propose next revision
-    S-->>BE: CAS commit + canonical hash
+    S-->>BE: CAS commit + canonical hash + atomic retirement status
     G->>S: schedule request
     S-->>G: directory revision + exact routes
     G->>S: acquire (revision, root_uuid) lease

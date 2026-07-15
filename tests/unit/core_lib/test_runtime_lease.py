@@ -8,6 +8,7 @@ from core.lib.runtime import (
     RuntimeContext,
     RuntimeLeaseClient,
     RuntimeLeaseIdentityError,
+    RuntimeLeaseRetired,
     RuntimeLeaseUnavailable,
 )
 
@@ -52,13 +53,14 @@ def test_runtime_lease_client_uses_exact_task_key_and_scheduler_endpoint():
             response["released"] = True
         else:
             response["expires_at"] = 123.0
+            response["valid_for_seconds"] = 45.0
         return response
 
     client = RuntimeLeaseClient(runtime_context(), requester=requester)
     task = LeaseTask()
 
     assert client.acquire(task)["expires_at"] == 123.0
-    assert client.renew(task)["expires_at"] == 123.0
+    assert client.renew(task)["valid_for_seconds"] == 45.0
     assert client.release(task)["released"] is True
 
     assert [call["method"] for call in calls] == [
@@ -103,6 +105,29 @@ def test_runtime_lease_client_fails_closed_on_invalid_task_or_response():
     with pytest.raises(RuntimeLeaseUnavailable, match="identity mismatch"):
         mismatched.renew(LeaseTask())
 
+    missing_lifetime = RuntimeLeaseClient(
+        runtime_context(),
+        requester=lambda **kwargs: {
+            "revision": 7,
+            "root_uuid": "root-7",
+            "expires_at": 123.0,
+        },
+    )
+    with pytest.raises(RuntimeLeaseUnavailable, match="relative lifetime"):
+        missing_lifetime.renew(LeaseTask())
+
+    excessive_lifetime = RuntimeLeaseClient(
+        runtime_context(),
+        requester=lambda **kwargs: {
+            "revision": 7,
+            "root_uuid": "root-7",
+            "expires_at": 123.0,
+            "valid_for_seconds": 46.0,
+        },
+    )
+    with pytest.raises(RuntimeLeaseUnavailable, match="relative lifetime"):
+        excessive_lifetime.renew(LeaseTask())
+
 
 @pytest.mark.unit
 def test_runtime_context_reads_and_validates_lease_ttl(monkeypatch):
@@ -123,7 +148,10 @@ def test_runtime_lease_keepalive_renews_during_long_operation():
         return {
             "revision": payload["revision"],
             "root_uuid": payload["root_uuid"],
-            "expires_at": time.time() + 0.15,
+            # The Scheduler wall clock may be far behind this node. Only its
+            # relative lifetime is meaningful to the client.
+            "expires_at": 123.0,
+            "valid_for_seconds": 0.15,
         }
 
     client = RuntimeLeaseClient(runtime_context(ttl=0.15), requester=requester)
@@ -145,10 +173,56 @@ def test_runtime_lease_keepalive_fails_closed_after_full_ttl_without_renewal():
         return {
             "revision": payload["revision"],
             "root_uuid": payload["root_uuid"],
-            "expires_at": time.time() + 0.12,
+            # A far-ahead Scheduler clock must not extend local ownership.
+            "expires_at": 9999999999.0,
+            "valid_for_seconds": 0.12,
         }
 
     client = RuntimeLeaseClient(runtime_context(ttl=0.12), requester=requester)
     with pytest.raises(RuntimeLeaseUnavailable, match="expired during"):
         with client.keepalive(LeaseTask()):
             time.sleep(0.18)
+
+
+@pytest.mark.unit
+def test_runtime_lease_client_distinguishes_retired_revision():
+    client = RuntimeLeaseClient(
+        runtime_context(),
+        requester=lambda **kwargs: {
+            "revision": 7,
+            "root_uuid": "root-7",
+            "retired": True,
+            "deadline": 123.0,
+        },
+    )
+
+    with pytest.raises(RuntimeLeaseRetired, match="revision 7") as raised:
+        client.renew(LeaseTask())
+    assert raised.value.deadline == 123.0
+
+
+@pytest.mark.unit
+def test_runtime_lease_keepalive_obeys_scheduler_expiry_before_local_ttl():
+    calls = []
+
+    def requester(**kwargs):
+        calls.append(kwargs)
+        payload = json.loads(kwargs["data"]["data"])
+        if len(calls) > 1:
+            return {
+                "revision": payload["revision"],
+                "root_uuid": payload["root_uuid"],
+                "retired": True,
+                "deadline": time.time(),
+            }
+        return {
+            "revision": payload["revision"],
+            "root_uuid": payload["root_uuid"],
+            "expires_at": 9999999999.0,
+            "valid_for_seconds": 0.08,
+        }
+
+    client = RuntimeLeaseClient(runtime_context(ttl=0.3), requester=requester)
+    with pytest.raises(RuntimeLeaseRetired):
+        with client.keepalive(LeaseTask()):
+            time.sleep(0.13)

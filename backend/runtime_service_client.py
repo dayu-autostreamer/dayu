@@ -6,11 +6,12 @@ import copy
 import math
 import re
 import time
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 from kubernetes import watch
 from kubernetes.client.rest import ApiException
 
+from kubernetes_timeout import kubernetes_request_timeout
 from runtime_model import RuntimeEndpoint, RuntimeUnit
 
 RUNTIME_GROUP = "sedna.io"
@@ -89,9 +90,15 @@ class RuntimeServiceClient:
             raise ValueError("api must be the shared ClusterClient CustomObjectsApi")
         self.api = api
         self.watch_factory = watch_factory or watch.Watch
-        self.request_timeout = float(request_timeout_seconds)
-        if self.request_timeout <= 0:
-            raise ValueError("request_timeout_seconds must be positive")
+        self.request_timeout = kubernetes_request_timeout(request_timeout_seconds)
+
+    def _bounded_request_timeout(self, requested: Optional[float] = None) -> int:
+        timeout = (
+            self.request_timeout
+            if requested is None
+            else kubernetes_request_timeout(requested)
+        )
+        return min(self.request_timeout, timeout)
 
     @staticmethod
     def _validate_manifest(manifest: Mapping[str, Any]) -> None:
@@ -103,7 +110,11 @@ class RuntimeServiceClient:
         if not metadata.get("name"):
             raise ValueError("RuntimeService metadata.name must be non-empty")
 
-    def create(self, manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    def create(
+        self,
+        manifest: Mapping[str, Any],
+        request_timeout_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
         self._validate_manifest(manifest)
         body = copy.deepcopy(dict(manifest))
         metadata = body.setdefault("metadata", {})
@@ -119,7 +130,9 @@ class RuntimeServiceClient:
             namespace=self.namespace,
             plural=RUNTIME_PLURAL,
             body=body,
-            _request_timeout=self.request_timeout,
+            _request_timeout=self._bounded_request_timeout(
+                request_timeout_seconds,
+            ),
         )
 
     def get(
@@ -133,10 +146,8 @@ class RuntimeServiceClient:
             namespace=self.namespace,
             plural=RUNTIME_PLURAL,
             name=name,
-            _request_timeout=(
-                self.request_timeout
-                if request_timeout_seconds is None
-                else min(self.request_timeout, max(0.001, float(request_timeout_seconds)))
+            _request_timeout=self._bounded_request_timeout(
+                request_timeout_seconds,
             ),
         )
 
@@ -150,10 +161,8 @@ class RuntimeServiceClient:
             "version": RUNTIME_VERSION,
             "namespace": self.namespace,
             "plural": RUNTIME_PLURAL,
-            "_request_timeout": (
-                self.request_timeout
-                if request_timeout_seconds is None
-                else min(self.request_timeout, max(0.001, float(request_timeout_seconds)))
+            "_request_timeout": self._bounded_request_timeout(
+                request_timeout_seconds,
             ),
         }
         if label_selector:
@@ -294,10 +303,11 @@ class RuntimeServiceClient:
         if not expected:
             return {}
         timeout_seconds = float(timeout_seconds)
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be finite and positive")
 
         conditions = tuple(condition_types)
+        deadline = time.monotonic() + timeout_seconds
         _raise_if_cancelled(cancel_event)
 
         def ready_from_list(response: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -317,17 +327,27 @@ class RuntimeServiceClient:
                     snapshot[name] = item
             return snapshot
 
-        request_timeout = (
-            min(self.request_timeout, CANCELLATION_POLL_SECONDS)
-            if cancel_event is not None
-            else self.request_timeout
-        )
+        def remaining_request_timeout() -> int:
+            _raise_if_cancelled(cancel_event)
+            remaining = deadline - time.monotonic()
+            request_timeout = int(math.floor(min(self.request_timeout, remaining)))
+            if request_timeout < 1:
+                raise RuntimeServiceTimeout(
+                    f"timed out waiting for RuntimeService conditions {conditions}: "
+                    f"{sorted(expected)}"
+                )
+            if cancel_event is not None:
+                request_timeout = min(
+                    request_timeout,
+                    int(CANCELLATION_POLL_SECONDS),
+                )
+            return request_timeout
 
         def cancellable_list() -> Dict[str, Any]:
             try:
                 value = self.list(
                     label_selector=label_selector,
-                    request_timeout_seconds=request_timeout,
+                    request_timeout_seconds=remaining_request_timeout(),
                 )
             except Exception:
                 _raise_if_cancelled(cancel_event)
@@ -341,7 +361,6 @@ class RuntimeServiceClient:
             return result
 
         resource_version = str((response.get("metadata") or {}).get("resourceVersion") or "")
-        deadline = time.monotonic() + timeout_seconds
         watcher = self.watch_factory()
         try:
             while len(result) < len(expected):
@@ -349,22 +368,15 @@ class RuntimeServiceClient:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                watch_window = (
-                    min(remaining, CANCELLATION_POLL_SECONDS)
-                    if cancel_event is not None
-                    else remaining
-                )
-                server_timeout = max(1, int(math.ceil(watch_window)))
+                request_timeout = remaining_request_timeout()
+                server_timeout = max(1, request_timeout - 1)
                 stream_kwargs = {
                     "group": RUNTIME_GROUP,
                     "version": RUNTIME_VERSION,
                     "namespace": self.namespace,
                     "plural": RUNTIME_PLURAL,
                     "timeout_seconds": server_timeout,
-                    "_request_timeout": (
-                        min(self.request_timeout, max(0.001, watch_window)),
-                        server_timeout + 1,
-                    ),
+                    "_request_timeout": request_timeout,
                 }
                 if resource_version:
                     stream_kwargs["resource_version"] = resource_version
@@ -439,10 +451,68 @@ class RuntimeServiceClient:
         timeout_seconds: float = 120,
         request_timeout_seconds: Optional[float] = None,
     ) -> bool:
+        timeout_seconds = float(timeout_seconds)
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be finite and positive")
+        deadline = time.monotonic() + timeout_seconds
+
+        def remaining_request_timeout() -> int:
+            remaining = deadline - time.monotonic()
+            requested = (
+                min(remaining, request_timeout_seconds)
+                if request_timeout_seconds is not None
+                else remaining
+            )
+            request_timeout = int(math.floor(min(self.request_timeout, requested)))
+            if request_timeout < 1:
+                raise RuntimeServiceTimeout(
+                    f"timed out waiting for RuntimeService {name!r} deletion"
+                )
+            return request_timeout
+
+        deleted = self._delete_without_wait(
+            name,
+            uid,
+            request_timeout_provider=remaining_request_timeout,
+        )
+        if not wait:
+            return True
+        if deleted:
+            # A 404 or UID-precondition conflict against a replacement proves
+            # that the exact target is already absent.
+            return True
+
+        while time.monotonic() < deadline:
+            try:
+                current = self.get(
+                    name,
+                    request_timeout_seconds=remaining_request_timeout(),
+                )
+            except ApiException as exc:
+                if getattr(exc, "status", None) == 404:
+                    return True
+                raise
+            current_uid = str(
+                ((current or {}).get("metadata") or {}).get("uid") or ""
+            )
+            if uid and current_uid and current_uid != str(uid):
+                return True
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        raise RuntimeServiceTimeout(f"timed out waiting for RuntimeService {name!r} deletion")
+
+    def _delete_without_wait(
+        self,
+        name: str,
+        uid: Optional[str],
+        request_timeout_provider: Callable[[], float],
+        propagation_policy: str = "Foreground",
+    ) -> bool:
+        """Issue one exact DELETE; return whether absence is already proven."""
+
         body: Dict[str, Any] = {
             "apiVersion": "v1",
             "kind": "DeleteOptions",
-            "propagationPolicy": "Foreground",
+            "propagationPolicy": propagation_policy,
         }
         if uid:
             body["preconditions"] = {"uid": str(uid)}
@@ -454,14 +524,7 @@ class RuntimeServiceClient:
                 plural=RUNTIME_PLURAL,
                 name=name,
                 body=body,
-                _request_timeout=(
-                    self.request_timeout
-                    if request_timeout_seconds is None
-                    else min(
-                        self.request_timeout,
-                        max(0.001, float(request_timeout_seconds)),
-                    )
-                ),
+                _request_timeout=request_timeout_provider(),
             )
         except ApiException as exc:
             if getattr(exc, "status", None) == 404:
@@ -474,7 +537,7 @@ class RuntimeServiceClient:
                 try:
                     current = self.get(
                         name,
-                        request_timeout_seconds=request_timeout_seconds,
+                        request_timeout_seconds=request_timeout_provider(),
                     )
                 except ApiException as read_exc:
                     if getattr(read_exc, "status", None) == 404:
@@ -486,33 +549,21 @@ class RuntimeServiceClient:
                 if current_uid and current_uid != str(uid):
                     return True
             raise
-
-        if not wait:
-            return True
-        deadline = time.monotonic() + float(timeout_seconds)
-        while time.monotonic() < deadline:
-            try:
-                self.get(name)
-            except ApiException as exc:
-                if getattr(exc, "status", None) == 404:
-                    return True
-                raise
-            time.sleep(0.2)
-        raise RuntimeServiceTimeout(f"timed out waiting for RuntimeService {name!r} deletion")
+        return False
 
     def delete_many(
         self,
         identities: Mapping[str, Optional[str]],
         timeout_seconds: float = 120,
-        label_selector: Optional[str] = None,
         cancel_event=None,
     ) -> bool:
-        """Delete exact RuntimeService UIDs and confirm absence with one watch.
+        """Submit exact UID-guarded deletions inside one shared deadline.
 
         Kubernetes has no collection delete with per-object UID preconditions,
-        so the DELETE requests remain one per immutable resource. Completion is
-        nevertheless observed through one list/watch boundary instead of a GET
-        polling loop per resource.
+        so the requests remain one per immutable resource. A successful return
+        means the apiserver accepted every deletion (or proved the exact UID is
+        already absent); Background garbage collection may still be removing
+        dependents. Lifecycle completion must not wait on remote-node finalizers.
         """
 
         identities = {
@@ -528,145 +579,50 @@ class RuntimeServiceClient:
                 f"delete_many requires immutable UIDs for every RuntimeService: {missing_uids}"
             )
         timeout_seconds = float(timeout_seconds)
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
-        request_timeout = (
-            min(self.request_timeout, CANCELLATION_POLL_SECONDS)
-            if cancel_event is not None
-            else self.request_timeout
-        )
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be finite and positive")
+        expected = set(identities)
+        deadline = time.monotonic() + timeout_seconds
+
+        def remaining_request_timeout() -> int:
+            _raise_if_cancelled(cancel_event)
+            remaining = deadline - time.monotonic()
+            request_budget = min(self.request_timeout, remaining)
+            # kubernetes-client 20.11 only treats an integer as a total
+            # request timeout.  A float is ignored and a tuple bounds connect
+            # and read independently, so use the whole seconds still inside
+            # the operation deadline.
+            request_timeout = int(math.floor(request_budget))
+            if request_timeout < 1:
+                raise RuntimeServiceTimeout(
+                    f"timed out deleting RuntimeServices: {sorted(expected)}"
+                )
+            if cancel_event is not None:
+                request_timeout = min(
+                    request_timeout,
+                    int(CANCELLATION_POLL_SECONDS),
+                )
+            return request_timeout
+
+        def ensure_within_deadline() -> None:
+            _raise_if_cancelled(cancel_event)
+            if time.monotonic() >= deadline:
+                raise RuntimeServiceTimeout(
+                    f"timed out deleting RuntimeServices: {sorted(expected)}"
+                )
+
         for name in sorted(identities):
             _raise_if_cancelled(cancel_event)
             try:
-                self.delete(
+                self._delete_without_wait(
                     name,
-                    uid=identities[name],
-                    wait=False,
-                    request_timeout_seconds=request_timeout,
+                    identities[name],
+                    request_timeout_provider=remaining_request_timeout,
+                    propagation_policy="Background",
                 )
             except Exception:
                 _raise_if_cancelled(cancel_event)
                 raise
-            _raise_if_cancelled(cancel_event)
+            ensure_within_deadline()
 
-        expected = set(identities)
-
-        def remaining_from_list(response: Mapping[str, Any]) -> set:
-            present = {
-                str((item.get("metadata") or {}).get("name") or ""):
-                str((item.get("metadata") or {}).get("uid") or "")
-                for item in response.get("items") or ()
-            }
-            # A same-name object with a different immutable UID is a new
-            # resource. The exact object we deleted is already absent and the
-            # replacement must never be waited on or deleted.
-            return {
-                name for name in expected
-                if name in present
-                and (not present[name] or present[name] == identities[name])
-            }
-
-        def cancellable_list() -> Dict[str, Any]:
-            try:
-                value = self.list(
-                    label_selector=label_selector,
-                    request_timeout_seconds=request_timeout,
-                )
-            except Exception:
-                _raise_if_cancelled(cancel_event)
-                raise
-            _raise_if_cancelled(cancel_event)
-            return value
-
-        _raise_if_cancelled(cancel_event)
-        response = cancellable_list()
-        remaining_names = remaining_from_list(response)
-        if not remaining_names:
-            return True
-        resource_version = str((response.get("metadata") or {}).get("resourceVersion") or "")
-        deadline = time.monotonic() + timeout_seconds
-        watcher = self.watch_factory()
-        try:
-            while remaining_names:
-                _raise_if_cancelled(cancel_event)
-                remaining_time = deadline - time.monotonic()
-                if remaining_time <= 0:
-                    break
-                watch_window = (
-                    min(remaining_time, CANCELLATION_POLL_SECONDS)
-                    if cancel_event is not None
-                    else remaining_time
-                )
-                server_timeout = max(1, int(math.ceil(watch_window)))
-                stream_kwargs = {
-                    "group": RUNTIME_GROUP,
-                    "version": RUNTIME_VERSION,
-                    "namespace": self.namespace,
-                    "plural": RUNTIME_PLURAL,
-                    "timeout_seconds": server_timeout,
-                    "_request_timeout": (
-                        min(self.request_timeout, max(0.001, watch_window)),
-                        server_timeout + 1,
-                    ),
-                }
-                if resource_version:
-                    stream_kwargs["resource_version"] = resource_version
-                if label_selector:
-                    stream_kwargs["label_selector"] = label_selector
-                saw_event = False
-                try:
-                    for event in watcher.stream(
-                        self.api.list_namespaced_custom_object, **stream_kwargs):
-                        _raise_if_cancelled(cancel_event)
-                        saw_event = True
-                        obj = event.get("object") if isinstance(event, Mapping) else None
-                        if not isinstance(obj, Mapping):
-                            continue
-                        metadata = obj.get("metadata") or {}
-                        resource_version = str(
-                            metadata.get("resourceVersion") or resource_version
-                        )
-                        name = str(metadata.get("name") or "")
-                        uid = str(metadata.get("uid") or "")
-                        if name in expected:
-                            event_type = str(event.get("type", "")).upper()
-                            if event_type == "DELETED" and uid == identities[name]:
-                                remaining_names.discard(name)
-                            elif event_type != "DELETED" and uid and uid != identities[name]:
-                                remaining_names.discard(name)
-                        if not remaining_names:
-                            watcher.stop()
-                            break
-                except ApiException as exc:
-                    if getattr(exc, "status", None) != 410:
-                        _raise_if_cancelled(cancel_event)
-                        raise
-                    watcher.stop()
-                    watcher = self.watch_factory()
-                    _raise_if_cancelled(cancel_event)
-                    response = cancellable_list()
-                    resource_version = str(
-                        (response.get("metadata") or {}).get("resourceVersion") or ""
-                    )
-                    remaining_names = remaining_from_list(response)
-                    continue
-                except Exception:
-                    _raise_if_cancelled(cancel_event)
-                    raise
-                if not remaining_names:
-                    break
-                _raise_if_cancelled(cancel_event)
-                if not saw_event:
-                    response = cancellable_list()
-                    resource_version = str(
-                        (response.get("metadata") or {}).get("resourceVersion")
-                        or resource_version
-                    )
-                    remaining_names = remaining_from_list(response)
-        finally:
-            watcher.stop()
-        if remaining_names:
-            raise RuntimeServiceTimeout(
-                f"timed out waiting for RuntimeService deletion: {sorted(remaining_names)}"
-            )
         return True

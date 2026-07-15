@@ -8,6 +8,7 @@ from typing import Any, Mapping, Optional
 
 from kubernetes.client.rest import ApiException
 
+from kubernetes_timeout import kubernetes_request_timeout
 from runtime_model import RuntimeSession, canonical_hash, canonical_json
 
 SESSION_DATA_KEY = "session.json"
@@ -64,9 +65,7 @@ class RuntimeSessionStore:
         if api is None:
             raise ValueError("api must be the shared ClusterClient CoreV1Api")
         self.api = api
-        self.request_timeout = float(request_timeout_seconds)
-        if self.request_timeout <= 0:
-            raise ValueError("request_timeout_seconds must be positive")
+        self.request_timeout = kubernetes_request_timeout(request_timeout_seconds)
 
     def _decode(self, configmap: Any) -> StoredRuntimeSession:
         data = _data(configmap)
@@ -158,7 +157,13 @@ class RuntimeSessionStore:
                     _request_timeout=self.request_timeout,
                 )
         except ApiException as exc:
-            if getattr(exc, "status", None) in {409, 422}:
+            conflict_statuses = {409, 422}
+            if expected_resource_version is not None:
+                # A peer may delete the CAS object between our transaction
+                # reload and replace. Treat absence like every other stale
+                # resourceVersion so the orchestrator reloads to ``None``.
+                conflict_statuses.add(404)
+            if getattr(exc, "status", None) in conflict_statuses:
                 raise RuntimeSessionConflict(
                     f"RuntimeSession CAS conflict for ConfigMap {self.name!r} at "
                     f"resourceVersion={expected_resource_version!r}"
@@ -178,7 +183,13 @@ class RuntimeSessionStore:
         body = {
             "apiVersion": "v1",
             "kind": "DeleteOptions",
-            "preconditions": {"uid": stored.uid},
+            # Both preconditions are evaluated atomically by the apiserver. A
+            # UID-only delete could remove a newer CAS update written between
+            # the read above and this DELETE.
+            "preconditions": {
+                "uid": stored.uid,
+                "resourceVersion": stored.resource_version,
+            },
         }
         try:
             self.api.delete_namespaced_config_map(

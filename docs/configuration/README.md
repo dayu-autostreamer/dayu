@@ -63,8 +63,10 @@ or advance the task, and Processors maintain a renewal heartbeat throughout exec
 After the Distributor has durably stored the result and the Scheduler has
 acknowledged its scenario update, it releases the lease. Any acquire or renew
 outcome that is not explicitly acknowledged stops task progress. A failed
-release is only logged and leaves the lease to expire naturally, which keeps
-the corresponding RuntimeServices protected during drain.
+release is only logged and leaves the lease to expire naturally. During
+redeployment, Scheduler caps every old-revision lease at one persisted,
+immutable retirement deadline; after that deadline any remaining leases are
+revoked instead of delaying RuntimeService reclamation indefinitely.
 
 ## Global Catalogs
 
@@ -75,7 +77,7 @@ This file is the root of the platform catalog. It defines:
 - namespace and image defaults
 - the backend-only service account and minimal cluster RBAC names
 - the support-layer `JointMultiEdgeService` API version and kind
-- RuntimeService activation, operation, drain, and task-lease deadlines
+- RuntimeService activation, operation, retirement, and task-lease deadlines
 - file mount defaults
 - log export and retention defaults
 - datasource defaults
@@ -112,9 +114,12 @@ Runtime control fields:
 | `runtime.metrics-request-timeout-seconds` | `5` | Upper bound requested for each telemetry Pod, metrics, or due node-inventory list; the shared Kubernetes client may cap it further to its own control-plane budget. |
 | `runtime.result-request-timeout-seconds` | `5` | Maximum time for one incremental Distributor result poll. A stopped query can therefore leave a cancelled worker blocked for at most this bounded request. |
 | `runtime.result-batch-size` | `20` | Maximum task records returned by one Distributor poll. This matches the bounded in-memory visualization queue instead of requesting the entire accumulated result set. |
-| `runtime.drain-timeout-seconds` | `3900` | Maximum retirement wait; must exceed lease TTL plus the quiet window so failed releases can expire safely. |
-| `runtime.drain-quiet-window-seconds` | `10` | Required continuous zero-lease interval before deletion. |
+| `runtime.retirement-grace-seconds` | `180` | Maximum retirement grace for tasks on the previous directory revision. Scheduler uses its own clock to establish the deadline atomically with proposal commit and lease clamping; Backend persists the returned value, the deadline is never extended, and Scheduler revokes remaining leases when it expires. |
 | `runtime.lease-ttl-seconds` | `3600` | Lease TTL injected into runtime bootstrap. |
+
+Only the lease-protected retirement gates another rollout, and only until this fixed grace expires. If Kubernetes
+exact-UID deletion still fails after the deadline, Backend retains those identities in its cleanup backlog and retries
+them independently; the backlog does not extend the retirement deadline or block a later rollout.
 
 There are intentionally no runtime Kubernetes endpoint, selector, cache TTL, warm-up, or refresh settings. Such a
 setting would reintroduce cluster discovery into application processes and violates the architecture; the renderer
@@ -129,9 +134,10 @@ proposals, and task leases across Scheduler/Redis Pod replacement. The path is n
 writable and durable, and explicitly migrate it if the support Redis moves to another cloud node.
 
 Normal uninstall uses Scheduler's install-scoped proposal index to atomically delete the active directory key, every
-pending proposal, and the index itself only after lease drain. Task-lease key expiry bounds the remaining transient
-state. Fallback shell cleanup after an unsuccessful graceful uninstall does not provide that transactional guarantee
-and does not erase the host directory.
+pending proposal, and the index itself after immediately fencing relevant revisions. It does not wait for lease
+release or expiry. Fallback shell cleanup after an unsuccessful backend uninstall does not provide that transactional
+clear guarantee and does not erase the host directory, but install-scoped keys cannot authorize routes for a later
+installation.
 
 ### `template/scheduler_policies.yaml`
 
@@ -224,6 +230,10 @@ The `template/` subtree is split by component ownership.
 | `template/distributor/` | distributor deployment placement and port |
 | `template/monitor/` | monitor interval and enabled monitor hooks |
 | `template/processor/` | processor type, model parameters, scenario extractors, queue strategy |
+
+`DELETE_TEMP_FILES` in the controller template enables one FastAPI-lifespan-managed cleaner. Its retention is derived
+from the runtime task-lease TTL; the controller does not start a second constructor-owned cleaner or apply a separate
+fixed short file TTL.
 
 ### Generator template pattern
 

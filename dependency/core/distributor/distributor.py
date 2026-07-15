@@ -139,6 +139,18 @@ class Distributor:
 
         LOGGER.info(f'[Distribute Data] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 
+        try:
+            # Fence late results before they become durable. A task whose
+            # directory revision has retired must not reappear after Backend
+            # has released the rollout gate at its deadline.
+            self.runtime_lease_client.renew(cur_task)
+        except RuntimeLeaseError as exc:
+            LOGGER.warning(
+                f'[Runtime Task Lease] Drop unowned result before persistence. '
+                f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}: {exc}'
+            )
+            return
+
         self.save_task_record(cur_task)
         if not self.send_scenario_to_scheduler(cur_task):
             LOGGER.warning(
@@ -151,8 +163,8 @@ class Distributor:
             self.runtime_lease_client.release(cur_task)
         except RuntimeLeaseError as exc:
             # A failed release is deliberately not retried or emulated.  The
-            # scheduler lease remains until its TTL and therefore keeps the old
-            # RuntimeDirectory revision safe to drain conservatively.
+            # scheduler lease remains until its TTL or the immutable retirement
+            # deadline, whichever comes first.
             LOGGER.warning(
                 f'[Runtime Task Lease] Release failed; retain until TTL. '
                 f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}: {exc}'

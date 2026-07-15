@@ -90,8 +90,8 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `POST` | `/install` | Resolve policy + datasource mapping and deploy the runtime stack. | JSON body described below | `{state, msg}` |
-| `POST` | `/stop_service` | Stop generators, drain revision leases, atomically clear the install-scoped directory/proposals, delete the other exact units, and delete scheduler last. | None | `{state, msg}` |
-| `GET` | `/install_state` | Check session ownership and its lifecycle phase; failed/recovering sessions remain `install` until safely uninstalled. | None | `{state, phase, ready, operation_id, active_directory_revision, active_runtime_count, pending_runtime_count, last_error}` |
+| `POST` | `/stop_service` | Accept an asynchronous uninstall: close query admission, persist `uninstalling`, and start background teardown. | None | `{state, msg}`; success means accepted, not completed |
+| `GET` | `/install_state` | Check session ownership and its lifecycle phase; failed/recovering sessions remain `install` until safely uninstalled. | None | `{state, phase, ready, operation_id, active_directory_revision, active_runtime_count, pending_runtime_count, cleanup_runtime_count, retirement_revision, retirement_deadline, last_error}` |
 | `POST` | `/submit_query` | Open datasource playback for a datasource label and begin result collection. | JSON body with `source_label` | `{state, msg}` |
 | `POST` | `/stop_query` | Stop datasource playback and clear in-memory task results. | None | `{state, msg}` |
 | `GET` | `/query_state` | Get query state for the current datasource. | None | `{state: "open"|"close"|"disabled", source_label}` |
@@ -101,12 +101,19 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 
 `state="install"` means a managed session still owns resources; it is not a readiness signal. Clients may query
 `/installed_service`, `/service_info/{service}`, and `/system_parameters` only when `phase="active"`. During activation,
-drain, or uninstall, the frontend retains the ownership state to prevent a second install while suspending telemetry
-polling and clearing active-service details.
+publication recovery, or uninstall, the frontend retains the ownership state to prevent a second install while
+suspending telemetry polling and clearing active-service details. A pending old-revision retirement keeps the newly
+published session active and does not block those reads.
 
 `ready` is true exactly when `phase="active"`. With no session, the endpoint returns
 `state="uninstall"`, `phase="uninstalled"`, zero counts/revision, and an empty error. The lifecycle request itself may
-still be running in a worker thread; this endpoint remains responsive throughout a long activation, drain, or delete.
+still be running in a worker thread; this endpoint remains responsive throughout activation, publication recovery,
+background retirement reconciliation, or exact-UID deletion.
+
+After `POST /stop_service` returns `state="success"`, poll `/install_state`. The uninstall is complete only when the
+session disappears and the endpoint reports `state="uninstall", phase="uninstalled"`. Until then, `operation_id`
+identifies the accepted operation, `phase` is `uninstalling` or `finalizing-uninstall`, and `last_error` reports the
+latest background failure while the reconcile worker keeps the exact ownership record for retry.
 
 `POST /install` expects a deployment request shaped like:
 
@@ -265,18 +272,19 @@ array. Before the first successful sample, visualizers use their existing empty/
 - `POST /install` fails closed if any required processor/cloud target lacks a Ready Sedna LC/EdgeMesh agent, if a fixed
   source is outside the resolved source permission set, if activation identity is
   incomplete, or if RuntimeDirectory readback differs from the published revision/hash.
-- `POST /stop_service` is retryable. Backend removes `dayu-runtime-session` only after lease drain and all exact
-  RuntimeService deletions plus RuntimeDirectory cleanup succeed; a failed attempt preserves the session and error.
+- `POST /stop_service` is idempotent admission for a background operation and never waits for task leases or resource
+  deletion. Backend subsequently deletes generators first, sends
+  `deadline=now` retirement fences for every possibly published revision, and attempts the install-id-guarded
+  RuntimeDirectory/proposal clear. Fence or clear failure is logged and does not veto administrative teardown. Backend
+  then persists `finalizing-uninstall`, deletes Scheduler by exact UID as the definitive admission fence, deletes the
+  remaining workers by exact UID, and removes `dayu-runtime-session` after every UID-guarded `Background` DELETE is
+  accepted by the apiserver or the exact target is already absent. It does not wait for dependent objects to disappear
+  physically. An API rejection or timeout preserves the session phase and error for retry; retrying
+  `finalizing-uninstall` does not require a live Scheduler API.
   If install is still activating or planning, stop first cancels its lifecycle token and then enters serialized
   cleanup. Pre-publication cleanup uses the persisted install identity and exact UID discovery without calling an
   unready Scheduler; cancellation is not persisted as a generic install failure. Concurrent stop requests keep new
   install admission closed until every stop request has finished.
-  `clearing-directory` is persisted before Scheduler cleanup and retains every not-yet-deleted non-Scheduler UID. Its
-  retry repeats the install-id-guarded, idempotent directory clear while Scheduler is still live, then deletes those
-  route targets. Backend accepts either the exact DELETE acknowledgement or an empty revision-0 directory readback after
-  an ambiguous/lost response. Once clear and route-target deletion succeed, it persists `finalizing-uninstall` with only
-  Scheduler identities; retries from this phase use Kubernetes UID deletion plus ConfigMap CAS and never call a
-  Scheduler that may already be gone.
 - `POST /datasource` returns `state: "partial"` when only some uploaded files are accepted. The `results` array carries per-file status details.
 - `POST /submit_query` only works after install-time deployment has completed and a datasource config exists for the requested label.
 - `POST /submit_query` is idempotent for the already-open datasource label. Opening a different datasource while one is active fails until `/stop_query` closes the current one.

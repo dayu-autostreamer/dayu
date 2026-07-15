@@ -197,6 +197,7 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
                 "revision": payload["revision"],
                 "root_uuid": payload["root_uuid"],
                 "expires_at": 123.0,
+                "valid_for_seconds": float(payload["ttl_seconds"]),
             }
         uploaded.update(url=url, method=method, data=data, files=files)
 

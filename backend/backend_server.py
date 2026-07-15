@@ -698,7 +698,7 @@ class BackendServer:
             msg = 'unexpected system error, please refer to logs in backend'
 
         if result:
-            return {'state': 'success', 'msg': 'Uninstall services successfully'}
+            return {'state': 'success', 'msg': msg}
         else:
             return {'state': 'fail', 'msg': f'Uninstall services failed: {msg}'}
 
@@ -723,8 +723,12 @@ class BackendServer:
                 'active_directory_revision': 0,
                 'active_runtime_count': 0,
                 'pending_runtime_count': 0,
+                'cleanup_runtime_count': 0,
+                'retirement_revision': 0,
+                'retirement_deadline': None,
                 'last_error': '',
             }
+        retirement = session.retirement
         return {
             # ``state`` remains the ownership guard used to reject a second
             # installation.  ``ready``/``phase`` express whether read APIs may
@@ -736,6 +740,9 @@ class BackendServer:
             'active_directory_revision': session.active_directory_revision,
             'active_runtime_count': len(session.active),
             'pending_runtime_count': len(session.pending),
+            'cleanup_runtime_count': len(session.cleanup),
+            'retirement_revision': retirement.revision if retirement else 0,
+            'retirement_deadline': retirement.deadline if retirement else None,
             'last_error': session.last_error,
         }
 

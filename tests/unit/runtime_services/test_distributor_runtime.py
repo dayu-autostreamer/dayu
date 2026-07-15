@@ -106,6 +106,13 @@ def distributor_instance(monkeypatch, tmp_path):
         requests.append((url, method, kwargs))
         if url.endswith("/runtime-directory/task-leases"):
             payload = json.loads(kwargs["data"]["data"])
+            if method == "PUT":
+                return {
+                    "revision": payload["revision"],
+                    "root_uuid": payload["root_uuid"],
+                    "expires_at": 1000.0,
+                    "valid_for_seconds": payload["ttl_seconds"],
+                }
             return {
                 "revision": payload["revision"],
                 "root_uuid": payload["root_uuid"],
@@ -186,7 +193,15 @@ def test_distributor_records_transmit_time_and_forwards_scenario(distributor_ins
 
     assert durations == [(True, "transmit")]
     assert task.get_service("detector").get_transmit_time() == 0.25
-    assert distributor_instance.requests[0] == (
+    renew_url, renew_method, renew_kwargs = distributor_instance.requests[0]
+    assert renew_url.endswith("/runtime-directory/task-leases")
+    assert renew_method == "PUT"
+    assert json.loads(renew_kwargs["data"]["data"]) == {
+        "revision": 1,
+        "root_uuid": task.get_root_uuid(),
+        "ttl_seconds": distributor.runtime_lease_client.ttl_seconds,
+    }
+    assert distributor_instance.requests[1] == (
         "http://scheduler-cloud.dayu.svc.cluster.local.:9001/scenario",
         "POST",
         {
@@ -194,7 +209,7 @@ def test_distributor_records_transmit_time_and_forwards_scenario(distributor_ins
             "data": {"data": task.serialize()},
         },
     )
-    release_url, release_method, release_kwargs = distributor_instance.requests[1]
+    release_url, release_method, release_kwargs = distributor_instance.requests[2]
     assert release_url == (
         "http://scheduler-cloud.dayu.svc.cluster.local.:9001"
         "/runtime-directory/task-leases"
@@ -264,6 +279,9 @@ def test_distributor_keeps_lease_until_ttl_when_release_is_not_confirmed(
     warnings = []
 
     class FailedLeaseClient:
+        def renew(self, task):
+            return None
+
         def release(self, task):
             raise RuntimeLeaseUnavailable("scheduler unavailable")
 
@@ -279,6 +297,40 @@ def test_distributor_keeps_lease_until_ttl_when_release_is_not_confirmed(
 
     assert distributor.query_all_result()["size"] == 1
     assert any("retain until TTL" in message for message in warnings)
+
+
+@pytest.mark.unit
+def test_distributor_drops_result_when_retired_lease_cannot_be_renewed(
+    distributor_instance, monkeypatch
+):
+    distributor = distributor_instance.instance
+    warnings = []
+
+    class RetiredLeaseClient:
+        def renew(self, task):
+            raise RuntimeLeaseUnavailable("revision retired")
+
+        def release(self, task):
+            raise AssertionError("a rejected result must not release a lease")
+
+    distributor.runtime_lease_client = RetiredLeaseClient()
+    monkeypatch.setattr(
+        distributor_module.LOGGER,
+        "warning",
+        lambda message: warnings.append(message),
+    )
+    monkeypatch.setattr(
+        distributor,
+        "send_scenario_to_scheduler",
+        lambda task: (_ for _ in ()).throw(
+            AssertionError("a rejected result must not reach Scheduler")
+        ),
+    )
+
+    distributor.distribute_data(build_task(task_id=13))
+
+    assert distributor.query_all_result()["size"] == 0
+    assert any("Drop unowned result before persistence" in message for message in warnings)
 
 
 @pytest.mark.unit

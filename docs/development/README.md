@@ -49,7 +49,7 @@ Usually touch:
 
 - `backend/backend_server.py` for route behavior
 - `backend/backend_core.py` for operator/query coordination
-- `backend/runtime_orchestrator.py` for the transactional install/rollout/drain/uninstall state machine
+- `backend/runtime_orchestrator.py` for the transactional install/rollout/bounded-retirement/uninstall state machine
 - `backend/runtime_service_client.py` for the fixed Sedna RuntimeService GVR and condition watch
 - `backend/runtime_session_store.py` for ConfigMap CAS persistence
 - `backend/cluster_client.py` for backend-owned inventory, preflight, and batched Pod metrics
@@ -66,15 +66,19 @@ cache refresh switch. Runtime topology is represented by `RuntimeDirectory` and 
 Usually touch:
 
 - `dependency/core/scheduler/runtime_directory.py` and Scheduler APIs for directory CAS/publication
-- `dependency/core/scheduler/task_lease.py` for drain ownership
+- `dependency/core/scheduler/task_lease.py` for task ownership, immutable retirement deadlines, and forced fencing
 - `dependency/core/lib/runtime/` and `content/task.py` for bootstrap, exact route, and task identity contracts
 - generator/controller/processor/distributor consumers for acquire/renew/release ordering
-- `backend/runtime_orchestrator.py` for proposal/commit/drain/delete ordering
+- `backend/runtime_orchestrator.py` for proposal/atomic-retirement commit/recovery plus exact-UID-delete ordering
 - [`../api/runtime-services.md`](../api/runtime-services.md), [`../operations/README.md`](../operations/README.md), and
   backend/runtime service unit tests
 
-Preserve these invariants: activate before publication, CAS before traffic moves, generator-first shutdown, scheduler-last
-deletion, and zero leases for the quiet window before retirement.
+Preserve these invariants: activate replacements and persist exact old-resource ownership before publication; atomically
+commit the route CAS, old-revision marker, and lease clamp in Scheduler; persist Scheduler's authoritative deadline;
+return without waiting for old tasks; permit at most one lease-protected retirement; never extend its deadline; use
+status-only normal reconciliation and reserve `PATCH` for uninstall's immediate fence; advance retirement and exact-UID
+cleanup as independent lanes; and keep generator-first/immediate-fence-and-clear/Scheduler-admission-fence/worker-delete
+uninstall ordering.
 
 ### Add or change a hook
 
@@ -173,7 +177,7 @@ write the tutorial flow on the website and link to the exact repository referenc
 | Hook lifecycle, aliases, or parameters | `docs/hooks/` |
 | Datasource manifest or playback changes | `docs/datasource/` |
 | Core vocabulary, task envelope, or DAG/service semantics | `docs/concepts.md` and the affected reference doc |
-| Install, uninstall, redeployment, drain, or cleanup behavior | `docs/operations/README.md` |
+| Install, uninstall, redeployment, retirement/fencing, or cleanup behavior | `docs/operations/README.md` |
 | Repository workflow, test strategy, or contributor path changes | `docs/development/` or `docs/testing/` |
 | Big-picture architecture or deployment composition changes | `docs/architecture/` and `docs/configuration/` |
 

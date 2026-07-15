@@ -1,10 +1,13 @@
 import json
+from dataclasses import replace
 
 import pytest
 
 from runtime_model import (
+    RuntimeCleanupRef,
     RuntimeDirectory,
     RuntimeEndpoint,
+    RuntimeRetirement,
     RuntimeSession,
     RuntimeSlot,
     RuntimeUnit,
@@ -22,11 +25,11 @@ def make_unit(service="face-detection", node="edge-x1", revision=3, endpoint=Tru
     )
     return RuntimeUnit(
         slot=slot,
-        runtime_id=slot.runtime_name(revision),
+        runtime_id=slot.runtime_name(revision, "install-1"),
         runtime_revision=revision,
         spec_hash="a" * 64,
         endpoint=RuntimeEndpoint(
-            dns_name=f"{slot.runtime_name(revision)}.dayu.svc.cluster.local",
+            dns_name=f"{slot.runtime_name(revision, 'install-1')}.dayu.svc.cluster.local",
             port=9000,
             runtime_service_uid="runtime-uid",
             service_uid="service-uid",
@@ -35,16 +38,17 @@ def make_unit(service="face-detection", node="edge-x1", revision=3, endpoint=Tru
     )
 
 
-def test_runtime_slot_name_is_revision_scoped_dns_safe_and_collision_resistant():
+def test_runtime_slot_name_is_install_and_revision_scoped_dns_safe_and_collision_resistant():
     first = RuntimeSlot("processor", "edge_x1", "edge", logical_service="face_detection")
     alias = RuntimeSlot("processor", "edge-x1", "edge", logical_service="face-detection")
     long = RuntimeSlot("processor", "edge-x1", "edge", logical_service="a" * 240)
 
-    assert first.runtime_name(7).endswith("-r7")
-    assert first.runtime_name(7) != first.runtime_name(8)
-    assert first.runtime_name(7) != alias.runtime_name(7)
-    assert len(long.runtime_name(123456)) <= 63
-    assert long.runtime_name(123456)[0].isalpha()
+    assert first.runtime_name(7, "install-a").endswith("-r7")
+    assert first.runtime_name(7, "install-a") != first.runtime_name(8, "install-a")
+    assert first.runtime_name(7, "install-a") != alias.runtime_name(7, "install-a")
+    assert first.runtime_name(7, "install-a") != first.runtime_name(7, "install-b")
+    assert len(long.runtime_name(123456, "install-a")) <= 63
+    assert long.runtime_name(123456, "install-a")[0].isalpha()
 
 
 def test_slot_validates_required_component_specific_identity():
@@ -97,6 +101,14 @@ def test_directory_rejects_duplicate_logical_slots_and_runtime_ids():
 def test_runtime_session_round_trip_contains_only_transaction_state():
     active = make_unit()
     pending = make_unit(service="vehicle-detection", revision=4)
+    retirement = RuntimeRetirement(
+        revision=1,
+        units=(active,),
+        deadline=1234.5,
+        started_at="2026-07-12T00:00:00Z",
+        fenced=True,
+        forced_count=2,
+    )
     session = RuntimeSession(
         install_id="install-1",
         operation_id="operation-42",
@@ -105,7 +117,7 @@ def test_runtime_session_round_trip_contains_only_transaction_state():
         active_directory_revision=2,
         active=(active,),
         pending=(pending,),
-        retired=(),
+        retirement=retirement,
         source_label="source-a",
         policy_id="hedger",
         source_deploy=[{"source": {"id": 0}, "node_set": ["edge-x1"]}],
@@ -116,9 +128,47 @@ def test_runtime_session_round_trip_contains_only_transaction_state():
     value = session.to_dict()
     assert "manifest" not in canonical_json(value)
     assert value["active_directory_revision"] == 2
+    assert value["retirement"] == retirement.to_dict()
     assert session.directory.routes == (active,)
     assert RuntimeSession.from_dict(value) == session
     assert session.content_hash == canonical_hash(value)
+
+
+def test_cleanup_owns_multiple_historical_revisions_of_one_logical_slot():
+    active = make_unit(revision=4)
+    old_two = make_unit(revision=2)
+    old_three = make_unit(revision=3)
+
+    session = RuntimeSession(
+        install_id="install-1",
+        operation_id="operation-1",
+        phase="active",
+        next_runtime_revision=5,
+        active_directory_revision=4,
+        active=(active,),
+        cleanup=(old_three, old_two),
+    )
+
+    assert session.cleanup == (
+        RuntimeCleanupRef.from_unit(old_two),
+        RuntimeCleanupRef.from_unit(old_three),
+    )
+    assert set(session.to_dict()["cleanup"][0]) <= {
+        "runtime_id",
+        "runtime_service_uid",
+    }
+    assert RuntimeSession.from_dict(session.to_dict()) == session
+
+    conflicting = replace(
+        RuntimeCleanupRef.from_unit(old_two),
+        runtime_service_uid="another-runtime-uid",
+    )
+    with pytest.raises(ValueError, match="conflicting cleanup ownership"):
+        RuntimeSession(
+            install_id="install-1",
+            operation_id="operation-2",
+            cleanup=(RuntimeCleanupRef.from_unit(old_two), conflicting),
+        )
 
 
 def test_runtime_unit_replaces_provisional_hash_with_observed_hash_immutably():
@@ -151,7 +201,7 @@ def test_endpointless_unit_persists_hidden_uid_identity_only_in_control_plane_st
     slot = RuntimeSlot("monitor", "edge-x1", "edge")
     unit = RuntimeUnit(
         slot=slot,
-        runtime_id=slot.runtime_name(3),
+        runtime_id=slot.runtime_name(3, "install-1"),
         runtime_revision=3,
         spec_hash="a" * 64,
         rollout_hash="b" * 64,

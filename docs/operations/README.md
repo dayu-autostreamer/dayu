@@ -76,7 +76,7 @@ service-account token to a RuntimeService template.
 | `default-image-meta.*` | Registry/repository/tag for support containers. |
 | `default-file-mount-prefix` | Host-path prefix used by rendered mounts. |
 | `datasource.*` | Optional simulated datasource placement and data root. |
-| `runtime.*` | activation, operation, inventory, telemetry, drain, quiet-window, and lease budgets. |
+| `runtime.*` | activation, operation, inventory, telemetry, one bounded retirement grace, and task-lease budgets. |
 
 ```bash
 TEMPLATE=template ACTION=start bash dayu.sh
@@ -113,12 +113,12 @@ Scheduler returns `runtime_directory_revision` and compact `runtime_routes` with
 into the Task and acquires `(revision, root_uuid)` before first submission. Controller renews at forwarding boundaries;
 Processor also maintains a bounded heartbeat throughout long inference so one stage cannot silently outlive its TTL.
 Distributor releases it only after durable storage and scheduler scenario acknowledgement. Any acquire/renew result
-that is not explicitly acknowledged stops task progress; a failed release expires by TTL and conservatively delays
-drain.
+that is not explicitly acknowledged stops task progress. A failed release expires by TTL during normal operation;
+during redeployment it can delay reclamation only until the previous revision's immutable retirement deadline.
 
 ## Processor Rollout
 
-`BackendCore.run_cycle_deploy()` requests the current redeployment plan. Backend renders every desired processor slot
+`BackendCore.run_runtime_reconcile()` requests the current redeployment plan. Backend renders every desired processor slot
 and compares its stable rollout hash with the active unit. The desired set is the complete validated Scheduler plan,
 optionally unioned with one exact cloud slot per logical service when `default-cloud-processor-backup` is enabled.
 This same composition is used during initial install. Placement, image, template, mount, or effective environment
@@ -127,32 +127,49 @@ changes cause a new RuntimeService revision; an unchanged cloud backup is retain
 The transaction is:
 
 1. create and activate all changed/new processor RuntimeServices;
-2. build the next complete RuntimeDirectory;
-3. propose it against the current base revision;
-4. commit with compare-and-swap and verify readback;
-5. wait until leases on the old revision remain zero for `runtime.drain-quiet-window-seconds`;
-6. delete retired RuntimeServices by exact name and UID.
+2. build the next complete RuntimeDirectory and persist the old revision's exact RuntimeService ownership with its
+   deadline deliberately unarmed, closing the Backend crash boundary before publication;
+3. propose the directory against the current base revision;
+4. commit once in Scheduler: the same atomic boundary changes N to N+1, creates N's immutable deadline from
+   `runtime.retirement-grace-seconds`, and clamps all existing N leases to that deadline;
+5. verify readback when needed, persist Scheduler's authoritative retirement status, finalize the active session, and
+   return immediately;
+6. let the unified runtime-reconcile worker observe status and reclaim old ownership in bounded, retryable ticks.
 
-Publication precedes retirement, so new tasks use the new routes while old tasks retain their immutable old routes. If
-drain/deletion fails after commit, the new directory remains active and retired units remain in the session for retry;
-they are never silently forgotten or deleted before drain.
+Route publication and the retirement bound are one Scheduler transaction, so new tasks use the new routes while old
+tasks retain their immutable old routes only during the bounded grace; there is no route-switch-to-fence gap. If
+reclamation fails after commit, the new directory remains active and retired units remain owned by the session. At most one lease-protected retirement may be
+pending. Another policy rollout is reported as deferred immediately only until that retirement finishes or reaches its
+immutable deadline; it never waits behind an unbounded lease or Kubernetes finalizer.
 
-`REDEPLOYMENT_REQUEST_INTERVAL` controls the periodic policy check. The worker waits one interval before its first
-check because install has already committed the initial plan. Its lifecycle lock protects only the worker token and is
-never held across Scheduler or Kubernetes I/O, so uninstall can cancel the loop without waiting on a slow redeploy.
-RuntimeOrchestrator still serializes any transaction that was already in flight.
-An automatic rollout propagates that cancellation token through activation,
-watch, drain, and retirement waits; Scheduler calls have the separate
-`runtime.scheduler-request-timeout-seconds` cap. Cancellation prevents further
-HTTP retries and interrupts retry backoff; an already-running synchronous
-request is the only bounded cancellation delay. RuntimeService watches use a
-short server window with a slightly larger client read timeout, so normal watch
-expiry is not misclassified as a transport failure.
+Each `RuntimeOrchestrator.reconcile_retirement()` call performs one bounded step and never polls or sleeps internally.
+Normal reconciliation reads Scheduler status with `GET`; it does not create or extend the deadline. Once the lease
+count reaches zero, Backend submits UID-guarded `Background` deletion for the retired RuntimeServices and clears the
+retirement record after every request is accepted or its exact UID is already absent. If the deadline arrives first,
+Scheduler atomically revokes the remaining leases, records the forced count, and rejects further renewal before
+Backend submits the same deletion. A rejected or timed-out delete moves those immutable identities to the persisted
+`cleanup` backlog and releases the retirement gate. Every worker tick advances retirement and then independently
+advances cleanup from the latest session snapshot, so continuous rollout cannot starve the backlog. Neither physical
+garbage collection nor backlog failure blocks a subsequent rollout. There is no configurable quiet window and no
+requirement that the retirement grace exceed the normal task-lease TTL.
+
+`BackendCore.run_runtime_reconcile()` is the single worker for both retirement reconciliation and automatic policy
+checks. It executes one reconciliation tick on its fixed internal cadence even when automatic redeployment is
+disabled. `REDEPLOYMENT_REQUEST_INTERVAL` controls only when that worker asks the policy for another plan, and it waits
+one interval before the first policy check because install has already committed the initial plan. Its lifecycle lock
+protects only the worker token and is never held across Scheduler or Kubernetes I/O, so uninstall can invalidate the
+worker promptly. RuntimeOrchestrator still serializes the one transaction or reconciliation step already in flight.
+An automatic rollout propagates that cancellation token through activation, watch, publication, and exact-UID
+retirement deletion; Scheduler calls have the separate `runtime.scheduler-request-timeout-seconds` cap.
+Cancellation prevents further HTTP retries and interrupts retry backoff; an already-running synchronous request is
+the only bounded cancellation delay. RuntimeService watches use a short server window with a slightly larger client
+read timeout, so normal watch expiry is not misclassified as a transport failure.
 
 Explicit install uses the same lifecycle cancellation contract. Backend
 registers the install token before entering the serialized transaction, and a
-stop request signals that token before waiting for cleanup; overlapping stop
-requests keep install admission closed until all of them finish. Cancellation
+stop request signals that token before waiting for cleanup. An overlapping stop
+returns the same accepted state while the first request establishes the durable
+uninstall intent; cancellation
 is propagated through RuntimeService activation watches, Scheduler placement,
 and initial directory publication. The last CAS session boundary is preserved
 without recording a normal install failure, so stop can delete exact owned
@@ -164,9 +181,9 @@ operation timeout.
 
 After the new directory CAS is finalized, management reads consume the immutable
 session snapshot without taking the lifecycle transaction lock. Node inventory
-uses a separate cache lock. Consequently, an old-revision drain can continue in
-the background without making service-list/detail reads wait behind its lease
-timeout.
+uses a separate cache lock. Consequently, pending retirement is reconciled in
+the background without making service-list/detail reads wait for old tasks or
+the retirement deadline.
 
 Runtime telemetry follows a stale-while-revalidate path owned by one backend daemon. It samples Scheduler `/resource`
 and `/overhead` every `runtime.telemetry-sample-interval-seconds`; within that same non-overlapping worker, a slower
@@ -205,40 +222,53 @@ When `datasource.use-simulation=false`, backend opens the selected datasource au
 
 ## Graceful Uninstall And System Stop
 
-Backend `POST /stop_service` uses the CAS session as its exact ownership record:
+Backend `POST /stop_service` is an asynchronous administrative command. The first accepted request closes query
+admission, persists an `operation_id` with `phase="uninstalling"`, starts the lifecycle reconcile worker, and returns
+once that intent is durable. Repeated or concurrent requests reuse the same intent and worker and return immediately.
+The API does not wait for Kubernetes deletion. Clients must poll `GET /install_state` until it reports
+`state="uninstall"` and `phase="uninstalled"`; while work remains it reports `uninstalling` or
+`finalizing-uninstall`, and `last_error` exposes the latest retryable failure.
 
-1. delete all generator RuntimeServices first so no new task lease can be acquired;
-2. drain every active or plausibly pending RuntimeDirectory revision;
-3. persist `clearing-directory`, then atomically clear the install-scoped active RuntimeDirectory snapshot and all
-   indexed pending proposals;
-4. delete controller/processor/distributor/monitor units by exact RuntimeService UID only after the empty directory is
-   durably observable;
-5. persist `finalizing-uninstall` with only Scheduler identities;
-6. delete Scheduler RuntimeService(s) last so directory and lease APIs remain available through drain and clear;
-7. delete `dayu-runtime-session` only after all resource deletion succeeds.
+The background operation uses the CAS session as its exact ownership record:
 
-Backend persists `clearing-directory` before step 4 and advances to `finalizing-uninstall` only after Scheduler
-acknowledges the atomic directory/proposal clear or an empty revision-0 readback proves that an ambiguous request
-committed. A retry in the former phase repeats the idempotent clear and finishes the still-recorded non-Scheduler UID
-deletions; a retry in the latter phase never requires Scheduler and finishes Scheduler UID deletion plus ConfigMap CAS.
-The directory is therefore never left advertising a route whose RuntimeService has already been deleted. Failed
-uninstall preserves a precise retry boundary and error. There is no local manifest fallback.
+1. delete all generator RuntimeServices by exact UID so no new task can enter the runtime;
+2. send an immediate `deadline=now` retirement fence for every active, retiring, or plausibly publishing directory
+   revision; Scheduler atomically revokes any remaining leases;
+3. attempt the install-id-guarded atomic clear of the active RuntimeDirectory and indexed proposals;
+4. persist `finalizing-uninstall`, then delete Scheduler RuntimeService(s) by exact UID;
+5. delete controller/processor/distributor/monitor units by exact UID;
+6. delete `dayu-runtime-session` after all owned exact-UID `Background` DELETE requests are accepted or their targets
+   are already absent.
+
+Uninstall does not poll lease counts, wait for releases, or inherit the redeployment grace. A Scheduler fence or
+directory-clear failure is logged but cannot make task state veto administrative teardown. Scheduler remains available
+through the best-effort fence and clear, then its own exact-UID deletion is the definitive admission fence: it is
+removed before workers so no surviving control plane can route to workers already being torn down. Exact name/UID
+ownership checks still prevent a retry from deleting a replacement object. Once `finalizing-uninstall` is persisted, a
+retry needs no Scheduler API and resumes Scheduler/worker deletion before removing the ConfigMap CAS record. A failed
+exact-UID API request preserves that retry boundary and error. Acceptance does not wait for Sedna-owned dependents or
+finalizers to disappear physically; Kubernetes garbage collection proceeds asynchronously. RuntimeService names carry
+an installation digest as well as the revision, preventing an immediate reinstall from colliding with dependents of
+the old UID during that asynchronous cleanup. There is no local manifest fallback.
 
 ```bash
 TEMPLATE=template ACTION=stop bash dayu.sh
 ```
 
-The script gives backend `/stop_service` a bounded, best-effort opportunity to drain tasks and remove the managed
-runtime before deleting the support layer. `GRACEFUL_STOP_WAIT_SEC` may override the default 240-second budget. A
+The script gives backend `/stop_service` a bounded, best-effort opportunity to fence and remove the managed runtime
+before deleting the support layer. It treats the POST response as acceptance and polls `/install_state` for session
+removal within the same budget. `GRACEFUL_STOP_WAIT_SEC` may override the default 60-second budget. A
 backend failure, timeout, malformed response, or unavailable service is logged but never blocks `ACTION=stop`: the
 script continues by deleting RuntimeServices, support resources, Services/Endpoints, workloads, access bindings, and
-the namespace. This keeps the public stop interface independent of backend health, as in earlier Dayu versions.
+the namespace. Per-kind deletion is asynchronous and does not repeat Service/Endpoint/Pod disappearance polling;
+the bounded Namespace deletion is the single completion barrier before the command reports success. This keeps the
+public stop interface independent of backend health, as in earlier Dayu versions.
 
 `WAIT_EDGEMESH_RULES=false` may skip the best-effort EdgeMesh iptables cleanup wait. When shell cleanup follows an
 unsuccessful graceful uninstall, Scheduler's install-id-guarded directory/proposal cleanup may not complete and the
 host-mounted Redis directory remains intact. Its keys are install-id scoped and cannot route a later installation;
-pending proposals and task leases expire through their own TTLs. Remove persisted Redis data manually only while the
-support Redis is stopped and discarding the old installation state is intentional.
+pending proposals and ordinary task-lease records retain their own expiry behavior. Remove persisted Redis data
+manually only while the support Redis is stopped and discarding the old installation state is intentional.
 
 ## Why Edge Nodes Do Not Pay Kubernetes Discovery Cost
 

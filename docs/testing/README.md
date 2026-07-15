@@ -121,7 +121,9 @@ For `dependency/core/lib/` outside `algorithms/`, the current state is now much 
 For service-layer code, the most useful unit tests are not “does FastAPI work” or “does OpenCV decode real video.” Mature projects usually focus on consumer contracts instead:
 
 - `processor` unit tests should prove how a task is read, how upstream content is consumed, how model/tracker/classifier dependencies are invoked, and how results/scenarios are written back into the task.
-- task-lease tests should prove Generator acquire, Controller/Processor renew, Distributor release ordering, and fail-closed behavior without contacting Kubernetes.
+- task-lease tests should prove Generator acquire, Controller/Processor renew, Distributor release ordering, atomic
+  directory commit plus old-lease clamping, inactive-revision renewal rejection without a marker, immutable retirement
+  deadlines/forced revocation, and fail-closed behavior without contacting Kubernetes.
 - structured application unit tests should prove each application service can be instantiated independently, returns only
   service-specific `outputs`, and does not encode DAG membership or shared DAG schemas.
 - `monitor` unit tests should prove how monitor workers are instantiated, scheduled, joined, and posted to the scheduler API.
@@ -138,17 +140,20 @@ For backend code, mature open source projects also usually keep orchestration te
 - pure RuntimeService rendering and immutable runtime/session models
 - fixed-GVR create/watch/delete behavior, including watch expiration and exact status identity binding
 - ConfigMap `resourceVersion` compare-and-swap and corruption/conflict handling
-- scheduler-first install, activation/publication readback, proposal/commit/drain/delete rollout, and
-  generator-first/scheduler-last uninstall ordering
+- scheduler-first install, activation/publication readback, proposal/atomic-retirement-CAS/return, bounded retirement,
+  cleanup fairness while retirement remains continuously pending, UID-guarded `Background` deletion acceptance within
+  one shared deadline, asynchronous/repeated/concurrent uninstall admission, and
+  generator-first/immediate-fence/Scheduler-admission-fence/worker-delete uninstall ordering
 - strict deployment-plan validation plus optional cloud-backup composition across initial install and redeploy
 - backend-owned node/agent preflight and batched exact-Pod-UID telemetry joins, including all-container Kubernetes
   Quantity aggregation, allocatable/capacity denominator labeling, and fail-closed partial metrics
-- polling loops such as result fetching and cycle deploy control
+- polling loops such as result fetching and runtime reconcile control
 - single-flight Scheduler/Kubernetes telemetry sampling, independent cadences, immediate route placeholders,
   per-resource available/stale/unavailable states, exact-Pod batch binding, rebind/uninstall race rejection, singleton
   bandwidth projection/conflict handling, and frontend settle-then-schedule/abort contracts
 - connection-boundary DNS canonicalization for HTTP, Redis, iperf, simulated datasource, and shell-rendered support
   endpoints while persisted RuntimeDirectory identities remain unchanged
+- Controller temporary-file cleanup with one lifespan-owned cleaner and action-aware immediate reclamation
 - config validation, snapshot export, and state persistence helpers
 - backend-only failure handling that should not require component or end-to-end tests
 

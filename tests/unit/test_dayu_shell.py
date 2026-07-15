@@ -30,6 +30,7 @@ def test_stop_continues_cleanup_when_backend_uninstall_fails(tmp_path):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     kubectl_log = tmp_path / "kubectl.log"
+    timeout_log = tmp_path / "timeout.log"
 
     _write_executable(
         fake_bin / "yq",
@@ -71,6 +72,17 @@ exit 0
 """,
     )
     _write_executable(
+        fake_bin / "timeout",
+        """#!/bin/sh
+printf '%s\n' "$*" >> "$TIMEOUT_LOG"
+case "$*" in
+  *"kubectl --request-timeout=10s delete endpointslices "*) exit 124 ;;
+esac
+shift
+exec "$@"
+""",
+    )
+    _write_executable(
         fake_bin / "curl",
         """#!/bin/sh
 printf '%s\n' '{"state":"fail","msg":"scheduler unavailable"}'
@@ -83,10 +95,9 @@ printf '%s\n' '{"state":"fail","msg":"scheduler unavailable"}'
         "TEMPLATE": str(template),
         "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
         "KUBECTL_LOG": str(kubectl_log),
+        "TIMEOUT_LOG": str(timeout_log),
         "GRACEFUL_STOP_WAIT_SEC": "1",
-        "SVC_WAIT_SEC": "0",
         "MESH_WAIT_SEC": "0",
-        "POD_WAIT_SEC": "0",
         "NS_WAIT_SEC": "0",
     })
 
@@ -108,19 +119,58 @@ printf '%s\n' '{"state":"fail","msg":"scheduler unavailable"}'
     calls = kubectl_log.read_text(encoding="utf-8").splitlines()
     runtime_delete = next(
         index for index, call in enumerate(calls)
-        if call.startswith("delete runtimeservices.sedna.io ")
+        if "delete runtimeservices.sedna.io " in call
     )
     namespace_delete = next(
         index for index, call in enumerate(calls)
-        if call.startswith("delete namespace dayu-test ")
+        if "delete namespace dayu-test " in call
     )
     assert runtime_delete < namespace_delete
+
+    bounded_calls = timeout_log.read_text(encoding="utf-8").splitlines()
+    assert any(
+        call.startswith("6 kubectl --request-timeout=5s get runtimeservices.sedna.io ")
+        for call in bounded_calls
+    )
+    assert any(
+        call.startswith("6 kubectl --request-timeout=5s get svc backend-cloud ")
+        for call in bounded_calls
+    )
+    assert any(
+        call.startswith("6 kubectl --request-timeout=5s get pods -A ")
+        for call in bounded_calls
+    )
+    assert any(
+        call.startswith(
+            "11 kubectl --request-timeout=10s delete runtimeservices.sedna.io "
+        ) and "--wait=false" in call
+        for call in bounded_calls
+    )
+    assert any(
+        "kubectl --request-timeout=10s delete clusterrolebinding " in call
+        and "--wait=false" in call
+        for call in bounded_calls
+    )
+    assert any(
+        "kubectl --request-timeout=10s delete endpointslices " in call
+        for call in bounded_calls
+    )
+    assert any(
+        call.startswith("10 kubectl --request-timeout=10s delete namespace dayu-test ")
+        and "--wait=true" in call
+        and "--timeout=0s" in call
+        for call in bounded_calls
+    )
 
 
 def test_stop_interface_does_not_require_a_force_flag():
     script = DAYU_SCRIPT.read_text(encoding="utf-8")
 
     assert "FORCE_RUNTIME_STOP" not in script
+    assert 'GRACEFUL_STOP_WAIT_SEC:-60' in script
+    assert "_wait_empty" not in script
+    assert "SVC_WAIT_SEC" not in script
+    assert "POD_WAIT_SEC" not in script
 
 
 def test_datasource_backend_url_uses_absolute_cluster_service_dns():

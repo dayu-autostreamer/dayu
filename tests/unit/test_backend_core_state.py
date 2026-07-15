@@ -14,7 +14,7 @@ from runtime_model import RuntimeDirectory, RuntimeEndpoint, RuntimeSlot, Runtim
 def _directory():
     def unit(component, port):
         slot = RuntimeSlot(component, "cloud-a", "cloud")
-        runtime_id = slot.runtime_name(4)
+        runtime_id = slot.runtime_name(4, "install-a")
         return RuntimeUnit(
             slot,
             runtime_id,

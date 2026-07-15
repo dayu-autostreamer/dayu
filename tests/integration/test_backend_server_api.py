@@ -18,7 +18,7 @@ def _active_directory():
     return RuntimeDirectory(
         "install-api",
         1,
-        (RuntimeUnit(slot, slot.runtime_name(1), 1, "a" * 64),),
+        (RuntimeUnit(slot, slot.runtime_name(1, "install-api"), 1, "a" * 64),),
     )
 
 

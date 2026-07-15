@@ -50,6 +50,8 @@ class FakeCoreAPI:
 
     def replace_namespaced_config_map(self, **kwargs):
         self.calls.append(("replace", kwargs))
+        if self.value is None:
+            raise ApiException(status=404)
         expected = str(kwargs["body"]["metadata"].get("resourceVersion") or "")
         actual = str((self.value or {}).get("metadata", {}).get("resourceVersion") or "")
         if expected != actual:
@@ -61,6 +63,11 @@ class FakeCoreAPI:
         if self.value is None:
             raise ApiException(status=404)
         if kwargs["body"]["preconditions"]["uid"] != self.value["metadata"]["uid"]:
+            raise ApiException(status=409)
+        if (
+            kwargs["body"]["preconditions"]["resourceVersion"]
+            != self.value["metadata"]["resourceVersion"]
+        ):
             raise ApiException(status=409)
         self.value = None
         return {}
@@ -88,7 +95,17 @@ def test_store_create_load_replace_and_uid_guarded_delete():
 
     assert store.delete(expected_resource_version="2") is True
     assert api.value is None
+    delete_call = next(kwargs for operation, kwargs in api.calls if operation == "delete")
+    assert delete_call["body"]["preconditions"] == {
+        "uid": "configmap-uid",
+        "resourceVersion": "2",
+    }
     assert store.delete() is True
+    assert api.calls
+    assert all(
+        type(kwargs["_request_timeout"]) is int
+        for _, kwargs in api.calls
+    )
 
 
 def test_store_reports_create_and_replace_conflicts():
@@ -101,6 +118,19 @@ def test_store_reports_create_and_replace_conflicts():
         store.compare_and_swap(make_session("ready"), "stale")
     with pytest.raises(RuntimeSessionConflict):
         store.delete(expected_resource_version="stale")
+
+
+def test_store_treats_remote_delete_during_replace_as_a_cas_conflict():
+    api = FakeCoreAPI()
+    store = RuntimeSessionStore("dayu", api=api)
+    created = store.compare_and_swap(make_session(), None)
+    api.value = None
+
+    with pytest.raises(RuntimeSessionConflict):
+        store.compare_and_swap(
+            make_session("activating"),
+            created.resource_version,
+        )
 
 
 def test_store_detects_corrupted_session_hash():

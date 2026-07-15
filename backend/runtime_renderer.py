@@ -249,7 +249,7 @@ class RuntimeServiceRenderer:
                 f"logical template position {expected_position!r} cannot render a {slot.position!r} slot"
             )
 
-        runtime_id = slot.runtime_name(revision)
+        runtime_id = slot.runtime_name(revision, self.install_id)
         base_container = self._container_template(logical_template, slot.position)
         raw_containers = list(container_overrides or (base_container,))
         containers: List[Dict[str, Any]] = []

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -115,16 +116,19 @@ class RuntimeSlot:
             source_id=data.get("source_id", data.get("sourceID", "")),
         )
 
-    def runtime_name(self, revision: int) -> str:
-        """Build a collision-resistant DNS-1035 RuntimeService name.
+    def runtime_name(self, revision: int, install_id: str) -> str:
+        """Build an install- and revision-scoped DNS-1035 resource name.
 
         A digest of the unsanitized logical key prevents aliases such as
         ``edge_x1`` and ``edge-x1`` from collapsing to the same Kubernetes name.
+        A separate install digest prevents a new installation from colliding
+        with dependents still being removed by Background garbage collection.
         """
 
         revision = int(revision)
         if revision < 1:
             raise ValueError("revision must be positive")
+        install_id = _require_text("install_id", install_id, max_length=256)
 
         parts = [self.component]
         if self.logical_service:
@@ -133,8 +137,9 @@ class RuntimeSlot:
             parts.extend(("source", self.source_id))
         parts.append(self.target_node)
         readable = _dns_fragment("-".join(parts))
-        digest = canonical_hash(self.to_dict())[:10]
-        suffix = f"-{digest}-r{revision}"
+        slot_digest = canonical_hash(self.to_dict())[:10]
+        install_digest = canonical_hash({"install_id": install_id})[:8]
+        suffix = f"-{slot_digest}-{install_digest}-r{revision}"
         readable = readable[: 63 - len(suffix)].rstrip("-")
         if not readable:
             readable = "runtime"
@@ -296,6 +301,55 @@ class RuntimeUnit:
         )
 
 
+@dataclass(frozen=True)
+class RuntimeCleanupRef:
+    """Compact exact ownership retained only for asynchronous deletion."""
+
+    runtime_id: str
+    runtime_service_uid: str = ""
+
+    def __post_init__(self):
+        runtime_id = _require_text("runtime_id", self.runtime_id, max_length=63)
+        if not _DNS_1035_RE.fullmatch(runtime_id):
+            raise ValueError(f"runtime_id is not a DNS-1035 label: {runtime_id!r}")
+        object.__setattr__(self, "runtime_id", runtime_id)
+        object.__setattr__(
+            self,
+            "runtime_service_uid",
+            str(self.runtime_service_uid or ""),
+        )
+
+    @classmethod
+    def from_unit(cls, unit: RuntimeUnit) -> "RuntimeCleanupRef":
+        uid = unit.runtime_service_uid or (
+            unit.endpoint.runtime_service_uid if unit.endpoint else ""
+        )
+        return cls(unit.runtime_id, uid)
+
+    def to_dict(self) -> Dict[str, str]:
+        value = {"runtime_id": self.runtime_id}
+        if self.runtime_service_uid:
+            value["runtime_service_uid"] = self.runtime_service_uid
+        return value
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeCleanupRef":
+        resource_identity = data.get(
+            "resource_identity",
+            data.get("resourceIdentity", {}),
+        ) or {}
+        return cls(
+            runtime_id=data.get("runtime_id", data.get("runtimeID", "")),
+            runtime_service_uid=(
+                data.get("runtime_service_uid")
+                or data.get("runtimeServiceUID")
+                or resource_identity.get("runtime_service_uid")
+                or resource_identity.get("runtimeServiceUID")
+                or ""
+            ),
+        )
+
+
 def _normalize_routes(routes: Iterable[RuntimeUnit]) -> Tuple[RuntimeUnit, ...]:
     by_key: Dict[str, RuntimeUnit] = {}
     runtime_ids = set()
@@ -309,6 +363,40 @@ def _normalize_routes(routes: Iterable[RuntimeUnit]) -> Tuple[RuntimeUnit, ...]:
         by_key[unit.logical_key] = unit
         runtime_ids.add(unit.runtime_id)
     return tuple(by_key[key] for key in sorted(by_key))
+
+
+def _normalize_ownership(
+    units: Iterable[Any],
+) -> Tuple[RuntimeCleanupRef, ...]:
+    """Normalize garbage-collection ownership by immutable resource name.
+
+    Unlike a RuntimeDirectory, cleanup may legitimately own several historical
+    revisions of the same logical slot.  Only ``runtime_id`` is unique here;
+    accepting two different descriptions for that immutable name would make an
+    exact-UID delete ambiguous and is therefore rejected.
+    """
+
+    by_runtime_id: Dict[str, RuntimeCleanupRef] = {}
+    for unit in units:
+        if isinstance(unit, RuntimeUnit):
+            unit = RuntimeCleanupRef.from_unit(unit)
+        elif not isinstance(unit, RuntimeCleanupRef):
+            unit = RuntimeCleanupRef.from_dict(unit)
+        existing = by_runtime_id.get(unit.runtime_id)
+        if (
+            existing is not None
+            and existing.runtime_service_uid
+            and unit.runtime_service_uid
+            and existing.runtime_service_uid != unit.runtime_service_uid
+        ):
+            raise ValueError(
+                f"conflicting cleanup ownership for runtime_id {unit.runtime_id!r}"
+            )
+        if existing is None or (
+            not existing.runtime_service_uid and unit.runtime_service_uid
+        ):
+            by_runtime_id[unit.runtime_id] = unit
+    return tuple(by_runtime_id[name] for name in sorted(by_runtime_id))
 
 
 @dataclass(frozen=True)
@@ -386,6 +474,61 @@ class RuntimeDirectory:
 
 
 @dataclass(frozen=True)
+class RuntimeRetirement:
+    """Durable ownership of one superseded RuntimeDirectory revision."""
+
+    revision: int
+    units: Tuple[RuntimeUnit, ...]
+    deadline: Optional[float]
+    started_at: str = ""
+    fenced: bool = False
+    forced_count: int = 0
+
+    def __post_init__(self):
+        revision = int(self.revision)
+        if revision < 1:
+            raise ValueError("retirement revision must be positive")
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "units", _normalize_routes(self.units))
+        deadline = self.deadline
+        if deadline is not None:
+            try:
+                deadline = float(deadline)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("retirement deadline must be numeric") from exc
+            if not math.isfinite(deadline) or deadline <= 0:
+                raise ValueError("retirement deadline must be finite and positive")
+        object.__setattr__(self, "deadline", deadline)
+        object.__setattr__(self, "started_at", str(self.started_at or ""))
+        object.__setattr__(self, "fenced", bool(self.fenced))
+        forced_count = int(self.forced_count)
+        if forced_count < 0:
+            raise ValueError("retirement forced_count must not be negative")
+        object.__setattr__(self, "forced_count", forced_count)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "revision": self.revision,
+            "units": [unit.to_state_dict() for unit in self.units],
+            "deadline": self.deadline,
+            "started_at": self.started_at,
+            "fenced": self.fenced,
+            "forced_count": self.forced_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeRetirement":
+        return cls(
+            revision=data.get("revision", 0),
+            units=tuple(RuntimeUnit.from_dict(item) for item in (data.get("units") or ())),
+            deadline=data.get("deadline", 0),
+            started_at=data.get("started_at", data.get("startedAt", "")),
+            fenced=data.get("fenced", False),
+            forced_count=data.get("forced_count", data.get("forcedCount", 0)),
+        )
+
+
+@dataclass(frozen=True)
 class RuntimeSession:
     install_id: str
     operation_id: str
@@ -394,7 +537,8 @@ class RuntimeSession:
     active_directory_revision: int = 0
     active: Tuple[RuntimeUnit, ...] = field(default_factory=tuple)
     pending: Tuple[RuntimeUnit, ...] = field(default_factory=tuple)
-    retired: Tuple[RuntimeUnit, ...] = field(default_factory=tuple)
+    retirement: Optional[RuntimeRetirement] = None
+    cleanup: Tuple[RuntimeCleanupRef, ...] = field(default_factory=tuple)
     source_label: str = ""
     policy_id: str = ""
     source_deploy: Any = field(default_factory=list)
@@ -419,7 +563,48 @@ class RuntimeSession:
         object.__setattr__(self, "active_directory_revision", directory_revision)
         object.__setattr__(self, "active", _normalize_routes(self.active))
         object.__setattr__(self, "pending", _normalize_routes(self.pending))
-        object.__setattr__(self, "retired", _normalize_routes(self.retired))
+        retirement = self.retirement
+        if retirement is not None and not isinstance(retirement, RuntimeRetirement):
+            retirement = RuntimeRetirement.from_dict(retirement)
+        object.__setattr__(self, "retirement", retirement)
+        cleanup = _normalize_ownership(self.cleanup)
+        object.__setattr__(self, "cleanup", cleanup)
+
+        active_ids = {unit.runtime_id for unit in self.active}
+        pending_ids = {unit.runtime_id for unit in self.pending}
+        cleanup_ids = {unit.runtime_id for unit in cleanup}
+        retirement_ids = {
+            unit.runtime_id for unit in retirement.units
+        } if retirement is not None else set()
+        if active_ids & pending_ids:
+            raise ValueError("active and pending RuntimeServices must not overlap")
+        if cleanup_ids & (active_ids | pending_ids):
+            raise ValueError("cleanup RuntimeServices must not overlap active or pending state")
+        if cleanup_ids & retirement_ids:
+            raise ValueError("cleanup RuntimeServices must not overlap retirement state")
+        if pending_ids & retirement_ids:
+            raise ValueError("pending RuntimeServices must not overlap retirement state")
+        if phase == "active" and self.pending:
+            raise ValueError("active runtime session must not contain pending RuntimeServices")
+        if phase == "publishing-rollout":
+            if retirement is None or retirement.revision != directory_revision:
+                raise ValueError(
+                    "publishing-rollout requires retirement of the active directory revision"
+                )
+            active_by_id = {unit.runtime_id: unit for unit in self.active}
+            if any(active_by_id.get(unit.runtime_id) != unit for unit in retirement.units):
+                raise ValueError(
+                    "publishing-rollout retirement must be an exact subset of active state"
+                )
+        if phase == "active" and retirement is not None:
+            if retirement.deadline is None:
+                raise ValueError("active retirement requires an armed deadline")
+            if retirement.revision != directory_revision - 1:
+                raise ValueError(
+                    "active retirement must immediately precede the active directory revision"
+                )
+            if active_ids & retirement_ids:
+                raise ValueError("retired RuntimeServices must not overlap the active directory")
         object.__setattr__(self, "source_label", str(self.source_label or ""))
         object.__setattr__(self, "policy_id", str(self.policy_id or ""))
         object.__setattr__(self, "last_error", str(self.last_error or ""))
@@ -449,7 +634,8 @@ class RuntimeSession:
             "active_directory_revision": self.active_directory_revision,
             "active": [unit.to_state_dict() for unit in self.active],
             "pending": [unit.to_state_dict() for unit in self.pending],
-            "retired": [unit.to_state_dict() for unit in self.retired],
+            "retirement": self.retirement.to_dict() if self.retirement else None,
+            "cleanup": [unit.to_dict() for unit in self.cleanup],
             "source_label": self.source_label,
             "policy_id": self.policy_id,
             "source_deploy": deepcopy(self.source_deploy),
@@ -467,7 +653,14 @@ class RuntimeSession:
             active_directory_revision=data.get("active_directory_revision", data.get("activeDirectoryRevision", 0)),
             active=tuple(RuntimeUnit.from_dict(item) for item in (data.get("active") or ())),
             pending=tuple(RuntimeUnit.from_dict(item) for item in (data.get("pending") or ())),
-            retired=tuple(RuntimeUnit.from_dict(item) for item in (data.get("retired") or ())),
+            retirement=(
+                RuntimeRetirement.from_dict(data["retirement"])
+                if data.get("retirement") else None
+            ),
+            cleanup=tuple(
+                RuntimeCleanupRef.from_dict(item)
+                for item in (data.get("cleanup") or ())
+            ),
             source_label=data.get("source_label", data.get("sourceLabel", "")),
             policy_id=data.get("policy_id", data.get("policyID", "")),
             source_deploy=data.get("source_deploy", data.get("sourceDeploy", [])),
