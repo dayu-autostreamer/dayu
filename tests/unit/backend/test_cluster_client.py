@@ -1,3 +1,5 @@
+import pytest
+
 from cluster_client import ClusterClient
 
 
@@ -12,8 +14,8 @@ def node(name, role, ready=True):
         "status": {
             "addresses": [{"type": "InternalIP", "address": f"10.0.0.{1 if role == 'cloud' else 2}"}],
             "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
-            "capacity": {"cpu": "8"},
-            "allocatable": {"cpu": "7500m"},
+            "capacity": {"cpu": "8", "memory": "8Gi"},
+            "allocatable": {"cpu": "7500m", "memory": "7Gi"},
         },
     }
 
@@ -62,15 +64,19 @@ class FakeCore:
 
 
 class FakeCustom:
-    def __init__(self):
+    def __init__(self, items=None, error=None):
         self.calls = []
+        self.error = error
+        self.items = items if items is not None else [{
+            "metadata": {"name": "runtime-a-abc"},
+            "containers": [{"name": "runtime", "usage": {"cpu": "12m", "memory": "150Mi"}}],
+        }]
 
     def list_namespaced_custom_object(self, **kwargs):
         self.calls.append(kwargs)
-        return {"items": [{
-            "metadata": {"name": "runtime-a-abc"},
-            "containers": [{"name": "runtime", "usage": {"cpu": "12m", "memory": "150Mi"}}],
-        }]}
+        if self.error is not None:
+            raise self.error
+        return {"items": self.items}
 
 
 def make_client(core=None, custom=None):
@@ -90,7 +96,7 @@ def test_node_inventory_uses_one_list_and_preserves_roles_readiness_and_capacity
     assert inventory["cloud-1"]["role"] == "cloud"
     assert inventory["edge-1"]["role"] == "edge"
     assert inventory["edge-1"]["ready"] is True
-    assert inventory["edge-1"]["capacity"] == {"cpu": "8"}
+    assert inventory["edge-1"]["capacity"] == {"cpu": "8", "memory": "8Gi"}
 
 
 def test_managed_agent_validation_reports_missing_and_not_ready_by_agent():
@@ -124,6 +130,22 @@ def test_runtime_metrics_batches_pods_metrics_and_nodes_and_requires_exact_uid()
     assert result["runtime-a-abc"]["resources"]["runtime"]["requests"]["memory"] == "100Mi"
     assert result["runtime-a-abc"]["usage"]["runtime"]["memory"] == "150Mi"
     assert result["runtime-a-abc"]["node_info"]["role"] == "edge"
+    assert result["runtime-a-abc"]["resource_usage"] == {
+        "cpu": {
+            "status": "available",
+            "usage_millicores": 12.0,
+            "reference_millicores": 7500.0,
+            "utilization_percent": pytest.approx(0.16),
+            "basis": "node_allocatable",
+        },
+        "memory": {
+            "status": "available",
+            "usage_bytes": 150 * 1024 ** 2,
+            "reference_bytes": 7 * 1024 ** 3,
+            "utilization_percent": pytest.approx(150 / (7 * 1024) * 100),
+            "basis": "node_allocatable",
+        },
+    }
 
     assert client.runtime_metrics([{"name": "runtime-a-abc", "uid": "stale-uid"}]) == {}
 
@@ -182,3 +204,133 @@ def test_explicit_empty_inventory_does_not_trigger_a_second_node_list():
 
     assert [call[0] for call in core.calls] == ["pods"]
     assert result["runtime-a-abc"]["node_info"] is None
+    assert result["runtime-a-abc"]["resource_usage"]["cpu"] == {
+        "status": "available",
+        "usage_millicores": 12.0,
+        "reference_millicores": None,
+        "utilization_percent": None,
+        "basis": "",
+    }
+
+
+def test_runtime_metrics_sums_all_containers_and_parses_kubernetes_quantities():
+    core = FakeCore()
+    core.runtime_pods[0]["spec"]["containers"].append({
+        "name": "sidecar",
+        "resources": {},
+    })
+    custom = FakeCustom(items=[{
+        "metadata": {"name": "runtime-a-abc"},
+        "containers": [
+            {"name": "runtime", "usage": {"cpu": "500000n", "memory": "1Mi"}},
+            {"name": "sidecar", "usage": {"cpu": "250u", "memory": "500Ki"}},
+        ],
+    }])
+
+    summary = make_client(core=core, custom=custom).runtime_metrics([
+        {"name": "runtime-a-abc", "uid": "pod-uid"},
+    ])["runtime-a-abc"]["resource_usage"]
+
+    assert summary["cpu"]["usage_millicores"] == pytest.approx(0.75)
+    assert summary["cpu"]["utilization_percent"] == pytest.approx(0.01)
+    assert summary["memory"]["usage_bytes"] == 1024 ** 2 + 500 * 1024
+    assert summary["memory"]["utilization_percent"] == pytest.approx(
+        (1024 ** 2 + 500 * 1024) / (7 * 1024 ** 3) * 100
+    )
+
+
+def test_runtime_metrics_uses_labeled_node_capacity_fallback():
+    core = FakeCore()
+    core.nodes[1]["status"]["allocatable"] = {"cpu": "0", "memory": "invalid"}
+
+    summary = make_client(core=core).runtime_metrics([
+        {"name": "runtime-a-abc", "uid": "pod-uid"},
+    ])["runtime-a-abc"]["resource_usage"]
+
+    assert summary["cpu"]["reference_millicores"] == 8000.0
+    assert summary["cpu"]["basis"] == "node_capacity"
+    assert summary["memory"]["reference_bytes"] == 8 * 1024 ** 3
+    assert summary["memory"]["basis"] == "node_capacity"
+
+
+@pytest.mark.parametrize(
+    ("custom", "expected_status"),
+    [
+        (FakeCustom(items=[]), "unavailable"),
+        (FakeCustom(error=RuntimeError("metrics API unavailable")), "error"),
+    ],
+)
+def test_runtime_metrics_distinguishes_missing_samples_from_metrics_api_errors(
+        custom, expected_status,
+):
+    summary = make_client(custom=custom).runtime_metrics([
+        {"name": "runtime-a-abc", "uid": "pod-uid"},
+    ])["runtime-a-abc"]["resource_usage"]
+
+    assert summary["cpu"]["status"] == expected_status
+    assert summary["memory"]["status"] == expected_status
+    assert summary["cpu"]["utilization_percent"] is None
+
+
+def test_runtime_metrics_does_not_report_partial_or_malformed_pod_usage_as_available():
+    custom = FakeCustom(items=[{
+        "metadata": {"name": "runtime-a-abc"},
+        "containers": [{"name": "runtime", "usage": {"cpu": "0"}}],
+    }])
+
+    summary = make_client(custom=custom).runtime_metrics([
+        {"name": "runtime-a-abc", "uid": "pod-uid"},
+    ])["runtime-a-abc"]["resource_usage"]
+
+    assert summary["cpu"]["status"] == "available"
+    assert summary["cpu"]["usage_millicores"] == 0.0
+    assert summary["cpu"]["utilization_percent"] == 0.0
+    assert summary["memory"]["status"] == "unavailable"
+    assert summary["memory"]["usage_bytes"] is None
+
+
+@pytest.mark.parametrize("quantity", ["NaN", "Infinity", "-1m", True])
+def test_runtime_metrics_rejects_non_finite_negative_and_boolean_quantities(quantity):
+    custom = FakeCustom(items=[{
+        "metadata": {"name": "runtime-a-abc"},
+        "containers": [{
+            "name": "runtime",
+            "usage": {"cpu": quantity, "memory": "1Mi"},
+        }],
+    }])
+
+    cpu = make_client(custom=custom).runtime_metrics([
+        {"name": "runtime-a-abc", "uid": "pod-uid"},
+    ])["runtime-a-abc"]["resource_usage"]["cpu"]
+
+    assert cpu["status"] == "unavailable"
+    assert cpu["usage_millicores"] is None
+
+
+def test_runtime_metrics_requires_every_expected_pod_container():
+    core = FakeCore()
+    core.runtime_pods[0]["spec"]["containers"].append({
+        "name": "sidecar",
+        "resources": {},
+    })
+
+    summary = make_client(core=core).runtime_metrics([
+        {"name": "runtime-a-abc", "uid": "pod-uid"},
+    ])["runtime-a-abc"]["resource_usage"]
+
+    assert summary["cpu"]["status"] == "unavailable"
+    assert summary["memory"]["status"] == "unavailable"
+
+
+def test_runtime_metrics_rejects_a_metrics_object_with_a_different_uid():
+    custom = FakeCustom(items=[{
+        "metadata": {"name": "runtime-a-abc", "uid": "replacement-uid"},
+        "containers": [{"name": "runtime", "usage": {"cpu": "12m", "memory": "1Mi"}}],
+    }])
+
+    summary = make_client(custom=custom).runtime_metrics([
+        {"name": "runtime-a-abc", "uid": "pod-uid"},
+    ])["runtime-a-abc"]["resource_usage"]
+
+    assert summary["cpu"]["status"] == "unavailable"
+    assert summary["memory"]["status"] == "unavailable"

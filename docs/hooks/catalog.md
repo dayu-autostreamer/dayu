@@ -239,12 +239,12 @@ that appear in templates, environment variables, and visualization configs.
 | `cpu_usage`           | `dependency/core/lib/algorithms/parameter_monitor/cpu_usage_monitor.py`           | Report host CPU utilization via `psutil`.                                          |
 | `memory_usage`        | `dependency/core/lib/algorithms/parameter_monitor/memory_usage_monitor.py`        | Report host memory utilization via `psutil`.                                       |
 | `memory_capacity`     | `dependency/core/lib/algorithms/parameter_monitor/memory_capacity_monitor.py`     | Report total host memory capacity in GB.                                           |
-| `available_bandwidth` | `dependency/core/lib/algorithms/parameter_monitor/available_bandwidth_monitor.py` | Measure cloud-edge bandwidth using `iperf3` and a scheduler-managed resource lock. |
+| `available_bandwidth` | `dependency/core/lib/algorithms/parameter_monitor/available_bandwidth_monitor.py` | Use a Scheduler lock so one edge client measures edge-to-cloud bandwidth against the cloud iperf server. Cloud/non-holder nodes return `-1` and probe failure returns `0`; Backend projects the unique positive result as a shared system measurement. |
 | `queue_length`        | `dependency/core/lib/algorithms/parameter_monitor/queue_length_monitor.py`        | Query queue lengths through exact local processor routes from `RuntimeDirectory`.  |
 | `model_flops`         | `dependency/core/lib/algorithms/parameter_monitor/model_flops_monitor.py`         | Query model FLOPs through exact local processor routes from `RuntimeDirectory`.    |
 | `model_memory`        | `dependency/core/lib/algorithms/parameter_monitor/model_memory_monitor.py`        | Query processor-reported RSS through exact routes and retain the observed maximum. |
 | `cpu_flops`           | `dependency/core/lib/algorithms/parameter_monitor/cpu_flops_monitor.py`           | Estimate host CPU peak FLOPs from `lscpu`.                                         |
-| `gpu_flops`           | `dependency/core/lib/algorithms/parameter_monitor/gpu_flops_monitor.py`           | Estimate GPU FLOPs using CUDA device metadata.                                     |
+| `gpu_flops`           | `dependency/core/lib/algorithms/parameter_monitor/gpu_flops_monitor.py`           | Report current FP32 GFLOP/s from Jetson nvgpu/devfreq sysfs or desktop CUDA metadata and live clocks; brief failures use a bounded last-valid sample. |
 | `gpu_usage`           | `dependency/core/lib/algorithms/parameter_monitor/gpu_usage_monitor.py`           | Report GPU usage using NVML, `nvidia-smi`, Jetson sysfs, or `tegrastats`.          |
 
 ## Visualization Hooks

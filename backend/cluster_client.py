@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 from kubernetes import client, config
+from kubernetes.utils.quantity import parse_quantity
 
 
 def _get(value: Any, *path: str, default=None):
@@ -37,6 +39,116 @@ def _pod_ready(pod: Any) -> bool:
     if statuses is None:
         statuses = _get(pod, "status", "containerStatuses", default=[]) or []
     return ready_condition and bool(statuses) and all(bool(_get(status, "ready")) for status in statuses)
+
+
+def _non_negative_quantity(value: Any) -> Optional[Decimal]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = parse_quantity(str(value))
+        if not parsed.is_finite() or parsed < 0:
+            return None
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    return parsed
+
+
+def _sum_container_usage(
+    usage: Mapping[str, Mapping[str, Any]],
+    resource: str,
+    expected_containers: Iterable[str],
+) -> Optional[Decimal]:
+    """Sum one resource across every Metrics API container, fail closed."""
+
+    if not isinstance(usage, Mapping) or not usage:
+        return None
+    expected = {str(name) for name in expected_containers if str(name)}
+    if not expected or not expected.issubset(usage):
+        return None
+    total = Decimal(0)
+    for values in usage.values():
+        if not isinstance(values, Mapping) or resource not in values:
+            return None
+        parsed = _non_negative_quantity(values.get(resource))
+        if parsed is None:
+            return None
+        total += parsed
+    return total
+
+
+def _node_reference(
+    node_info: Mapping[str, Any], resource: str,
+) -> tuple[Optional[Decimal], str]:
+    """Prefer allocatable resources and explicitly label a capacity fallback."""
+
+    if not isinstance(node_info, Mapping):
+        return None, ""
+    for field, basis in (
+        ("allocatable", "node_allocatable"),
+        ("capacity", "node_capacity"),
+    ):
+        values = node_info.get(field) or {}
+        if not isinstance(values, Mapping):
+            continue
+        reference = _non_negative_quantity(values.get(resource))
+        if reference is not None and reference > 0:
+            return reference, basis
+    return None, ""
+
+
+def _pod_resource_usage(
+    usage: Mapping[str, Mapping[str, Any]],
+    node_info: Mapping[str, Any],
+    metrics_status: str,
+    expected_containers: Iterable[str],
+) -> Dict[str, Dict[str, Any]]:
+    """Normalize Pod CPU/memory usage against resources available on its node."""
+
+    result = {}
+    for resource in ("cpu", "memory"):
+        resource_usage = (
+            _sum_container_usage(usage, resource, expected_containers)
+            if metrics_status == "available"
+            else None
+        )
+        reference, basis = _node_reference(node_info, resource)
+        if resource_usage is not None:
+            status = "available"
+        elif metrics_status == "error":
+            status = "error"
+        else:
+            status = "unavailable"
+        utilization = (
+            float(resource_usage * 100 / reference)
+            if resource_usage is not None and reference is not None
+            else None
+        )
+        if resource == "cpu":
+            result[resource] = {
+                "status": status,
+                "usage_millicores": (
+                    float(resource_usage * 1000)
+                    if resource_usage is not None else None
+                ),
+                "reference_millicores": (
+                    float(reference * 1000) if reference is not None else None
+                ),
+                "utilization_percent": utilization,
+                "basis": basis,
+            }
+        else:
+            result[resource] = {
+                "status": status,
+                "usage_bytes": (
+                    int(resource_usage) if resource_usage is not None else None
+                ),
+                "reference_bytes": (
+                    int(reference) if reference is not None else None
+                ),
+                "utilization_percent": utilization,
+                "basis": basis,
+            }
+    return result
 
 
 def _node_record(node: Any) -> Dict[str, Any]:
@@ -202,6 +314,7 @@ class ClusterClient:
             label_selector=self.runtime_selector,
             _request_timeout=request_timeout,
         )
+        metrics_status = "available"
         try:
             metrics_response = self.custom.list_namespaced_custom_object(
                 group="metrics.k8s.io",
@@ -215,6 +328,7 @@ class ClusterClient:
             # Metrics Server is optional. Pod readiness and exact UID identity
             # remain available even when live CPU/memory samples are not.
             metrics_response = {"items": []}
+            metrics_status = "error"
         nodes = {
             str(name): dict(record)
             for name, record in (node_inventory or {}).items()
@@ -247,7 +361,14 @@ class ClusterClient:
                     "requests": dict(_get(resources, "requests", default={}) or {}),
                     "limits": dict(_get(resources, "limits", default={}) or {}),
                 }
-            metric = metrics.get(name) or {}
+            metric = metrics.get(name)
+            pod_metrics_status = metrics_status
+            metric_uid = str(_get(metric, "metadata", "uid", default="") or "")
+            if metric_uid and metric_uid != uid:
+                metric = None
+            if metrics_status == "available" and metric is None:
+                pod_metrics_status = "unavailable"
+            metric = metric or {}
             usage = {
                 str(_get(container, "name", default="") or ""): dict(_get(container, "usage", default={}) or {})
                 for container in _get(metric, "containers", default=[]) or []
@@ -266,5 +387,11 @@ class ClusterClient:
                 "resources": container_resources,
                 "usage": usage,
                 "node_info": nodes.get(node_name),
+                "resource_usage": _pod_resource_usage(
+                    usage,
+                    nodes.get(node_name) or {},
+                    pod_metrics_status,
+                    container_resources,
+                ),
             }
         return result

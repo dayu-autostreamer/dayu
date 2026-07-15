@@ -83,6 +83,7 @@ class RuntimeOrchestrator:
 
     INSTALL_LABEL = "dayu.io/install-id"
     MANAGED_LABEL_SELECTOR = "app.kubernetes.io/managed-by=dayu-backend"
+    SUPPORTED_JETPACK_MAJORS = frozenset({4, 5, 6})
     _PUBLICATION_PHASES = frozenset({"publishing", "publishing-rollout"})
 
     def __init__(
@@ -727,18 +728,34 @@ class RuntimeOrchestrator:
         templates["processor"] = template_helper.load_application_apply_yaml(service_dict)
         return templates, normalized_sources
 
-    def _processor_template(self, service_info: Mapping[str, Any], node: str, inventory):
-        template = copy.deepcopy(service_info["service"])
+    def _specialize_template_for_node(
+        self, logical_template: Mapping[str, Any], node: str, inventory,
+    ):
+        """Select a node-compatible image without performing another cluster read.
+
+        Monitor and processor images share the same JetPack build matrix.  The
+        inventory used for lifecycle planning already contains the node labels,
+        so image selection must happen here before the RuntimeService is
+        rendered instead of being rediscovered by a worker.
+        """
+        template = copy.deepcopy(logical_template)
         if inventory[node].get("role") != "edge":
             return template, {}
         labels = inventory[node].get("labels") or {}
         raw_major = labels.get("jetson.nvidia.com/jetpack.major")
+        if raw_major is None:
+            return template, {}
         try:
             major = int(raw_major)
         except (TypeError, ValueError):
-            major = -1
-        if major < 0:
-            return template, {}
+            raise RuntimeOrchestrationError(
+                f"node {node!r} has invalid JetPack major label {raw_major!r}"
+            )
+        if major not in self.SUPPORTED_JETPACK_MAJORS:
+            raise RuntimeOrchestrationError(
+                f"node {node!r} requires unsupported JetPack major {major}; "
+                f"published image variants are {sorted(self.SUPPORTED_JETPACK_MAJORS)}"
+            )
         container = template.setdefault("pod-template", {})
         image = container.get("image")
         if image:
@@ -798,9 +815,12 @@ class RuntimeOrchestrator:
                 templates["controller"], RuntimeSlot("controller", node, position), revision,
                 extra_env={"DAYU_RUNTIME_BOOTSTRAP": bootstrap},
             ))
+            monitor_template, device_env = self._specialize_template_for_node(
+                templates["monitor"], node, inventory,
+            )
             rendered.append(renderer.render(
-                templates["monitor"], RuntimeSlot("monitor", node, position), revision,
-                extra_env={"DAYU_RUNTIME_BOOTSTRAP": bootstrap},
+                monitor_template, RuntimeSlot("monitor", node, position), revision,
+                extra_env={"DAYU_RUNTIME_BOOTSTRAP": bootstrap, **device_env},
             ))
 
         enriched_sources = copy.deepcopy(source_deploy)
@@ -849,7 +869,9 @@ class RuntimeOrchestrator:
                 raise RuntimeOrchestrationError(f"no processor template exists for service {service!r}")
             for node in nodes:
                 position = "cloud" if node == cloud_node else "edge"
-                logical_template, device_env = self._processor_template(service_info, node, inventory)
+                logical_template, device_env = self._specialize_template_for_node(
+                    service_info["service"], node, inventory,
+                )
                 rendered.append(renderer.render(
                     logical_template,
                     RuntimeSlot("processor", node, position, logical_service=service),
@@ -1343,8 +1365,8 @@ class RuntimeOrchestrator:
                 raise RuntimeOrchestrationError(
                     f"no processor template exists for service {slot.logical_service!r}"
                 )
-            logical_template, device_env = self._processor_template(
-                service_info, slot.target_node, inventory,
+            logical_template, device_env = self._specialize_template_for_node(
+                service_info["service"], slot.target_node, inventory,
             )
             candidate = renderer.render(
                 logical_template, slot, session.next_runtime_revision,

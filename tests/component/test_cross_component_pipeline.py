@@ -611,7 +611,7 @@ def test_monitor_reports_resource_state_to_scheduler(mounted_runtime, monkeypatc
     scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
 
     monkeypatch.setenv("NODE_NAME", "edge-node")
-    monkeypatch.setenv("INTERVAL", "0")
+    monkeypatch.setenv("INTERVAL", "1")
     monkeypatch.setenv("MONITORS", "['cpu_usage', 'memory_usage']")
 
     runtime_context = RuntimeContext({

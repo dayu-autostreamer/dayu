@@ -251,7 +251,7 @@ def test_cpu_gpu_and_bandwidth_monitors_cover_success_and_fallback_paths(monkeyp
         "get_device_fp32_flops",
         lambda self, is_jetson=False: (_ for _ in ()).throw(RuntimeError("no gpu")),
     )
-    assert gpu_flops_module.GPUFlopsMonitor(system).get_parameter_value() == 0
+    assert gpu_flops_module.GPUFlopsMonitor(system).get_parameter_value() is None
 
     started_threads = []
 

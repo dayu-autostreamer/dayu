@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,87 @@ from core.lib.common import LOGGER, Counter, FileOps
 from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 
 from backend_core import BackendCore
+
+
+_RESOURCE_FIELDS = {
+    "cpu": ("usage_millicores", "reference_millicores"),
+    "memory": ("usage_bytes", "reference_bytes"),
+}
+
+
+def _optional_non_negative_number(value):
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _resource_detail(summary, resource, has_sample):
+    usage_key, reference_key = _RESOURCE_FIELDS[resource]
+    summary = summary if isinstance(summary, dict) else {}
+    status = str(summary.get("status") or "")
+    if status not in {"available", "stale", "collecting", "unavailable"}:
+        status = "unavailable" if has_sample else "collecting"
+    usage = _optional_non_negative_number(summary.get(usage_key))
+    reference = _optional_non_negative_number(summary.get(reference_key))
+    if reference is not None and reference <= 0:
+        reference = None
+    if status in {"available", "stale"} and usage is None:
+        status = "unavailable"
+    utilization = (
+        usage * 100 / reference
+        if status in {"available", "stale"}
+        and usage is not None
+        and reference is not None
+        else None
+    )
+    basis = str(summary.get("basis") or "")
+    if basis not in {"node_allocatable", "node_capacity"}:
+        basis = ""
+    return {
+        "status": status,
+        usage_key: usage,
+        reference_key: reference,
+        "utilization_percent": utilization,
+        "basis": basis,
+    }
+
+
+def _shared_bandwidth(resource_data, has_sample, stale=False):
+    """Project the singleton edge-to-cloud iperf probe as a shared view."""
+
+    candidates = []
+    if isinstance(resource_data, dict):
+        for node, resources in sorted(resource_data.items(), key=lambda item: str(item[0])):
+            if not isinstance(resources, dict):
+                continue
+            value = _optional_non_negative_number(resources.get("available_bandwidth"))
+            # AvailableBandwidthMonitor uses both -1 (not the lock holder) and
+            # 0 (iperf failure) as non-measurements.
+            if value is not None and value > 0:
+                candidates.append((str(node), value))
+    if len(candidates) == 1:
+        node, value = candidates[0]
+        return {
+            "status": "stale" if stale else "available",
+            "mbps": value,
+            "probe_node": node,
+        }
+    if len(candidates) > 1:
+        # Multiple positive probes violate the Scheduler lock invariant. Do
+        # not pick a dict-order-dependent value and mislabel it as canonical.
+        return {
+            "status": "ambiguous",
+            "mbps": None,
+            "probe_node": "",
+        }
+    return {
+        "status": "unavailable" if has_sample else "collecting",
+        "mbps": None,
+        "probe_node": "",
+    }
 
 
 class BackendServer:
@@ -365,28 +447,30 @@ class BackendServer:
                 return []
             metrics = telemetry.get('runtime_metrics') or {}
             resource_data = telemetry.get('resource') or {}
+            shared_bandwidth = _shared_bandwidth(
+                resource_data,
+                has_sample=telemetry.get('resource_sampled_at') is not None,
+                stale=bool(telemetry.get('resource_stale')),
+            )
+            has_metrics_sample = telemetry.get('runtime_metrics_sampled_at') is not None
             info = []
             for metric in metrics.values():
                 hostname = metric.get('node', '')
-                usage = metric.get('usage') or {}
-                cpu = ', '.join(
-                    str(values.get('cpu')) for values in usage.values() if values.get('cpu')
-                ) or '-'
-                memory = ', '.join(
-                    str(values.get('memory')) for values in usage.values() if values.get('memory')
-                ) or '-'
-                node_resource = resource_data.get(hostname, {}) if isinstance(resource_data, dict) else {}
-                bandwidth_value = node_resource.get('available_bandwidth')
-                bandwidth = (
-                    f'{float(bandwidth_value):.2f}Mbps'
-                    if isinstance(bandwidth_value, (int, float)) and bandwidth_value >= 0 else '-'
-                )
+                resource_usage = metric.get('resource_usage') or {}
                 info.append({
                     'ip': (metric.get('node_info') or {}).get('address', ''),
                     'hostname': hostname,
-                    'cpu': cpu,
-                    'memory': memory,
-                    'bandwidth': bandwidth,
+                    'cpu': _resource_detail(
+                        resource_usage.get('cpu'),
+                        'cpu',
+                        has_metrics_sample,
+                    ),
+                    'memory': _resource_detail(
+                        resource_usage.get('memory'),
+                        'memory',
+                        has_metrics_sample,
+                    ),
+                    'bandwidth': copy.deepcopy(shared_bandwidth),
                     'age': metric.get('created_at', ''),
                 })
             info.sort(key=lambda item: item['hostname'])

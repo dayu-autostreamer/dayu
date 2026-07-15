@@ -105,9 +105,10 @@ four tags automatically:
 - `TAG-jp5`
 - `TAG-jp6`
 
-These variants line up with the deployment logic in `backend/template_helper.py`,
-which appends `-jpX` to edge images when a Jetson device reports a known JetPack
-major version.
+These variants line up with the deployment logic in `backend/runtime_orchestrator.py`,
+which uses the already-fetched node inventory to append `-jpX` to edge monitor and
+processor images when a node reports a known JetPack major version. This selection
+does not add worker-side Kubernetes discovery.
 
 ## Dayubase
 

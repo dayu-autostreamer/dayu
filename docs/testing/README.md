@@ -141,11 +141,12 @@ For backend code, mature open source projects also usually keep orchestration te
 - scheduler-first install, activation/publication readback, proposal/commit/drain/delete rollout, and
   generator-first/scheduler-last uninstall ordering
 - strict deployment-plan validation plus optional cloud-backup composition across initial install and redeploy
-- backend-owned node/agent preflight and batched exact-Pod-UID telemetry joins
+- backend-owned node/agent preflight and batched exact-Pod-UID telemetry joins, including all-container Kubernetes
+  Quantity aggregation, allocatable/capacity denominator labeling, and fail-closed partial metrics
 - polling loops such as result fetching and cycle deploy control
-- single-flight Scheduler/Kubernetes telemetry sampling, independent cadences, immediate route placeholders and
-  last-known-good fields, exact-Pod batch binding, rebind/uninstall race rejection, and frontend
-  settle-then-schedule/abort contracts
+- single-flight Scheduler/Kubernetes telemetry sampling, independent cadences, immediate route placeholders,
+  per-resource available/stale/unavailable states, exact-Pod batch binding, rebind/uninstall race rejection, singleton
+  bandwidth projection/conflict handling, and frontend settle-then-schedule/abort contracts
 - connection-boundary DNS canonicalization for HTTP, Redis, iperf, simulated datasource, and shell-rendered support
   endpoints while persisted RuntimeDirectory identities remain unchanged
 - config validation, snapshot export, and state persistence helpers

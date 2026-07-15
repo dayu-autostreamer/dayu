@@ -13,6 +13,25 @@ class FakeClock:
         return self.value
 
 
+def empty_resource_usage(status):
+    return {
+        "cpu": {
+            "status": status,
+            "usage_millicores": None,
+            "reference_millicores": None,
+            "utilization_percent": None,
+            "basis": "",
+        },
+        "memory": {
+            "status": status,
+            "usage_bytes": None,
+            "reference_bytes": None,
+            "utilization_percent": None,
+            "basis": "",
+        },
+    }
+
+
 def directory(revision=1, install_id="install-a", pod_suffix="r1"):
     routes = []
     for index, service in enumerate(("detect", "track"), start=1):
@@ -80,6 +99,7 @@ def test_bind_immediately_exposes_exact_processor_placeholders_without_sampling(
             "created_at": "",
             "resources": {},
             "usage": {},
+            "resource_usage": empty_resource_usage("collecting"),
             "runtime_id": "processor-detect-r1",
             "logical_service": "detect",
         },
@@ -112,8 +132,8 @@ def test_runtime_telemetry_batches_all_processors_and_retains_independent_lkg_fi
 
     cache = RuntimeTelemetryCache(
         request=scheduler_request(
-            resource_values=({"edge-a": {"available_bandwidth": 12.5}}, None),
-            overhead_values=(0.025, None),
+            resource_values=({"edge-a": {"available_bandwidth": 12.5}}, None, None),
+            overhead_values=(0.025, None, None),
             calls=scheduler_calls,
         ),
         runtime_metrics=runtime_metrics,
@@ -140,14 +160,16 @@ def test_runtime_telemetry_batches_all_processors_and_retains_independent_lkg_fi
     assert {call[2] for call in scheduler_calls} == {1.5}
 
     # Scheduler is sampled at its faster cadence, while Kubernetes waits for
-    # its own period. A failed due sample preserves only the prior K8s field.
+    # its own period. Failed reads retain values but expose resource freshness.
     clock.value = 2.0
     assert cache._sample_once() is False
     assert len(metric_calls) == 1
     clock.value = 10.0
     assert cache._sample_once() is False
     second = cache.snapshot()
-    assert second == first
+    expected = copy.deepcopy(first)
+    expected["resource_stale"] = True
+    assert second == expected
     assert len(metric_calls) == 2
 
     detect = cache.snapshot(logical_service="detect")
@@ -203,6 +225,7 @@ def test_runtime_telemetry_discards_inflight_sample_after_rebind():
                 "created_at": "",
                 "resources": {},
                 "usage": {},
+                "resource_usage": empty_resource_usage("collecting"),
                 "runtime_id": "processor-detect-new",
                 "logical_service": "detect",
             },
@@ -217,11 +240,14 @@ def test_runtime_telemetry_discards_inflight_sample_after_rebind():
                 "created_at": "",
                 "resources": {},
                 "usage": {},
+                "resource_usage": empty_resource_usage("collecting"),
                 "runtime_id": "processor-track-new",
                 "logical_service": "track",
             },
         },
         "scheduler_sampled_at": None,
+        "resource_sampled_at": None,
+        "resource_stale": False,
         "runtime_metrics_sampled_at": None,
     }
 
@@ -283,3 +309,149 @@ def test_runtime_telemetry_is_single_flight_and_close_is_bounded():
     release_request.set()
     cache.close(join_timeout=1)
     assert worker.is_alive() is False
+
+
+def test_runtime_telemetry_retains_resource_values_per_metric_and_marks_them_stale():
+    clock = FakeClock()
+    responses = iter([
+        {
+            "processor-detect-r1": {
+                "uid": "uid-detect-r1",
+                "resource_usage": {
+                    "cpu": {
+                        "status": "available",
+                        "usage_millicores": 100.0,
+                        "reference_millicores": 1000.0,
+                        "utilization_percent": 10.0,
+                        "basis": "node_allocatable",
+                    },
+                    "memory": {
+                        "status": "available",
+                        "usage_bytes": 100,
+                        "reference_bytes": 1000,
+                        "utilization_percent": 10.0,
+                        "basis": "node_allocatable",
+                    },
+                },
+            },
+        },
+        {
+            "processor-detect-r1": {
+                "uid": "uid-detect-r1",
+                "resource_usage": {
+                    "cpu": {
+                        "status": "available",
+                        "usage_millicores": 200.0,
+                        "reference_millicores": 1000.0,
+                        "utilization_percent": 20.0,
+                        "basis": "node_allocatable",
+                    },
+                    "memory": {
+                        "status": "error",
+                        "usage_bytes": None,
+                        "reference_bytes": 1000,
+                        "utilization_percent": None,
+                        "basis": "node_allocatable",
+                    },
+                },
+            },
+        },
+        RuntimeError("Pod list unavailable"),
+    ])
+
+    def runtime_metrics(refs, request_timeout_seconds):
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    cache = RuntimeTelemetryCache(
+        request=scheduler_request(
+            resource_values=({}, {}, {}),
+            overhead_values=(0, 0, 0),
+        ),
+        runtime_metrics=runtime_metrics,
+        metrics_interval_seconds=10,
+        clock=clock,
+    )
+    cache.bind("http://scheduler/resource", directory())
+
+    assert cache._sample_once() is True
+    clock.value = 10
+    assert cache._sample_once() is True
+    second = cache.snapshot("detect")
+    usage = second["runtime_metrics"]["processor-detect-r1"]["resource_usage"]
+    assert usage["cpu"]["status"] == "available"
+    assert usage["cpu"]["usage_millicores"] == 200.0
+    assert usage["memory"]["status"] == "stale"
+    assert usage["memory"]["usage_bytes"] == 100
+    last_successful_sample = second["runtime_metrics_sampled_at"]
+
+    clock.value = 20
+    assert cache._sample_once() is True
+    third = cache.snapshot("detect")
+    usage = third["runtime_metrics"]["processor-detect-r1"]["resource_usage"]
+    assert usage["cpu"]["status"] == "stale"
+    assert usage["cpu"]["usage_millicores"] == 200.0
+    assert usage["memory"]["status"] == "stale"
+    assert third["runtime_metrics_sampled_at"] == last_successful_sample
+
+
+def test_runtime_telemetry_first_failed_attempt_is_unavailable_not_collecting():
+    cache = RuntimeTelemetryCache(
+        request=scheduler_request(resource_values=({},), overhead_values=(0,)),
+        runtime_metrics=lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("Pod list unavailable")
+        ),
+    )
+    cache.bind("http://scheduler/resource", directory())
+
+    assert cache._sample_once() is True
+    snapshot = cache.snapshot("detect")
+    usage = snapshot["runtime_metrics"]["processor-detect-r1"]["resource_usage"]
+    assert usage["cpu"]["status"] == "unavailable"
+    assert usage["memory"]["status"] == "unavailable"
+    assert snapshot["runtime_metrics_sampled_at"] is None
+
+
+def test_runtime_telemetry_successful_sample_with_missing_exact_pod_is_unavailable():
+    cache = RuntimeTelemetryCache(
+        request=scheduler_request(resource_values=({},), overhead_values=(0,)),
+        runtime_metrics=lambda refs, request_timeout_seconds: {},
+    )
+    cache.bind("http://scheduler/resource", directory())
+
+    assert cache._sample_once() is True
+    snapshot = cache.snapshot("detect")
+    usage = snapshot["runtime_metrics"]["processor-detect-r1"]["resource_usage"]
+    assert usage["cpu"]["status"] == "unavailable"
+    assert usage["memory"]["status"] == "unavailable"
+    assert snapshot["runtime_metrics_sampled_at"] is not None
+
+
+def test_scheduler_resource_freshness_is_independent_from_overhead_success():
+    clock = FakeClock()
+    cache = RuntimeTelemetryCache(
+        request=scheduler_request(
+            resource_values=({"edge-probe": {"available_bandwidth": 12.5}}, None),
+            overhead_values=(0.1, 0.2),
+        ),
+        runtime_metrics=lambda refs, request_timeout_seconds: {},
+        interval_seconds=2,
+        metrics_interval_seconds=10,
+        clock=clock,
+    )
+    cache.bind("http://scheduler/resource", directory())
+
+    assert cache._sample_once() is True
+    first = cache.snapshot()
+    assert first["resource_stale"] is False
+    assert first["resource_sampled_at"] is not None
+
+    clock.value = 2
+    assert cache._sample_once() is True
+    second = cache.snapshot()
+    assert second["resource"] == first["resource"]
+    assert second["resource_sampled_at"] == first["resource_sampled_at"]
+    assert second["resource_stale"] is True
+    assert second["scheduling_overhead"] == 0.2

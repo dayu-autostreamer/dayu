@@ -65,7 +65,11 @@ class FakeBackendCoreManagement:
         self._query_generation = 0
         self.customized_source_result_visualization_configs = {}
         self.resource_url = None
-        self.scheduler_resource = {"edge-a": {"available_bandwidth": 12.34}}
+        self.scheduler_resource = {
+            "cloud-a": {"available_bandwidth": -1},
+            "edge-a": {"available_bandwidth": -1},
+            "edge-probe": {"available_bandwidth": 12.34},
+        }
         self.runtime_metrics_snapshot = {
             "processor-face-detection-edge-a-r1": {
                 "uid": "processor-pod-uid",
@@ -73,9 +77,28 @@ class FakeBackendCoreManagement:
                 "node": "edge-a",
                 "node_info": {"address": "10.0.0.8"},
                 "usage": {"processor": {"cpu": "25m", "memory": "64Mi"}},
+                "resource_usage": {
+                    "cpu": {
+                        "status": "available",
+                        "usage_millicores": 25.0,
+                        "reference_millicores": 4000.0,
+                        "utilization_percent": 0.625,
+                        "basis": "node_allocatable",
+                    },
+                    "memory": {
+                        "status": "available",
+                        "usage_bytes": 64 * 1024 ** 2,
+                        "reference_bytes": 8 * 1024 ** 3,
+                        "utilization_percent": 0.78125,
+                        "basis": "node_allocatable",
+                    },
+                },
                 "created_at": "2026-07-12T00:00:00Z",
             }
         }
+        self.resource_sampled_at = 1.0
+        self.resource_stale = False
+        self.runtime_metrics_sampled_at = 1.0
         self.install_state = False
         self.runtime_orchestrator = type("RuntimeView", (), {
             "current_session": lambda _runtime: (
@@ -248,7 +271,9 @@ class FakeBackendCoreManagement:
             "scheduling_overhead": None,
             "runtime_metrics": metrics,
             "scheduler_sampled_at": None,
-            "runtime_metrics_sampled_at": None,
+            "resource_sampled_at": self.resource_sampled_at,
+            "resource_stale": self.resource_stale,
+            "runtime_metrics_sampled_at": self.runtime_metrics_sampled_at,
         }
 
     def get_log_file_name(self):
@@ -416,9 +441,25 @@ def test_backend_server_covers_query_state_visualization_and_service_info(manage
     assert service_info == [{
         "ip": "10.0.0.8",
         "hostname": "edge-a",
-        "cpu": "25m",
-        "memory": "64Mi",
-        "bandwidth": "12.34Mbps",
+        "cpu": {
+            "status": "available",
+            "usage_millicores": 25.0,
+            "reference_millicores": 4000.0,
+            "utilization_percent": 0.625,
+            "basis": "node_allocatable",
+        },
+        "memory": {
+            "status": "available",
+            "usage_bytes": 64 * 1024 ** 2,
+            "reference_bytes": 8 * 1024 ** 3,
+            "utilization_percent": 0.78125,
+            "basis": "node_allocatable",
+        },
+        "bandwidth": {
+            "status": "available",
+            "mbps": 12.34,
+            "probe_node": "edge-probe",
+        },
         "age": "2026-07-12T00:00:00Z",
     }]
     assert asyncio.run(backend.get_service_info("null")) == []
@@ -544,7 +585,11 @@ def test_backend_server_covers_disabled_query_state_and_service_info_fallbacks(m
     backend.server.scheduler_resource = None
     without_scheduler_resource = asyncio.run(backend.get_service_info("face-detection"))
     assert without_scheduler_resource[0]["hostname"] == "edge-a"
-    assert without_scheduler_resource[0]["bandwidth"] == "-"
+    assert without_scheduler_resource[0]["bandwidth"] == {
+        "status": "unavailable",
+        "mbps": None,
+        "probe_node": "",
+    }
 
     monkeypatch.setattr(
         backend.server,
@@ -557,3 +602,126 @@ def test_backend_server_covers_disabled_query_state_and_service_info_fallbacks(m
     unavailable_log = client.get("/download_log")
     assert unavailable_log.status_code == 503
     assert unavailable_log.json() == {"detail": "Result log export is temporarily unavailable"}
+
+
+@pytest.mark.integration
+def test_service_info_projects_one_probe_to_every_service_row(management_backend):
+    _, backend, _, _ = management_backend
+    backend.server.install_state = True
+    backend.server.runtime_metrics_snapshot["processor-face-detection-edge-b-r1"] = {
+        **copy.deepcopy(next(iter(backend.server.runtime_metrics_snapshot.values()))),
+        "uid": "processor-pod-b-uid",
+        "node": "edge-b",
+        "node_info": {"address": "10.0.0.9"},
+    }
+
+    service_info = asyncio.run(backend.get_service_info("face-detection"))
+
+    assert [item["hostname"] for item in service_info] == ["edge-a", "edge-b"]
+    expected = {
+        "status": "available",
+        "mbps": 12.34,
+        "probe_node": "edge-probe",
+    }
+    assert [item["bandwidth"] for item in service_info] == [expected, expected]
+    assert service_info[0]["bandwidth"] is not service_info[1]["bandwidth"]
+
+
+@pytest.mark.integration
+def test_service_info_exposes_collecting_and_stale_bandwidth_states(management_backend):
+    _, backend, _, _ = management_backend
+    backend.server.install_state = True
+
+    backend.server.scheduler_resource = None
+    backend.server.resource_sampled_at = None
+    collecting = asyncio.run(backend.get_service_info("face-detection"))[0]
+    assert collecting["bandwidth"]["status"] == "collecting"
+
+    backend.server.scheduler_resource = {"edge-probe": {"available_bandwidth": 12.34}}
+    backend.server.resource_sampled_at = 1.0
+    backend.server.resource_stale = True
+    stale = asyncio.run(backend.get_service_info("face-detection"))[0]
+    assert stale["bandwidth"] == {
+        "status": "stale",
+        "mbps": 12.34,
+        "probe_node": "edge-probe",
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("resource", "has_sample", "expected"),
+    [
+        (
+            {
+                "cloud": {"available_bandwidth": -1},
+                "edge-a": {"available_bandwidth": 0},
+                "edge-b": {"available_bandwidth": True},
+                "edge-c": {"available_bandwidth": float("nan")},
+                "edge-d": {"available_bandwidth": float("inf")},
+            },
+            True,
+            {"status": "unavailable", "mbps": None, "probe_node": ""},
+        ),
+        (
+            {
+                "edge-b": {"available_bandwidth": 8.0},
+                "edge-a": {"available_bandwidth": 7.0},
+            },
+            True,
+            {"status": "ambiguous", "mbps": None, "probe_node": ""},
+        ),
+        (
+            {},
+            False,
+            {"status": "collecting", "mbps": None, "probe_node": ""},
+        ),
+    ],
+)
+def test_shared_bandwidth_fails_closed_for_invalid_or_conflicting_probes(
+        management_backend, resource, has_sample, expected,
+):
+    backend_server_module, _, _, _ = management_backend
+
+    assert backend_server_module._shared_bandwidth(resource, has_sample) == expected
+
+
+@pytest.mark.integration
+def test_service_resource_detail_recomputes_percent_and_fails_closed(management_backend):
+    backend_server_module, _, _, _ = management_backend
+
+    assert backend_server_module._resource_detail(
+        {
+            "status": "available",
+            "usage_millicores": 100.0,
+            "reference_millicores": 1000.0,
+            "utilization_percent": 99.0,
+            "basis": "node_allocatable",
+        },
+        "cpu",
+        has_sample=True,
+    ) == {
+        "status": "available",
+        "usage_millicores": 100.0,
+        "reference_millicores": 1000.0,
+        "utilization_percent": 10.0,
+        "basis": "node_allocatable",
+    }
+    assert backend_server_module._resource_detail(
+        {
+            "status": "stale",
+            "usage_bytes": float("nan"),
+            "reference_bytes": 0,
+            "utilization_percent": float("inf"),
+            "basis": "unknown",
+        },
+        "memory",
+        has_sample=True,
+    ) == {
+        "status": "unavailable",
+        "usage_bytes": None,
+        "reference_bytes": None,
+        "utilization_percent": None,
+        "basis": "",
+    }
+    assert backend_server_module._resource_detail(None, "cpu", has_sample=False)["status"] == "collecting"

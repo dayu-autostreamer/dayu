@@ -30,7 +30,7 @@ def test_monitor_initializes_workers_waits_by_interval_and_posts_resource_state(
     worker_calls = []
     sleeps = []
     requests = []
-    timestamps = iter([10.0, 12.0, 13.0])
+    timestamps = iter([10.0, 12.0, 15.0])
 
     def fake_get_parameter(name, direct=False):
         if name == "INTERVAL":
@@ -53,7 +53,7 @@ def test_monitor_initializes_workers_waits_by_interval_and_posts_resource_state(
         "endpoints": {"scheduler": {"fqdn": "10.0.0.8", "port": 9001}},
     })
     monkeypatch.setattr(monitor_module.RuntimeContext, "get_default", staticmethod(lambda: context))
-    monkeypatch.setattr(monitor_module.time, "time", lambda: next(timestamps))
+    monkeypatch.setattr(monitor_module.time, "monotonic", lambda: next(timestamps))
     monkeypatch.setattr(monitor_module.time, "sleep", lambda seconds: sleeps.append(seconds))
     monkeypatch.setattr(monitor_module.LOGGER, "info", lambda message: None)
     monkeypatch.setattr(
@@ -76,11 +76,40 @@ def test_monitor_initializes_workers_waits_by_interval_and_posts_resource_state(
         ("join", "memory"),
     ]
     assert sleeps == [3.0]
+    assert monitor._next_monitor_deadline == 20.0
 
     payload = json.loads(requests[0][2]["data"]["data"])
     assert requests[0][0] == "http://10.0.0.8:9001/resource"
     assert requests[0][1] == "POST"
     assert payload == {"device": "edge-node", "resource": {"cpu": 0.4, "memory": 0.6}}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("interval", "monitors", "message"),
+    [
+        (0, ["cpu"], "INTERVAL must be a positive number"),
+        (True, ["cpu"], "INTERVAL must be a positive number"),
+        (5, "cpu", "MONITORS must be a list"),
+        (5, ["cpu", "cpu"], "MONITORS must not contain duplicate"),
+        (5, [""], "MONITORS must be a list"),
+    ],
+)
+def test_monitor_rejects_invalid_sampling_configuration(monkeypatch, interval, monitors, message):
+    monkeypatch.setattr(
+        monitor_module.Context,
+        "get_parameter",
+        staticmethod(lambda name, direct=False: interval if name == "INTERVAL" else monitors),
+    )
+    context = RuntimeContext({
+        "local_node": "edge-node",
+        "cloud_node": "cloud-node",
+        "endpoints": {"scheduler": {"fqdn": "scheduler", "port": 9000}},
+    })
+    monkeypatch.setattr(monitor_module.RuntimeContext, "get_default", staticmethod(lambda: context))
+
+    with pytest.raises(ValueError, match=message):
+        monitor_module.Monitor()
 
 
 @pytest.mark.unit

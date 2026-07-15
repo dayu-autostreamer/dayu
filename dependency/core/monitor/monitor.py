@@ -15,7 +15,14 @@ class Monitor:
         self.resource_info = {}
 
         self.monitor_interval = Context.get_parameter('INTERVAL', direct=False)
-        self.last_monitor_ts = time.time()
+        if (
+            isinstance(self.monitor_interval, bool)
+            or not isinstance(self.monitor_interval, (int, float))
+            or self.monitor_interval <= 0
+        ):
+            raise ValueError('INTERVAL must be a positive number')
+        self.monitor_interval = float(self.monitor_interval)
+        self._next_monitor_deadline = time.monotonic() + self.monitor_interval
 
         self.runtime_context = RuntimeContext.get_default()
         self.scheduler_endpoint = self.runtime_context.resolve_static_endpoint('scheduler')
@@ -26,6 +33,12 @@ class Monitor:
         self._directory_fetched_at = 0.0
 
         monitor_parameters_text = Context.get_parameter('MONITORS', direct=False)
+        if not isinstance(monitor_parameters_text, (list, tuple)) or not all(
+            isinstance(name, str) and name.strip() for name in monitor_parameters_text
+        ):
+            raise ValueError('MONITORS must be a list of non-empty monitor hook names')
+        if len(set(monitor_parameters_text)) != len(monitor_parameters_text):
+            raise ValueError('MONITORS must not contain duplicate hook names')
         self.monitor_parameters = []
         for mp_text in monitor_parameters_text:
             self.monitor_parameters.append(
@@ -64,12 +77,17 @@ class Monitor:
             thread.join()
 
     def wait_for_monitor(self):
-        current_ts = time.time()
-        if current_ts - self.last_monitor_ts < self.monitor_interval:
-            wait_time = self.monitor_interval - (current_ts - self.last_monitor_ts)
+        current_ts = time.monotonic()
+        wait_time = self._next_monitor_deadline - current_ts
+        if wait_time > 0:
             LOGGER.debug(f'[Monitor Interval] Waiting {wait_time} seconds for next monitor cycle.')
             time.sleep(wait_time)
-        self.last_monitor_ts = current_ts
+        current_ts = time.monotonic()
+        elapsed_intervals = max(
+            1,
+            int((current_ts - self._next_monitor_deadline) // self.monitor_interval) + 1,
+        )
+        self._next_monitor_deadline += elapsed_intervals * self.monitor_interval
 
     def send_resource_state_to_scheduler(self):
 

@@ -132,7 +132,9 @@ Key points:
   expansion without changing directory hashes or recovery identity
 - one Backend telemetry worker binds exact processor Pod name/UID identities from the immutable RuntimeDirectory,
   samples Scheduler and Kubernetes on independent bounded cadences, and publishes generation-guarded last-known-good
-  snapshots; management endpoints never turn browser polling into Kubernetes or Scheduler calls
+  snapshots; it normalizes summed Pod CPU/memory against cached Node resources and projects the one edge-to-cloud
+  bandwidth probe as an explicitly shared value, while management endpoints never turn browser polling into Kubernetes
+  or Scheduler calls
 - Scheduler stores the active RuntimeDirectory, proposals, and task leases in support Redis. `dayu.sh` mounts Redis
   `/data` on the cloud host and enables AOF with `appendfsync=always`, so Scheduler and Redis Pod replacement do not
   erase committed routing state when that host path remains available

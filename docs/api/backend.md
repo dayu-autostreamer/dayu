@@ -71,7 +71,7 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | `GET` | `/policy` | List available scheduler policies from `template/scheduler_policies.yaml`. | None | Array of `{policy_id, policy_name}` |
 | `GET` | `/installed_service` | List logical processor service ids from the committed RuntimeDirectory. | None | Array of service ids |
 | `GET` | `/service` | List services declared in `template/services.yaml`. | None | Array of service metadata |
-| `GET` | `/service_info/{service}` | Read the last-known-good batch snapshot for exact active processor Pod UIDs of one logical service. | Path parameter `service` | Array of `{ip,hostname,cpu,memory,bandwidth,age}` |
+| `GET` | `/service_info/{service}` | Read normalized Pod resources and the shared WAN probe from the cached batch snapshot for one logical service. | Path parameter `service` | Array of service-detail records described below. |
 | `GET` | `/edge_node` | List Ready edge nodes from backend's owned inventory snapshot. | None | Array of `{name}` |
 
 ### DAG and datasource management
@@ -150,6 +150,47 @@ from an older install or directory revision cannot publish into the new generati
 processor routes appear as placeholders with their committed target node and unknown resource/readiness fields; the
 first successful batch sample atomically replaces them. A failed sample retains the placeholder or prior
 last-known-good batch. Runtime Pods neither serve this request nor call Kubernetes.
+
+CPU and memory are sums across every expected container reported for the exact active Pod. The denominator prefers the
+target Node's `status.allocatable` and falls back to `status.capacity` only when allocatable is absent or invalid;
+`basis` always exposes which denominator was used. CPU is returned in millicores and memory in bytes so clients do not
+need to parse Kubernetes Quantity strings. Missing, partial, malformed, or temporarily failed metrics are never
+converted to zero. They are exposed as `collecting`, `unavailable`, or a retained `stale` value.
+
+```json
+[
+  {
+    "ip": "10.0.0.8",
+    "hostname": "edge-a",
+    "cpu": {
+      "status": "available",
+      "usage_millicores": 25.0,
+      "reference_millicores": 4000.0,
+      "utilization_percent": 0.625,
+      "basis": "node_allocatable"
+    },
+    "memory": {
+      "status": "available",
+      "usage_bytes": 67108864,
+      "reference_bytes": 8589934592,
+      "utilization_percent": 0.78125,
+      "basis": "node_allocatable"
+    },
+    "bandwidth": {
+      "status": "available",
+      "mbps": 12.34,
+      "probe_node": "edge-probe"
+    },
+    "age": "2026-07-12T00:00:00Z"
+  }
+]
+```
+
+`bandwidth` is deliberately a shared system measurement, not a per-processor-node link estimate. One edge Monitor owns
+the Scheduler's `available_bandwidth` lock and runs the edge-to-cloud iperf client; the cloud server and non-holder
+nodes publish `-1`, while probe failure publishes `0`. Backend projects the only finite positive sample to every
+service row and identifies its `probe_node`. No valid sample gives `collecting` or `unavailable`; a retained sample
+after a Scheduler resource-read failure is `stale`; multiple positive candidates fail closed as `ambiguous`.
 
 The list selector is Sedna's controller-guaranteed `dayu.io/mesh-managed=true`; exact Pod name/UID matching remains the
 authorization boundary. The application-supplied `app.kubernetes.io/managed-by` label owns RuntimeService CRs but is

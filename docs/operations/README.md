@@ -175,7 +175,17 @@ directory into one Pod list and one optional metrics list. Scheduler and Kuberne
 request budgets. `/system_parameters` and `/service_info/{service}` only deep-copy the last-known-good cache, so a slow
 Scheduler, Metrics Server, kube-apiserver, or cluster DNS path cannot queue management API requests. Rebind/uninstall
 invalidates the generation before any old in-flight result can publish.
-Frontend polling is settle-then-schedule (single-flight) and aborts the active fetch when polling stops.
+Pod CPU/memory is summed across all expected containers and normalized against cached Node allocatable resources, with
+an explicitly labeled capacity fallback. A Metrics API or whole Kubernetes sample failure retains each prior value as
+`stale`; a missing/partial first sample is `unavailable`, never zero. Scheduler resource freshness is tracked separately
+from scheduling overhead, so an overhead success cannot make an old bandwidth value appear fresh.
+
+Available bandwidth is one edge-to-cloud WAN observation by design. The Scheduler lock permits one edge iperf client;
+the cloud server and non-holder nodes report `-1`, and probe failures report `0`. Backend accepts exactly one finite
+positive value, shares it across every service-detail row with the probe node identified, and fails closed when multiple
+positive values violate the lock invariant. It must not be interpreted as a separate measurement for every edge node.
+Frontend state and selected-service polling is settle-then-schedule (single-flight), aborts active fetches when polling
+stops, and reads only this backend cache every five seconds; it does not change the Kubernetes sampling cadence.
 Lifecycle and telemetry calls pass explicit bounded timeout budgets; bulk task and video transfers retain their
 data-plane-specific timeout behavior instead of inheriting a control-plane deadline.
 
@@ -240,7 +250,8 @@ support Redis is stopped and discarding the old installation state is intentiona
 - EdgeMesh projects its existing MetaServer-backed Service/Endpoints informers into an atomic in-memory exact route;
 - backend telemetry periodically batches exact Pod UID joins for the entire active directory into one
   server-side-label-filtered Pod list and at most one equally filtered metrics list, while reusing its independent node
-  inventory snapshot; browser service-detail requests only read this last-known-good snapshot;
+  inventory snapshot; browser service-detail requests only read this normalized last-known-good snapshot, including
+  the single shared edge-to-cloud probe projection;
 - automatic redeploy reuses the same Backend-owned node TTL and does not repeat Sedna/EdgeMesh Agent Pod lists after
   installation has authorized the immutable processor and source candidate sets.
 

@@ -57,6 +57,8 @@ class RuntimeTelemetryCache:
         self._scheduling_overhead = None
         self._runtime_metrics = {}
         self._scheduler_sampled_at = None
+        self._resource_sampled_at = None
+        self._resource_stale = False
         self._runtime_metrics_sampled_at = None
 
     @staticmethod
@@ -111,7 +113,26 @@ class RuntimeTelemetryCache:
         return binding_key, tuple(refs), context
 
     @staticmethod
-    def _placeholder_metrics(pod_context):
+    def _empty_resource_usage(status):
+        return {
+            "cpu": {
+                "status": status,
+                "usage_millicores": None,
+                "reference_millicores": None,
+                "utilization_percent": None,
+                "basis": "",
+            },
+            "memory": {
+                "status": status,
+                "usage_bytes": None,
+                "reference_bytes": None,
+                "utilization_percent": None,
+                "basis": "",
+            },
+        }
+
+    @classmethod
+    def _placeholder_metrics(cls, pod_context, resource_status="collecting"):
         """Represent committed routes before their first bounded K8s sample."""
         return {
             pod_name: {
@@ -125,11 +146,59 @@ class RuntimeTelemetryCache:
                 "created_at": "",
                 "resources": {},
                 "usage": {},
+                "resource_usage": cls._empty_resource_usage(resource_status),
                 "runtime_id": context["runtime_id"],
                 "logical_service": context["logical_service"],
             }
             for pod_name, context in pod_context.items()
         }
+
+    @classmethod
+    def _retain_last_resource_usage(cls, current, previous):
+        """Keep valid prior usage when Metrics API data is temporarily absent."""
+
+        current = (
+            copy.deepcopy(current)
+            if isinstance(current, dict)
+            else cls._empty_resource_usage("unavailable")
+        )
+        previous = previous if isinstance(previous, dict) else {}
+        for resource in ("cpu", "memory"):
+            latest = current.get(resource)
+            if not isinstance(latest, dict):
+                latest = cls._empty_resource_usage("unavailable")[resource]
+                current[resource] = latest
+            if latest.get("status") == "available":
+                continue
+            prior = previous.get(resource)
+            if isinstance(prior, dict) and prior.get("status") in {"available", "stale"}:
+                current[resource] = copy.deepcopy(prior)
+                current[resource]["status"] = "stale"
+            elif latest.get("status") == "error":
+                latest["status"] = "unavailable"
+        return current
+
+    @classmethod
+    def _mark_runtime_metrics_stale(cls, metrics):
+        """Publish sampling failure without presenting old values as fresh."""
+
+        result = copy.deepcopy(metrics) if isinstance(metrics, dict) else {}
+        for metric in result.values():
+            if not isinstance(metric, dict):
+                continue
+            usage = metric.get("resource_usage")
+            if not isinstance(usage, dict):
+                metric["resource_usage"] = cls._empty_resource_usage("unavailable")
+                continue
+            for resource in ("cpu", "memory"):
+                detail = usage.get(resource)
+                if not isinstance(detail, dict):
+                    usage[resource] = cls._empty_resource_usage("unavailable")[resource]
+                elif detail.get("status") in {"available", "stale"}:
+                    detail["status"] = "stale"
+                elif detail.get("status") in {"collecting", "error"}:
+                    detail["status"] = "unavailable"
+        return result
 
     def bind(self, resource_url, directory):
         """Bind one committed directory and discard another generation's data."""
@@ -160,6 +229,8 @@ class RuntimeTelemetryCache:
                 self._resource = None
                 self._scheduling_overhead = None
                 self._scheduler_sampled_at = None
+                self._resource_sampled_at = None
+                self._resource_stale = False
         self._wake_event.set()
 
     def unbind(self):
@@ -207,6 +278,8 @@ class RuntimeTelemetryCache:
                 "scheduling_overhead": copy.deepcopy(self._scheduling_overhead),
                 "runtime_metrics": copy.deepcopy(metrics),
                 "scheduler_sampled_at": self._scheduler_sampled_at,
+                "resource_sampled_at": self._resource_sampled_at,
+                "resource_stale": self._resource_stale,
                 "runtime_metrics_sampled_at": self._runtime_metrics_sampled_at,
             }
 
@@ -234,7 +307,7 @@ class RuntimeTelemetryCache:
             LOGGER.exception(exc)
         return resource, scheduling_overhead
 
-    def _sample_runtime_metrics(self, pod_refs, pod_context):
+    def _sample_runtime_metrics(self, pod_refs, pod_context, previous_metrics):
         if not pod_refs:
             return {}
         sampled = self._runtime_metrics_request(
@@ -244,7 +317,13 @@ class RuntimeTelemetryCache:
         if not isinstance(sampled, dict):
             return None
 
-        result = self._placeholder_metrics(pod_context)
+        # Once a due sample has completed, a missing exact-UID Pod is not
+        # "collecting": it is unavailable. Only a freshly bound directory uses
+        # the collecting placeholder before its first bounded sample.
+        result = self._placeholder_metrics(
+            pod_context,
+            resource_status="unavailable",
+        )
         for pod_name, metric in sampled.items():
             pod_name = str(pod_name)
             bound_context = pod_context.get(pod_name)
@@ -255,9 +334,14 @@ class RuntimeTelemetryCache:
             # the previous incarnation's management telemetry.
             if str(metric.get("uid") or "") != bound_context["pod_uid"]:
                 continue
+            previous = previous_metrics.get(pod_name) or {}
             result[pod_name] = {
                 **result[pod_name],
                 **copy.deepcopy(metric),
+                "resource_usage": self._retain_last_resource_usage(
+                    metric.get("resource_usage"),
+                    previous.get("resource_usage"),
+                ),
                 "runtime_id": bound_context["runtime_id"],
                 "logical_service": bound_context["logical_service"],
             }
@@ -274,6 +358,7 @@ class RuntimeTelemetryCache:
                 binding_key = self._binding_key
                 pod_refs = self._pod_refs
                 pod_context = copy.deepcopy(self._pod_context)
+                previous_metrics = copy.deepcopy(self._runtime_metrics)
                 generation = self._generation
                 metrics_due = (
                     self._metrics_due_at is not None
@@ -284,12 +369,20 @@ class RuntimeTelemetryCache:
 
             resource, scheduling_overhead = self._sample_scheduler(resource_url)
             runtime_metrics = None
+            runtime_metrics_succeeded = False
             if metrics_due:
                 try:
-                    runtime_metrics = self._sample_runtime_metrics(pod_refs, pod_context)
+                    runtime_metrics = self._sample_runtime_metrics(
+                        pod_refs,
+                        pod_context,
+                        previous_metrics,
+                    )
+                    runtime_metrics_succeeded = isinstance(runtime_metrics, dict)
                 except Exception as exc:
                     LOGGER.warning(f"Failed to sample Kubernetes runtime telemetry: {exc}")
                     LOGGER.exception(exc)
+                if not runtime_metrics_succeeded:
+                    runtime_metrics = self._mark_runtime_metrics_stale(previous_metrics)
 
             resource_valid = isinstance(resource, dict)
             overhead_valid = scheduling_overhead is not None
@@ -309,14 +402,19 @@ class RuntimeTelemetryCache:
                     self._metrics_due_at = self._clock() + self._metrics_interval_seconds
                 if resource_valid:
                     self._resource = copy.deepcopy(resource)
+                    self._resource_sampled_at = sampled_at
+                    self._resource_stale = False
+                elif self._resource is not None:
+                    self._resource_stale = True
                 if overhead_valid:
                     self._scheduling_overhead = copy.deepcopy(scheduling_overhead)
                 if resource_valid or overhead_valid:
                     self._scheduler_sampled_at = sampled_at
                 if runtime_metrics_valid:
                     self._runtime_metrics = copy.deepcopy(runtime_metrics)
+                if runtime_metrics_succeeded:
                     self._runtime_metrics_sampled_at = sampled_at
-            return resource_valid or overhead_valid or runtime_metrics_valid
+            return resource_valid or overhead_valid or runtime_metrics_succeeded
         finally:
             self._sample_lock.release()
 

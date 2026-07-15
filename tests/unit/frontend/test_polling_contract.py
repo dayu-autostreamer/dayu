@@ -29,8 +29,32 @@ def test_service_query_polling_and_detail_requests_cancel_stale_work():
     assert "this.serviceListController?.abort()" in source
     assert "this.serviceInfoController?.abort()" in source
     assert "this.selected_service !== service" in source
+    assert "this.serviceInfoTimer = window.setTimeout" in source
+    assert "void this.sendRequest(service)" in source
+    assert "this.stopServiceInfoPolling()" in source
     assert "if (!this.runtimeReady)" in source
     assert "this.install_state.setPhase('uninstalling')" in source
+
+
+def test_service_detail_uses_normalized_resource_meters_and_shared_bandwidth():
+    source = (REPO_ROOT / "frontend/src/views/install/SvcQuery.vue").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Pod usage vs node resources" in source
+    assert 'role="progressbar"' in source
+    assert ':aria-valuenow="meterWidth(item.cpu)"' in source
+    assert "Math.min(100, Math.max(0, metric.utilization_percent))" in source
+    assert "usage_millicores" in source
+    assert "usage_bytes" in source
+    assert "node_allocatable" in source
+    assert "node_capacity" in source
+    assert "Collecting metrics" in source
+    assert "Metrics unavailable" in source
+    assert "Last known sample" in source
+    assert "Shared Edge → Cloud" in source
+    assert "Measured by ${metric.probe_node}" in source
+    assert "Multiple active probe values" in source
 
 
 def test_install_state_separates_session_ownership_from_runtime_readiness():

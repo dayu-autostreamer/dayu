@@ -134,6 +134,16 @@ class FakeRenderer:
 
     def render(self, logical_template, slot, revision, extra_env=None, container_overrides=None):
         runtime_id = slot.runtime_name(revision)
+        container = {
+            "name": slot.component,
+            "env": [
+                {"name": str(name), "value": str(value)}
+                for name, value in sorted((extra_env or {}).items())
+            ],
+        }
+        image = (logical_template.get("pod-template") or {}).get("image")
+        if image:
+            container["image"] = image
         spec = {
             "installID": self.install_id,
             "deploymentRevision": revision,
@@ -141,13 +151,7 @@ class FakeRenderer:
             "targetNode": slot.target_node,
             "podTemplate": {
                 "spec": {
-                    "containers": [{
-                        "name": slot.component,
-                        "env": [
-                            {"name": str(name), "value": str(value)}
-                            for name, value in sorted((extra_env or {}).items())
-                        ],
-                    }],
+                    "containers": [container],
                 },
             },
         }
@@ -235,6 +239,7 @@ class FakeTemplateHelper:
                 "value": repr({"scope": self.source_selection_scope}),
             }],
         }
+        templates["monitor"]["pod-template"] = {"image": "monitor:v1"}
         return templates
 
     @staticmethod
@@ -644,6 +649,52 @@ def test_install_activates_scheduler_first_then_binds_observed_hash_and_endpoint
         and endpoint.get("port") == 9000
         for endpoint in bootstrap["endpoints"]
     )
+
+
+def test_install_specializes_edge_monitor_and_processor_images_for_node_jetpack():
+    orchestrator, cluster, runtime, _, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    cluster.nodes["edge-a"]["labels"] = {"jetson.nvidia.com/jetpack.major": "6"}
+
+    install(orchestrator, "detect")
+
+    assert cluster.inventory_calls == 1
+    containers = {
+        (manifest["spec"]["component"], manifest["spec"]["targetNode"]):
+            manifest["spec"]["podTemplate"]["spec"]["containers"][0]
+        for manifest in runtime.created.values()
+    }
+    edge_monitor = containers[("monitor", "edge-a")]
+    edge_processor = containers[("processor", "edge-a")]
+    cloud_monitor = containers[("monitor", "cloud-a")]
+
+    assert edge_monitor["image"] == "monitor:v1-jp6"
+    assert edge_processor["image"] == "processor:test-jp6"
+    assert {item["name"]: item["value"] for item in edge_monitor["env"]}["JETPACK"] == "6"
+    assert {item["name"]: item["value"] for item in edge_processor["env"]}["JETPACK"] == "6"
+    assert cloud_monitor["image"] == "monitor:v1"
+    assert "JETPACK" not in {item["name"] for item in cloud_monitor["env"]}
+
+
+@pytest.mark.parametrize(
+    ("label", "message"),
+    [
+        ("invalid", "invalid JetPack major label"),
+        ("7", "unsupported JetPack major 7"),
+        ("0", "unsupported JetPack major 0"),
+    ],
+)
+def test_node_image_specialization_rejects_invalid_or_unpublished_jetpack_variants(label, message):
+    orchestrator, cluster, _, _, _, _ = make_orchestrator({"detect": ["edge-a"]})
+    cluster.nodes["edge-a"]["labels"] = {"jetson.nvidia.com/jetpack.major": label}
+
+    with pytest.raises(RuntimeOrchestrationError, match=message):
+        orchestrator._specialize_template_for_node(
+            {"pod-template": {"image": "monitor:v1"}},
+            "edge-a",
+            cluster.nodes,
+        )
 
 
 def test_install_propagates_one_cancellation_token_through_watch_and_scheduler_calls():
