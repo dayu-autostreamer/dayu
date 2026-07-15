@@ -21,7 +21,7 @@ class VideoGenerator(Generator):
 
     def submit_task_to_controller(self, cur_task):
         self.record_total_start_ts(cur_task)
-        super().submit_task_to_controller(cur_task)
+        return super().submit_task_to_controller(cur_task)
 
     def run(self):
         # Start with the default local scheduling view. Once runtime services are
@@ -30,6 +30,10 @@ class VideoGenerator(Generator):
 
         initial_schedule_pending = True
         while True:
+            if self._runtime_schedule_refresh_required.is_set():
+                initial_schedule_pending = True
+                self._runtime_schedule_refresh_required.clear()
+
             if initial_schedule_pending:
                 LOGGER.debug('[Scheduling Request] Request an initial routable scheduling policy.')
                 if not self.request_schedule_policy():
@@ -49,7 +53,7 @@ class VideoGenerator(Generator):
             # been processed since the last scheduling decision.
             scheduling_threshold = self.request_scheduling_interval * self.raw_meta_data.get('fps', 0)
             if self.cumulative_scheduling_frame_count > scheduling_threshold:
-                LOGGER.debug(f'[Scheduling Request] Request a Scheduling policy from scheduler.')
+                LOGGER.debug('[Scheduling Request] Request a Scheduling policy from scheduler.')
                 if not self.request_schedule_policy():
                     LOGGER.debug('[Runtime Directory] Updated scheduling policy is not routable; postpone ingestion.')
                     time.sleep(0.5)

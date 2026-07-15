@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from core.lib.content import Task
-from core.lib.runtime import RuntimeContext, RuntimeLeaseUnavailable, RuntimeResolver
+from core.lib.runtime import RuntimeContext, RuntimeResolver
 
 
 def controller_route(node):
@@ -128,11 +128,6 @@ def controller_under_test(monkeypatch):
 
     controller.runtime_context = RuntimeContext({"local_node": "edgex1", "cloud_node": "cloudx1"})
     controller.runtime_resolver = RuntimeResolver(controller.runtime_context)
-    controller.runtime_lease_client = type(
-        "LeaseClient",
-        (),
-        {"renew": lambda self, task: {"revision": 1, "root_uuid": task.get_root_uuid()}},
-    )()
     return controller_module, controller
 
 
@@ -269,25 +264,20 @@ def test_submit_task_start_stage_returns_transmit_when_all_children_transmit(con
 
 
 @pytest.mark.unit
-def test_controller_does_not_advance_when_lease_renewal_fails(controller_under_test, monkeypatch):
+def test_controller_advances_without_per_stage_runtime_lease(controller_under_test, monkeypatch):
     _, controller = controller_under_test
     task = FakeTask(service_name="face-detection", stage_device="edgex1")
     forwarded = []
 
-    class FailedLeaseClient:
-        def renew(self, current_task):
-            raise RuntimeLeaseUnavailable("scheduler unavailable")
-
-    controller.runtime_lease_client = FailedLeaseClient()
     monkeypatch.setattr(
         controller,
         "send_task_to_service",
-        lambda *args, **kwargs: forwarded.append((args, kwargs)),
+        lambda *args, **kwargs: forwarded.append((args, kwargs)) or "execute",
     )
 
-    with pytest.raises(RuntimeLeaseUnavailable, match="scheduler unavailable"):
-        controller.submit_task(task)
-    assert forwarded == []
+    assert not hasattr(controller, "runtime_lease_client")
+    assert controller.submit_task(task) == "execute"
+    assert len(forwarded) == 1
 
 
 @pytest.mark.unit
@@ -303,11 +293,6 @@ def test_process_return_waits_when_parallel_tasks_cannot_be_retrieved():
             return None
 
     controller.task_coordinator = BrokenCoordinator()
-    controller.runtime_lease_client = type(
-        "LeaseClient",
-        (),
-        {"renew": lambda self, task: {"revision": 1, "root_uuid": task.get_root_uuid()}},
-    )()
     submitted_tasks = []
     controller.submit_task = lambda task: submitted_tasks.append(task) or "execute"
 

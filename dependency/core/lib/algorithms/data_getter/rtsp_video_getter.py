@@ -51,7 +51,6 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
         return cap
 
     def get_one_frame(self, system):
-        import cv2
         if not self.data_source_capture or not self.data_source_capture.isOpened():
             # (Re)open with FFMPEG backend and low-latency options
             self.data_source_capture = self._open_capture(system.video_data_source)
@@ -91,11 +90,13 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
             for frame in frame_buffer
         ]
         file_name = NameMaintainer.get_task_data_file_name(source_id, new_task_id, file_suffix=self.file_suffix)
-        self.compress_frames(system, frame_buffer, file_name)
 
-        new_task = system.generate_task(new_task_id, task_dag, service_deployment, meta_data, file_name, None)
-        system.submit_task_to_controller(new_task)
-        FileOps.remove_file(file_name)
+        try:
+            self.compress_frames(system, frame_buffer, file_name)
+            new_task = system.generate_task(new_task_id, task_dag, service_deployment, meta_data, file_name, None)
+            return system.submit_task_to_controller(new_task)
+        finally:
+            FileOps.remove_file(file_name)
 
     def __call__(self, system):
         while len(self.frame_buffer) < system.meta_data['buffer_size']:

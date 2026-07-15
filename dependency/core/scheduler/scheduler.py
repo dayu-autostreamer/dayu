@@ -224,6 +224,16 @@ class Scheduler:
             return self.runtime_directory.clear(install_id)
 
     def acquire_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
+        if isinstance(self.task_leases, RedisTaskLeaseStore):
+            # The Redis Lua transaction reads the active directory and admits
+            # the lease atomically.  A Python-side snapshot would add a second
+            # round trip without strengthening the cross-replica guarantee.
+            return self.task_leases.acquire(
+                revision=revision,
+                root_uuid=root_uuid,
+                active_revision=None,
+                ttl_seconds=ttl_seconds,
+            )
         with self._runtime_state_lock:
             return self.task_leases.acquire(
                 revision=revision,
@@ -235,6 +245,12 @@ class Scheduler:
     def renew_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
         # Existing work may renew an inactive revision only while the atomic
         # directory commit's persisted retirement bound remains open.
+        if isinstance(self.task_leases, RedisTaskLeaseStore):
+            return self.task_leases.renew(
+                revision,
+                root_uuid,
+                ttl_seconds=ttl_seconds,
+            )
         with self._runtime_state_lock:
             return self.task_leases.renew(
                 revision,

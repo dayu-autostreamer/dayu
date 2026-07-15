@@ -75,26 +75,32 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
             time.sleep(1)
             return
 
-        actual_buffer_size = len(self.hash_codes) if self.hash_codes else 0
-        system.cumulative_scheduling_frame_count += (
-            actual_buffer_size *
-            system.raw_meta_data.get('fps', 0) /
-            system.meta_data.get('fps', 1)
-        )
+        try:
+            actual_buffer_size = len(self.hash_codes) if self.hash_codes else 0
+            system.cumulative_scheduling_frame_count += (
+                actual_buffer_size *
+                system.raw_meta_data.get('fps', 0) /
+                system.meta_data.get('fps', 1)
+            )
 
-        if self.last_submit_ts is None:
-            sleep_time = 0
-        else:
-            delay = time.monotonic() - self.last_submit_ts
-            sleep_time = self.compute_cost_time(system, delay, actual_buffer_size=actual_buffer_size)
-        LOGGER.info(f'[Camera Simulation] source {system.source_id}: sleep {sleep_time}s')
-        time.sleep(sleep_time)
+            if self.last_submit_ts is None:
+                sleep_time = 0
+            else:
+                delay = time.monotonic() - self.last_submit_ts
+                sleep_time = self.compute_cost_time(system, delay, actual_buffer_size=actual_buffer_size)
+            LOGGER.info(f'[Camera Simulation] source {system.source_id}: sleep {sleep_time}s')
+            time.sleep(sleep_time)
 
-        new_task = system.generate_task(new_task_id, copy.deepcopy(system.task_dag),
-                                        copy.deepcopy(system.service_deployment),
-                                        copy.deepcopy(system.meta_data),
-                                        self.file_name, self.hash_codes)
-        system.submit_task_to_controller(new_task)
-        self.last_submit_ts = time.monotonic()
-
-        FileOps.remove_file(self.file_name)
+            new_task = system.generate_task(new_task_id, copy.deepcopy(system.task_dag),
+                                            copy.deepcopy(system.service_deployment),
+                                            copy.deepcopy(system.meta_data),
+                                            self.file_name, self.hash_codes)
+            submitted = system.submit_task_to_controller(new_task)
+            # Admission failures are still generation attempts. Advancing this
+            # timestamp preserves the configured source cadence and prevents a
+            # transient Scheduler outage from turning the source loop into a
+            # tight retry loop.
+            self.last_submit_ts = time.monotonic()
+            return submitted
+        finally:
+            FileOps.remove_file(self.file_name)

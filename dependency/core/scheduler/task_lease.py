@@ -14,6 +14,7 @@ import time
 from abc import ABC, abstractmethod
 
 from .runtime_directory import (
+    REDIS_SOCKET_TIMEOUT_SECONDS,
     RuntimeDirectoryConflict,
     RuntimeDirectoryError,
     RuntimeDirectoryNotFound,
@@ -190,15 +191,16 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
         active_revision = _revision(active_revision)
         root_uuid = _root_uuid(root_uuid)
         ttl_seconds = _ttl(ttl_seconds)
-        if revision != active_revision:
-            raise RuntimeDirectoryConflict(
-                f"task lease revision {revision} is not active (active revision is {active_revision})"
-            )
         with self._lock:
             self._prune_locked()
             retirement = self._retirements.get(revision)
             if retirement is not None:
                 raise TaskLeaseRetired(revision, retirement["deadline"])
+            if revision != active_revision:
+                raise RuntimeDirectoryConflict(
+                    f"task lease revision {revision} is not active "
+                    f"(active revision is {active_revision})"
+                )
             now = self._clock()
             expires_at = now + ttl_seconds
             self._leases[(revision, root_uuid)] = expires_at
@@ -305,20 +307,20 @@ class RedisTaskLeaseStore(TaskLeaseStore):
     """Redis ZSET implementation used by scheduler replicas in production."""
 
     _ACQUIRE_SCRIPT = """
+local revision = tonumber(ARGV[1])
+local retirement_raw = redis.call('GET', KEYS[2])
+if retirement_raw then
+  local retirement = cjson.decode(retirement_raw)
+  return {1, tostring(retirement.deadline)}
+end
 local active_raw = redis.call('GET', KEYS[1])
 local active_revision = 0
 if active_raw then
   local active = cjson.decode(active_raw)
   active_revision = tonumber(active.revision or active.directory_revision or 0)
 end
-local revision = tonumber(ARGV[1])
 if active_revision ~= revision then
   return {0, tostring(active_revision)}
-end
-local retirement_raw = redis.call('GET', KEYS[2])
-if retirement_raw then
-  local retirement = cjson.decode(retirement_raw)
-  return {1, tostring(retirement.deadline)}
 end
 local now = tonumber(ARGV[2])
 local expires = tonumber(ARGV[3])
@@ -491,6 +493,8 @@ return cjson.encode({
                 host=endpoint.connection_host,
                 port=endpoint.port or 6379,
                 decode_responses=True,
+                socket_connect_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+                socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
             ),
             install_id=install_id,
             clock=clock,
@@ -504,13 +508,10 @@ return cjson.encode({
 
     def acquire(self, revision, root_uuid, active_revision, ttl_seconds=60.0):
         revision = _revision(revision)
-        active_revision = _revision(active_revision)
+        if active_revision is not None:
+            _revision(active_revision)
         root_uuid = _root_uuid(root_uuid)
         ttl_seconds = _ttl(ttl_seconds)
-        if revision != active_revision:
-            raise RuntimeDirectoryConflict(
-                f"task lease revision {revision} is not active (active revision is {active_revision})"
-            )
         now = self.clock()
         expires_at = now + ttl_seconds
         code, value = self.redis.eval(

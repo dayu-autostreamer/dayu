@@ -63,6 +63,8 @@ Key boundaries:
 - Scheduler owns the canonical, versioned `RuntimeDirectory`, persisted with proposal/CAS state in Redis so a
   Scheduler Pod restart preserves the active route authority. Runtime workers resolve controller and processor
   endpoints from the exact routes copied into each task; they never perform Kubernetes discovery.
+- Scheduler runs as one direct Uvicorn process. Its Redis-backed RuntimeDirectory and lease endpoints are synchronous
+  FastAPI handlers executed in the framework thread pool, keeping blocking Redis I/O away from the ASGI event loop.
 - Scheduler and its policy plugins share the canonical deployment-plan boundary in
   `dependency/core/lib/scheduling/deployment_plan.py`; `algorithms/` contains implementations, not framework contracts.
 - Backend may compose the optional `default-cloud-processor-backup` replica only after that plan is complete and
@@ -169,10 +171,10 @@ sequenceDiagram
     S-->>G: directory revision + exact routes
     G->>S: acquire (revision, root_uuid) lease
     G->>W: task carrying immutable routes and revision
-    W->>S: renew lease
     W->>D: completed task
+    D->>S: final renew before persistence
     D->>S: scenario update
-    D->>S: release lease after durable storage + acknowledgement
+    D->>S: release after durable storage + acknowledgement
 ```
 
 There is no route fallback. Missing, ambiguous, stale, or incomplete route identity is a hard runtime error. This is
@@ -205,8 +207,9 @@ More concretely:
 2. Datasource supervisor starts `http_video` or `rtsp_video` source processes based on backend state.
 3. Generator reads source data, asks scheduler for a plan plus compact exact routes, acquires the task lease, and
    copies the directory revision/routes into the task before submission.
-4. Controller and processor use only those task routes and renew the same lease as the task advances.
-5. Distributor persists the completed task, obtains scheduler acknowledgement, then releases the lease.
+4. Controller and processor use only those task routes and do not call the lease API.
+5. Distributor renews once to fence a late result, persists it, obtains scheduler acknowledgement, then releases the
+   lease.
 6. Monitor periodically reports resource state to scheduler.
 7. Backend polls distributor and scheduler to produce frontend-facing result and system visualizations.
 
@@ -218,9 +221,9 @@ More concretely:
 | Datasource | source playback, manifest interpretation, clip or frame indexing | scheduling decisions |
 | Generator | source segmentation, task creation, pre-schedule and pre-submit hooks | inference execution |
 | Scheduler | policy/resource state, source/deployment plans, persistent-AOF Redis RuntimeDirectory CAS and revision leases | Kubernetes discovery, Pod/RuntimeService recovery, or result persistence |
-| Controller | transport timing, task forwarding, return-path orchestration | scheduling or storage |
-| Processor | AI inference, scenario extraction, queue discipline | deployment or visualization |
-| Distributor | durable result storage, incremental result queries, export files | operator workflows |
+| Controller | transport timing, task forwarding, return-path orchestration | scheduling, lease management, or storage |
+| Processor | AI inference, scenario extraction, queue discipline | deployment, lease management, or visualization |
+| Distributor | final task-lease validation/release, durable result storage, incremental result queries, export files | operator workflows |
 | Monitor | resource sampling through committed local routes | Kubernetes discovery or task-level scheduling decisions |
 
 ## Runtime Content Contract

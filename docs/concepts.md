@@ -176,6 +176,9 @@ Production Scheduler persists the active snapshot and expiring proposals in Redi
 scoped Redis ZSETs. The support Redis uses a host-mounted append-only file with synchronous fsync, so this state survives
 Scheduler or Redis Pod replacement while the cloud-node host path is retained. Process memory is used only by tests or
 an explicitly constructed local harness. A production Scheduler with no bootstrap Redis endpoint fails at startup.
+Scheduler itself runs as one direct Uvicorn process. Its synchronous Redis-backed directory and lease endpoints execute
+in FastAPI's thread pool, so blocking Redis I/O cannot starve the ASGI event loop; there is no second supervisor
+worker-heartbeat timeout that can mistake a delayed notification for a dead Scheduler.
 
 During uninstall, Backend stops generators, immediately fences every relevant revision with `deadline=now`, and then
 calls `DELETE /runtime-directory` with the exact install id without waiting for lease release. Scheduler atomically
@@ -207,12 +210,14 @@ manifest file or cache to refresh.
 contain a mutable route cache. Generator obtains exact routes from Scheduler and copies the committed directory
 revision and routes into each `Task`.
 
-The task is protected by a lease keyed by `(directory_revision, root_uuid)`. Generator acquires it before first
-submission; controller and processor renew it; distributor releases it only after durable result persistence and a
-successful scheduler scenario acknowledgement. Redeployment gives the previous revision a bounded immutable deadline;
-normal completion permits immediate reclamation, while deadline expiry revokes any remainder and releases the rollout
-gate. Uninstall does not wait for lease count or expiry: it requests an immediate fence and proceeds with exact-UID
-administrative teardown.
+The task is protected by a lease keyed by `(directory_revision, root_uuid)`. Generator acquires it once before first
+submission. Controller and Processor do not access the lease API. Distributor renews once immediately before durable
+result persistence, requires a successful Scheduler scenario acknowledgement, and then releases. A transient acquire
+failure drops only the current task and leaves the Generator loop running; a retired response requests a fresh schedule
+for the next ingestion round. The normal TTL covers end-to-end processing. Redeployment gives the previous revision a
+bounded immutable deadline that clamps every old lease and remains the hard upper bound; expiry revokes any remainder
+and releases the rollout gate. Uninstall does not wait for lease count or expiry: it requests an immediate fence and
+proceeds with exact-UID administrative teardown.
 
 Runtime Pods set `automountServiceAccountToken: false`. Runtime code therefore has no Kubernetes package, kubeconfig,
 Pod/Node/Service discovery, topology cache, or forced-refresh API.

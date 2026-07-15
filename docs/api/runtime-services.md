@@ -11,7 +11,7 @@ This document describes the internal APIs used by Dayu runtime components. These
 | Scheduler/resource updates | Scheduler endpoints often receive JSON encoded into a form field named `data`. |
 | Runtime bootstrap | `DAYU_RUNTIME_BOOTSTRAP` supplies immutable install context and static infrastructure endpoints; it is never a Kubernetes discovery cache. |
 | Exact task routing | `Task` serializes `runtime_directory_revision`, `runtime_routes`, and `root_uuid`. Controller/processor routes must be complete exact identities. |
-| Task ownership and retirement | Runtime services acquire/renew/release a Scheduler lease keyed by `(runtime_directory_revision, root_uuid)`; Backend may place one immutable deadline on an old revision. |
+| Task ownership and retirement | Generator acquires one Scheduler lease keyed by `(runtime_directory_revision, root_uuid)`; Distributor performs the final renew/persist/scenario-ack/release sequence. Backend may place one immutable deadline on an old revision. |
 
 Runtime service code does not import Kubernetes, load a kubeconfig, or discover Pods, Nodes, or Services. Missing or
 ambiguous task routes fail closed.
@@ -34,8 +34,8 @@ Operational notes:
 - If `DELETE_TEMP_FILES` is enabled, that single lifespan-managed cleaner uses the task-lease TTL, rather than a fixed
   short timeout, so a legitimate long-running processor cannot lose its controller-side file mid-task.
 - `submit_task` stores the uploaded file in the temp directory and forwards the task into the controller pipeline asynchronously.
-- Controller resolves downstream controller/processor targets only from the Task's exact route snapshot and renews the
-  Task lease as work advances. Missing route or failed renewal stops forwarding.
+- Controller resolves downstream controller/processor targets only from the Task's exact route snapshot. It does not
+  call the task-lease API; a missing or invalid route stops forwarding.
 
 ## Processor Service
 
@@ -57,8 +57,8 @@ Operational notes:
 - `PROCESSOR_NAME` selects the processor implementation.
 - `PRO_QUEUE_NAME` selects the queue strategy.
 - A background thread drains the task queue and posts results back to controller through `/process_return_task`.
-- Processor validates the exact task route and keeps its lease renewed throughout execution; it does not resolve
-  service placement from local or cluster state. A full TTL without a confirmed heartbeat fails closed.
+- Processor validates the exact task route and does not call the task-lease API or resolve service placement from
+  local or cluster state. Normal end-to-end execution is covered by the lease TTL acquired by Generator.
 - `/queue_clear` supports dry-run previews when the selected queue exposes `get_all_without_drop()`. Destructive clears
   prefer a queue-level `drain(max_count=...)` method and otherwise fall back to repeated `get()` calls.
 - All processor implementations store inference content as `{"service", "outputs", "profile"}`. `outputs` is keyed by
@@ -73,6 +73,11 @@ Operational notes:
 ## Scheduler Service
 
 Implementation entrypoint: `dependency/core/scheduler/scheduler_server.py`
+
+Scheduler runs as one direct Uvicorn process, preserving its single-process scheduling-agent state without a second
+Gunicorn worker supervisor. Redis-backed RuntimeDirectory and task-lease handlers are synchronous FastAPI endpoints,
+so blocking Redis work runs in the framework thread pool instead of starving the ASGI event loop. Removing the second
+supervisor also removes its worker-heartbeat timeout from this path.
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
@@ -140,11 +145,16 @@ keys are intentionally separate and retain their lease-derived expiry.
 An acquire or renewal rejected by retirement returns
 `{revision,root_uuid,retired:true,deadline}` instead of an expiry; runtime clients treat it as a hard stop. Releasing a
 lease after its revision has retired is idempotent and reports it as already released.
-`expires_at` is the Scheduler's wall-clock timestamp and is retained for observability. Runtime clients validate
-`valid_for_seconds` and advance a local monotonic deadline from that relative duration, so lease safety does not
-depend on wall-clock synchronization between cloud and edge nodes.
+`expires_at` is the Scheduler's wall-clock timestamp and is retained for observability. Runtime clients validate the
+Scheduler-computed relative `valid_for_seconds` instead of comparing cloud and edge wall clocks.
 An inactive revision without a persisted retirement marker cannot renew: Scheduler rejects it fail-closed instead of
 assuming that a missing marker means an unbounded grace period.
+
+The normal per-task sequence is deliberately small: Generator acquires once before first submission; Controller and
+Processor never access this API; Distributor renews once immediately before durable persistence, sends the scenario
+update, and releases only after an explicit acknowledgement. The configured TTL covers normal end-to-end processing.
+When a redeployment retires that task's old revision, the immutable retirement deadline clamps the lease and is the
+hard upper bound regardless of the original TTL.
 
 Production Scheduler stores directories/proposals and leases in Redis, scoped by install id and revision. Redis uses
 a host-mounted AOF with synchronous fsync. Redeployment's proposal commit is one Scheduler transaction: it changes the
@@ -196,10 +206,10 @@ Implementation entrypoint: `dependency/core/distributor/distributor_server.py`
 | `POST` | `/clear_database` | Clear the result database. | None | `null` |
 | `GET` | `/is_database_empty` | Check whether the result database contains records. | None | Boolean |
 
-Distributor releases the task lease only after the result is durably stored and Scheduler returns
-`{"accepted": true}` for the scenario update. A release transport failure is logged and left to TTL expiry so a
-normal task remains fail-safe; a redeploy retirement deadline still places a hard upper bound on old-revision
-ownership.
+Distributor first renews the task lease to reject a result that arrived after its revision retired. It then stores the
+result durably, requires Scheduler to return `{"accepted": true}` for the scenario update, and releases the lease. A
+failed final renewal drops the result before persistence; a release transport failure is logged and left to TTL expiry.
+The old-revision retirement deadline remains the hard upper bound during redeployment.
 
 Implementation note:
 
@@ -258,7 +268,7 @@ These runtime components are important for understanding the system but do not e
 
 | Component | Behavior | Main code path |
 | --- | --- | --- |
-| Generator | Waits for schedulable exact routes, acquires the revision lease, copies routes into Task, and starts its run loop. | `dependency/core/generator/generator_server.py` |
+| Generator | Waits for schedulable exact routes, acquires one revision lease per task, and copies routes into Task. A transient lease outage drops only that task; a retired revision requests a fresh schedule while the source loop remains alive. | `dependency/core/generator/generator_server.py` |
 | Monitor | Periodically samples `MON_PRAM` hooks and posts resource data to scheduler. | `dependency/core/monitor/monitor.py` |
 | Datasource supervisor | Polls backend `/datasource_state` and starts or stops local source processes. | `datasource/datasource_server.py` |
 | RTSP stream source | Reads `rtsp_video/manifest.json` through `VideoDataset` and streams clips to the configured RTSP address. | `datasource/rtsp_video.py` |

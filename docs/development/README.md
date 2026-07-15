@@ -32,7 +32,7 @@ Most component containers are intentionally thin. The logic lives under `depende
 
 | Entrypoint | Delegates to |
 | --- | --- |
-| `components/scheduler/main.py` | `dependency/core/scheduler/SchedulerServer` |
+| `components/scheduler/main.py` | `dependency/core/scheduler/SchedulerServer` through one direct Uvicorn process |
 | `components/processor/main.py` | `dependency/core/processor/ProcessorServer` |
 | `components/controller/main.py` | `dependency/core/controller/ControllerServer` |
 | `components/distributor/main.py` | `dependency/core/distributor/DistributorServer` |
@@ -68,7 +68,8 @@ Usually touch:
 - `dependency/core/scheduler/runtime_directory.py` and Scheduler APIs for directory CAS/publication
 - `dependency/core/scheduler/task_lease.py` for task ownership, immutable retirement deadlines, and forced fencing
 - `dependency/core/lib/runtime/` and `content/task.py` for bootstrap, exact route, and task identity contracts
-- generator/controller/processor/distributor consumers for acquire/renew/release ordering
+- generator/distributor consumers for acquire-once/final-renew/persist/scenario-ack/release ordering; controller and
+  processor must remain outside the lease protocol
 - `backend/runtime_orchestrator.py` for proposal/atomic-retirement commit/recovery plus exact-UID-delete ordering
 - [`../api/runtime-services.md`](../api/runtime-services.md), [`../operations/README.md`](../operations/README.md), and
   backend/runtime service unit tests
@@ -79,6 +80,10 @@ return without waiting for old tasks; permit at most one lease-protected retirem
 status-only normal reconciliation and reserve `PATCH` for uninstall's immediate fence; advance retirement and exact-UID
 cleanup as independent lanes; and keep generator-first/immediate-fence-and-clear/Scheduler-admission-fence/worker-delete
 uninstall ordering.
+
+Keep Scheduler single-process because scheduling-agent state is process-local. Run it directly under Uvicorn rather
+than a second worker supervisor, and define blocking Redis-backed RuntimeDirectory/lease handlers synchronously so
+FastAPI dispatches them to its thread pool. Do not expose worker-heartbeat or Redis-threading tuning as configuration.
 
 ### Add or change a hook
 

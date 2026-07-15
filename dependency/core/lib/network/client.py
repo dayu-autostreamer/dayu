@@ -1,9 +1,37 @@
-from core.lib.common import LOGGER
-import requests
+import os
+import threading
 import time
+
+import requests
+
+from core.lib.common import LOGGER
 
 
 DEFAULT_RETRY_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+_HTTP_SESSION_LOCAL = threading.local()
+
+
+def _get_http_session():
+    """Return one connection pool per process and calling thread.
+
+    ``requests.Session`` is not documented as thread-safe, while Dayu issues
+    synchronous requests from both component loops and FastAPI worker threads.
+    A process-aware thread-local session keeps connection reuse without sharing
+    mutable request state across FastAPI threads or forked RTSP workers.
+    """
+    process_id = os.getpid()
+    session = getattr(_HTTP_SESSION_LOCAL, "session", None)
+    if session is None or getattr(_HTTP_SESSION_LOCAL, "process_id", None) != process_id:
+        if session is not None:
+            session.close()
+        session = requests.Session()
+        _HTTP_SESSION_LOCAL.session = session
+        _HTTP_SESSION_LOCAL.process_id = process_id
+    return session
+
+
+def _request(**kwargs):
+    return _get_http_session().request(**kwargs)
 
 
 def _normalize_retry_count(retry):
@@ -72,7 +100,7 @@ def http_request(url,
             return None
         should_retry = False
         try:
-            response = requests.request(method=_method, url=url, timeout=_max_timeout, **kwargs)
+            response = _request(method=_method, url=url, timeout=_max_timeout, **kwargs)
             if response.status_code == 200:
                 if no_decode:
                     return response

@@ -5,7 +5,7 @@ from core.lib.estimation import TimeEstimator
 from core.lib.network import http_request, NetworkAPIPath, NetworkAPIMethod
 from core.lib.common import LOGGER, Context, TaskConstant, FileOps
 from core.lib.content import Task
-from core.lib.runtime import RuntimeContext, RuntimeLeaseClient, RuntimeResolver
+from core.lib.runtime import RuntimeContext, RuntimeResolver
 
 from .task_coordinator import TaskCoordinator
 
@@ -14,10 +14,6 @@ class Controller:
     def __init__(self):
         self.runtime_context = RuntimeContext.get_default()
         self.runtime_resolver = RuntimeResolver(self.runtime_context)
-        self.runtime_lease_client = RuntimeLeaseClient(
-            self.runtime_context,
-            requester=http_request,
-        )
         self.task_coordinator = TaskCoordinator(runtime_context=self.runtime_context)
 
         self.is_display = Context.get_parameter('DISPLAY', direct=False)
@@ -37,14 +33,6 @@ class Controller:
             resolver = RuntimeResolver(context)
             self.runtime_resolver = resolver
         return resolver
-
-    def _renew_task_lease(self, task):
-        client = getattr(self, "runtime_lease_client", None)
-        if client is None:
-            context = getattr(self, "runtime_context", None) or RuntimeContext.get_default()
-            client = RuntimeLeaseClient(context, requester=http_request)
-            self.runtime_lease_client = client
-        return client.renew(task)
 
     @staticmethod
     def _routes_from_request(request):
@@ -255,11 +243,6 @@ class Controller:
             LOGGER.warning('Current task is None')
             return 'error'
 
-        # This method is the controller's receive/advance boundary.  Renew
-        # before every branch decision so an old RuntimeDirectory revision is
-        # not retired while the task is being forwarded or merged.
-        self._renew_task_lease(cur_task)
-
         LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
                     f'current service: {cur_task.get_flow_index()} dst device: {cur_task.get_current_stage_device()} '
                     f'current device: {self.local_device}')
@@ -285,8 +268,6 @@ class Controller:
     def process_return(self, cur_task):
         """step to next step and submit task"""
         assert cur_task, 'Current task is None'
-
-        self._renew_task_lease(cur_task)
 
         LOGGER.info(f'[Process Return] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 

@@ -7,9 +7,6 @@ are sent to the scheduler endpoint injected in ``DAYU_RUNTIME_BOOTSTRAP``.
 
 import json
 import math
-import threading
-import time
-from contextlib import contextmanager
 from typing import Callable, Tuple
 
 from core.lib.network import NetworkAPIMethod, NetworkAPIPath, http_request
@@ -55,7 +52,6 @@ class RuntimeLeaseClient:
         runtime_context=None,
         requester: Callable = None,
         timeout_seconds: float = 5.0,
-        clock: Callable = None,
     ):
         self.runtime_context = runtime_context or RuntimeContext.get_default()
         self.requester = requester or http_request
@@ -66,7 +62,6 @@ class RuntimeLeaseClient:
         if timeout_seconds <= 0:
             raise ValueError("task lease request timeout must be positive")
         self.timeout_seconds = timeout_seconds
-        self.clock = clock or time.monotonic
 
     @property
     def ttl_seconds(self):
@@ -203,68 +198,3 @@ class RuntimeLeaseClient:
             "release",
             include_ttl=False,
         )
-
-    @contextmanager
-    def keepalive(self, task):
-        """Renew a lease throughout one potentially long-running operation.
-
-        Component-boundary renewals protect normal forwarding, but inference
-        may legitimately run longer than a configured TTL.  A daemon heartbeat
-        renews at most every 30 seconds. Transient failures are retried only
-        while the last Scheduler-confirmed expiry remains valid. A retirement
-        fence is terminal and fails closed when the operation returns.
-        """
-
-        initial = self.renew(task)
-        stop = threading.Event()
-        now = self.clock()
-        state = {
-            "valid_until": now + initial["valid_for_seconds"],
-            "lost": None,
-        }
-        interval = max(
-            0.05,
-            min(30.0, initial["valid_for_seconds"] / 3.0),
-        )
-
-        def heartbeat():
-            while not stop.wait(interval):
-                try:
-                    response = self.renew(task)
-                    state["valid_until"] = (
-                        self.clock() + response["valid_for_seconds"]
-                    )
-                    state["lost"] = None
-                except RuntimeLeaseRetired as exc:
-                    state["lost"] = exc
-                    state["valid_until"] = self.clock()
-                    return
-                except RuntimeLeaseError as exc:
-                    state["lost"] = exc
-                    if self.clock() >= state["valid_until"]:
-                        return
-
-        thread = threading.Thread(
-            target=heartbeat,
-            name="dayu-runtime-lease-keepalive",
-            daemon=True,
-        )
-        thread.start()
-        body_error = None
-        try:
-            yield
-        except BaseException as exc:
-            body_error = exc
-            raise
-        finally:
-            stop.set()
-            thread.join(timeout=max(1.0, min(self.timeout_seconds + 1.0, 10.0)))
-            if (
-                    body_error is None
-                    and self.clock() >= state["valid_until"]
-            ):
-                if isinstance(state["lost"], RuntimeLeaseRetired):
-                    raise state["lost"]
-                raise RuntimeLeaseUnavailable(
-                    "runtime task lease expired during a long-running operation"
-                ) from state["lost"]

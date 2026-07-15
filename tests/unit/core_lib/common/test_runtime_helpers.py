@@ -571,41 +571,41 @@ def test_http_request_handles_success_redirects_and_failures(monkeypatch):
             return self._payload
 
     response = FakeResponse(200, payload={"ok": True})
-    monkeypatch.setattr(network_client_module.requests, "request", lambda **kwargs: response)
+    monkeypatch.setattr(network_client_module, "_request", lambda **kwargs: response)
     assert http_request("http://service") == {"ok": True}
     assert http_request("http://service", no_decode=True) is response
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: FakeResponse(200, payload=None, content=b"payload"),
     )
     assert http_request("http://service", binary=False) == "payload"
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: FakeResponse(302),
     )
     assert http_request("http://service") is None
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: FakeResponse(404),
     )
     assert http_request("http://service") is None
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(network_client_module.requests.exceptions.Timeout("slow")),
     )
     assert http_request("http://service") is None
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(network_client_module.requests.exceptions.ConnectionError("down")),
     )
     assert http_request("http://service") is None
@@ -636,7 +636,7 @@ def test_http_request_retries_transient_failures(monkeypatch):
             raise response
         return response
 
-    monkeypatch.setattr(network_client_module.requests, "request", timeout_then_success)
+    monkeypatch.setattr(network_client_module, "_request", timeout_then_success)
     assert http_request("http://service", retry=2) == {"ok": True}
     assert len(request_calls) == 2
 
@@ -647,7 +647,7 @@ def test_http_request_retries_transient_failures(monkeypatch):
     request_calls.clear()
     sleep_calls = []
     monkeypatch.setattr(network_client_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
-    monkeypatch.setattr(network_client_module.requests, "request", timeout_then_success)
+    monkeypatch.setattr(network_client_module, "_request", timeout_then_success)
 
     assert http_request("http://service", retry=2, retry_interval=0.25) == {"recovered": True}
     assert len(request_calls) == 2
@@ -670,8 +670,8 @@ def test_http_request_does_not_retry_non_retryable_status(monkeypatch):
 
     request_calls = []
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: request_calls.append(kwargs) or FakeResponse(),
     )
 

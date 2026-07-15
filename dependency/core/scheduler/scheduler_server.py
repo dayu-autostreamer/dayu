@@ -112,7 +112,7 @@ class SchedulerServer:
                      self.retire_task_leases,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_RETIRE_TASK_LEASES]),
-        ], log_level='trace', timeout=6000)
+        ])
 
         self.app.add_middleware(
             CORSMiddleware, allow_origins=["*"], allow_credentials=True,
@@ -161,10 +161,10 @@ class SchedulerServer:
             return HTTPException(status_code=409, detail=str(exc))
         return HTTPException(status_code=422, detail=str(exc))
 
-    async def get_runtime_directory(self):
+    def get_runtime_directory(self):
         return self.scheduler.runtime_directory_snapshot()
 
-    async def put_runtime_directory(self, data: str = Form(...)):
+    def put_runtime_directory(self, data: str = Form(...)):
         payload = json.loads(data)
         directory = payload.get('directory', payload)
         expected_revision = payload.get('expected_revision', payload.get('expectedRevision'))
@@ -173,14 +173,14 @@ class SchedulerServer:
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
-    async def clear_runtime_directory(self, data: str = Form(...)):
+    def clear_runtime_directory(self, data: str = Form(...)):
         payload = json.loads(data)
         try:
             return self.scheduler.clear_runtime_directory(payload.get('install_id'))
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
-    async def propose_runtime_directory(self, data: str = Form(...)):
+    def propose_runtime_directory(self, data: str = Form(...)):
         payload = json.loads(data)
         try:
             return self.scheduler.propose_runtime_directory(
@@ -192,7 +192,7 @@ class SchedulerServer:
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
-    async def commit_runtime_directory(self, proposal_id: str, data: str = Form(...)):
+    def commit_runtime_directory(self, proposal_id: str, data: str = Form(...)):
         payload = json.loads(data)
         try:
             return self.scheduler.commit_runtime_directory(
@@ -206,20 +206,20 @@ class SchedulerServer:
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
-    async def reject_runtime_directory(self, proposal_id: str, data: str = Form('{}')):
+    def reject_runtime_directory(self, proposal_id: str, data: str = Form('{}')):
         payload = json.loads(data)
         try:
             return self.scheduler.reject_runtime_directory(proposal_id, payload.get('reason', ''))
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
-    async def count_task_leases(self, revision: int):
+    def count_task_leases(self, revision: int):
         try:
             return self.scheduler.task_lease_status(revision)
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
-    async def retire_task_leases(self, data: str = Form(...)):
+    def retire_task_leases(self, data: str = Form(...)):
         payload = json.loads(data)
         try:
             return self.scheduler.retire_task_leases(
@@ -229,7 +229,7 @@ class SchedulerServer:
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
-    async def acquire_task_lease(self, data: str = Form(...)):
+    def acquire_task_lease(self, data: str = Form(...)):
         payload = json.loads(data)
         revision = payload.get('revision', payload.get('runtime_directory_revision'))
         root_uuid = payload.get('root_uuid', payload.get('rootUUID'))
@@ -244,7 +244,7 @@ class SchedulerServer:
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)
 
-    async def renew_task_lease(self, data: str = Form(...)):
+    def renew_task_lease(self, data: str = Form(...)):
         payload = json.loads(data)
         revision = payload.get('revision', payload.get('runtime_directory_revision'))
         root_uuid = payload.get('root_uuid', payload.get('rootUUID'))
@@ -268,7 +268,7 @@ class SchedulerServer:
             'deadline': exc.deadline,
         }
 
-    async def release_task_lease(self, data: str = Form(...)):
+    def release_task_lease(self, data: str = Form(...)):
         payload = json.loads(data)
         try:
             return self.scheduler.release_task_lease(

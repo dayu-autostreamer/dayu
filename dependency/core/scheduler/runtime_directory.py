@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 
 
+REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
+
+
 class RuntimeDirectoryError(ValueError):
     """Base error for invalid directory state transitions."""
 
@@ -781,7 +784,13 @@ return {1, proposal_raw}
         except ImportError as exc:
             raise RuntimeError("redis package is required for a durable RuntimeDirectory") from exc
         return cls(
-            redis.Redis(host=endpoint.connection_host, port=endpoint.port or 6379, decode_responses=True),
+            redis.Redis(
+                host=endpoint.connection_host,
+                port=endpoint.port or 6379,
+                decode_responses=True,
+                socket_connect_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+                socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+            ),
             install_id=install_id,
             initial=initial,
             clock=clock,

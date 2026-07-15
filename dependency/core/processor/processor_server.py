@@ -11,7 +11,7 @@ from core.lib.common import LOGGER, FileOps
 from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
-from core.lib.runtime import RuntimeContext, RuntimeLeaseClient, RuntimeResolver
+from core.lib.runtime import RuntimeContext, RuntimeResolver
 
 
 class ProcessorServer:
@@ -70,10 +70,6 @@ class ProcessorServer:
 
         self.runtime_context = RuntimeContext.get_default()
         self.runtime_resolver = RuntimeResolver(self.runtime_context)
-        self.runtime_lease_client = RuntimeLeaseClient(
-            self.runtime_context,
-            requester=http_request,
-        )
         self.local_device = self.runtime_context.local_node
         self.processor_port = Context.get_parameter('GUNICORN_PORT')
 
@@ -112,17 +108,18 @@ class ProcessorServer:
                     f'task {cur_task.get_task_id()}')
         FileOps.save_task_file_in_temp(cur_task, file_data)
 
-        with self.runtime_lease_client.keepalive(cur_task):
+        try:
             new_task = self.processor(cur_task)
-        current_content = new_task.get_current_content() if new_task else None
-        output_labels = []
-        if isinstance(current_content, dict) and isinstance(current_content.get('outputs'), dict):
-            output_labels = list(current_content['outputs'].keys())
-        LOGGER.debug(f'[Processor Return completed] output labels: {output_labels}')
-        FileOps.remove_task_file_in_temp(cur_task)
-        if new_task:
-            return new_task.serialize()
-        return None
+            current_content = new_task.get_current_content() if new_task else None
+            output_labels = []
+            if isinstance(current_content, dict) and isinstance(current_content.get('outputs'), dict):
+                output_labels = list(current_content['outputs'].keys())
+            LOGGER.debug(f'[Processor Return completed] output labels: {output_labels}')
+            if new_task:
+                return new_task.serialize()
+            return None
+        finally:
+            FileOps.remove_task_file_in_temp(cur_task)
 
     async def query_queue_length(self):
         return self.task_queue.size()
@@ -247,11 +244,8 @@ class ProcessorServer:
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
 
-        # Processor execution is a hard safety boundary. Keep renewing while
-        # inference runs so a long stage cannot outlive its directory lease.
-        with self.runtime_lease_client.keepalive(task):
-            TimeEstimator.record_dag_ts(task, is_end=False, sub_tag='real_execute')
-            new_task = self.processor(task)
+        TimeEstimator.record_dag_ts(task, is_end=False, sub_tag='real_execute')
+        new_task = self.processor(task)
         if new_task is None:
             LOGGER.warning(f'[Monitor Task] Processor returned no task. '
                            f'Source: {task.get_source_id()} / Task: {task.get_task_id()}')

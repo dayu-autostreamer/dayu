@@ -110,11 +110,15 @@ Runtime Pods consume `DAYU_RUNTIME_BOOTSTRAP`, which contains immutable install 
 endpoints, the active directory revision, and the lease TTL. It is not a Kubernetes cache and has no refresh operation.
 
 Scheduler returns `runtime_directory_revision` and compact `runtime_routes` with each schedule. Generator copies them
-into the Task and acquires `(revision, root_uuid)` before first submission. Controller renews at forwarding boundaries;
-Processor also maintains a bounded heartbeat throughout long inference so one stage cannot silently outlive its TTL.
-Distributor releases it only after durable storage and scheduler scenario acknowledgement. Any acquire/renew result
-that is not explicitly acknowledged stops task progress. A failed release expires by TTL during normal operation;
-during redeployment it can delay reclamation only until the previous revision's immutable retirement deadline.
+into the Task and acquires `(revision, root_uuid)` once before first submission. Controller and Processor do not access
+the lease API. Distributor performs the final renewal immediately before durable storage, requires Scheduler scenario
+acknowledgement, and then releases. A transient acquire outage drops only the current task while Generator keeps its
+source loop alive; a retired response requests a fresh schedule for the next round. The normal TTL covers end-to-end
+processing. A failed release expires by TTL during normal operation; during redeployment the previous revision's
+immutable retirement deadline clamps the lease and remains the hard upper bound.
+
+Scheduler runs as one direct Uvicorn process. Its synchronous Redis-backed directory and lease endpoints execute in
+FastAPI's thread pool, so Redis latency does not block the ASGI event loop or trigger a supervisor heartbeat timeout.
 
 ## Processor Rollout
 

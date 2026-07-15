@@ -27,22 +27,22 @@ class FakeResponse:
 @pytest.mark.unit
 def test_http_request_handles_http_error_request_error_and_generic_error(monkeypatch):
     monkeypatch.setattr(
-        client_module.requests,
-        "request",
+        client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(client_module.requests.exceptions.HTTPError("bad-request")),
     )
     assert http_request("http://scheduler") is None
 
     monkeypatch.setattr(
-        client_module.requests,
-        "request",
+        client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(client_module.requests.exceptions.RequestException("broken")),
     )
     assert http_request("http://scheduler") is None
 
     monkeypatch.setattr(
-        client_module.requests,
-        "request",
+        client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("unexpected")),
     )
     assert http_request("http://scheduler") is None
@@ -52,8 +52,8 @@ def test_http_request_handles_http_error_request_error_and_generic_error(monkeyp
 def test_http_request_cooperative_cancellation_skips_attempts_and_retry_backoff(monkeypatch):
     request_calls = []
     monkeypatch.setattr(
-        client_module.requests,
-        "request",
+        client_module,
+        "_request",
         lambda **kwargs: request_calls.append(kwargs) or FakeResponse(503),
     )
 
@@ -90,8 +90,8 @@ def test_http_request_cooperative_cancellation_skips_attempts_and_retry_backoff(
 def test_http_request_without_cancellation_token_keeps_existing_contract(monkeypatch):
     request_calls = []
     monkeypatch.setattr(
-        client_module.requests,
-        "request",
+        client_module,
+        "_request",
         lambda **kwargs: request_calls.append(kwargs) or FakeResponse(
             200, {"ok": True},
         ),
@@ -99,6 +99,43 @@ def test_http_request_without_cancellation_token_keeps_existing_contract(monkeyp
 
     assert http_request("http://scheduler") == {"ok": True}
     assert len(request_calls) == 1
+
+
+@pytest.mark.unit
+def test_http_request_reuses_one_session_per_process_thread(monkeypatch):
+    created_sessions = []
+    closed_sessions = []
+
+    class FakeSession:
+        def close(self):
+            closed_sessions.append(self)
+
+    def create_session():
+        session = FakeSession()
+        created_sessions.append(session)
+        return session
+
+    monkeypatch.setattr(client_module.requests, "Session", create_session)
+    monkeypatch.setattr(client_module, "_HTTP_SESSION_LOCAL", threading.local())
+
+    first = client_module._get_http_session()
+    second = client_module._get_http_session()
+    other_thread_sessions = []
+    thread = threading.Thread(
+        target=lambda: other_thread_sessions.append(client_module._get_http_session())
+    )
+    thread.start()
+    thread.join()
+
+    assert first is second
+    assert other_thread_sessions[0] is not first
+    assert created_sessions == [first, other_thread_sessions[0]]
+
+    monkeypatch.setattr(client_module.os, "getpid", lambda: 999999)
+    after_fork = client_module._get_http_session()
+
+    assert after_fork is not first
+    assert closed_sessions == [first]
 
 
 @pytest.mark.unit

@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from core.lib.content import Task
-from core.lib.runtime import RuntimeContext, RuntimeLeaseUnavailable
+from core.lib.runtime import (
+    RuntimeContext,
+    RuntimeLeaseIdentityError,
+    RuntimeLeaseRetired,
+    RuntimeLeaseUnavailable,
+)
 
 
 class StopGeneratorLoop(RuntimeError):
@@ -199,7 +204,13 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
                 "expires_at": 123.0,
                 "valid_for_seconds": float(payload["ttl_seconds"]),
             }
-        uploaded.update(url=url, method=method, data=data, files=files)
+        uploaded.update(
+            url=url,
+            method=method,
+            data=data,
+            files=files,
+            content=files["file"][1].read(),
+        )
 
     monkeypatch.setattr(generator_module, "http_request", fake_http_request)
 
@@ -234,7 +245,7 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
         lambda cur_task: call_order.append(("record", cur_task.get_task_id())),
     )
 
-    generator.submit_task_to_controller(task)
+    assert generator.submit_task_to_controller(task) is True
 
     file_name, file_handle, content_type = uploaded["files"]["file"]
     assert call_order == [
@@ -246,9 +257,9 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
     assert uploaded["method"] == "POST"
     assert uploaded["data"]["data"] == task.serialize()
     assert file_name == str(payload_path)
-    assert file_handle.read() == b"payload"
+    assert uploaded["content"] == b"payload"
+    assert file_handle.closed is True
     assert content_type == "multipart/form-data"
-    file_handle.close()
 
     with pytest.raises(AssertionError, match="Task is empty when submit to controller"):
         generator.submit_task_to_controller(None)
@@ -297,10 +308,32 @@ def test_generator_submit_fails_closed_when_task_lease_is_not_confirmed(monkeypa
     )
     task.set_flow_index("face-detection")
 
-    with pytest.raises(RuntimeLeaseUnavailable, match="not confirmed"):
-        generator.submit_task_to_controller(task)
+    assert generator.submit_task_to_controller(task) is False
     assert len(calls) == 1
     assert calls[0]["url"].endswith("/runtime-directory/task-leases")
+    assert generator._runtime_schedule_refresh_required.is_set() is False
+
+    generator.runtime_lease_client.acquire = lambda _task: (_ for _ in ()).throw(
+        RuntimeLeaseRetired(1)
+    )
+    assert generator.submit_task_to_controller(task) is False
+    assert generator._runtime_schedule_refresh_required.is_set() is True
+
+    generator._runtime_schedule_refresh_required.clear()
+    generator.runtime_lease_client.acquire = lambda _task: (_ for _ in ()).throw(
+        RuntimeLeaseIdentityError("invalid lease identity")
+    )
+    with pytest.raises(RuntimeLeaseIdentityError, match="invalid lease identity"):
+        generator.submit_task_to_controller(task)
+
+    generator._runtime_schedule_refresh_required.clear()
+    process = generator_module.multiprocessing.Process(
+        target=generator._runtime_schedule_refresh_required.set
+    )
+    process.start()
+    process.join(timeout=5)
+    assert process.exitcode == 0
+    assert generator._runtime_schedule_refresh_required.is_set() is True
 
 
 @pytest.mark.unit
@@ -331,7 +364,7 @@ def test_video_generator_submit_records_total_start_before_parent_submit(monkeyp
     monkeypatch.setattr(
         generator_module.Generator,
         "submit_task_to_controller",
-        lambda self, task: order.append("submit"),
+        lambda self, task: order.append("submit") or True,
     )
 
     generator = video_generator_module.VideoGenerator(
@@ -341,7 +374,7 @@ def test_video_generator_submit_records_total_start_before_parent_submit(monkeyp
         dag=build_dag_deployment(),
     )
 
-    generator.submit_task_to_controller(object())
+    assert generator.submit_task_to_controller(object()) is True
 
     assert order == ["total", "submit"]
 
@@ -411,3 +444,54 @@ def test_video_generator_run_requests_initial_schedule_after_health_before_data_
     assert getter_filter_calls == [9, 9, 9]
     assert data_getter_calls == [9]
     assert schedule_requests == [0, 6]
+
+
+@pytest.mark.unit
+def test_video_generator_run_refreshes_schedule_after_retired_lease(monkeypatch):
+    generator_module = importlib.import_module("core.generator.generator")
+    video_generator_module = importlib.import_module("core.generator.video_generator")
+
+    data_getter_calls = []
+
+    def data_getter(system):
+        data_getter_calls.append(system.source_id)
+        system._runtime_schedule_refresh_required.set()
+
+    hooks = {
+        "GEN_BSO": lambda system: {},
+        "GEN_ASO": lambda system, response: None,
+        "GEN_GETTER": data_getter,
+        "GEN_BSTO": lambda system, task: None,
+        "GEN_FILTER": object(),
+        "GEN_PROCESS": object(),
+        "GEN_COMPRESS": object(),
+        "GEN_GETTER_FILTER": lambda system: True,
+    }
+    patch_generator_runtime(
+        monkeypatch,
+        generator_module,
+        hooks,
+        video_generator_module=video_generator_module,
+    )
+
+    generator = video_generator_module.VideoGenerator(
+        source_id=10,
+        source_url="http://source/video",
+        source_metadata={"fps": 5},
+        dag=build_dag_deployment(),
+    )
+    schedule_requests = []
+
+    def fake_request_schedule_policy():
+        schedule_requests.append(generator.cumulative_scheduling_frame_count)
+        if len(schedule_requests) == 2:
+            raise StopGeneratorLoop
+        return True
+
+    monkeypatch.setattr(generator, "request_schedule_policy", fake_request_schedule_policy)
+
+    with pytest.raises(StopGeneratorLoop):
+        generator.run()
+
+    assert data_getter_calls == [10]
+    assert schedule_requests == [0, 0]

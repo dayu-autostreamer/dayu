@@ -77,6 +77,7 @@ class FakeScheduler:
         self.scenario_tasks = []
         self.resource_updates = []
         self.leases = set()
+        self.lease_operations = []
 
     def register_schedule_table(self, source_id):
         return None
@@ -173,6 +174,7 @@ class FakeScheduler:
         }
 
     def acquire_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
+        self.lease_operations.append(("acquire", int(revision), str(root_uuid)))
         self.leases.add((int(revision), str(root_uuid)))
         return {
             "revision": int(revision), "root_uuid": str(root_uuid), "expires_at": 9999999999.0,
@@ -180,6 +182,7 @@ class FakeScheduler:
         }
 
     def renew_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
+        self.lease_operations.append(("renew", int(revision), str(root_uuid)))
         assert (int(revision), str(root_uuid)) in self.leases
         return {
             "revision": int(revision), "root_uuid": str(root_uuid), "expires_at": 9999999999.0,
@@ -187,6 +190,7 @@ class FakeScheduler:
         }
 
     def release_task_lease(self, revision, root_uuid):
+        self.lease_operations.append(("release", int(revision), str(root_uuid)))
         self.leases.discard((int(revision), str(root_uuid)))
         return {"revision": int(revision), "root_uuid": str(root_uuid), "released": True}
 
@@ -407,8 +411,6 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
     router = ComponentRouter(scheduler_server, controller_server, processor_server, distributor_server)
     for module in (generator_module, controller_module, processor_server_module, distributor_module):
         monkeypatch.setattr(module, "http_request", router.request)
-    controller_server.controller.runtime_lease_client.requester = router.request
-    processor_server.runtime_lease_client.requester = router.request
     distributor_server.distributor.runtime_lease_client.requester = router.request
 
     try:
@@ -454,6 +456,11 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
         assert len(scheduler_server.scheduler.scenario_tasks) == 1
         scenario_task = scheduler_server.scheduler.scenario_tasks[0]
         assert scenario_task.get_scenario_data("face-detection") == {"obj_num": 1}
+        assert scheduler_server.scheduler.lease_operations == [
+            ("acquire", 1, stored_task.get_root_uuid()),
+            ("renew", 1, stored_task.get_root_uuid()),
+            ("release", 1, stored_task.get_root_uuid()),
+        ]
     finally:
         router.close()
 
@@ -551,8 +558,6 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
         distributor_module,
     ):
         monkeypatch.setattr(module, "http_request", router.request)
-    controller_server.controller.runtime_lease_client.requester = router.request
-    processor_server.runtime_lease_client.requester = router.request
     distributor_server.distributor.runtime_lease_client.requester = router.request
 
     class BoundedVideoGenerator(video_generator_module.VideoGenerator):
@@ -611,6 +616,15 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
             "obj_num": 1,
             "payload": "stream-batch-2",
         }
+        assert scheduler_server.scheduler.lease_operations == [
+            operation
+            for task in stored_tasks
+            for operation in (
+                ("acquire", 1, task.get_root_uuid()),
+                ("renew", 1, task.get_root_uuid()),
+                ("release", 1, task.get_root_uuid()),
+            )
+        ]
     finally:
         router.close()
 

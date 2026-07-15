@@ -30,6 +30,7 @@ This section documents the service interfaces used by Dayu. It follows the imple
 | Serialized tasks | Internal services exchange `Task.serialize()` payloads. The exact schema is an internal contract defined in `core.lib.content.Task`. |
 | GET with request body | Some non-runtime endpoints currently use `GET` with JSON/form data. The method and body documented here are the canonical current contract and must change together with all callers. |
 | Visualization configs | Visualization hook selection is data-driven from YAML configs and not hard-coded in backend route handlers. |
+| Scheduler execution | Scheduler runs as one direct Uvicorn process. Blocking Redis-backed directory and lease handlers are synchronous FastAPI endpoints and run in its thread pool instead of blocking the ASGI event loop. |
 
 ## Runtime Flow
 
@@ -51,9 +52,10 @@ flowchart LR
     MON["Monitor"] --> SCH
 ```
 
-Generator acquires a revision/root-task lease before submission, controller and processor renew it, and distributor
-releases it after durable completion. Exact controller/processor identities travel in the serialized Task; no runtime
-API performs Kubernetes discovery.
+Generator acquires one revision/root-task lease before submission. Controller and processor follow the exact routes in
+the Task without calling the lease API. Distributor performs the single final renewal before persistence, waits for
+the Scheduler scenario acknowledgement, and then releases the lease. Exact controller/processor identities travel in
+the serialized Task; no runtime API performs Kubernetes discovery.
 
 ## Documents In This Section
 

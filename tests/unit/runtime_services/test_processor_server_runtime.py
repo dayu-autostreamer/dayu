@@ -1,5 +1,4 @@
 import asyncio
-from contextlib import contextmanager
 import importlib
 from types import SimpleNamespace
 
@@ -7,7 +6,7 @@ import pytest
 
 from core.lib.common import Queue
 from core.lib.content import Task
-from core.lib.runtime import RuntimeContext, RuntimeLeaseUnavailable
+from core.lib.runtime import RuntimeContext
 
 
 processor_server_module = importlib.import_module("core.processor.processor_server")
@@ -95,26 +94,6 @@ class FakeBackgroundTasks:
         self.tasks.append((func, args, kwargs))
 
 
-class RecordingLeaseClient:
-    def __init__(self):
-        self.renewed = []
-
-    def renew(self, task):
-        self.renewed.append(
-            (task.get_runtime_directory_revision(), task.get_root_uuid())
-        )
-        return {
-            "revision": task.get_runtime_directory_revision(),
-            "root_uuid": task.get_root_uuid(),
-            "expires_at": 123.0,
-        }
-
-    @contextmanager
-    def keepalive(self, task):
-        self.renew(task)
-        yield
-
-
 @pytest.fixture
 def server_context(monkeypatch):
     fake_queue = Queue()
@@ -139,13 +118,10 @@ def server_context(monkeypatch):
     RuntimeContext.reset_default()
     monkeypatch.setattr(processor_server_module.threading, "Thread", DummyThread)
     server = processor_server_module.ProcessorServer()
-    lease_client = RecordingLeaseClient()
-    server.runtime_lease_client = lease_client
     return SimpleNamespace(
         server=server,
         queue=fake_queue,
         processor=fake_processor,
-        lease_client=lease_client,
     )
 
 
@@ -220,9 +196,7 @@ def test_processor_server_process_task_service_records_duration_and_sends_result
             "frame_count": 0,
         },
     }
-    assert server_context.lease_client.renewed == [
-        (task.get_runtime_directory_revision(), task.get_root_uuid())
-    ]
+    assert not hasattr(server, "runtime_lease_client")
     assert processed.get_service("detector").get_real_execute_time() == 0.75
     assert durations == [(4, False, "real_execute"), (4, True, "real_execute")]
     assert requests == [
@@ -253,20 +227,13 @@ def test_processor_server_process_task_service_skips_none_result(server_context,
 
 
 @pytest.mark.unit
-def test_processor_fails_closed_before_execution_when_lease_renewal_fails(server_context):
+def test_processor_execution_does_not_require_runtime_lease_client(server_context):
     server = server_context.server
     task = build_task(["detector"], "detector")
 
-    class FailedLeaseClient:
-        @contextmanager
-        def keepalive(self, current_task):
-            raise RuntimeLeaseUnavailable("scheduler unavailable")
-            yield
-
-    server.runtime_lease_client = FailedLeaseClient()
-    with pytest.raises(RuntimeLeaseUnavailable, match="scheduler unavailable"):
-        server.process_task_service(task)
-    assert server_context.processor.calls == []
+    assert not hasattr(server, "runtime_lease_client")
+    assert server.process_task_service(task) is task
+    assert server_context.processor.calls == [task]
 
 
 @pytest.mark.unit
@@ -328,6 +295,32 @@ def test_processor_server_process_return_service_handles_processor_returning_non
     assert response is None
     assert saved == [("none.bin", b"payload")]
     assert removed == ["none.bin"]
+
+
+@pytest.mark.unit
+def test_processor_server_process_return_service_cleans_temp_file_when_processor_fails(
+    server_context, monkeypatch
+):
+    server = server_context.server
+    task = build_task(["detector"], "detector", file_path="failed.bin")
+    removed = []
+
+    monkeypatch.setattr(
+        processor_server_module.FileOps,
+        "save_task_file_in_temp",
+        lambda current_task, file_data: None,
+    )
+    monkeypatch.setattr(
+        processor_server_module.FileOps,
+        "remove_task_file_in_temp",
+        lambda current_task: removed.append(current_task.get_file_path()),
+    )
+    server.processor = lambda current_task: (_ for _ in ()).throw(RuntimeError("processor failed"))
+
+    with pytest.raises(RuntimeError, match="processor failed"):
+        asyncio.run(server.process_return_service(FakeUploadFile(b"payload"), task.serialize()))
+
+    assert removed == ["failed.bin"]
 
 
 @pytest.mark.unit

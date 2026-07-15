@@ -138,7 +138,7 @@ def test_http_video_getter_call_generates_tasks_and_cleans_files(monkeypatch, tm
             "file_name": file_name,
             "hashes": hash_codes,
         },
-        submit_task_to_controller=lambda task: submitted.append(task),
+        submit_task_to_controller=lambda task: submitted.append(task) or True,
     )
     submitted = []
     removed = []
@@ -149,11 +149,44 @@ def test_http_video_getter_call_generates_tasks_and_cleans_files(monkeypatch, tm
     monkeypatch.setattr(http_getter_module.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(http_getter_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
 
-    getter(system)
+    assert getter(system) is True
 
     assert system.cumulative_scheduling_frame_count == 4
     assert submitted == [{"task_id": 11, "file_name": "payload.mp4", "hashes": ["hash-0", "hash-1"]}]
     assert removed == ["payload.mp4"]
+
+
+@pytest.mark.unit
+def test_http_video_getter_cleans_file_when_task_admission_is_rejected(monkeypatch, tmp_path):
+    getter = http_getter_module.HttpVideoGetter()
+    payload_path = tmp_path / "rejected.mp4"
+    removed = []
+    system = SimpleNamespace(
+        source_id=5,
+        meta_data={"fps": 10, "buffer_size": 1},
+        raw_meta_data={"fps": 10},
+        cumulative_scheduling_frame_count=0,
+        task_dag=build_task().get_dag(),
+        service_deployment={"detector": ["edge-a"]},
+        generate_task=lambda *args: object(),
+        submit_task_to_controller=lambda task: False,
+    )
+
+    def fake_request_source_data(cur_system, task_id):
+        getter.hash_codes = ["hash-0"]
+        getter.file_name = str(payload_path)
+        payload_path.write_bytes(b"video")
+        return True
+
+    monkeypatch.setattr(getter, "request_source_data", fake_request_source_data)
+    monkeypatch.setattr(http_getter_module.Counter, "get_count", staticmethod(lambda name: 12))
+    monkeypatch.setattr(http_getter_module.time, "monotonic", lambda: 12.5)
+    monkeypatch.setattr(http_getter_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(http_getter_module.FileOps, "remove_file", lambda path: removed.append(path))
+
+    assert getter(system) is False
+    assert getter.last_submit_ts == 12.5
+    assert removed == [str(payload_path)]
 
 
 @pytest.mark.unit
@@ -177,7 +210,7 @@ def test_http_video_getter_rate_limits_between_task_submissions(monkeypatch, tmp
             "file_name": file_name,
             "hashes": hash_codes,
         },
-        submit_task_to_controller=lambda task: submitted.append((clock["now"], task)),
+        submit_task_to_controller=lambda task: submitted.append((clock["now"], task)) or True,
     )
 
     def fake_request_source_data(cur_system, task_id):
@@ -257,15 +290,40 @@ def test_rtsp_video_getter_helpers_reconnect_and_dispatch(monkeypatch):
     run_system = SimpleNamespace(
         source_id=2,
         generate_task=lambda task_id, dag, deployment, metadata, file_name, hash_codes: {"task_id": task_id, "file": file_name},
-        submit_task_to_controller=lambda task: generated.append(("submit", task)),
+        submit_task_to_controller=lambda task: generated.append(("submit", task)) or True,
         raw_meta_data={"resolution": "1080p"},
         meta_data={"resolution": "720p"},
     )
 
-    getter.generate_and_send_new_task(run_system, [frame], 7, build_task().get_dag(), {"detector": ["edge-a"]}, {"resolution": "720p"})
+    assert getter.generate_and_send_new_task(
+        run_system,
+        [frame],
+        7,
+        build_task().get_dag(),
+        {"detector": ["edge-a"]},
+        {"resolution": "720p"},
+    ) is True
     assert any(event[0] == "compress" for event in generated)
     assert any(event[0] == "submit" for event in generated)
     assert removed and removed[0].endswith(".mp4")
+
+    removed.clear()
+    monkeypatch.setattr(
+        getter,
+        "compress_frames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("compression failed")),
+    )
+    with pytest.raises(RuntimeError, match="compression failed"):
+        getter.generate_and_send_new_task(
+            run_system,
+            [frame],
+            8,
+            build_task().get_dag(),
+            {"detector": ["edge-a"]},
+            {"resolution": "720p"},
+        )
+    assert len(removed) == 1
+    assert removed[0].endswith(".mp4")
 
     started_processes = []
 

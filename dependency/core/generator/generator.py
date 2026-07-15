@@ -1,12 +1,19 @@
 import copy
 import json
+import multiprocessing
 
 from core.lib.common import Context, LOGGER
 from core.lib.content import Task
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.network import http_request
 from core.lib.estimation import TimeEstimator
-from core.lib.runtime import RuntimeContext, RuntimeLeaseClient, RuntimeResolver
+from core.lib.runtime import (
+    RuntimeContext,
+    RuntimeLeaseClient,
+    RuntimeLeaseRetired,
+    RuntimeLeaseUnavailable,
+    RuntimeResolver,
+)
 
 
 class Generator:
@@ -25,6 +32,9 @@ class Generator:
         self.deployment_version = 0
         self.runtime_directory_revision = 0
         self.runtime_routes = {}
+        # RTSP submission runs in a child process, so this signal must be
+        # process-shared for a retired lease to refresh the parent loop.
+        self._runtime_schedule_refresh_required = multiprocessing.Event()
         # raw_meta_data contains meta configuration of source
         self.raw_meta_data = metadata.copy()
         # meta_data contains data configuration decisions
@@ -193,10 +203,25 @@ class Generator:
 
         self.before_submit_task_operation(self, cur_task)
 
-        # Acquiring against the active revision is the admission boundary for
-        # a new task.  RuntimeLeaseClient raises on every ambiguous outcome, so
-        # no task is submitted when the scheduler cannot prove the lease.
-        self.runtime_lease_client.acquire(cur_task)
+        # Lease acquisition is the only scheduler-backed admission check on
+        # the data path. A transient scheduler failure drops this task without
+        # killing the long-running generator; a retired snapshot additionally
+        # requests a fresh schedule before the next ingestion round.
+        try:
+            self.runtime_lease_client.acquire(cur_task)
+        except RuntimeLeaseRetired as exc:
+            self._runtime_schedule_refresh_required.set()
+            LOGGER.warning(
+                f'[Runtime Lease] Drop task from retired directory: '
+                f'source={cur_task.get_source_id()}, task={cur_task.get_task_id()}, error={exc}'
+            )
+            return False
+        except RuntimeLeaseUnavailable as exc:
+            LOGGER.warning(
+                f'[Runtime Lease] Drop task because admission is unavailable: '
+                f'source={cur_task.get_source_id()}, task={cur_task.get_task_id()}, error={exc}'
+            )
+            return False
 
         dst_device = cur_task.get_current_stage_device()
         controller_address = self.runtime_resolver.resolve_url(
@@ -207,16 +232,18 @@ class Generator:
             exact=True,
         )
         self.record_transmit_start_ts(cur_task)
-        http_request(url=controller_address,
-                     method=NetworkAPIMethod.CONTROLLER_TASK,
-                     data={'data': cur_task.serialize()},
-                     files={'file': (cur_task.get_file_path(),
-                                     open(cur_task.get_file_path(), 'rb'),
-                                     'multipart/form-data')}
-                     )
+        with open(cur_task.get_file_path(), 'rb') as task_file:
+            http_request(url=controller_address,
+                         method=NetworkAPIMethod.CONTROLLER_TASK,
+                         data={'data': cur_task.serialize()},
+                         files={'file': (cur_task.get_file_path(),
+                                         task_file,
+                                         'multipart/form-data')}
+                         )
         LOGGER.info(f'[To Controller {dst_device}] source: {cur_task.get_source_id()}  '
                     f'task: {cur_task.get_task_id()}  '
                     f'file: {cur_task.get_file_path()}')
+        return True
 
     def run(self):
         assert None, 'Base Generator should not be invoked directly!'

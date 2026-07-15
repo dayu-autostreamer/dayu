@@ -449,6 +449,23 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
             "deadline": 123.0,
         }
 
+        server.scheduler.acquire_task_lease = retired_renew
+        retired_acquire = client.post(
+            "/runtime-directory/task-leases",
+            data={"data": json.dumps({
+                "revision": 3,
+                "root_uuid": "task-4",
+                "ttl_seconds": 60,
+            })},
+        )
+        assert retired_acquire.status_code == 200
+        assert retired_acquire.json() == {
+            "revision": 3,
+            "root_uuid": "task-4",
+            "retired": True,
+            "deadline": 123.0,
+        }
+
 
 @pytest.mark.integration
 def test_processor_server_exposes_queue_processing_and_return_contract(mounted_runtime, monkeypatch, tmp_path):
@@ -475,20 +492,7 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
     monkeypatch.setenv("GUNICORN_PORT", "9004")
 
     server = processor_server_module.ProcessorServer()
-    renewed = []
-    class Lease:
-        @staticmethod
-        def keepalive(task):
-            class Guard:
-                def __enter__(self):
-                    renewed.append(task.get_root_uuid())
-
-                def __exit__(self, *_args):
-                    return False
-
-            return Guard()
-
-    server.runtime_lease_client = Lease()
+    assert not hasattr(server, "runtime_lease_client")
     task = build_task(file_path="processor-input.bin")
 
     with TestClient(server.app) as client:
@@ -540,7 +544,6 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
         }
         assert client.get("/queue_length").json() == 0
         assert client.get("/model_flops").json() == 321.0
-        assert len(renewed) == 2
 
 
 @pytest.mark.integration

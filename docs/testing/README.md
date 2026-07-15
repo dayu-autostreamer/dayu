@@ -121,7 +121,8 @@ For `dependency/core/lib/` outside `algorithms/`, the current state is now much 
 For service-layer code, the most useful unit tests are not “does FastAPI work” or “does OpenCV decode real video.” Mature projects usually focus on consumer contracts instead:
 
 - `processor` unit tests should prove how a task is read, how upstream content is consumed, how model/tracker/classifier dependencies are invoked, and how results/scenarios are written back into the task.
-- task-lease tests should prove Generator acquire, Controller/Processor renew, Distributor release ordering, atomic
+- task-lease tests should prove one Generator acquire per task, no Controller/Processor lease calls, Distributor final
+  renew/persist/scenario-ack/release ordering, transient acquire failure isolation, retired-schedule refresh, atomic
   directory commit plus old-lease clamping, inactive-revision renewal rejection without a marker, immutable retirement
   deadlines/forced revocation, and fail-closed behavior without contacting Kubernetes.
 - structured application unit tests should prove each application service can be instantiated independently, returns only
@@ -129,7 +130,9 @@ For service-layer code, the most useful unit tests are not “does FastAPI work�
 - `monitor` unit tests should prove how monitor workers are instantiated, scheduled, joined, and posted to the scheduler API.
 - `distributor` unit tests should prove persistence ordering, incremental reads, export behavior, and scheduler forwarding without needing a full pipeline run.
 - `generator_server` unit tests should prove context parameters are collected and passed into the selected generator hook correctly.
-- `scheduler` unit tests should prove startup-policy fallback, backup offloading, scenario/resource propagation, and resource-lock passthrough without depending on research agents.
+- `scheduler` unit tests should prove direct single-process Uvicorn startup, thread-pool-safe synchronous Redis handlers,
+  startup-policy fallback, backup offloading, scenario/resource propagation, and resource-lock passthrough without
+  depending on research agents.
 - package `__init__` tests should prove optional imports degrade gracefully when third-party dependencies are absent, while real core import errors still surface immediately.
 - `*_server` unit tests should prove queueing, background handling, serialization, timing hooks, and outbound request contracts.
 

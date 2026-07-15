@@ -58,15 +58,15 @@ when constructing a runtime context outside the normal renderer.
 
 Each task is pinned to the immutable pair
 `(runtime_directory_revision, root_uuid)`. The Generator must acquire that
-lease before its first submission, Controllers renew it whenever they receive
-or advance the task, and Processors maintain a renewal heartbeat throughout execution.
-After the Distributor has durably stored the result and the Scheduler has
-acknowledged its scenario update, it releases the lease. Any acquire or renew
-outcome that is not explicitly acknowledged stops task progress. A failed
-release is only logged and leaves the lease to expire naturally. During
-redeployment, Scheduler caps every old-revision lease at one persisted,
-immutable retirement deadline; after that deadline any remaining leases are
-revoked instead of delaying RuntimeService reclamation indefinitely.
+lease once before its first submission. Controller and Processor do not call
+the lease API. Distributor renews once immediately before durable persistence,
+requires Scheduler to acknowledge the scenario update, and then releases the
+lease. A transient acquire failure drops only the current task and leaves the
+Generator loop alive; a retired response requests a fresh schedule. A failed
+release is only logged and leaves the lease to expire naturally. The configured
+TTL covers normal end-to-end processing. During redeployment, Scheduler caps
+every old-revision lease at one persisted, immutable retirement deadline; that
+deadline is the hard upper bound and revokes any remainder when it expires.
 
 ## Global Catalogs
 
@@ -115,7 +115,7 @@ Runtime control fields:
 | `runtime.result-request-timeout-seconds` | `5` | Maximum time for one incremental Distributor result poll. A stopped query can therefore leave a cancelled worker blocked for at most this bounded request. |
 | `runtime.result-batch-size` | `20` | Maximum task records returned by one Distributor poll. This matches the bounded in-memory visualization queue instead of requesting the entire accumulated result set. |
 | `runtime.retirement-grace-seconds` | `180` | Maximum retirement grace for tasks on the previous directory revision. Scheduler uses its own clock to establish the deadline atomically with proposal commit and lease clamping; Backend persists the returned value, the deadline is never extended, and Scheduler revokes remaining leases when it expires. |
-| `runtime.lease-ttl-seconds` | `3600` | Lease TTL injected into runtime bootstrap. |
+| `runtime.lease-ttl-seconds` | `3600` | End-to-end task lease TTL injected into runtime bootstrap; a retired old revision is still capped by its immutable retirement deadline. |
 
 Only the lease-protected retirement gates another rollout, and only until this fixed grace expires. If Kubernetes
 exact-UID deletion still fails after the deadline, Backend retains those identities in its cleanup backlog and retries
@@ -132,6 +132,9 @@ rejects templates that attempt to define one instead of silently stripping or ac
 `--appendonly yes --appendfsync always --dir /data`. This persists Scheduler's active RuntimeDirectory, expiring
 proposals, and task leases across Scheduler/Redis Pod replacement. The path is namespace-scoped but node-local: keep it
 writable and durable, and explicitly migrate it if the support Redis moves to another cloud node.
+
+Scheduler uses one direct Uvicorn process. Blocking Redis-backed directory and lease endpoints are synchronous FastAPI
+handlers and therefore run in the framework thread pool; this execution model has no user-facing tuning switch.
 
 Normal uninstall uses Scheduler's install-scoped proposal index to atomically delete the active directory key, every
 pending proposal, and the index itself after immediately fencing relevant revisions. It does not wait for lease

@@ -1,3 +1,4 @@
+import inspect
 import json
 import threading
 
@@ -17,6 +18,7 @@ from core.scheduler.task_lease import (
 )
 from core.scheduler.task_lease import RedisTaskLeaseStore
 from core.scheduler.scheduler import Scheduler
+from core.scheduler.scheduler_server import SchedulerServer
 from core.lib.runtime import RuntimeEndpoint
 
 
@@ -270,11 +272,11 @@ class FakeTaskLeaseRedis:
             assert key_count == 3
             assert keys[0].endswith(":active")
             requested, now, expiry, member, _ttl = args
-            if self.active_revision != int(requested):
-                return [0, str(self.active_revision)]
             retirement = self.retirements.get(revision)
             if retirement:
                 return [1, str(retirement["deadline"])]
+            if self.active_revision != int(requested):
+                return [0, str(self.active_revision)]
             self._prune(revision, float(now))
             self.leases.setdefault(revision, {})[str(member)] = float(expiry)
             return [2, str(expiry)]
@@ -518,13 +520,37 @@ def test_redis_stores_use_absolute_cluster_dns_at_connection_boundary(monkeypatc
             "host": "redis.dayu.svc.cluster.local.",
             "port": 6379,
             "decode_responses": True,
+            "socket_connect_timeout": 5.0,
+            "socket_timeout": 5.0,
         },
         {
             "host": "redis.dayu.svc.cluster.local.",
             "port": 6379,
             "decode_responses": True,
+            "socket_connect_timeout": 5.0,
+            "socket_timeout": 5.0,
         },
     ]
+
+
+@pytest.mark.unit
+def test_scheduler_runtime_state_handlers_run_outside_the_event_loop():
+    for method_name in (
+        "get_runtime_directory",
+        "put_runtime_directory",
+        "clear_runtime_directory",
+        "propose_runtime_directory",
+        "commit_runtime_directory",
+        "reject_runtime_directory",
+        "count_task_leases",
+        "retire_task_leases",
+        "acquire_task_lease",
+        "renew_task_lease",
+        "release_task_lease",
+    ):
+        assert not inspect.iscoroutinefunction(getattr(SchedulerServer, method_name))
+
+    assert inspect.iscoroutinefunction(SchedulerServer.get_resource_lock)
 
 
 @pytest.mark.unit
@@ -646,7 +672,7 @@ def test_memory_scheduler_commit_switches_directory_and_arms_retirement_together
     assert scheduler.renew_task_lease(
         1, "in-flight", ttl_seconds=100,
     )["expires_at"] == 120.0
-    with pytest.raises(RuntimeDirectoryConflict, match="active revision is 2"):
+    with pytest.raises(TaskLeaseRetired, match="deadline 120.0"):
         scheduler.acquire_task_lease(1, "late", ttl_seconds=10)
 
 
@@ -735,6 +761,8 @@ def test_redis_task_lease_retirement_survives_restart_and_checks_active_atomical
         first.renew(3, "task-a", ttl_seconds=100, active_revision=3)
 
     assert first.retire(3, deadline=120)["deadline"] == 120.0
+    with pytest.raises(TaskLeaseRetired, match="deadline 120.0"):
+        first.acquire(3, "late-retired-task", active_revision=4)
     restarted = RedisTaskLeaseStore(redis, install_id="test", clock=lambda: now[0])
     assert restarted.retire(3, deadline=140)["deadline"] == 120.0
     assert restarted.renew(3, "task-a", ttl_seconds=100)["expires_at"] == 120.0
@@ -750,3 +778,26 @@ def test_redis_task_lease_retirement_survives_restart_and_checks_active_atomical
     with pytest.raises(TaskLeaseRetired, match="revision 3"):
         restarted.renew(3, "task-a")
     assert restarted.release(3, "task-a")["already_released"] is True
+
+
+@pytest.mark.unit
+def test_redis_scheduler_lease_path_does_not_pre_read_active_directory():
+    redis = FakeTaskLeaseRedis(active_revision=3)
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler._runtime_state_lock = threading.RLock()
+    scheduler.task_leases = RedisTaskLeaseStore(
+        redis,
+        install_id="test",
+        clock=lambda: 100.0,
+    )
+
+    def unexpected_directory_read():
+        raise AssertionError("Redis lease admission must be one atomic script")
+
+    scheduler.runtime_directory_revision = unexpected_directory_read
+
+    acquired = scheduler.acquire_task_lease(3, "task-a", ttl_seconds=100)
+    renewed = scheduler.renew_task_lease(3, "task-a", ttl_seconds=100)
+
+    assert acquired["expires_at"] == 200.0
+    assert renewed["expires_at"] == 200.0
