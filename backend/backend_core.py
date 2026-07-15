@@ -10,12 +10,13 @@ from collections import deque
 import os
 import time
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, TaskConstant, \
+from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, Queue, TaskConstant, \
     ConfigBoundInstanceCache
-from core.lib.network import http_request, NetworkAPIPath, NetworkAPIMethod
+from core.lib.network import connection_host, http_request, NetworkAPIPath, NetworkAPIMethod
 from core.lib.estimation import Timer
 
-from runtime_orchestrator import RuntimeOrchestrator
+from runtime_orchestrator import RuntimeOperationCancelled, RuntimeOrchestrator
+from runtime_telemetry import RuntimeTelemetryCache
 from template_helper import TemplateHelper
 
 
@@ -66,14 +67,59 @@ class BackendCore:
         self.resource_url = None
         self.log_fetch_url = None
 
+        runtime_config = self.template_helper.load_base_info().get('runtime', {})
+        self.runtime_telemetry = RuntimeTelemetryCache(
+            request=lambda *args, **kwargs: http_request(*args, **kwargs),
+            runtime_metrics=lambda refs, request_timeout_seconds: (
+                self.runtime_orchestrator.sample_runtime_metrics(
+                    refs,
+                    request_timeout_seconds=request_timeout_seconds,
+                )
+            ),
+            interval_seconds=runtime_config.get('telemetry-sample-interval-seconds', 2),
+            metrics_interval_seconds=runtime_config.get(
+                'metrics-sample-interval-seconds', 10,
+            ),
+            scheduler_request_timeout_seconds=runtime_config.get(
+                'telemetry-request-timeout-seconds', 3,
+            ),
+            kubernetes_request_timeout_seconds=runtime_config.get(
+                'metrics-request-timeout-seconds', 5,
+            ),
+        )
+
         self.inner_datasource = self.check_simulation_datasource()
         self.source_open = False
         self.source_label = ''
         self.query_lock = threading.Lock()
+        self._query_generation = 0
+        self._query_cancel_event = None
+        self._result_thread = None
+        # Query admission follows the committed runtime lifecycle.  It is
+        # enabled only after install/recovery publishes an active directory
+        # and is disabled atomically with query cancellation before uninstall.
+        self._query_admission_enabled = False
+        self.result_request_timeout_seconds = max(
+            0.1,
+            float(runtime_config.get('result-request-timeout-seconds', 5)),
+        )
+        self.result_batch_size = max(
+            1,
+            int(runtime_config.get('result-batch-size', 20)),
+        )
 
         self.task_results = {}
 
         self.is_get_result = False
+        # Lifecycle cancellation is coordinated independently from the
+        # RuntimeOrchestrator transaction lock.  An uninstall request registers
+        # here first and can therefore signal an install that is blocked in a
+        # RuntimeService watch before waiting for the serialized cleanup
+        # transaction.  The request counter also closes the stop-before-token
+        # race: an overlapping install cannot register after stop has started.
+        self._lifecycle_control_lock = threading.Lock()
+        self._install_cancel_event = None
+        self._stop_request_count = 0
         self._redeployment_lock = threading.Lock()
         self._redeployment_stop_event = None
         self._redeployment_thread = None
@@ -130,7 +176,10 @@ class BackendCore:
             if directory is None:
                 raise RuntimeError('recovered active session has no RuntimeDirectory')
             self._bind_runtime_urls(directory)
+            self.runtime_telemetry.start()
             self._start_redeployment_loop(session.install_id)
+            with self.query_lock:
+                self._query_admission_enabled = True
         except Exception as exc:
             # Keep the management API available for inspection/uninstall even
             # when an external dependency is unavailable during process start.
@@ -146,37 +195,97 @@ class BackendCore:
 
     def parse_and_apply_templates(self, policy, source_deploy, source_label=''):
         """Install one transactional managed-runtime session."""
+        cancel_event = threading.Event()
+        with self._lifecycle_control_lock:
+            if self._stop_request_count:
+                return False, 'Install cancelled by lifecycle operation'
+            if self._install_cancel_event is not None:
+                return False, 'Another install operation is already in progress'
+            self._install_cancel_event = cancel_event
+
+        directory = None
         try:
             directory = self.runtime_orchestrator.install(
                 policy=policy,
                 source_deploy=source_deploy,
                 source_label=source_label,
+                cancel_event=cancel_event,
             )
+        except RuntimeOperationCancelled:
+            return False, 'Install cancelled by lifecycle operation'
         except Exception as exc:
             LOGGER.warning(f'Managed runtime install failed: {exc}')
             LOGGER.exception(exc)
             return False, str(exc)
+        finally:
+            # Successful finalization below clears the token atomically.  Every
+            # other exit must release it here without disturbing a later install.
+            if directory is None:
+                with self._lifecycle_control_lock:
+                    if self._install_cancel_event is cancel_event:
+                        self._install_cancel_event = None
 
-        self._bind_runtime_urls(directory)
-        self._start_redeployment_loop(directory.install_id)
-        return True, 'Install services successfully'
+        # Finalize the local bindings in the same short critical section used
+        # by stop registration.  Either install commits all local admission
+        # state first, or stop wins, signals the token, and install publishes
+        # none of it after uninstall.
+        with self._lifecycle_control_lock:
+            try:
+                if cancel_event.is_set() or self._stop_request_count:
+                    return False, 'Install cancelled by lifecycle operation'
+                self._bind_runtime_urls(directory)
+                self.runtime_telemetry.start()
+                self._start_redeployment_loop(directory.install_id)
+                with self.query_lock:
+                    self._query_admission_enabled = True
+                return True, 'Install services successfully'
+            finally:
+                if self._install_cancel_event is cancel_event:
+                    self._install_cancel_event = None
 
     def parse_and_delete_templates(self):
         """Stop generators, drain exact task leases and remove the session."""
-        self._stop_redeployment_loop()
+        # Register stop before touching any other lifecycle state.  This both
+        # interrupts an in-flight install and prevents an overlapping install
+        # from registering a token until this stop request has settled.
+        with self._lifecycle_control_lock:
+            self._stop_request_count += 1
+            install_cancel_event = self._install_cancel_event
+            if install_cancel_event is not None:
+                install_cancel_event.set()
+
         try:
+            # Query ownership belongs to the lifecycle controller, not to an
+            # API caller. Closing and admission blocking in one short critical
+            # section prevents a concurrent /submit_query from reopening while
+            # uninstall is draining the runtime.
+            with self.query_lock:
+                self._query_admission_enabled = False
+                self._close_query_locked()
+            # Stop every producer of Scheduler/Kubernetes traffic before the
+            # serialized uninstall transaction. A failed uninstall leaves its
+            # session non-active, so telemetry deliberately remains unbound.
+            self._stop_redeployment_loop()
+            self.runtime_telemetry.unbind()
             self.runtime_orchestrator.uninstall()
+            self.resource_url = None
+            self.result_url = None
+            self.result_file_url = None
+            self.log_fetch_url = None
+            return True, 'Uninstall services successfully'
         except Exception as exc:
             LOGGER.warning(f'Managed runtime uninstall failed: {exc}')
             LOGGER.exception(exc)
             return False, str(exc)
-        self.resource_url = None
-        self.result_url = None
-        self.result_file_url = None
-        self.log_fetch_url = None
-        return True, 'Uninstall services successfully'
+        finally:
+            # Registration and release intentionally enclose every operation
+            # above. Otherwise an exception while closing local state would
+            # permanently reject future installs. A counter also keeps install
+            # admission closed until all overlapping stop requests have ended.
+            with self._lifecycle_control_lock:
+                self._stop_request_count -= 1
 
-    def parse_and_redeploy_services(self, policy=None):
+    def parse_and_redeploy_services(self, policy=None, cancel_event=None):
         """Publish a processor rollout; unchanged plans are a successful no-op."""
         session = self.runtime_orchestrator.current_session()
         if session is None:
@@ -185,15 +294,26 @@ class BackendCore:
         if policy is None:
             return False, f'scheduler policy {session.policy_id!r} does not exist'
         try:
-            changed = self.runtime_orchestrator.redeploy(policy)
+            changed = self.runtime_orchestrator.redeploy(
+                policy,
+                cancel_event=cancel_event,
+            )
+        except RuntimeOperationCancelled:
+            return False, 'Redeployment cancelled by lifecycle operation'
         except Exception as exc:
             LOGGER.warning(f'Managed processor rollout failed: {exc}')
             LOGGER.exception(exc)
             return False, str(exc)
         if changed:
             directory = self.runtime_orchestrator.active_directory()
-            if directory is not None:
-                self._bind_runtime_urls(directory)
+            with self._lifecycle_control_lock:
+                if (
+                    self._stop_request_count
+                    or (cancel_event is not None and cancel_event.is_set())
+                ):
+                    return False, 'Redeployment cancelled by lifecycle operation'
+                if directory is not None:
+                    self._bind_runtime_urls(directory)
         return True, 'Redeployment succeeded' if changed else 'Deployment is unchanged'
 
     def find_service_by_id(self, service_id):
@@ -254,12 +374,8 @@ class BackendCore:
         if not self.inner_datasource:
             return url
         source_protocol = source_mode.split('_')[0]
-        datasource_fqdn = f'datasource-edge.{self.namespace}.svc.cluster.local'
+        datasource_fqdn = connection_host(f'datasource-edge.{self.namespace}.svc.cluster.local')
         return f'{source_protocol}://{datasource_fqdn}:8000/{source_type}{source_id}'
-
-    def check_node_exist(self, node):
-        record = self.runtime_orchestrator.node_inventory().get(str(node))
-        return bool(record and record.get('ready'))
 
     def get_edge_nodes(self):
         def sort_key(item):
@@ -374,12 +490,7 @@ class BackendCore:
 
         resource_snapshot = None
         if any(config.get('hook_name') == 'service_queue_length' for config in viz_configs):
-            self.get_resource_url()
-            if self.resource_url:
-                resource_snapshot = http_request(
-                    self.resource_url,
-                    method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE,
-                )
+            resource_snapshot = self.runtime_telemetry.snapshot()['resource']
 
         visualization_data = []
         for idx, (viz_config, viz_func) in enumerate(zip(viz_configs, viz_functions)):
@@ -402,21 +513,11 @@ class BackendCore:
         viz_configs = self.system_visualization_configs
         viz_functions = self.system_visualization_cache.sync_and_get(viz_configs, namespace='system_visualizer')
 
-        resource_snapshot = None
-        scheduling_overhead = None
-        try:
-            # Fetch each scheduler snapshot once; visualizers are pure transforms.
-            self.get_resource_url()
-            if self.resource_url:
-                resource_snapshot = http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE)
-                scheduler_base = self.resource_url.rsplit(NetworkAPIPath.SCHEDULER_GET_RESOURCE, 1)[0]
-                scheduling_overhead = http_request(
-                    f'{scheduler_base}{NetworkAPIPath.SCHEDULER_OVERHEAD}',
-                    method=NetworkAPIMethod.SCHEDULER_OVERHEAD,
-                )
-        except Exception as e:
-            LOGGER.warning(f'Failed to fetch scheduler resource for system viz: {str(e)}')
-            LOGGER.exception(e)
+        # Scheduler I/O is owned by one background sampler.  UI requests only
+        # transform an immutable last-known-good snapshot.
+        telemetry = self.runtime_telemetry.snapshot()
+        resource_snapshot = telemetry['resource']
+        scheduling_overhead = telemetry['scheduling_overhead']
 
         visualization_data = []
         for idx, (viz_config, viz_func) in enumerate(zip(viz_configs, viz_functions)):
@@ -435,7 +536,7 @@ class BackendCore:
 
         return visualization_data
 
-    def parse_task_result(self, results):
+    def parse_task_result(self, results, query_generation=None):
         for result in results:
             if result is None or result == '':
                 continue
@@ -445,14 +546,36 @@ class BackendCore:
             source_id = task.get_source_id()
             LOGGER.debug(task.get_delay_info())
 
-            if not self.source_open:
-                break
+            task_copy = copy.deepcopy(task)
+            with self.query_lock:
+                if (
+                    not self.source_open
+                    or (
+                        query_generation is not None
+                        and query_generation != self._query_generation
+                    )
+                ):
+                    break
+                task_queue = self.task_results.get(source_id)
+                if task_queue is not None:
+                    # Queue.put is non-blocking.  Keeping generation validation
+                    # and publication in the same critical section means close
+                    # cannot race between them and accept an old collector's
+                    # final result.
+                    task_queue.put(task_copy)
+                    continue
 
-            self.task_results[source_id].put(copy.deepcopy(task))
+            LOGGER.warning(
+                f'Ignore result for unknown source {source_id!r} in query generation '
+                f'{query_generation!r}'
+            )
 
-    def fetch_visualization_data(self, source_id):
-        assert source_id in self.task_results, f'Source_id {source_id} not found in task results!'
-        tasks = self.task_results[source_id].get_all()
+    def fetch_visualization_data(self, source_id, task_queue=None):
+        if task_queue is None:
+            task_queue = self.task_results.get(source_id)
+        if task_queue is None:
+            return []
+        tasks = task_queue.get_all()
         vis_results = []
 
         with Timer(f'Visualization preparation for {len(tasks)} tasks'):
@@ -474,33 +597,132 @@ class BackendCore:
 
         return vis_results
 
-    def run_get_result(self):
-        time_ticket = 0
-        while self.is_get_result:
+    def open_query(self, source_label):
+        """Atomically open one datasource/result-collector generation."""
+        source_config = self.find_datasource_configuration_by_label(source_label)
+        if not source_config:
+            return False, 'Datasource configuration not exists'
+
+        with self.query_lock:
+            if not self._query_admission_enabled or not self.result_url:
+                return False, 'Runtime is not ready for datasource queries'
+            if self.source_open:
+                if self.source_label == source_label:
+                    return True, 'Datasource is already open'
+                return False, 'Another datasource is already open, please close it first'
+
+            self._query_generation += 1
+            generation = self._query_generation
+            cancel_event = threading.Event()
+            self._query_cancel_event = cancel_event
+            self.source_open = True
+            self.source_label = source_label
+            source_ids = [source['id'] for source in source_config.get('source_list') or ()]
+            self.task_results = {source_id: Queue(20) for source_id in source_ids}
+            # Runtime endpoints are immutable for this install.  Capture the
+            # distributor URL per generation so a cancelled collector cannot
+            # refresh or overwrite lifecycle-owned URL bindings after uninstall.
+            result_url = self.result_url
+            self.is_get_result = True
+            thread = threading.Thread(
+                target=self.run_get_result,
+                args=(generation, cancel_event, result_url),
+                name=f'dayu-result-collector-{generation}',
+                daemon=True,
+            )
+            self._result_thread = thread
             try:
-                time.sleep(1)
-                self.get_result_url()
-                if not self.result_url:
-                    LOGGER.debug('[NO RESULT] Fetch result url failed.')
-                    continue
-                response = http_request(self.result_url,
-                                        method=NetworkAPIMethod.DISTRIBUTOR_RESULT,
-                                        json={'time_ticket': time_ticket, 'size': 0})
+                thread.start()
+            except Exception:
+                cancel_event.set()
+                self.source_open = False
+                self.source_label = ''
+                self.is_get_result = False
+                self.task_results.clear()
+                self._query_cancel_event = None
+                self._result_thread = None
+                raise
 
-                if not response:
-                    self.result_url = None
-                    self.result_file_url = None
-                    LOGGER.debug('[NO RESULT] Request result url failed.')
-                    continue
+        return True, 'Datasource open successfully'
 
-                time_ticket = response["time_ticket"]
-                results = response['result']
-                LOGGER.debug(f'Fetch {len(results)} tasks from time ticket: {time_ticket}')
-                self.parse_task_result(results)
+    def _close_query_locked(self):
+        """Cancel and clear the current generation while ``query_lock`` is held."""
+        if self._query_cancel_event is not None:
+            self._query_cancel_event.set()
+        self._query_generation += 1
+        self._query_cancel_event = None
+        self._result_thread = None
+        self.source_open = False
+        self.source_label = ''
+        self.is_get_result = False
+        self.task_results.clear()
+        self.customized_source_result_visualization_configs.clear()
 
-            except Exception as e:
-                LOGGER.warning(f'Unexpected error occurred in getting task result: {str(e)}')
-                LOGGER.exception(e)
+    def close_query(self):
+        """Cancel startup/collection immediately and clear its local state."""
+        with self.query_lock:
+            if not self.source_open and not self.is_get_result and self._query_cancel_event is None:
+                return True, 'Datasource is already closed'
+            self._close_query_locked()
+        return True, 'Datasource close successfully'
+
+    def query_snapshot(self, include_queues=False):
+        """Return one internally consistent, immutable query-state snapshot."""
+        with self.query_lock:
+            return {
+                'open': self.source_open,
+                'source_label': self.source_label,
+                'generation': self._query_generation,
+                'queues': dict(self.task_results) if include_queues else None,
+            }
+
+    def is_query_generation_active(self, generation):
+        with self.query_lock:
+            return self.source_open and generation == self._query_generation
+
+    def run_get_result(self, query_generation, cancel_event, result_url):
+        cancel_event = cancel_event or threading.Event()
+        time_ticket = 0
+        try:
+            while not cancel_event.wait(1):
+                with self.query_lock:
+                    if (
+                        not self.is_get_result
+                        or query_generation != self._query_generation
+                        or cancel_event is not self._query_cancel_event
+                    ):
+                        return
+                try:
+                    response = http_request(result_url,
+                                            method=NetworkAPIMethod.DISTRIBUTOR_RESULT,
+                                            timeout=self.result_request_timeout_seconds,
+                                            json={
+                                                'time_ticket': time_ticket,
+                                                'size': self.result_batch_size,
+                                            })
+
+                    if cancel_event.is_set():
+                        return
+                    if not response:
+                        LOGGER.debug('[NO RESULT] Request result url failed.')
+                        continue
+
+                    time_ticket = response["time_ticket"]
+                    results = response['result']
+                    LOGGER.debug(f'Fetch {len(results)} tasks from time ticket: {time_ticket}')
+                    self.parse_task_result(results, query_generation=query_generation)
+
+                except Exception as e:
+                    LOGGER.warning(f'Unexpected error occurred in getting task result: {str(e)}')
+                    LOGGER.exception(e)
+        finally:
+            with self.query_lock:
+                if (
+                    query_generation == self._query_generation
+                    and cancel_event is self._query_cancel_event
+                ):
+                    self.is_get_result = False
+                    self._result_thread = None
 
     def _start_redeployment_loop(self, install_id):
         """Replace the rollout worker with one scoped to this installation."""
@@ -540,49 +762,48 @@ class BackendCore:
             self._redeployment_stop_event = None
             self._redeployment_thread = None
 
-    def _wait_until_next_redeployment_cycle(self, stop_event, cycle_started_t):
-        interval_s = max(0.0, float(self.processor_redeployment_interval_s))
-        if interval_s <= 0.0:
-            return stop_event.is_set()
-
-        elapsed_s = max(0.0, time.monotonic() - cycle_started_t)
-        sleep_s = max(0.0, interval_s - elapsed_s)
-        return stop_event.wait(sleep_s) if sleep_s > 0.0 else stop_event.is_set()
-
     def run_cycle_deploy(self, stop_event, install_id):
         interval = max(0.0, float(self.processor_redeployment_interval_s))
         if interval <= 0:
             LOGGER.info('[Redeployment] Automatic processor rollout is disabled.')
             return
         try:
-            while not stop_event.is_set():
-                cycle_started_t = time.monotonic()
+            # Installation already committed the initial deployment.  Waiting
+            # before the first reconciliation avoids racing the management API
+            # and gives stop/reinstall an interruptible cancellation boundary.
+            while not stop_event.wait(interval):
                 try:
-                    # Serialize the final token check with stop/replacement. Once
-                    # uninstall returns from _stop_redeployment_loop, an old
-                    # worker can neither start nor repeat a redeployment call.
+                    # The lock protects only worker identity.  Never hold it
+                    # across scheduler/Kubernetes I/O: uninstall can invalidate
+                    # this token immediately and RuntimeOrchestrator serializes
+                    # any operation that was already in flight.
                     with self._redeployment_lock:
                         if self._redeployment_stop_event is not stop_event or stop_event.is_set():
                             return
-                        session = self.runtime_orchestrator.current_session()
-                        if (
-                            session is None
-                            or session.phase != 'active'
-                            or session.install_id != install_id
-                        ):
-                            LOGGER.debug(
-                                '[Redeployment] Managed runtime session changed; stop rollout loop.'
-                            )
-                            return
-                        policy = self.find_scheduler_policy_by_id(session.policy_id)
-                        result, message = self.parse_and_redeploy_services(policy)
+                    session = self.runtime_orchestrator.current_session()
+                    if (
+                        session is None
+                        or session.phase != 'active'
+                        or session.install_id != install_id
+                    ):
+                        LOGGER.debug(
+                            '[Redeployment] Managed runtime session changed; stop rollout loop.'
+                        )
+                        return
+                    if stop_event.is_set():
+                        return
+                    policy = self.find_scheduler_policy_by_id(session.policy_id)
+                    result, message = self.parse_and_redeploy_services(
+                        policy,
+                        cancel_event=stop_event,
+                    )
+                    if stop_event.is_set():
+                        return
                     if not result:
                         LOGGER.warning(f'[Redeployment] {message}')
                 except Exception as exc:
                     LOGGER.warning(f'[Redeployment] Unexpected rollout error: {exc}')
                     LOGGER.exception(exc)
-                if self._wait_until_next_redeployment_cycle(stop_event, cycle_started_t):
-                    return
         finally:
             with self._redeployment_lock:
                 if self._redeployment_stop_event is stop_event:
@@ -699,11 +920,13 @@ class BackendCore:
         return export_path
 
     def get_system_parameters(self):
-        # Skip system parameters retrieving when not installed
-        if not self.check_install_state():
+        # Session ownership is not readiness.  Never render/log telemetry from
+        # an activating, failed, draining, or uninstalling transaction.
+        session = self.runtime_orchestrator.current_session()
+        if session is None or session.phase != 'active':
             return []
 
-        # Backend-controlled timestamp and single resource fetch per request
+        # Backend-controlled timestamp; scheduler values are already cached.
         timestamp = time.strftime('%H:%M:%S', time.localtime())
 
         data = self.prepare_system_visualizations_data()
@@ -719,6 +942,20 @@ class BackendCore:
             LOGGER.exception(e)
 
         return [snapshot]
+
+    def get_runtime_telemetry(self, logical_service=''):
+        return self.runtime_telemetry.snapshot(logical_service=logical_service)
+
+    def close(self):
+        with self._lifecycle_control_lock:
+            if self._install_cancel_event is not None:
+                self._install_cancel_event.set()
+        self._stop_redeployment_loop()
+        with self.query_lock:
+            self._query_admission_enabled = False
+            self._close_query_locked()
+        self.runtime_telemetry.unbind()
+        self.runtime_telemetry.close()
 
     def check_datasource_config(self, config_path):
         if not YamlOps.is_yaml_file(config_path):
@@ -785,9 +1022,10 @@ class BackendCore:
     def _bind_runtime_urls(self, directory):
         scheduler = self._runtime_unit(directory, 'scheduler').endpoint
         distributor = self._runtime_unit(directory, 'distributor').endpoint
-        scheduler_base = f'http://{scheduler.dns_name}:{scheduler.port}'
-        distributor_base = f'http://{distributor.dns_name}:{distributor.port}'
+        scheduler_base = f'http://{scheduler.url_authority}'
+        distributor_base = f'http://{distributor.url_authority}'
         self.resource_url = f'{scheduler_base}{NetworkAPIPath.SCHEDULER_GET_RESOURCE}'
+        self.runtime_telemetry.bind(self.resource_url, directory)
         self.result_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_RESULT}'
         self.result_file_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_FILE}'
         self.log_fetch_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_EXPORT_RESULT_LOG}'

@@ -106,7 +106,9 @@ lint-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m ruff check \
 		backend/backend_core.py \
 		backend/backend_server.py \
+		backend/runtime_telemetry.py \
 		backend/template_helper.py \
+		dependency/core/lib/network/utils.py \
 		datasource \
 		tests \
 		dependency/core/controller \

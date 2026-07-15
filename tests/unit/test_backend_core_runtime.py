@@ -28,8 +28,8 @@ def test_fill_datasource_config_uses_stable_in_cluster_service_dns(backend_core_
     assert filled["source_label"] == "source_config_0"
     assert [source["id"] for source in filled["source_list"]] == [0, 1]
     assert [source["url"] for source in filled["source_list"]] == [
-        "http://datasource-edge.dayu.svc.cluster.local:8000/video0",
-        "http://datasource-edge.dayu.svc.cluster.local:8000/video1",
+        "http://datasource-edge.dayu.svc.cluster.local.:8000/video0",
+        "http://datasource-edge.dayu.svc.cluster.local.:8000/video1",
     ]
 
 
@@ -61,8 +61,6 @@ def test_external_datasource_and_node_inventory_need_no_kubernetes_discovery(
         {"name": "edgen4"},
         {"name": "misc-node"},
     ]
-    assert backend_core_instance.check_node_exist("edgex2") is True
-    assert backend_core_instance.check_node_exist("not-ready") is False
 
 
 def test_backend_core_validates_datasource_and_visualization_configs(
@@ -101,12 +99,11 @@ def test_backend_core_validates_datasource_and_visualization_configs(
     assert backend_core_instance.check_visualization_config(str(invalid_visualization)) is None
 
 
-def test_visualizers_share_one_scheduler_snapshot_per_request(
+def test_visualizers_use_cached_scheduler_snapshot_without_network_io(
         backend_core_instance, monkeypatch,
 ):
     import backend_core as backend_core_module
 
-    calls = []
     backend_core_instance.system_visualization_configs = [
         {"hook_name": "cpu_usage", "variables": []},
         {"hook_name": "memory_usage", "variables": []},
@@ -119,20 +116,21 @@ def test_visualizers_share_one_scheduler_snapshot_per_request(
             lambda scheduling_overhead=None: {"overhead": scheduling_overhead},
         ]
     )
-    backend_core_instance.resource_url = "http://scheduler.dayu.svc:9001/resource"
-
-    def fake_request(url, method=None, **kwargs):
-        calls.append(url)
-        return 0.25 if url.endswith("/overhead") else {"edge-a": {"cpu_usage": 0.5}}
-
-    monkeypatch.setattr(backend_core_module, "http_request", fake_request)
+    backend_core_instance.runtime_telemetry = SimpleNamespace(
+        snapshot=lambda: {
+            "resource": {"edge-a": {"cpu_usage": 0.5}},
+            "scheduling_overhead": 0.25,
+            "scheduler_sampled_at": 1.0,
+        }
+    )
+    monkeypatch.setattr(
+        backend_core_module,
+        "http_request",
+        lambda *args, **kwargs: pytest.fail("request handlers must not contact scheduler"),
+    )
 
     result = backend_core_instance.prepare_system_visualizations_data()
 
-    assert calls == [
-        "http://scheduler.dayu.svc:9001/resource",
-        "http://scheduler.dayu.svc:9001/overhead",
-    ]
     assert result[0]["data"]["cpu"] == {"edge-a": {"cpu_usage": 0.5}}
     assert result[1]["data"]["memory"] == {"edge-a": {"cpu_usage": 0.5}}
     assert result[2]["data"]["overhead"] == 0.25

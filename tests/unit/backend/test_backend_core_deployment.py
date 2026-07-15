@@ -1,9 +1,11 @@
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from runtime_model import RuntimeDirectory, RuntimeEndpoint, RuntimeSlot, RuntimeUnit
+from runtime_orchestrator import RuntimeOperationCancelled
 
 
 def _unit(component, port, revision=1):
@@ -60,7 +62,7 @@ class FakeOrchestrator:
     def current_session(self):
         return self.session
 
-    def redeploy(self, policy):
+    def redeploy(self, policy, cancel_event=None):
         self.redeploy_calls.append(policy)
         if self.redeploy_error:
             raise self.redeploy_error
@@ -73,12 +75,35 @@ class FakeOrchestrator:
         return self.directory
 
 
+class FakeRuntimeTelemetry:
+    def __init__(self):
+        self.bound_urls = []
+        self.bound_directories = []
+        self.started = 0
+        self.unbound = 0
+        self.closed = 0
+
+    def bind(self, url, directory):
+        self.bound_urls.append(url)
+        self.bound_directories.append(directory)
+
+    def start(self):
+        self.started += 1
+
+    def unbind(self):
+        self.unbound += 1
+
+    def close(self):
+        self.closed += 1
+
+
 @pytest.fixture
 def backend_core_instance(mounted_runtime):
     from backend_core import BackendCore
 
     instance = BackendCore()
     instance.runtime_orchestrator = FakeOrchestrator()
+    instance.runtime_telemetry = FakeRuntimeTelemetry()
     return instance
 
 
@@ -103,17 +128,28 @@ def test_install_delegates_transaction_and_binds_directory_urls(backend_core_ins
     )
 
     assert (ok, message) == (True, "Install services successfully")
-    assert backend_core_instance.runtime_orchestrator.install_calls == [{
+    assert len(backend_core_instance.runtime_orchestrator.install_calls) == 1
+    install_call = backend_core_instance.runtime_orchestrator.install_calls[0]
+    cancel_event = install_call.pop("cancel_event")
+    assert install_call == {
         "policy": policy,
         "source_deploy": source_deploy,
         "source_label": "source-a",
-    }]
+    }
+    assert isinstance(cancel_event, threading.Event)
+    assert cancel_event.is_set() is False
     assert backend_core_instance.resource_url.endswith(":9001/resource")
     assert backend_core_instance.result_url.endswith(":9003/result")
+    assert backend_core_instance.runtime_telemetry.bound_urls == [
+        backend_core_instance.resource_url
+    ]
+    assert backend_core_instance.runtime_telemetry.bound_directories == [_directory()]
+    assert backend_core_instance.runtime_telemetry.started == 1
     assert started[0]["name"] == "dayu-runtime-redeployment-install-a"
     assert started[0]["daemon"] is True
     assert started[0]["started"] is True
     assert started[0]["args"][1] == "install-a"
+    assert backend_core_instance._query_admission_enabled is True
 
 
 def test_install_failure_is_reported_without_starting_rollout_loop(backend_core_instance, monkeypatch):
@@ -133,6 +169,204 @@ def test_install_failure_is_reported_without_starting_rollout_loop(backend_core_
     assert backend_core_instance._redeployment_stop_event is None
 
 
+def test_uninstall_cancels_inflight_install_before_waiting_for_serialized_cleanup(
+        backend_core_instance,
+):
+    operation_lock = threading.Lock()
+    install_started = threading.Event()
+    install_results = []
+    seen_cancel_events = []
+
+    def blocking_install(**kwargs):
+        cancel_event = kwargs["cancel_event"]
+        seen_cancel_events.append(cancel_event)
+        with operation_lock:
+            install_started.set()
+            assert cancel_event.wait(2)
+            raise RuntimeOperationCancelled("cancelled by lifecycle operation")
+
+    def serialized_uninstall():
+        with operation_lock:
+            backend_core_instance.runtime_orchestrator.uninstall_calls += 1
+
+    backend_core_instance.runtime_orchestrator.install = blocking_install
+    backend_core_instance.runtime_orchestrator.uninstall = serialized_uninstall
+
+    install_thread = threading.Thread(
+        target=lambda: install_results.append(
+            backend_core_instance.parse_and_apply_templates({}, []),
+        ),
+    )
+    install_thread.start()
+    assert install_started.wait(1)
+
+    started_at = time.monotonic()
+    uninstall_result = backend_core_instance.parse_and_delete_templates()
+    elapsed = time.monotonic() - started_at
+    install_thread.join(timeout=1)
+
+    assert install_thread.is_alive() is False
+    assert elapsed < 0.5
+    assert uninstall_result == (True, "Uninstall services successfully")
+    assert install_results == [(False, "Install cancelled by lifecycle operation")]
+    assert len(seen_cancel_events) == 1
+    assert seen_cancel_events[0].is_set() is True
+    assert backend_core_instance.runtime_orchestrator.uninstall_calls == 1
+    assert backend_core_instance._install_cancel_event is None
+    assert backend_core_instance._stop_request_count == 0
+
+
+def test_stop_registration_prevents_install_token_race(backend_core_instance):
+    uninstall_started = threading.Event()
+    release_uninstall = threading.Event()
+    stop_results = []
+
+    def blocking_uninstall():
+        uninstall_started.set()
+        assert release_uninstall.wait(2)
+
+    backend_core_instance.runtime_orchestrator.uninstall = blocking_uninstall
+    stop_thread = threading.Thread(
+        target=lambda: stop_results.append(
+            backend_core_instance.parse_and_delete_templates(),
+        ),
+    )
+    stop_thread.start()
+    assert uninstall_started.wait(1)
+
+    assert backend_core_instance.parse_and_apply_templates({}, []) == (
+        False,
+        "Install cancelled by lifecycle operation",
+    )
+    assert backend_core_instance.runtime_orchestrator.install_calls == []
+
+    release_uninstall.set()
+    stop_thread.join(timeout=1)
+    assert stop_thread.is_alive() is False
+    assert stop_results == [(True, "Uninstall services successfully")]
+
+
+@pytest.mark.parametrize("failure_point", ["query", "telemetry", "redeployment"])
+def test_stop_registration_is_released_when_local_shutdown_raises(
+        backend_core_instance, monkeypatch, failure_point,
+):
+    error = RuntimeError(f"{failure_point} shutdown failed")
+    if failure_point == "query":
+        monkeypatch.setattr(
+            backend_core_instance,
+            "_close_query_locked",
+            lambda: (_ for _ in ()).throw(error),
+        )
+    elif failure_point == "telemetry":
+        monkeypatch.setattr(
+            backend_core_instance.runtime_telemetry,
+            "unbind",
+            lambda: (_ for _ in ()).throw(error),
+        )
+    else:
+        monkeypatch.setattr(
+            backend_core_instance,
+            "_stop_redeployment_loop",
+            lambda: (_ for _ in ()).throw(error),
+        )
+
+    ok, message = backend_core_instance.parse_and_delete_templates()
+
+    assert ok is False
+    assert str(error) in message
+    assert backend_core_instance._stop_request_count == 0
+
+
+def test_overlapping_stop_requests_keep_install_admission_closed_until_both_finish(
+        backend_core_instance,
+):
+    state_lock = threading.Lock()
+    both_uninstalls_started = threading.Event()
+    release_uninstalls = threading.Event()
+    started = 0
+    results = []
+
+    def blocking_uninstall():
+        nonlocal started
+        with state_lock:
+            started += 1
+            if started == 2:
+                both_uninstalls_started.set()
+        assert release_uninstalls.wait(2)
+
+    backend_core_instance.runtime_orchestrator.uninstall = blocking_uninstall
+    threads = [
+        threading.Thread(
+            target=lambda: results.append(
+                backend_core_instance.parse_and_delete_templates(),
+            ),
+        )
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    assert both_uninstalls_started.wait(1)
+
+    assert backend_core_instance._stop_request_count == 2
+    assert backend_core_instance.parse_and_apply_templates({}, []) == (
+        False,
+        "Install cancelled by lifecycle operation",
+    )
+
+    release_uninstalls.set()
+    for thread in threads:
+        thread.join(timeout=1)
+        assert thread.is_alive() is False
+
+    assert sorted(results) == [
+        (True, "Uninstall services successfully"),
+        (True, "Uninstall services successfully"),
+    ]
+    assert backend_core_instance._stop_request_count == 0
+
+
+def test_concurrent_second_install_cannot_overwrite_cancel_token(
+        backend_core_instance, monkeypatch,
+):
+    first_started = threading.Event()
+    release_first = threading.Event()
+    first_result = []
+    tokens = []
+
+    def blocking_install(**kwargs):
+        tokens.append(kwargs["cancel_event"])
+        first_started.set()
+        assert release_first.wait(2)
+        return _directory()
+
+    backend_core_instance.runtime_orchestrator.install = blocking_install
+    monkeypatch.setattr(
+        backend_core_instance,
+        "_start_redeployment_loop",
+        lambda install_id: None,
+    )
+    first_thread = threading.Thread(
+        target=lambda: first_result.append(
+            backend_core_instance.parse_and_apply_templates({}, []),
+        ),
+    )
+    first_thread.start()
+    assert first_started.wait(1)
+
+    assert backend_core_instance.parse_and_apply_templates({}, []) == (
+        False,
+        "Another install operation is already in progress",
+    )
+    assert backend_core_instance._install_cancel_event is tokens[0]
+
+    release_first.set()
+    first_thread.join(timeout=1)
+    assert first_thread.is_alive() is False
+    assert first_result == [(True, "Install services successfully")]
+    assert len(tokens) == 1
+    assert backend_core_instance._install_cancel_event is None
+
+
 def test_backend_startup_recovery_rebinds_active_directory_and_restarts_rollout_loop(
     backend_core_instance, monkeypatch
 ):
@@ -148,6 +382,8 @@ def test_backend_startup_recovery_rebinds_active_directory_and_restarts_rollout_
     assert backend_core_instance.resource_url.endswith(":9001/resource")
     assert backend_core_instance.result_url.endswith(":9003/result")
     assert started == ["install-a"]
+    assert backend_core_instance.runtime_telemetry.started == 1
+    assert backend_core_instance._query_admission_enabled is True
 
 
 @pytest.mark.parametrize("phase", ["clearing-directory", "finalizing-uninstall"])
@@ -181,9 +417,12 @@ def test_uninstall_delegates_drain_and_clears_only_runtime_bindings(backend_core
     assert backend_core_instance.result_url is None
     assert backend_core_instance.result_file_url is None
     assert backend_core_instance.log_fetch_url is None
+    assert backend_core_instance.runtime_telemetry.unbound == 1
+    assert backend_core_instance._query_admission_enabled is False
 
 
 def test_uninstall_failure_preserves_error_and_stops_redeployment(backend_core_instance):
+    backend_core_instance._bind_runtime_urls(_directory())
     backend_core_instance.runtime_orchestrator.uninstall_error = RuntimeError("leases still active")
     stop_event = threading.Event()
     backend_core_instance._redeployment_stop_event = stop_event
@@ -194,6 +433,33 @@ def test_uninstall_failure_preserves_error_and_stops_redeployment(backend_core_i
     assert "leases still active" in message
     assert stop_event.is_set() is True
     assert backend_core_instance._redeployment_stop_event is None
+    assert backend_core_instance.runtime_telemetry.unbound == 1
+    assert backend_core_instance.runtime_telemetry.bound_urls == [
+        backend_core_instance.resource_url
+    ]
+    assert backend_core_instance.runtime_telemetry.started == 0
+
+
+def test_backend_close_cancels_query_redeployment_and_telemetry(backend_core_instance):
+    redeployment_stop = threading.Event()
+    query_stop = threading.Event()
+    install_stop = threading.Event()
+    backend_core_instance._redeployment_stop_event = redeployment_stop
+    backend_core_instance._redeployment_thread = object()
+    backend_core_instance._query_admission_enabled = True
+    backend_core_instance.source_open = True
+    backend_core_instance.is_get_result = True
+    backend_core_instance._query_cancel_event = query_stop
+    backend_core_instance._install_cancel_event = install_stop
+
+    backend_core_instance.close()
+
+    assert redeployment_stop.is_set() is True
+    assert query_stop.is_set() is True
+    assert install_stop.is_set() is True
+    assert backend_core_instance._query_admission_enabled is False
+    assert backend_core_instance.source_open is False
+    assert backend_core_instance.runtime_telemetry.closed == 1
 
 
 def test_redeploy_requires_managed_session_and_current_policy(backend_core_instance):
@@ -220,7 +486,7 @@ def test_redeploy_uses_session_policy_and_rebinds_only_after_commit(backend_core
         True, "Redeployment succeeded"
     )
     assert backend_core_instance.runtime_orchestrator.redeploy_calls == [policy]
-    assert "-r2.dayu.svc.cluster.local:9001" in backend_core_instance.resource_url
+    assert "-r2.dayu.svc.cluster.local.:9001" in backend_core_instance.resource_url
 
     backend_core_instance.runtime_orchestrator.changed = False
     backend_core_instance.resource_url = "keep-current-binding"
@@ -290,12 +556,50 @@ def test_reinstall_invalidates_old_sleeping_redeployment_worker(
     assert len(backend_core_instance.runtime_orchestrator.redeploy_calls) == redeploy_count
 
 
-def test_redeployment_wait_is_event_interruptible(backend_core_instance, monkeypatch):
+def test_redeployment_waits_before_first_cycle_and_is_interruptible(backend_core_instance):
     event = threading.Event()
-    waits = []
-    monkeypatch.setattr(event, "wait", lambda timeout: waits.append(timeout) or True)
-    monkeypatch.setattr("backend_core.time.monotonic", lambda: 12.0)
+    event.set()
     backend_core_instance.processor_redeployment_interval_s = 5.0
 
-    assert backend_core_instance._wait_until_next_redeployment_cycle(event, 10.0) is True
-    assert waits == [3.0]
+    backend_core_instance.run_cycle_deploy(event, "install-a")
+
+    assert backend_core_instance.runtime_orchestrator.redeploy_calls == []
+
+
+def test_redeployment_does_not_hold_worker_lock_across_control_plane_io(
+        backend_core_instance,
+):
+    class OneCycleEvent:
+        def __init__(self):
+            self.stopped = False
+
+        def wait(self, timeout):
+            if self.stopped:
+                return True
+            return False
+
+        def is_set(self):
+            return self.stopped
+
+        def set(self):
+            self.stopped = True
+
+    event = OneCycleEvent()
+    backend_core_instance._redeployment_stop_event = event
+    backend_core_instance.processor_redeployment_interval_s = 1.0
+    lock_available = []
+
+    def redeploy(_policy, cancel_event=None):
+        assert cancel_event is event
+        acquired = backend_core_instance._redeployment_lock.acquire(blocking=False)
+        lock_available.append(acquired)
+        if acquired:
+            backend_core_instance._redeployment_lock.release()
+        event.set()
+        return True, "ok"
+
+    backend_core_instance.parse_and_redeploy_services = redeploy
+
+    backend_core_instance.run_cycle_deploy(event, "install-a")
+
+    assert lock_available == [True]

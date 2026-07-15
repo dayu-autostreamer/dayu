@@ -1,7 +1,5 @@
 import copy
 import json
-import threading
-import time
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -9,10 +7,11 @@ from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks, HTTPException, Request
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse, FileResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from fastapi.middleware.cors import CORSMiddleware
-from core.lib.common import LOGGER, Counter, Queue, FileOps
-from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
+from core.lib.common import LOGGER, Counter, FileOps
+from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 
 from backend_core import BackendCore
 
@@ -163,6 +162,8 @@ class BackendServer:
             CORSMiddleware, allow_origins=["*"], allow_credentials=True,
             allow_methods=["*"], allow_headers=["*"],
         )
+        if hasattr(self.server, 'close'):
+            self.app.add_event_handler('shutdown', self.server.close)
 
     async def get_all_schedule_policies(self):
         """
@@ -187,7 +188,9 @@ class BackendServer:
         :return:
         ["face_detection", "..."]
         """
-        directory = self.server.runtime_orchestrator.active_directory()
+        directory = await run_in_threadpool(
+            self.server.runtime_orchestrator.active_directory,
+        )
         if directory is None:
             return []
         return sorted({
@@ -353,13 +356,15 @@ class BackendServer:
         try:
             if service == 'null':
                 return []
-            metrics = self.server.runtime_orchestrator.runtime_metrics(logical_service=service)
-
-            self.server.get_resource_url()
-            resource_data = http_request(
-                self.server.resource_url,
-                method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE,
-            ) if self.server.resource_url else {}
+            # This is an in-memory, generation-bound deep copy. Browser polls
+            # never list Pods, Nodes, RuntimeServices, or metrics resources.
+            telemetry = self.server.get_runtime_telemetry(
+                logical_service=service,
+            )
+            if not telemetry.get('install_id') or not telemetry.get('directory_revision'):
+                return []
+            metrics = telemetry.get('runtime_metrics') or {}
+            resource_data = telemetry.get('resource') or {}
             info = []
             for metric in metrics.values():
                 hostname = metric.get('node', '')
@@ -564,16 +569,17 @@ class BackendServer:
             if dag is None:
                 return {'state': 'fail', 'msg': 'Install services failed: dag not exists'}
 
-            for node in node_set:
-                if not self.server.check_node_exist(node):
-                    return {'state': 'fail', 'msg': f'Install services failed: edge node "{node}" not exists'}
-
             source.update({'source_type': source_config['source_type'], 'source_mode': source_config['source_mode']})
 
             source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
         try:
-            result, msg = self.server.parse_and_apply_templates(policy, source_deploy, source_label=source_label)
+            result, msg = await run_in_threadpool(
+                self.server.parse_and_apply_templates,
+                policy,
+                source_deploy,
+                source_label,
+            )
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             LOGGER.exception(e)
@@ -595,11 +601,11 @@ class BackendServer:
         :return:
         """
 
-        if not self.server.inner_datasource:
-            await self.stop_query()
-
         try:
-            result, msg = self.server.parse_and_delete_templates()
+            # BackendCore owns query admission and cancellation as part of the
+            # same lifecycle operation.  Keeping it below the threadpool
+            # boundary prevents a stop/reopen race before uninstall begins.
+            result, msg = await run_in_threadpool(self.server.parse_and_delete_templates)
 
         except Exception as e:
             LOGGER.warning(f'Uninstall services failed: {str(e)}')
@@ -618,7 +624,36 @@ class BackendServer:
         {'state':'install/uninstall'}
         """
 
-        return {'state': 'install' if self.server.check_install_state() else 'uninstall'}
+        # The first process-local snapshot load may read the Kubernetes
+        # ConfigMap.  Keep even that one-off synchronous call off the event
+        # loop; subsequent reads are the in-memory snapshot fast path.
+        session = await run_in_threadpool(
+            self.server.runtime_orchestrator.current_session,
+        )
+        if session is None:
+            return {
+                'state': 'uninstall',
+                'phase': 'uninstalled',
+                'ready': False,
+                'operation_id': '',
+                'active_directory_revision': 0,
+                'active_runtime_count': 0,
+                'pending_runtime_count': 0,
+                'last_error': '',
+            }
+        return {
+            # ``state`` remains the ownership guard used to reject a second
+            # installation.  ``ready``/``phase`` express whether read APIs may
+            # consume the atomically published RuntimeDirectory.
+            'state': 'install',
+            'phase': session.phase,
+            'ready': session.phase == 'active',
+            'operation_id': session.operation_id,
+            'active_directory_revision': session.active_directory_revision,
+            'active_runtime_count': len(session.active),
+            'pending_runtime_count': len(session.pending),
+            'last_error': session.last_error,
+        }
 
     async def submit_query(self, data=Body(...)):
         """
@@ -631,6 +666,9 @@ class BackendServer:
         {'msg': 'Invalid service name'}
         """
 
+        return await run_in_threadpool(self._submit_query, data)
+
+    def _submit_query(self, data):
         if isinstance(data, dict):
             parsed_data = data
         elif isinstance(data, bytes):
@@ -642,27 +680,8 @@ class BackendServer:
         data = parsed_data
 
         source_label = data['source_label']
-        if not self.server.find_datasource_configuration_by_label(source_label):
-            return {'state': 'fail', 'msg': 'Datasource configuration not exists'}
-
-        with self.server.query_lock:
-            if self.server.source_open:
-                if self.server.source_label == source_label:
-                    return {'state': 'success', 'msg': 'Datasource is already open'}
-                return {'state': 'fail', 'msg': 'Another datasource is already open, please close it first'}
-
-            self.server.source_open = True
-            self.server.source_label = source_label
-            source_ids = self.server.get_source_ids()
-            for source_id in source_ids:
-                self.server.task_results[source_id] = Queue(20)
-
-            time.sleep((len(source_ids) - 1) * 4)
-
-            self.server.is_get_result = True
-            threading.Thread(target=self.server.run_get_result).start()
-
-        return {'state': 'success', 'msg': 'Datasource open successfully'}
+        result, message = self.server.open_query(source_label)
+        return {'state': 'success' if result else 'fail', 'msg': message}
 
     async def stop_query(self):
         """
@@ -671,18 +690,11 @@ class BackendServer:
         {'state':"success/fail",'msg':'...'}
         """
 
-        with self.server.query_lock:
-            if not self.server.source_open and not self.server.is_get_result:
-                return {'state': 'success', 'msg': 'Datasource is already closed'}
+        return await run_in_threadpool(self._stop_query)
 
-            self.server.source_open = False
-            self.server.source_label = ''
-            self.server.is_get_result = False
-            self.server.task_results.clear()
-            self.server.customized_source_result_visualization_configs.clear()
-        time.sleep(1)
-
-        return {'state': 'success', 'msg': 'Datasource close successfully'}
+    def _stop_query(self):
+        result, message = self.server.close_query()
+        return {'state': 'success' if result else 'fail', 'msg': message}
 
     async def get_query_state(self):
         """
@@ -690,13 +702,14 @@ class BackendServer:
         :return:
         {'state':'open/close','source_label':''}
         """
+        snapshot = await run_in_threadpool(self.server.query_snapshot)
         if self.server.inner_datasource:
-            state = 'open' if self.server.source_open else 'close'
+            state = 'open' if snapshot['open'] else 'close'
         else:
             state = 'disabled'
 
         return {'state': state,
-                'source_label': self.server.source_label
+                'source_label': snapshot['source_label']
                 }
 
     async def get_source_list(self):
@@ -710,17 +723,20 @@ class BackendServer:
         ]
         :return:
         """
-        if not self.server.source_open:
+        snapshot = await run_in_threadpool(self.server.query_snapshot)
+        if not snapshot['open']:
             return []
 
-        source_config = self.server.find_datasource_configuration_by_label(self.server.source_label)
+        source_config = self.server.find_datasource_configuration_by_label(
+            snapshot['source_label'],
+        )
         if not source_config:
             return []
 
         return [{'id': source['id'], 'label': source['name']} for source in source_config['source_list']]
 
     async def get_edge_nodes(self):
-        return self.server.get_edge_nodes()
+        return await run_in_threadpool(self.server.get_edge_nodes)
 
     async def get_task_result(self):
         """
@@ -735,18 +751,36 @@ class BackendServer:
         }
         :return:
         """
-        if not self.server.source_open:
+        session = await run_in_threadpool(
+            self.server.runtime_orchestrator.current_session,
+        )
+        if session is None or session.phase != 'active':
             return {}
-        ans = {}
-        source_config = self.server.find_datasource_configuration_by_label(self.server.source_label)
-        for source in source_config['source_list']:
-            source_id = source['id']
-            ans[source_id] = self.server.fetch_visualization_data(source_id)
+        return await run_in_threadpool(self._get_task_result)
 
-        return ans
+    def _get_task_result(self):
+        snapshot = self.server.query_snapshot(include_queues=True)
+        if not snapshot['open']:
+            return {}
+        generation = snapshot['generation']
+        queues = snapshot['queues']
+        ans = {}
+        for source_id, task_queue in queues.items():
+            if task_queue is not None:
+                ans[source_id] = self.server.fetch_visualization_data(
+                    source_id,
+                    task_queue=task_queue,
+                )
+
+        # Visualization may download and transform result artifacts.  If stop
+        # or reopen won the race during that work, never publish the previous
+        # generation's response to the new query.
+        return ans if self.server.is_query_generation_active(generation) else {}
 
     async def get_system_parameters(self):
-        return self.server.get_system_parameters()
+        # Rendering and append-only log maintenance are synchronous work; keep
+        # them off the event loop just like the Kubernetes telemetry join.
+        return await run_in_threadpool(self.server.get_system_parameters)
 
     async def get_result_visualization_config(self, source_id):
         """
@@ -781,10 +815,11 @@ class BackendServer:
         return self.server.get_system_visualization_config()
 
     async def get_datasource_state(self):
-        state = 'open' if self.server.source_open else 'close'
+        snapshot = await run_in_threadpool(self.server.query_snapshot)
+        state = 'open' if snapshot['open'] else 'close'
         if state == 'close':
             return {'state': state}
-        source_label = self.server.source_label
+        source_label = snapshot['source_label']
         config = self.server.find_datasource_configuration_by_label(source_label)
         if config is None:
             LOGGER.warning(f'Config of "{source_label}" does not exist.')
@@ -792,7 +827,7 @@ class BackendServer:
         return {'state': state, **config}
 
     async def reset_datasource(self):
-        self.server.source_open = False
+        await run_in_threadpool(self.server.close_query)
 
     async def download_log(self):
         """

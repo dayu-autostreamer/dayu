@@ -124,6 +124,15 @@ Key points:
   containers do not install or import the Kubernetes Python package
 - the compact transaction record is stored in the `dayu-runtime-session` ConfigMap with Kubernetes
   `resourceVersion` compare-and-swap; no local manifest file is a lifecycle source of truth
+- ownership has two explicit label planes: Backend selects the RuntimeService CRs it created with
+  `app.kubernetes.io/managed-by=dayu-backend`, while materialized Pods are selected with Sedna's guaranteed
+  `dayu.io/mesh-managed=true` and then matched against the exact Pod UID stored in the session
+- RuntimeDirectory keeps Sedna's stable DNS identity without a terminal dot. HTTP, Redis, and iperf clients turn
+  `*.svc.cluster.local` into an absolute DNS name only at the connection boundary, avoiding Pod `ndots` search-path
+  expansion without changing directory hashes or recovery identity
+- one Backend telemetry worker binds exact processor Pod name/UID identities from the immutable RuntimeDirectory,
+  samples Scheduler and Kubernetes on independent bounded cadences, and publishes generation-guarded last-known-good
+  snapshots; management endpoints never turn browser polling into Kubernetes or Scheduler calls
 - Scheduler stores the active RuntimeDirectory, proposals, and task leases in support Redis. `dayu.sh` mounts Redis
   `/data` on the cloud host and enables AOF with `appendfsync=always`, so Scheduler and Redis Pod replacement do not
   erase committed routing state when that host path remains available

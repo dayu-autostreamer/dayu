@@ -15,6 +15,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
+from core.lib.network import connection_host
+
 _DNS_1035_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
 _LABEL_VALUE_RE = re.compile(r"^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$")
 _VALID_POSITIONS = frozenset({"cloud", "edge"})
@@ -160,8 +162,12 @@ class RuntimeEndpoint:
             object.__setattr__(self, name, str(getattr(self, name) or ""))
 
     @property
+    def connection_host(self) -> str:
+        return connection_host(self.dns_name)
+
+    @property
     def url_authority(self) -> str:
-        return f"{self.dns_name}:{self.port}"
+        return f"{self.connection_host}:{self.port}"
 
     def to_dict(self) -> Dict[str, Any]:
         result = {"dns_name": self.dns_name, "port": self.port}

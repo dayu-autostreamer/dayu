@@ -1,6 +1,10 @@
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from core.lib.common import Queue
 from core.lib.content import Task
@@ -137,6 +141,82 @@ def test_task_result_queue_remains_data_plane_only(mounted_runtime, monkeypatch,
         "task_id": 5,
         "data": [{"frame": 5}],
     }]
+
+
+def test_query_open_has_no_source_count_dependent_startup_delay(mounted_runtime):
+    backend = _backend(mounted_runtime)
+    backend.source_configs = [{
+        "source_label": "source-a",
+        "source_list": [{"id": source_id} for source_id in range(10)],
+    }]
+    backend.result_url = "http://distributor/result"
+    backend._query_admission_enabled = True
+
+    started = time.monotonic()
+    assert backend.open_query("source-a") == (True, "Datasource open successfully")
+    assert time.monotonic() - started < 0.5
+    assert sorted(backend.task_results) == list(range(10))
+
+    assert backend.close_query() == (True, "Datasource close successfully")
+    assert backend.source_open is False
+    assert backend.is_get_result is False
+    assert backend.task_results == {}
+
+
+def test_query_requires_committed_runtime_admission(mounted_runtime):
+    backend = _backend(mounted_runtime)
+    backend.source_configs = [{"source_label": "source-a", "source_list": [{"id": 0}]}]
+    backend.result_url = "http://distributor/result"
+
+    assert backend.open_query("source-a") == (
+        False,
+        "Runtime is not ready for datasource queries",
+    )
+
+
+def test_cancelled_result_collector_has_bounded_io_and_cannot_publish_late_results(
+        mounted_runtime, monkeypatch,
+):
+    import backend_core as backend_core_module
+
+    backend = _backend(mounted_runtime)
+    backend.source_configs = [{"source_label": "source-a", "source_list": [{"id": 0}]}]
+    backend.result_url = "http://distributor/result"
+    backend._query_admission_enabled = True
+    request_started = threading.Event()
+    release_request = threading.Event()
+    request = {}
+
+    def fake_http_request(url, method=None, timeout=None, json=None, **kwargs):
+        request.update({"url": url, "timeout": timeout, "json": json})
+        request_started.set()
+        assert release_request.wait(1)
+        return {"time_ticket": 1, "result": ["late-result"]}
+
+    monkeypatch.setattr(backend_core_module, "http_request", fake_http_request)
+    monkeypatch.setattr(
+        backend_core_module.Task,
+        "deserialize",
+        classmethod(lambda cls, value: pytest.fail("cancelled result must not be parsed")),
+    )
+
+    assert backend.open_query("source-a") == (True, "Datasource open successfully")
+    with backend.query_lock:
+        thread = backend._result_thread
+        queue = backend.task_results[0]
+    assert request_started.wait(2)
+
+    assert backend.close_query() == (True, "Datasource close successfully")
+    release_request.set()
+    thread.join(timeout=1)
+
+    assert thread.is_alive() is False
+    assert queue.empty() is True
+    assert request == {
+        "url": "http://distributor/result",
+        "timeout": 5.0,
+        "json": {"time_ticket": 0, "size": 20},
+    }
 
 
 def test_install_state_is_derived_from_runtime_session(mounted_runtime):

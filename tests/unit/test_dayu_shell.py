@@ -121,3 +121,9 @@ def test_stop_interface_does_not_require_a_force_flag():
     script = DAYU_SCRIPT.read_text(encoding="utf-8")
 
     assert "FORCE_RUNTIME_STOP" not in script
+
+
+def test_datasource_backend_url_uses_absolute_cluster_service_dns():
+    script = DAYU_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'http://backend-cloud.$NAMESPACE.svc.cluster.local.:8000' in script

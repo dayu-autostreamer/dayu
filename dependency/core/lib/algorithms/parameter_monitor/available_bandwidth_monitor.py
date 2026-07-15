@@ -31,7 +31,7 @@ class AvailableBandwidthMonitor(BaseMonitor, abc.ABC):
         else:
             monitor_endpoint = context.resolve_static_endpoint('monitor', target_node=context.cloud_node)
             self.iperf3_port = monitor_endpoint.port
-            self.iperf3_server_ip = monitor_endpoint.fqdn
+            self.iperf3_server_ip = monitor_endpoint.connection_host
             try:
                 self.request_for_bandwidth_permission()
             except Exception as e:

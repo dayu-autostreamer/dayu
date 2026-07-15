@@ -133,6 +133,20 @@ def test_runtime_unit_replaces_provisional_hash_with_observed_hash_immutably():
         provisional.with_observed_spec_hash("")
 
 
+def test_runtime_endpoint_uses_absolute_cluster_dns_only_at_connection_boundary():
+    endpoint = RuntimeEndpoint("scheduler.dayu.svc.cluster.local", 9000)
+
+    assert endpoint.connection_host == "scheduler.dayu.svc.cluster.local."
+    assert endpoint.url_authority == "scheduler.dayu.svc.cluster.local.:9000"
+    assert endpoint.to_dict() == {
+        "dns_name": "scheduler.dayu.svc.cluster.local",
+        "port": 9000,
+    }
+
+    already_absolute = RuntimeEndpoint("scheduler.dayu.svc.cluster.local.", 9000)
+    assert already_absolute.connection_host == "scheduler.dayu.svc.cluster.local."
+
+
 def test_endpointless_unit_persists_hidden_uid_identity_only_in_control_plane_state():
     slot = RuntimeSlot("monitor", "edge-x1", "edge")
     unit = RuntimeUnit(

@@ -6,8 +6,10 @@ carried either in ``DAYU_RUNTIME_BOOTSTRAP`` or in a task route snapshot.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from urllib.parse import urlsplit
+
+from core.lib.network import connection_host
 
 
 def _first(mapping: Dict[str, Any], *names: str, default=None):
@@ -149,12 +151,16 @@ class RuntimeEndpoint:
         )
 
     @property
+    def connection_host(self):
+        return connection_host(self.fqdn)
+
+    @property
     def base_url(self):
         if not self.fqdn:
             raise ValueError("runtime endpoint has no fqdn/host")
         port = ":{}".format(self.port) if self.port else ""
         path = "/{}".format(self.base_path.strip("/")) if self.base_path.strip("/") else ""
-        return "{}://{}{}{}".format(self.protocol or "http", self.fqdn, port, path)
+        return "{}://{}{}{}".format(self.protocol or "http", self.connection_host, port, path)
 
     def url(self, path=None):
         if not path:

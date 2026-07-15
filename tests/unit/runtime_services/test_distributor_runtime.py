@@ -187,7 +187,7 @@ def test_distributor_records_transmit_time_and_forwards_scenario(distributor_ins
     assert durations == [(True, "transmit")]
     assert task.get_service("detector").get_transmit_time() == 0.25
     assert distributor_instance.requests[0] == (
-        "http://scheduler-cloud.dayu.svc.cluster.local:9001/scenario",
+        "http://scheduler-cloud.dayu.svc.cluster.local.:9001/scenario",
         "POST",
         {
             "timeout": distributor._SCHEDULER_REQUEST_TIMEOUT_SECONDS,
@@ -196,7 +196,7 @@ def test_distributor_records_transmit_time_and_forwards_scenario(distributor_ins
     )
     release_url, release_method, release_kwargs = distributor_instance.requests[1]
     assert release_url == (
-        "http://scheduler-cloud.dayu.svc.cluster.local:9001"
+        "http://scheduler-cloud.dayu.svc.cluster.local.:9001"
         "/runtime-directory/task-leases"
     )
     assert release_method == "DELETE"

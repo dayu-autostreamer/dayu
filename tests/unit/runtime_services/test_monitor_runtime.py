@@ -153,7 +153,7 @@ def test_monitor_reads_exact_processor_routes_once_per_interval(monkeypatch):
     assert [route.runtime_id for route in first] == ["processor-detector-edge-node-4"]
     assert [route.runtime_id for route in second] == ["processor-detector-edge-node-4"]
     assert requests == [
-        ("http://scheduler.dayu.svc.cluster.local:9000/runtime-directory", "GET")
+        ("http://scheduler.dayu.svc.cluster.local.:9000/runtime-directory", "GET")
     ]
 
 
@@ -180,4 +180,4 @@ def test_monitor_negative_caches_failed_directory_reads(monkeypatch):
     monitor = monitor_module.Monitor()
     assert monitor.runtime_routes(component="processor") == []
     assert monitor.runtime_routes(component="processor") == []
-    assert requests == ["http://scheduler.dayu.svc.cluster.local:9000/runtime-directory"]
+    assert requests == ["http://scheduler.dayu.svc.cluster.local.:9000/runtime-directory"]

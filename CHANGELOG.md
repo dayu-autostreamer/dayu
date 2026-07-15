@@ -15,6 +15,13 @@ Replace application `JointMultiEdgeService` generation and edge-side Kubernetes 
 ### Bug Fix
 - Fix possible failure in install/uninstall with one crash-recoverable ConfigMap CAS session and exact RuntimeService ownership identities (`backend`).
 - Prevent source-selection scope from collapsing to the processor `node_set`, and reject invalid fixed source configuration instead of silently changing the selected source (`backend`/`scheduler`).
+- Eliminate Kubernetes service-DNS search-path stalls by preserving stable RuntimeDirectory names while using absolute
+  `*.svc.cluster.local.` hosts only at HTTP, Redis, iperf, and support-datasource connection boundaries.
+- Remove the legacy per-source query startup delay and make result collection generation-scoped, immediately
+  cancellable, and bounded by an explicit Distributor request timeout and batch size (`backend`/`distributor`).
+- Make install lifecycle-cancellable: stop signals an in-flight RuntimeService activation/planning transaction before
+  serialized cleanup, preserves its crash-recoverable ownership session, and removes pre-publication resources without
+  waiting for an unready Scheduler or the full activation timeout.
 
 ### Minor Update
 - Add more services: traffic-detection, road-context-segmentation, traffic-signal-recognition, vehicle-tracking, vehicle-attribute-recognition, vehicle-trajectory-prediction, pedestrian-pose-estimation, pedestrian-intent-recognition, risk-graph-generation (`processor`).

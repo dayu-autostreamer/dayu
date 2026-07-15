@@ -16,7 +16,7 @@ class TaskCoordinator:
         )
         if not endpoint.fqdn or not endpoint.port:
             raise ValueError("redis bootstrap endpoint requires fqdn and port")
-        self.pool = redis.ConnectionPool(host=endpoint.fqdn,
+        self.pool = redis.ConnectionPool(host=endpoint.connection_host,
                                          port=endpoint.port,
                                          max_connections=self.max_connections)
         self.redis = redis.Redis(connection_pool=self.pool)

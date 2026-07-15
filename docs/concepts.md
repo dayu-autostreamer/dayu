@@ -216,4 +216,6 @@ A query opens one datasource label after the runtime stack is installed. While t
 4. backend polls distributor and renders visualization hooks
 
 Only one datasource label is open at a time in the current backend state model. Reopening the same datasource is
-idempotent; opening a different datasource requires `/stop_query` first.
+idempotent; opening a different datasource requires `/stop_query` first. The collector has no per-source startup
+delay, consumes a bounded incremental result batch, and tags all state with a generation so a stopped collector's late
+response cannot enter a later query.

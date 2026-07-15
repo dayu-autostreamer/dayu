@@ -170,7 +170,7 @@ return 1
             raise RuntimeError("redis package is required for production task leases") from exc
         return cls(
             redis.Redis(
-                host=endpoint.fqdn,
+                host=endpoint.connection_host,
                 port=endpoint.port or 6379,
                 decode_responses=True,
             ),

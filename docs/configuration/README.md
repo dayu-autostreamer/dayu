@@ -100,11 +100,18 @@ Control-plane fields:
 
 Runtime control fields:
 
-| Field | Default (seconds) | Meaning |
+| Field | Default | Meaning |
 | --- | ---: | --- |
 | `runtime.activation-timeout-seconds` | `300` | Maximum wait for exact Sedna `Activated` and dynamic `Ready` conditions. |
-| `runtime.operation-timeout-seconds` | `900` | Backend-to-scheduler decision/publication request budget. |
+| `runtime.operation-timeout-seconds` | `900` | End-to-end install/redeployment transaction budget used across activation and publication stages. |
+| `runtime.scheduler-request-timeout-seconds` | `30` | Maximum total time for one Scheduler control-plane call, including retries. Cancellation stops subsequent attempts/backoff; a running synchronous attempt remains bounded by its share of this budget. |
 | `runtime.inventory-ttl-seconds` | `30` | Backend-owned node snapshot TTL; callers cannot force refresh it. |
+| `runtime.telemetry-sample-interval-seconds` | `2` | Scheduler resource/overhead cadence used by the single backend runtime-telemetry worker. A new cycle starts only after the previous cycle settles. |
+| `runtime.telemetry-request-timeout-seconds` | `3` | Per-request timeout budget for the worker's Scheduler resource and overhead calls. Browser requests never inherit this wait. |
+| `runtime.metrics-sample-interval-seconds` | `10` | Kubernetes Pod/metrics cadence within the same single worker, clamped to at least the Scheduler telemetry interval. Each due cycle batches every exact processor Pod reference from the committed directory; it never creates one request per service or browser poll. |
+| `runtime.metrics-request-timeout-seconds` | `5` | Upper bound requested for each telemetry Pod, metrics, or due node-inventory list; the shared Kubernetes client may cap it further to its own control-plane budget. |
+| `runtime.result-request-timeout-seconds` | `5` | Maximum time for one incremental Distributor result poll. A stopped query can therefore leave a cancelled worker blocked for at most this bounded request. |
+| `runtime.result-batch-size` | `20` | Maximum task records returned by one Distributor poll. This matches the bounded in-memory visualization queue instead of requesting the entire accumulated result set. |
 | `runtime.drain-timeout-seconds` | `3900` | Maximum retirement wait; must exceed lease TTL plus the quiet window so failed releases can expire safely. |
 | `runtime.drain-quiet-window-seconds` | `10` | Required continuous zero-lease interval before deletion. |
 | `runtime.lease-ttl-seconds` | `3600` | Lease TTL injected into runtime bootstrap. |

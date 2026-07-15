@@ -68,7 +68,7 @@ def test_runtime_lease_client_uses_exact_task_key_and_scheduler_endpoint():
     ]
     assert all(
         call["url"]
-        == "http://scheduler.dayu.svc.cluster.local:9000/runtime-directory/task-leases"
+        == "http://scheduler.dayu.svc.cluster.local.:9000/runtime-directory/task-leases"
         for call in calls
     )
     acquire_payload = json.loads(calls[0]["data"]["data"])

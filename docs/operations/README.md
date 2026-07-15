@@ -6,10 +6,19 @@ the Dayu EdgeMesh fork are installed. Public first-run tutorials remain on the
 
 ## Non-Negotiable Prerequisites
 
-The application runtime requires
+The minimum released application runtime requires
 [dayu-sedna `v1.1`](https://github.com/dayu-autostreamer/dayu-sedna/tree/v1.1) and
 [dayu-edgemesh `v1.1`](https://github.com/dayu-autostreamer/dayu-edgemesh/tree/v1.1). Install the two tagged versions as a
-matched pair; do not mix their legacy `v1.0` baselines with `v1.1`:
+matched pair; do not mix their legacy `v1.0` baselines with `v1.1`.
+
+The released `v1.1` GM injects the authoritative `dayu.io/*` identities consumed by Dayu and EdgeMesh, so it remains
+functionally compatible. The structural correction that also preserves caller-supplied
+`spec.podTemplate.metadata.labels` and `annotations` is still in dayu-sedna's `Unreleased` source, not its historical
+`v1.1` tag. When those custom fields are required, build a source revision containing the correction, apply its
+RuntimeService CRD before restarting GM, and publish that revision under a new immutable maintenance tag. A controller
+image update alone does not change the cluster's stored CRD schema. The schema upgrade prevents future pruning but
+cannot restore metadata already removed from existing objects; recreate them with the normal Dayu uninstall/install
+lifecycle (or a new runtime revision).
 
 1. Install `runtimeservices.sedna.io` and the matching Sedna RBAC.
 2. Run Sedna GM and every target-node LC from the same managed-runtime source revision. Installing only the CRD with
@@ -67,7 +76,7 @@ service-account token to a RuntimeService template.
 | `default-image-meta.*` | Registry/repository/tag for support containers. |
 | `default-file-mount-prefix` | Host-path prefix used by rendered mounts. |
 | `datasource.*` | Optional simulated datasource placement and data root. |
-| `runtime.*` | activation, operation, inventory, drain, quiet-window, and lease budgets. |
+| `runtime.*` | activation, operation, inventory, telemetry, drain, quiet-window, and lease budgets. |
 
 ```bash
 TEMPLATE=template ACTION=start bash dayu.sh
@@ -128,13 +137,59 @@ Publication precedes retirement, so new tasks use the new routes while old tasks
 drain/deletion fails after commit, the new directory remains active and retired units remain in the session for retry;
 they are never silently forgotten or deleted before drain.
 
-`REDEPLOYMENT_REQUEST_INTERVAL` controls the periodic policy check. It does not weaken activation or drain gates.
+`REDEPLOYMENT_REQUEST_INTERVAL` controls the periodic policy check. The worker waits one interval before its first
+check because install has already committed the initial plan. Its lifecycle lock protects only the worker token and is
+never held across Scheduler or Kubernetes I/O, so uninstall can cancel the loop without waiting on a slow redeploy.
+RuntimeOrchestrator still serializes any transaction that was already in flight.
+An automatic rollout propagates that cancellation token through activation,
+watch, drain, and retirement waits; Scheduler calls have the separate
+`runtime.scheduler-request-timeout-seconds` cap. Cancellation prevents further
+HTTP retries and interrupts retry backoff; an already-running synchronous
+request is the only bounded cancellation delay. RuntimeService watches use a
+short server window with a slightly larger client read timeout, so normal watch
+expiry is not misclassified as a transport failure.
+
+Explicit install uses the same lifecycle cancellation contract. Backend
+registers the install token before entering the serialized transaction, and a
+stop request signals that token before waiting for cleanup; overlapping stop
+requests keep install admission closed until all of them finish. Cancellation
+is propagated through RuntimeService activation watches, Scheduler placement,
+and initial directory publication. The last CAS session boundary is preserved
+without recording a normal install failure, so stop can delete exact owned
+RuntimeServices. Before the first directory publication, cleanup is Kubernetes
+only and does not wait for an unready Scheduler endpoint. Cancellation latency
+is therefore bounded by the current synchronous Kubernetes/HTTP request or the
+short RuntimeService watch cancellation window, not the 300/900-second
+operation timeout.
+
+After the new directory CAS is finalized, management reads consume the immutable
+session snapshot without taking the lifecycle transaction lock. Node inventory
+uses a separate cache lock. Consequently, an old-revision drain can continue in
+the background without making service-list/detail reads wait behind its lease
+timeout.
+
+Runtime telemetry follows a stale-while-revalidate path owned by one backend daemon. It samples Scheduler `/resource`
+and `/overhead` every `runtime.telemetry-sample-interval-seconds`; within that same non-overlapping worker, a slower
+`runtime.metrics-sample-interval-seconds` due cycle batches every exact processor Pod reference in the committed
+directory into one Pod list and one optional metrics list. Scheduler and Kubernetes calls have separate explicit
+request budgets. `/system_parameters` and `/service_info/{service}` only deep-copy the last-known-good cache, so a slow
+Scheduler, Metrics Server, kube-apiserver, or cluster DNS path cannot queue management API requests. Rebind/uninstall
+invalidates the generation before any old in-flight result can publish.
+Frontend polling is settle-then-schedule (single-flight) and aborts the active fetch when polling stops.
+Lifecycle and telemetry calls pass explicit bounded timeout budgets; bulk task and video transfers retain their
+data-plane-specific timeout behavior instead of inheriting a control-plane deadline.
 
 ## Query Lifecycle
 
 `POST /submit_query` opens one datasource label and is idempotent for that same label. A different label cannot open
 until `POST /stop_query` closes the current one. Stopping a query clears in-memory task result queues and source-specific
 visualization configuration; it does not uninstall RuntimeServices.
+
+Query admission is enabled only after an active RuntimeDirectory is committed and is disabled atomically before
+uninstall starts. Opening a query has no source-count-dependent sleep. One generation-scoped collector polls the
+captured Distributor endpoint with `runtime.result-request-timeout-seconds` and requests at most
+`runtime.result-batch-size` records; cancellation invalidates that generation, so a late response cannot populate a
+new query or restore lifecycle-owned endpoint state.
 
 When `datasource.use-simulation=false`, backend opens the selected datasource automatically after successful install.
 
@@ -183,8 +238,9 @@ support Redis is stopped and discarding the old installation state is intentiona
 - Scheduler's durable Redis directory/proposal store and task-lease store are application protocols, not Kubernetes caches;
 - Hedger and the other Scheduler policies never delete or request deletion of processor Pods; failed workload reconciliation and exact RuntimeService retirement remain backend control-plane responsibilities;
 - EdgeMesh projects its existing MetaServer-backed Service/Endpoints informers into an atomic in-memory exact route;
-- backend telemetry batches exact Pod UID joins into one server-side-label-filtered Pod list and at most one equally
-  filtered metrics list, while reusing its node inventory snapshot;
+- backend telemetry periodically batches exact Pod UID joins for the entire active directory into one
+  server-side-label-filtered Pod list and at most one equally filtered metrics list, while reusing its independent node
+  inventory snapshot; browser service-detail requests only read this last-known-good snapshot;
 - automatic redeploy reuses the same Backend-owned node TTL and does not repeat Sedna/EdgeMesh Agent Pod lists after
   installation has authorized the immutable processor and source candidate sets.
 

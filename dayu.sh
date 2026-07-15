@@ -192,7 +192,7 @@ spec:
                 - name: PLAY_MODE
                   value: "$DATASOURCE_PLAY_MODE"
                 - name: DAYU_BACKEND_ENDPOINT
-                  value: "http://backend-cloud.$NAMESPACE.svc.cluster.local:8000"
+                  value: "http://backend-cloud.$NAMESPACE.svc.cluster.local.:8000"
                 - name: GUNICORN_PORT
                   value: "8000"
               image: $REGISTRY/$REPOSITORY/datasource:$TAG

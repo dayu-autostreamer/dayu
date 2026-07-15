@@ -49,13 +49,16 @@ def http_request(url,
                  retry_interval=0,
                  retry_backoff=1,
                  retry_status_codes=None,
+                 cancel_event=None,
                  **kwargs):
     """
     Send an HTTP request and keep the previous return contract.
 
     retry is the maximum number of attempts. The default value 1 preserves the
     previous behavior. Retries are applied to transport exceptions and transient
-    HTTP status codes such as 408, 429 and 5xx.
+    HTTP status codes such as 408, 429 and 5xx. ``cancel_event`` is cooperative:
+    it prevents a new attempt and interrupts retry backoff, while the timeout of
+    an already-running synchronous request remains its hard cancellation bound.
     """
     _max_timeout = timeout if timeout else 1000
     _method = 'GET' if not method else method
@@ -65,6 +68,8 @@ def http_request(url,
     _retry_status_codes = _normalize_retry_status_codes(retry_status_codes)
 
     for attempt in range(1, _retry + 1):
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         should_retry = False
         try:
             response = requests.request(method=_method, url=url, timeout=_max_timeout, **kwargs)
@@ -98,7 +103,11 @@ def http_request(url,
 
         LOGGER.warning(f'Retry request {url}, attempt {attempt + 1}/{_retry}')
         if _retry_interval > 0:
-            time.sleep(_retry_interval)
+            if cancel_event is not None:
+                if cancel_event.wait(_retry_interval):
+                    return None
+            else:
+                time.sleep(_retry_interval)
             _retry_interval *= _retry_backoff
 
     return None

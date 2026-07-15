@@ -264,7 +264,7 @@ def test_base_monitor_and_available_bandwidth_init_cover_runtime_contracts(monke
     ))
     assert client_monitor.is_server is False
     assert client_monitor.iperf3_port == 7777
-    assert client_monitor.iperf3_server_ip == "monitor-cloud.dayu.svc.cluster.local"
+    assert client_monitor.iperf3_server_ip == "monitor-cloud.dayu.svc.cluster.local."
     assert any("Request bandwidth resource permission failed" in message for message in warnings)
     assert exceptions == ["permission denied"]
 

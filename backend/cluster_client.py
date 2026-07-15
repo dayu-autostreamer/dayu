@@ -82,7 +82,7 @@ class ClusterClient:
         load_config: bool = True,
         sedna_lc_selector: str = "sedna=lc",
         edgemesh_selector: str = "k8s-app=kubeedge,kubeedge=edgemesh-agent",
-        runtime_selector: str = "app.kubernetes.io/managed-by=dayu-backend",
+        runtime_selector: str = "dayu.io/mesh-managed=true",
         request_timeout_seconds: float = 10,
     ):
         self.namespace = str(namespace or "").strip()
@@ -104,11 +104,22 @@ class ClusterClient:
         if self.request_timeout <= 0:
             raise ValueError("request_timeout_seconds must be positive")
 
-    def node_inventory(self) -> Dict[str, Dict[str, Any]]:
+    def _bounded_timeout(self, request_timeout_seconds: Optional[float] = None) -> float:
+        timeout = self.request_timeout if request_timeout_seconds is None else float(
+            request_timeout_seconds
+        )
+        if timeout <= 0:
+            raise ValueError("request_timeout_seconds must be positive")
+        return min(self.request_timeout, timeout)
+
+    def node_inventory(
+        self, request_timeout_seconds: Optional[float] = None,
+    ) -> Dict[str, Dict[str, Any]]:
         """Return a complete node inventory from exactly one list call."""
 
+        request_timeout = self._bounded_timeout(request_timeout_seconds)
         result = {}
-        for node in _items(self.core.list_node(_request_timeout=self.request_timeout)):
+        for node in _items(self.core.list_node(_request_timeout=request_timeout)):
             record = _node_record(node)
             if record["name"]:
                 result[record["name"]] = record
@@ -161,6 +172,7 @@ class ClusterClient:
         pod_refs: Sequence[Mapping[str, Any]],
         namespace: Optional[str] = None,
         node_inventory: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        request_timeout_seconds: Optional[float] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Join one Pod list and one metrics list by exact Pod UID.
 
@@ -169,6 +181,7 @@ class ClusterClient:
         """
 
         namespace = str(namespace or self.namespace)
+        request_timeout = self._bounded_timeout(request_timeout_seconds)
         normalized_refs = {}
         for ref in pod_refs or ():
             ref_namespace = str(ref.get("namespace") or namespace)
@@ -187,7 +200,7 @@ class ClusterClient:
         pods_response = self.core.list_namespaced_pod(
             namespace=namespace,
             label_selector=self.runtime_selector,
-            _request_timeout=self.request_timeout,
+            _request_timeout=request_timeout,
         )
         try:
             metrics_response = self.custom.list_namespaced_custom_object(
@@ -196,7 +209,7 @@ class ClusterClient:
                 namespace=namespace,
                 plural="pods",
                 label_selector=self.runtime_selector,
-                _request_timeout=self.request_timeout,
+                _request_timeout=request_timeout,
             )
         except Exception:
             # Metrics Server is optional. Pod readiness and exact UID identity
@@ -206,8 +219,8 @@ class ClusterClient:
             str(name): dict(record)
             for name, record in (node_inventory or {}).items()
         }
-        if not nodes:
-            for node in _items(self.core.list_node(_request_timeout=self.request_timeout)):
+        if node_inventory is None:
+            for node in _items(self.core.list_node(_request_timeout=request_timeout)):
                 record = _node_record(node)
                 if record["name"]:
                     nodes[record["name"]] = record

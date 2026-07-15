@@ -36,8 +36,21 @@ support-crd-meta:
 runtime:
   activation-timeout-seconds: 300
   operation-timeout-seconds: 900
+  # Total budget for one Scheduler control-plane HTTP call (including retries).
+  scheduler-request-timeout-seconds: 30
   # Backend owns the only node inventory snapshot; runtime workers never query it.
   inventory-ttl-seconds: 30
+  # One backend worker samples Scheduler telemetry; browser requests only read
+  # its last-known-good snapshot and never contact Scheduler directly.
+  telemetry-sample-interval-seconds: 2
+  telemetry-request-timeout-seconds: 3
+  # The same single worker batches all processor Pod refs. Kubernetes sampling
+  # is intentionally slower than Scheduler sampling to bound API-server load.
+  metrics-sample-interval-seconds: 10
+  metrics-request-timeout-seconds: 5
+  # Distributor polling is bounded independently from bulk artifact transfer.
+  result-request-timeout-seconds: 5
+  result-batch-size: 20
   # Must exceed lease TTL + quiet window so a failed release can expire safely.
   drain-timeout-seconds: 3900
   drain-quiet-window-seconds: 10

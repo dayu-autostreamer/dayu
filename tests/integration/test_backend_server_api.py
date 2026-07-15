@@ -72,6 +72,7 @@ class FakeBackendCore:
         self.inner_datasource = True
         self.runtime_orchestrator = type("RuntimeView", (), {
             "active_directory": staticmethod(_active_directory),
+            "current_session": staticmethod(lambda: None),
         })()
         self._export_payload = gzip.compress(json.dumps([{"task_id": 1}]).encode("utf-8"))
 
@@ -102,6 +103,14 @@ class FakeBackendCore:
 
     def get_edge_nodes(self):
         return [{"name": "edgex1"}]
+
+    def query_snapshot(self, include_queues=False):
+        return {
+            "open": self.source_open,
+            "source_label": self.source_label,
+            "generation": 0,
+            "queues": {} if include_queues else None,
+        }
 
     def get_system_parameters(self):
         return {"namespace": self.namespace}

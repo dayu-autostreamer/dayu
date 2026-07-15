@@ -43,17 +43,21 @@ class FakeCore:
         self.runtime_pods = [pod("runtime-a-abc", "pod-uid", "edge-1")]
         self.agent_pods = {}
         self.calls = []
+        self.request_timeouts = []
 
     def list_node(self, **kwargs):
         self.calls.append(("nodes", None))
+        self.request_timeouts.append(kwargs.get("_request_timeout"))
         return {"items": self.nodes}
 
     def list_pod_for_all_namespaces(self, label_selector, **kwargs):
         self.calls.append(("agents", label_selector))
+        self.request_timeouts.append(kwargs.get("_request_timeout"))
         return {"items": self.agent_pods.get(label_selector, [])}
 
     def list_namespaced_pod(self, namespace, **kwargs):
         self.calls.append(("pods", namespace, kwargs.get("label_selector")))
+        self.request_timeouts.append(kwargs.get("_request_timeout"))
         return {"items": self.runtime_pods}
 
 
@@ -109,6 +113,7 @@ def test_runtime_metrics_batches_pods_metrics_and_nodes_and_requires_exact_uid()
     core = FakeCore()
     custom = FakeCustom()
     client = make_client(core=core, custom=custom)
+    assert client.runtime_selector == "dayu.io/mesh-managed=true"
     result = client.runtime_metrics([{"name": "runtime-a-abc", "uid": "pod-uid"}])
 
     assert [call[0] for call in core.calls] == ["pods", "nodes"]
@@ -142,3 +147,38 @@ def test_runtime_metrics_reuses_supplied_inventory_and_makes_only_two_cluster_ca
     assert core.calls == [("pods", "dayu", client.runtime_selector)]
     assert len(custom.calls) == 1
     assert result["runtime-a-abc"]["node_info"] == snapshot["edge-1"]
+
+
+def test_runtime_metrics_request_timeout_is_explicit_and_capped_by_client_budget():
+    core = FakeCore()
+    custom = FakeCustom()
+    client = ClusterClient(
+        namespace="dayu",
+        core_api=core,
+        custom_api=custom,
+        load_config=False,
+        request_timeout_seconds=4,
+    )
+
+    client.node_inventory(request_timeout_seconds=2.5)
+    client.runtime_metrics(
+        [{"name": "runtime-a-abc", "uid": "pod-uid"}],
+        node_inventory={"edge-1": {}},
+        request_timeout_seconds=30,
+    )
+
+    assert core.request_timeouts == [2.5, 4.0]
+    assert custom.calls[-1]["_request_timeout"] == 4.0
+
+
+def test_explicit_empty_inventory_does_not_trigger_a_second_node_list():
+    core = FakeCore()
+    client = make_client(core=core)
+
+    result = client.runtime_metrics(
+        [{"name": "runtime-a-abc", "uid": "pod-uid"}],
+        node_inventory={},
+    )
+
+    assert [call[0] for call in core.calls] == ["pods"]
+    assert result["runtime-a-abc"]["node_info"] is None

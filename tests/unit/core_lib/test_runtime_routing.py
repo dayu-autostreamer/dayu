@@ -54,7 +54,9 @@ def test_runtime_resolver_understands_canonical_nested_identity_and_fails_closed
     assert endpoint.runtime_id == "processor-edge-a-r7"
     assert endpoint.deployment_revision == 7
     assert endpoint.endpoint_pod_uid == "pod-uid"
-    assert endpoint.url("/predict_local") == "http://processor-edge-a.dayu.svc.cluster.local:9000/predict_local"
+    assert endpoint.url("/predict_local") == "http://processor-edge-a.dayu.svc.cluster.local.:9000/predict_local"
+    assert endpoint.fqdn == "processor-edge-a.dayu.svc.cluster.local"
+    assert endpoint.to_dict()["fqdn"] == "processor-edge-a.dayu.svc.cluster.local"
 
     incomplete = canonical_route()
     incomplete["endpoint"].pop("pod_uid")

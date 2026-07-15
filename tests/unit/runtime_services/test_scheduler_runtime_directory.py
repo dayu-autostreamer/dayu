@@ -10,6 +10,8 @@ from core.scheduler.runtime_directory import (
     create_runtime_directory_store,
 )
 from core.scheduler.task_lease import InMemoryTaskLeaseStore, create_task_lease_store
+from core.scheduler.task_lease import RedisTaskLeaseStore
+from core.lib.runtime import RuntimeEndpoint
 
 
 def route(component, node, runtime_revision, service="", suffix="x"):
@@ -242,6 +244,43 @@ def test_production_directory_factory_requires_durable_redis_endpoint():
         create_runtime_directory_store(MissingRedisContext())
     with pytest.raises(RuntimeDirectoryError, match="durable task leases"):
         create_task_lease_store(MissingRedisContext())
+
+
+@pytest.mark.unit
+def test_redis_stores_use_absolute_cluster_dns_at_connection_boundary(monkeypatch):
+    import redis
+
+    calls = []
+
+    class ConnectionRedis(FakeDirectoryRedis):
+        pass
+
+    def connect(**kwargs):
+        calls.append(kwargs)
+        return ConnectionRedis()
+
+    monkeypatch.setattr(redis, "Redis", connect)
+    endpoint = RuntimeEndpoint(
+        component="redis",
+        fqdn="redis.dayu.svc.cluster.local",
+        port=6379,
+    )
+
+    RedisRuntimeDirectoryStore.from_endpoint(endpoint, install_id="install-a")
+    RedisTaskLeaseStore.from_endpoint(endpoint, install_id="install-a")
+
+    assert calls == [
+        {
+            "host": "redis.dayu.svc.cluster.local.",
+            "port": 6379,
+            "decode_responses": True,
+        },
+        {
+            "host": "redis.dayu.svc.cluster.local.",
+            "port": 6379,
+            "decode_responses": True,
+        },
+    ]
 
 
 @pytest.mark.unit

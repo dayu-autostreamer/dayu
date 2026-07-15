@@ -675,7 +675,7 @@ return {1, proposal_raw}
         except ImportError as exc:
             raise RuntimeError("redis package is required for a durable RuntimeDirectory") from exc
         return cls(
-            redis.Redis(host=endpoint.fqdn, port=endpoint.port or 6379, decode_responses=True),
+            redis.Redis(host=endpoint.connection_host, port=endpoint.port or 6379, decode_responses=True),
             install_id=install_id,
             initial=initial,
             clock=clock,

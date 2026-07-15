@@ -143,6 +143,11 @@ For backend code, mature open source projects also usually keep orchestration te
 - strict deployment-plan validation plus optional cloud-backup composition across initial install and redeploy
 - backend-owned node/agent preflight and batched exact-Pod-UID telemetry joins
 - polling loops such as result fetching and cycle deploy control
+- single-flight Scheduler/Kubernetes telemetry sampling, independent cadences, immediate route placeholders and
+  last-known-good fields, exact-Pod batch binding, rebind/uninstall race rejection, and frontend
+  settle-then-schedule/abort contracts
+- connection-boundary DNS canonicalization for HTTP, Redis, iperf, simulated datasource, and shell-rendered support
+  endpoints while persisted RuntimeDirectory identities remain unchanged
 - config validation, snapshot export, and state persistence helpers
 - backend-only failure handling that should not require component or end-to-end tests
 
@@ -150,7 +155,8 @@ So the answer to “is everything outside `algorithms/` covered?” is now: almo
 
 The performance boundary is reviewable even without a live cluster: runtime modules cannot import the Kubernetes
 package, rendered Pods cannot receive a service-account token, task-routed components cannot resolve from bootstrap,
-and backend telemetry tests assert batched list behavior rather than per-worker calls. A live environment is still
+and backend telemetry tests assert periodic whole-directory batches plus a zero-I/O management read path rather than
+per-worker or per-browser calls. A live environment is still
 useful for measuring Sedna/EdgeMesh activation latency, but it is not needed to prove that edge Python processes have no
 Kubernetes call path.
 

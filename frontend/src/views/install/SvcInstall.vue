@@ -276,11 +276,7 @@ export default {
 				);
 
 				installed.value = installStateResponse.data.state;
-				if (installed.value === 'install') {
-					install_state.install();
-				} else {
-					install_state.uninstall();
-				}
+				install_state.sync(installStateResponse.data.state, installStateResponse.data.phase);
 
 				policyOptions.value = Array.isArray(policyResponse.data) ? policyResponse.data : [];
 				datasourceOptions.value = Array.isArray(datasourceResponse.data) ? datasourceResponse.data : [];

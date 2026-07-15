@@ -4,6 +4,7 @@ import gzip
 import importlib
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -61,23 +62,38 @@ class FakeBackendCoreManagement:
         self.source_label = ""
         self.inner_datasource = True
         self.task_results = {}
+        self._query_generation = 0
         self.customized_source_result_visualization_configs = {}
         self.resource_url = None
+        self.scheduler_resource = {"edge-a": {"available_bandwidth": 12.34}}
+        self.runtime_metrics_snapshot = {
+            "processor-face-detection-edge-a-r1": {
+                "uid": "processor-pod-uid",
+                "logical_service": "face-detection",
+                "node": "edge-a",
+                "node_info": {"address": "10.0.0.8"},
+                "usage": {"processor": {"cpu": "25m", "memory": "64Mi"}},
+                "created_at": "2026-07-12T00:00:00Z",
+            }
+        }
         self.install_state = False
         self.runtime_orchestrator = type("RuntimeView", (), {
-            "runtime_metrics": staticmethod(lambda logical_service=None: {
-                "processor-face-detection-edge-a-r1": {
-                    "node": "edge-a",
-                    "node_info": {"address": "10.0.0.8"},
-                    "usage": {"processor": {"cpu": "25m", "memory": "64Mi"}},
-                    "created_at": "2026-07-12T00:00:00Z",
-                }
-            }),
+            "current_session": lambda _runtime: (
+                SimpleNamespace(
+                    phase="active",
+                    operation_id="operation-test",
+                    active_directory_revision=1,
+                    active=(),
+                    pending=(),
+                    last_error="",
+                ) if self.install_state else None
+            ),
         })()
         self.install_result = (True, "ok")
         self.install_exception = None
         self.uninstall_result = (True, "ok")
         self.run_get_result_called = False
+        self.close_query_calls = 0
         self.query_lock = threading.Lock()
         self.applied_templates = []
         self.datasource_config_to_return = {
@@ -128,9 +144,6 @@ class FakeBackendCoreManagement:
     def find_datasource_configuration_by_label(self, label):
         return next((config for config in self.source_configs if config["source_label"] == label), None)
 
-    def check_node_exist(self, node):
-        return node in {"edgex1", "edgex2"}
-
     def parse_and_apply_templates(self, policy, source_deploy, source_label=""):
         if self.install_exception:
             raise self.install_exception
@@ -142,6 +155,7 @@ class FakeBackendCoreManagement:
         return self.install_result
 
     def parse_and_delete_templates(self):
+        self.close_query()
         return self.uninstall_result
 
     def check_install_state(self):
@@ -154,7 +168,43 @@ class FakeBackendCoreManagement:
     def run_get_result(self):
         self.run_get_result_called = True
 
-    def fetch_visualization_data(self, source_id):
+    def open_query(self, source_label):
+        if not self.find_datasource_configuration_by_label(source_label):
+            return False, "Datasource configuration not exists"
+        if self.source_open:
+            if self.source_label == source_label:
+                return True, "Datasource is already open"
+            return False, "Another datasource is already open, please close it first"
+        self.source_open = True
+        self.source_label = source_label
+        self._query_generation += 1
+        self.task_results = {source_id: object() for source_id in self.get_source_ids()}
+        self.run_get_result()
+        return True, "Datasource open successfully"
+
+    def close_query(self):
+        self.close_query_calls += 1
+        self._query_generation += 1
+        self.source_open = False
+        self.source_label = ""
+        self.task_results.clear()
+        self.customized_source_result_visualization_configs.clear()
+        return True, "Datasource close successfully"
+
+    def query_snapshot(self, include_queues=False):
+        with self.query_lock:
+            return {
+                "open": self.source_open,
+                "source_label": self.source_label,
+                "generation": self._query_generation,
+                "queues": dict(self.task_results) if include_queues else None,
+            }
+
+    def is_query_generation_active(self, generation):
+        with self.query_lock:
+            return self.source_open and generation == self._query_generation
+
+    def fetch_visualization_data(self, source_id, task_queue=None):
         return [{"source_id": source_id, "value": f"result-{source_id}"}]
 
     def get_system_parameters(self):
@@ -184,6 +234,23 @@ class FakeBackendCoreManagement:
     def get_resource_url(self):
         self.resource_url = "http://scheduler/resource"
 
+    def get_runtime_telemetry(self, logical_service=""):
+        metrics = copy.deepcopy(self.runtime_metrics_snapshot)
+        if logical_service:
+            metrics = {
+                name: metric for name, metric in metrics.items()
+                if metric.get("logical_service") == logical_service
+            }
+        return {
+            "install_id": "install-test" if self.install_state else None,
+            "directory_revision": 1 if self.install_state else None,
+            "resource": copy.deepcopy(self.scheduler_resource),
+            "scheduling_overhead": None,
+            "runtime_metrics": metrics,
+            "scheduler_sampled_at": None,
+            "runtime_metrics_sampled_at": None,
+        }
+
     def get_log_file_name(self):
         return None
 
@@ -196,34 +263,9 @@ def management_backend(monkeypatch, tmp_path):
     backend_server_module = importlib.import_module("backend_server")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(backend_server_module, "BackendCore", FakeBackendCoreManagement)
-    monkeypatch.setattr(backend_server_module.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(
-        backend_server_module,
-        "http_request",
-        lambda address, method=None, **kwargs: {"edge-a": {"available_bandwidth": 12.34}}
-        if address == "http://scheduler/resource"
-        else None,
-    )
-
     backend = backend_server_module.BackendServer()
     with TestClient(backend.app) as client:
-        started_targets = []
-        original_thread = backend_server_module.threading.Thread
-
-        class DummyThread:
-            def __init__(self, target):
-                self.target = target
-
-            def start(self):
-                started_targets.append(self.target)
-
-        def thread_factory(*args, target=None, **kwargs):
-            if target == backend.server.run_get_result:
-                return DummyThread(target)
-            return original_thread(*args, target=target, **kwargs)
-
-        monkeypatch.setattr(backend_server_module.threading, "Thread", thread_factory)
-        yield backend_server_module, backend, client, started_targets
+        yield backend_server_module, backend, client, []
 
 
 @pytest.mark.integration
@@ -279,22 +321,6 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
     )
     assert invalid_policy["state"] == "fail"
 
-    invalid_node = asyncio.run(
-        backend.install_service(
-            json.dumps(
-                {
-                    "source_config_label": "source-config-0",
-                    "policy_id": "fixed",
-                    "source": [
-                        {"id": 0, "dag_selected": 1, "node_selected": ["missing-node"]},
-                        {"id": 1, "dag_selected": 1, "node_selected": ["edgex1"]},
-                    ],
-                }
-            ).encode()
-        )
-    )
-    assert invalid_node["state"] == "fail"
-
     install_result = asyncio.run(
         backend.install_service(
             json.dumps(
@@ -333,15 +359,18 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
 
     uninstall_result = asyncio.run(backend.uninstall_service())
     assert uninstall_result["state"] == "success"
+    assert backend.server.close_query_calls == 1
 
     backend.server.uninstall_result = (False, "still running")
     failed_uninstall = asyncio.run(backend.uninstall_service())
     assert failed_uninstall["state"] == "fail"
+    assert backend.server.close_query_calls == 2
 
 
 @pytest.mark.integration
 def test_backend_server_covers_query_state_visualization_and_service_info(management_backend):
-    _, backend, client, started_targets = management_backend
+    _, backend, client, _ = management_backend
+    backend.server.install_state = True
 
     missing_query = asyncio.run(backend.submit_query(json.dumps({"source_label": "missing"}).encode()))
     assert missing_query["state"] == "fail"
@@ -350,11 +379,11 @@ def test_backend_server_covers_query_state_visualization_and_service_info(manage
     assert open_query["state"] == "success"
     assert backend.server.source_open is True
     assert sorted(backend.server.task_results.keys()) == [0, 1]
-    assert len(started_targets) == 1
+    assert backend.server.run_get_result_called is True
 
     duplicate_query = asyncio.run(backend.submit_query(json.dumps({"source_label": "source-config-0"}).encode()))
     assert duplicate_query["state"] == "success"
-    assert len(started_targets) == 1
+    assert backend.server.run_get_result_called is True
 
     assert client.get("/query_state").json() == {"state": "open", "source_label": "source-config-0"}
     assert client.get("/source_list").json() == [
@@ -418,28 +447,109 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
     assert missing_delete["state"] == "fail"
 
     backend.server.install_state = True
-    assert client.get("/install_state").json() == {"state": "install"}
+    assert client.get("/install_state").json() == {
+        "state": "install",
+        "phase": "active",
+        "ready": True,
+        "operation_id": "operation-test",
+        "active_directory_revision": 1,
+        "active_runtime_count": 0,
+        "pending_runtime_count": 0,
+        "last_error": "",
+    }
     backend.server.install_state = False
-    assert client.get("/install_state").json() == {"state": "uninstall"}
+    assert client.get("/install_state").json() == {
+        "state": "uninstall",
+        "phase": "uninstalled",
+        "ready": False,
+        "operation_id": "",
+        "active_directory_revision": 0,
+        "active_runtime_count": 0,
+        "pending_runtime_count": 0,
+        "last_error": "",
+    }
+
+
+@pytest.mark.integration
+def test_long_uninstall_does_not_block_install_state_event_loop(management_backend, monkeypatch):
+    _, backend, _, _ = management_backend
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_uninstall():
+        started.set()
+        assert release.wait(2)
+        return True, "ok"
+
+    monkeypatch.setattr(backend.server, "parse_and_delete_templates", slow_uninstall)
+
+    async def exercise():
+        uninstall = asyncio.create_task(backend.uninstall_service())
+        assert await asyncio.to_thread(started.wait, 1)
+        state = await asyncio.wait_for(backend.get_install_state(), timeout=0.2)
+        release.set()
+        result = await uninstall
+        return state, result
+
+    state, result = asyncio.run(exercise())
+
+    assert state["state"] == "uninstall"
+    assert result["state"] == "success"
+
+
+@pytest.mark.integration
+def test_session_snapshot_reads_are_offloaded_from_async_management_handlers(
+        management_backend, monkeypatch,
+):
+    _, backend, _, _ = management_backend
+    main_thread = threading.get_ident()
+    caller_threads = []
+    session = SimpleNamespace(
+        phase="active",
+        operation_id="operation-test",
+        active_directory_revision=1,
+        active=(),
+        pending=(),
+        last_error="",
+    )
+
+    def current_session():
+        caller_threads.append(threading.get_ident())
+        return session
+
+    monkeypatch.setattr(
+        backend.server.runtime_orchestrator,
+        "current_session",
+        current_session,
+    )
+
+    asyncio.run(backend.get_install_state())
+    asyncio.run(backend.get_service_info("face-detection"))
+    asyncio.run(backend.get_task_result())
+
+    # service_info is now a pure telemetry-cache read and no longer consults
+    # lifecycle state or Kubernetes through RuntimeOrchestrator.
+    assert len(caller_threads) == 2
+    assert all(thread_id != main_thread for thread_id in caller_threads)
 
 
 @pytest.mark.integration
 def test_backend_server_covers_disabled_query_state_and_service_info_fallbacks(management_backend, monkeypatch):
     _, backend, client, _ = management_backend
+    backend.server.install_state = True
 
     backend.server.inner_datasource = False
     assert client.get("/query_state").json() == {"state": "disabled", "source_label": ""}
 
-    backend.server.resource_url = None
-    monkeypatch.setattr(backend.server, "get_resource_url", lambda: None)
+    backend.server.scheduler_resource = None
     without_scheduler_resource = asyncio.run(backend.get_service_info("face-detection"))
     assert without_scheduler_resource[0]["hostname"] == "edge-a"
     assert without_scheduler_resource[0]["bandwidth"] == "-"
 
     monkeypatch.setattr(
-        backend.server.runtime_orchestrator,
-        "runtime_metrics",
-        lambda logical_service=None: (_ for _ in ()).throw(RuntimeError("boom")),
+        backend.server,
+        "get_runtime_telemetry",
+        lambda logical_service="": (_ for _ in ()).throw(RuntimeError("boom")),
     )
     assert asyncio.run(backend.get_service_info("face-detection")) == []
 

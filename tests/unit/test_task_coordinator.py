@@ -187,13 +187,17 @@ def test_task_coordinator_initializes_redis_clients_from_runtime_configuration(m
     coordinator = task_coordinator_module.TaskCoordinator(
         runtime_context=RuntimeContext({
             "cloud_node": "cloudx1",
-            "endpoints": {"redis": {"fqdn": "redis.dayu.svc", "port": 6379}},
+            "endpoints": {"redis": {"fqdn": "redis.dayu.svc.cluster.local", "port": 6379}},
         })
     )
 
     assert coordinator.max_connections == "12"
     assert coordinator.storage_timeout == "900"
-    assert pool_calls == [{"host": "redis.dayu.svc", "port": 6379, "max_connections": "12"}]
+    assert pool_calls == [{
+        "host": "redis.dayu.svc.cluster.local.",
+        "port": 6379,
+        "max_connections": "12",
+    }]
     assert coordinator.redis == {"redis": {"pool": pool_calls[0]}}
 
 

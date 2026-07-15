@@ -3,6 +3,7 @@
 		<div class="panel-header">
 			<div>
 				<h3>Installed Services</h3>
+				<p class="runtime-phase">Runtime phase: {{ install_state.phase }}</p>
 			</div>
 
 			<div class="panel-actions">
@@ -77,7 +78,7 @@
 <script>
 import { ElMessage } from 'element-plus';
 import { RefreshRight } from '@element-plus/icons-vue';
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, markRaw, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useInstallStateStore } from '/@/stores/installState';
 
 const INSTALL_CHANGED_EVENT = 'dayu-install-changed';
@@ -93,28 +94,69 @@ export default {
 			selected: null,
 			selected_service: null,
 			handleInstallChanged: null,
+			serviceListController: null,
+			serviceInfoController: null,
 		};
 	},
 	setup() {
 		const install_state = useInstallStateStore();
 		const installed = ref('uninstall');
+		const runtimeReady = computed(() => install_state.isReady);
 		const loading = ref(false);
 		let stateTimer = null;
+		let stateController = null;
+		let stateRequest = null;
+		let statePollingActive = false;
 
 		const syncInstallState = async () => {
-			try {
-				const response = await fetch('/api/install_state');
-				const data = await response.json();
-				installed.value = data.state;
-				if (data.state === 'install') {
-					install_state.install();
-				} else {
-					install_state.uninstall();
+			if (stateRequest) return stateRequest;
+			const controller = new AbortController();
+			stateController = controller;
+			const request = (async () => {
+				try {
+					const response = await fetch('/api/install_state', { signal: controller.signal });
+					if (!response.ok) throw new Error(`Install state request failed: ${response.status}`);
+					const data = await response.json();
+					installed.value = data.state;
+					install_state.sync(data.state, data.phase);
+				} catch (error) {
+					if (error?.name !== 'AbortError') {
+						console.error(error);
+						ElMessage.error('System Error');
+					}
 				}
-			} catch (error) {
-				console.error(error);
-				ElMessage.error('System Error');
+			})();
+			stateRequest = request;
+			try {
+				return await request;
+			} finally {
+				if (stateRequest === request) stateRequest = null;
+				if (stateController === controller) stateController = null;
 			}
+		};
+
+		const pollInstallState = async () => {
+			if (!statePollingActive) return;
+			await syncInstallState();
+			if (statePollingActive) {
+				stateTimer = window.setTimeout(pollInstallState, 3000);
+			}
+		};
+
+		const startInstallStatePolling = () => {
+			if (statePollingActive) return;
+			statePollingActive = true;
+			void pollInstallState();
+		};
+
+		const stopInstallStatePolling = () => {
+			statePollingActive = false;
+			if (stateTimer) {
+				clearTimeout(stateTimer);
+				stateTimer = null;
+			}
+			stateController?.abort();
+			stateController = null;
 		};
 
 		watch(
@@ -125,30 +167,51 @@ export default {
 		);
 
 		onMounted(() => {
-			stateTimer = window.setInterval(() => {
-				syncInstallState();
-			}, 3000);
+			startInstallStatePolling();
 		});
 
 		onBeforeUnmount(() => {
-			if (stateTimer) {
-				clearInterval(stateTimer);
-				stateTimer = null;
-			}
+			stopInstallStatePolling();
 		});
 
 		return {
 			installed,
 			install_state,
 			loading,
+			runtimeReady,
+			startInstallStatePolling,
+			stopInstallStatePolling,
 			syncInstallState,
 		};
 	},
+	watch: {
+		runtimeReady(ready) {
+			if (ready) void this.getServiceList();
+			else this.clearRuntimeDetails();
+		},
+	},
 	methods: {
+		clearRuntimeDetails() {
+			this.serviceListController?.abort();
+			this.serviceInfoController?.abort();
+			this.services = [];
+			this.selected = null;
+			this.selected_service = null;
+			this.urlData = [];
+		},
 		async getServiceList() {
+			if (!this.runtimeReady) {
+				this.clearRuntimeDetails();
+				return;
+			}
+			this.serviceListController?.abort();
+			const controller = markRaw(new AbortController());
+			this.serviceListController = controller;
 			try {
-				const response = await fetch('/api/installed_service');
+				const response = await fetch('/api/installed_service', { signal: controller.signal });
+				if (!response.ok) throw new Error(`Service list request failed: ${response.status}`);
 				const data = await response.json();
+				if (controller.signal.aborted || this.serviceListController !== controller) return;
 				this.services = Array.isArray(data) ? data : [];
 
 				if (this.selected && !this.services.includes(this.selected)) {
@@ -157,35 +220,55 @@ export default {
 					this.urlData = [];
 				}
 			} catch (error) {
-				console.error(error);
-				ElMessage.error('System Error');
+				if (error?.name !== 'AbortError') {
+					console.error(error);
+					ElMessage.error('System Error');
+				}
+			} finally {
+				if (this.serviceListController === controller) this.serviceListController = null;
 			}
 		},
 		async refreshAll() {
 			await this.syncInstallState();
+			if (!this.runtimeReady) {
+				this.clearRuntimeDetails();
+				return;
+			}
 			await this.getServiceList();
 			if (this.selected_service) {
 				await this.sendRequest(this.selected_service);
 			}
 		},
 		async sendRequest(service) {
-			if (!service) {
+			this.serviceInfoController?.abort();
+			if (!service || !this.runtimeReady) {
 				this.urlData = [];
 				return;
 			}
 
+			const controller = markRaw(new AbortController());
+			this.serviceInfoController = controller;
 			try {
 				this.selected_service = service;
-				const response = await fetch(`/api/service_info/${service}`);
+				const response = await fetch(`/api/service_info/${service}`, { signal: controller.signal });
+				if (!response.ok) throw new Error(`Service detail request failed: ${response.status}`);
 				const data = await response.json();
+				if (controller.signal.aborted || this.serviceInfoController !== controller || this.selected_service !== service)
+					return;
 				this.urlData = Array.isArray(data) ? data : [];
 			} catch (error) {
-				console.error(error);
-				ElMessage.error('System Error');
+				if (error?.name !== 'AbortError') {
+					console.error(error);
+					ElMessage.error('System Error');
+				}
+			} finally {
+				if (this.serviceInfoController === controller) this.serviceInfoController = null;
 			}
 		},
 		async uninstallServices() {
 			this.loading = true;
+			this.install_state.setPhase('uninstalling');
+			this.clearRuntimeDetails();
 			try {
 				const response = await fetch('/api/stop_service', {
 					method: 'POST',
@@ -207,6 +290,7 @@ export default {
 					});
 					window.dispatchEvent(new Event(INSTALL_CHANGED_EVENT));
 				} else {
+					await this.syncInstallState();
 					ElMessage({
 						message: data.msg,
 						showClose: true,
@@ -216,6 +300,7 @@ export default {
 				}
 			} catch (error) {
 				console.error(error);
+				await this.syncInstallState();
 				ElMessage.error('Network Error');
 			} finally {
 				this.loading = false;
@@ -230,6 +315,8 @@ export default {
 		window.addEventListener(INSTALL_CHANGED_EVENT, this.handleInstallChanged);
 	},
 	beforeUnmount() {
+		this.serviceListController?.abort();
+		this.serviceInfoController?.abort();
 		if (this.handleInstallChanged) {
 			window.removeEventListener(INSTALL_CHANGED_EVENT, this.handleInstallChanged);
 		}
@@ -256,6 +343,12 @@ export default {
 	margin: 0;
 	font-size: 26px;
 	color: #0f172a;
+}
+
+.runtime-phase {
+	margin: 6px 0 0;
+	font-size: 13px;
+	color: #64748b;
 }
 
 .panel-actions,

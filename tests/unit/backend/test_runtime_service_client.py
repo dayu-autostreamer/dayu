@@ -1,4 +1,5 @@
 import copy
+import threading
 
 import pytest
 from kubernetes.client.rest import ApiException
@@ -10,6 +11,7 @@ from runtime_service_client import (
     RUNTIME_PLURAL,
     RUNTIME_VERSION,
     RuntimeServiceClient,
+    RuntimeServiceCancelled,
     RuntimeServiceInvalidStatus,
     RuntimeServiceRejected,
     RuntimeServiceTimeout,
@@ -197,6 +199,67 @@ def test_wait_follows_one_watch_from_list_resource_version():
     assert watcher.stopped is True
 
 
+def test_wait_cancellation_bounds_list_and_watch_request_windows():
+    api = FakeAPI([runtime_obj(ready=False, resource_version="3")])
+    watcher = FakeWatch([
+        {"type": "MODIFIED", "object": runtime_obj(resource_version="4")},
+    ])
+    client = RuntimeServiceClient(
+        "dayu", api=api, watch_factory=lambda: watcher,
+        request_timeout_seconds=30,
+    )
+
+    result = client.wait_for_conditions(
+        {"runtime-a": 3},
+        timeout_seconds=20,
+        cancel_event=threading.Event(),
+    )
+
+    assert result["runtime-a"]["metadata"]["resourceVersion"] == "4"
+    list_kwargs = next(kwargs for operation, kwargs in api.calls if operation == "list")
+    assert list_kwargs["_request_timeout"] == 2.0
+    watch_kwargs = watcher.stream_calls[0][1]
+    assert watch_kwargs["timeout_seconds"] == 2
+    assert watch_kwargs["_request_timeout"][1] > watch_kwargs["timeout_seconds"]
+
+
+def test_wait_with_pre_cancelled_token_does_not_contact_kubernetes():
+    api = FakeAPI([runtime_obj()])
+    client = RuntimeServiceClient("dayu", api=api)
+    cancelled = threading.Event()
+    cancelled.set()
+
+    with pytest.raises(RuntimeServiceCancelled, match="cancelled"):
+        client.wait_for_conditions(
+            {"runtime-a": 3},
+            cancel_event=cancelled,
+        )
+
+    assert api.calls == []
+
+
+def test_wait_cancellation_inside_watch_stops_stream_and_propagates():
+    cancel_event = threading.Event()
+
+    class CancellingWatch(FakeWatch):
+        def stream(self, func, **kwargs):
+            self.stream_calls.append((func, kwargs))
+            cancel_event.set()
+            yield {"type": "MODIFIED", "object": runtime_obj()}
+
+    api = FakeAPI([runtime_obj(ready=False, resource_version="3")])
+    watcher = CancellingWatch(())
+    client = RuntimeServiceClient("dayu", api=api, watch_factory=lambda: watcher)
+
+    with pytest.raises(RuntimeServiceCancelled, match="cancelled"):
+        client.wait_for_conditions(
+            {"runtime-a": 3},
+            cancel_event=cancel_event,
+        )
+
+    assert watcher.stopped is True
+
+
 def test_wait_fails_fast_on_rejected_spec():
     api = FakeAPI([runtime_obj(ready=False, accepted=False)])
     client = RuntimeServiceClient("dayu", api=api)
@@ -259,10 +322,16 @@ def test_wait_replaces_snapshot_after_410_instead_of_retaining_deleted_ready_obj
 def test_delete_many_uses_uid_guarded_deletes_and_one_shared_watch():
     first = runtime_obj("runtime-a", resource_version="3")
     second = runtime_obj("runtime-b", resource_version="3")
+    first["metadata"]["uid"] = "uid-a"
+    second["metadata"]["uid"] = "uid-b"
     api = FakeAPI([first, second])
+    deleted_first = runtime_obj("runtime-a", resource_version="4")
+    deleted_second = runtime_obj("runtime-b", resource_version="5")
+    deleted_first["metadata"]["uid"] = "uid-a"
+    deleted_second["metadata"]["uid"] = "uid-b"
     watcher = FakeWatch([
-        {"type": "DELETED", "object": runtime_obj("runtime-a", resource_version="4")},
-        {"type": "DELETED", "object": runtime_obj("runtime-b", resource_version="5")},
+        {"type": "DELETED", "object": deleted_first},
+        {"type": "DELETED", "object": deleted_second},
     ])
     client = RuntimeServiceClient(
         "dayu", api=api, watch_factory=lambda: watcher,
@@ -280,6 +349,66 @@ def test_delete_many_uses_uid_guarded_deletes_and_one_shared_watch():
     assert len(lists) == 1
     assert len(watcher.stream_calls) == 1
     assert watcher.stream_calls[0][1]["resource_version"] == "3"
+
+
+def test_delete_many_treats_same_name_different_uid_as_replacement_not_target():
+    class ConflictAPI(FakeAPI):
+        def delete_namespaced_custom_object(self, **kwargs):
+            self.calls.append(("delete", kwargs))
+            raise ApiException(status=409)
+
+    replacement = runtime_obj("runtime-a", resource_version="7")
+    replacement["metadata"]["uid"] = "new-uid"
+    api = ConflictAPI([replacement])
+    client = RuntimeServiceClient(
+        "dayu", api=api, watch_factory=lambda: pytest.fail("watch should not start"),
+    )
+
+    assert client.delete_many({"runtime-a": "old-uid"}) is True
+    delete_kwargs = next(kwargs for operation, kwargs in api.calls if operation == "delete")
+    assert delete_kwargs["body"]["preconditions"] == {"uid": "old-uid"}
+    assert any(operation == "get" for operation, _ in api.calls)
+
+
+def test_delete_many_with_pre_cancelled_token_does_not_delete():
+    api = FakeAPI([runtime_obj()])
+    client = RuntimeServiceClient("dayu", api=api)
+    cancelled = threading.Event()
+    cancelled.set()
+
+    with pytest.raises(RuntimeServiceCancelled, match="cancelled"):
+        client.delete_many(
+            {"runtime-a": "runtime-uid"},
+            cancel_event=cancelled,
+        )
+
+    assert api.calls == []
+
+
+def test_delete_many_cancellation_inside_watch_keeps_exact_uid_boundary():
+    cancel_event = threading.Event()
+    target = runtime_obj("runtime-a", resource_version="3")
+    target["metadata"]["uid"] = "uid-a"
+
+    class CancellingWatch(FakeWatch):
+        def stream(self, func, **kwargs):
+            self.stream_calls.append((func, kwargs))
+            cancel_event.set()
+            yield {"type": "DELETED", "object": copy.deepcopy(target)}
+
+    api = FakeAPI([target])
+    watcher = CancellingWatch(())
+    client = RuntimeServiceClient("dayu", api=api, watch_factory=lambda: watcher)
+
+    with pytest.raises(RuntimeServiceCancelled, match="cancelled"):
+        client.delete_many(
+            {"runtime-a": "uid-a"},
+            cancel_event=cancel_event,
+        )
+
+    assert watcher.stopped is True
+    delete_kwargs = next(kwargs for operation, kwargs in api.calls if operation == "delete")
+    assert delete_kwargs["body"]["preconditions"] == {"uid": "uid-a"}
 
 
 def test_delete_many_refuses_to_fall_back_to_name_only_deletion():
