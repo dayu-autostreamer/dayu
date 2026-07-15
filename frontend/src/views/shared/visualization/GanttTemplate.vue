@@ -17,6 +17,10 @@ import * as echarts from 'echarts';
 import { PieChart } from '@element-plus/icons-vue';
 
 const MAX_VISIBLE_LANES = 10;
+const GOLDEN_ANGLE = 137.50776405003785;
+const BAR_OPACITY = 0.86;
+const DARK_LABEL_COLOR = '#0f172a';
+const LIGHT_LABEL_COLOR = '#ffffff';
 
 function stableHash(value) {
 	let hash = 2166136261;
@@ -25,11 +29,66 @@ function stableHash(value) {
 		hash ^= source.charCodeAt(index);
 		hash = Math.imul(hash, 16777619);
 	}
+	hash ^= hash >>> 16;
+	hash = Math.imul(hash, 0x7feb352d);
+	hash ^= hash >>> 15;
+	hash = Math.imul(hash, 0x846ca68b);
+	hash ^= hash >>> 16;
 	return hash >>> 0;
 }
 
-function getTaskColor(taskId) {
-	return `hsl(${stableHash(`task:${taskId}`) % 360}, 68%, 48%)`;
+function hslToRgb(hue, saturation, lightness) {
+	const normalizedHue = (((hue % 360) + 360) % 360) / 60;
+	const normalizedSaturation = saturation / 100;
+	const normalizedLightness = lightness / 100;
+	const chroma = (1 - Math.abs(2 * normalizedLightness - 1)) * normalizedSaturation;
+	const secondary = chroma * (1 - Math.abs((normalizedHue % 2) - 1));
+	let red = 0;
+	let green = 0;
+	let blue = 0;
+
+	if (normalizedHue < 1) [red, green, blue] = [chroma, secondary, 0];
+	else if (normalizedHue < 2) [red, green, blue] = [secondary, chroma, 0];
+	else if (normalizedHue < 3) [red, green, blue] = [0, chroma, secondary];
+	else if (normalizedHue < 4) [red, green, blue] = [0, secondary, chroma];
+	else if (normalizedHue < 5) [red, green, blue] = [secondary, 0, chroma];
+	else [red, green, blue] = [chroma, 0, secondary];
+
+	const match = normalizedLightness - chroma / 2;
+	return [red + match, green + match, blue + match].map((channel) => channel * 255);
+}
+
+function relativeLuminance(rgb) {
+	const [red, green, blue] = rgb.map((channel) => {
+		const value = channel / 255;
+		return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+	});
+	return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function getLabelTone(hue, saturation, lightness) {
+	const displayedRgb = hslToRgb(hue, saturation, lightness).map(
+		(channel) => channel * BAR_OPACITY + 255 * (1 - BAR_OPACITY)
+	);
+	const backgroundLuminance = relativeLuminance(displayedRgb);
+	const darkLuminance = relativeLuminance([15, 23, 42]);
+	const lightContrast = 1.05 / (backgroundLuminance + 0.05);
+	const darkContrast = (backgroundLuminance + 0.05) / (darkLuminance + 0.05);
+	return darkContrast >= lightContrast ? 0 : 1;
+}
+
+function getTaskPalette(taskId) {
+	const hash = stableHash(`task:${taskId}`);
+	const numericTaskId = Number(taskId);
+	const hueSeed = Number.isSafeInteger(numericTaskId) ? numericTaskId : hash;
+	const hue = (((hueSeed * GOLDEN_ANGLE) % 360) + 360) % 360;
+	const saturation = 58 + ((hash >>> 8) % 4) * 7;
+	const lightness = 38 + ((hash >>> 12) % 4) * 7;
+
+	return {
+		barColor: `hsl(${hue.toFixed(3)}, ${saturation}%, ${lightness}%)`,
+		labelTone: getLabelTone(hue, saturation, lightness),
+	};
 }
 
 function normalizePayload(payload) {
@@ -110,6 +169,7 @@ function assignOverlapTracks(segments) {
 function renderGanttItem(params, api) {
 	const laneIndex = api.value(0);
 	const taskId = String(api.value(5) ?? '');
+	const labelColor = Number(api.value(6)) === 0 ? DARK_LABEL_COLOR : LIGHT_LABEL_COLOR;
 	const startPoint = api.coord([api.value(1), laneIndex]);
 	const endPoint = api.coord([api.value(2), laneIndex]);
 	const laneHeight = Math.abs(api.size([0, 1])[1]);
@@ -148,7 +208,7 @@ function renderGanttItem(params, api) {
 				shape,
 				style: {
 					fill: api.visual('color'),
-					opacity: 0.86,
+					opacity: BAR_OPACITY,
 					stroke: 'rgba(15, 23, 42, 0.24)',
 					lineWidth: 1,
 				},
@@ -173,11 +233,9 @@ function renderGanttItem(params, api) {
 					ellipsis: '…',
 					align: 'center',
 					verticalAlign: 'middle',
-					fill: '#ffffff',
+					fill: labelColor,
 					fontSize: Math.max(8, Math.min(11, shape.height * 0.58)),
-					fontWeight: 600,
-					textBorderColor: 'rgba(15, 23, 42, 0.8)',
-					textBorderWidth: 2,
+					fontWeight: 700,
 				},
 			},
 		],
@@ -217,7 +275,6 @@ export default {
 		const container = ref(null);
 		const resizeObserver = ref(null);
 		const mutationObserver = ref(null);
-		const legendScrollIndex = ref(0);
 		let unmounted = false;
 		let retryTimer = null;
 
@@ -230,8 +287,6 @@ export default {
 			const laneSet = new Set();
 			const rawSegments = [];
 			const segmentKeys = new Set();
-			const taskOrder = [];
-			const taskSet = new Set();
 
 			const addLane = (value) => {
 				if (value === null || value === undefined) return '';
@@ -278,10 +333,6 @@ export default {
 						if (segmentKeys.has(segmentKey)) return;
 						segmentKeys.add(segmentKey);
 
-						if (!taskSet.has(taskId)) {
-							taskSet.add(taskId);
-							taskOrder.push(taskId);
-						}
 						rawSegments.push({
 							taskId,
 							lane,
@@ -302,7 +353,7 @@ export default {
 				laneIndex: laneIndexes.get(segment.lane),
 			}));
 
-			return { lanes, segments, taskOrder };
+			return { lanes, segments };
 		});
 
 		const showEmptyState = computed(
@@ -363,50 +414,50 @@ export default {
 				renderer: 'canvas',
 				useDirtyRect: true,
 			});
-			chart.value.on('legendscroll', (event) => {
-				legendScrollIndex.value = event.scrollDataIndex || 0;
-			});
 			return true;
 		};
 
 		const getChartOption = () => {
-			const { lanes, segments, taskOrder } = normalizedTimeline.value;
+			const { lanes, segments } = normalizedTimeline.value;
 			if (!lanes.length || !segments.length) return {};
+			const paletteCache = new Map();
 
-			const segmentsByTask = new Map(taskOrder.map((taskId) => [taskId, []]));
-			segments.forEach((segment) => {
-				if (!segmentsByTask.has(segment.taskId)) segmentsByTask.set(segment.taskId, []);
-				segmentsByTask.get(segment.taskId).push(segment);
-			});
-			const legendData = [...segmentsByTask.keys()].map((taskId) => `Task ${taskId}`);
-			const legendStartIndex = Math.min(legendScrollIndex.value, Math.max(legendData.length - 1, 0));
-			const series = [...segmentsByTask.entries()].map(([taskId, taskSegments]) => {
-				const color = getTaskColor(taskId);
-				return {
-					name: `Task ${taskId}`,
+			const series = [
+				{
+					name: 'Task intervals',
 					type: 'custom',
 					coordinateSystem: 'cartesian2d',
 					renderItem: renderGanttItem,
 					encode: { x: [1, 2], y: 0 },
-					itemStyle: { color },
-					emphasis: { focus: 'series' },
-					data: taskSegments.map((segment) => ({
-						value: [
-							segment.laneIndex,
-							segment.startMs,
-							segment.endMs,
-							segment.trackIndex,
-							segment.trackCount,
-							segment.taskId,
-						],
-						itemStyle: { color },
-						meta: segment,
-					})),
-				};
-			});
+					data: segments.map((segment) => {
+						if (!paletteCache.has(segment.taskId)) {
+							paletteCache.set(segment.taskId, getTaskPalette(segment.taskId));
+						}
+						const palette = paletteCache.get(segment.taskId);
+						return {
+							value: [
+								segment.laneIndex,
+								segment.startMs,
+								segment.endMs,
+								segment.trackIndex,
+								segment.trackCount,
+								segment.taskId,
+								palette.labelTone,
+							],
+							itemStyle: { color: palette.barColor },
+							meta: segment,
+						};
+					}),
+				},
+			];
 
-			const minTime = Math.min(...segments.map((segment) => segment.startMs));
-			const maxTime = Math.max(...segments.map((segment) => segment.endMs));
+			const { minTime, maxTime } = segments.reduce(
+				(range, segment) => ({
+					minTime: Math.min(range.minTime, segment.startMs),
+					maxTime: Math.max(range.maxTime, segment.endMs),
+				}),
+				{ minTime: Infinity, maxTime: -Infinity }
+			);
 			const spansMultipleDates = new Date(minTime).toDateString() !== new Date(maxTime).toDateString();
 			const dataZoom = [
 				{
@@ -435,7 +486,7 @@ export default {
 				filterMode: 'weakFilter',
 				show: lanes.length > MAX_VISIBLE_LANES,
 				right: 8,
-				top: 62,
+				top: 32,
 				bottom: 54,
 				width: 14,
 				start: 0,
@@ -472,23 +523,8 @@ export default {
 						].join('<br/>');
 					},
 				},
-				legend: {
-					top: 8,
-					left: 16,
-					right: 16,
-					type: 'scroll',
-					scrollDataIndex: legendStartIndex,
-					icon: 'roundRect',
-					itemWidth: 13,
-					itemHeight: 8,
-					itemGap: 14,
-					pageButtonPosition: 'end',
-					pageIconSize: 10,
-					textStyle: { color: '#334155' },
-					data: legendData,
-				},
 				grid: {
-					top: 58,
+					top: 28,
 					left: 20,
 					right: lanes.length > MAX_VISIBLE_LANES ? 34 : 18,
 					bottom: 56,
@@ -553,8 +589,6 @@ export default {
 				}
 				return { ...zoom, start: previous.start, end: previous.end };
 			});
-			const previousSelection = currentOption.legend?.[0]?.selected;
-			if (previousSelection) option.legend.selected = previousSelection;
 			chart.value.setOption(option, true);
 			handleResize();
 		};
