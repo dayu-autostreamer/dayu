@@ -160,18 +160,30 @@ def test_install_state_separates_session_ownership_from_runtime_readiness():
     assert "install_state.install()" not in install
 
 
-def test_only_page_local_draft_is_persisted_by_install_form():
+def test_install_form_persists_a_namespace_scoped_semantic_draft():
     source = (REPO_ROOT / "frontend/src/views/install/SvcInstall.vue").read_text(
         encoding="utf-8"
     )
+    draft = (
+        REPO_ROOT / "frontend/src/views/install/installFormDraft.ts"
+    ).read_text(encoding="utf-8")
 
-    assert "saveStorage(DRAFT_STATE_KEY, payload)" in source
+    assert "writeInstallFormDraft" in source
+    assert "install_state.namespace" in source
+    assert "globalThis.localStorage" in draft
+    assert "policyId" in draft
+    assert "datasourceLabel" in draft
+    assert "sourceId" in draft
     assert "savedInstallConfig" not in source
     assert "INSTALL_STATE_KEY" not in source
-    assert "sessionStorage.setItem" in source
-    assert "localStorage" not in source
+    assert "sessionStorage" not in source
+    assert "sessionStorage" not in draft
     clear_method = source.split("handleClear()", 1)[1].split("},", 1)[0]
-    assert "removeItem(this.DRAFT_STATE_KEY)" in clear_method
+    assert "this.clearSelections()" in clear_method
+    complete_method = source.split("completeInstall(message)", 1)[1].split(
+        "},", 1
+    )[0]
+    assert "clearInstallFormDraft" not in complete_method
 
 
 def test_install_lifecycle_is_initialized_once_before_mount():

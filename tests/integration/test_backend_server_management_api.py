@@ -529,6 +529,7 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
 
     backend.server.install_state = True
     assert client.get("/install_state").json() == {
+        "namespace": "dayu-test",
         "state": "install",
         "phase": "active",
         "ready": True,
@@ -551,6 +552,7 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
     backend.server._pending_install_id = ""
     backend.server.install_state = False
     assert client.get("/install_state").json() == {
+        "namespace": "dayu-test",
         "state": "uninstall",
         "phase": "uninstalled",
         "ready": False,

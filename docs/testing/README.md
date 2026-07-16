@@ -172,6 +172,12 @@ the command. The Python frontend contract tests
 additionally verify that components consume the single Pinia lifecycle observer rather than issuing their own
 `/install_state` polls.
 
+The Node frontend suite also covers the installation-form preference boundary: drafts are isolated by the namespace
+reported by `/install_state`, contain only stable semantic identifiers, survive catalog reordering, reconcile against
+current datasource/DAG/node catalogs, and fail open when browser storage is corrupt or unavailable. Static frontend
+contracts ensure installation completion does not erase that draft and **Clear** remains the only explicit removal
+path.
+
 `tests/unit/test_dayu_shell.py` executes `ACTION=stop` against deterministic fake `kubectl`, HTTP, timeout, and clock
 commands. It covers cancellation before any RuntimeService exists, strict lifecycle-JSON validation, target-bound
 replacement completion, same-target `cancelling-install`/`preparing-uninstall` waits, trusted targetless-stop

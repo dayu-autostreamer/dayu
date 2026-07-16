@@ -30,6 +30,7 @@ const INSTALL_A = '11111111-1111-4111-8111-111111111111';
 const INSTALL_B = '22222222-2222-4222-8222-222222222222';
 
 const snapshot = (overrides = {}) => ({
+	namespace: 'dayu-test',
 	state: 'uninstall',
 	phase: 'uninstalled',
 	ready: false,
@@ -102,6 +103,7 @@ test('an authoritative active snapshot ends global install loading before the PO
 	]);
 	const store = createStore();
 	await hydrate(store);
+	assert.equal(store.namespace, 'dayu-test');
 	actionId = store.beginInstall();
 	const completion = store.waitUntilInstallSettles(actionId);
 

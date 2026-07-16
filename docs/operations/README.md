@@ -71,8 +71,8 @@ service-account token to a RuntimeService template.
 
 One namespace is one shared Dayu lifecycle domain. Backend owns one install admission, one RuntimeSession, and one
 query lifecycle for that namespace; every frontend window connected to it observes and may operate the same state.
-There is no browser-session ownership layer. Unsubmitted form drafts and notifications may remain tab-local, but
-install/query/service state must come from Backend.
+There is no browser-session ownership layer. Browser preferences may persist independently, but install/query/service
+state must come from Backend.
 
 Kubernetes RBAC above limits what Backend can change; it does not authorize callers of Backend's HTTP API. Dayu has no
 built-in HTTP authentication, and the frontend's local token is not a security boundary. Production multi-user
@@ -221,6 +221,15 @@ permits retry. In durable cleanup, a persistent panel reports the remaining Kube
 object-identity reduction it changes to a delayed warning, but the button keeps spinning and Install remains disabled;
 this warning is diagnostic state shared by every browser, not an operation timeout. Failed initial sessions remain
 cleanable through Uninstall.
+
+The left-hand installation form is a reusable browser preference, not lifecycle state. The frontend stores one
+versioned draft per Backend namespace in browser-local storage and retains it across reloads, browser restarts, and
+other tabs on the same origin. It stores only the selected policy id, datasource label, and each source's DAG id and
+node names. After loading the current catalogs, the page resolves those stable identifiers again and drops deleted
+policies, datasources, sources, DAGs, and nodes rather than replaying stale objects or array positions. A successful,
+failed, or cancelled install and an uninstall do not erase this preference, so it remains available for a later
+installation; only **Clear** removes it. This cache is a convenience local to one browser profile. `/install_state`
+remains authoritative for namespace-wide ownership, readiness, button state, and permissions.
 
 After the new directory CAS is finalized, management reads consume the immutable
 session snapshot without taking the lifecycle transaction lock. Node inventory

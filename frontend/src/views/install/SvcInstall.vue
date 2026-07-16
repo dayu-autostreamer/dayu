@@ -151,8 +151,14 @@ import axios from 'axios';
 import { markRaw, onMounted, ref, watch } from 'vue';
 import { useInstallStateStore } from '/@/stores/installState';
 import { fetchJsonWithTimeout } from '/@/utils/fetchWithTimeout';
+import {
+	clearInstallFormDraft,
+	createInstallFormDraft,
+	readInstallFormDraft,
+	restoreInstallFormDraft,
+	writeInstallFormDraft,
+} from './installFormDraft';
 
-const DRAFT_STATE_KEY = 'savedDraftConfig';
 const INSTALL_REQUEST_TIMEOUT_MS = 930000;
 const INSTALL_RESPONSE_SETTLE_MS = 3000;
 
@@ -177,6 +183,7 @@ export default {
 		const dagOptions = ref([]);
 		const nodeOptions = ref([]);
 		const install_state = useInstallStateStore();
+		let draftHydrated = false;
 
 		const isValidIndex = (index, array) =>
 			Number.isSafeInteger(index) &&
@@ -185,77 +192,46 @@ export default {
 			index < array.length &&
 			Object.prototype.hasOwnProperty.call(array, index);
 
-		const safeClone = (value) => {
-			try {
-				return JSON.parse(JSON.stringify(value));
-			} catch {
-				return null;
-			}
-		};
-
-		const loadStorage = (key) => {
-			try {
-				const data = sessionStorage.getItem(key);
-				return data ? JSON.parse(data) : null;
-			} catch (error) {
-				console.error('Fail to load storage', error);
-				return null;
-			}
-		};
-
-		const saveStorage = (key, value) => {
-			try {
-				sessionStorage.setItem(key, JSON.stringify(value));
-			} catch (error) {
-				console.error('Fail to save storage', error);
-			}
-		};
-
-		const createSourceSelections = (datasource, savedSources = []) => {
-			const savedById = new Map((savedSources || []).map((source) => [source.id, source]));
-			return (datasource?.source_list || []).map((source) => {
-				const saved = savedById.get(source.id) || {};
-				const dagSelected = dagOptions.value.some((dag) => dag.dag_id === saved.dag_selected) ? saved.dag_selected : '';
-				const nodeSelected = Array.isArray(saved.node_selected)
-					? saved.node_selected.filter((nodeName) => nodeOptions.value.some((node) => node.name === nodeName))
-					: [];
-
-				return {
-					...source,
-					dag_selected: dagSelected,
-					node_selected: nodeSelected,
-				};
-			});
+		const persistSelections = () => {
+			if (!draftHydrated) return;
+			const policy = isValidIndex(selectedPolicyIndex.value, policyOptions.value)
+				? policyOptions.value[selectedPolicyIndex.value]
+				: null;
+			const datasource = isValidIndex(selectedDatasourceIndex.value, datasourceOptions.value)
+				? datasourceOptions.value[selectedDatasourceIndex.value]
+				: null;
+			writeInstallFormDraft(install_state.namespace, createInstallFormDraft(policy, datasource, selectedSources.value));
 		};
 
 		const restoreSelections = () => {
-			const storedConfig = loadStorage(DRAFT_STATE_KEY);
+			const restored = restoreInstallFormDraft(readInstallFormDraft(install_state.namespace), {
+				policies: policyOptions.value,
+				datasources: datasourceOptions.value,
+				dags: dagOptions.value,
+				nodes: nodeOptions.value,
+			});
+			draftHydrated = false;
+			selectedPolicyIndex.value = restored.policyIndex;
+			selectedDatasourceIndex.value = restored.datasourceIndex;
+			selectedSources.value = restored.sources;
+			draftHydrated = true;
+			// Persist the reconciled form so deleted DAGs, nodes, and sources do
+			// not survive as stale browser state.
+			persistSelections();
+		};
 
-			if (!storedConfig) {
-				selectedPolicyIndex.value = null;
-				selectedDatasourceIndex.value = null;
-				selectedSources.value = [];
-				return;
-			}
-
-			selectedPolicyIndex.value = isValidIndex(storedConfig.selectedPolicyIndex, policyOptions.value)
-				? storedConfig.selectedPolicyIndex
-				: null;
-
-			selectedDatasourceIndex.value = isValidIndex(storedConfig.selectedDatasourceIndex, datasourceOptions.value)
-				? storedConfig.selectedDatasourceIndex
-				: null;
-
-			if (selectedDatasourceIndex.value !== null) {
-				const datasource = datasourceOptions.value[selectedDatasourceIndex.value];
-				selectedSources.value = createSourceSelections(datasource, storedConfig.selectedSources);
-			} else {
-				selectedSources.value = [];
-			}
+		const clearSelections = () => {
+			draftHydrated = false;
+			selectedPolicyIndex.value = null;
+			selectedDatasourceIndex.value = null;
+			selectedSources.value = [];
+			clearInstallFormDraft(install_state.namespace);
+			draftHydrated = true;
 		};
 
 		const refreshOptions = async () => {
 			try {
+				persistSelections();
 				await install_state.refresh({ fresh: true });
 				const [policyResponse, datasourceResponse, dagResponse, nodeResponse] = await Promise.all([
 					axios.get('/api/policy'),
@@ -276,32 +252,24 @@ export default {
 			}
 		};
 
-		watch(
-			[selectedPolicyIndex, selectedDatasourceIndex, selectedSources],
-			([policyIdx, datasourceIdx, sources]) => {
-				const payload = {
-					selectedPolicyIndex: isValidIndex(policyIdx, policyOptions.value) ? policyIdx : null,
-					selectedDatasourceIndex: isValidIndex(datasourceIdx, datasourceOptions.value) ? datasourceIdx : null,
-					selectedSources: safeClone(sources) || [],
-				};
-
-				saveStorage(DRAFT_STATE_KEY, payload);
-			},
-			{ deep: true }
-		);
+		watch([selectedPolicyIndex, selectedDatasourceIndex, selectedSources], persistSelections, {
+			deep: true,
+			flush: 'sync',
+		});
 
 		onMounted(async () => {
 			await refreshOptions();
 		});
 
 		return {
-			DRAFT_STATE_KEY,
+			clearSelections,
 			dagOptions,
 			datasourceOptions,
 			install_state,
 			isValidIndex,
 			nodeOptions,
 			policyOptions,
+			persistSelections,
 			refreshOptions,
 			selectedDatasourceIndex,
 			selectedPolicyIndex,
@@ -321,11 +289,6 @@ export default {
 			}
 		},
 		completeInstall(message) {
-			try {
-				sessionStorage.removeItem(this.DRAFT_STATE_KEY);
-			} catch (error) {
-				console.error('Fail to clear submitted draft', error);
-			}
 			if (this.componentUnmounted) return;
 			ElMessage({
 				message: message || 'Install services successfully',
@@ -418,6 +381,7 @@ export default {
 					return;
 				}
 			}
+			this.persistSelections();
 
 			const submittedConfig = {
 				selectedPolicyIndex: this.selectedPolicyIndex,
@@ -514,10 +478,7 @@ export default {
 			}
 		},
 		handleClear() {
-			this.selectedPolicyIndex = null;
-			this.selectedDatasourceIndex = null;
-			this.selectedSources = [];
-			sessionStorage.removeItem(this.DRAFT_STATE_KEY);
+			this.clearSelections();
 		},
 	},
 	beforeUnmount() {

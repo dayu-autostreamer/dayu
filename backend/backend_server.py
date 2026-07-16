@@ -832,9 +832,8 @@ class BackendServer:
         else:
             return {'state': 'fail', 'msg': f'Uninstall services failed: {msg}'}
 
-    @staticmethod
     def _install_state_response(
-            session, pending=None, local_ready=False, local_error=''):
+            self, session, pending=None, local_ready=False, local_error=''):
         pending = pending if isinstance(pending, dict) else {}
         has_pending = bool(pending)
         pending_kind = str(pending.get('kind') or 'install')
@@ -846,6 +845,7 @@ class BackendServer:
         )
         if session is None:
             return {
+                'namespace': self.server.namespace,
                 'state': 'uninstall',
                 'phase': pending_phase if has_pending else 'uninstalled',
                 'ready': False,
@@ -880,6 +880,7 @@ class BackendServer:
             # converge on a terminal failure instead of polling forever.
             phase = 'failed'
         return {
+            'namespace': self.server.namespace,
             # ``state`` remains the ownership guard used to reject a second
             # installation. ``ready``/``phase`` express whether read APIs may
             # consume the atomically published RuntimeDirectory.

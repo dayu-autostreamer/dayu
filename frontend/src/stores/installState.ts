@@ -10,6 +10,7 @@ import {
 import { fetchJsonWithTimeout } from '/@/utils/fetchWithTimeout';
 
 type InstallStateSnapshot = {
+	namespace: string;
 	state: InstallStatus;
 	phase?: string;
 	ready?: boolean;
@@ -125,6 +126,7 @@ export function createInstallId() {
 
 export const useInstallStateStore = defineStore('install_state', () => {
 	const status = ref<InstallStatus>('uninstall');
+	const namespace = ref('');
 	const phase = ref('uninstalled');
 	const ready = ref(false);
 	const hydrated = ref(false);
@@ -185,6 +187,9 @@ export const useInstallStateStore = defineStore('install_state', () => {
 		if ((snapshot.state === 'install' || snapshot.install_pending) && !nextInstallId) {
 			throw new Error('Owned install state response contains no install_id');
 		}
+		const nextNamespace = String(snapshot.namespace || '').trim();
+		if (!nextNamespace) throw new Error('Install state response contains no namespace');
+		namespace.value = nextNamespace;
 		status.value = snapshot.state;
 		phase.value = snapshot.phase || (snapshot.state === 'install' ? 'unknown' : 'uninstalled');
 		ready.value = snapshot.state === 'install' && Boolean(snapshot.ready) && phase.value === 'active';
@@ -289,6 +294,7 @@ export const useInstallStateStore = defineStore('install_state', () => {
 		uninstallCommandOperationId = '';
 		activeInstallIdentityObserved = false;
 		cleanup.value = null;
+		namespace.value = '';
 		initialized.value = false;
 	}
 
@@ -508,6 +514,7 @@ export const useInstallStateStore = defineStore('install_state', () => {
 	}
 
 	return {
+		namespace,
 		status,
 		phase,
 		ready,

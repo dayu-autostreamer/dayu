@@ -91,7 +91,7 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | --- | --- | --- | --- | --- |
 | `POST` | `/install` | Resolve policy + datasource mapping and deploy the runtime stack. | JSON body described below, including a client-generated canonical UUID `install_id` | `{state, msg, warning?}`; success acknowledges this request, while `/install_state` remains the lifecycle source of truth |
 | `POST` | `/stop_service` | Accept an asynchronous uninstall: close query admission, persist or expose cancellation intent, and start background teardown. | JSON `{install_id}` binds the command to the observed target; an omitted id is a trusted system-teardown fallback | `{state, msg}`; success means accepted or already absent, not completed |
-| `GET` | `/install_state` | Check install admission, session ownership, lifecycle phase, and uninstall cleanup diagnostics; failed/recovering sessions remain `install` until safely uninstalled. | None | `{state, phase, ready, install_id, install_pending, operation_id, updated_at, active_directory_revision, active_runtime_count, pending_runtime_count, cleanup_runtime_count, cleanup, retirement_revision, retirement_deadline, last_error}` |
+| `GET` | `/install_state` | Check install admission, session ownership, lifecycle phase, and uninstall cleanup diagnostics; failed/recovering sessions remain `install` until safely uninstalled. | None | `{namespace, state, phase, ready, install_id, install_pending, operation_id, updated_at, active_directory_revision, active_runtime_count, pending_runtime_count, cleanup_runtime_count, cleanup, retirement_revision, retirement_deadline, last_error}` |
 | `POST` | `/submit_query` | Open datasource playback for a datasource label and begin result collection. | JSON body with `source_label` | `{state, msg}` |
 | `POST` | `/stop_query` | Stop datasource playback and clear in-memory task results. | None | `{state, msg}` |
 | `GET` | `/query_state` | Get query state for the current datasource. | None | `{state: "open"|"close"|"disabled", source_label}` |
@@ -104,6 +104,10 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 local admission finalization, publication recovery, or uninstall, the frontend retains the ownership state to prevent
 a second install while suspending telemetry polling and clearing active-service details. A pending old-revision retirement keeps the newly
 published session active and does not block those reads.
+
+`namespace` is the Backend namespace served by this endpoint. Frontends may use it only to scope non-authoritative
+browser preferences such as a reusable installation form draft. It does not identify a user or browser and must not
+replace `install_id`, `state`, `phase`, or `ready` in lifecycle, admission, or authorization decisions.
 
 `ready` is true exactly when `phase="active"`, install admission has finalized, and this Backend process has locally
 projected the exact `(install_id, active_directory_revision)` into its URL, query-admission, reconciliation, and
