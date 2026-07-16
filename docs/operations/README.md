@@ -123,6 +123,14 @@ No partial runtime becomes routable. A missing plan, unknown target, ambiguous c
 spec, incomplete UID tuple, activation timeout, or directory readback mismatch fails the transaction and records the
 error in the session.
 
+Scheduler policy and request-validation rejections retain the original HTTP status, endpoint, and a bounded actionable
+form of the structured `detail` when Backend records `RuntimeSession.last_error`; validation inputs are omitted, and
+`/install_state` plus the existing frontend error presentation expose the resulting message unchanged. For example, an
+invalid fixed deployment names the source, logical service, non-candidate nodes, and allowed nodes instead of being
+reduced to a generic "no valid plan" error. The matching Scheduler 4xx log is a bounded single-line warning suitable
+for Pod-log diagnosis; it omits request bodies and full DAG/policy payloads. No additional runtime field or
+error-logging configuration is required.
+
 ## Runtime Routing And Leases
 
 Runtime Pods consume `DAYU_RUNTIME_BOOTSTRAP`, which contains immutable install context, compact node metadata, support

@@ -160,6 +160,14 @@ def test_install_state_separates_session_ownership_from_runtime_readiness():
     assert "install_state.install()" not in install
 
 
+def test_scheduler_install_failure_uses_existing_frontend_error_surface():
+    install = (REPO_ROOT / "frontend/src/views/install/SvcInstall.vue").read_text(encoding="utf-8")
+    query = (REPO_ROOT / "frontend/src/views/install/SvcQuery.vue").read_text(encoding="utf-8")
+
+    assert "this.showInstallError(this.install_state.lastError)" in install
+    assert "{{ install_state.lastError }}" in query
+
+
 def test_install_form_persists_a_namespace_scoped_semantic_draft():
     source = (REPO_ROOT / "frontend/src/views/install/SvcInstall.vue").read_text(
         encoding="utf-8"

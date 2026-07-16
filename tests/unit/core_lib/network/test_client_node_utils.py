@@ -14,10 +14,12 @@ merge_address = utils_module.merge_address
 
 
 class FakeResponse:
-    def __init__(self, status_code, payload=None):
+    def __init__(self, status_code, payload=None, content=b"", text="", reason=None):
         self.status_code = status_code
         self._payload = payload
-        self.content = b""
+        self.content = content
+        self.text = text
+        self.reason = reason
         self.url = "http://scheduler"
 
     def json(self):
@@ -99,6 +101,122 @@ def test_http_request_without_cancellation_token_keeps_existing_contract(monkeyp
 
     assert http_request("http://scheduler") == {"ok": True}
     assert len(request_calls) == 1
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_preserves_fastapi_error_detail(monkeypatch):
+    request_calls = []
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: request_calls.append(kwargs) or FakeResponse(
+            422,
+            {
+                "detail": (
+                    "deployment policy for service 'vehicle-trajectory-prediction' "
+                    "selected non-candidate nodes: ['edgexn32']"
+                )
+            },
+        ),
+    )
+
+    with pytest.raises(client_module.HTTPClientError) as exc_info:
+        client_module.http_request_or_raise(
+            "http://scheduler/initial_deployment",
+            method="post",
+            retry=3,
+        )
+
+    error = exc_info.value
+    assert error.method == "POST"
+    assert error.url == "http://scheduler/initial_deployment"
+    assert error.status_code == 422
+    assert error.detail == (
+        "deployment policy for service 'vehicle-trajectory-prediction' "
+        "selected non-candidate nodes: ['edgexn32']"
+    )
+    assert "HTTP 422" in str(error)
+    assert len(request_calls) == 1
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_sanitizes_structured_validation_detail(monkeypatch):
+    validation_error = {
+        "type": "missing",
+        "loc": ["body", "node_set"],
+        "msg": "Field required",
+        "input": "x" * 4096,
+    }
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: FakeResponse(422, {"detail": [validation_error]}),
+    )
+
+    with pytest.raises(client_module.HTTPClientError) as exc_info:
+        client_module.http_request_or_raise("http://scheduler/initial_deployment")
+
+    detail = exc_info.value.detail
+    assert '"loc":["body","node_set"]' in detail
+    assert '"msg":"Field required"' in detail
+    assert '"type":"missing"' in detail
+    assert '"input"' not in detail
+    assert "x" * 32 not in detail
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_bounds_unstructured_error_detail(monkeypatch):
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: FakeResponse(422, {"detail": "x" * 4096}),
+    )
+
+    with pytest.raises(client_module.HTTPClientError) as exc_info:
+        client_module.http_request_or_raise("http://scheduler/initial_deployment")
+
+    assert len(exc_info.value.detail) == client_module._MAX_ERROR_DETAIL_LENGTH
+    assert exc_info.value.detail.endswith("...")
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_retains_last_transient_failure(monkeypatch):
+    responses = iter([
+        FakeResponse(503, {"detail": "scheduler is starting"}),
+        FakeResponse(503, {"detail": "scheduler policy is unavailable"}),
+    ])
+    request_calls = []
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: request_calls.append(kwargs) or next(responses),
+    )
+
+    with pytest.raises(client_module.HTTPClientError) as exc_info:
+        client_module.http_request_or_raise("http://scheduler", retry=2)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "scheduler policy is unavailable"
+    assert len(request_calls) == 2
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_keeps_cooperative_cancellation_semantics(monkeypatch):
+    request_calls = []
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: request_calls.append(kwargs) or FakeResponse(200, {"ok": True}),
+    )
+    cancelled = threading.Event()
+    cancelled.set()
+
+    assert client_module.http_request_or_raise(
+        "http://scheduler",
+        retry=3,
+        cancel_event=cancelled,
+    ) is None
+    assert request_calls == []
 
 
 @pytest.mark.unit

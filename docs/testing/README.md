@@ -109,7 +109,7 @@ For `dependency/core/lib/` outside `algorithms/`, the current state is now much 
 | `scheduling/deployment_plan.py` | Strong direct coverage | Canonical service-to-node-list normalization, complete DAG coverage, candidate scoping, explicit cloud identity, and invalid-plan rejection are tested independently from policy implementations |
 | `scheduling/source_selection.py` | Strong direct coverage | Strict scope parsing, independent Backend-authorized source candidates, selected/all-edge semantics, and rejection of legacy discovery inputs are tested directly and through Backend install transactions |
 | `content/service.py`, `content/dag.py`, `content/task.py` | Strong direct coverage | DAG extraction, service timing, and task lifecycle are exercised directly |
-| `network/client.py`, `network/api.py`, `network/utils.py` | Good direct coverage | HTTP behavior, API constants, and pure address utilities are covered; topology and ports are no longer discovered in runtime workers |
+| `network/client.py`, `network/api.py`, `network/utils.py` | Good direct coverage | HTTP behavior includes management-call status/detail preservation while the existing lenient caller contract remains stable; API constants and pure address utilities are covered, and topology and ports are no longer discovered in runtime workers |
 | `solver/*` | Good direct coverage | Longest path, LCA, and intermediate node logic have dedicated tests |
 | `estimation/time_estimation.py`, `estimation/accuracy_estimation.py`, `estimation/overhead_estimation.py`, `estimation/model_flops_estimation.py` | Direct coverage added | Timing tickets, accuracy math, overhead logs, and FLOPs fallback behavior are now unit-tested |
 | `common/log.py`, `common/constant.py`, `network/api.py`, `network/utils.py`, package `__init__.py` exports | Mostly trivial / indirectly covered | These are thin constants or re-export layers and do not need the same density of tests |
@@ -131,8 +131,8 @@ For service-layer code, the most useful unit tests are not â€œdoes FastAPI workâ
 - `distributor` unit tests should prove persistence ordering, incremental reads, export behavior, and scheduler forwarding without needing a full pipeline run.
 - `generator_server` unit tests should prove context parameters are collected and passed into the selected generator hook correctly.
 - `scheduler` unit tests should prove direct single-process Uvicorn startup, thread-pool-safe synchronous Redis handlers,
-  startup-policy fallback, backup offloading, scenario/resource propagation, and resource-lock passthrough without
-  depending on research agents.
+  startup-policy fallback, backup offloading, scenario/resource propagation, resource-lock passthrough, unchanged
+  structured 4xx responses, and bounded rejection logging without depending on research agents.
 - package `__init__` tests should prove optional imports degrade gracefully when third-party dependencies are absent, while real core import errors still surface immediately.
 - `*_server` unit tests should prove queueing, background handling, serialization, timing hooks, and outbound request contracts.
 
@@ -147,6 +147,8 @@ For backend code, mature open source projects also usually keep orchestration te
   cleanup fairness while retirement remains continuously pending, UID-guarded `Background` deletion acceptance within
   one shared deadline, asynchronous/repeated/concurrent uninstall admission, and
   generator-first/immediate-fence/Scheduler-admission-fence/worker-delete uninstall ordering
+- Scheduler management failures retaining endpoint, status, and structured detail in the existing RuntimeSession and
+  `/install_state` contracts instead of collapsing into a generic plan error
 - strict deployment-plan validation plus optional cloud-backup composition across initial install and redeploy
 - backend-owned node/agent preflight and batched exact-Pod-UID telemetry joins, including all-container Kubernetes
   Quantity aggregation, allocatable/capacity denominator labeling, and fail-closed partial metrics

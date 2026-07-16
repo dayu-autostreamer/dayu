@@ -469,6 +469,99 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("path", "scheduler_method"),
+    [
+        ("/source_nodes_selection", "get_source_node_selection_plan"),
+        ("/initial_deployment", "get_initial_deployment_plan"),
+        ("/redeployment", "get_redeployment_plan"),
+    ],
+)
+def test_scheduler_deployment_errors_include_source_and_bounded_log_detail(
+    monkeypatch,
+    path,
+    scheduler_method,
+):
+    scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
+    monkeypatch.setattr(scheduler_server_module, "Scheduler", FakeScheduler)
+    warnings = []
+    monkeypatch.setattr(scheduler_server_module.LOGGER, "warning", warnings.append)
+
+    server = scheduler_server_module.SchedulerServer()
+    policy_detail = "invalid deployment node\n" + "x" * 1200
+
+    def reject_policy(_source_id, _source_data):
+        raise ValueError(policy_detail)
+
+    setattr(server.scheduler, scheduler_method, reject_policy)
+    payload = [{
+        "source": {"id": 17},
+        "node_set": ["secret-edge-node"],
+        "dag": {"face-detection": {}},
+    }]
+
+    with TestClient(server.app) as client:
+        response = client.request("GET", path, data={"data": json.dumps(payload)})
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": f"source_id=17: {policy_detail}"}
+    assert len(warnings) == 1
+    assert f"method=GET path={path} status=422" in warnings[0]
+    assert "source_id=17: invalid deployment node" in warnings[0]
+    assert "\n" not in warnings[0]
+    assert warnings[0].endswith("...")
+    assert "secret-edge-node" not in warnings[0]
+
+
+@pytest.mark.integration
+def test_scheduler_logs_validation_and_server_errors_with_native_responses(monkeypatch):
+    scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
+    monkeypatch.setattr(scheduler_server_module, "Scheduler", FakeScheduler)
+    warnings = []
+    errors = []
+    monkeypatch.setattr(scheduler_server_module.LOGGER, "warning", warnings.append)
+    monkeypatch.setattr(scheduler_server_module.LOGGER, "error", errors.append)
+
+    server = scheduler_server_module.SchedulerServer()
+    runtime_detail = "runtime route\nis unavailable"
+
+    def reject_runtime_state(*_args, **_kwargs):
+        raise RuntimeDirectoryError(runtime_detail)
+
+    server.scheduler.schedule_runtime_state = reject_runtime_state
+    schedule_payload = {
+        "source_id": 7,
+        "meta_data": {"buffer_size": 2},
+        "source_device": "edge-node",
+    }
+
+    with TestClient(server.app) as client:
+        validation_response = client.request("GET", "/initial_deployment")
+        server_response = client.request(
+            "GET",
+            "/schedule",
+            data={"data": json.dumps(schedule_payload)},
+        )
+
+    assert validation_response.status_code == 422
+    assert isinstance(validation_response.json()["detail"], list)
+    assert validation_response.json()["detail"][0]["type"] == "missing"
+    assert len(warnings) == 1
+    assert "method=GET path=/initial_deployment status=422" in warnings[0]
+    assert '"loc":["body","data"]' in warnings[0]
+    assert "\n" not in warnings[0]
+
+    assert server_response.status_code == 503
+    assert server_response.json() == {
+        "detail": f"no valid runtime route for schedule plan: {runtime_detail}"
+    }
+    assert errors == [
+        "[Scheduler API] method=GET path=/schedule status=503 "
+        "detail=no valid runtime route for schedule plan: runtime route is unavailable"
+    ]
+
+
+@pytest.mark.integration
 def test_processor_server_exposes_queue_processing_and_return_contract(mounted_runtime, monkeypatch, tmp_path):
     processor_server_module = importlib.import_module("core.processor.processor_server")
     monkeypatch.chdir(tmp_path)

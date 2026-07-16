@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.lib.network import HTTPClientError
 from runtime_model import (
     RuntimeCleanupRef,
     RuntimeEndpoint,
@@ -22,6 +23,7 @@ from runtime_orchestrator import (
     RuntimeOrchestrator,
     RuntimePreflightError,
     RuntimeRetirementPending,
+    SchedulerRequestError,
 )
 from runtime_service_client import RuntimeServiceCancelled, RuntimeServiceClient
 from runtime_session_store import StoredRuntimeSession
@@ -1139,6 +1141,74 @@ def test_selected_edge_scope_rejects_scheduler_source_outside_processor_candidat
         manifest["spec"]["component"] == "generator"
         for manifest in runtime.created.values()
     )
+
+
+def test_scheduler_rejection_detail_is_persisted_without_generic_plan_error():
+    orchestrator, _, _, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    detail = (
+        "source_id=1: deployment policy for service 'detect' selected "
+        "non-candidate nodes: ['edge-c']; allowed processor nodes: "
+        "['cloud-a', 'edge-a', 'edge-b']"
+    )
+
+    def reject_initial_deployment(url, method, **kwargs):
+        if url.endswith("/initial_deployment"):
+            raise HTTPClientError(
+                method=method,
+                url=url,
+                status_code=422,
+                detail=detail,
+            )
+        return scheduler(url, method, **kwargs)
+
+    orchestrator._request = reject_initial_deployment
+
+    with pytest.raises(SchedulerRequestError) as exc_info:
+        install(orchestrator, "detect")
+
+    expected = (
+        "Scheduler /initial_deployment rejected the request (HTTP 422): "
+        f"{detail}"
+    )
+    assert str(exc_info.value) == expected
+    assert exc_info.value.endpoint == "/initial_deployment"
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == detail
+    assert sessions.stored.session.phase == "failed"
+    assert sessions.stored.session.last_error == expected
+    assert "returned no valid plan" not in sessions.stored.session.last_error
+
+
+def test_scheduler_http_failure_yields_to_lifecycle_cancellation():
+    orchestrator, _, _, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    cancel_event = threading.Event()
+
+    def cancel_during_request(url, method, **kwargs):
+        cancel_event.set()
+        raise HTTPClientError(
+            method=method,
+            url=url,
+            status_code=503,
+            detail="scheduler is stopping",
+        )
+
+    orchestrator._request = cancel_during_request
+
+    with pytest.raises(RuntimeOperationCancelled):
+        orchestrator.install(
+            {"id": "fixed"},
+            source_deploy("detect"),
+            source_label="camera-a",
+            install_id=INSTALL_ID,
+            cancel_event=cancel_event,
+        )
+
+    assert sessions.stored.session.phase == "activating-scheduler"
+    assert sessions.stored.session.last_error == ""
 
 
 def test_all_edge_scope_allows_source_outside_processor_candidates_from_one_snapshot():

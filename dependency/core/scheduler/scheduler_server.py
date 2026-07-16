@@ -1,12 +1,20 @@
 import json
 
 from fastapi import FastAPI, Form, HTTPException
-from fastapi.routing import APIRoute
-from starlette.responses import JSONResponse
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.routing import APIRoute
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
-from core.lib.network import NetworkAPIMethod, NetworkAPIPath
+from core.lib.common import LOGGER
 from core.lib.content import Task
+from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 from core.lib.scheduling.deployment_plan import dag_services
 
 from .scheduler import Scheduler
@@ -16,6 +24,9 @@ from .runtime_directory import (
     RuntimeDirectoryNotFound,
 )
 from .task_lease import TaskLeaseRetired
+
+
+_API_ERROR_LOG_DETAIL_LIMIT = 1024
 
 
 class SchedulerServer:
@@ -118,8 +129,65 @@ class SchedulerServer:
             CORSMiddleware, allow_origins=["*"], allow_credentials=True,
             allow_methods=["*"], allow_headers=["*"],
         )
+        self.app.add_exception_handler(
+            StarletteHTTPException,
+            self._handle_http_exception,
+        )
+        self.app.add_exception_handler(
+            RequestValidationError,
+            self._handle_request_validation_error,
+        )
 
         self.scheduler = Scheduler()
+
+    @staticmethod
+    def _compact_log_detail(detail):
+        if not isinstance(detail, str):
+            detail = json.dumps(
+                detail,
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            )
+        detail = " ".join(detail.split()) or "<empty>"
+        if len(detail) > _API_ERROR_LOG_DETAIL_LIMIT:
+            detail = f"{detail[:_API_ERROR_LOG_DETAIL_LIMIT - 3]}..."
+        return detail
+
+    @classmethod
+    def _log_api_error(cls, request, status_code, detail):
+        message = (
+            f"[Scheduler API] method={request.method} path={request.url.path} "
+            f"status={status_code} detail={cls._compact_log_detail(detail)}"
+        )
+        log = LOGGER.error if status_code >= 500 else LOGGER.warning
+        log(message)
+
+    @classmethod
+    async def _handle_http_exception(
+        cls,
+        request: Request,
+        exc: StarletteHTTPException,
+    ):
+        cls._log_api_error(request, exc.status_code, exc.detail)
+        return await http_exception_handler(request, exc)
+
+    @classmethod
+    async def _handle_request_validation_error(
+        cls,
+        request: Request,
+        exc: RequestValidationError,
+    ):
+        detail = [
+            {
+                "loc": error.get("loc", ()),
+                "msg": error.get("msg", ""),
+                "type": error.get("type", ""),
+            }
+            for error in exc.errors()
+        ]
+        cls._log_api_error(request, 422, detail)
+        return await request_validation_exception_handler(request, exc)
 
     async def generate_schedule_plan(self, data: str = Form(...)):
         data = json.loads(data)
@@ -154,12 +222,15 @@ class SchedulerServer:
         return response
 
     @staticmethod
-    def _translate_runtime_error(exc):
+    def _translate_runtime_error(exc, source_id=None):
+        detail = str(exc)
+        if source_id is not None:
+            detail = f"source_id={source_id}: {detail}"
         if isinstance(exc, RuntimeDirectoryNotFound):
-            return HTTPException(status_code=404, detail=str(exc))
+            return HTTPException(status_code=404, detail=detail)
         if isinstance(exc, RuntimeDirectoryConflict):
-            return HTTPException(status_code=409, detail=str(exc))
-        return HTTPException(status_code=422, detail=str(exc))
+            return HTTPException(status_code=409, detail=detail)
+        return HTTPException(status_code=422, detail=detail)
 
     def get_runtime_directory(self):
         return self.scheduler.runtime_directory_snapshot()
@@ -319,7 +390,7 @@ class SchedulerServer:
             try:
                 source_plan = self.scheduler.get_source_node_selection_plan(source_id, source_data)
             except (RuntimeDirectoryError, ValueError) as exc:
-                raise self._translate_runtime_error(exc)
+                raise self._translate_runtime_error(exc, source_id)
             plan[source_id] = source_plan
 
         # LOGGER.info(f'[Source Node Selection] (all sources) Selection policy: {plan}')
@@ -338,7 +409,7 @@ class SchedulerServer:
                     plan, source_plan, allowed_services=dag_services(source_data),
                 )
             except (RuntimeDirectoryError, ValueError) as exc:
-                raise self._translate_runtime_error(exc)
+                raise self._translate_runtime_error(exc, source_id)
 
         return {'plan': plan}
 
@@ -354,7 +425,7 @@ class SchedulerServer:
                     plan, source_plan, allowed_services=dag_services(source_data),
                 )
             except (RuntimeDirectoryError, ValueError) as exc:
-                raise self._translate_runtime_error(exc)
+                raise self._translate_runtime_error(exc, source_id)
 
         return {'plan': plan}
 

@@ -19,7 +19,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from core.lib.common import LOGGER, TaskConstant
-from core.lib.network import NetworkAPIMethod, NetworkAPIPath, http_request
+from core.lib.network import (
+    HTTPClientError,
+    NetworkAPIMethod,
+    NetworkAPIPath,
+    http_request_or_raise,
+)
 from core.lib.scheduling.source_selection import (
     ALL_EDGE_NODES,
     SOURCE_CANDIDATE_NODES_FIELD,
@@ -61,6 +66,25 @@ class RuntimeOperationCancelled(RuntimeOrchestrationError):
 
 class RuntimeRetirementPending(RuntimeOrchestrationError):
     """A newer rollout is deferred while the previous revision retires."""
+
+
+class SchedulerRequestError(RuntimeOrchestrationError):
+    """A Scheduler management request failed with actionable context."""
+
+    def __init__(self, endpoint: str, error: HTTPClientError):
+        self.endpoint = str(endpoint or "")
+        self.status_code = error.status_code
+        self.detail = error.detail
+        if self.status_code is None:
+            message = f"Scheduler {self.endpoint} request failed"
+        else:
+            message = (
+                f"Scheduler {self.endpoint} rejected the request "
+                f"(HTTP {self.status_code})"
+            )
+        if self.detail:
+            message = f"{message}: {self.detail}"
+        super().__init__(message)
 
 
 def _utc_now() -> str:
@@ -116,7 +140,7 @@ class RuntimeOrchestrator:
         cluster_client: Optional[ClusterClient] = None,
         runtime_client: Optional[RuntimeServiceClient] = None,
         session_store: Optional[RuntimeSessionStore] = None,
-        request=http_request,
+        request=http_request_or_raise,
         clock=time.monotonic,
         wall_clock=time.time,
     ):
@@ -665,6 +689,9 @@ class RuntimeOrchestrator:
                 cancel_event=cancel_event,
                 **kwargs,
             )
+        except HTTPClientError as exc:
+            self._raise_if_cancelled(cancel_event)
+            raise SchedulerRequestError(path, exc) from exc
         except Exception:
             self._raise_if_cancelled(cancel_event)
             raise

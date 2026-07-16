@@ -113,6 +113,21 @@ def test_fixed_plan_scopes_configuration_to_the_current_dag():
 
 
 @pytest.mark.unit
+def test_invalid_deployment_names_the_allowed_processor_nodes():
+    with pytest.raises(ValueError) as exc_info:
+        validate_plan(
+            {"detector": ["edge-x"], "tracker": ["edge-b"]},
+            deployment_info(),
+            cloud_node="cloud-a",
+        )
+
+    assert str(exc_info.value) == (
+        "deployment policy for service 'detector' selected non-candidate nodes: "
+        "['edge-x']; allowed processor nodes: ['cloud-a', 'edge-a', 'edge-b']"
+    )
+
+
+@pytest.mark.unit
 def test_cloud_plan_uses_only_the_injected_cloud_identity():
     system = SimpleNamespace(cloud_device="control-plane-a")
 

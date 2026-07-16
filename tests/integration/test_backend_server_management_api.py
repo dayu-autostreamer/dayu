@@ -640,6 +640,19 @@ def test_install_state_projects_admission_and_local_projection_failures(
     assert projection_failure["ready"] is False
     assert projection_failure["last_error"].endswith("bind failed")
 
+    scheduler_detail = (
+        "Scheduler /initial_deployment rejected the request (HTTP 422): "
+        "source_id=0: deployment policy selected non-candidate node 'edgexn32'"
+    )
+    failed_session = copy.copy(session)
+    failed_session.phase = "failed"
+    failed_session.last_error = scheduler_detail
+    scheduler_failure = backend._install_state_response(
+        failed_session,
+        local_ready=False,
+    )
+    assert scheduler_failure["last_error"] == scheduler_detail
+
 
 @pytest.mark.integration
 def test_install_state_reports_delayed_cleanup_without_releasing_session_ownership(

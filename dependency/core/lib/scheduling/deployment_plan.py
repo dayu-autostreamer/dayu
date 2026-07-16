@@ -64,7 +64,8 @@ def validate_plan(plan, info, cloud_node=""):
         invalid = sorted(set(nodes) - candidates)
         if invalid:
             raise ValueError(
-                f"deployment policy for service {service!r} selected non-candidate nodes: {invalid}"
+                f"deployment policy for service {service!r} selected non-candidate nodes: {invalid}; "
+                f"allowed processor nodes: {sorted(candidates)}"
             )
         nodes = sorted(set(nodes))
         if not nodes:

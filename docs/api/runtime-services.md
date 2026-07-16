@@ -100,6 +100,13 @@ supervisor also removes its worker-heartbeat timeout from this path.
 | `GET` | `/redeployment` | Generate redeployment plan. | Form field `data` with JSON array | `{plan: {service: [node, ...]}}` |
 | `GET` | `/generation_admission` | Decide whether one source may generate the next task. | Form field `data` with source request JSON | Policy-specific admission response |
 
+Expected Scheduler rejections use FastAPI's structured `{"detail": ...}` response. Backend management calls preserve
+a bounded, single-line form of the actionable detail together with the HTTP status and endpoint; validation inputs are
+omitted before an install or redeployment failure is recorded in the existing `RuntimeSession.last_error` field and
+exposed by `/install_state` without adding another lifecycle field.
+The Scheduler also writes one bounded, single-line warning for each 4xx rejection so the same failure is actionable
+from either the frontend or the Scheduler log. Request bodies and complete DAG/policy payloads are not logged.
+
 Initial-deployment and redeployment policies have one canonical result contract: each key is a logical service name and
 its value is a JSON list of target node names. Scheduler unions node lists for the same logical service across sources.
 Node-to-services maps and scalar node values are invalid; Backend does not guess their orientation or repair an
