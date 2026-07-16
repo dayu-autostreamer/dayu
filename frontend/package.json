@@ -8,11 +8,12 @@
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",
+		"test": "node --test tests/*.test.mjs",
 		"lint": "eslint --ext .js,.jsx,.ts,.tsx,.vue src/",
 		"lint:fix": "npm run lint -- --fix",
 		"lint-fix": "npm run lint:fix",
-		"format": "prettier --write \"{src,public}/**/*.{js,jsx,ts,tsx,vue,scss,css,json,md}\"",
-		"format:check": "prettier --check \"{src,public}/**/*.{js,jsx,ts,tsx,vue,scss,css,json,md}\""
+		"format": "prettier --write \"{src,public,tests}/**/*.{js,mjs,jsx,ts,tsx,vue,scss,css,json,md}\"",
+		"format:check": "prettier --check \"{src,public,tests}/**/*.{js,mjs,jsx,ts,tsx,vue,scss,css,json,md}\""
 	},
 	"dependencies": {
 		"@dagrejs/dagre": "^1.1.4",
@@ -61,7 +62,7 @@
 		"not dead"
 	],
 	"engines": {
-		"node": ">=16.0.0",
+		"node": ">=20.0.0",
 		"npm": ">= 7.0.0"
 	},
 	"keywords": [

@@ -89,9 +89,6 @@ class FakeBackendCore:
             return None, f"Service '{service_id}' field '{field}' must contain non-empty string labels"
         return value, None
 
-    def check_pods_running_state(self):
-        return True
-
     def check_dag(self, dag):
         return True, "ok"
 
@@ -121,8 +118,8 @@ class FakeBackendCore:
     def get_system_visualization_config(self):
         return [{"name": "CPU Usage"}]
 
-    def check_install_state(self):
-        return False
+    def management_lifecycle_snapshot(self):
+        return self.runtime_orchestrator.current_session(), None, False, ""
 
     def get_log_file_name(self):
         return None
@@ -160,6 +157,19 @@ def test_policy_and_installed_service_routes_are_exposed(backend_client):
     installed_response = client.get("/installed_service")
     assert installed_response.status_code == 200
     assert installed_response.json() == ["face-detection"]
+
+
+@pytest.mark.integration
+def test_backend_does_not_grant_cross_origin_browser_access(backend_client):
+    _, client = backend_client
+
+    response = client.get(
+        "/policy",
+        headers={"Origin": "https://untrusted.example"},
+    )
+
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
 
 
 @pytest.mark.integration

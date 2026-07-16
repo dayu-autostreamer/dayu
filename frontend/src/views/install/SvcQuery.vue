@@ -4,6 +4,9 @@
 			<div>
 				<h3>Installed Services</h3>
 				<p class="runtime-phase">Runtime phase: {{ install_state.phase }}</p>
+				<p v-if="install_state.lastError" class="runtime-error">
+					{{ install_state.isUninstalling ? 'Cleanup is retrying: ' : 'Runtime error: ' }}{{ install_state.lastError }}
+				</p>
 			</div>
 
 			<div class="panel-actions">
@@ -135,8 +138,23 @@
 		</section>
 
 		<div class="action-bar">
-			<el-button type="danger" round :loading="loading" :disabled="installed !== 'install'" @click="uninstallServices">
-				Uninstall
+			<el-button
+				type="danger"
+				round
+				:loading="install_state.isUninstalling"
+				:disabled="!install_state.canUninstall"
+				:title="
+					install_state.uninstallCancelsInstall || install_state.isInstalling || install_state.isCancellingInstall
+						? 'Cancel installation and clean up created resources'
+						: 'Uninstall services'
+				"
+				@click="uninstallServices"
+			>
+				{{
+					install_state.uninstallCancelsInstall || install_state.isInstalling || install_state.isCancellingInstall
+						? 'Cancel Install'
+						: 'Uninstall'
+				}}
 			</el-button>
 		</div>
 	</div>
@@ -145,10 +163,13 @@
 <script>
 import { ElMessage } from 'element-plus';
 import { RefreshRight } from '@element-plus/icons-vue';
-import { computed, markRaw, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, markRaw } from 'vue';
 import { useInstallStateStore } from '/@/stores/installState';
+import { classifyStopResponse, deriveRuntimeDetailTransition } from '/@/stores/installLifecycle';
+import { FetchJsonResponseError, fetchJsonWithTimeout } from '/@/utils/fetchWithTimeout';
 
-const INSTALL_CHANGED_EVENT = 'dayu-install-changed';
+const STOP_REQUEST_TIMEOUT_MS = 15000;
+const STOP_RETRY_INTERVAL_MS = 1000;
 
 export default {
 	components: {
@@ -160,102 +181,29 @@ export default {
 			urlData: [],
 			selected: null,
 			selected_service: null,
-			handleInstallChanged: null,
 			serviceListController: null,
 			serviceInfoController: null,
 			serviceInfoTimer: null,
+			uninstallCommandController: null,
+			componentUnmounted: false,
 		};
 	},
 	setup() {
 		const install_state = useInstallStateStore();
-		const installed = ref('uninstall');
 		const runtimeReady = computed(() => install_state.isReady);
-		const loading = ref(false);
-		let stateTimer = null;
-		let stateController = null;
-		let stateRequest = null;
-		let statePollingActive = false;
-
-		const syncInstallState = async () => {
-			if (stateRequest) return stateRequest;
-			const controller = new AbortController();
-			stateController = controller;
-			const request = (async () => {
-				try {
-					const response = await fetch('/api/install_state', { signal: controller.signal });
-					if (!response.ok) throw new Error(`Install state request failed: ${response.status}`);
-					const data = await response.json();
-					installed.value = data.state;
-					install_state.sync(data.state, data.phase);
-				} catch (error) {
-					if (error?.name !== 'AbortError') {
-						console.error(error);
-						ElMessage.error('System Error');
-					}
-				}
-			})();
-			stateRequest = request;
-			try {
-				return await request;
-			} finally {
-				if (stateRequest === request) stateRequest = null;
-				if (stateController === controller) stateController = null;
-			}
-		};
-
-		const pollInstallState = async () => {
-			if (!statePollingActive) return;
-			await syncInstallState();
-			if (statePollingActive) {
-				stateTimer = window.setTimeout(pollInstallState, 3000);
-			}
-		};
-
-		const startInstallStatePolling = () => {
-			if (statePollingActive) return;
-			statePollingActive = true;
-			void pollInstallState();
-		};
-
-		const stopInstallStatePolling = () => {
-			statePollingActive = false;
-			if (stateTimer) {
-				clearTimeout(stateTimer);
-				stateTimer = null;
-			}
-			stateController?.abort();
-			stateController = null;
-		};
-
-		watch(
-			() => install_state.status,
-			(newValue) => {
-				installed.value = newValue;
-			}
-		);
-
-		onMounted(() => {
-			startInstallStatePolling();
-		});
-
-		onBeforeUnmount(() => {
-			stopInstallStatePolling();
-		});
+		const runtimeGeneration = computed(() => (install_state.isReady ? install_state.installId : ''));
 
 		return {
-			installed,
 			install_state,
-			loading,
+			runtimeGeneration,
 			runtimeReady,
-			startInstallStatePolling,
-			stopInstallStatePolling,
-			syncInstallState,
 		};
 	},
 	watch: {
-		runtimeReady(ready) {
-			if (ready) void this.getServiceList();
-			else this.clearRuntimeDetails();
+		runtimeGeneration(generation, previousGeneration) {
+			const transition = deriveRuntimeDetailTransition(previousGeneration, generation);
+			if (transition.clear) this.clearRuntimeDetails();
+			if (transition.load) void this.getServiceList();
 		},
 	},
 	methods: {
@@ -387,7 +335,13 @@ export default {
 			}
 		},
 		async refreshAll() {
-			await this.syncInstallState();
+			try {
+				await this.install_state.refresh({ fresh: true });
+			} catch (error) {
+				console.error(error);
+				ElMessage.error('Fail to refresh install state');
+				return;
+			}
 			if (!this.runtimeReady) {
 				this.clearRuntimeDetails();
 				return;
@@ -432,55 +386,126 @@ export default {
 			}
 		},
 		async uninstallServices() {
-			this.loading = true;
-			this.install_state.setPhase('uninstalling');
+			const actionId = this.install_state.beginUninstall();
+			if (actionId === null) return;
+			const targetInstallId = this.install_state.uninstallTargetInstallId;
+			const cancellingInstall = this.install_state.uninstallCancelsInstall;
 			this.clearRuntimeDetails();
-			try {
-				const response = await fetch('/api/stop_service', {
-					method: 'POST',
-				});
-				const data = await response.json();
+			const observedResult = this.install_state.waitUntilUninstallCommandObserved(actionId).then((observed) => ({
+				kind: 'observed',
+				observed,
+			}));
+			let commandObserved = false;
+			while (!commandObserved && !this.componentUnmounted) {
+				const commandController = markRaw(new AbortController());
+				this.uninstallCommandController = commandController;
+				const commandResult = (async () => {
+					try {
+						const { response, data } = await fetchJsonWithTimeout(
+							'/api/stop_service',
+							{
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ install_id: targetInstallId }),
+							},
+							STOP_REQUEST_TIMEOUT_MS,
+							commandController
+						);
+						return {
+							kind: 'response',
+							disposition: classifyStopResponse(response.ok, data?.state, response.status),
+							message: data?.msg || 'Uninstall services failed',
+						};
+					} catch (error) {
+						if (error instanceof FetchJsonResponseError) {
+							return {
+								kind: 'response',
+								disposition: classifyStopResponse(false, undefined, error.status),
+								message: `Uninstall request rejected (HTTP ${error.status})`,
+							};
+						}
+						return { kind: 'unknown', error };
+					}
+				})();
 
-				if (data.state === 'success') {
-					await this.syncInstallState();
-					ElMessage({
-						message: data.msg,
-						showClose: true,
-						type: 'success',
-						duration: 3000,
-					});
-					window.dispatchEvent(new Event(INSTALL_CHANGED_EVENT));
-				} else {
-					await this.syncInstallState();
-					ElMessage({
-						message: data.msg,
-						showClose: true,
-						type: 'error',
-						duration: 3000,
-					});
+				const firstResult = await Promise.race([commandResult, observedResult]);
+				if (this.uninstallCommandController === commandController) this.uninstallCommandController = null;
+				if (this.componentUnmounted) {
+					this.install_state.rejectUninstall(actionId);
+					return;
 				}
-			} catch (error) {
-				console.error(error);
-				await this.syncInstallState();
-				ElMessage.error('Network Error');
-			} finally {
-				this.loading = false;
+				if (firstResult.kind === 'observed') {
+					commandController.abort();
+					if (!firstResult.observed) return;
+					commandObserved = true;
+					break;
+				}
+				if (firstResult.kind === 'response' && firstResult.disposition === 'accepted') {
+					this.install_state.markUninstallCommandObserved(actionId);
+					commandObserved = true;
+					break;
+				}
+				if (firstResult.kind === 'response' && firstResult.disposition === 'rejected') {
+					// A concurrent operator may already have advanced the same target.
+					// Re-read once before treating an explicit failure as authoritative.
+					commandObserved = await this.install_state.reconcileUninstallCommand(actionId);
+					if (commandObserved) break;
+					this.install_state.rejectUninstall(actionId);
+					if (!this.componentUnmounted) {
+						ElMessage({ message: firstResult.message, showClose: true, type: 'error', duration: 3000 });
+					}
+					return;
+				}
+
+				// Timeout, transport failure, or a non-contract response is ambiguous:
+				// keep the target-bound operation pending, observe server state, and
+				// retry the exact same idempotent stop request.
+				if (firstResult.kind === 'unknown') console.error(firstResult.error);
+				commandObserved = await this.install_state.reconcileUninstallCommand(actionId);
+				if (!commandObserved && !this.componentUnmounted) {
+					await new Promise((resolve) => window.setTimeout(resolve, STOP_RETRY_INTERVAL_MS));
+				}
 			}
+			if (!commandObserved) {
+				this.install_state.rejectUninstall(actionId);
+				return;
+			}
+			try {
+				await this.install_state.refresh({ fresh: true });
+			} catch (error) {
+				// Command delivery is known. A transient state-read failure must keep
+				// the action pending; the centralized poller resumes completion tracking.
+				console.error('Fail to refresh accepted uninstall', error);
+			}
+
+			const completed = await this.install_state.waitUntilUninstallCompletes(actionId);
+			if (!completed) {
+				const message = this.install_state.lastError || 'Uninstall command did not reach durable cleanup';
+				this.install_state.rejectUninstall(actionId);
+				if (!this.componentUnmounted) {
+					ElMessage({ message, showClose: true, type: 'error', duration: 3000 });
+				}
+				return;
+			}
+			this.install_state.finishUninstall(actionId);
+			if (this.componentUnmounted) return;
+			ElMessage({
+				message: cancellingInstall ? 'Installation cancelled successfully' : 'Uninstall services successfully',
+				showClose: true,
+				type: 'success',
+				duration: 3000,
+			});
 		},
 	},
 	async mounted() {
 		await this.refreshAll();
-		this.handleInstallChanged = () => {
-			this.refreshAll();
-		};
-		window.addEventListener(INSTALL_CHANGED_EVENT, this.handleInstallChanged);
 	},
 	beforeUnmount() {
+		this.componentUnmounted = true;
+		this.uninstallCommandController?.abort();
+		this.uninstallCommandController = null;
 		this.stopServiceInfoPolling();
 		this.serviceListController?.abort();
-		if (this.handleInstallChanged) {
-			window.removeEventListener(INSTALL_CHANGED_EVENT, this.handleInstallChanged);
-		}
 	},
 };
 </script>
@@ -510,6 +535,14 @@ export default {
 	margin: 6px 0 0;
 	font-size: 13px;
 	color: #64748b;
+}
+
+.runtime-error {
+	max-width: 640px;
+	margin: 6px 0 0;
+	font-size: 12px;
+	color: #b45309;
+	word-break: break-word;
 }
 
 .panel-actions {

@@ -85,9 +85,15 @@ def test_system_log_export_uses_repeatable_snapshots(
 ):
     monkeypatch.chdir(tmp_path)
     backend_core_instance.system_log_store_path = str(tmp_path / "system.jsonl")
-    backend_core_instance.runtime_orchestrator = SimpleNamespace(
-        current_session=lambda: SimpleNamespace(phase="active")
+    session = SimpleNamespace(
+        phase="active",
+        install_id="install-a",
+        active_directory_revision=1,
     )
+    backend_core_instance.runtime_orchestrator = SimpleNamespace(
+        current_session=lambda: session,
+    )
+    backend_core_instance._bound_runtime_key = ("install-a", 1)
     monkeypatch.setattr(
         backend_core_instance,
         "prepare_system_visualizations_data",

@@ -160,6 +160,21 @@ For backend code, mature open source projects also usually keep orchestration te
 - config validation, snapshot export, and state persistence helpers
 - backend-only failure handling that should not require component or end-to-end tests
 
+Frontend lifecycle transitions use Node's built-in test runner in `frontend/tests/`. `make frontend-test` covers the
+lifecycle projection, request/JSON-body timeouts, HTTP-safe UUID generation, identity-bound install acceptance,
+single-flight snapshot application, action-waiter invalidation, stale refresh serialization, cancellation availability,
+permanent gateway-error rejection, non-ready metric fencing, failed-session cleanup, and target-bound uninstall
+completion across an immediate replacement Session. The Python frontend contract tests
+additionally verify that components consume the single Pinia lifecycle observer rather than issuing their own
+`/install_state` polls.
+
+`tests/unit/test_dayu_shell.py` executes `ACTION=stop` against deterministic fake `kubectl`, HTTP, timeout, and clock
+commands. It covers cancellation before any RuntimeService exists, strict lifecycle-JSON validation, target-bound
+replacement completion, same-target `cancelling-install`/`preparing-uninstall` waits, trusted targetless-stop
+completion, Backend-failure fallback cleanup, idempotent absent
+namespaces with cluster-RBAC cleanup, and non-zero results when final namespace removal is present or unverifiable.
+These are behavior tests; source-string assertions alone are not sufficient for the stop contract.
+
 So the answer to “is everything outside `algorithms/` covered?” is now: almost all meaningful runtime logic is covered directly. Kubernetes/live-environment failure paths belong exclusively to the backend control plane; runtime worker tests use injected bootstrap and directory snapshots instead of cluster mocks.
 
 The performance boundary is reviewable even without a live cluster: runtime modules cannot import the Kubernetes

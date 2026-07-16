@@ -56,13 +56,29 @@ overwriting or deleting another namespace's binding.
 | API | Resources | Verbs | Purpose |
 | --- | --- | --- | --- |
 | namespaced `sedna.io` | `runtimeservices` | `get,list,watch,create,delete` | immutable lifecycle and condition watch |
-| cluster core | `nodes` | `get,list,watch` | backend-owned inventory snapshot |
-| cluster core | `pods` | `get,list,watch` | managed-agent preflight and exact-UID telemetry join |
+| cluster core | `nodes` | `list` | backend-owned inventory snapshot |
+| cluster core | `pods` | `list` | managed-agent preflight and exact-UID telemetry join |
 | namespaced core | `configmaps` | `get,create,update,delete` | CAS runtime-session record |
-| namespaced `metrics.k8s.io` | `pods` | `get,list` | optional telemetry snapshot |
+| namespaced `metrics.k8s.io` | `pods` | `list` | optional telemetry snapshot |
 
 Runtime workers need none of these permissions. Do not bind the backend role to a runtime Pod and do not add a
 service-account token to a RuntimeService template.
+
+### Access and lifecycle boundary
+
+One namespace is one shared Dayu lifecycle domain. Backend owns one install admission, one RuntimeSession, and one
+query lifecycle for that namespace; every frontend window connected to it observes and may operate the same state.
+There is no browser-session ownership layer. Unsubmitted form drafts and notifications may remain tab-local, but
+install/query/service state must come from Backend.
+
+Kubernetes RBAC above limits what Backend can change; it does not authorize callers of Backend's HTTP API. Dayu has no
+built-in HTTP authentication, and the frontend's local token is not a security boundary. Production multi-user
+deployments must authenticate and map each principal to the intended namespace endpoint at an external gateway and
+must restrict direct Frontend and Backend NodePort access. Frontend proxies `/api` to Backend through cluster DNS;
+Backend does not enable cross-origin browser access. The gateway must also reserve body-less `/stop_service` for the trusted
+system-teardown path; Dayu cannot distinguish that request from another reachable HTTP client. `install_id` is
+observable lifecycle state used for concurrency fencing, not a bearer token or user identity, and every install
+attempt must use a fresh UUID that is never deliberately reused.
 
 ## Start The Support Layer
 
@@ -183,6 +199,23 @@ is therefore bounded by the current synchronous Kubernetes/HTTP request or the
 short RuntimeService watch cancellation window, not the 300/900-second
 operation timeout.
 
+The Install page follows that lifecycle instead of treating session ownership as readiness. The Install button spins
+while the Backend admission token or activation phases are running. The token is exposed as `install_pending`, so a
+page reload cannot submit a second install during preflight. The browser-generated `install_id` is the same identity
+used by the admission token, durable RuntimeSession, Kubernetes ownership labels, and later uninstall precondition.
+It identifies the namespace-wide lifecycle generation; it is a concurrency/fencing token, not a browser session or
+user identity. Every page connected to the same Dayu namespace observes and may operate on that same lifecycle.
+The Uninstall button is presented as **Cancel Install** as soon as `/install_state` exposes that identity-bound token;
+it is not enabled from the local POST alone, so cancel cannot race ahead of Backend registration or target a
+superseded installation. `/install_state` is the only lifecycle source of truth; `/install` success is not treated as a
+second readiness snapshot. After stop is accepted, loading moves to that button and remains there through
+`cancelling-install`, `preparing-uninstall`, `uninstalling`, and `finalizing-uninstall`. Both preparing phases keep the
+same target `install_id`, expose the stop command's `operation_id`, and cannot be mistaken for completion. The UI reports
+success only after the target `install_id` disappears; an immediately created replacement session cannot keep the old
+action spinning. A newly observed `preparing-uninstall` acknowledges command delivery and stops duplicate POSTs without
+pretending the Session transition is durable; if that preparation reverts with an error, the UI releases the spinner and
+permits retry. Failed initial sessions remain cleanable through Uninstall.
+
 After the new directory CAS is finalized, management reads consume the immutable
 session snapshot without taking the lifecycle transaction lock. Node inventory
 uses a separate cache lock. Consequently, pending retirement is reconciled in
@@ -227,11 +260,16 @@ When `datasource.use-simulation=false`, backend opens the selected datasource au
 ## Graceful Uninstall And System Stop
 
 Backend `POST /stop_service` is an asynchronous administrative command. The first accepted request closes query
-admission, persists an `operation_id` with `phase="uninstalling"`, starts the lifecycle reconcile worker, and returns
-once that intent is durable. Repeated or concurrent requests reuse the same intent and worker and return immediately.
-The API does not wait for Kubernetes deletion. Clients must poll `GET /install_state` until it reports
-`state="uninstall"` and `phase="uninstalled"`; while work remains it reports `uninstalling` or
-`finalizing-uninstall`, and `last_error` exposes the latest retryable failure.
+admission and exposes a new `operation_id`. An in-memory install admission first reports `phase="cancelling-install"`;
+a persisted Session first reports `phase="preparing-uninstall"` from the shared stop admission, then persists
+`phase="uninstalling"` and starts the lifecycle reconcile worker. Repeated or concurrent
+requests join the same stop admission and return the same durable acceptance result once its leader finishes.
+The API does not wait for Kubernetes deletion. A client first captures `install_id`, sends it back in the stop request,
+and polls `GET /install_state` until that exact id disappears or changes. The usual final state is
+`state="uninstall", phase="uninstalled"`; a concurrent replacement may already expose a different id. While work
+remains it reports `cancelling-install`, `preparing-uninstall`, `uninstalling`, or `finalizing-uninstall`, and
+`last_error` exposes the latest
+retryable failure.
 
 The background operation uses the CAS session as its exact ownership record:
 
@@ -260,13 +298,22 @@ TEMPLATE=template ACTION=stop bash dayu.sh
 ```
 
 The script gives backend `/stop_service` a bounded, best-effort opportunity to fence and remove the managed runtime
-before deleting the support layer. It treats the POST response as acceptance and polls `/install_state` for session
-removal within the same budget. `GRACEFUL_STOP_WAIT_SEC` may override the default 60-second budget. A
+before deleting the support layer, even when preflight has not created a RuntimeService yet. It accepts only a valid
+JSON lifecycle snapshot containing `state`, `phase`, and `install_id`. If that snapshot already reports
+`state="uninstall", phase="uninstalled"`, and an empty id, no runtime stop is needed. Otherwise it sends the observed
+id as the target, treats the POST response as acceptance, and polls until that exact id disappears or changes. Empty,
+malformed, HTML, or incomplete poll responses are never evidence of completion. If initial state inspection is
+unavailable, the script may use the body-less global stop only as a trusted system-teardown fallback; it then accepts
+completion only from a later valid `phase="uninstalled"` snapshot with an empty id. `GRACEFUL_STOP_WAIT_SEC` may
+override the default 60-second budget. A
 backend failure, timeout, malformed response, or unavailable service is logged but never blocks `ACTION=stop`: the
 script continues by deleting RuntimeServices, support resources, Services/Endpoints, workloads, access bindings, and
 the namespace. Per-kind deletion is asynchronous and does not repeat Service/Endpoint/Pod disappearance polling;
-the bounded Namespace deletion is the single completion barrier before the command reports success. This keeps the
-public stop interface independent of backend health, as in earlier Dayu versions.
+the bounded Namespace deletion plus an authoritative `--ignore-not-found -o name` readback is the single completion
+barrier before the command reports success. An already absent namespace is idempotent success after best-effort cleanup
+of its namespace-suffixed ClusterRole/ClusterRoleBinding. A namespace that still exists, or whose state cannot be
+verified because Kubernetes is unavailable, returns non-zero even though every preceding cleanup step was attempted.
+This keeps the public stop interface independent of backend health without reporting an unverified system stop.
 
 `WAIT_EDGEMESH_RULES=false` may skip the best-effort EdgeMesh iptables cleanup wait. When shell cleanup follows an
 unsuccessful graceful uninstall, Scheduler's install-id-guarded directory/proposal cleanup may not complete and the

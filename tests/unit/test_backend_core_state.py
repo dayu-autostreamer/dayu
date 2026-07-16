@@ -59,17 +59,30 @@ def test_backend_core_log_snapshot_compaction_and_record_count(
     assert backend.system_log_record_count == 2
 
 
-def test_backend_core_urls_are_bound_only_from_active_runtime_directory(
+def test_backend_core_urls_are_bound_only_by_lifecycle_projection(
         mounted_runtime, monkeypatch, tmp_path,
 ):
     import backend_core as backend_core_module
 
     backend = _backend(mounted_runtime)
-    backend.runtime_orchestrator = SimpleNamespace(active_directory=lambda: _directory())
+    directory = _directory()
+    session = SimpleNamespace(
+        install_id=directory.install_id,
+        phase="active",
+        active_directory_revision=directory.revision,
+    )
+    backend.runtime_orchestrator = SimpleNamespace(current_session=lambda: session)
+    backend.runtime_telemetry = SimpleNamespace(
+        bind=lambda *_args: None,
+        start=lambda: None,
+        unbind=lambda: None,
+    )
 
-    backend.get_resource_url()
-    backend.get_result_url()
-    backend.get_log_url()
+    assert backend.resource_url is None
+    assert backend.result_url is None
+    assert backend.management_lifecycle_snapshot()[2] is False
+
+    backend._activate_local_runtime(directory)
 
     assert backend.resource_url.endswith(":9001/resource")
     assert backend.result_url.endswith(":9003/result")
@@ -94,6 +107,36 @@ def test_backend_core_urls_are_bound_only_from_active_runtime_directory(
     monkeypatch.setattr(backend_core_module, "http_request", fake_http_request)
     assert Path(backend.get_file_result("artifact.bin")).read_bytes() == b"chunk-data"
     assert backend.open_result_log_export_stream() is not None
+
+
+def test_local_projection_is_bound_before_query_admission_opens(mounted_runtime):
+    backend = _backend(mounted_runtime)
+    directory = _directory()
+    expected_key = (directory.install_id, directory.revision)
+    observations = []
+
+    class ObservingQueryLock:
+        def __enter__(self):
+            observations.append((
+                backend._bound_runtime_key,
+                backend._query_admission_enabled,
+            ))
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+    backend.query_lock = ObservingQueryLock()
+    backend.runtime_telemetry = SimpleNamespace(
+        bind=lambda *_args: None,
+        start=lambda: None,
+        unbind=lambda: None,
+    )
+
+    backend._activate_local_runtime(directory)
+
+    assert observations == [(expected_key, False)]
+    assert backend._query_admission_enabled is True
 
 
 def test_task_result_queue_remains_data_plane_only(mounted_runtime, monkeypatch, tmp_path):
@@ -219,21 +262,37 @@ def test_cancelled_result_collector_has_bounded_io_and_cannot_publish_late_resul
     }
 
 
-def test_install_state_is_derived_from_runtime_session(mounted_runtime):
+def test_lifecycle_snapshot_distinguishes_session_ownership_from_local_readiness(
+        mounted_runtime,
+):
     backend = _backend(mounted_runtime)
-    state = {"session": SimpleNamespace(phase="active"), "directory": _directory()}
+    directory = _directory()
+    state = {"session": SimpleNamespace(
+        phase="active",
+        install_id=directory.install_id,
+        active_directory_revision=directory.revision,
+    )}
     backend.runtime_orchestrator = SimpleNamespace(
         current_session=lambda: state["session"],
-        active_directory=lambda: state["directory"],
     )
 
-    assert backend.check_install_state() is True
-    assert backend.check_pods_running_state() is True
+    session, pending, ready, error = backend.management_lifecycle_snapshot()
+    assert session is state["session"]
+    assert pending is None
+    assert ready is False
+    assert error == ""
 
-    state["session"] = SimpleNamespace(phase="failed")
-    state["directory"] = None
-    assert backend.check_install_state() is True
-    assert backend.check_pods_running_state() is False
+    backend._bound_runtime_key = (directory.install_id, directory.revision)
+    assert backend.management_lifecycle_snapshot()[2] is True
+
+    state["session"] = SimpleNamespace(
+        phase="failed",
+        install_id=directory.install_id,
+        active_directory_revision=directory.revision,
+    )
+    session, _, ready, _ = backend.management_lifecycle_snapshot()
+    assert session is state["session"]
+    assert ready is False
 
     backend.template_helper = SimpleNamespace(load_base_info=lambda: {"log-file-name": "dayu.log"})
     assert backend.get_log_file_name() == "dayu"

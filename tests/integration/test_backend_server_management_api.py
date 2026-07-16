@@ -4,10 +4,13 @@ import gzip
 import importlib
 import json
 import threading
+import uuid
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+
+INSTALL_ID = "11111111-1111-4111-8111-111111111111"
 
 
 def make_dag():
@@ -100,11 +103,15 @@ class FakeBackendCoreManagement:
         self.resource_stale = False
         self.runtime_metrics_sampled_at = 1.0
         self.install_state = False
+        self._pending_install_id = ""
+        self._current_install_id = INSTALL_ID
         self.runtime_orchestrator = type("RuntimeView", (), {
             "current_session": lambda _runtime: (
                 SimpleNamespace(
+                    install_id=self._current_install_id,
                     phase="active",
                     operation_id="operation-test",
+                    updated_at="2026-07-16T00:00:00Z",
                     active_directory_revision=1,
                     active=(),
                     pending=(),
@@ -117,6 +124,7 @@ class FakeBackendCoreManagement:
         self.install_result = (True, "ok")
         self.install_exception = None
         self.uninstall_result = (True, "ok")
+        self.uninstall_expected_ids = []
         self.run_get_result_called = False
         self.close_query_calls = 0
         self.query_lock = threading.Lock()
@@ -151,9 +159,6 @@ class FakeBackendCoreManagement:
             return None, f"Service '{service_id}' field '{field}' must contain non-empty string labels"
         return value, None
 
-    def check_pods_running_state(self):
-        return True
-
     def check_dag(self, dag):
         return True, "ok"
 
@@ -169,22 +174,42 @@ class FakeBackendCoreManagement:
     def find_datasource_configuration_by_label(self, label):
         return next((config for config in self.source_configs if config["source_label"] == label), None)
 
-    def parse_and_apply_templates(self, policy, source_deploy, source_label=""):
+    def parse_and_apply_templates(self, policy, source_deploy, source_label="", install_id=""):
         if self.install_exception:
             raise self.install_exception
         self.applied_templates.append({
             "policy": policy,
             "source_deploy": copy.deepcopy(source_deploy),
             "source_label": source_label,
+            "install_id": install_id,
         })
+        if self.install_result[0]:
+            self._current_install_id = install_id
+            self.install_state = True
         return self.install_result
 
-    def parse_and_delete_templates(self):
+    def parse_and_delete_templates(self, expected_install_id=""):
+        self.uninstall_expected_ids.append(expected_install_id)
+        if expected_install_id:
+            try:
+                if str(uuid.UUID(expected_install_id)) != expected_install_id:
+                    raise ValueError
+            except (ValueError, TypeError, AttributeError):
+                return False, "install_id must be a canonical UUID"
         self.close_query()
         return self.uninstall_result
 
-    def check_install_state(self):
-        return self.install_state
+    def management_lifecycle_snapshot(self):
+        session = self.runtime_orchestrator.current_session()
+        pending = (
+            {
+                "install_id": self._pending_install_id,
+                "phase": "preparing-install",
+                "operation_id": "pending-operation",
+            }
+            if self._pending_install_id else None
+        )
+        return session, pending, bool(session and session.phase == "active"), ""
 
     def get_source_ids(self):
         config = self.find_datasource_configuration_by_label(self.source_label)
@@ -255,9 +280,6 @@ class FakeBackendCoreManagement:
 
     def get_edge_nodes(self):
         return [{"name": "edgex1"}, {"name": "edgex2"}]
-
-    def get_resource_url(self):
-        self.resource_url = "http://scheduler/resource"
 
     def get_runtime_telemetry(self, logical_service=""):
         metrics = copy.deepcopy(self.runtime_metrics_snapshot)
@@ -339,6 +361,7 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
         backend.install_service(
             json.dumps(
                 {
+                    "install_id": INSTALL_ID,
                     "source_config_label": "source-config-0",
                     "policy_id": "missing",
                     "source": [{"id": 0, "dag_selected": 1, "node_selected": ["edgex1"]}],
@@ -348,21 +371,25 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
     )
     assert invalid_policy["state"] == "fail"
 
-    install_result = asyncio.run(
-        backend.install_service(
-            json.dumps(
-                {
-                    "source_config_label": "source-config-0",
-                    "policy_id": "fixed",
-                    "source": [
-                        {"id": 0, "dag_selected": 1, "node_selected": ["edgex1"]},
-                        {"id": 1, "dag_selected": 1, "node_selected": ["edgex2"]},
-                    ],
-                }
-            ).encode()
-        )
-    )
-    assert install_result["state"] == "success"
+    install_result = client.post(
+        "/install",
+        json={
+            "install_id": INSTALL_ID,
+            "source_config_label": "source-config-0",
+            "policy_id": "fixed",
+            "source": [
+                {"id": 0, "dag_selected": 1, "node_selected": ["edgex1"]},
+                {"id": 1, "dag_selected": 1, "node_selected": ["edgex2"]},
+            ],
+        },
+    ).json()
+    assert install_result == {
+        "state": "success",
+        "msg": "Install services successfully",
+    }
+    installed_state = client.get("/install_state").json()
+    assert installed_state["install_id"] == INSTALL_ID
+    assert installed_state["ready"] is True
     assert len(backend.server.applied_templates) == 1
     assert backend.server.applied_templates[0]["source_deploy"][0]["source"]["source_mode"] == "http_video"
     assert backend.server.applied_templates[0]["source_label"] == "source-config-0"
@@ -372,6 +399,7 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
         backend.install_service(
             json.dumps(
                 {
+                    "install_id": INSTALL_ID,
                     "source_config_label": "source-config-0",
                     "policy_id": "fixed",
                     "source": [
@@ -385,15 +413,19 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
     assert failed_install["state"] == "fail"
 
     backend.server.uninstall_result = (True, "Uninstall services started")
-    uninstall_result = asyncio.run(backend.uninstall_service())
+    uninstall_result = client.post(
+        "/stop_service",
+        json={"install_id": INSTALL_ID},
+    ).json()
     assert uninstall_result == {
         "state": "success",
         "msg": "Uninstall services started",
     }
+    assert backend.server.uninstall_expected_ids[-1] == INSTALL_ID
     assert backend.server.close_query_calls == 1
 
     backend.server.uninstall_result = (False, "still running")
-    failed_uninstall = asyncio.run(backend.uninstall_service())
+    failed_uninstall = asyncio.run(backend.uninstall_service(None))
     assert failed_uninstall["state"] == "fail"
     assert backend.server.close_query_calls == 2
 
@@ -498,7 +530,10 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
         "state": "install",
         "phase": "active",
         "ready": True,
+        "install_id": INSTALL_ID,
+        "install_pending": False,
         "operation_id": "operation-test",
+        "updated_at": "2026-07-16T00:00:00Z",
         "active_directory_revision": 1,
         "active_runtime_count": 0,
         "pending_runtime_count": 0,
@@ -507,12 +542,19 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
         "retirement_deadline": None,
         "last_error": "",
     }
+
+    backend.server._pending_install_id = INSTALL_ID
+    assert client.get("/install_state").json()["ready"] is False
+    backend.server._pending_install_id = ""
     backend.server.install_state = False
     assert client.get("/install_state").json() == {
         "state": "uninstall",
         "phase": "uninstalled",
         "ready": False,
+        "install_id": "",
+        "install_pending": False,
         "operation_id": "",
+        "updated_at": "",
         "active_directory_revision": 0,
         "active_runtime_count": 0,
         "pending_runtime_count": 0,
@@ -522,6 +564,134 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
         "last_error": "",
     }
 
+    backend.server._pending_install_id = INSTALL_ID
+    pending_state = client.get("/install_state").json()
+    assert pending_state["install_pending"] is True
+    assert pending_state["install_id"] == INSTALL_ID
+    assert pending_state["phase"] == "preparing-install"
+
+
+@pytest.mark.integration
+def test_install_state_projects_admission_and_local_projection_failures(
+        management_backend,
+):
+    _, backend, _, _ = management_backend
+    backend.server.install_state = True
+    session = backend.server.runtime_orchestrator.current_session()
+
+    preparing_stop = backend._install_state_response(
+        session,
+        {
+            "kind": "stop",
+            "install_id": INSTALL_ID,
+            "phase": "preparing-uninstall",
+            "operation_id": "stop-operation",
+        },
+        local_ready=False,
+    )
+    assert preparing_stop["state"] == "install"
+    assert preparing_stop["phase"] == "preparing-uninstall"
+    assert preparing_stop["operation_id"] == "stop-operation"
+    assert preparing_stop["install_pending"] is False
+    assert preparing_stop["ready"] is False
+
+    targetless_stop = backend._install_state_response(
+        None,
+        {
+            "kind": "stop",
+            "install_id": "",
+            "phase": "preparing-uninstall",
+            "operation_id": "global-stop-operation",
+        },
+    )
+    assert targetless_stop["state"] == "uninstall"
+    assert targetless_stop["phase"] == "preparing-uninstall"
+    assert targetless_stop["install_id"] == ""
+    assert targetless_stop["operation_id"] == "global-stop-operation"
+    assert targetless_stop["install_pending"] is False
+
+    cancelling_install = backend._install_state_response(
+        session,
+        {
+            "kind": "install",
+            "install_id": INSTALL_ID,
+            "phase": "cancelling-install",
+            "operation_id": "cancel-operation",
+        },
+        local_ready=False,
+    )
+    assert cancelling_install["phase"] == "cancelling-install"
+    assert cancelling_install["operation_id"] == "cancel-operation"
+    assert cancelling_install["install_pending"] is True
+
+    projection_failure = backend._install_state_response(
+        session,
+        local_ready=False,
+        local_error="local runtime activation failed: bind failed",
+    )
+    assert projection_failure["state"] == "install"
+    assert projection_failure["phase"] == "failed"
+    assert projection_failure["ready"] is False
+    assert projection_failure["last_error"].endswith("bind failed")
+
+
+@pytest.mark.integration
+def test_install_and_uninstall_reject_malformed_json_objects(management_backend):
+    _, _, client, _ = management_backend
+
+    install = client.post("/install", json=[])
+    uninstall = client.post("/stop_service", json=[])
+
+    assert install.json() == {
+        "state": "fail",
+        "msg": "Install services failed: invalid request body",
+    }
+    assert uninstall.json() == {
+        "state": "fail",
+        "msg": "Uninstall services failed: invalid request body",
+    }
+
+    invalid_identity = client.post(
+        "/stop_service",
+        json={"install_id": "not-an-install-id"},
+    )
+    assert invalid_identity.json() == {
+        "state": "fail",
+        "msg": "Uninstall services failed: install_id must be a canonical UUID",
+    }
+
+
+@pytest.mark.integration
+def test_implicit_query_failure_is_a_warning_not_runtime_rollback(
+        management_backend, monkeypatch,
+):
+    _, backend, client, _ = management_backend
+    backend.server.inner_datasource = False
+    monkeypatch.setattr(
+        backend.server,
+        "open_query",
+        lambda _source_label: (False, "datasource temporarily unavailable"),
+    )
+
+    response = client.post(
+        "/install",
+        json={
+            "install_id": INSTALL_ID,
+            "source_config_label": "source-config-0",
+            "policy_id": "fixed",
+            "source": [
+                {"dag_selected": 1, "node_selected": ["edgex1"]},
+                {"dag_selected": 1, "node_selected": ["edgex2"]},
+            ],
+        },
+    ).json()
+
+    assert response["state"] == "success"
+    assert "warning" in response
+    assert "datasource temporarily unavailable" in response["warning"]
+    assert "install_state" not in response
+    assert backend.server.install_state is True
+
 
 @pytest.mark.integration
 def test_long_uninstall_does_not_block_install_state_event_loop(management_backend, monkeypatch):
@@ -529,7 +699,7 @@ def test_long_uninstall_does_not_block_install_state_event_loop(management_backe
     started = threading.Event()
     release = threading.Event()
 
-    def slow_uninstall():
+    def slow_uninstall(expected_install_id=""):
         started.set()
         assert release.wait(2)
         return True, "ok"
@@ -537,7 +707,7 @@ def test_long_uninstall_does_not_block_install_state_event_loop(management_backe
     monkeypatch.setattr(backend.server, "parse_and_delete_templates", slow_uninstall)
 
     async def exercise():
-        uninstall = asyncio.create_task(backend.uninstall_service())
+        uninstall = asyncio.create_task(backend.uninstall_service(None))
         assert await asyncio.to_thread(started.wait, 1)
         state = await asyncio.wait_for(backend.get_install_state(), timeout=0.2)
         release.set()
@@ -557,9 +727,12 @@ def test_session_snapshot_reads_are_offloaded_from_async_management_handlers(
     _, backend, _, _ = management_backend
     main_thread = threading.get_ident()
     caller_threads = []
+    export_threads = []
     session = SimpleNamespace(
+        install_id=INSTALL_ID,
         phase="active",
         operation_id="operation-test",
+        updated_at="2026-07-16T00:00:00Z",
         active_directory_revision=1,
         active=(),
         pending=(),
@@ -577,8 +750,17 @@ def test_session_snapshot_reads_are_offloaded_from_async_management_handlers(
         "current_session",
         current_session,
     )
+    monkeypatch.setattr(
+        backend.server,
+        "open_result_log_export_stream",
+        lambda: (
+            export_threads.append(threading.get_ident()),
+            FakeStreamResponse(gzip.compress(b"[]")),
+        )[1],
+    )
 
     asyncio.run(backend.get_install_state())
+    asyncio.run(backend.download_log())
     asyncio.run(backend.get_service_info("face-detection"))
     asyncio.run(backend.get_task_result())
 
@@ -586,6 +768,8 @@ def test_session_snapshot_reads_are_offloaded_from_async_management_handlers(
     # lifecycle state or Kubernetes through RuntimeOrchestrator.
     assert len(caller_threads) == 2
     assert all(thread_id != main_thread for thread_id in caller_threads)
+    assert len(export_threads) == 1
+    assert export_threads[0] != main_thread
 
 
 @pytest.mark.integration

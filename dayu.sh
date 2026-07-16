@@ -66,7 +66,7 @@ rules:
     verbs: ["get", "create", "update", "delete"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
-    verbs: ["get", "list"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -89,10 +89,10 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["list"]
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -277,7 +277,6 @@ EOF
 
 create_frontend() {
   echo "$(green_text [DAYU]) Creating frontend ..."
-  BACKEND_PORT=$(get_service_nodeport "backend-cloud" "$NAMESPACE")
       kubectl -n "$NAMESPACE" apply -f - <<EOF
 apiVersion: $SUPPORT_API_VERSION
 kind: $SUPPORT_KIND
@@ -295,7 +294,7 @@ spec:
             - name: VITE_DAYU_VERSION
               value: $TAG
             - name: VITE_BACKEND_ADDRESS
-              value: 'http://$CLOUD_IP:$BACKEND_PORT'
+              value: 'http://backend-cloud.$NAMESPACE.svc.cluster.local.:8000'
             - name: VITE_PORT
               value: '8000'
             - name: VITE_OPEN
@@ -424,9 +423,17 @@ stop_system() {
         _run_with_timeout 11 kubectl --request-timeout=10s delete "$@" --wait=false
     }
 
-    if ! _kubectl_read get namespace "${ns}" >/dev/null 2>&1; then
-        echo "Namespace $(red_text "$NAMESPACE") does not exist. No need to clean up resources."
-        exit 1
+    local namespace_state=""
+    if ! namespace_state="$(_kubectl_read get namespace "${ns}" \
+            --ignore-not-found=true -o name 2>/dev/null)"; then
+        echo "$(yellow_text [DAYU]) Unable to verify namespace '${ns}'; system stop cannot continue safely."
+        return 1
+    fi
+    if [[ -z "${namespace_state}" ]]; then
+        echo "$(green_text [DAYU]) Namespace '${ns}' is already absent; remove deployment-scoped access bindings."
+        delete_service_account || true
+        echo "$(green_text [DAYU]) DAYU system is already stopped."
+        return 0
     fi
 
     _bool_is_true() {
@@ -527,12 +534,14 @@ stop_system() {
         local backend_state_url
         local response=""
         local state_response=""
+        local parsed_state=""
+        local parsed_phase=""
+        local parsed_snapshot=""
+        local install_id=""
+        local current_install_id=""
+        local stop_payload=""
+        local http_client=""
         local start_ts
-
-        if [[ -z "${app_resources}" ]]; then
-            echo "$(green_text [DAYU]) No deployed DAYU services found, skip graceful service uninstall."
-            return 0
-        fi
 
         if ! _kubectl_read get svc "${backend_service}" -n "${namespace}" >/dev/null 2>&1; then
             echo "$(yellow_text [DAYU]) Backend service '${backend_service}' not found, skip graceful service uninstall."
@@ -552,14 +561,54 @@ stop_system() {
         start_ts="$(date +%s)"
 
         if command -v curl >/dev/null 2>&1; then
-            response="$(_run_with_timeout "${graceful_wait}" \
-                curl --silent --show-error --max-time "${graceful_wait}" -X POST "${backend_url}" 2>/dev/null || true)"
+            http_client="curl"
+            state_response="$(_run_with_timeout 5 \
+                curl --silent --show-error --max-time 5 "${backend_state_url}" 2>/dev/null || true)"
         elif command -v wget >/dev/null 2>&1; then
-            response="$(_run_with_timeout "${graceful_wait}" \
-                wget -qO- --timeout="${graceful_wait}" --method=POST "${backend_url}" 2>/dev/null || true)"
+            http_client="wget"
+            state_response="$(_run_with_timeout 5 \
+                wget -qO- --timeout=5 "${backend_state_url}" 2>/dev/null || true)"
         else
             echo "$(yellow_text [DAYU]) Neither curl nor wget found, skip graceful service uninstall."
             return 1
+        fi
+
+        if parsed_snapshot="$(_parse_install_state "${state_response}")"; then
+            IFS=$'\t' read -r parsed_state parsed_phase install_id <<< "${parsed_snapshot}"
+            if [[ "${parsed_state}" == "uninstall" \
+                    && "${parsed_phase}" == "uninstalled" \
+                    && -z "${install_id}" ]]; then
+                echo "$(green_text [DAYU]) No managed runtime or install admission is active."
+                return 0
+            fi
+        else
+            echo "$(yellow_text [DAYU]) Backend install state is unavailable or invalid; use the trusted global stop fallback."
+        fi
+
+        if [[ -n "${install_id}" ]]; then
+            stop_payload="{\"install_id\":\"${install_id}\"}"
+        fi
+
+        if [[ "${http_client}" == "curl" ]]; then
+            if [[ -n "${stop_payload}" ]]; then
+                response="$(_run_with_timeout "${graceful_wait}" \
+                    curl --silent --show-error --max-time "${graceful_wait}" -X POST \
+                    -H 'Content-Type: application/json' --data "${stop_payload}" \
+                    "${backend_url}" 2>/dev/null || true)"
+            else
+                response="$(_run_with_timeout "${graceful_wait}" \
+                    curl --silent --show-error --max-time "${graceful_wait}" -X POST \
+                    "${backend_url}" 2>/dev/null || true)"
+            fi
+        elif [[ -n "${stop_payload}" ]]; then
+            response="$(_run_with_timeout "${graceful_wait}" \
+                wget -qO- --timeout="${graceful_wait}" --method=POST \
+                --header='Content-Type: application/json' --body-data="${stop_payload}" \
+                "${backend_url}" 2>/dev/null || true)"
+        else
+            response="$(_run_with_timeout "${graceful_wait}" \
+                wget -qO- --timeout="${graceful_wait}" --method=POST \
+                "${backend_url}" 2>/dev/null || true)"
         fi
 
         if [[ -z "${response}" ]]; then
@@ -569,17 +618,26 @@ stop_system() {
 
         if printf '%s' "${response}" | grep -q '"state"[[:space:]]*:[[:space:]]*"success"'; then
             while (( $(date +%s) - start_ts < graceful_wait )); do
-                if command -v curl >/dev/null 2>&1; then
+                if [[ "${http_client}" == "curl" ]]; then
                     state_response="$(_run_with_timeout 5 \
                         curl --silent --show-error --max-time 5 "${backend_state_url}" 2>/dev/null || true)"
                 else
                     state_response="$(_run_with_timeout 5 \
                         wget -qO- --timeout=5 "${backend_state_url}" 2>/dev/null || true)"
                 fi
-                if printf '%s' "${state_response}" \
-                    | grep -q '"state"[[:space:]]*:[[:space:]]*"uninstall"'; then
-                    echo "$(green_text [DAYU]) Backend graceful uninstall finished successfully."
-                    return 0
+                if parsed_snapshot="$(_parse_install_state "${state_response}")"; then
+                    IFS=$'\t' read -r parsed_state parsed_phase current_install_id <<< "${parsed_snapshot}"
+                    if [[ -n "${install_id}" ]]; then
+                        if [[ "${current_install_id}" != "${install_id}" ]]; then
+                            echo "$(green_text [DAYU]) Backend graceful uninstall finished successfully."
+                            return 0
+                        fi
+                    elif [[ "${parsed_state}" == "uninstall" \
+                            && "${parsed_phase}" == "uninstalled" \
+                            && -z "${current_install_id}" ]]; then
+                        echo "$(green_text [DAYU]) Backend graceful uninstall finished successfully."
+                        return 0
+                    fi
                 fi
                 sleep 2
             done
@@ -589,6 +647,32 @@ stop_system() {
 
         echo "$(yellow_text [DAYU]) Backend graceful uninstall did not finish cleanly: ${response}"
         return 1
+    }
+
+    _parse_install_state() {
+        local response="$1"
+        local state
+        local phase
+        local install_id
+
+        [[ -n "${response}" ]] || return 1
+        state="$(printf '%s' "${response}" | yq e '.state' - 2>/dev/null)" || return 1
+        phase="$(printf '%s' "${response}" | yq e '.phase' - 2>/dev/null)" || return 1
+        install_id="$(printf '%s' "${response}" | yq e '.install_id' - 2>/dev/null)" || return 1
+
+        [[ "${state}" == "install" || "${state}" == "uninstall" ]] || return 1
+        [[ -n "${phase}" && "${phase}" != "null" ]] || return 1
+        [[ "${install_id}" != "null" ]] || return 1
+
+        if [[ -z "${install_id}" ]]; then
+            [[ "${state}" == "uninstall" && "${phase}" == "uninstalled" ]] || return 1
+        elif [[ "${phase}" == "uninstalled" ]]; then
+            return 1
+        elif ! [[ "${install_id}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            return 1
+        fi
+
+        printf '%s\t%s\t%s\n' "${state}" "${phase}" "${install_id}"
     }
 
     app_resources="$(_list_dayu_app_resources "${ns}")"
@@ -626,9 +710,22 @@ stop_system() {
     _kubectl_delete role,rolebinding -n "${ns}" --all --ignore-not-found=true 2>/dev/null || true
 
     echo "$(green_text [DAYU]) (6/6) Delete namespace '${ns}'..."
-    _run_with_timeout "$((ns_wait + 10))" \
-        kubectl --request-timeout=10s delete namespace "${ns}" \
-        --ignore-not-found=true --wait=true --timeout="${ns_wait}s" 2>/dev/null || true
+    if ! _run_with_timeout "$((ns_wait + 10))" \
+            kubectl --request-timeout=10s delete namespace "${ns}" \
+            --ignore-not-found=true --wait=true --timeout="${ns_wait}s" 2>/dev/null; then
+        echo "$(yellow_text [DAYU]) Namespace deletion command did not complete cleanly; verify the final namespace state."
+    fi
+
+    namespace_state=""
+    if ! namespace_state="$(_kubectl_read get namespace "${ns}" \
+            --ignore-not-found=true -o name 2>/dev/null)"; then
+        echo "$(red_text [DAYU]) Unable to verify that namespace '${ns}' was removed."
+        return 1
+    fi
+    if [[ -n "${namespace_state}" ]]; then
+        echo "$(red_text [DAYU]) Namespace '${ns}' still exists; DAYU system stop is incomplete."
+        return 1
+    fi
 
     echo "$(green_text DAYU system stop successfully.)"
 }

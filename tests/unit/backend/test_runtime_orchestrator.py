@@ -28,6 +28,7 @@ from runtime_session_store import StoredRuntimeSession
 
 
 HASH = "b" * 64
+INSTALL_ID = "11111111-1111-4111-8111-111111111111"
 
 
 def source_deploy(*services):
@@ -402,6 +403,34 @@ class FakeSessionStore:
         return True
 
 
+class UncertainSessionStore(FakeSessionStore):
+    def __init__(self):
+        super().__init__()
+        self.lose_next_response = False
+        self.fail_next_load = False
+        self.replace_after_lost_response = None
+
+    def load(self):
+        if self.fail_next_load:
+            self.fail_next_load = False
+            raise RuntimeError("ConfigMap read unavailable")
+        return super().load()
+
+    def compare_and_swap(self, session, expected_resource_version):
+        stored = super().compare_and_swap(session, expected_resource_version)
+        if not self.lose_next_response:
+            return stored
+        self.lose_next_response = False
+        if self.replace_after_lost_response is not None:
+            self.revision += 1
+            self.stored = StoredRuntimeSession(
+                self.replace_after_lost_response,
+                str(self.revision),
+                "replacement-session-uid",
+            )
+        raise RuntimeError("ConfigMap write response lost")
+
+
 class FakeScheduler:
     def __init__(
             self, initial_plan, events=None, initial_put_ack=True,
@@ -583,6 +612,95 @@ def test_absent_session_snapshot_is_loaded_once_and_stays_absent_after_delete():
     assert sessions.load_calls == calls_after_delete
 
 
+def test_first_session_create_accepts_only_exact_response_lost_readback():
+    orchestrator, _, _, _, _, _ = make_orchestrator({"detector": ["edge-a"]})
+    sessions = UncertainSessionStore()
+    orchestrator._sessions = sessions
+    desired = RuntimeSession(
+        install_id=INSTALL_ID,
+        operation_id="create-operation",
+        phase="activating-scheduler",
+    )
+    sessions.lose_next_response = True
+
+    saved = orchestrator._save(desired)
+
+    assert saved == desired
+    assert orchestrator.current_session() == desired
+    assert sessions.load_calls == 1
+
+
+def test_begin_uninstall_accepts_exact_response_lost_readback():
+    orchestrator, _, _, _, _, _ = make_orchestrator({"detector": ["edge-a"]})
+    sessions = UncertainSessionStore()
+    orchestrator._sessions = sessions
+    active = RuntimeSession(
+        install_id=INSTALL_ID,
+        operation_id="install-operation",
+        phase="active",
+        active_directory_revision=1,
+    )
+    orchestrator._save(active)
+    sessions.lose_next_response = True
+
+    saved = orchestrator.begin_uninstall(INSTALL_ID)
+
+    assert saved.phase == "uninstalling"
+    assert saved.install_id == INSTALL_ID
+    assert saved.operation_id != active.operation_id
+    assert orchestrator.current_session() == saved
+    assert sessions.load_calls == 2
+
+
+def test_uncertain_session_write_never_accepts_a_different_readback():
+    orchestrator, _, _, _, _, _ = make_orchestrator({"detector": ["edge-a"]})
+    sessions = UncertainSessionStore()
+    orchestrator._sessions = sessions
+    active = RuntimeSession(
+        install_id=INSTALL_ID,
+        operation_id="install-operation",
+        phase="active",
+        active_directory_revision=1,
+    )
+    orchestrator._save(active)
+    desired = replace(
+        active,
+        operation_id="stop-operation",
+        phase="uninstalling",
+    )
+    replacement = replace(
+        active,
+        operation_id="other-operation",
+        phase="failed",
+    )
+    sessions.lose_next_response = True
+    sessions.replace_after_lost_response = replacement
+
+    with pytest.raises(RuntimeError, match="write response lost"):
+        orchestrator._save(desired)
+
+    assert orchestrator.current_session() == replacement
+
+
+def test_double_uncertain_session_io_forces_next_management_read_to_reload():
+    orchestrator, _, _, _, _, _ = make_orchestrator({"detector": ["edge-a"]})
+    sessions = UncertainSessionStore()
+    orchestrator._sessions = sessions
+    desired = RuntimeSession(
+        install_id=INSTALL_ID,
+        operation_id="create-operation",
+        phase="activating-scheduler",
+    )
+    sessions.lose_next_response = True
+    sessions.fail_next_load = True
+
+    with pytest.raises(RuntimeError, match="write response lost"):
+        orchestrator._save(desired)
+
+    assert orchestrator._snapshot_loaded is False
+    assert orchestrator.current_session() == desired
+
+
 def test_lazy_snapshot_load_cannot_overwrite_a_transaction_reload():
     class BlockingStore(FakeSessionStore):
         def __init__(self):
@@ -657,6 +775,7 @@ def test_runtime_config_rejects_non_boolean_default_cloud_processor_backup(value
 def install(orchestrator, *services):
     return orchestrator.install(
         {"id": "fixed"}, source_deploy(*services), source_label="camera-a",
+        install_id=INSTALL_ID,
     )
 
 
@@ -676,6 +795,7 @@ def test_install_activates_scheduler_first_then_binds_observed_hash_and_endpoint
         "activating-scheduler", "activating-scheduler", "activating-runtime",
         "publishing", "active",
     ]
+    assert sessions.stored.session.install_id == INSTALL_ID
     assert sessions.stored.session.active_directory_revision == 1
     assert directory == sessions.stored.session.directory
     assert all(unit.spec_hash == HASH for unit in directory.routes)
@@ -712,6 +832,20 @@ def test_install_activates_scheduler_first_then_binds_observed_hash_and_endpoint
         and endpoint.get("port") == 9000
         for endpoint in bootstrap["endpoints"]
     )
+
+
+def test_install_rejects_noncanonical_install_identity_before_cluster_io():
+    orchestrator, cluster, _, _, _, _ = make_orchestrator({"detect": ["edge-a"]})
+
+    with pytest.raises(ValueError, match="canonical UUID"):
+        orchestrator.install(
+            {"id": "fixed"},
+            source_deploy("detect"),
+            source_label="camera-a",
+            install_id="not-a-uuid",
+        )
+
+    assert cluster.inventory_calls == 0
 
 
 def test_install_specializes_edge_monitor_and_processor_images_for_node_jetpack():
@@ -786,6 +920,7 @@ def test_install_propagates_one_cancellation_token_through_watch_and_scheduler_c
         {"id": "fixed"},
         source_deploy("detect"),
         source_label="camera-a",
+        install_id=INSTALL_ID,
         cancel_event=cancel_event,
     )
 
@@ -822,6 +957,7 @@ def test_cancelled_scheduler_activation_is_bounded_and_uninstalls_without_schedu
                 {"id": "fixed"},
                 source_deploy("detect"),
                 source_label="camera-a",
+                install_id=INSTALL_ID,
                 cancel_event=cancel_event,
             )
         except Exception as exc:  # asserted below from the worker thread
@@ -848,7 +984,10 @@ def test_cancelled_scheduler_activation_is_bounded_and_uninstalls_without_schedu
     assert scheduler_runtime_id in runtime.created
     assert scheduler.calls == []
 
-    orchestrator.uninstall()
+    orchestrator.uninstall("22222222-2222-4222-8222-222222222222")
+    assert sessions.stored.session.install_id == INSTALL_ID
+
+    orchestrator.uninstall(INSTALL_ID)
 
     assert sessions.stored is None
     assert sessions.deleted is True
@@ -1724,6 +1863,78 @@ def test_recover_promotes_initial_directory_committed_before_session_cas_without
     assert recovered.pending == ()
     assert cluster.inventory_calls == inventory_calls
     assert runtime.wait_batches == wait_batches
+
+
+@pytest.mark.parametrize("phase", ["activating-scheduler", "activating-runtime"])
+def test_recover_marks_interrupted_initial_activation_failed_without_losing_ownership(
+        phase,
+):
+    orchestrator, cluster, runtime, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    committed = sessions.stored.session
+    interrupted = replace(
+        committed,
+        phase=phase,
+        active=(),
+        pending=committed.active,
+        active_directory_revision=0,
+    )
+    sessions.revision += 1
+    sessions.stored = StoredRuntimeSession(
+        interrupted, str(sessions.revision), "session-uid",
+    )
+    orchestrator._stored = None
+    inventory_calls = cluster.inventory_calls
+    wait_batches = list(runtime.wait_batches)
+
+    recovered = orchestrator.recover()
+
+    assert recovered.phase == "failed"
+    assert recovered.pending == interrupted.pending
+    assert "backend restarted during" in recovered.last_error
+    assert cluster.inventory_calls == inventory_calls
+    assert runtime.wait_batches == wait_batches
+
+
+def test_publication_recovery_persists_error_and_a_later_attempt_clears_it():
+    orchestrator, _, _, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    committed = sessions.stored.session
+    publishing = replace(
+        committed,
+        operation_id="recover-initial",
+        phase="publishing",
+        next_runtime_revision=1,
+        active_directory_revision=0,
+        active=(),
+        pending=committed.active,
+    )
+    sessions.revision += 1
+    sessions.stored = StoredRuntimeSession(
+        publishing, str(sessions.revision), "session-uid",
+    )
+    orchestrator._stored = None
+    recover_publication = orchestrator._recover_publication
+
+    def fail_once(_session):
+        raise RuntimeError("scheduler temporarily unavailable")
+
+    orchestrator._recover_publication = fail_once
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        orchestrator.recover()
+
+    failed_attempt = sessions.stored.session
+    assert failed_attempt.phase == "publishing"
+    assert failed_attempt.last_error == "scheduler temporarily unavailable"
+
+    orchestrator._recover_publication = recover_publication
+    recovered = orchestrator.recover()
+    assert recovered.phase == "active"
+    assert recovered.last_error == ""
 
 
 def test_recover_promotes_committed_rollout_and_keeps_old_revision_retirement():

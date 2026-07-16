@@ -59,6 +59,7 @@ define HELP_INFO
 #   make frontend-lint
 #   make frontend-format
 #   make frontend-format-check
+#   make frontend-test
 #   make frontend-build
 #   make frontend-check
 #   make check
@@ -71,7 +72,7 @@ define HELP_INFO
 #   make frontend-format
 endef
 
-.PHONY: help build all validate-build install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-build frontend-check check
+.PHONY: help build all validate-build install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-test frontend-build frontend-check check
 
 help:
 	@echo "$${HELP_INFO}"
@@ -174,6 +175,9 @@ frontend-format-check:
 frontend-build:
 	cd $(FRONTEND_DIR) && $(NPM) run build
 
-frontend-check: frontend-format-check frontend-build
+frontend-test:
+	cd $(FRONTEND_DIR) && $(NPM) run test
+
+frontend-check: frontend-format-check frontend-test frontend-build
 
 check: validate-build ci-python frontend-check

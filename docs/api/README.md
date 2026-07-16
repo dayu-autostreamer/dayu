@@ -22,8 +22,8 @@ This section documents the service interfaces used by Dayu. It follows the imple
 
 | Topic | Current behavior |
 | --- | --- |
-| Transport | FastAPI services with permissive CORS enabled on all routes. |
-| Authentication | No built-in authentication or authorization layer is implemented in the current codebase. |
+| Transport | Frontend calls Backend through its same-origin `/api` proxy; Backend does not grant cross-origin browser access. This is still transport scoping, not caller authentication. |
+| Authentication | No built-in authentication or authorization layer is implemented. Namespace-scoped Kubernetes RBAC limits Backend resource access but does not authenticate HTTP callers. |
 | Kubernetes boundary | Backend alone uses the Kubernetes Python client. Runtime APIs consume bootstrap, directory snapshots, and exact task routes. |
 | Error style | Mixed. Many backend control-plane endpoints return `{state, msg}`; some runtime endpoints return plain values, arrays, serialized tasks, file streams, or `null`. |
 | Binary payloads | Internal task transfer uses `multipart/form-data` with `file` for the binary payload and `data` for a serialized `Task`. |
@@ -31,6 +31,14 @@ This section documents the service interfaces used by Dayu. It follows the imple
 | GET with request body | Some non-runtime endpoints currently use `GET` with JSON/form data. The method and body documented here are the canonical current contract and must change together with all callers. |
 | Visualization configs | Visualization hook selection is data-driven from YAML configs and not hard-coded in backend route handlers. |
 | Scheduler execution | Scheduler runs as one direct Uvicorn process. Blocking Redis-backed directory and lease handlers are synchronous FastAPI endpoints and run in its thread pool instead of blocking the ASGI event loop. |
+
+One namespace is one shared lifecycle and permission domain from Dayu's point of view. Every browser, script, or API
+client that can reach the same Backend can observe and operate the same installation. `install_id` prevents a delayed
+request from deleting a replacement generation; it is public lifecycle state and grants no authority. A multi-user
+deployment must authenticate outside Dayu, route each principal to the intended namespace deployment, and restrict
+direct Frontend and Backend NodePort access. Browser-local tokens, tabs, and storage are not isolation mechanisms.
+The repository's frontend login/profile routing is presentation state only: it does not authenticate requests to
+Backend and must not be used as evidence that an install or uninstall caller is authorized.
 
 ## Runtime Flow
 

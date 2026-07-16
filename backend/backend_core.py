@@ -5,7 +5,9 @@ import shutil
 import tempfile
 import threading
 import re
+import uuid
 from collections import deque
+from dataclasses import dataclass
 
 import os
 import time
@@ -26,6 +28,29 @@ from template_helper import TemplateHelper
 
 def _indent_json_block(text, prefix='    '):
     return '\n'.join(f'{prefix}{line}' if line else prefix for line in text.splitlines())
+
+
+@dataclass
+class _InstallAdmission:
+    install_id: str
+    cancel_event: threading.Event
+    done_event: threading.Event
+    phase: str = 'preparing-install'
+    operation_id: str = ''
+
+    def cancel(self):
+        if self.phase != 'cancelling-install':
+            self.phase = 'cancelling-install'
+            self.operation_id = str(uuid.uuid4())
+        self.cancel_event.set()
+
+
+@dataclass
+class _StopAdmission:
+    install_id: str
+    done_event: threading.Event
+    operation_id: str
+    result: object = None
 
 
 class BackendCore:
@@ -119,19 +144,26 @@ class BackendCore:
         # RuntimeOrchestrator transaction lock.  An uninstall request registers
         # here first and can therefore signal an install that is blocked in a
         # RuntimeService watch before waiting for the serialized cleanup
-        # transaction.  The request counter also closes the stop-before-token
-        # race: an overlapping install cannot register after stop has started.
+        # transaction. A single-flight stop admission also closes the
+        # stop-before-token race: no install can register before durable stop
+        # acceptance, and concurrent callers observe the same result.
         self._lifecycle_control_lock = threading.Lock()
-        self._install_cancel_event = None
-        self._stop_request_count = 0
+        self._closed = False
+        self._install_admission = None
+        self._stop_admission = None
+        self._bound_runtime_key = None
+        self._local_runtime_error_key = None
+        self._local_runtime_error = ''
         self._runtime_reconcile_lock = threading.Lock()
         self._runtime_reconcile_stop_event = None
         self._runtime_reconcile_thread = None
+        self._runtime_recovery_stop_event = threading.Event()
+        self._runtime_recovery_wake_event = threading.Event()
+        self._runtime_recovery_requested = False
+        self._runtime_recovery_thread = None
         self.runtime_orchestrator = RuntimeOrchestrator(self.template_helper, self.namespace)
         redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=20, direct=False)
         self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
-        if os.getenv('DAYU_RUNTIME_CONTROL_PLANE', '').lower() == 'true':
-            self._recover_runtime_session()
         self.system_log_store_path = 'system_log_store.jsonl'
         self.system_log_lock = threading.Lock()
         self.system_log_retention_records = max(
@@ -158,38 +190,216 @@ class BackendCore:
         except KeyError as e:
             LOGGER.warning(f'Parse base info failed: {str(e)}')
 
-    def _recover_runtime_session(self):
-        """Resume the compact lifecycle record after a backend Pod restart."""
+    @staticmethod
+    def _runtime_key(directory):
+        if directory is None:
+            return None
+        return str(directory.install_id), int(directory.revision)
+
+    def _activate_local_runtime(self, directory, start_reconcile=False):
+        """Publish one directory to Backend-local readers after durable commit."""
+        if self._closed:
+            raise RuntimeError('backend lifecycle is closed')
+        runtime_key = self._runtime_key(directory)
+        reconcile_started = False
+        try:
+            self._bind_runtime_urls(directory)
+            self.runtime_telemetry.start()
+            if start_reconcile:
+                self._start_runtime_reconcile_loop(directory.install_id)
+                reconcile_started = True
+            # Publish the generation before opening query admission. Production
+            # callers hold lifecycle control across this method, so management
+            # readers cannot observe the intermediate value; query callers only
+            # become admissible after every local projection field is complete.
+            self._bound_runtime_key = runtime_key
+            self._local_runtime_error_key = None
+            self._local_runtime_error = ''
+            with self.query_lock:
+                self._query_admission_enabled = True
+        except Exception as exc:
+            self._bound_runtime_key = None
+            self._local_runtime_error_key = runtime_key
+            self._local_runtime_error = f'local runtime activation failed: {exc}'
+            try:
+                if reconcile_started:
+                    self._stop_runtime_reconcile_loop()
+            except Exception:
+                LOGGER.exception('failed to stop reconcile after local activation error')
+            try:
+                with self.query_lock:
+                    self._query_admission_enabled = False
+                    self._close_query_locked()
+            except Exception:
+                LOGGER.exception('failed to close query after local activation error')
+            try:
+                self.runtime_telemetry.unbind()
+            except Exception:
+                LOGGER.exception('failed to unbind telemetry after local activation error')
+            self.resource_url = None
+            self.result_url = None
+            self.result_file_url = None
+            self.log_fetch_url = None
+            raise
+
+    def _ensure_local_runtime_projection(self, session, cancel_event=None):
+        """Repair a missing local projection from the in-memory directory."""
+        if session is None or session.phase != 'active':
+            return False
+        session_key = (
+            session.install_id,
+            int(session.active_directory_revision),
+        )
+        if self._bound_runtime_key == session_key:
+            return False
+        with self._lifecycle_control_lock:
+            if (
+                    self._stop_admission is not None
+                    or (cancel_event is not None and cancel_event.is_set())):
+                return False
+            if self._bound_runtime_key == session_key:
+                return False
+            directory = self.runtime_orchestrator.active_directory()
+            if self._runtime_key(directory) != session_key:
+                raise RuntimeError(
+                    'active RuntimeDirectory does not match the durable session generation'
+                )
+            # active_directory() is a process snapshot lookup. Retrying this
+            # projection performs no Kubernetes discovery or list call.
+            self._activate_local_runtime(directory)
+            return True
+
+    def _recover_runtime_session(self, stop_event=None):
+        """Perform one recovery attempt; return whether it reached a stable state."""
         try:
             session = self.runtime_orchestrator.recover()
+            if stop_event is not None and stop_event.is_set():
+                return True
             if session is None:
-                return
+                return True
             if session.phase in {'uninstalling', 'finalizing-uninstall'}:
                 # A durable uninstall intent must resume before this process
                 # can re-open query admission. The same lifecycle worker
                 # repeats each exact-UID boundary idempotently without blocking
                 # backend startup or management reads.
-                self._start_runtime_reconcile_loop(session.install_id)
-                return
+                with self._lifecycle_control_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        return True
+                    self._start_runtime_reconcile_loop(session.install_id)
+                return True
             if session.phase != 'active':
                 LOGGER.warning(
                     f'[Runtime Recovery] Session {session.install_id} requires operator cleanup: '
                     f'phase={session.phase}, error={session.last_error}'
                 )
-                return
+                return True
             directory = self.runtime_orchestrator.active_directory()
             if directory is None:
                 raise RuntimeError('recovered active session has no RuntimeDirectory')
-            self._bind_runtime_urls(directory)
-            self.runtime_telemetry.start()
-            self._start_runtime_reconcile_loop(session.install_id)
-            with self.query_lock:
-                self._query_admission_enabled = True
+            with self._lifecycle_control_lock:
+                if stop_event is not None and stop_event.is_set():
+                    return True
+                stop = self._stop_admission
+                if stop is not None and stop.install_id in {'', session.install_id}:
+                    return True
+                current = self.runtime_orchestrator.current_session()
+                if (
+                        current is None
+                        or current.install_id != session.install_id
+                        or current.phase != 'active'):
+                    return False
+                self._activate_local_runtime(directory, start_reconcile=True)
+            return True
         except Exception as exc:
             # Keep the management API available for inspection/uninstall even
             # when an external dependency is unavailable during process start.
+            try:
+                current = self.runtime_orchestrator.current_session()
+            except Exception:
+                current = None
+            if current is not None and current.phase == 'active':
+                runtime_key = (
+                    current.install_id,
+                    int(current.active_directory_revision),
+                )
+                with self._lifecycle_control_lock:
+                    self._bound_runtime_key = None
+                    if self._local_runtime_error_key != runtime_key:
+                        self._local_runtime_error_key = runtime_key
+                        self._local_runtime_error = (
+                            f'local runtime recovery failed: {exc}'
+                        )
             LOGGER.warning(f'[Runtime Recovery] Managed runtime recovery failed: {exc}')
             LOGGER.exception(exc)
+            return False
+
+    def _start_runtime_recovery_async(self):
+        with self._lifecycle_control_lock:
+            if self._closed:
+                return
+            if self._runtime_recovery_thread is not None:
+                # Do not lose a trigger against a worker that has just reached
+                # a stable snapshot but has not yet cleared its ownership.
+                self._runtime_recovery_requested = True
+                self._runtime_recovery_wake_event.set()
+                return
+            self._runtime_recovery_stop_event.clear()
+            self._runtime_recovery_wake_event.clear()
+            self._runtime_recovery_requested = False
+            thread = threading.Thread(
+                target=self.run_runtime_recovery,
+                args=(self._runtime_recovery_stop_event,),
+                name='dayu-runtime-recovery',
+                daemon=True,
+            )
+            self._runtime_recovery_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._runtime_recovery_thread = None
+                self._runtime_recovery_stop_event.set()
+                raise
+
+    def start(self):
+        """Start lifecycle workers under the owning application's lifespan."""
+        with self._lifecycle_control_lock:
+            self._closed = False
+        if os.getenv('DAYU_RUNTIME_CONTROL_PLANE', '').lower() == 'true':
+            self._start_runtime_recovery_async()
+
+    def run_runtime_recovery(self, stop_event):
+        retry_delay = 1.0
+        try:
+            while not stop_event.is_set():
+                if self._recover_runtime_session(stop_event=stop_event):
+                    with self._lifecycle_control_lock:
+                        if stop_event.is_set():
+                            if self._runtime_recovery_thread is threading.current_thread():
+                                self._runtime_recovery_thread = None
+                            self._runtime_recovery_requested = False
+                            return
+                        if self._runtime_recovery_requested:
+                            self._runtime_recovery_requested = False
+                            self._runtime_recovery_wake_event.clear()
+                            retry_delay = 1.0
+                            continue
+                        if self._runtime_recovery_thread is threading.current_thread():
+                            self._runtime_recovery_thread = None
+                        return
+                woke = self._runtime_recovery_wake_event.wait(retry_delay)
+                self._runtime_recovery_wake_event.clear()
+                if stop_event.is_set():
+                    return
+                if woke:
+                    with self._lifecycle_control_lock:
+                        self._runtime_recovery_requested = False
+                    retry_delay = 1.0
+                else:
+                    retry_delay = min(retry_delay * 2.0, 30.0)
+        finally:
+            with self._lifecycle_control_lock:
+                if self._runtime_recovery_thread is threading.current_thread():
+                    self._runtime_recovery_thread = None
 
     def get_log_file_name(self):
         base_info = self.template_helper.load_base_info()
@@ -198,89 +408,207 @@ class BackendCore:
             return None
         return load_file_name.split('.')[0]
 
-    def parse_and_apply_templates(self, policy, source_deploy, source_label=''):
+    def parse_and_apply_templates(
+            self, policy, source_deploy, source_label='', install_id=''):
         """Install one transactional managed-runtime session."""
+        install_id = str(install_id or '').strip()
+        try:
+            canonical_install_id = str(uuid.UUID(install_id))
+        except (ValueError, AttributeError, TypeError):
+            return False, 'install_id must be a canonical UUID'
+        if install_id != canonical_install_id:
+            return False, 'install_id must be a canonical UUID'
+
         cancel_event = threading.Event()
+        # Complete the one-off ConfigMap snapshot load without holding process
+        # admission control. The second read below is memory-only, so a slow API
+        # server cannot freeze stop registration or lifecycle status sampling.
+        self.runtime_orchestrator.current_session()
         with self._lifecycle_control_lock:
-            if self._stop_request_count:
+            if self._closed:
+                return False, 'Backend lifecycle is closed'
+            if self._stop_admission is not None:
                 return False, 'Install cancelled by lifecycle operation'
             session = self.runtime_orchestrator.current_session()
-            if session is not None and session.phase in {
-                'uninstalling', 'finalizing-uninstall',
-            }:
-                return False, 'Uninstall is in progress'
-            if self._install_cancel_event is not None:
+            if session is not None:
+                if session.phase in {'uninstalling', 'finalizing-uninstall'}:
+                    return False, 'Uninstall is in progress'
+                return False, 'A managed runtime session already exists; uninstall it before installing'
+            if self._install_admission is not None:
                 return False, 'Another install operation is already in progress'
-            self._install_cancel_event = cancel_event
-
-        directory = None
-        try:
-            directory = self.runtime_orchestrator.install(
-                policy=policy,
-                source_deploy=source_deploy,
-                source_label=source_label,
+            admission = _InstallAdmission(
+                install_id=install_id,
                 cancel_event=cancel_event,
+                done_event=threading.Event(),
+                operation_id=str(uuid.uuid4()),
             )
-        except RuntimeOperationCancelled:
-            return False, 'Install cancelled by lifecycle operation'
+            self._install_admission = admission
+            self._local_runtime_error_key = None
+            self._local_runtime_error = ''
+
+        try:
+            try:
+                directory = self.runtime_orchestrator.install(
+                    policy=policy,
+                    source_deploy=source_deploy,
+                    source_label=source_label,
+                    install_id=install_id,
+                    cancel_event=cancel_event,
+                )
+            except RuntimeOperationCancelled:
+                return False, 'Install cancelled by lifecycle operation'
+            except Exception as exc:
+                LOGGER.warning(f'Managed runtime install failed: {exc}')
+                LOGGER.exception(exc)
+                recovery_required = False
+                try:
+                    current = self.runtime_orchestrator.current_session()
+                    if (
+                            current is not None
+                            and current.install_id == install_id
+                            and self.runtime_orchestrator.requires_recovery(current)):
+                        recovery_required = True
+                except Exception:
+                    # Snapshot calibration is itself unavailable. A recovery
+                    # controller is the only bounded way to determine whether
+                    # the initial Session CAS committed before the lost reply.
+                    recovery_required = True
+                    LOGGER.exception(
+                        'failed to inspect runtime session after install error'
+                    )
+                try:
+                    if recovery_required:
+                        self._start_runtime_recovery_async()
+                except Exception:
+                    LOGGER.exception(
+                        'failed to start runtime recovery controller'
+                    )
+                return False, str(exc)
+
+            # Publish the local projection under the same short admission
+            # boundary used by stop registration. A stop either observes and
+            # removes this projection, or cancels before it can become ready.
+            with self._lifecycle_control_lock:
+                if cancel_event.is_set() or self._stop_admission is not None:
+                    return False, 'Install cancelled by lifecycle operation'
+                session = self.runtime_orchestrator.current_session()
+                if (
+                        session is None
+                        or session.install_id != directory.install_id
+                        or session.phase != 'active'):
+                    raise RuntimeError(
+                        'install completed without an active RuntimeSession snapshot'
+                    )
+                self._activate_local_runtime(directory, start_reconcile=True)
+            return True, 'Install services successfully'
         except Exception as exc:
-            LOGGER.warning(f'Managed runtime install failed: {exc}')
+            LOGGER.warning(f'Managed runtime local activation failed: {exc}')
             LOGGER.exception(exc)
+            try:
+                current = self.runtime_orchestrator.current_session()
+                if (
+                        current is not None
+                        and current.install_id == install_id
+                        and current.phase == 'active'):
+                    self._start_runtime_recovery_async()
+            except Exception:
+                LOGGER.exception('failed to start local projection recovery controller')
             return False, str(exc)
         finally:
-            # Successful finalization below clears the token atomically.  Every
-            # other exit must release it here without disturbing a later install.
-            if directory is None:
-                with self._lifecycle_control_lock:
-                    if self._install_cancel_event is cancel_event:
-                        self._install_cancel_event = None
+            with self._lifecycle_control_lock:
+                if self._install_admission is admission:
+                    self._install_admission = None
+                admission.done_event.set()
 
-        # Finalize the local bindings in the same short critical section used
-        # by stop registration.  Either install commits all local admission
-        # state first, or stop wins, signals the token, and install publishes
-        # none of it after uninstall.
-        with self._lifecycle_control_lock:
-            try:
-                if cancel_event.is_set() or self._stop_request_count:
-                    return False, 'Install cancelled by lifecycle operation'
-                self._bind_runtime_urls(directory)
-                self.runtime_telemetry.start()
-                self._start_runtime_reconcile_loop(directory.install_id)
-                with self.query_lock:
-                    self._query_admission_enabled = True
-                return True, 'Install services successfully'
-            finally:
-                if self._install_cancel_event is cancel_event:
-                    self._install_cancel_event = None
-
-    def parse_and_delete_templates(self):
+    def parse_and_delete_templates(self, expected_install_id=''):
         """Fence task admission and remove the managed runtime session."""
+        expected_install_id = str(expected_install_id or '').strip()
+        if expected_install_id:
+            try:
+                canonical_install_id = str(uuid.UUID(expected_install_id))
+            except (ValueError, AttributeError, TypeError):
+                return False, 'install_id must be a canonical UUID'
+            if expected_install_id != canonical_install_id:
+                return False, 'install_id must be a canonical UUID'
+        with self._lifecycle_control_lock:
+            if self._closed:
+                return False, 'Backend lifecycle is closed'
+        # Complete the one-off Session load before admission serialization. The
+        # second read below is memory-only and closes the install/stop race.
+        self.runtime_orchestrator.current_session()
         # Register stop before touching any other lifecycle state.  This both
         # interrupts an in-flight install and prevents an overlapping install
         # from registering a token until this stop request has settled.
         with self._lifecycle_control_lock:
-            if self._stop_request_count:
-                install_cancel_event = self._install_cancel_event
-                if install_cancel_event is not None:
-                    install_cancel_event.set()
-                return True, 'Uninstall services started'
-            self._stop_request_count += 1
-            install_cancel_event = self._install_cancel_event
-            if install_cancel_event is not None:
-                install_cancel_event.set()
+            if self._closed:
+                return False, 'Backend lifecycle is closed'
+            session = self.runtime_orchestrator.current_session()
+            admission = self._install_admission
+            pending_install_id = admission.install_id if admission is not None else ''
+            if (
+                    expected_install_id
+                    and not (
+                        (session is not None and session.install_id == expected_install_id)
+                        or pending_install_id == expected_install_id
+                    )):
+                return True, 'Target installation is already absent'
+            if admission is not None:
+                admission.cancel()
+            stop_admission = self._stop_admission
+            if stop_admission is None:
+                target_install_id = expected_install_id or (
+                    session.install_id if session is not None else pending_install_id
+                )
+                stop_admission = _StopAdmission(
+                    install_id=target_install_id,
+                    done_event=threading.Event(),
+                    operation_id=str(uuid.uuid4()),
+                )
+                self._stop_admission = stop_admission
+                # Stop admission and query admission share one linearization
+                # boundary. A client that observes preparing-uninstall can no
+                # longer open a datasource generation, and the previous result
+                # collector has already been fenced.
+                try:
+                    with self.query_lock:
+                        self._query_admission_enabled = False
+                        self._close_query_locked()
+                except Exception as exc:
+                    result = (False, str(exc))
+                    stop_admission.result = result
+                    if self._stop_admission is stop_admission:
+                        self._stop_admission = None
+                    stop_admission.done_event.set()
+                    LOGGER.warning(f'Managed runtime query shutdown failed: {exc}')
+                    LOGGER.exception(exc)
+                    return result
+                self._bound_runtime_key = None
+                leader = True
+            else:
+                leader = False
 
+        # Every caller observes the same durable acceptance result. In
+        # particular, a concurrent follower cannot report success while the
+        # leader has not yet persisted uninstall intent (or its failure).
+        if not leader:
+            stop_admission.done_event.wait()
+            return stop_admission.result or (
+                False, 'Uninstall admission ended without a result',
+            )
+
+        # If this stop raced an install before its first Session CAS, wait for
+        # the cancelled install to release its token. It can no longer publish
+        # locally because this stop admission remains registered, and any
+        # exact resource identities it persisted are then owned by uninstall.
+        if admission is not None:
+            admission.done_event.wait()
+
+        result = (False, 'Uninstall did not reach durable acceptance')
         try:
             session = self.runtime_orchestrator.current_session()
             uninstall_started = session is not None and session.phase in {
                 'uninstalling', 'finalizing-uninstall',
             }
-            # Query ownership belongs to the lifecycle controller, not to an
-            # API caller. Closing and admission blocking in one short critical
-            # section prevents a concurrent /submit_query from reopening while
-            # uninstall is fencing and removing the runtime.
-            with self.query_lock:
-                self._query_admission_enabled = False
-                self._close_query_locked()
             if uninstall_started:
                 self.runtime_telemetry.unbind()
                 self.resource_url = None
@@ -288,35 +616,57 @@ class BackendCore:
                 self.result_file_url = None
                 self.log_fetch_url = None
                 self._ensure_runtime_reconcile_loop(session.install_id)
-                return True, 'Uninstall services started'
-            # Stop every producer of Scheduler/Kubernetes traffic before the
-            # serialized uninstall transaction. A failed uninstall leaves its
-            # session non-active, so telemetry deliberately remains unbound.
-            self._stop_runtime_reconcile_loop()
-            self.runtime_telemetry.unbind()
-            session = self.runtime_orchestrator.begin_uninstall()
-            self.resource_url = None
-            self.result_url = None
-            self.result_file_url = None
-            self.log_fetch_url = None
-            if session is not None:
-                self._start_runtime_reconcile_loop(session.install_id)
-                return True, 'Uninstall services started'
-            return True, 'No managed services are installed'
+                result = (True, 'Uninstall services started')
+            else:
+                # Stop every producer of Scheduler/Kubernetes traffic before
+                # the serialized uninstall transaction. A failed uninstall
+                # leaves telemetry and task admission deliberately unbound.
+                self._stop_runtime_reconcile_loop()
+                self.runtime_telemetry.unbind()
+                session = self.runtime_orchestrator.begin_uninstall(
+                    stop_admission.install_id,
+                )
+                self.resource_url = None
+                self.result_url = None
+                self.result_file_url = None
+                self.log_fetch_url = None
+                if session is not None:
+                    self._local_runtime_error_key = None
+                    self._local_runtime_error = ''
+                    self._start_runtime_reconcile_loop(session.install_id)
+                    result = (True, 'Uninstall services started')
+                else:
+                    self._local_runtime_error_key = None
+                    self._local_runtime_error = ''
+                    result = (True, 'No managed services are installed')
         except Exception as exc:
             LOGGER.warning(f'Managed runtime uninstall failed: {exc}')
             LOGGER.exception(exc)
-            return False, str(exc)
+            try:
+                current = self.runtime_orchestrator.current_session()
+            except Exception:
+                current = None
+            if current is not None and current.phase == 'active':
+                with self._lifecycle_control_lock:
+                    self._local_runtime_error_key = (
+                        current.install_id,
+                        int(getattr(current, 'active_directory_revision', 0) or 0),
+                    )
+                    self._local_runtime_error = f'local runtime shutdown failed: {exc}'
+            result = (False, str(exc))
         finally:
-            # Registration and release intentionally enclose every operation
-            # above. Otherwise an exception while closing local state would
-            # permanently reject future installs. A counter also keeps install
-            # admission closed until all overlapping stop requests have ended.
             with self._lifecycle_control_lock:
-                self._stop_request_count -= 1
+                stop_admission.result = result
+                if self._stop_admission is stop_admission:
+                    self._stop_admission = None
+                stop_admission.done_event.set()
+        return result
 
     def parse_and_redeploy_services(self, policy=None, cancel_event=None):
         """Publish a processor rollout; unchanged plans are a successful no-op."""
+        with self._lifecycle_control_lock:
+            if self._closed:
+                return False, 'Backend lifecycle is closed'
         session = self.runtime_orchestrator.current_session()
         if session is None:
             return False, 'no managed runtime session exists'
@@ -338,14 +688,22 @@ class BackendCore:
             return False, str(exc)
         if changed:
             directory = self.runtime_orchestrator.active_directory()
-            with self._lifecycle_control_lock:
-                if (
-                    self._stop_request_count
-                    or (cancel_event is not None and cancel_event.is_set())
-                ):
-                    return False, 'Redeployment cancelled by lifecycle operation'
-                if directory is not None:
-                    self._bind_runtime_urls(directory)
+            try:
+                with self._lifecycle_control_lock:
+                    if (
+                        self._stop_admission is not None
+                        or (cancel_event is not None and cancel_event.is_set())
+                    ):
+                        return False, 'Redeployment cancelled by lifecycle operation'
+                    if directory is None:
+                        raise RuntimeError(
+                            'redeployment committed without an active RuntimeDirectory'
+                        )
+                    self._activate_local_runtime(directory)
+            except Exception as exc:
+                LOGGER.warning(f'Managed runtime local projection failed: {exc}')
+                LOGGER.exception(exc)
+                return False, str(exc)
         return True, 'Redeployment succeeded' if changed else 'Deployment is unchanged'
 
     def find_service_by_id(self, service_id):
@@ -434,14 +792,58 @@ class BackendCore:
         edge_nodes.sort(key=sort_key)
         return edge_nodes
 
-    def check_install_state(self):
-        # Any CAS session owns RuntimeServices and must be uninstalled before a
-        # new transaction. Failed or recovering sessions are therefore still
-        # "installed" from the management UI's lifecycle perspective.
-        return self.runtime_orchestrator.current_session() is not None
-
-    def check_pods_running_state(self):
-        return self.runtime_orchestrator.active_directory() is not None
+    def management_lifecycle_snapshot(self):
+        """Read admission and Session state without blocking the event loop."""
+        # Complete the one-off durable load before taking admission control.
+        self.runtime_orchestrator.current_session()
+        with self._lifecycle_control_lock:
+            admission = self._install_admission
+            pending = (
+                {
+                    'kind': 'install',
+                    'install_id': admission.install_id,
+                    'phase': admission.phase,
+                    'operation_id': admission.operation_id,
+                }
+                if admission is not None else None
+            )
+            # This second read is memory-only. Sampling both values under the
+            # same admission boundary prevents combining an old Session with a
+            # newer installation token from another client.
+            session = self.runtime_orchestrator.current_session()
+            stop = self._stop_admission
+            if pending is None and stop is not None:
+                pending = {
+                    'kind': 'stop',
+                    'install_id': stop.install_id,
+                    'phase': 'preparing-uninstall',
+                    'operation_id': stop.operation_id,
+                }
+            session_key = None
+            if session is not None and session.phase == 'active':
+                session_key = (
+                    session.install_id,
+                    int(getattr(session, 'active_directory_revision', 0) or 0),
+                )
+            stop_matches = bool(
+                session is not None
+                and stop is not None
+                and stop.install_id in {'', session.install_id}
+            )
+            local_ready = bool(
+                session_key is not None
+                and self._bound_runtime_key == session_key
+                and not stop_matches
+                and not (
+                    admission is not None
+                    and admission.install_id == session.install_id
+                )
+            )
+            local_error = (
+                self._local_runtime_error
+                if session_key == self._local_runtime_error_key else ''
+            )
+        return session, pending, local_ready, local_error
 
     def check_simulation_datasource(self):
         return bool(self.template_helper.load_base_info().get('datasource', {}).get('use-simulation'))
@@ -761,7 +1163,12 @@ class BackendCore:
         install_id = str(install_id or '').strip()
         if not install_id:
             raise ValueError('runtime reconcile loop requires an install_id')
+        # ``close`` publishes _closed first and then takes this same lock to
+        # invalidate the worker. Whichever side wins is therefore linearized:
+        # either startup observes closure, or close stops the newly made worker.
         with self._runtime_reconcile_lock:
+            if self._closed:
+                raise RuntimeError('backend lifecycle is closed')
             if self._runtime_reconcile_stop_event is not None:
                 self._runtime_reconcile_stop_event.set()
             stop_event = threading.Event()
@@ -797,13 +1204,44 @@ class BackendCore:
             self._runtime_reconcile_stop_event = None
             self._runtime_reconcile_thread = None
 
+    @staticmethod
+    def _runtime_progress_key(session):
+        """Return lifecycle structure only; timestamps/errors are not progress."""
+        if session is None:
+            return None
+
+        def runtime_ids(units):
+            return tuple(
+                getattr(unit, 'runtime_id', repr(unit)) for unit in (units or ())
+            )
+
+        retirement = getattr(session, 'retirement', None)
+        return (
+            getattr(session, 'install_id', ''),
+            getattr(session, 'operation_id', ''),
+            getattr(session, 'phase', ''),
+            int(getattr(session, 'active_directory_revision', 0) or 0),
+            runtime_ids(getattr(session, 'active', ())),
+            runtime_ids(getattr(session, 'pending', ())),
+            runtime_ids(getattr(session, 'cleanup', ())),
+            (
+                getattr(retirement, 'revision', 0),
+                runtime_ids(getattr(retirement, 'units', ())),
+            ) if retirement is not None else None,
+        )
+
     def run_runtime_reconcile(self, stop_event, install_id):
         interval = max(0.0, float(self.processor_redeployment_interval_s))
         if interval <= 0:
             LOGGER.info('[Redeployment] Automatic processor rollout is disabled.')
         next_rollout = time.monotonic() + interval if interval > 0 else None
+        retry_delay = 1.0
         try:
-            while not stop_event.wait(1.0):
+            while not stop_event.wait(retry_delay):
+                session = None
+                before_key = None
+                cycle_failed = False
+                progressed = False
                 try:
                     with self._runtime_reconcile_lock:
                         if (
@@ -820,38 +1258,84 @@ class BackendCore:
                             '[Runtime Reconcile] Managed runtime session changed; stop worker.'
                         )
                         return
+                    before_key = self._runtime_progress_key(session)
                     if stop_event.is_set():
                         return
                     if session.phase in {'uninstalling', 'finalizing-uninstall'}:
-                        self.runtime_orchestrator.uninstall()
-                        if self.runtime_orchestrator.current_session() is None:
+                        self.runtime_orchestrator.uninstall(install_id)
+                        session = self.runtime_orchestrator.current_session()
+                        if session is None:
                             return
-                        continue
-                    self.runtime_orchestrator.reconcile_retirement(
-                        cancel_event=stop_event,
+                    else:
+                        if session.phase == 'active':
+                            progressed = self._ensure_local_runtime_projection(
+                                session,
+                                cancel_event=stop_event,
+                            ) or progressed
+                        changed = self.runtime_orchestrator.reconcile_retirement(
+                            cancel_event=stop_event,
+                        )
+                        session = self.runtime_orchestrator.current_session()
+                        if session is None or session.install_id != install_id:
+                            return
+                        if session.phase == 'active':
+                            progressed = self._ensure_local_runtime_projection(
+                                session,
+                                cancel_event=stop_event,
+                            ) or progressed
+                        if (
+                                session.phase == 'active'
+                                and next_rollout is not None
+                                and time.monotonic() >= next_rollout):
+                            policy = self.find_scheduler_policy_by_id(session.policy_id)
+                            result, message = self.parse_and_redeploy_services(
+                                policy,
+                                cancel_event=stop_event,
+                            )
+                            next_rollout = time.monotonic() + interval
+                            if stop_event.is_set():
+                                return
+                            if not result:
+                                cycle_failed = True
+                                LOGGER.warning(f'[Redeployment] {message}')
+                            session = self.runtime_orchestrator.current_session()
+                            if session is None or session.install_id != install_id:
+                                return
+                        progressed = bool(changed) or progressed
+
+                    progressed = (
+                        progressed
+                        or self._runtime_progress_key(session) != before_key
                     )
-                    session = self.runtime_orchestrator.current_session()
-                    if session is None or session.install_id != install_id:
-                        return
-                    if session.phase != 'active':
-                        continue
-                    if next_rollout is None or time.monotonic() < next_rollout:
-                        continue
-                    policy = self.find_scheduler_policy_by_id(session.policy_id)
-                    result, message = self.parse_and_redeploy_services(
-                        policy,
-                        cancel_event=stop_event,
+                    deferred_failure = bool(
+                        session is not None
+                        and getattr(session, 'last_error', '')
+                        and (
+                            getattr(session, 'cleanup', ())
+                            or getattr(session, 'retirement', None) is not None
+                            or str(getattr(session, 'phase', '')).startswith('publishing')
+                        )
                     )
-                    next_rollout = time.monotonic() + interval
-                    if stop_event.is_set():
-                        return
-                    if not result:
-                        LOGGER.warning(f'[Redeployment] {message}')
+                    if deferred_failure and not progressed:
+                        cycle_failed = True
                 except Exception as exc:
+                    try:
+                        current = self.runtime_orchestrator.current_session()
+                    except Exception:
+                        current = None
+                    progressed = (
+                        before_key is not None
+                        and self._runtime_progress_key(current) != before_key
+                    )
+                    cycle_failed = True
                     if interval > 0:
                         next_rollout = time.monotonic() + interval
                     LOGGER.warning(f'[Runtime Reconcile] Unexpected error: {exc}')
                     LOGGER.exception(exc)
+                if cycle_failed and not progressed:
+                    retry_delay = min(retry_delay * 2.0, 30.0)
+                else:
+                    retry_delay = 1.0
         finally:
             with self._runtime_reconcile_lock:
                 if self._runtime_reconcile_stop_event is stop_event:
@@ -968,10 +1452,10 @@ class BackendCore:
         return export_path
 
     def get_system_parameters(self):
-        # Session ownership is not readiness. Never render/log telemetry from
-        # any non-active lifecycle transaction.
-        session = self.runtime_orchestrator.current_session()
-        if session is None or session.phase != 'active':
+        # A durable active Session is insufficient: only the exact directory
+        # generation projected by this Backend process owns local telemetry.
+        _, _, local_ready, _ = self.management_lifecycle_snapshot()
+        if not local_ready:
             return []
 
         # Backend-controlled timestamp; scheduler values are already cached.
@@ -996,8 +1480,12 @@ class BackendCore:
 
     def close(self):
         with self._lifecycle_control_lock:
-            if self._install_cancel_event is not None:
-                self._install_cancel_event.set()
+            self._closed = True
+            self._runtime_recovery_stop_event.set()
+            self._runtime_recovery_wake_event.set()
+            if self._install_admission is not None:
+                self._install_admission.cancel()
+            self._bound_runtime_key = None
         self._stop_runtime_reconcile_loop()
         with self.query_lock:
             self._query_admission_enabled = False
@@ -1078,25 +1566,6 @@ class BackendCore:
         self.result_file_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_FILE}'
         self.log_fetch_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_EXPORT_RESULT_LOG}'
 
-    def _refresh_runtime_urls(self):
-        directory = self.runtime_orchestrator.active_directory()
-        if directory is None:
-            return False
-        self._bind_runtime_urls(directory)
-        return True
-
-    def get_resource_url(self):
-        if not self.resource_url:
-            self._refresh_runtime_urls()
-
-    def get_result_url(self):
-        if not self.result_url or not self.result_file_url:
-            self._refresh_runtime_urls()
-
-    def get_log_url(self):
-        if not self.log_fetch_url:
-            self._refresh_runtime_urls()
-
     def get_file_result(self, file_name):
         if not self.result_file_url:
             return ''
@@ -1115,8 +1584,8 @@ class BackendCore:
 
     def open_result_log_export_stream(self):
         self.parse_base_info()
-        self.get_log_url()
-        if not self.log_fetch_url:
+        _, _, local_ready, _ = self.management_lifecycle_snapshot()
+        if not local_ready or not self.log_fetch_url:
             return None
 
         response = http_request(

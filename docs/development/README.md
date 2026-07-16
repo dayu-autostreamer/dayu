@@ -162,6 +162,7 @@ make test-component
 make test-e2e
 make coverage-python
 make frontend-install
+make frontend-test
 make frontend-check
 ```
 

@@ -98,6 +98,14 @@ class RuntimeOrchestrator:
     MANAGED_LABEL_SELECTOR = "app.kubernetes.io/managed-by=dayu-backend"
     SUPPORTED_JETPACK_MAJORS = frozenset({4, 5, 6})
     _PUBLICATION_PHASES = frozenset({"publishing", "publishing-rollout"})
+    _INITIAL_ACTIVATION_PHASES = frozenset({
+        "activating-scheduler", "activating-runtime",
+    })
+    _RECOVERY_PHASES = (
+        _INITIAL_ACTIVATION_PHASES
+        | _PUBLICATION_PHASES
+        | frozenset({"activating-rollout"})
+    )
 
     def __init__(
         self,
@@ -225,7 +233,28 @@ class RuntimeOrchestrator:
                 self._stored = self.sessions.load()
                 self._snapshot_loaded = True
                 raise
+            except Exception as write_error:
+                # A timeout/EOF can arrive after the API server committed the
+                # CAS. Calibrate that one uncertain outcome with a bounded GET
+                # and accept only an exact desired value; never swallow a
+                # genuinely different writer's state.
+                try:
+                    observed = self.sessions.load()
+                except Exception as read_error:
+                    # The next management read must not trust the stale local
+                    # snapshot after two ambiguous control-plane failures.
+                    self._snapshot_loaded = False
+                    raise write_error from read_error
+                self._stored = observed
+                self._snapshot_loaded = True
+                if observed is not None and observed.session == session:
+                    return observed.session
+                raise
             return self._stored.session
+
+    @classmethod
+    def requires_recovery(cls, session: Optional[RuntimeSession]) -> bool:
+        return session is not None and session.phase in cls._RECOVERY_PHASES
 
     def _mark_snapshot_deleted(self) -> None:
         """Publish the durable absence of a session as one snapshot update."""
@@ -1204,13 +1233,53 @@ class RuntimeOrchestrator:
             if stored is None:
                 return None
             session = stored.session
+            if session.phase in self._INITIAL_ACTIVATION_PHASES:
+                # Activation is a watch-driven operation and cannot be resumed
+                # safely after losing its deadline and in-memory watch state.
+                # Preserve every exact identity already observed so the
+                # target-bound uninstall path remains authoritative.
+                session = self._save(replace(
+                    session,
+                    phase="failed",
+                    last_error=(
+                        f"backend restarted during {session.phase}; "
+                        "uninstall this installation before retrying"
+                    ),
+                    updated_at=_utc_now(),
+                ))
             if session.phase == "activating-rollout":
                 session = self._restore_active_after_rollout_failure(
                     session,
                     "backend restarted before processor rollout publication",
                 )
             if session.phase in self._PUBLICATION_PHASES:
-                session = self._recover_publication(session)
+                try:
+                    session = self._recover_publication(session)
+                except Exception as exc:
+                    # Keep the publication phase recoverable and expose the
+                    # failed attempt. Background recovery retries with bounded
+                    # exponential backoff; a later finalization clears it.
+                    try:
+                        current = (
+                            self._stored.session
+                            if self._stored is not None else None
+                        )
+                        if (
+                                current is not None
+                                and current.install_id == session.install_id
+                                and current.operation_id == session.operation_id
+                                and current.phase in self._PUBLICATION_PHASES
+                                and current.last_error != str(exc)):
+                            self._save(replace(
+                                current,
+                                last_error=str(exc),
+                                updated_at=_utc_now(),
+                            ))
+                    except Exception:
+                        LOGGER.exception(
+                            "failed to persist publication recovery error"
+                        )
+                    raise
             return session
 
     def install(
@@ -1218,8 +1287,16 @@ class RuntimeOrchestrator:
         policy: Mapping[str, Any],
         source_deploy: Sequence[Mapping[str, Any]],
         source_label: str = "",
+        install_id: str = "",
         cancel_event=None,
     ) -> RuntimeDirectory:
+        install_id = str(install_id or "").strip()
+        try:
+            canonical_install_id = str(uuid.UUID(install_id))
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError("install_id must be a canonical UUID") from None
+        if install_id != canonical_install_id:
+            raise ValueError("install_id must be a canonical UUID")
         self._raise_if_cancelled(cancel_event)
         with self._lock:
             self._raise_if_cancelled(cancel_event)
@@ -1250,7 +1327,6 @@ class RuntimeOrchestrator:
             source_candidates = set(self._source_candidate_nodes(normalized_sources))
             permitted_runtime_nodes = processor_candidates | source_candidates | {cloud_node}
 
-            install_id = str(uuid.uuid4())
             operation_id = str(uuid.uuid4())
             revision = 1
             renderer = self.template_helper.create_runtime_renderer(install_id)
@@ -2096,7 +2172,7 @@ class RuntimeOrchestrator:
             retirement_units,
         )
 
-    def begin_uninstall(self) -> Optional[RuntimeSession]:
+    def begin_uninstall(self, expected_install_id: str = "") -> Optional[RuntimeSession]:
         """Persist administrative stop intent without waiting for teardown."""
 
         with self._lock:
@@ -2104,6 +2180,8 @@ class RuntimeOrchestrator:
             if stored is None:
                 return None
             session = stored.session
+            if expected_install_id and session.install_id != expected_install_id:
+                return None
             if session.phase not in {"uninstalling", "finalizing-uninstall"}:
                 session = self._save(replace(
                     session,
@@ -2114,7 +2192,7 @@ class RuntimeOrchestrator:
                 ))
             return session
 
-    def uninstall(self) -> None:
+    def uninstall(self, expected_install_id: str = "") -> None:
         """Stop the installation without allowing task leases to veto teardown."""
 
         with self._lock:
@@ -2122,6 +2200,8 @@ class RuntimeOrchestrator:
             if stored is None:
                 return
             session = stored.session
+            if expected_install_id and session.install_id != expected_install_id:
+                return
             all_units = self._owned_units(session)
             schedulers = tuple(
                 unit for unit in all_units if unit.slot.component == "scheduler"

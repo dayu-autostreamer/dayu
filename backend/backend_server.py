@@ -10,7 +10,6 @@ from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse, FileResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from fastapi.middleware.cors import CORSMiddleware
 from core.lib.common import LOGGER, Counter, FileOps
 from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 
@@ -21,6 +20,20 @@ _RESOURCE_FIELDS = {
     "cpu": ("usage_millicores", "reference_millicores"),
     "memory": ("usage_bytes", "reference_bytes"),
 }
+
+
+def _json_object(data):
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, bytes):
+        data = str(data, encoding='utf-8')
+    if isinstance(data, str):
+        value = json.loads(data) if data else {}
+        if isinstance(value, dict):
+            return value
+    if data is None:
+        return {}
+    raise ValueError('request body must be a JSON object')
 
 
 def _optional_non_negative_number(value):
@@ -240,10 +253,8 @@ class BackendServer:
                      ),
         ], log_level='trace', timeout=6000)
 
-        self.app.add_middleware(
-            CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-            allow_methods=["*"], allow_headers=["*"],
-        )
+        if hasattr(self.server, 'start'):
+            self.app.add_event_handler('startup', self.server.start)
         if hasattr(self.server, 'close'):
             self.app.add_event_handler('shutdown', self.server.close)
 
@@ -409,7 +420,7 @@ class BackendServer:
         {'state':success/fail, 'msg':'...'}
         """
 
-        data = json.loads(str(data, encoding='utf-8'))
+        data = _json_object(data)
         dag_id = int(data['dag_id'])
         for index, dag in enumerate(self.server.dags):
             if dag['dag_id'] == dag_id:
@@ -624,14 +635,30 @@ class BackendServer:
         {'msg': 'Invalid service name!'}
         """
 
-        data = json.loads(str(data, encoding='utf-8'))
-
-        source_label = data['source_config_label']
-        policy_id = data['policy_id']
-        source_map_list = data['source']
-
-        dag_list = [x['dag_selected'] for x in source_map_list]
-        node_set_list = [x['node_selected'] for x in source_map_list]
+        try:
+            data = _json_object(data)
+            raw_install_id = data.get('install_id')
+            if raw_install_id is not None and not isinstance(raw_install_id, str):
+                raise TypeError('install_id must be a string')
+            install_id = str(raw_install_id or '').strip()
+            source_label = data['source_config_label']
+            policy_id = data['policy_id']
+            if not isinstance(source_label, str) or not isinstance(policy_id, str):
+                raise TypeError('source_config_label and policy_id must be strings')
+            source_map_list = data['source']
+            if not isinstance(source_map_list, list):
+                raise TypeError('source must be a list')
+            if any(not isinstance(item, dict) for item in source_map_list):
+                raise TypeError('every source mapping must be an object')
+            dag_list = [item['dag_selected'] for item in source_map_list]
+            node_set_list = [item['node_selected'] for item in source_map_list]
+            if any(not isinstance(nodes, list) for nodes in node_set_list):
+                raise TypeError('node_selected must be a list')
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return {
+                'state': 'fail',
+                'msg': 'Install services failed: invalid request body',
+            }
 
         source_deploy = []
 
@@ -663,6 +690,7 @@ class BackendServer:
                 policy,
                 source_deploy,
                 source_label,
+                install_id,
             )
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
@@ -671,14 +699,34 @@ class BackendServer:
             msg = 'unexpected system error, please refer to logs in backend'
 
         if result:
+            response = {
+                'state': 'success',
+                'msg': 'Install services successfully',
+            }
             if not self.server.inner_datasource:
-                await self.submit_query({'source_label': source_label})
-
-            return {'state': 'success', 'msg': 'Install services successfully'}
+                try:
+                    query_result = await self.submit_query(
+                        {'source_label': source_label},
+                    )
+                    if query_result.get('state') != 'success':
+                        response['warning'] = (
+                            'Runtime installed, but datasource query did not start: '
+                            f"{query_result.get('msg') or 'unknown error'}"
+                        )
+                except Exception as exc:
+                    LOGGER.warning(
+                        f'Runtime installed, but datasource query did not start: {exc}'
+                    )
+                    LOGGER.exception(exc)
+                    response['warning'] = (
+                        'Runtime installed, but datasource query did not start; '
+                        'start it explicitly after checking backend logs'
+                    )
+            return response
         else:
             return {'state': 'fail', 'msg': f'Install services failed: {msg}'}
 
-    async def uninstall_service(self):
+    async def uninstall_service(self, data=Body(default=None)):
         """
         {'state':"success/fail",'msg':'...'}
 
@@ -686,10 +734,25 @@ class BackendServer:
         """
 
         try:
+            payload = _json_object(data)
+            raw_install_id = payload.get('install_id')
+            if raw_install_id is not None and not isinstance(raw_install_id, str):
+                raise TypeError('install_id must be a string')
+            expected_install_id = str(raw_install_id or '').strip()
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {
+                'state': 'fail',
+                'msg': 'Uninstall services failed: invalid request body',
+            }
+
+        try:
             # BackendCore owns query admission and cancellation as part of the
             # same lifecycle operation.  Keeping it below the threadpool
             # boundary prevents a stop/reopen race before uninstall begins.
-            result, msg = await run_in_threadpool(self.server.parse_and_delete_templates)
+            result, msg = await run_in_threadpool(
+                self.server.parse_and_delete_templates,
+                expected_install_id,
+            )
 
         except Exception as e:
             LOGGER.warning(f'Uninstall services failed: {str(e)}')
@@ -702,6 +765,72 @@ class BackendServer:
         else:
             return {'state': 'fail', 'msg': f'Uninstall services failed: {msg}'}
 
+    @staticmethod
+    def _install_state_response(
+            session, pending=None, local_ready=False, local_error=''):
+        pending = pending if isinstance(pending, dict) else {}
+        has_pending = bool(pending)
+        pending_kind = str(pending.get('kind') or 'install')
+        pending_install_id = str(pending.get('install_id') or '')
+        pending_phase = str(pending.get('phase') or 'preparing-install')
+        pending_operation_id = str(pending.get('operation_id') or '')
+        install_pending = bool(
+            pending_install_id and pending_kind == 'install'
+        )
+        if session is None:
+            return {
+                'state': 'uninstall',
+                'phase': pending_phase if has_pending else 'uninstalled',
+                'ready': False,
+                'install_id': pending_install_id,
+                'install_pending': install_pending,
+                'operation_id': pending_operation_id,
+                'updated_at': '',
+                'active_directory_revision': 0,
+                'active_runtime_count': 0,
+                'pending_runtime_count': 0,
+                'cleanup_runtime_count': 0,
+                'retirement_revision': 0,
+                'retirement_deadline': None,
+                'last_error': '',
+            }
+
+        retirement = session.retirement
+        same_pending_target = pending_install_id == session.install_id
+        same_pending_install = same_pending_target and pending_kind == 'install'
+        phase = session.phase
+        operation_id = session.operation_id
+        if same_pending_target and pending_kind == 'stop':
+            phase = pending_phase
+            operation_id = pending_operation_id
+        elif same_pending_install and pending_phase == 'cancelling-install':
+            phase = pending_phase
+            operation_id = pending_operation_id
+        elif session.phase == 'active' and local_error:
+            # Keep ownership as ``install`` so exact uninstall remains
+            # available, while allowing clients waiting for installation to
+            # converge on a terminal failure instead of polling forever.
+            phase = 'failed'
+        return {
+            # ``state`` remains the ownership guard used to reject a second
+            # installation. ``ready``/``phase`` express whether read APIs may
+            # consume the atomically published RuntimeDirectory.
+            'state': 'install',
+            'phase': phase,
+            'ready': phase == 'active' and bool(local_ready) and not same_pending_install,
+            'install_id': session.install_id,
+            'install_pending': same_pending_install,
+            'operation_id': operation_id,
+            'updated_at': session.updated_at,
+            'active_directory_revision': session.active_directory_revision,
+            'active_runtime_count': len(session.active),
+            'pending_runtime_count': len(session.pending),
+            'cleanup_runtime_count': len(session.cleanup),
+            'retirement_revision': retirement.revision if retirement else 0,
+            'retirement_deadline': retirement.deadline if retirement else None,
+            'last_error': local_error or session.last_error,
+        }
+
     async def get_install_state(self):
         """
         :return:
@@ -711,40 +840,12 @@ class BackendServer:
         # The first process-local snapshot load may read the Kubernetes
         # ConfigMap.  Keep even that one-off synchronous call off the event
         # loop; subsequent reads are the in-memory snapshot fast path.
-        session = await run_in_threadpool(
-            self.server.runtime_orchestrator.current_session,
+        session, pending, local_ready, local_error = await run_in_threadpool(
+            self.server.management_lifecycle_snapshot,
         )
-        if session is None:
-            return {
-                'state': 'uninstall',
-                'phase': 'uninstalled',
-                'ready': False,
-                'operation_id': '',
-                'active_directory_revision': 0,
-                'active_runtime_count': 0,
-                'pending_runtime_count': 0,
-                'cleanup_runtime_count': 0,
-                'retirement_revision': 0,
-                'retirement_deadline': None,
-                'last_error': '',
-            }
-        retirement = session.retirement
-        return {
-            # ``state`` remains the ownership guard used to reject a second
-            # installation.  ``ready``/``phase`` express whether read APIs may
-            # consume the atomically published RuntimeDirectory.
-            'state': 'install',
-            'phase': session.phase,
-            'ready': session.phase == 'active',
-            'operation_id': session.operation_id,
-            'active_directory_revision': session.active_directory_revision,
-            'active_runtime_count': len(session.active),
-            'pending_runtime_count': len(session.pending),
-            'cleanup_runtime_count': len(session.cleanup),
-            'retirement_revision': retirement.revision if retirement else 0,
-            'retirement_deadline': retirement.deadline if retirement else None,
-            'last_error': session.last_error,
-        }
+        return self._install_state_response(
+            session, pending, local_ready, local_error,
+        )
 
     async def submit_query(self, data=Body(...)):
         """
@@ -930,7 +1031,9 @@ class BackendServer:
             formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
             file_name = f'RESULT_LOG_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
 
-        upstream_response = self.server.open_result_log_export_stream()
+        upstream_response = await run_in_threadpool(
+            self.server.open_result_log_export_stream,
+        )
         if upstream_response is None:
             raise HTTPException(status_code=503, detail='Result log export is temporarily unavailable')
 

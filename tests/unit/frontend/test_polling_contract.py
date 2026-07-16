@@ -15,17 +15,49 @@ def test_system_parameters_polling_is_settle_then_schedule_and_abortable():
     assert "await this.fetchLatest(controller.signal)" in source
     assert "this.requestController?.abort()" in source
     assert "this.pollingTimer = setTimeout(poll, 2000)" in source
-    assert "state.status === 'install' && state.phase === 'active'" in source
+    assert "installStore.isReady" in source
+    assert "runtimeInstallId" in source
+    assert "syncRuntimeGeneration(installStore.installId" in source
+    assert "this.bufferedTaskCache.splice(0, this.bufferedTaskCache.length)" in source
+    assert "localStorage" not in source
+    assert "fetch('/api/install_state')" not in source
 
 
-def test_service_query_polling_and_detail_requests_cancel_stale_work():
+def test_install_state_polling_is_centralized_single_flight_and_abortable():
+    store = (REPO_ROOT / "frontend/src/stores/installState.ts").read_text(
+        encoding="utf-8"
+    )
+    install = (REPO_ROOT / "frontend/src/views/install/SvcInstall.vue").read_text(
+        encoding="utf-8"
+    )
+    query = (REPO_ROOT / "frontend/src/views/install/SvcQuery.vue").read_text(
+        encoding="utf-8"
+    )
+
+    assert store.count("'/api/install_state'") == 1
+    assert "fetchJsonWithTimeout<InstallStateSnapshot>(" in store
+    assert "STATE_REQUEST_TIMEOUT_MS" in store
+    assert "stateRequest" in store
+    assert "new AbortController()" in store
+    assert "await refresh()" in store
+    assert "pollingTimer = window.setTimeout(poll, interval)" in store
+    assert "stateController?.abort()" in store
+    assert "fetch('/api/install_state'" not in install
+    assert "fetch('/api/install_state'" not in query
+    assert "dayu-install-changed" not in install
+    assert "dayu-install-changed" not in query
+    assert "updated_at" not in store
+    assert "retiredInstallIds" not in store
+    assert "confirmInstall" not in store
+    assert "function sync(" not in store
+
+
+def test_service_query_detail_and_uninstall_requests_follow_lifecycle_state():
     source = (REPO_ROOT / "frontend/src/views/install/SvcQuery.vue").read_text(
         encoding="utf-8"
     )
 
     assert "setInterval(" not in source
-    assert "stateController?.abort()" in source
-    assert "stateTimer = window.setTimeout(pollInstallState, 3000)" in source
     assert "this.serviceListController?.abort()" in source
     assert "this.serviceInfoController?.abort()" in source
     assert "this.selected_service !== service" in source
@@ -33,7 +65,24 @@ def test_service_query_polling_and_detail_requests_cancel_stale_work():
     assert "void this.sendRequest(service)" in source
     assert "this.stopServiceInfoPolling()" in source
     assert "if (!this.runtimeReady)" in source
-    assert "this.install_state.setPhase('uninstalling')" in source
+    assert ':loading="install_state.isUninstalling"' in source
+    assert ':disabled="!install_state.canUninstall"' in source
+    assert "this.install_state.beginUninstall()" in source
+    assert "JSON.stringify({ install_id: targetInstallId })" in source
+    assert "classifyStopResponse" in source
+    assert "while (!commandObserved && !this.componentUnmounted)" in source
+    assert "STOP_RETRY_INTERVAL_MS" in source
+    assert "waitUntilUninstallCommandObserved" in source
+    assert "markUninstallCommandObserved" in source
+    assert "this.uninstallCommandController?.abort()" in source
+    assert "phase === 'cancelling-install'" not in source
+    assert "await this.install_state.waitUntilUninstallCompletes(actionId)" in source
+    assert "this.install_state.finishUninstall(actionId)" in source
+    assert "'Installation cancelled successfully'" in source
+    assert "'Uninstall services successfully'" in source
+    assert "setPhase('uninstalling')" not in source
+    assert "runtimeGeneration" in source
+    assert "deriveRuntimeDetailTransition(previousGeneration, generation)" in source
 
 
 def test_service_detail_uses_normalized_resource_meters_and_shared_bandwidth():
@@ -58,14 +107,81 @@ def test_service_detail_uses_normalized_resource_meters_and_shared_bandwidth():
 
 
 def test_install_state_separates_session_ownership_from_runtime_readiness():
-    source = (REPO_ROOT / "frontend/src/stores/installState.ts").read_text(
+    lifecycle = (REPO_ROOT / "frontend/src/stores/installLifecycle.ts").read_text(
+        encoding="utf-8"
+    )
+    store = (REPO_ROOT / "frontend/src/stores/installState.ts").read_text(
+        encoding="utf-8"
+    )
+    install = (REPO_ROOT / "frontend/src/views/install/SvcInstall.vue").read_text(
         encoding="utf-8"
     )
 
-    assert "status: 'uninstall'" in source
-    assert "phase: 'uninstalled'" in source
-    assert "state.status === 'install' && state.phase === 'active'" in source
-    assert "install(phase = 'active')" in source
+    assert "const hasSession = input.status === 'install'" in lifecycle
+    assert "input.ready && input.phase === 'active'" in lifecycle
+    assert "(hasSession || input.installPending) && !isUninstalling" in lifecycle
+    assert "canInstall: input.hydrated" in lifecycle
+    assert "INITIAL_INSTALL_PHASES" in lifecycle
+    assert "UNINSTALL_PHASES" in lifecycle
+    assert "cancelling-install" in lifecycle
+    assert "preparing-uninstall" in lifecycle
+    assert "localInstallWaitingForAdmission" in lifecycle
+    assert "classifyStopResponse" in lifecycle
+    assert "operationId" in store
+    assert "installId" in store
+    assert "createInstallId" in store
+    assert "hasInstallIdentity" in store
+    assert "serverInstallPending" in store
+    assert "lastError" in store
+    assert "installCancelRequested" in store
+    assert "reconcileInstallAcceptance" in store
+    assert "reconcileUninstallCommand" in store
+    assert ':loading="install_state.isInstalling"' in install
+    assert ':disabled="!install_state.canInstall"' in install
+    assert "Promise.race([commandResult, lifecycleResult])" in install
+    assert "await this.waitForInstallCommandTail(commandResult)" in install
+    assert "INSTALL_RESPONSE_SETTLE_MS" in install
+    assert "await this.install_state.refresh({ fresh: true })" in install
+    assert "data.warning" in install
+    assert "showInstallWarning" in install
+    assert "confirmInstall" not in install
+    assert "data.install_state" not in install
+    assert "submittedConfig" in install
+    assert "install_id: actionId" in install
+    assert "install_state.install()" not in install
+
+
+def test_only_page_local_draft_is_persisted_by_install_form():
+    source = (REPO_ROOT / "frontend/src/views/install/SvcInstall.vue").read_text(
+        encoding="utf-8"
+    )
+
+    assert "saveStorage(DRAFT_STATE_KEY, payload)" in source
+    assert "savedInstallConfig" not in source
+    assert "INSTALL_STATE_KEY" not in source
+    assert "sessionStorage.setItem" in source
+    assert "localStorage" not in source
+    clear_method = source.split("handleClear()", 1)[1].split("},", 1)[0]
+    assert "removeItem(this.DRAFT_STATE_KEY)" in clear_method
+
+
+def test_install_lifecycle_is_initialized_once_before_mount():
+    main = (REPO_ROOT / "frontend/src/main.ts").read_text(encoding="utf-8")
+    install = (REPO_ROOT / "frontend/src/views/install/SvcInstall.vue").read_text(
+        encoding="utf-8"
+    )
+    query = (REPO_ROOT / "frontend/src/views/install/SvcQuery.vue").read_text(
+        encoding="utf-8"
+    )
+    system = (
+        REPO_ROOT / "frontend/src/stores/systemParameters.ts"
+    ).read_text(encoding="utf-8")
+
+    assert main.count("installState.init()") == 1
+    assert main.index("installState.init()") < main.index("app.mount('#app')")
+    assert "install_state.init()" not in install
+    assert "install_state.init()" not in query
+    assert "installStore.init()" not in system
 
 
 def test_result_polling_is_single_flight_and_cancels_stale_fetches():

@@ -89,9 +89,9 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `POST` | `/install` | Resolve policy + datasource mapping and deploy the runtime stack. | JSON body described below | `{state, msg}` |
-| `POST` | `/stop_service` | Accept an asynchronous uninstall: close query admission, persist `uninstalling`, and start background teardown. | None | `{state, msg}`; success means accepted, not completed |
-| `GET` | `/install_state` | Check session ownership and its lifecycle phase; failed/recovering sessions remain `install` until safely uninstalled. | None | `{state, phase, ready, operation_id, active_directory_revision, active_runtime_count, pending_runtime_count, cleanup_runtime_count, retirement_revision, retirement_deadline, last_error}` |
+| `POST` | `/install` | Resolve policy + datasource mapping and deploy the runtime stack. | JSON body described below, including a client-generated canonical UUID `install_id` | `{state, msg, warning?}`; success acknowledges this request, while `/install_state` remains the lifecycle source of truth |
+| `POST` | `/stop_service` | Accept an asynchronous uninstall: close query admission, persist or expose cancellation intent, and start background teardown. | JSON `{install_id}` binds the command to the observed target; an omitted id is a trusted system-teardown fallback | `{state, msg}`; success means accepted or already absent, not completed |
+| `GET` | `/install_state` | Check install admission, session ownership, and lifecycle phase; failed/recovering sessions remain `install` until safely uninstalled. | None | `{state, phase, ready, install_id, install_pending, operation_id, updated_at, active_directory_revision, active_runtime_count, pending_runtime_count, cleanup_runtime_count, retirement_revision, retirement_deadline, last_error}` |
 | `POST` | `/submit_query` | Open datasource playback for a datasource label and begin result collection. | JSON body with `source_label` | `{state, msg}` |
 | `POST` | `/stop_query` | Stop datasource playback and clear in-memory task results. | None | `{state, msg}` |
 | `GET` | `/query_state` | Get query state for the current datasource. | None | `{state: "open"|"close"|"disabled", source_label}` |
@@ -100,25 +100,43 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | `POST` | `/reset_datasource` | Cancel the active result-collector generation and clear datasource state. | None | `null` |
 
 `state="install"` means a managed session still owns resources; it is not a readiness signal. Clients may query
-`/installed_service`, `/service_info/{service}`, and `/system_parameters` only when `phase="active"`. During activation,
-publication recovery, or uninstall, the frontend retains the ownership state to prevent a second install while
-suspending telemetry polling and clearing active-service details. A pending old-revision retirement keeps the newly
+`/installed_service`, `/service_info/{service}`, and `/system_parameters` only when `ready=true`. During activation,
+local admission finalization, publication recovery, or uninstall, the frontend retains the ownership state to prevent
+a second install while suspending telemetry polling and clearing active-service details. A pending old-revision retirement keeps the newly
 published session active and does not block those reads.
 
-`ready` is true exactly when `phase="active"`. With no session, the endpoint returns
-`state="uninstall"`, `phase="uninstalled"`, zero counts/revision, and an empty error. The lifecycle request itself may
-still be running in a worker thread; this endpoint remains responsive throughout activation, publication recovery,
+`ready` is true exactly when `phase="active"`, install admission has finalized, and this Backend process has locally
+projected the exact `(install_id, active_directory_revision)` into its URL, query-admission, reconciliation, and
+telemetry state. The frontend creates a fresh canonical UUID for every install attempt and must never reuse it; the
+UUID is used as `install_id` from request admission through RuntimeSession, ConfigMap, RuntimeDirectory, and
+RuntimeService ownership. Before that session is persisted, `install_pending=true` and `phase="preparing-install"`
+expose the same id, so a lost response, page reload, or second browser cannot start a second namespace-wide installation.
+When stop is accepted against an in-memory admission, the same id remains visible with
+`phase="cancelling-install"`, `install_pending=true`, `ready=false`, and a new cancellation `operation_id` until the
+target either enters durable uninstall or disappears. When an active Session is selected for stop, the single-flight
+stop admission is exposed first as `phase="preparing-uninstall"`, with the same id, `install_pending=false`,
+`ready=false`, and a new stop `operation_id`; this closes the admission gap before the durable Session transition is
+committed. Observing that new operation is enough for a client to stop retransmitting the same POST, but only
+`uninstalling`/`finalizing-uninstall` or target disappearance proves durable progress/completion. If preparation fails,
+the phase returns to the owned Session state with `last_error`, allowing an explicit retry. With no session or pending
+request, the endpoint returns
+`state="uninstall"`, `phase="uninstalled"`, empty ids, zero
+counts/revision, and an empty error. This endpoint remains responsive throughout activation, publication recovery,
 background retirement reconciliation, or exact-UID deletion.
 
-After `POST /stop_service` returns `state="success"`, poll `/install_state`. The uninstall is complete only when the
-session disappears and the endpoint reports `state="uninstall", phase="uninstalled"`. Until then, `operation_id`
-identifies the accepted operation, `phase` is `uninstalling` or `finalizing-uninstall`, and `last_error` reports the
-latest background failure while the reconcile worker keeps the exact ownership record for retry.
+Send the observed `install_id` to `POST /stop_service`, then poll `/install_state`. The uninstall is complete when that target
+`install_id` disappears; normally the endpoint then reports `state="uninstall", phase="uninstalled"`, while a
+concurrent client may already have created a different Session. Until completion, `operation_id` identifies the
+accepted operation, `phase` is `cancelling-install`, `preparing-uninstall`, `uninstalling`, or
+`finalizing-uninstall`, and `last_error` reports the latest background failure while the reconcile worker keeps the
+exact ownership record for retry. `preparing-uninstall` still owns the same target and is neither durable acceptance nor
+a completion signal; its new `operation_id` is the delivery acknowledgement that prevents duplicate in-flight POSTs.
 
 `POST /install` expects a deployment request shaped like:
 
 ```json
 {
+  "install_id": "b8108ad0-6fb7-47bc-82a8-1f16a9b8f83a",
   "source_config_label": "Road & Street Cameras (Two Camera HTTP)",
   "policy_id": "casva",
   "source": [
@@ -131,6 +149,21 @@ latest background failure while the reconcile worker keeps the exact ownership r
   ]
 }
 ```
+
+`POST /install` does not duplicate `/install_state`. After submitting, clients use only `/install_state` for lifecycle
+observation and bind their local spinner/result to the submitted UUID. A response can arrive after another client has
+already cancelled or superseded that generation, so `state="success"` is not a separate readiness fact. When
+`datasource.use-simulation=false`, runtime installation remains successful even if the subsequent implicit query open
+fails; the response then includes a non-empty `warning`, and the operator may retry query startup independently. If
+`/install_state` reaches `ready=true` first, the frontend gives the POST a short bounded tail window to retain that
+warning; it never lets a missing response override the authoritative ready state.
+
+`install_id` is not a secret or authorization token. All clients admitted to one namespace Backend share the same
+lifecycle permissions. The target precondition exists only to make delayed Cancel/Uninstall requests harmless. The
+body-less global stop is reserved for trusted system teardown such as `dayu.sh` when state inspection is unavailable;
+it must not be exposed as a substitute for HTTP authentication. The no-reuse UUID requirement prevents a delayed
+target-bound stop from encountering an ABA identity; a caller that can deliberately choose or replay another
+installation's id is already inside this shared administrative trust domain.
 
 During install, backend creates immutable `sedna.io/v1alpha1` `RuntimeService` objects. Scheduler is activated first,
 then supplies source-selection and initial-deployment plans. Backend validates the deployment plan and, when

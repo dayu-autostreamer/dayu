@@ -132,12 +132,14 @@ make test-component
 make test-e2e
 make coverage-python
 make frontend-install
+make frontend-test
 make frontend-check
 make check
 ```
 
 `make validate-build` checks the Docker Bake image matrix against Dockerfiles and deployment templates.
 `make check` is the day-to-day aggregate gate. `make coverage-python` mirrors the Python coverage run used by hosted CI.
+`make frontend-check` runs formatting, the lifecycle state-machine tests, and the production build.
 `make frontend-lint` remains available as a cleanup target while the frontend template debt continues to be reduced
 incrementally.
 

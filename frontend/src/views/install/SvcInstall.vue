@@ -130,9 +130,8 @@
 				<el-button
 					type="primary"
 					round
-					native-type="submit"
-					:loading="loading"
-					:disabled="installed === 'install'"
+					:loading="install_state.isInstalling"
+					:disabled="!install_state.canInstall"
 					@click="submitService"
 				>
 					<el-icon><Promotion /></el-icon>
@@ -149,12 +148,13 @@
 import { ElButton, ElMessage } from 'element-plus';
 import { Connection, Promotion, RefreshRight } from '@element-plus/icons-vue';
 import axios from 'axios';
-import { onMounted, ref, watch } from 'vue';
+import { markRaw, onMounted, ref, watch } from 'vue';
 import { useInstallStateStore } from '/@/stores/installState';
+import { fetchJsonWithTimeout } from '/@/utils/fetchWithTimeout';
 
-const INSTALL_STATE_KEY = 'savedInstallConfig';
 const DRAFT_STATE_KEY = 'savedDraftConfig';
-const INSTALL_CHANGED_EVENT = 'dayu-install-changed';
+const INSTALL_REQUEST_TIMEOUT_MS = 930000;
+const INSTALL_RESPONSE_SETTLE_MS = 3000;
 
 export default {
 	components: {
@@ -165,21 +165,13 @@ export default {
 	},
 	data() {
 		return {
-			loading: false,
+			componentUnmounted: false,
 		};
 	},
 	setup() {
-		const LENGTH_KEYS = {
-			policy: 'prev_len:policy',
-			datasource: 'prev_len:datasource',
-			dag: 'prev_len:dag',
-			node: 'prev_len:node',
-		};
-
 		const selectedPolicyIndex = ref(null);
 		const selectedDatasourceIndex = ref(null);
 		const selectedSources = ref([]);
-		const installed = ref('uninstall');
 		const policyOptions = ref([]);
 		const datasourceOptions = ref([]);
 		const dagOptions = ref([]);
@@ -203,7 +195,7 @@ export default {
 
 		const loadStorage = (key) => {
 			try {
-				const data = localStorage.getItem(key);
+				const data = sessionStorage.getItem(key);
 				return data ? JSON.parse(data) : null;
 			} catch (error) {
 				console.error('Fail to load storage', error);
@@ -213,7 +205,7 @@ export default {
 
 		const saveStorage = (key, value) => {
 			try {
-				localStorage.setItem(key, JSON.stringify(value));
+				sessionStorage.setItem(key, JSON.stringify(value));
 			} catch (error) {
 				console.error('Fail to save storage', error);
 			}
@@ -237,8 +229,7 @@ export default {
 		};
 
 		const restoreSelections = () => {
-			const activeKey = installed.value === 'install' ? INSTALL_STATE_KEY : DRAFT_STATE_KEY;
-			const storedConfig = loadStorage(activeKey) || loadStorage(DRAFT_STATE_KEY) || loadStorage(INSTALL_STATE_KEY);
+			const storedConfig = loadStorage(DRAFT_STATE_KEY);
 
 			if (!storedConfig) {
 				selectedPolicyIndex.value = null;
@@ -265,28 +256,18 @@ export default {
 
 		const refreshOptions = async () => {
 			try {
-				const [installStateResponse, policyResponse, datasourceResponse, dagResponse, nodeResponse] = await Promise.all(
-					[
-						axios.get('/api/install_state'),
-						axios.get('/api/policy'),
-						axios.get('/api/datasource'),
-						axios.get('/api/dag_workflow'),
-						axios.get('/api/edge_node'),
-					]
-				);
-
-				installed.value = installStateResponse.data.state;
-				install_state.sync(installStateResponse.data.state, installStateResponse.data.phase);
+				await install_state.refresh({ fresh: true });
+				const [policyResponse, datasourceResponse, dagResponse, nodeResponse] = await Promise.all([
+					axios.get('/api/policy'),
+					axios.get('/api/datasource'),
+					axios.get('/api/dag_workflow'),
+					axios.get('/api/edge_node'),
+				]);
 
 				policyOptions.value = Array.isArray(policyResponse.data) ? policyResponse.data : [];
 				datasourceOptions.value = Array.isArray(datasourceResponse.data) ? datasourceResponse.data : [];
 				dagOptions.value = Array.isArray(dagResponse.data) ? dagResponse.data : [];
 				nodeOptions.value = Array.isArray(nodeResponse.data) ? nodeResponse.data : [];
-
-				localStorage.setItem(LENGTH_KEYS.policy, policyOptions.value.length);
-				localStorage.setItem(LENGTH_KEYS.datasource, datasourceOptions.value.length);
-				localStorage.setItem(LENGTH_KEYS.dag, dagOptions.value.length);
-				localStorage.setItem(LENGTH_KEYS.node, nodeOptions.value.length);
 
 				restoreSelections();
 			} catch (error) {
@@ -296,36 +277,17 @@ export default {
 		};
 
 		watch(
-			[selectedPolicyIndex, selectedDatasourceIndex, selectedSources, installed],
-			([policyIdx, datasourceIdx, sources, installStatus]) => {
+			[selectedPolicyIndex, selectedDatasourceIndex, selectedSources],
+			([policyIdx, datasourceIdx, sources]) => {
 				const payload = {
 					selectedPolicyIndex: isValidIndex(policyIdx, policyOptions.value) ? policyIdx : null,
 					selectedDatasourceIndex: isValidIndex(datasourceIdx, datasourceOptions.value) ? datasourceIdx : null,
 					selectedSources: safeClone(sources) || [],
 				};
 
-				if (installStatus === 'install') {
-					saveStorage(INSTALL_STATE_KEY, payload);
-				} else {
-					saveStorage(DRAFT_STATE_KEY, payload);
-				}
+				saveStorage(DRAFT_STATE_KEY, payload);
 			},
 			{ deep: true }
-		);
-
-		watch(
-			() => install_state.status,
-			(newValue, oldValue) => {
-				installed.value = newValue;
-				if (oldValue === 'install' && newValue === 'uninstall') {
-					saveStorage(DRAFT_STATE_KEY, {
-						selectedPolicyIndex: selectedPolicyIndex.value,
-						selectedDatasourceIndex: selectedDatasourceIndex.value,
-						selectedSources: safeClone(selectedSources.value) || [],
-					});
-					localStorage.removeItem(INSTALL_STATE_KEY);
-				}
-			}
 		);
 
 		onMounted(async () => {
@@ -334,12 +296,9 @@ export default {
 
 		return {
 			DRAFT_STATE_KEY,
-			INSTALL_CHANGED_EVENT,
-			INSTALL_STATE_KEY,
 			dagOptions,
 			datasourceOptions,
 			install_state,
-			installed,
 			isValidIndex,
 			nodeOptions,
 			policyOptions,
@@ -350,6 +309,59 @@ export default {
 		};
 	},
 	methods: {
+		async waitForInstallCommandTail(commandResult) {
+			let timer = null;
+			const timeout = new Promise((resolve) => {
+				timer = window.setTimeout(() => resolve(null), INSTALL_RESPONSE_SETTLE_MS);
+			});
+			try {
+				return await Promise.race([commandResult, timeout]);
+			} finally {
+				if (timer !== null) window.clearTimeout(timer);
+			}
+		},
+		completeInstall(message) {
+			try {
+				sessionStorage.removeItem(this.DRAFT_STATE_KEY);
+			} catch (error) {
+				console.error('Fail to clear submitted draft', error);
+			}
+			if (this.componentUnmounted) return;
+			ElMessage({
+				message: message || 'Install services successfully',
+				showClose: true,
+				type: 'success',
+				duration: 3000,
+			});
+		},
+		showInstallError(message) {
+			if (this.componentUnmounted) return;
+			ElMessage({
+				message: message || 'Install services failed',
+				showClose: true,
+				type: 'error',
+				duration: 3000,
+			});
+		},
+		showInstallWarning(message) {
+			if (!message || this.componentUnmounted) return;
+			ElMessage({
+				message,
+				showClose: true,
+				type: 'warning',
+				duration: 5000,
+			});
+		},
+		reportInstallCompletion(completion, successMessage = 'Install services successfully', warningMessage = '') {
+			if (completion === 'active') {
+				this.completeInstall(successMessage);
+				this.showInstallWarning(warningMessage);
+			} else if (completion === 'failed') {
+				this.showInstallError(this.install_state.lastError);
+			} else if (completion === 'unknown') {
+				this.showInstallError('Install completion could not be confirmed');
+			}
+		},
 		hasAssignedDag(source) {
 			return source?.dag_selected !== null && source?.dag_selected !== undefined && source?.dag_selected !== '';
 		},
@@ -407,62 +419,109 @@ export default {
 				}
 			}
 
+			const submittedConfig = {
+				selectedPolicyIndex: this.selectedPolicyIndex,
+				selectedDatasourceIndex: this.selectedDatasourceIndex,
+				selectedSources: JSON.parse(JSON.stringify(this.selectedSources)),
+			};
+			const actionId = this.install_state.beginInstall();
+			if (actionId === null) return;
 			const payload = {
+				install_id: actionId,
 				source_config_label: this.datasourceOptions[this.selectedDatasourceIndex].source_label,
 				policy_id: this.policyOptions[this.selectedPolicyIndex].policy_id,
-				source: this.selectedSources,
+				source: submittedConfig.selectedSources,
 			};
 
-			this.loading = true;
-			try {
-				const response = await fetch('/api/install', {
-					method: 'POST',
-					body: JSON.stringify(payload),
-				});
-				const data = await response.json();
-
-				if (data.state === 'success') {
-					this.install_state.install();
-					localStorage.setItem(
-						this.INSTALL_STATE_KEY,
-						JSON.stringify({
-							selectedPolicyIndex: this.selectedPolicyIndex,
-							selectedDatasourceIndex: this.selectedDatasourceIndex,
-							selectedSources: JSON.parse(JSON.stringify(this.selectedSources)),
-						})
+			const commandController = markRaw(new AbortController());
+			const lifecycleResult = this.install_state.waitUntilInstallSettles(actionId).then((completion) => ({
+				kind: 'lifecycle',
+				completion,
+			}));
+			const commandResult = (async () => {
+				try {
+					const { response, data } = await fetchJsonWithTimeout(
+						'/api/install',
+						{
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify(payload),
+						},
+						INSTALL_REQUEST_TIMEOUT_MS,
+						commandController
 					);
-					localStorage.removeItem(this.DRAFT_STATE_KEY);
-
-					ElMessage({
-						message: data.msg,
-						showClose: true,
-						type: 'success',
-						duration: 3000,
-					});
-					window.dispatchEvent(new Event(this.INSTALL_CHANGED_EVENT));
-					await this.refreshOptions();
-				} else {
-					ElMessage({
-						message: data.msg,
-						showClose: true,
-						type: 'error',
-						duration: 3000,
-					});
+					return { kind: 'response', response, data };
+				} catch (error) {
+					return { kind: 'error', error };
 				}
-			} catch (error) {
-				console.error('Submission failed', error);
-				ElMessage.error('Network Error');
+			})();
+			try {
+				const firstResult = await Promise.race([commandResult, lifecycleResult]);
+				if (firstResult.kind === 'lifecycle') {
+					if (firstResult.completion === 'active') {
+						const tailResult = await this.waitForInstallCommandTail(commandResult);
+						commandController.abort();
+						if (tailResult?.kind === 'response' && tailResult.response.ok && tailResult.data?.state === 'success') {
+							this.reportInstallCompletion('active', tailResult.data.msg, tailResult.data.warning);
+							return;
+						}
+					}
+					commandController.abort();
+					this.reportInstallCompletion(firstResult.completion);
+					return;
+				}
+
+				if (firstResult.kind === 'error') {
+					console.error('Submission failed', firstResult.error);
+					let accepted =
+						this.install_state.hasInstallIdentity(actionId) &&
+						(this.install_state.hasSession || this.install_state.serverInstallPending);
+					if (!accepted) accepted = await this.install_state.reconcileInstallAcceptance(actionId);
+					if (this.install_state.shouldIgnoreInstallResult(actionId)) return;
+					if (!accepted) {
+						this.showInstallError('Network Error');
+						return;
+					}
+					this.reportInstallCompletion((await lifecycleResult).completion);
+					return;
+				}
+
+				const { response, data } = firstResult;
+				if (!response.ok || data.state !== 'success') {
+					try {
+						await this.install_state.refresh({ fresh: true });
+					} catch (error) {
+						console.error('Fail to reconcile failed install', error);
+					}
+					if (this.install_state.shouldIgnoreInstallResult(actionId)) return;
+					if (this.install_state.hasInstallIdentity(actionId) && this.install_state.hasTerminalInstallFailure) {
+						this.reportInstallCompletion('failed');
+					} else {
+						this.showInstallError(data?.msg);
+					}
+					return;
+				}
+
+				try {
+					await this.install_state.refresh({ fresh: true });
+				} catch (error) {
+					console.error('Fail to refresh successful install', error);
+				}
+				if (this.install_state.shouldIgnoreInstallResult(actionId)) return;
+				this.reportInstallCompletion((await lifecycleResult).completion, data.msg, data.warning);
 			} finally {
-				this.loading = false;
+				this.install_state.finishInstall(actionId);
 			}
 		},
 		handleClear() {
 			this.selectedPolicyIndex = null;
 			this.selectedDatasourceIndex = null;
 			this.selectedSources = [];
-			localStorage.removeItem(this.INSTALL_STATE_KEY);
-			localStorage.removeItem(this.DRAFT_STATE_KEY);
+			sessionStorage.removeItem(this.DRAFT_STATE_KEY);
 		},
+	},
+	beforeUnmount() {
+		this.componentUnmounted = true;
 	},
 };
 </script>
