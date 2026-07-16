@@ -157,7 +157,7 @@ def test_http_video_getter_call_generates_tasks_and_cleans_files(monkeypatch, tm
 
 
 @pytest.mark.unit
-def test_http_video_getter_cleans_file_when_task_admission_is_rejected(monkeypatch, tmp_path):
+def test_http_video_getter_cleans_file_when_retired_task_is_explicitly_rejected(monkeypatch, tmp_path):
     getter = http_getter_module.HttpVideoGetter()
     payload_path = tmp_path / "rejected.mp4"
     removed = []
@@ -325,17 +325,6 @@ def test_rtsp_video_getter_helpers_reconnect_and_dispatch(monkeypatch):
     assert len(removed) == 1
     assert removed[0].endswith(".mp4")
 
-    started_processes = []
-
-    class DummyProcess:
-        def __init__(self, target=None, args=None):
-            self.target = target
-            self.args = args or ()
-
-        def start(self):
-            started_processes.append((self.target, self.args))
-
-    monkeypatch.setattr(rtsp_getter_module.multiprocessing, "Process", DummyProcess)
     monkeypatch.setattr(rtsp_getter_module.Counter, "get_count", staticmethod(lambda name: 8))
     getter.frame_buffer = [np.zeros((2, 2, 3), dtype=np.uint8), np.zeros((2, 2, 3), dtype=np.uint8)]
     dispatch_system = SimpleNamespace(
@@ -349,9 +338,16 @@ def test_rtsp_video_getter_helpers_reconnect_and_dispatch(monkeypatch):
     )
     monkeypatch.setattr(getter, "get_one_frame", lambda cur_system: np.zeros((2, 2, 3), dtype=np.uint8))
     monkeypatch.setattr(getter, "filter_frame", lambda cur_system, frame: True)
-    getter(dispatch_system)
+    dispatched = []
+    monkeypatch.setattr(
+        getter,
+        "generate_and_send_new_task",
+        lambda *args: dispatched.append(args) or True,
+    )
+    assert getter(dispatch_system) is True
     assert dispatch_system.cumulative_scheduling_frame_count == 4
-    assert started_processes
+    assert len(dispatched) == 1
+    assert dispatched[0][2] == 8
     assert getter.frame_buffer == []
 
 

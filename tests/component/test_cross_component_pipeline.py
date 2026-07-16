@@ -343,6 +343,95 @@ class ComponentRouter:
 
 
 @pytest.mark.component
+def test_parallel_branches_keep_one_artifact_and_retry_ready_join(mounted_runtime):
+    controller_module = importlib.import_module("core.controller.controller")
+    processor_server_module = importlib.import_module("core.processor.processor_server")
+    dag = Task.extract_dag_from_dag_deployment({
+        "fast": {
+            "service": {"service_name": "fast", "execute_device": "edge-node"},
+            "next_nodes": ["join"],
+        },
+        "slow": {
+            "service": {"service_name": "slow", "execute_device": "edge-node"},
+            "next_nodes": ["join"],
+        },
+        "join": {
+            "service": {"service_name": "join", "execute_device": "edge-node"},
+            "next_nodes": [],
+        },
+    })
+    root = Task(
+        source_id=0,
+        task_id=9,
+        source_device="edge-node",
+        all_edge_devices=["edge-node"],
+        dag=dag,
+        metadata={"buffer_size": 1},
+        raw_metadata={"buffer_size": 1},
+        file_path="shared.mp4",
+        runtime_directory_revision=1,
+    )
+    FileOps.save_task_file_in_temp(root, b"immutable-video")
+    fast, slow = root.step_to_next_stage()
+    assert FileOps.get_task_file_in_temp(fast) == FileOps.get_task_file_in_temp(slow)
+
+    class ReadingProcessor:
+        def __call__(self, task):
+            payload = Path(FileOps.get_task_file_in_temp(task)).read_bytes()
+            task.set_current_content({
+                "service": task.get_flow_index(),
+                "outputs": {"text": [{"frame_index": None, "items": [{"text": payload.decode()}]}]},
+                "profile": {"frame_count": 1},
+            })
+            return task
+
+    processor = object.__new__(processor_server_module.ProcessorServer)
+    processor.processor = ReadingProcessor()
+    fast = processor.process_task_service(fast)
+    assert Path(FileOps.get_task_file_in_temp(root)).read_bytes() == b"immutable-video"
+
+    class Barrier:
+        def __init__(self):
+            self.tasks = {}
+            self.completed = 0
+
+        def arrive(self, task, joint_service_name, required_count):
+            self.tasks[task.get_past_flow_index()] = Task.deserialize(task.serialize())
+            return list(self.tasks.values()) if len(self.tasks) == required_count else None
+
+        def complete(self, root_uuid, joint_service_name):
+            self.completed += 1
+            self.tasks.clear()
+
+    controller = object.__new__(controller_module.Controller)
+    controller.task_coordinator = Barrier()
+    downstream_attempts = []
+    downstream_results = []
+
+    def submit_merged(task):
+        downstream_attempts.append(task)
+        if len(downstream_attempts) == 1:
+            return False
+        downstream_results.append(task)
+        return True
+
+    controller.submit_task = submit_merged
+    assert controller.process_return(fast) is True
+
+    slow = processor.process_task_service(slow)
+    assert slow.get_current_content()["outputs"]["text"][0]["items"][0]["text"] == "immutable-video"
+    assert controller.process_return(slow) is False
+    assert len(controller.task_coordinator.tasks) == 2
+    assert Path(FileOps.get_task_file_in_temp(root)).read_bytes() == b"immutable-video"
+
+    assert controller.process_return(Task.deserialize(slow.serialize())) is True
+    assert controller.task_coordinator.completed == 1
+    assert len(downstream_results) == 1
+    assert downstream_results[0].get_service("fast").get_content_data() is not None
+    assert downstream_results[0].get_service("slow").get_content_data() is not None
+
+
+@pytest.mark.component
 def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_runtime, monkeypatch, tmp_path):
     generator_module = importlib.import_module("core.generator.generator")
     controller_module = importlib.import_module("core.controller.controller")
@@ -351,6 +440,7 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
     distributor_module = importlib.import_module("core.distributor.distributor")
     distributor_server_module = importlib.import_module("core.distributor.distributor_server")
     scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
+    delivery_module = importlib.import_module("core.lib.network.delivery")
 
     monkeypatch.chdir(tmp_path)
     Path("payload.bin").write_bytes(b"frame-bytes")
@@ -409,8 +499,9 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
     distributor_server = distributor_server_module.DistributorServer()
 
     router = ComponentRouter(scheduler_server, controller_server, processor_server, distributor_server)
-    for module in (generator_module, controller_module, processor_server_module, distributor_module):
+    for module in (generator_module, controller_module, distributor_module):
         monkeypatch.setattr(module, "http_request", router.request)
+    monkeypatch.setattr(delivery_module, "http_request", router.request)
     distributor_server.distributor.runtime_lease_client.requester = router.request
 
     try:
@@ -476,6 +567,7 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
     distributor_module = importlib.import_module("core.distributor.distributor")
     distributor_server_module = importlib.import_module("core.distributor.distributor_server")
     scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
+    delivery_module = importlib.import_module("core.lib.network.delivery")
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NODE_NAME", "edge-node")
@@ -554,10 +646,10 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
         generator_module,
         http_video_getter_module,
         controller_module,
-        processor_server_module,
         distributor_module,
     ):
         monkeypatch.setattr(module, "http_request", router.request)
+    monkeypatch.setattr(delivery_module, "http_request", router.request)
     distributor_server.distributor.runtime_lease_client.requester = router.request
 
     class BoundedVideoGenerator(video_generator_module.VideoGenerator):

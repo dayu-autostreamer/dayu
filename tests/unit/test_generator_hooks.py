@@ -204,15 +204,14 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
                 "expires_at": 123.0,
                 "valid_for_seconds": float(payload["ttl_seconds"]),
             }
-        uploaded.update(
-            url=url,
-            method=method,
-            data=data,
-            files=files,
-            content=files["file"][1].read(),
-        )
+        raise AssertionError(f"unexpected request: {url}")
 
     monkeypatch.setattr(generator_module, "http_request", fake_http_request)
+    monkeypatch.setattr(
+        generator_module,
+        "deliver_task",
+        lambda **kwargs: uploaded.update(kwargs) or True,
+    )
 
     class DummyGenerator(generator_module.Generator):
         def run(self):
@@ -247,7 +246,6 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
 
     assert generator.submit_task_to_controller(task) is True
 
-    file_name, file_handle, content_type = uploaded["files"]["file"]
     assert call_order == [
         ("bsto", 5),
         ("lease", task.get_root_uuid()),
@@ -255,18 +253,16 @@ def test_generator_submit_task_to_controller_invokes_bsto_records_timing_and_upl
     ]
     assert uploaded["url"] == "http://edge-target:9002/submit_task"
     assert uploaded["method"] == "POST"
-    assert uploaded["data"]["data"] == task.serialize()
-    assert file_name == str(payload_path)
-    assert uploaded["content"] == b"payload"
-    assert file_handle.closed is True
-    assert content_type == "multipart/form-data"
+    assert uploaded["task"] is task
+    assert uploaded["file_path"] == str(payload_path)
+    assert uploaded["persistent"] is True
 
     with pytest.raises(AssertionError, match="Task is empty when submit to controller"):
         generator.submit_task_to_controller(None)
 
 
 @pytest.mark.unit
-def test_generator_submit_fails_closed_when_task_lease_is_not_confirmed(monkeypatch, tmp_path):
+def test_generator_submit_retries_transient_admission_and_rejects_retired_tasks(monkeypatch, tmp_path):
     generator_module = importlib.import_module("core.generator.generator")
     hooks = {
         "GEN_BSO": lambda system: {},
@@ -275,13 +271,6 @@ def test_generator_submit_fails_closed_when_task_lease_is_not_confirmed(monkeypa
         "GEN_BSTO": lambda system, task: None,
     }
     patch_generator_runtime(monkeypatch, generator_module, hooks)
-
-    calls = []
-    monkeypatch.setattr(
-        generator_module,
-        "http_request",
-        lambda **kwargs: calls.append(kwargs) or None,
-    )
 
     class DummyGenerator(generator_module.Generator):
         def run(self):
@@ -308,9 +297,21 @@ def test_generator_submit_fails_closed_when_task_lease_is_not_confirmed(monkeypa
     )
     task.set_flow_index("face-detection")
 
-    assert generator.submit_task_to_controller(task) is False
-    assert len(calls) == 1
-    assert calls[0]["url"].endswith("/runtime-directory/task-leases")
+    admission_attempts = []
+
+    def acquire_after_retry(_task):
+        admission_attempts.append(True)
+        if len(admission_attempts) == 1:
+            raise RuntimeLeaseUnavailable("scheduler temporarily unavailable")
+
+    sleeps = []
+    generator.runtime_lease_client.acquire = acquire_after_retry
+    monkeypatch.setattr(generator_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(generator_module, "deliver_task", lambda **kwargs: True)
+
+    assert generator.submit_task_to_controller(task) is True
+    assert len(admission_attempts) == 2
+    assert sleeps == [0.5]
     assert generator._runtime_schedule_refresh_required.is_set() is False
 
     generator.runtime_lease_client.acquire = lambda _task: (_ for _ in ()).throw(
@@ -327,12 +328,10 @@ def test_generator_submit_fails_closed_when_task_lease_is_not_confirmed(monkeypa
         generator.submit_task_to_controller(task)
 
     generator._runtime_schedule_refresh_required.clear()
-    process = generator_module.multiprocessing.Process(
-        target=generator._runtime_schedule_refresh_required.set
-    )
-    process.start()
-    process.join(timeout=5)
-    assert process.exitcode == 0
+    thread = generator_module.threading.Thread(target=generator._runtime_schedule_refresh_required.set)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
     assert generator._runtime_schedule_refresh_required.is_set() is True
 
 

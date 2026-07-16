@@ -257,6 +257,8 @@ def test_task_pipeline_conversion_stage_navigation_and_branch_merge():
 
     join_from_a = branches["a"].step_to_next_stage()[0]
     join_from_b = branches["b"].step_to_next_stage()[0]
+    assert join_from_a.get_parent_uuid() != join_from_b.get_parent_uuid()
+    assert join_from_a.get_task_uuid() == join_from_b.get_task_uuid()
     join_from_a.merge_task(join_from_b)
     assert join_from_a.get_service("b").get_content_data() == {"branch": "b"}
 
@@ -386,6 +388,7 @@ def test_task_service_and_content_helpers_cover_stage_updates_and_time_ticket_op
     cloned = join_task.fork_task(join_task.get_flow_index())
     assert cloned.get_flow_index() == join_task.get_flow_index()
     assert cloned.get_parent_uuid() == join_task.get_task_uuid()
+    assert cloned.get_task_uuid() == join_task.fork_task(join_task.get_flow_index()).get_task_uuid()
 
 
 @pytest.mark.unit

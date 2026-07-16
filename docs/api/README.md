@@ -60,10 +60,11 @@ flowchart LR
     MON["Monitor"] --> SCH
 ```
 
-Generator acquires one revision/root-task lease before submission. Controller and processor follow the exact routes in
-the Task without calling the lease API. Distributor performs the single final renewal before persistence, waits for
-the Scheduler scenario acknowledgement, and then releases the lease. Exact controller/processor identities travel in
-the serialized Task; no runtime API performs Kubernetes discovery.
+Generator acquires one revision/root-task lease before submission. Generator, Controller, Processor, and Distributor
+transfer ownership with an exact `{accepted, task_uuid}` acknowledgement; a missing or mismatched ACK retains ownership
+at the sender. Controller and processor follow the exact routes in the Task without calling the lease API. Distributor
+performs the single final renewal before durable persistence and then completes Scheduler feedback and lease release.
+Exact controller/processor identities travel in the serialized Task; no runtime API performs Kubernetes discovery.
 
 ## Documents In This Section
 

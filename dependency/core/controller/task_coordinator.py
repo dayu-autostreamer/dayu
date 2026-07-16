@@ -1,110 +1,105 @@
+import math
+
 import redis
 
+from core.lib.common import Context, LOGGER
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context
 from core.lib.runtime import RuntimeContext, RuntimeEndpoint, RuntimeResolver
 
 
+class TaskCoordinationError(RuntimeError):
+    """Raised when a parallel DAG barrier cannot safely retain ownership."""
+
+
 class TaskCoordinator:
+    _ARRIVE_SCRIPT = """
+local key = KEYS[1]
+local branch = ARGV[1]
+local payload = ARGV[2]
+local ttl = tonumber(ARGV[3])
+local required = tonumber(ARGV[4])
+redis.call('HSET', key, branch, payload)
+redis.call('EXPIRE', key, ttl)
+if redis.call('HLEN', key) < required then
+  return {}
+end
+return redis.call('HGETALL', key)
+"""
+
     def __init__(self, runtime_context=None, redis_endpoint=None):
-        self.max_connections = Context.get_parameter('MAX_REDIS_CONNECTIONS', '10', direct=False)
-        self.storage_timeout = Context.get_parameter('REDIS_STORAGE_TIMEOUT', '3600', direct=False)
         runtime_context = runtime_context or RuntimeContext.get_default()
+        self.max_connections = int(Context.get_parameter('MAX_REDIS_CONNECTIONS', '10', direct=False))
+        self.storage_timeout = max(1, int(math.ceil(runtime_context.lease_ttl_seconds)))
         endpoint = RuntimeEndpoint.from_value(redis_endpoint, component="redis") if redis_endpoint else None
         endpoint = endpoint or RuntimeResolver(runtime_context).resolve(
             "redis", target_node=runtime_context.cloud_node or None
         )
         if not endpoint.fqdn or not endpoint.port:
             raise ValueError("redis bootstrap endpoint requires fqdn and port")
-        self.pool = redis.ConnectionPool(host=endpoint.connection_host,
-                                         port=endpoint.port,
-                                         max_connections=self.max_connections)
+        self.pool = redis.ConnectionPool(
+            host=endpoint.connection_host,
+            port=endpoint.port,
+            max_connections=self.max_connections,
+        )
         self.redis = redis.Redis(connection_pool=self.pool)
-        self.lock_prefix = 'dayu:dag:lock'
         self.joint_service_key_prefix = 'dayu:dag:joint_service'
 
-    def _get_joint_service_key(self, root_task_id, joint_service_name):
-        return f"{self.joint_service_key_prefix}:{root_task_id}:{joint_service_name}"
+    def _get_joint_service_key(self, root_uuid, joint_service_name):
+        return f"{self.joint_service_key_prefix}:{root_uuid}:{joint_service_name}"
 
-    def store_task_data(self, task, joint_service_name):
+    def arrive(self, task, joint_service_name, required_count):
+        """Idempotently retain one predecessor and return a ready barrier.
+
+        The predecessor service is the stable branch identity. Re-delivering
+        the same branch overwrites its previous value instead of incrementing
+        the barrier. The hash remains in Redis until ``complete`` is called
+        after the merged task has been acknowledged downstream.
+        """
+        branch = str(task.get_past_flow_index() or "")
+        if not branch:
+            raise TaskCoordinationError("parallel task has no predecessor identity")
         try:
-            storage_key = f"{self.joint_service_key_prefix}:{task.get_root_uuid()}:{joint_service_name}"
+            result = self.redis.eval(
+                self._ARRIVE_SCRIPT,
+                1,
+                self._get_joint_service_key(task.get_root_uuid(), joint_service_name),
+                branch,
+                task.serialize(),
+                self.storage_timeout,
+                required_count,
+            )
+        except Exception as exc:
+            raise TaskCoordinationError(f"failed to retain parallel task: {exc}") from exc
 
-            with self.redis.pipeline() as pipe:
-                pipe.hset(storage_key, task.get_task_uuid(), task.serialize())
-                pipe.expire(storage_key, self.storage_timeout)
-                pipe.hlen(storage_key)
-                _, _, count = pipe.execute()
+        if not result:
+            return None
 
-                LOGGER.debug(f'Store "source {task.get_source_id()} task {task.get_task_id()} '
-                             f'current_service {task.get_flow_index()}" into {storage_key}, current count: {count}')
-
-                return count
-
-        except Exception as e:
-            LOGGER.warning(f'Redis operation failed in storing task: {str(e)}')
-
-    def retrieve_task_data(self, root_uuid, joint_service_name, required_count):
         try:
-            lock_key = f"{self.lock_prefix}:{root_uuid}:{joint_service_name}"
-            lock = self.redis.lock(lock_key, timeout=10)
-            with lock:
-                storage_key = f"{self.joint_service_key_prefix}:{root_uuid}:{joint_service_name}"
-                lua_script = """
-                            local key = KEYS[1]
-                            local required = tonumber(ARGV[1])
-        
-                            -- check current task count
-                            local count = redis.call('HLEN', key)
-                            if count < required then
-                                return nil
-                            end
-        
-                            -- retrieve all task data
-                            local all_data = redis.call('HGETALL', key)
-        
-                            -- clear storage
-                            redis.call('DEL', key)
-        
-                            return all_data
-                            """
+            tasks = [Task.deserialize(result[index + 1]) for index in range(0, len(result), 2)]
+        except Exception as exc:
+            raise TaskCoordinationError(f"parallel task barrier is corrupt: {exc}") from exc
 
-                result = self.redis.eval(
-                    lua_script,
-                    1,
-                    storage_key,
-                    required_count
-                )
+        predecessors = {item.get_past_flow_index() for item in tasks}
+        joint_services = {item.get_flow_index() for item in tasks}
+        if len(tasks) != required_count or len(predecessors) != required_count:
+            raise TaskCoordinationError(
+                f"parallel task barrier expected {required_count} unique predecessors, "
+                f"got {sorted(predecessors)}"
+            )
+        if joint_services != {joint_service_name}:
+            raise TaskCoordinationError(
+                f"parallel task barrier targets conflicting services: {sorted(joint_services)}"
+            )
 
-                if not result:
-                    LOGGER.warning(f"Conditions not met for {storage_key}, required count: {required_count}")
-                    return None
+        LOGGER.debug(
+            f"Parallel task barrier ready: root={task.get_root_uuid()} "
+            f"service={joint_service_name} predecessors={sorted(predecessors)}"
+        )
+        return tasks
 
-                parsed_tasks = [
-                    Task.deserialize(result[i + 1])
-                    for i in range(0, len(result), 2)
-                ]
-
-                cur_task_services = set([task.get_flow_index() for task in parsed_tasks])
-                past_task_services = set([task.get_past_flow_index() for task in parsed_tasks])
-
-                # check if joint service merged from same parallel branch (e.g., [a->c, a->c, b->c])
-                if len(past_task_services) != required_count:
-                    LOGGER.warning(f"Same branch exists for parallel services: require {required_count} "
-                                   f"get {len(past_task_services)}, past services: {past_task_services}, "
-                                   f"current joint service: {list(cur_task_services)[0]}")
-                    return None
-
-                # check if joint service of parallel branches are different (e.g., [a->c, b->d])
-                if len(cur_task_services) != 1:
-                    LOGGER.warning(f"Joint service for parallel branches conflict:"
-                                   f" require 1 get {len(cur_task_services)}, "
-                                   f"past services: {past_task_services}, "
-                                   f"current joint service: {list(cur_task_services)[0]}")
-                    return None
-
-                LOGGER.debug(f"Retrieve {len(parsed_tasks)} tasks from {storage_key}, "
-                             f"past services:{past_task_services}, current joint service:{list(cur_task_services)[0]}")
-                return parsed_tasks
-        except Exception as e:
-            LOGGER.warning(f'Redis operation failed in retrieve tasks: {str(e)}')
+    def complete(self, root_uuid, joint_service_name):
+        """Commit a barrier only after its merged task is owned downstream."""
+        try:
+            self.redis.delete(self._get_joint_service_key(root_uuid, joint_service_name))
+        except Exception as exc:
+            raise TaskCoordinationError(f"failed to complete parallel task barrier: {exc}") from exc

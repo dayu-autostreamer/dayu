@@ -31,7 +31,7 @@ class Task:
                  runtime_directory_revision: int = 0,
                  runtime_routes=None):
 
-        # unique uuid for each duplicated task
+        # delivery identity for one logical root-task DAG stage
         self.__task_uuid = task_uuid or str(uuid.uuid4())
         # parent uuid for duplicated task (currently unused)
         self.__parent_uuid = parent_uuid
@@ -456,7 +456,14 @@ class Task:
         if new_flow_index and new_flow_index != self.__cur_flow_index:
             new_task.set_past_flow_index(self.__cur_flow_index)
             new_task.set_flow_index(new_flow_index)
-        new_task.set_task_uuid(str(uuid.uuid4()))
+        # A DAG node executes at most once for one root task. Deriving its
+        # delivery identity from (root, stage) makes retries and concurrent
+        # join completion converge on the same downstream work item.
+        target_flow_index = new_flow_index or self.__cur_flow_index
+        new_task.set_task_uuid(str(uuid.uuid5(
+            uuid.NAMESPACE_OID,
+            f"{self.__root_uuid}:{target_flow_index}",
+        )))
         new_task.set_parent_uuid(self.__task_uuid)
         return new_task
 

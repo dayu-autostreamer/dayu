@@ -139,6 +139,19 @@ class Distributor:
 
         LOGGER.info(f'[Distribute Data] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 
+        existing = self.get_task_record(cur_task.get_source_id(), cur_task.get_task_id())
+        if existing is not None:
+            if existing.get_root_uuid() != cur_task.get_root_uuid():
+                raise RuntimeError(
+                    f"task identity conflict for source={cur_task.get_source_id()} "
+                    f"task={cur_task.get_task_id()}"
+                )
+            LOGGER.debug(
+                f'[Distribute Data] Idempotent duplicate accepted. '
+                f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}'
+            )
+            return True
+
         try:
             # Fence late results before they become durable. A task whose
             # directory revision has retired must not reappear after Backend
@@ -149,16 +162,16 @@ class Distributor:
                 f'[Runtime Task Lease] Drop unowned result before persistence. '
                 f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}: {exc}'
             )
-            return
+            return False
 
-        self.save_task_record(cur_task)
+        inserted = self.save_task_record(cur_task)
+        if not inserted:
+            return True
         if not self.send_scenario_to_scheduler(cur_task):
             LOGGER.warning(
-                f'[Runtime Task Lease] Scheduler scenario was not acknowledged; '
-                f'retain lease until TTL. source={cur_task.get_source_id()} '
-                f'task={cur_task.get_task_id()}'
+                f'[Scheduler Scenario] Durable task result was accepted but scenario feedback was not. '
+                f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}'
             )
-            return
         try:
             self.runtime_lease_client.release(cur_task)
         except RuntimeLeaseError as exc:
@@ -169,12 +182,18 @@ class Distributor:
                 f'[Runtime Task Lease] Release failed; retain until TTL. '
                 f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}: {exc}'
             )
+        return True
+
+    def get_task_record(self, source_id, task_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT json FROM records WHERE source_id = ? AND task_id = ?",
+                (source_id, task_id),
+            ).fetchone()
+        return Task.deserialize(row[0]) if row else None
 
     def save_task_record(self, cur_task: Task):
-        """
-        Insert or update a record for the task.
-        NOTE: Try INSERT first, and on conflict log a warning (same behavior as original).
-        """
+        """Persist once and treat a repeated delivery of the same root task as idempotent."""
         self.record_total_end_ts(cur_task)
         task_source_id = cur_task.get_source_id()
         task_task_id = cur_task.get_task_id()
@@ -191,25 +210,29 @@ class Distributor:
                 )
                 conn.commit()
         except sqlite3.IntegrityError:
-            LOGGER.warning(
-                f'[Task Name Conflict] source_id: {task_source_id}, task_id: {task_task_id} already exists.'
+            existing = self.get_task_record(task_source_id, task_task_id)
+            if existing is None or existing.get_root_uuid() != cur_task.get_root_uuid():
+                raise RuntimeError(
+                    f"task identity conflict for source={task_source_id} task={task_task_id}"
+                )
+            LOGGER.debug(
+                f'[Distribute Data] Concurrent duplicate accepted. '
+                f'source={task_source_id} task={task_task_id}'
             )
-            return
+            return False
 
         self._writes_since_prune += 1
         if self.result_log_retention_records and self._writes_since_prune >= self.result_log_retention_prune_interval:
             self._prune_old_records()
             self._writes_since_prune = 0
+        return True
 
     @staticmethod
     def record_total_end_ts(cur_task):
         TimeEstimator.record_task_ts(cur_task, 'total_end_time', is_end=False)
 
     def send_scenario_to_scheduler(self, cur_task: Task):
-        """
-        Send scenario to scheduler with simple retries and short timeouts.
-        Network errors are logged and retried; DB is unaffected.
-        """
+        """Send one bounded best-effort scenario update after durable storage."""
         assert cur_task, 'Current task is None'
         LOGGER.info(f'[Send Scenario] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 

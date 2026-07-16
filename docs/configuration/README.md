@@ -60,11 +60,11 @@ Each task is pinned to the immutable pair
 `(runtime_directory_revision, root_uuid)`. The Generator must acquire that
 lease once before its first submission. Controller and Processor do not call
 the lease API. Distributor renews once immediately before durable persistence,
-requires Scheduler to acknowledge the scenario update, and then releases the
-lease. A transient acquire failure drops only the current task and leaves the
-Generator loop alive; a retired response requests a fresh schedule. A failed
+stores the result, and then completes Scheduler feedback and release. A
+transient admission or delivery failure retains the materialized task and
+applies backpressure; a retired response requests a fresh schedule. A failed
 release is only logged and leaves the lease to expire naturally. The configured
-TTL covers normal end-to-end processing. During redeployment, Scheduler caps
+TTL covers normal end-to-end processing and inactive artifact cleanup. During redeployment, Scheduler caps
 every old-revision lease at one persisted, immutable retirement deadline; that
 deadline is the hard upper bound and revokes any remainder when it expires.
 
@@ -229,14 +229,15 @@ The `template/` subtree is split by component ownership.
 | --- | --- |
 | `template/scheduler/` | scheduler hook family and agent parameters |
 | `template/generator/` | source-side hook selection and scheduling request cadence |
-| `template/controller/` | temp-file cleanup and display behavior |
+| `template/controller/` | display behavior; artifact cleanup follows the runtime lease invariant |
 | `template/distributor/` | distributor deployment placement and port |
 | `template/monitor/` | monitor interval and enabled monitor hooks |
 | `template/processor/` | processor type, model parameters, scenario extractors, queue strategy |
 
-`DELETE_TEMP_FILES` in the controller template enables one FastAPI-lifespan-managed cleaner. Its retention is derived
-from the runtime task-lease TTL; the controller does not start a second constructor-owned cleaner or apply a separate
-fixed short file TTL.
+Every Controller lifespan owns one cleaner whose retention is the runtime task-lease TTL. This is an invariant rather
+than a configuration switch: uploads are atomically published under the existing `(revision, root_uuid)` identity,
+active transitions refresh their timestamp, and only artifacts with no progress for a full TTL are removed. Controller
+startup/shutdown, intermediate DAG branches, and Processor queue clearing never clear the shared hostPath.
 
 ### Generator template pattern
 

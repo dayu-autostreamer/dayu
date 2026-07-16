@@ -1,13 +1,15 @@
 import json
-
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
-from fastapi.routing import APIRoute
 from contextlib import asynccontextmanager
-from starlette.responses import JSONResponse
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from core.lib.network import NetworkAPIPath, NetworkAPIMethod
-from core.lib.common import FileOps, Context, FileCleaner
+from fastapi.routing import APIRoute
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import JSONResponse
+
+from core.lib.common import FileOps, FileCleaner
 from core.lib.content import Task
+from core.lib.network import NetworkAPIMethod, NetworkAPIPath, task_ack
 
 from .controller import Controller
 
@@ -15,28 +17,22 @@ from .controller import Controller
 class ControllerServer:
     def __init__(self):
         self.controller = Controller()
-        self.is_delete_temp_files = Context.get_parameter('DELETE_TEMP_FILES', direct=False)
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
-            FileOps.clear_task_temp_directory()
-            cleaner = None
-            if self.is_delete_temp_files:
-                cleaner = FileCleaner(
-                    folder=FileOps.get_task_temp_directory(),
-                    poll_seconds=30,
-                    ttl_seconds=self.controller.runtime_context.lease_ttl_seconds,
-                    recursive=False,
-                    max_delete_per_round=200
-                )
-                cleaner.start()
+            cleaner = FileCleaner(
+                folder=FileOps.get_task_temp_directory(),
+                poll_seconds=30,
+                ttl_seconds=self.controller.runtime_context.lease_ttl_seconds,
+                recursive=False,
+                max_delete_per_round=200,
+            )
+            cleaner.start()
 
             try:
                 yield
             finally:
-                if cleaner:
-                    cleaner.stop(join=True, timeout=3.0)
-                FileOps.clear_task_temp_directory()
+                cleaner.stop(join=True, timeout=3.0)
 
         self.app = FastAPI(routes=[
             APIRoute(NetworkAPIPath.CONTROLLER_CHECK,
@@ -76,12 +72,12 @@ class ControllerServer:
             return {'status': 'not ok', 'error': f'invalid processor health request: {exc}'}
         return {'status': 'ok'} if self.controller.check_processor_health(request) else {'status': 'not ok'}
 
-    async def submit_task(self, backtask: BackgroundTasks, file: UploadFile = File(...), data: str = Form(...)):
+    async def submit_task(self, file: UploadFile = File(...), data: str = Form(...)):
         file_data = await file.read()
-        backtask.add_task(self.submit_task_background, data, file_data)
+        return await run_in_threadpool(self.accept_task, data, file_data)
 
-    async def process_return(self, backtask: BackgroundTasks, data: str = Form(...)):
-        backtask.add_task(self.process_return_background, data)
+    async def process_return(self, data: str = Form(...)):
+        return await run_in_threadpool(self.accept_result, data)
 
     async def clear_processor_queues(self, data: str = Form("{}")):
         try:
@@ -93,29 +89,21 @@ class ControllerServer:
             }
         return self.controller.clear_processor_queues(request)
 
-    def submit_task_background(self, data, file_data):
-        """deal with tasks submitted by the generator or other controllers"""
+    def accept_task(self, data, file_data):
+        """Acknowledge only after this controller has transferred ownership."""
         cur_task = Task.deserialize(data)
         FileOps.save_task_file_in_temp(cur_task, file_data)
-        # record end time of transmitting
         self.controller.record_transmit_ts(cur_task, is_end=True)
+        if not self.controller.submit_task(cur_task):
+            raise HTTPException(status_code=503, detail="downstream task ownership was not acknowledged")
+        return task_ack(cur_task)
 
-        action = None
-        try:
-            action = self.controller.submit_task(cur_task)
-        finally:
-            if self.is_delete_temp_files and action != 'execute':
-                FileOps.remove_task_file_in_temp(cur_task)
-
-    def process_return_background(self, data):
-        """deal with tasks returned by the processor"""
+    def accept_result(self, data):
+        """Retain or forward a Processor result before acknowledging it."""
         cur_task = Task.deserialize(data)
-        # record end time of executing
+        if not FileOps.touch_task_file_in_temp(cur_task):
+            raise HTTPException(status_code=503, detail="task artifact is unavailable")
         self.controller.record_execute_ts(cur_task, is_end=True)
-
-        actions = ()
-        try:
-            actions = self.controller.process_return(cur_task)
-        finally:
-            if self.is_delete_temp_files and 'execute' not in actions and 'wait' not in actions:
-                FileOps.remove_task_file_in_temp(cur_task)
+        if not self.controller.process_return(cur_task):
+            raise HTTPException(status_code=503, detail="downstream task ownership was not acknowledged")
+        return task_ack(cur_task)

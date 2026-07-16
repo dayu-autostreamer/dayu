@@ -14,7 +14,6 @@ for path in (str(BACKEND_DIR), str(DEPENDENCY_DIR), str(DATASOURCE_DIR), str(REP
     if path not in sys.path:
         sys.path.insert(0, path)
 
-os.environ.setdefault("DELETE_TEMP_FILES", "False")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 os.environ.setdefault("NAMESPACE", "dayu")
 
@@ -42,7 +41,6 @@ def mounted_runtime(monkeypatch, tmp_path):
     monkeypatch.setenv("DEFAULT_MOUNT_PATH", str(volume0))
     monkeypatch.setenv("TEMP_PATH", str(temp_dir))
     monkeypatch.setenv("NAMESPACE", "dayu")
-    monkeypatch.setenv("DELETE_TEMP_FILES", "False")
     monkeypatch.setenv("LOG_LEVEL", "INFO")
 
     return volume0

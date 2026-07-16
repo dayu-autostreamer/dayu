@@ -80,7 +80,9 @@ Key boundaries:
 - Backend `/stop_service` accepts uninstall asynchronously and exposes progress through `/install_state`. Its worker
   stops generators first, immediately fences every possibly published revision, and attempts the install-scoped
   directory/proposal clear while Scheduler is live. It then deletes Scheduler as the definitive admission fence before
-  deleting the remaining workers by exact UID. It never waits for task leases to expire or release. `dayu.sh ACTION=stop`
+  deleting the remaining workers by exact UID. The Session remains the namespace admission lock until a complete
+  Kubernetes snapshot proves every old RuntimeService and dependent workload/network object is gone; prolonged lack of
+  progress is reported without terminating cleanup. It never waits for task leases to expire or release. `dayu.sh ACTION=stop`
   attempts that backend path first, then always completes the administrative system teardown; backend
   failure or unavailability never changes the public stop command.
 
@@ -206,12 +208,16 @@ More concretely:
 1. Backend opens a datasource through `/submit_query`.
 2. Datasource supervisor starts `http_video` or `rtsp_video` source processes based on backend state.
 3. Generator reads source data, asks scheduler for a plan plus compact exact routes, acquires the task lease, and
-   copies the directory revision/routes into the task before submission.
-4. Controller and processor use only those task routes and do not call the lease API.
-5. Distributor renews once to fence a late result, persists it, obtains scheduler acknowledgement, then releases the
-   lease.
-6. Monitor periodically reports resource state to scheduler.
-7. Backend polls distributor and scheduler to produce frontend-facing result and system visualizations.
+   copies the directory revision/routes into the task before submission. Transient admission or delivery failure
+   applies source backpressure instead of discarding the materialized task.
+4. Generator, Controller, and Processor retain ownership until the next hop returns an exact task UUID ACK. Controller
+   and Processor use only the Task routes and do not call the lease API.
+5. Every fork of one root task references the same immutable node-local artifact. Its path derives from the existing
+   lease identity, publishing is atomic, and no intermediate branch or Pod lifecycle may delete it.
+6. Distributor renews once to fence a late new result and durably persists it. Persistence is the terminal delivery
+   ACK; scheduler scenario feedback and lease release then converge independently.
+7. Monitor periodically reports resource state to scheduler.
+8. Backend polls distributor and scheduler to produce frontend-facing result and system visualizations.
 
 ## Runtime Ownership By Component
 
@@ -221,8 +227,8 @@ More concretely:
 | Datasource | source playback, manifest interpretation, clip or frame indexing | scheduling decisions |
 | Generator | source segmentation, task creation, pre-schedule and pre-submit hooks | inference execution |
 | Scheduler | policy/resource state, source/deployment plans, persistent-AOF Redis RuntimeDirectory CAS and revision leases | Kubernetes discovery, Pod/RuntimeService recovery, or result persistence |
-| Controller | transport timing, task forwarding, return-path orchestration | scheduling, lease management, or storage |
-| Processor | AI inference, scenario extraction, queue discipline | deployment, lease management, or visualization |
+| Controller | transport timing, acknowledged task forwarding, idempotent parallel barriers | scheduling, lease management, or artifact deletion by an intermediate branch |
+| Processor | AI inference, scenario extraction, queue discipline, retaining computed results until ACK | deployment, lease management, or visualization |
 | Distributor | final task-lease validation/release, durable result storage, incremental result queries, export files | operator workflows |
 | Monitor | resource sampling through committed local routes | Kubernetes discovery or task-level scheduling decisions |
 

@@ -22,9 +22,14 @@ Replace application `JointMultiEdgeService` generation and edge-side Kubernetes 
 - Make install lifecycle-cancellable: stop signals an in-flight RuntimeService activation/planning transaction before
   serialized cleanup, preserves its crash-recoverable ownership session, and removes pre-publication resources without
   waiting for an unready Scheduler or the full activation timeout.
+- Keep uninstall ownership until Foreground RuntimeService deletion and the complete Kubernetes dependent-resource
+  barrier are empty; prolonged no-progress cleanup now remains retryable and install-fenced while exposing durable
+  diagnostics to every frontend window.
 - Prevent Scheduler supervisor heartbeat timeouts and cascading Generator exits by running one direct Uvicorn process,
   dispatching blocking Redis endpoints through FastAPI's thread pool, reducing each task to Generator acquire plus
-  Distributor final-renew/release, and isolating transient lease admission failures to the current task.
+  Distributor final-renew/release, and applying source backpressure during transient lease admission failures.
+- Prevent silent task loss with root-lease-scoped atomic artifacts, exact per-hop ownership ACKs, Generator/Processor
+  backpressure, retry-safe parallel joins, and idempotent durable Distributor acceptance.
 
 ### Minor Update
 - Add more services: traffic-detection, road-context-segmentation, traffic-signal-recognition, vehicle-tracking, vehicle-attribute-recognition, vehicle-trajectory-prediction, pedestrian-pose-estimation, pedestrian-intent-recognition, risk-graph-generation (`processor`).

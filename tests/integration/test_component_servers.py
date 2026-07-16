@@ -1,6 +1,7 @@
 import importlib
 import gzip
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -494,10 +495,15 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
     server = processor_server_module.ProcessorServer()
     assert not hasattr(server, "runtime_lease_client")
     task = build_task(file_path="processor-input.bin")
+    FileOps.save_task_file_in_temp(task, b"payload")
 
     with TestClient(server.app) as client:
         local_response = client.post("/predict_local", data={"data": task.serialize()})
         assert local_response.status_code == 200
+        assert local_response.json() == {
+            "accepted": True,
+            "task_uuid": task.get_task_uuid(),
+        }
         assert fake_queue.size() == 1
 
         queued_task = fake_queue.get()
@@ -640,6 +646,9 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
     execute_records = []
 
     class FakeController:
+        def __init__(self):
+            self.runtime_context = SimpleNamespace(lease_ttl_seconds=3600.0)
+
         def check_processor_health(self, request=None):
             return True
 
@@ -653,9 +662,11 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
 
         def submit_task(self, task):
             submitted_tasks.append(task)
+            return True
 
         def process_return(self, task):
             returned_tasks.append(task)
+            return True
 
     monkeypatch.setattr(controller_server_module, "Controller", FakeController)
 
@@ -673,6 +684,10 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
             files={"file": ("controller-input.bin", b"controller-payload", "application/octet-stream")},
         )
         assert submit_response.status_code == 200
+        assert submit_response.json() == {
+            "accepted": True,
+            "task_uuid": task.get_task_uuid(),
+        }
         assert submitted_tasks and submitted_tasks[0].get_task_id() == task.get_task_id()
         assert transmit_records == [(task.get_task_id(), True, "controller-input.bin")]
 
@@ -682,5 +697,9 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
 
         return_response = client.post("/process_return_task", data={"data": task.serialize()})
         assert return_response.status_code == 200
+        assert return_response.json() == {
+            "accepted": True,
+            "task_uuid": task.get_task_uuid(),
+        }
         assert returned_tasks and returned_tasks[0].get_task_id() == task.get_task_id()
         assert execute_records == [(task.get_task_id(), True)]

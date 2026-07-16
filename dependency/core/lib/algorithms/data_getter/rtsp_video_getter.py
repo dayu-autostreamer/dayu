@@ -1,5 +1,4 @@
 import abc
-import multiprocessing
 import copy
 import os
 import time
@@ -104,17 +103,20 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
             if self.filter_frame(system, frame):
                 self.frame_buffer.append(frame)
 
-        # generate tasks in parallel to avoid getting stuck with video compression
+        # Submission is deliberately serial: when the non-dropping data path
+        # applies backpressure, the source must not create unbounded child
+        # processes and continue consuming frames that have no owner.
         new_task_id = Counter.get_count('task_id')
         system.cumulative_scheduling_frame_count += int(system.meta_data.get('buffer_size', 0) *
                                                      system.raw_meta_data.get('fps', 0) /
                                                      system.meta_data.get('fps', 1))
-        multiprocessing.Process(target=self.generate_and_send_new_task,
-                                args=(system,
-                                      self.frame_buffer,
-                                      new_task_id,
-                                      copy.deepcopy(system.task_dag),
-                                      copy.deepcopy(system.service_deployment),
-                                      copy.deepcopy(system.meta_data),)).start()
-
+        frame_buffer = self.frame_buffer
         self.frame_buffer = []
+        return self.generate_and_send_new_task(
+            system,
+            frame_buffer,
+            new_task_id,
+            copy.deepcopy(system.task_dag),
+            copy.deepcopy(system.service_deployment),
+            copy.deepcopy(system.meta_data),
+        )

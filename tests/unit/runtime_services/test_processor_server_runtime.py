@@ -86,14 +86,6 @@ class FakeUploadFile:
         return self.payload
 
 
-class FakeBackgroundTasks:
-    def __init__(self):
-        self.tasks = []
-
-    def add_task(self, func, *args, **kwargs):
-        self.tasks.append((func, args, kwargs))
-
-
 @pytest.fixture
 def server_context(monkeypatch):
     fake_queue = Queue()
@@ -117,6 +109,11 @@ def server_context(monkeypatch):
     monkeypatch.setenv("DAYU_RUNTIME_BOOTSTRAP", '{"local_node":"edge-node","cloud_node":"cloud-node"}')
     RuntimeContext.reset_default()
     monkeypatch.setattr(processor_server_module.threading, "Thread", DummyThread)
+    monkeypatch.setattr(
+        processor_server_module.FileOps,
+        "touch_task_file_in_temp",
+        staticmethod(lambda task: True),
+    )
     server = processor_server_module.ProcessorServer()
     return SimpleNamespace(
         server=server,
@@ -126,23 +123,21 @@ def server_context(monkeypatch):
 
 
 @pytest.mark.unit
-def test_processor_server_async_endpoints_enqueue_background_tasks_and_report_metrics(server_context):
+def test_processor_server_task_endpoints_return_ack_after_queue_ownership(server_context, monkeypatch):
     server = server_context.server
     task = build_task(["detector"], "detector")
+    saved = []
+    monkeypatch.setattr(
+        processor_server_module.FileOps,
+        "save_task_file_in_temp",
+        staticmethod(lambda current, payload: saved.append((current.get_task_uuid(), payload))),
+    )
 
-    predict_tasks = FakeBackgroundTasks()
-    asyncio.run(server.process_service(predict_tasks, FakeUploadFile(b"payload"), task.serialize()))
-    assert predict_tasks.tasks == [
-        (server.process_service_background, (task.serialize(), b"payload"), {}),
-    ]
+    expected_ack = {"accepted": True, "task_uuid": task.get_task_uuid()}
+    assert asyncio.run(server.process_service(FakeUploadFile(b"payload"), task.serialize())) == expected_ack
+    assert asyncio.run(server.process_local_service(task.serialize())) == expected_ack
+    assert saved == [(task.get_task_uuid(), b"payload")]
 
-    local_tasks = FakeBackgroundTasks()
-    asyncio.run(server.process_local_service(local_tasks, task.serialize()))
-    assert local_tasks.tasks == [
-        (server.process_local_service_background, (task.serialize(),), {}),
-    ]
-
-    server_context.queue.put(task)
     assert asyncio.run(server.health_check()) == {"status": "ok"}
     assert asyncio.run(server.query_queue_length()) == 1
     assert asyncio.run(server.query_model_flops()) == 456.0
@@ -150,7 +145,7 @@ def test_processor_server_async_endpoints_enqueue_background_tasks_and_report_me
 
 
 @pytest.mark.unit
-def test_processor_server_background_handlers_queue_tasks_and_persist_temp_files(server_context, monkeypatch):
+def test_processor_server_accept_handlers_queue_tasks_and_persist_temp_files(server_context, monkeypatch):
     saved = []
     server = server_context.server
     task = build_task(["detector"], "detector")
@@ -161,11 +156,11 @@ def test_processor_server_background_handlers_queue_tasks_and_persist_temp_files
         lambda current_task, file_data: saved.append((current_task.get_file_path(), file_data)),
     )
 
-    server.process_service_background(task.serialize(), b"payload")
-    server.process_local_service_background(task.serialize())
+    server.accept_task(task.serialize(), b"payload")
+    server.accept_local_task(task.serialize())
 
     assert saved == [("payload.bin", b"payload")]
-    assert server_context.queue.size() == 2
+    assert server_context.queue.size() == 1
 
 
 @pytest.mark.unit
@@ -182,8 +177,8 @@ def test_processor_server_process_task_service_records_duration_and_sends_result
     monkeypatch.setattr(processor_server_module.TimeEstimator, "record_dag_ts", staticmethod(fake_record))
     monkeypatch.setattr(
         processor_server_module,
-        "http_request",
-        lambda url, method=None, **kwargs: requests.append((url, method, kwargs)),
+        "deliver_task",
+        lambda **kwargs: requests.append(kwargs) or True,
     )
 
     processed = server.process_task_service(task)
@@ -199,13 +194,12 @@ def test_processor_server_process_task_service_records_duration_and_sends_result
     assert not hasattr(server, "runtime_lease_client")
     assert processed.get_service("detector").get_real_execute_time() == 0.75
     assert durations == [(4, False, "real_execute"), (4, True, "real_execute")]
-    assert requests == [
-        (
-            "http://controller-edge-node.dayu.svc:9002/process_return_task",
-            "POST",
-            {"data": {"data": processed.serialize()}},
-        )
-    ]
+    assert requests == [{
+        "url": "http://controller-edge-node.dayu.svc:9002/process_return_task",
+        "method": "POST",
+        "task": processed,
+        "persistent": True,
+    }]
 
 
 @pytest.mark.unit
@@ -237,13 +231,12 @@ def test_processor_execution_does_not_require_runtime_lease_client(server_contex
 
 
 @pytest.mark.unit
-def test_processor_server_process_return_service_serializes_processed_task_and_cleans_temp_file(
+def test_processor_server_process_return_service_serializes_processed_task_without_branch_cleanup(
     server_context, monkeypatch
 ):
     server = server_context.server
     task = build_task(["detector"], "detector", file_path="return.bin")
     saved = []
-    removed = []
 
     monkeypatch.setattr(
         processor_server_module.FileOps,
@@ -253,7 +246,7 @@ def test_processor_server_process_return_service_serializes_processed_task_and_c
     monkeypatch.setattr(
         processor_server_module.FileOps,
         "remove_task_file_in_temp",
-        lambda current_task: removed.append(current_task.get_file_path()),
+        lambda current_task: (_ for _ in ()).throw(AssertionError("must not delete shared artifact")),
     )
 
     upload = FakeUploadFile(b"payload")
@@ -261,7 +254,6 @@ def test_processor_server_process_return_service_serializes_processed_task_and_c
     returned_task = Task.deserialize(serialized)
 
     assert saved == [("return.bin", b"payload")]
-    assert removed == ["return.bin"]
     assert returned_task.get_current_content() == {
         "service": "detector",
         "outputs": {"text": [{"frame_index": None, "items": [{"text": "processed"}]}]},
@@ -276,7 +268,6 @@ def test_processor_server_process_return_service_handles_processor_returning_non
     server = server_context.server
     task = build_task(["detector"], "detector", file_path="none.bin")
     saved = []
-    removed = []
 
     monkeypatch.setattr(
         processor_server_module.FileOps,
@@ -286,7 +277,7 @@ def test_processor_server_process_return_service_handles_processor_returning_non
     monkeypatch.setattr(
         processor_server_module.FileOps,
         "remove_task_file_in_temp",
-        lambda current_task: removed.append(current_task.get_file_path()),
+        lambda current_task: (_ for _ in ()).throw(AssertionError("must not delete shared artifact")),
     )
     server.processor = lambda current_task: None
 
@@ -294,16 +285,14 @@ def test_processor_server_process_return_service_handles_processor_returning_non
 
     assert response is None
     assert saved == [("none.bin", b"payload")]
-    assert removed == ["none.bin"]
 
 
 @pytest.mark.unit
-def test_processor_server_process_return_service_cleans_temp_file_when_processor_fails(
+def test_processor_server_process_return_service_preserves_artifact_when_processor_fails(
     server_context, monkeypatch
 ):
     server = server_context.server
     task = build_task(["detector"], "detector", file_path="failed.bin")
-    removed = []
 
     monkeypatch.setattr(
         processor_server_module.FileOps,
@@ -313,14 +302,13 @@ def test_processor_server_process_return_service_cleans_temp_file_when_processor
     monkeypatch.setattr(
         processor_server_module.FileOps,
         "remove_task_file_in_temp",
-        lambda current_task: removed.append(current_task.get_file_path()),
+        lambda current_task: (_ for _ in ()).throw(AssertionError("must not delete shared artifact")),
     )
     server.processor = lambda current_task: (_ for _ in ()).throw(RuntimeError("processor failed"))
 
     with pytest.raises(RuntimeError, match="processor failed"):
         asyncio.run(server.process_return_service(FakeUploadFile(b"payload"), task.serialize()))
 
-    assert removed == ["failed.bin"]
 
 
 @pytest.mark.unit
@@ -328,12 +316,10 @@ def test_processor_server_clear_queue_supports_preview_and_bounded_removal(serve
     server = server_context.server
     first = build_task(["detector"], "detector", file_path="first.bin")
     second = build_task(["detector"], "detector", file_path="second.bin")
-    removed = []
-
     monkeypatch.setattr(
         processor_server_module.FileOps,
         "remove_task_file_in_temp",
-        lambda current_task: removed.append(current_task.get_file_path()),
+        lambda current_task: (_ for _ in ()).throw(AssertionError("queue clear must not delete root artifact")),
     )
 
     server_context.queue.put(first)
@@ -348,7 +334,6 @@ def test_processor_server_clear_queue_supports_preview_and_bounded_removal(serve
     assert preview["dropped_tasks"] == [
         {"source_id": 3, "task_id": 4, "flow_index": "detector", "file_path": "first.bin"}
     ]
-    assert removed == []
 
     cleared = asyncio.run(server.clear_queue('{"max_count": "1", "reason": "drop-one"}'))
     assert cleared["ok"] is True
@@ -356,12 +341,10 @@ def test_processor_server_clear_queue_supports_preview_and_bounded_removal(serve
     assert cleared["matched_count"] == 1
     assert cleared["cleared_count"] == 1
     assert cleared["remaining_count"] == 1
-    assert removed == ["first.bin"]
 
     cleared_rest = asyncio.run(server.clear_queue("{}"))
     assert cleared_rest["matched_count"] == 1
     assert cleared_rest["remaining_count"] == 0
-    assert removed == ["first.bin", "second.bin"]
 
 
 @pytest.mark.unit
@@ -393,14 +376,11 @@ def test_processor_server_clear_queue_reports_invalid_requests_and_legacy_queue_
 
     first = build_task(["detector"], "detector", file_path="legacy-first.bin")
     second = build_task(["detector"], "detector", file_path="legacy-second.bin")
-    removed = []
-
-    def fake_remove(current_task):
-        removed.append(current_task.get_file_path())
-        if current_task.get_file_path() == "legacy-first.bin":
-            raise RuntimeError("remove failed")
-
-    monkeypatch.setattr(processor_server_module.FileOps, "remove_task_file_in_temp", fake_remove)
+    monkeypatch.setattr(
+        processor_server_module.FileOps,
+        "remove_task_file_in_temp",
+        lambda current_task: (_ for _ in ()).throw(AssertionError("queue clear must not delete root artifact")),
+    )
     server.task_queue = LegacyQueue([first, second])
 
     response = asyncio.run(server.clear_queue('{"max_count": 3, "reason": "legacy"}'))
@@ -413,7 +393,6 @@ def test_processor_server_clear_queue_reports_invalid_requests_and_legacy_queue_
         "legacy-first.bin",
         "legacy-second.bin",
     ]
-    assert removed == ["legacy-first.bin", "legacy-second.bin"]
 
 
 @pytest.mark.unit
@@ -456,16 +435,13 @@ def test_processor_server_loop_process_consumes_queue_once_and_forwards_results(
     class OneShotQueue:
         def __init__(self, item):
             self.item = item
-            self.empty_calls = 0
-
-        def empty(self):
-            self.empty_calls += 1
-            if self.empty_calls == 1:
-                return False
-            raise StopIteration
+            self.calls = 0
 
         def get(self):
-            return self.item
+            self.calls += 1
+            if self.calls == 1:
+                return self.item
+            raise StopIteration
 
         def size(self):
             return 0
@@ -488,22 +464,20 @@ def test_processor_server_loop_process_skips_empty_none_error_and_none_result(se
 
     class BranchQueue:
         def __init__(self):
-            self.steps = iter(["empty", "none-task", "error", "none-result", "stop"])
-            self.current = None
-
-        def empty(self):
-            self.current = next(self.steps)
-            if self.current == "stop":
-                raise StopIteration
-            return self.current == "empty"
+            self.steps = iter([None, task, task])
+            self.requeued = []
 
         def get(self):
-            if self.current == "none-task":
-                return None
-            return task
+            try:
+                return next(self.steps)
+            except StopIteration:
+                raise StopIteration
 
         def size(self):
             return 0
+
+        def put(self, current_task):
+            self.requeued.append(current_task)
 
     outcomes = iter([RuntimeError("processor failed"), None])
 
@@ -513,11 +487,14 @@ def test_processor_server_loop_process_skips_empty_none_error_and_none_result(se
             raise outcome
         return outcome
 
-    monkeypatch.setattr(server, "task_queue", BranchQueue())
+    branch_queue = BranchQueue()
+    monkeypatch.setattr(server, "task_queue", branch_queue)
     monkeypatch.setattr(server, "process_task_service", fake_process)
     monkeypatch.setattr(server, "send_result_back_to_controller", lambda current_task: forwarded.append(current_task))
+    monkeypatch.setattr(processor_server_module.time, "sleep", lambda seconds: None)
 
     with pytest.raises(StopIteration):
         server.loop_process()
 
     assert forwarded == []
+    assert branch_queue.requeued == [task, task]

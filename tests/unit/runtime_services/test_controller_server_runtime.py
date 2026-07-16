@@ -3,6 +3,7 @@ import importlib
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -26,7 +27,8 @@ class FakeController:
     def __init__(self):
         self.runtime_context = SimpleNamespace(lease_ttl_seconds=3600.0)
 
-    def check_processor_health(self, request=None):
+    @staticmethod
+    def check_processor_health(request=None):
         return False
 
     @staticmethod
@@ -37,180 +39,163 @@ class FakeController:
     def record_execute_ts(task, is_end=False):
         return None
 
-    def submit_task(self, task):
-        return "transmit"
+    @staticmethod
+    def submit_task(task):
+        return True
 
-    def process_return(self, task):
-        return ["transmit"]
+    @staticmethod
+    def process_return(task):
+        return True
+
+    @staticmethod
+    def clear_processor_queues(request):
+        return {"ok": True, "request": request}
+
+
+class FakeTask:
+    @staticmethod
+    def get_task_uuid():
+        return "branch-1"
+
+
+class FakeUploadFile:
+    async def read(self):
+        return b"payload"
 
 
 @pytest.mark.unit
-def test_controller_server_initialization_defers_temp_cleanup_to_lifespan(monkeypatch):
-    controller_server_module = importlib.import_module("core.controller.controller_server")
+def test_controller_lifespan_only_owns_one_lease_ttl_cleaner(monkeypatch):
+    module = importlib.import_module("core.controller.controller_server")
     FakeCleaner.instances = []
-    clear_calls = []
-
-    monkeypatch.setattr(controller_server_module, "Controller", FakeController)
-    monkeypatch.setattr(controller_server_module, "FileCleaner", FakeCleaner)
+    monkeypatch.setattr(module, "Controller", FakeController)
+    monkeypatch.setattr(module, "FileCleaner", FakeCleaner)
     monkeypatch.setattr(
-        controller_server_module.FileOps,
-        "clear_task_temp_directory",
-        staticmethod(lambda: clear_calls.append(True)),
-    )
-    monkeypatch.setattr(
-        controller_server_module.FileOps,
+        module.FileOps,
         "get_task_temp_directory",
-        staticmethod(lambda: "/tmp/dayu/dayu"),
-    )
-    monkeypatch.setattr(
-        controller_server_module.Context,
-        "get_parameter",
-        staticmethod(lambda name, default=None, direct=False: True if name == "DELETE_TEMP_FILES" else default),
+        staticmethod(lambda: "/tmp/dayu"),
     )
 
-    server = controller_server_module.ControllerServer()
-
-    assert server.app is not None
-    assert server.is_delete_temp_files is True
-    assert clear_calls == []
+    server = module.ControllerServer()
     assert FakeCleaner.instances == []
-
-
-@pytest.mark.unit
-def test_controller_server_lifespan_creates_and_stops_app_cleaner(monkeypatch):
-    controller_server_module = importlib.import_module("core.controller.controller_server")
-    FakeCleaner.instances = []
-    clear_calls = []
-
-    monkeypatch.setattr(controller_server_module, "Controller", FakeController)
-    monkeypatch.setattr(controller_server_module, "FileCleaner", FakeCleaner)
-    monkeypatch.setattr(
-        controller_server_module.FileOps,
-        "clear_task_temp_directory",
-        staticmethod(lambda: clear_calls.append(True)),
-    )
-    monkeypatch.setattr(
-        controller_server_module.FileOps,
-        "get_task_temp_directory",
-        staticmethod(lambda: "/tmp/dayu/dayu"),
-    )
-    monkeypatch.setattr(
-        controller_server_module.Context,
-        "get_parameter",
-        staticmethod(lambda name, default=None, direct=False: True if name == "DELETE_TEMP_FILES" else default),
-    )
-
-    server = controller_server_module.ControllerServer()
+    assert not hasattr(server, "is_delete_temp_files")
 
     with TestClient(server.app) as client:
         assert client.post("/check").json() == {"status": "not ok"}
 
-    assert clear_calls == [True, True]
     assert len(FakeCleaner.instances) == 1
-    assert FakeCleaner.instances[0].kwargs["folder"] == "/tmp/dayu/dayu"
-    assert FakeCleaner.instances[0].kwargs["ttl_seconds"] == 3600.0
-    assert FakeCleaner.instances[0].started == 1
-    assert FakeCleaner.instances[0].stopped == [{"join": True, "timeout": 3.0}]
+    cleaner = FakeCleaner.instances[0]
+    assert cleaner.kwargs == {
+        "folder": "/tmp/dayu",
+        "poll_seconds": 30,
+        "ttl_seconds": 3600.0,
+        "recursive": False,
+        "max_delete_per_round": 200,
+    }
+    assert cleaner.started == 1
+    assert cleaner.stopped == [{"join": True, "timeout": 3.0}]
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("delete_enabled", "action", "should_remove"),
-    [
-        (True, "transmit", True),
-        (True, "execute", False),
-        (False, "transmit", False),
-    ],
-)
-def test_controller_submit_background_cleans_only_files_no_longer_needed(
-    monkeypatch, delete_enabled, action, should_remove
-):
-    controller_server_module = importlib.import_module("core.controller.controller_server")
-    server = object.__new__(controller_server_module.ControllerServer)
-    task = object()
+def test_accept_task_publishes_file_and_returns_ack_without_branch_cleanup(monkeypatch):
+    module = importlib.import_module("core.controller.controller_server")
+    server = object.__new__(module.ControllerServer)
+    task = FakeTask()
     calls = []
-    server.is_delete_temp_files = delete_enabled
     server.controller = SimpleNamespace(
-        record_transmit_ts=lambda current_task, is_end: calls.append(("record", current_task, is_end)),
-        submit_task=lambda current_task: action,
+        record_transmit_ts=lambda current, is_end: calls.append(("record", current, is_end)),
+        submit_task=lambda current: calls.append(("submit", current)) or True,
     )
-
-    monkeypatch.setattr(controller_server_module.Task, "deserialize", staticmethod(lambda data: task))
+    monkeypatch.setattr(module.Task, "deserialize", staticmethod(lambda data: task))
     monkeypatch.setattr(
-        controller_server_module.FileOps,
+        module.FileOps,
         "save_task_file_in_temp",
-        staticmethod(lambda current_task, data: calls.append(("save", current_task, data))),
+        staticmethod(lambda current, payload: calls.append(("save", current, payload))),
     )
     monkeypatch.setattr(
-        controller_server_module.FileOps,
+        module.FileOps,
         "remove_task_file_in_temp",
-        staticmethod(lambda current_task: calls.append(("remove", current_task))),
+        staticmethod(lambda current: (_ for _ in ()).throw(AssertionError("must not delete"))),
     )
 
-    server.submit_task_background("task-data", b"file-data")
-
-    assert ("save", task, b"file-data") in calls
-    assert ("record", task, True) in calls
-    assert (("remove", task) in calls) is should_remove
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("delete_enabled", "actions", "should_remove"),
-    [
-        (True, ["transmit"], True),
-        (True, ["execute"], False),
-        (True, ["wait"], False),
-        (False, ["transmit"], False),
-    ],
-)
-def test_controller_return_background_preserves_files_needed_by_execute_or_join(
-    monkeypatch, delete_enabled, actions, should_remove
-):
-    controller_server_module = importlib.import_module("core.controller.controller_server")
-    server = object.__new__(controller_server_module.ControllerServer)
-    task = object()
-    calls = []
-    server.is_delete_temp_files = delete_enabled
-    server.controller = SimpleNamespace(
-        record_execute_ts=lambda current_task, is_end: calls.append(("record", current_task, is_end)),
-        process_return=lambda current_task: actions,
-    )
-
-    monkeypatch.setattr(controller_server_module.Task, "deserialize", staticmethod(lambda data: task))
-    monkeypatch.setattr(
-        controller_server_module.FileOps,
-        "remove_task_file_in_temp",
-        staticmethod(lambda current_task: calls.append(("remove", current_task))),
-    )
-
-    server.process_return_background("task-data")
-
-    assert ("record", task, True) in calls
-    assert (("remove", task) in calls) is should_remove
-
-
-@pytest.mark.unit
-def test_controller_server_endpoints_enqueue_background_handlers(monkeypatch):
-    controller_server_module = importlib.import_module("core.controller.controller_server")
-    server = object.__new__(controller_server_module.ControllerServer)
-    enqueued = []
-
-    class FakeBackgroundTasks:
-        def add_task(self, func, *args):
-            enqueued.append((func.__name__, args))
-
-    class FakeUploadFile:
-        async def read(self):
-            return b"payload"
-
-    server.submit_task_background = lambda data, file_data: None
-    server.process_return_background = lambda data: None
-
-    asyncio.run(server.submit_task(FakeBackgroundTasks(), FakeUploadFile(), "serialized-task"))
-    asyncio.run(server.process_return(FakeBackgroundTasks(), "serialized-return"))
-
-    assert enqueued == [
-        ("<lambda>", ("serialized-task", b"payload")),
-        ("<lambda>", ("serialized-return",)),
+    assert server.accept_task("serialized", b"payload") == {
+        "accepted": True,
+        "task_uuid": "branch-1",
+    }
+    assert calls == [
+        ("save", task, b"payload"),
+        ("record", task, True),
+        ("submit", task),
     ]
+
+    server.controller.submit_task = lambda current: False
+    with pytest.raises(HTTPException) as exc_info:
+        server.accept_task("serialized", b"payload")
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.unit
+def test_accept_result_refreshes_artifact_and_propagates_failure(monkeypatch):
+    module = importlib.import_module("core.controller.controller_server")
+    server = object.__new__(module.ControllerServer)
+    task = FakeTask()
+    calls = []
+    server.controller = SimpleNamespace(
+        record_execute_ts=lambda current, is_end: calls.append(("record", current, is_end)),
+        process_return=lambda current: calls.append(("return", current)) or True,
+    )
+    monkeypatch.setattr(module.Task, "deserialize", staticmethod(lambda data: task))
+    monkeypatch.setattr(
+        module.FileOps,
+        "touch_task_file_in_temp",
+        staticmethod(lambda current: calls.append(("touch", current)) or True),
+    )
+
+    assert server.accept_result("serialized") == {"accepted": True, "task_uuid": "branch-1"}
+    assert calls == [("touch", task), ("record", task, True), ("return", task)]
+
+    monkeypatch.setattr(module.FileOps, "touch_task_file_in_temp", staticmethod(lambda current: False))
+    with pytest.raises(HTTPException) as exc_info:
+        server.accept_result("serialized")
+    assert exc_info.value.status_code == 503
+
+    monkeypatch.setattr(module.FileOps, "touch_task_file_in_temp", staticmethod(lambda current: True))
+    server.controller.process_return = lambda current: False
+    with pytest.raises(HTTPException) as exc_info:
+        server.accept_result("serialized")
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.unit
+def test_task_endpoints_wait_for_synchronous_ownership_ack(monkeypatch):
+    module = importlib.import_module("core.controller.controller_server")
+    server = object.__new__(module.ControllerServer)
+    server.accept_task = lambda data, payload: {"accepted": True, "task_uuid": "upload"}
+    server.accept_result = lambda data: {"accepted": True, "task_uuid": "result"}
+
+    assert asyncio.run(server.submit_task(FakeUploadFile(), "task")) == {
+        "accepted": True,
+        "task_uuid": "upload",
+    }
+    assert asyncio.run(server.process_return("result")) == {
+        "accepted": True,
+        "task_uuid": "result",
+    }
+
+
+@pytest.mark.unit
+def test_controller_health_and_queue_clear_request_parsing():
+    module = importlib.import_module("core.controller.controller_server")
+    server = object.__new__(module.ControllerServer)
+    server.controller = FakeController()
+
+    assert asyncio.run(server.check_processor_health("bad-json")) == {
+        "status": "not ok",
+        "error": "invalid processor health request: Expecting value: line 1 column 1 (char 0)",
+    }
+    assert asyncio.run(server.clear_processor_queues('{"dry_run": true}')) == {
+        "ok": True,
+        "request": {"dry_run": True},
+    }
+    assert asyncio.run(server.clear_processor_queues("[]"))["ok"] is True
+    invalid = asyncio.run(server.clear_processor_queues("{"))
+    assert invalid["ok"] is False

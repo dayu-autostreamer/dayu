@@ -64,6 +64,9 @@ class FakeTask:
     def get_root_uuid(self):
         return self.root_uuid
 
+    def get_task_uuid(self):
+        return "branch-2"
+
     def save_transmit_time(self, duration):
         self.transmit_durations.append(duration)
 
@@ -137,37 +140,29 @@ def test_send_task_to_other_device_uploads_task_file_and_records_transmit_timest
 ):
     controller_module, controller = controller_under_test
     task = FakeTask()
-    temp_file = tmp_path / "dayu" / task.get_file_path()
-    temp_file.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = tmp_path / task.get_file_path()
     temp_file.write_bytes(b"payload")
 
     transmit_records = []
     request_calls = []
 
-    monkeypatch.setenv("NAMESPACE", "dayu")
     monkeypatch.setattr(
-        controller_module.Context,
-        "get_temporary_file_path",
-        staticmethod(lambda file_path: str(tmp_path / file_path)),
+        controller_module.FileOps,
+        "get_task_file_in_temp",
+        staticmethod(lambda cur_task: str(temp_file)),
     )
     monkeypatch.setattr(
         controller_module.Controller,
         "record_transmit_ts",
         staticmethod(lambda cur_task, is_end=False: transmit_records.append((cur_task.get_task_id(), is_end))),
     )
-    monkeypatch.setattr(controller_module, "http_request", lambda **kwargs: request_calls.append(kwargs) or {"state": "ok"})
+    monkeypatch.setattr(controller_module, "deliver_task", lambda **kwargs: request_calls.append(kwargs) or True)
 
-    controller.send_task_to_other_device(task, "cloudx1")
-
-    uploaded_file = request_calls[0]["files"]["file"][1]
-    try:
-        assert uploaded_file.read() == b"payload"
-    finally:
-        uploaded_file.close()
+    assert controller.send_task_to_other_device(task, "cloudx1") is True
 
     assert transmit_records == [(2, False)]
     assert request_calls[0]["method"] == controller_module.NetworkAPIMethod.CONTROLLER_TASK
-    assert request_calls[0]["data"] == {"data": task.serialize()}
+    assert Path(request_calls[0]["file_path"]).read_bytes() == b"payload"
 
 
 @pytest.mark.unit
@@ -176,37 +171,31 @@ def test_send_task_to_distributor_supports_hidden_and_display_upload_modes(
 ):
     controller_module, controller = controller_under_test
     task = FakeTask()
-    temp_file = tmp_path / "dayu" / task.get_file_path()
-    temp_file.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = tmp_path / task.get_file_path()
     temp_file.write_bytes(b"renderable")
 
     transmit_records = []
     request_calls = []
 
-    monkeypatch.setenv("NAMESPACE", "dayu")
     monkeypatch.setattr(
-        controller_module.Context,
-        "get_temporary_file_path",
-        staticmethod(lambda file_path: str(tmp_path / file_path)),
+        controller_module.FileOps,
+        "get_task_file_in_temp",
+        staticmethod(lambda cur_task: str(temp_file)),
     )
     monkeypatch.setattr(
         controller_module.Controller,
         "record_transmit_ts",
         staticmethod(lambda cur_task, is_end=False: transmit_records.append((cur_task.get_task_id(), is_end))),
     )
-    monkeypatch.setattr(controller_module, "http_request", lambda **kwargs: request_calls.append(kwargs) or {"state": "ok"})
+    monkeypatch.setattr(controller_module, "deliver_task", lambda **kwargs: request_calls.append(kwargs) or True)
 
     controller.is_display = False
-    controller.send_task_to_distributor(task)
-    assert request_calls[0]["files"]["file"][1] == b""
+    assert controller.send_task_to_distributor(task) is True
+    assert request_calls[0]["file_content"] == b""
 
     controller.is_display = True
-    controller.send_task_to_distributor(task)
-    uploaded_file = request_calls[1]["files"]["file"][1]
-    try:
-        assert uploaded_file.read() == b"renderable"
-    finally:
-        uploaded_file.close()
+    assert controller.send_task_to_distributor(task) is True
+    assert Path(request_calls[1]["file_path"]).read_bytes() == b"renderable"
 
     assert transmit_records == [(2, False), (2, False)]
 
@@ -217,49 +206,48 @@ def test_send_task_to_distributor_only_requires_file_for_display_mode(controller
     task = FakeTask(file_path="missing.bin")
     request_calls = []
 
-    monkeypatch.setenv("NAMESPACE", "dayu")
     monkeypatch.setattr(
-        controller_module.Context,
-        "get_temporary_file_path",
-        staticmethod(lambda file_path: str(tmp_path / file_path)),
+        controller_module.FileOps,
+        "get_task_file_in_temp",
+        staticmethod(lambda cur_task: str(tmp_path / "missing.bin")),
     )
-    monkeypatch.setattr(controller_module, "http_request", lambda **kwargs: request_calls.append(kwargs) or {"state": "ok"})
+    monkeypatch.setattr(controller_module, "deliver_task", lambda **kwargs: request_calls.append(kwargs) or True)
 
     controller.is_display = False
-    assert controller.send_task_to_distributor(task) is None
-    assert request_calls[0]["files"]["file"][1] == b""
+    assert controller.send_task_to_distributor(task) is True
+    assert request_calls[0]["file_content"] == b""
 
     controller.is_display = True
-    assert controller.send_task_to_distributor(task) is None
+    assert controller.send_task_to_distributor(task) is False
     assert len(request_calls) == 1
 
 
 @pytest.mark.unit
-def test_submit_task_start_stage_prefers_execute_when_any_child_executes(controller_under_test, monkeypatch):
+def test_submit_task_start_stage_requires_every_child_ack(controller_under_test, monkeypatch):
     controller_module, controller = controller_under_test
     execute_task = FakeTask(service_name="face-detection", stage_device="edgex1")
     remote_task = FakeTask(service_name="gender-classification", stage_device="cloudx1")
     start_task = StartTask([execute_task, remote_task])
 
     events = []
-    monkeypatch.setattr(controller, "send_task_to_service", lambda cur_task, service: events.append(("service", service)) or "execute")
-    monkeypatch.setattr(controller, "send_task_to_other_device", lambda cur_task, device: events.append(("remote", device)))
+    monkeypatch.setattr(controller, "send_task_to_service", lambda cur_task, service: events.append(("service", service)) or True)
+    monkeypatch.setattr(controller, "send_task_to_other_device", lambda cur_task, device: events.append(("remote", device)) or False)
 
-    assert controller.submit_task(start_task) == "execute"
+    assert controller.submit_task(start_task) is False
     assert events == [("service", "face-detection"), ("remote", "cloudx1")]
 
 
 @pytest.mark.unit
-def test_submit_task_start_stage_returns_transmit_when_all_children_transmit(controller_under_test, monkeypatch):
+def test_submit_task_start_stage_succeeds_when_all_children_ack(controller_under_test, monkeypatch):
     _, controller = controller_under_test
     remote_a = FakeTask(service_name="face-detection", stage_device="cloudx1")
     remote_b = FakeTask(service_name="gender-classification", stage_device="cloudx1")
     start_task = StartTask([remote_a, remote_b])
 
     events = []
-    monkeypatch.setattr(controller, "send_task_to_other_device", lambda cur_task, device: events.append(device))
+    monkeypatch.setattr(controller, "send_task_to_other_device", lambda cur_task, device: events.append(device) or True)
 
-    assert controller.submit_task(start_task) == "transmit"
+    assert controller.submit_task(start_task) is True
     assert events == ["cloudx1", "cloudx1"]
 
 
@@ -272,33 +260,33 @@ def test_controller_advances_without_per_stage_runtime_lease(controller_under_te
     monkeypatch.setattr(
         controller,
         "send_task_to_service",
-        lambda *args, **kwargs: forwarded.append((args, kwargs)) or "execute",
+        lambda *args, **kwargs: forwarded.append((args, kwargs)) or True,
     )
 
     assert not hasattr(controller, "runtime_lease_client")
-    assert controller.submit_task(task) == "execute"
+    assert controller.submit_task(task) is True
     assert len(forwarded) == 1
 
 
 @pytest.mark.unit
-def test_process_return_waits_when_parallel_tasks_cannot_be_retrieved():
+def test_process_return_acknowledges_branch_retained_in_incomplete_barrier():
     controller_module = importlib.import_module("core.controller.controller")
     controller = object.__new__(controller_module.Controller)
 
     class BrokenCoordinator:
-        def store_task_data(self, task, joint_service_name):
-            return 2
-
-        def retrieve_task_data(self, root_uuid, joint_service_name, required_count):
+        def arrive(self, task, joint_service_name, required_count):
             return None
+
+        def complete(self, root_uuid, joint_service_name):
+            raise AssertionError("incomplete barrier must not complete")
 
     controller.task_coordinator = BrokenCoordinator()
     submitted_tasks = []
-    controller.submit_task = lambda task: submitted_tasks.append(task) or "execute"
+    controller.submit_task = lambda task: submitted_tasks.append(task) or True
 
-    actions = controller.process_return(build_parallel_branch_task("detector-a", "left"))
+    accepted = controller.process_return(build_parallel_branch_task("detector-a", "left"))
 
-    assert actions == ["wait"]
+    assert accepted is True
     assert submitted_tasks == []
 
 

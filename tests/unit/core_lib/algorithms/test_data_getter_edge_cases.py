@@ -164,20 +164,16 @@ def test_rtsp_video_getter_call_retries_until_filtered_buffer_is_filled(monkeypa
         ]
     )
     filter_results = iter([False, True, True])
-    started = []
-
-    class DummyProcess:
-        def __init__(self, target=None, args=None):
-            self.target = target
-            self.args = args or ()
-
-        def start(self):
-            started.append((self.target, self.args))
+    submitted = []
 
     monkeypatch.setattr(getter, "get_one_frame", lambda system: next(frames))
     monkeypatch.setattr(getter, "filter_frame", lambda system, frame: next(filter_results))
     monkeypatch.setattr(rtsp_getter_module.Counter, "get_count", staticmethod(lambda name: 6))
-    monkeypatch.setattr(rtsp_getter_module.multiprocessing, "Process", DummyProcess)
+    monkeypatch.setattr(
+        getter,
+        "generate_and_send_new_task",
+        lambda *args: submitted.append(args) or True,
+    )
 
     system = SimpleNamespace(
         source_id=4,
@@ -188,11 +184,11 @@ def test_rtsp_video_getter_call_retries_until_filtered_buffer_is_filled(monkeypa
         service_deployment={"detector": ["edge-a"]},
     )
 
-    getter(system)
+    assert getter(system) is True
 
     assert system.cumulative_scheduling_frame_count == 4
-    assert len(started) == 1
-    assert len(started[0][1][1]) == 2
+    assert len(submitted) == 1
+    assert len(submitted[0][1]) == 2
     assert getter.frame_buffer == []
 
 

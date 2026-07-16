@@ -44,13 +44,17 @@ def build_parallel_branch_task(branch_name, value, root_uuid="root-task-0"):
 class RecordingTaskCoordinator:
     def __init__(self):
         self.stored_tasks = []
+        self.completed = []
 
-    def store_task_data(self, task, joint_service_name):
-        self.stored_tasks.append(task)
-        return len(self.stored_tasks)
+    def arrive(self, task, joint_service_name, required_count):
+        by_branch = {stored.get_past_flow_index(): stored for stored in self.stored_tasks}
+        by_branch[task.get_past_flow_index()] = task
+        self.stored_tasks = list(by_branch.values())
+        return list(self.stored_tasks) if len(self.stored_tasks) == required_count else None
 
-    def retrieve_task_data(self, root_uuid, joint_service_name, required_count):
-        return list(self.stored_tasks)
+    def complete(self, root_uuid, joint_service_name):
+        self.completed.append((root_uuid, joint_service_name))
+        self.stored_tasks = []
 
 
 @pytest.mark.unit
@@ -60,13 +64,13 @@ def test_process_return_waits_until_all_parallel_branches_arrive():
     controller.task_coordinator = RecordingTaskCoordinator()
 
     submitted_tasks = []
-    controller.submit_task = lambda task: submitted_tasks.append(task) or "execute"
+    controller.submit_task = lambda task: submitted_tasks.append(task) or True
 
     first_branch_task = build_parallel_branch_task("detector-a", "left-branch")
 
-    actions = controller.process_return(first_branch_task)
+    accepted = controller.process_return(first_branch_task)
 
-    assert actions == ["wait"]
+    assert accepted is True
     assert submitted_tasks == []
     assert len(controller.task_coordinator.stored_tasks) == 1
     assert controller.task_coordinator.stored_tasks[0].get_flow_index() == "join"
@@ -80,17 +84,18 @@ def test_process_return_merges_parallel_branch_results_before_submitting():
     controller.task_coordinator = RecordingTaskCoordinator()
 
     submitted_tasks = []
-    controller.submit_task = lambda task: submitted_tasks.append(task) or "execute"
+    controller.submit_task = lambda task: submitted_tasks.append(task) or True
 
     first_branch_task = build_parallel_branch_task("detector-a", "left-branch")
     second_branch_task = build_parallel_branch_task("detector-b", "right-branch")
 
-    assert controller.process_return(first_branch_task) == ["wait"]
+    assert controller.process_return(first_branch_task) is True
 
-    actions = controller.process_return(second_branch_task)
+    accepted = controller.process_return(second_branch_task)
 
-    assert actions == ["execute"]
+    assert accepted is True
     assert len(submitted_tasks) == 1
+    assert controller.task_coordinator.completed == [(second_branch_task.get_root_uuid(), "join")]
 
     merged_task = submitted_tasks[0]
     assert merged_task.get_flow_index() == "join"
@@ -104,3 +109,19 @@ def test_process_return_merges_parallel_branch_results_before_submitting():
     }
     assert merged_task.get_service("detector-a").get_scenario_data() == {"branch": "left-branch"}
     assert merged_task.get_service("detector-b").get_scenario_data() == {"branch": "right-branch"}
+
+
+@pytest.mark.unit
+def test_process_return_keeps_ready_barrier_when_downstream_rejects_delivery():
+    controller_module = importlib.import_module("core.controller.controller")
+    controller = object.__new__(controller_module.Controller)
+    controller.task_coordinator = RecordingTaskCoordinator()
+    controller.submit_task = lambda task: False
+    first = build_parallel_branch_task("detector-a", "left")
+    second = build_parallel_branch_task("detector-b", "right")
+
+    assert controller.process_return(first) is True
+    assert controller.process_return(second) is False
+
+    assert len(controller.task_coordinator.stored_tasks) == 2
+    assert controller.task_coordinator.completed == []

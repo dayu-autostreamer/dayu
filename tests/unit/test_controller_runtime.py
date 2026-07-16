@@ -40,6 +40,9 @@ class FakeTask:
     def get_current_stage_device(self): return self.node
     def set_current_stage_device(self, node): self.node = node
     def get_file_path(self): return self.file_path
+    def get_root_uuid(self): return "root-task"
+    def get_runtime_directory_revision(self): return 1
+    def get_task_uuid(self): return "branch-task"
     def get_runtime_routes(self): return self.routes
     def serialize(self): return '{"task":"serialized"}'
     def save_transmit_time(self, value): self.transmit_durations.append(value)
@@ -87,19 +90,18 @@ def test_controller_processor_delivery_requires_exact_task_route(controller_unde
     module, controller = controller_under_test
     task = FakeTask(routes=[route("processor", "edgex1", 31000, "face-detection")])
     monkeypatch.setattr(module.Controller, "record_execute_ts", staticmethod(lambda *args, **kwargs: None))
-    monkeypatch.setattr(module.Context, "get_temporary_file_path", staticmethod(lambda path: str(tmp_path / path)))
-    assert controller.send_task_to_service(task, "face-detection") == "error"
+    payload = tmp_path / "payload.bin"
+    monkeypatch.setattr(module.FileOps, "get_task_file_in_temp", staticmethod(lambda current: str(payload)))
+    assert controller.send_task_to_service(task, "face-detection") is False
 
-    payload = tmp_path / "dayu" / "payload.bin"
-    payload.parent.mkdir(parents=True, exist_ok=True)
     payload.write_bytes(b"payload")
     calls = []
-    monkeypatch.setattr(module, "http_request", lambda **kwargs: calls.append(kwargs))
-    assert controller.send_task_to_service(task, "face-detection") == "execute"
+    monkeypatch.setattr(module, "deliver_task", lambda **kwargs: calls.append(kwargs) or True)
+    assert controller.send_task_to_service(task, "face-detection") is True
     assert calls[0]["url"] == "http://processor-face-detection-edgex1.dayu.svc:31000/predict_local"
 
     missing = FakeTask(routes=[route("processor", "cloudx1", 31000, "face-detection")])
-    assert controller.send_task_to_service(missing, "face-detection") == "error"
+    assert controller.send_task_to_service(missing, "face-detection") is False
     assert missing.get_current_stage_device() == "edgex1"
 
 
@@ -107,14 +109,13 @@ def test_controller_processor_delivery_requires_exact_task_route(controller_unde
 def test_controller_remote_delivery_uses_task_controller_identity(controller_under_test, monkeypatch, tmp_path):
     module, controller = controller_under_test
     task = FakeTask(node="cloudx1", routes=[route("controller", "cloudx1", 9002)])
-    payload = tmp_path / "dayu" / "payload.bin"
-    payload.parent.mkdir(parents=True, exist_ok=True)
+    payload = tmp_path / "payload.bin"
     payload.write_bytes(b"payload")
-    monkeypatch.setattr(module.Context, "get_temporary_file_path", staticmethod(lambda path: str(tmp_path / path)))
+    monkeypatch.setattr(module.FileOps, "get_task_file_in_temp", staticmethod(lambda current: str(payload)))
     monkeypatch.setattr(module.Controller, "record_transmit_ts", staticmethod(lambda *args, **kwargs: None))
     calls = []
-    monkeypatch.setattr(module, "http_request", lambda **kwargs: calls.append(kwargs))
-    controller.send_task_to_other_device(task, "cloudx1")
+    monkeypatch.setattr(module, "deliver_task", lambda **kwargs: calls.append(kwargs) or True)
+    assert controller.send_task_to_other_device(task, "cloudx1") is True
     assert calls[0]["url"] == "http://controller-runtime-cloudx1.dayu.svc:9002/submit_task"
 
 

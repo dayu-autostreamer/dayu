@@ -1,16 +1,18 @@
 import json
 import threading
+import time
+from collections import deque
 
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
-
-from fastapi.routing import APIRoute
-from starlette.responses import JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from core.lib.common import Context
-from core.lib.common import LOGGER, FileOps
-from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
+from fastapi.routing import APIRoute
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import JSONResponse
+
+from core.lib.common import Context, FileOps, LOGGER
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
+from core.lib.network import deliver_task, NetworkAPIMethod, NetworkAPIPath, task_ack
 from core.lib.runtime import RuntimeContext, RuntimeResolver
 
 
@@ -72,54 +74,77 @@ class ProcessorServer:
         self.runtime_resolver = RuntimeResolver(self.runtime_context)
         self.local_device = self.runtime_context.local_node
         self.processor_port = Context.get_parameter('GUNICORN_PORT')
+        self._accepted_tasks = {}
+        self._accepted_task_expirations = deque()
+        self._accepted_tasks_lock = threading.Lock()
 
         threading.Thread(target=self.loop_process, name="ProcessorLoop", daemon=True).start()
 
     async def health_check(self):
         return {'status': 'ok'}
 
-    async def process_service(self, backtask: BackgroundTasks, file: UploadFile = File(...), data: str = Form(...)):
+    async def process_service(self, file: UploadFile = File(...), data: str = Form(...)):
         file_data = await file.read()
-        backtask.add_task(self.process_service_background, data, file_data)
+        return await run_in_threadpool(self.accept_task, data, file_data)
 
-    def process_service_background(self, data, file_data):
+    def accept_task(self, data, file_data):
         cur_task = Task.deserialize(data)
         FileOps.save_task_file_in_temp(cur_task, file_data)
-        self.task_queue.put(cur_task)
+        self._enqueue_task_once(cur_task)
         LOGGER.debug(f'[Task Queue] Queue Size (receive request): {self.task_queue.size()}')
-        LOGGER.debug(f'[Monitor Task] (Process Request Background) '
+        LOGGER.debug(f'[Monitor Task] (Process Request Accepted) '
                      f'Source: {cur_task.get_source_id()} / Task: {cur_task.get_task_id()} ')
+        return task_ack(cur_task)
 
-    async def process_local_service(self, backtask: BackgroundTasks, data: str = Form(...)):
+    async def process_local_service(self, data: str = Form(...)):
         """
             Process local services without transmitting files.
         """
-        backtask.add_task(self.process_local_service_background, data)
+        return await run_in_threadpool(self.accept_local_task, data)
 
-    def process_local_service_background(self, data):
+    def accept_local_task(self, data):
         cur_task = Task.deserialize(data)
-        self.task_queue.put(cur_task)
+        if not FileOps.touch_task_file_in_temp(cur_task):
+            raise HTTPException(status_code=503, detail="task artifact is unavailable")
+        self._enqueue_task_once(cur_task)
+        return task_ack(cur_task)
+
+    def _enqueue_task_once(self, task):
+        now = time.monotonic()
+        task_uuid = task.get_task_uuid()
+        with self._accepted_tasks_lock:
+            while self._accepted_task_expirations and self._accepted_task_expirations[0][0] <= now:
+                expires_at, accepted_uuid = self._accepted_task_expirations.popleft()
+                if self._accepted_tasks.get(accepted_uuid) == expires_at:
+                    self._accepted_tasks.pop(accepted_uuid, None)
+            if task_uuid in self._accepted_tasks:
+                return False
+            self.task_queue.put(task)
+            expires_at = now + self.runtime_context.lease_ttl_seconds
+            self._accepted_tasks[task_uuid] = expires_at
+            self._accepted_task_expirations.append((expires_at, task_uuid))
+            return True
 
     async def process_return_service(self, file: UploadFile = File(...),
                                      data: str = Form(...)):
         file_data = await file.read()
+        return await run_in_threadpool(self.process_return_task, data, file_data)
+
+    def process_return_task(self, data, file_data):
         cur_task = Task.deserialize(data)
-        LOGGER.info(f'[Process Return Background] Process task: source {cur_task.get_source_id()}  / '
+        LOGGER.info(f'[Process Return] Process task: source {cur_task.get_source_id()}  / '
                     f'task {cur_task.get_task_id()}')
         FileOps.save_task_file_in_temp(cur_task, file_data)
 
-        try:
-            new_task = self.processor(cur_task)
-            current_content = new_task.get_current_content() if new_task else None
-            output_labels = []
-            if isinstance(current_content, dict) and isinstance(current_content.get('outputs'), dict):
-                output_labels = list(current_content['outputs'].keys())
-            LOGGER.debug(f'[Processor Return completed] output labels: {output_labels}')
-            if new_task:
-                return new_task.serialize()
-            return None
-        finally:
-            FileOps.remove_task_file_in_temp(cur_task)
+        new_task = self.processor(cur_task)
+        current_content = new_task.get_current_content() if new_task else None
+        output_labels = []
+        if isinstance(current_content, dict) and isinstance(current_content.get('outputs'), dict):
+            output_labels = list(current_content['outputs'].keys())
+        LOGGER.debug(f'[Processor Return completed] output labels: {output_labels}')
+        if new_task:
+            return new_task.serialize()
+        return None
 
     async def query_queue_length(self):
         return self.task_queue.size()
@@ -187,14 +212,6 @@ class ProcessorServer:
                     if task is None:
                         break
                     dropped_tasks.append(task)
-            for task in dropped_tasks:
-                try:
-                    FileOps.remove_task_file_in_temp(task)
-                except Exception as exc:
-                    LOGGER.debug(
-                        f"[Task Queue] Failed to remove temp file for dropped task: {exc}"
-                    )
-
         dropped_records = [self._task_drop_record(task) for task in dropped_tasks]
         LOGGER.warning(
             f"[Task Queue] Cleared queued tasks: reason={reason}, dry_run={dry_run}, "
@@ -223,10 +240,9 @@ class ProcessorServer:
     def loop_process(self):
         LOGGER.info('Start processing loop..')
         while True:
-            if self.task_queue.empty():
-                continue
             task = self.task_queue.get()
             if not task:
+                time.sleep(0.01)
                 continue
             LOGGER.debug(f'[Task Queue] Queue Size (loop): {self.task_queue.size()}')
 
@@ -235,15 +251,23 @@ class ProcessorServer:
             except Exception as e:
                 LOGGER.critical("[Processor Error] Processor encountered error when processing data.")
                 LOGGER.exception(e)
+                self.task_queue.put(task)
+                time.sleep(0.1)
                 continue
 
-            if new_task:
-                self.send_result_back_to_controller(new_task)
-
+            if new_task is None:
+                self.task_queue.put(task)
+                time.sleep(0.1)
+                continue
+            self.send_result_back_to_controller(new_task)
 
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')
 
+        if not FileOps.touch_task_file_in_temp(task):
+            LOGGER.warning(f'[Task Artifact] File unavailable. '
+                           f'Source: {task.get_source_id()} / Task: {task.get_task_id()}')
+            return None
         TimeEstimator.record_dag_ts(task, is_end=False, sub_tag='real_execute')
         new_task = self.processor(task)
         if new_task is None:
@@ -259,12 +283,24 @@ class ProcessorServer:
         return new_task
 
     def send_result_back_to_controller(self, task):
-        controller_address = self.runtime_resolver.resolve_url(
-            "controller",
-            path=NetworkAPIPath.CONTROLLER_RETURN,
-            task=task,
-            target_node=self.local_device,
-            exact=True,
-        )
-        http_request(url=controller_address, method=NetworkAPIMethod.CONTROLLER_RETURN,
-                     data={'data': task.serialize()})
+        while True:
+            try:
+                controller_address = self.runtime_resolver.resolve_url(
+                    "controller",
+                    path=NetworkAPIPath.CONTROLLER_RETURN,
+                    task=task,
+                    target_node=self.local_device,
+                    exact=True,
+                )
+                return deliver_task(
+                    url=controller_address,
+                    method=NetworkAPIMethod.CONTROLLER_RETURN,
+                    task=task,
+                    persistent=True,
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    f'[Task Delivery] Retain processed result after delivery setup failure. '
+                    f'Source: {task.get_source_id()} / Task: {task.get_task_id()} / Error: {exc}'
+                )
+                time.sleep(0.5)

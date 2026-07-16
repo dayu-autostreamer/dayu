@@ -1,11 +1,11 @@
 import copy
 import json
-import multiprocessing
+import threading
+import time
 
 from core.lib.common import Context, LOGGER
 from core.lib.content import Task
-from core.lib.network import NetworkAPIPath, NetworkAPIMethod
-from core.lib.network import http_request
+from core.lib.network import deliver_task, http_request, NetworkAPIPath, NetworkAPIMethod
 from core.lib.estimation import TimeEstimator
 from core.lib.runtime import (
     RuntimeContext,
@@ -32,9 +32,7 @@ class Generator:
         self.deployment_version = 0
         self.runtime_directory_revision = 0
         self.runtime_routes = {}
-        # RTSP submission runs in a child process, so this signal must be
-        # process-shared for a retired lease to refresh the parent loop.
-        self._runtime_schedule_refresh_required = multiprocessing.Event()
+        self._runtime_schedule_refresh_required = threading.Event()
         # raw_meta_data contains meta configuration of source
         self.raw_meta_data = metadata.copy()
         # meta_data contains data configuration decisions
@@ -203,25 +201,26 @@ class Generator:
 
         self.before_submit_task_operation(self, cur_task)
 
-        # Lease acquisition is the only scheduler-backed admission check on
-        # the data path. A transient scheduler failure drops this task without
-        # killing the long-running generator; a retired snapshot additionally
-        # requests a fresh schedule before the next ingestion round.
-        try:
-            self.runtime_lease_client.acquire(cur_task)
-        except RuntimeLeaseRetired as exc:
-            self._runtime_schedule_refresh_required.set()
-            LOGGER.warning(
-                f'[Runtime Lease] Drop task from retired directory: '
-                f'source={cur_task.get_source_id()}, task={cur_task.get_task_id()}, error={exc}'
-            )
-            return False
-        except RuntimeLeaseUnavailable as exc:
-            LOGGER.warning(
-                f'[Runtime Lease] Drop task because admission is unavailable: '
-                f'source={cur_task.get_source_id()}, task={cur_task.get_task_id()}, error={exc}'
-            )
-            return False
+        # Once source data has been materialized, transient admission failures
+        # apply backpressure instead of discarding the task. A retired snapshot
+        # is an explicit fence: refresh scheduling before accepting new data.
+        while True:
+            try:
+                self.runtime_lease_client.acquire(cur_task)
+                break
+            except RuntimeLeaseRetired as exc:
+                self._runtime_schedule_refresh_required.set()
+                LOGGER.warning(
+                    f'[Runtime Lease] Reject task from retired directory: '
+                    f'source={cur_task.get_source_id()}, task={cur_task.get_task_id()}, error={exc}'
+                )
+                return False
+            except RuntimeLeaseUnavailable as exc:
+                LOGGER.warning(
+                    f'[Runtime Lease] Admission unavailable; retain task and retry. '
+                    f'source={cur_task.get_source_id()}, task={cur_task.get_task_id()}, error={exc}'
+                )
+                time.sleep(0.5)
 
         dst_device = cur_task.get_current_stage_device()
         controller_address = self.runtime_resolver.resolve_url(
@@ -232,14 +231,13 @@ class Generator:
             exact=True,
         )
         self.record_transmit_start_ts(cur_task)
-        with open(cur_task.get_file_path(), 'rb') as task_file:
-            http_request(url=controller_address,
-                         method=NetworkAPIMethod.CONTROLLER_TASK,
-                         data={'data': cur_task.serialize()},
-                         files={'file': (cur_task.get_file_path(),
-                                         task_file,
-                                         'multipart/form-data')}
-                         )
+        deliver_task(
+            url=controller_address,
+            method=NetworkAPIMethod.CONTROLLER_TASK,
+            task=cur_task,
+            file_path=cur_task.get_file_path(),
+            persistent=True,
+        )
         LOGGER.info(f'[To Controller {dst_device}] source: {cur_task.get_source_id()}  '
                     f'task: {cur_task.get_task_id()}  '
                     f'file: {cur_task.get_file_path()}')

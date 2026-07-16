@@ -2,7 +2,7 @@ import json
 import os
 
 from core.lib.estimation import TimeEstimator
-from core.lib.network import http_request, NetworkAPIPath, NetworkAPIMethod
+from core.lib.network import deliver_task, http_request, NetworkAPIPath, NetworkAPIMethod
 from core.lib.common import LOGGER, Context, TaskConstant, FileOps
 from core.lib.content import Task
 from core.lib.runtime import RuntimeContext, RuntimeResolver
@@ -176,15 +176,16 @@ class Controller:
             exact=True,
         )
 
-        http_request(url=controller_address,
-                     method=NetworkAPIMethod.CONTROLLER_TASK,
-                     data={'data': cur_task.serialize()},
-                     files={'file': (cur_task.get_file_path(),
-                                     open(FileOps.get_task_file_in_temp(cur_task), 'rb'),
-                                     'multipart/form-data')})
-
-        LOGGER.info(f'[To Device {device}] source: {cur_task.get_source_id()}  '
-                    f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
+        accepted = deliver_task(
+            url=controller_address,
+            method=NetworkAPIMethod.CONTROLLER_TASK,
+            task=cur_task,
+            file_path=FileOps.get_task_file_in_temp(cur_task),
+        )
+        if accepted:
+            LOGGER.info(f'[To Device {device}] source: {cur_task.get_source_id()}  '
+                        f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
+        return accepted
 
     def send_task_to_service(self, cur_task: Task, service: str = ''):
         self.record_execute_ts(cur_task=cur_task, is_end=False)
@@ -202,23 +203,24 @@ class Controller:
             LOGGER.error(
                 f'[Runtime Route Missing] Refuse to reroute service {service} on {self.local_device}: {exc}'
             )
-            return 'error'
+            return False
 
         if not os.path.exists(FileOps.get_task_file_in_temp(cur_task)):
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
                            f'task: {cur_task.get_task_id()} '
                            f'file: {FileOps.get_task_file_in_temp(cur_task)}')
-            return 'error'
+            return False
 
         # Local fast path: only send metadata
-        http_request(url=service_address,
-                     method=NetworkAPIMethod.PROCESSOR_PROCESS_LOCAL,
-                     data={'data': cur_task.serialize()})
-
-        LOGGER.info(f'[To Service {service} Local] source: {cur_task.get_source_id()}  '
-                    f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
-
-        return 'execute'
+        accepted = deliver_task(
+            url=service_address,
+            method=NetworkAPIMethod.PROCESSOR_PROCESS_LOCAL,
+            task=cur_task,
+        )
+        if accepted:
+            LOGGER.info(f'[To Service {service} Local] source: {cur_task.get_source_id()}  '
+                        f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
+        return accepted
 
     def send_task_to_distributor(self, cur_task: Task):
         self.record_transmit_ts(cur_task=cur_task, is_end=False)
@@ -227,21 +229,27 @@ class Controller:
             LOGGER.warning(f'[Task File Lost] source: {cur_task.get_source_id()}  '
                            f'task: {cur_task.get_task_id()} '
                            f'file: {task_file_path}')
-            return
-        file_content = open(task_file_path, 'rb') if self.is_display else b''
+            return False
 
-        http_request(url=self.distribute_address,
-                     method=NetworkAPIMethod.DISTRIBUTOR_DISTRIBUTE,
-                     files={'file': (cur_task.get_file_path(), file_content, 'multipart/form-data')},
-                     data={'data': cur_task.serialize()})
-
-        LOGGER.info(f'[To Distributor] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
-                    f'current service: {cur_task.get_flow_index()}')
+        delivery = {
+            "url": self.distribute_address,
+            "method": NetworkAPIMethod.DISTRIBUTOR_DISTRIBUTE,
+            "task": cur_task,
+        }
+        if self.is_display:
+            delivery["file_path"] = task_file_path
+        else:
+            delivery["file_content"] = b''
+        accepted = deliver_task(**delivery)
+        if accepted:
+            LOGGER.info(f'[To Distributor] source: {cur_task.get_source_id()}  '
+                        f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')
+        return accepted
 
     def submit_task(self, cur_task: Task):
         if not cur_task:
             LOGGER.warning('Current task is None')
-            return 'error'
+            return False
 
         LOGGER.info(f'[Submit Task] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()} '
                     f'current service: {cur_task.get_flow_index()} dst device: {cur_task.get_current_stage_device()} '
@@ -252,18 +260,13 @@ class Controller:
 
         if service_name == TaskConstant.START.value:
             next_tasks = cur_task.step_to_next_stage()
-            actions = [self.submit_task(new_task) for new_task in next_tasks]
-            action = 'execute' if 'execute' in actions else 'transmit'
+            accepted = [self.submit_task(new_task) for new_task in next_tasks]
+            return all(accepted)
         elif service_name == TaskConstant.END.value:
-            self.send_task_to_distributor(cur_task)
-            action = 'transmit'
+            return self.send_task_to_distributor(cur_task)
         elif dst_device != self.local_device:
-            self.send_task_to_other_device(cur_task, dst_device)
-            action = 'transmit'
-        else:
-            action = self.send_task_to_service(cur_task, service_name)
-
-        return action
+            return self.send_task_to_other_device(cur_task, dst_device)
+        return self.send_task_to_service(cur_task, service_name)
 
     def process_return(self, cur_task):
         """step to next step and submit task"""
@@ -271,7 +274,6 @@ class Controller:
 
         LOGGER.info(f'[Process Return] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 
-        actions = []
         parallel_joints = cur_task.get_parallel_info_for_merge()
         for parallel_joint in parallel_joints:
             joint_service_name = parallel_joint['joint_service']
@@ -281,19 +283,17 @@ class Controller:
 
             # node with parallel nodes should merge before step to next stage
             if required_parallel_task_count > 1:
-                parallel_count = self.task_coordinator.store_task_data(new_task, joint_service_name)
-                # wait when some duplicated tasks (with parallel nodes) not arrive
-                if parallel_count != required_parallel_task_count:
-                    actions.append('wait')
-                    continue
-                # retrieve parallel nodes in redis
-                tasks = self.task_coordinator.retrieve_task_data(new_task.get_root_uuid(),
-                                                                 joint_service_name,
-                                                                 required_parallel_task_count)
-                # something wrong causes invalid task retrieving
+                if new_task.get_past_flow_index() not in parallel_service_names:
+                    raise ValueError(
+                        f"service {new_task.get_past_flow_index()} is not a predecessor of "
+                        f"{joint_service_name}"
+                    )
+                tasks = self.task_coordinator.arrive(
+                    new_task,
+                    joint_service_name,
+                    required_parallel_task_count,
+                )
                 if not tasks:
-                    LOGGER.warning('Invalid task retrieving from task coordinator!')
-                    actions.append('wait')
                     continue
 
                 # merge parallel tasks
@@ -302,9 +302,12 @@ class Controller:
                 LOGGER.debug(f"Merge task with services {[task.get_past_flow_index() for task in tasks]} "
                              f"into task with service '{joint_service_name}'")
 
-            actions.append(self.submit_task(new_task))
+            if not self.submit_task(new_task):
+                return False
+            if required_parallel_task_count > 1:
+                self.task_coordinator.complete(new_task.get_root_uuid(), joint_service_name)
 
-        return actions
+        return True
 
     @staticmethod
     def record_transmit_ts(cur_task: Task, is_end: bool = False):
