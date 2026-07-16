@@ -3,7 +3,11 @@ import copy
 import pytest
 from kubernetes.client.rest import ApiException
 
-from runtime_model import RuntimeSession
+from runtime_model import (
+    RuntimeCleanupResource,
+    RuntimeSession,
+    RuntimeUninstallProgress,
+)
 from runtime_session_store import (
     RuntimeSessionConflict,
     RuntimeSessionCorrupt,
@@ -118,6 +122,30 @@ def test_store_reports_create_and_replace_conflicts():
         store.compare_and_swap(make_session("ready"), "stale")
     with pytest.raises(RuntimeSessionConflict):
         store.delete(expected_resource_version="stale")
+
+
+def test_store_round_trips_durable_uninstall_progress():
+    api = FakeCoreAPI()
+    store = RuntimeSessionStore("dayu", api=api)
+    session = RuntimeSession(
+        install_id="install-1",
+        operation_id="operation-1",
+        phase="finalizing-uninstall",
+        uninstall=RuntimeUninstallProgress(
+            started_at="2026-07-16T00:00:00+00:00",
+            last_progress_at="2026-07-16T00:01:00+00:00",
+            deletion_submitted=True,
+            remaining=(RuntimeCleanupResource(
+                kind="Pod",
+                name="processor-pod",
+                uid="pod-uid",
+            ),),
+        ),
+    )
+
+    store.compare_and_swap(session, None)
+
+    assert store.load().session == session
 
 
 def test_store_treats_remote_delete_during_replace_as_a_cas_conflict():

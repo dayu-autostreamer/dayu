@@ -27,14 +27,16 @@ from core.lib.scheduling.source_selection import (
     selection_scope_from_template,
 )
 
-from cluster_client import ClusterClient
+from cluster_client import ClusterClient, kubernetes_resource_ref
 from runtime_model import (
+    RuntimeCleanupResource,
     RuntimeCleanupRef,
     RuntimeDirectory,
     RuntimeEndpoint,
     RuntimeRetirement,
     RuntimeSession,
     RuntimeSlot,
+    RuntimeUninstallProgress,
     RuntimeUnit,
 )
 from runtime_service_client import RuntimeServiceCancelled, RuntimeServiceClient
@@ -2081,6 +2083,7 @@ class RuntimeOrchestrator:
         cancel_event=None,
         timeout_seconds: Optional[float] = None,
         allow_active: bool = False,
+        propagation_policy: str = "Background",
     ) -> None:
         self._raise_if_cancelled(cancel_event)
         units = tuple(units)
@@ -2121,13 +2124,8 @@ class RuntimeOrchestrator:
                 unresolved.add(unit.runtime_id)
         if unresolved:
             self._raise_if_cancelled(cancel_event)
-            selector = (
-                f"{self.MANAGED_LABEL_SELECTOR},"
-                f"{self.INSTALL_LABEL}={str(install_id)}"
-            )
             try:
                 response = self.runtime.list(
-                    label_selector=selector,
                     request_timeout_seconds=self._remaining_timeout(deadline),
                 )
             except Exception:
@@ -2142,10 +2140,10 @@ class RuntimeOrchestrator:
                 labels = metadata.get("labels") or {}
                 uid = str(metadata.get("uid") or "")
                 spec_install_id = str((obj.get("spec") or {}).get("installID") or "")
-                if (
+                if not uid or (
                     labels.get(self.INSTALL_LABEL) != str(install_id)
-                    or spec_install_id != str(install_id)
-                    or not uid):
+                    and spec_install_id != str(install_id)
+                ):
                     raise RuntimeOrchestrationError(
                         f"RuntimeService {name!r} has no exact install ownership identity"
                     )
@@ -2157,6 +2155,7 @@ class RuntimeOrchestrator:
                 identities,
                 timeout_seconds=self._remaining_timeout(deadline),
                 cancel_event=cancel_event,
+                propagation_policy=propagation_policy,
             )
         except RuntimeServiceCancelled:
             self._raise_if_cancelled(cancel_event)
@@ -2171,6 +2170,92 @@ class RuntimeOrchestrator:
             session.pending,
             retirement_units,
         )
+
+    def _uninstall_timestamp(self) -> str:
+        return datetime.fromtimestamp(
+            float(self._wall_clock()), timezone.utc,
+        ).isoformat()
+
+    def _new_uninstall_progress(self) -> RuntimeUninstallProgress:
+        timestamp = self._uninstall_timestamp()
+        return RuntimeUninstallProgress(
+            started_at=timestamp,
+            last_progress_at=timestamp,
+        )
+
+    def _observe_uninstall_resources(
+        self,
+        session: RuntimeSession,
+    ) -> Tuple[RuntimeCleanupResource, ...]:
+        """Return one complete, fail-closed snapshot of the cleanup barrier."""
+
+        install_id = session.install_id
+        owned_units = self._owned_units(session)
+        runtime_names = {unit.runtime_id for unit in owned_units} | {
+            unit.runtime_id for unit in session.cleanup
+        }
+        runtime_service_uids = {
+            uid
+            for unit in tuple(owned_units) + tuple(session.cleanup)
+            for uid in (
+                getattr(unit, "runtime_service_uid", "")
+                or (
+                    getattr(getattr(unit, "endpoint", None), "runtime_service_uid", "")
+                ),
+            )
+            if uid
+        }
+        service_uids = {
+            unit.endpoint.service_uid
+            for unit in owned_units
+            if unit.endpoint is not None and unit.endpoint.service_uid
+        }
+        pod_names = {
+            unit.pod_name for unit in owned_units if unit.pod_name
+        }
+        pod_uids = {
+            unit.pod_uid or (
+                unit.endpoint.pod_uid if unit.endpoint is not None else ""
+            )
+            for unit in owned_units
+        } - {""}
+        deadline = self._clock() + min(30.0, self.operation_timeout)
+        resources = [
+            RuntimeCleanupResource.from_dict(item)
+            for item in self.cluster.runtime_cleanup_resources(
+                install_id,
+                ownership={
+                    "runtime_names": runtime_names,
+                    "runtime_service_uids": runtime_service_uids,
+                    "service_uids": service_uids,
+                    "pod_names": pod_names,
+                    "pod_uids": pod_uids,
+                },
+                request_timeout_seconds=self._remaining_timeout(deadline),
+            )
+        ]
+        response = self.runtime.list(
+            request_timeout_seconds=self._remaining_timeout(deadline),
+        )
+        for item in response.get("items") or ():
+            metadata = item.get("metadata") or {}
+            labels = metadata.get("labels") or {}
+            name = str(metadata.get("name") or "")
+            uid = str(metadata.get("uid") or "")
+            if not (
+                str((item.get("spec") or {}).get("installID") or "") == install_id
+                or labels.get(self.INSTALL_LABEL) == install_id
+                or name in runtime_names
+                or uid in runtime_service_uids
+            ):
+                continue
+            resources.append(RuntimeCleanupResource.from_dict(
+                kubernetes_resource_ref("RuntimeService", item),
+            ))
+        return tuple(sorted(
+            resources,
+            key=lambda resource: resource.identity,
+        ))
 
     def begin_uninstall(self, expected_install_id: str = "") -> Optional[RuntimeSession]:
         """Persist administrative stop intent without waiting for teardown."""
@@ -2187,21 +2272,30 @@ class RuntimeOrchestrator:
                     session,
                     operation_id=str(uuid.uuid4()),
                     phase="uninstalling",
+                    uninstall=self._new_uninstall_progress(),
                     last_error="",
+                    updated_at=_utc_now(),
+                ))
+            elif session.uninstall is None:
+                # Upgrade/recovery path for a Session written before the
+                # cleanup barrier became part of the durable schema.
+                session = self._save(replace(
+                    session,
+                    uninstall=self._new_uninstall_progress(),
                     updated_at=_utc_now(),
                 ))
             return session
 
-    def uninstall(self, expected_install_id: str = "") -> None:
+    def uninstall(self, expected_install_id: str = "") -> bool:
         """Stop the installation without allowing task leases to veto teardown."""
 
         with self._lock:
             stored = self._reload_for_transaction()
             if stored is None:
-                return
+                return True
             session = stored.session
             if expected_install_id and session.install_id != expected_install_id:
-                return
+                return True
             all_units = self._owned_units(session)
             schedulers = tuple(
                 unit for unit in all_units if unit.slot.component == "scheduler"
@@ -2234,14 +2328,24 @@ class RuntimeOrchestrator:
             if session.phase in self._PUBLICATION_PHASES:
                 revisions.add(session.active_directory_revision + 1)
 
+            made_progress = False
             if session.phase not in {"uninstalling", "finalizing-uninstall"}:
                 session = self._save(replace(
                     session,
                     operation_id=str(uuid.uuid4()),
                     phase="uninstalling",
+                    uninstall=self._new_uninstall_progress(),
                     last_error="",
                     updated_at=_utc_now(),
                 ))
+                made_progress = True
+            elif session.uninstall is None:
+                session = self._save(replace(
+                    session,
+                    uninstall=self._new_uninstall_progress(),
+                    updated_at=_utc_now(),
+                ))
+                made_progress = True
 
             try:
                 if session.phase != "finalizing-uninstall":
@@ -2253,6 +2357,7 @@ class RuntimeOrchestrator:
                         session.install_id,
                         timeout_seconds=30,
                         allow_active=True,
+                        propagation_policy="Foreground",
                     )
                     if directory_may_be_published:
                         fence_deadline = self._wall_clock()
@@ -2284,29 +2389,77 @@ class RuntimeOrchestrator:
                     session = self._save(replace(
                         session,
                         phase="finalizing-uninstall",
+                        uninstall=replace(
+                            session.uninstall,
+                            last_progress_at=self._uninstall_timestamp(),
+                        ),
                         last_error="",
                         updated_at=_utc_now(),
                     ))
+                    made_progress = True
 
-                # Scheduler deletion is the definitive admission fence when its
-                # directory clear could not be acknowledged. Remove it before
-                # workers so no surviving control plane can route to resources
-                # that teardown has already removed.
-                self._delete_units(
-                    schedulers,
-                    session.install_id,
-                    timeout_seconds=60,
-                    allow_active=True,
-                )
-                self._delete_units(
-                    tuple(workers) + tuple(session.cleanup),
-                    session.install_id,
-                    timeout_seconds=60,
-                    allow_active=True,
-                )
+                progress = session.uninstall
+                if not progress.deletion_submitted:
+                    # Scheduler deletion is the definitive admission fence when
+                    # its directory clear could not be acknowledged. Submit it
+                    # before workers and persist that all exact deletes crossed
+                    # the API boundary, so later reconciles only observe GC.
+                    self._delete_units(
+                        schedulers,
+                        session.install_id,
+                        timeout_seconds=60,
+                        allow_active=True,
+                        propagation_policy="Foreground",
+                    )
+                    self._delete_units(
+                        tuple(workers) + tuple(session.cleanup),
+                        session.install_id,
+                        timeout_seconds=60,
+                        allow_active=True,
+                        propagation_policy="Foreground",
+                    )
+                    progress = replace(
+                        progress,
+                        deletion_submitted=True,
+                        last_progress_at=self._uninstall_timestamp(),
+                    )
+                    session = self._save(replace(
+                        session,
+                        uninstall=progress,
+                        last_error="",
+                        updated_at=_utc_now(),
+                    ))
+                    made_progress = True
+
+                remaining = self._observe_uninstall_resources(session)
+                if remaining:
+                    previous_identities = progress.identities
+                    next_identities = frozenset(
+                        resource.identity for resource in remaining
+                    )
+                    last_progress_at = progress.last_progress_at
+                    if previous_identities and next_identities < previous_identities:
+                        last_progress_at = self._uninstall_timestamp()
+                        made_progress = True
+                    next_progress = replace(
+                        progress,
+                        last_progress_at=last_progress_at,
+                        remaining=remaining,
+                    )
+                    changed = next_progress != progress or bool(session.last_error)
+                    if changed:
+                        self._save(replace(
+                            session,
+                            uninstall=next_progress,
+                            last_error="",
+                            updated_at=_utc_now(),
+                        ))
+                    return made_progress
+
                 expected = self._stored.resource_version if self._stored else None
                 self.sessions.delete(expected_resource_version=expected)
                 self._mark_snapshot_deleted()
+                return True
             except Exception as exc:
                 LOGGER.exception("managed RuntimeService uninstall failed")
                 try:
@@ -2319,21 +2472,22 @@ class RuntimeOrchestrator:
                     # was lost. Absence (or a newer installation) is
                     # authoritative; never recreate an old session merely to
                     # persist an uninstall error.
-                    return
+                    return True
                 current = stored.session
                 try:
-                    self._save(replace(
-                        current,
-                        phase=(
-                            "finalizing-uninstall"
-                            if current.phase == "finalizing-uninstall" else "uninstalling"
-                        ),
-                        last_error=str(exc),
-                        updated_at=_utc_now(),
-                    ))
+                    if current.last_error != str(exc):
+                        self._save(replace(
+                            current,
+                            phase=(
+                                "finalizing-uninstall"
+                                if current.phase == "finalizing-uninstall" else "uninstalling"
+                            ),
+                            last_error=str(exc),
+                            updated_at=_utc_now(),
+                        ))
                 except RuntimeSessionConflict:
                     if self._stored is None:
-                        return
+                        return True
                     raise
                 raise
 

@@ -4,12 +4,14 @@ from dataclasses import replace
 import pytest
 
 from runtime_model import (
+    RuntimeCleanupResource,
     RuntimeCleanupRef,
     RuntimeDirectory,
     RuntimeEndpoint,
     RuntimeRetirement,
     RuntimeSession,
     RuntimeSlot,
+    RuntimeUninstallProgress,
     RuntimeUnit,
     canonical_hash,
     canonical_json,
@@ -168,6 +170,50 @@ def test_cleanup_owns_multiple_historical_revisions_of_one_logical_slot():
             install_id="install-1",
             operation_id="operation-2",
             cleanup=(RuntimeCleanupRef.from_unit(old_two), conflicting),
+        )
+
+
+def test_uninstall_progress_round_trips_generic_cleanup_blockers_stably():
+    pod = RuntimeCleanupResource(
+        kind="Pod",
+        name="processor-abc",
+        uid="pod-uid",
+        node="edge-a",
+        deletion_timestamp="2026-07-16T00:00:00+00:00",
+        finalizers=("example.io/cleanup",),
+    )
+    service = RuntimeCleanupResource(
+        kind="Service",
+        name="processor",
+        uid="service-uid",
+    )
+    progress = RuntimeUninstallProgress(
+        started_at="2026-07-16T00:00:00+00:00",
+        last_progress_at="2026-07-16T00:01:00+00:00",
+        deletion_submitted=True,
+        remaining=(service, pod, pod),
+    )
+    session = RuntimeSession(
+        install_id="install-1",
+        operation_id="operation-1",
+        phase="finalizing-uninstall",
+        uninstall=progress,
+    )
+
+    restored = RuntimeSession.from_dict(session.to_dict())
+
+    assert restored == session
+    assert restored.uninstall.remaining == (pod, service)
+    assert restored.uninstall.identities == {
+        ("Pod", "processor-abc", "pod-uid"),
+        ("Service", "processor", "service-uid"),
+    }
+    with pytest.raises(ValueError, match="uninstall progress"):
+        replace(session, phase="active")
+    with pytest.raises(ValueError, match="timezone"):
+        RuntimeUninstallProgress(
+            started_at="2026-07-16T00:00:00",
+            last_progress_at="2026-07-16T00:00:00+00:00",
         )
 
 

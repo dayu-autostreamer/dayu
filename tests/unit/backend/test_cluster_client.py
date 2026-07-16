@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from kubernetes.client.rest import ApiException
 
 from cluster_client import ClusterClient
 
@@ -45,6 +46,8 @@ class FakeCore:
     def __init__(self):
         self.nodes = [node("cloud-1", "cloud"), node("edge-1", "edge")]
         self.runtime_pods = [pod("runtime-a-abc", "pod-uid", "edge-1")]
+        self.runtime_services = []
+        self.runtime_endpoints = []
         self.agent_pods = {}
         self.calls = []
         self.request_timeouts = []
@@ -64,20 +67,34 @@ class FakeCore:
         self.request_timeouts.append(kwargs.get("_request_timeout"))
         return {"items": self.runtime_pods}
 
+    def list_namespaced_service(self, namespace, **kwargs):
+        self.calls.append(("services", namespace, kwargs.get("label_selector")))
+        self.request_timeouts.append(kwargs.get("_request_timeout"))
+        return {"items": self.runtime_services}
+
+    def list_namespaced_endpoints(self, namespace, **kwargs):
+        self.calls.append(("endpoints", namespace, kwargs.get("label_selector")))
+        self.request_timeouts.append(kwargs.get("_request_timeout"))
+        return {"items": self.runtime_endpoints}
+
 
 class FakeCustom:
-    def __init__(self, items=None, error=None):
+    def __init__(self, items=None, error=None, collections=None):
         self.calls = []
         self.error = error
         self.items = items if items is not None else [{
             "metadata": {"name": "runtime-a-abc"},
             "containers": [{"name": "runtime", "usage": {"cpu": "12m", "memory": "150Mi"}}],
         }]
+        self.collections = collections or {}
 
     def list_namespaced_custom_object(self, **kwargs):
         self.calls.append(kwargs)
         if self.error is not None:
             raise self.error
+        key = (kwargs.get("group"), kwargs.get("version"), kwargs.get("plural"))
+        if key in self.collections:
+            return {"items": self.collections[key]}
         return {"items": self.items}
 
 
@@ -149,6 +166,180 @@ def test_managed_agent_validation_reports_missing_and_not_ready_by_agent():
     assert report["agents"]["sedna_lc"]["missing_nodes"] == ["cloud-1"]
     assert report["agents"]["edgemesh_agent"]["not_ready_nodes"] == ["cloud-1"]
     assert report["agents"]["edgemesh_agent"]["ready_nodes"] == ["edge-1"]
+
+
+def test_runtime_cleanup_resources_lists_every_barrier_kind_once_with_one_selector():
+    core = FakeCore()
+    core.runtime_pods = [pod("runtime-a-pod", "pod-uid", "edge-1")]
+    core.runtime_pods[0]["metadata"].update({
+        "deletionTimestamp": "2026-07-16T00:00:00Z",
+        "finalizers": ["example.io/cleanup"],
+    })
+    core.runtime_services = [{
+        "metadata": {"name": "runtime-a", "uid": "service-uid"},
+    }]
+    core.runtime_endpoints = [{
+        "metadata": {"name": "runtime-a", "uid": "endpoints-uid"},
+    }]
+    custom = FakeCustom(collections={
+        ("apps", "v1", "deployments"): [{
+            "metadata": {"name": "runtime-a", "uid": "deployment-uid"},
+        }],
+        ("apps", "v1", "replicasets"): [{
+            "metadata": {"name": "runtime-a-rs", "uid": "replicaset-uid"},
+        }],
+        ("discovery.k8s.io", "v1", "endpointslices"): [{
+            "metadata": {
+                "name": "runtime-a-slice",
+                "uid": "slice-uid",
+                "labels": {"kubernetes.io/service-name": "runtime-a"},
+            },
+        }],
+    })
+    client = make_client(core=core, custom=custom)
+
+    resources = client.runtime_cleanup_resources(
+        "install-a",
+        ownership={
+            "runtime_names": ["runtime-a"],
+            "pod_uids": ["pod-uid"],
+        },
+    )
+
+    assert {resource["kind"] for resource in resources} == {
+        "Deployment", "ReplicaSet", "Pod", "Service", "Endpoints", "EndpointSlice",
+    }
+    pod_resource = next(resource for resource in resources if resource["kind"] == "Pod")
+    assert pod_resource["node"] == "edge-1"
+    assert pod_resource["deletion_timestamp"] == "2026-07-16T00:00:00Z"
+    assert pod_resource["finalizers"] == ["example.io/cleanup"]
+    assert [call[0] for call in core.calls] == ["pods", "services", "endpoints"]
+    assert [call["plural"] for call in custom.calls] == [
+        "deployments", "replicasets", "endpointslices",
+    ]
+    assert all("label_selector" not in call for call in custom.calls)
+
+
+def test_runtime_cleanup_resources_uses_name_uid_and_owner_closure_when_labels_are_missing():
+    core = FakeCore()
+    core.runtime_pods = [{
+        "metadata": {
+            "name": "runtime-a-pod",
+            "uid": "pod-uid",
+            "ownerReferences": [{"uid": "replicaset-uid"}],
+        },
+        "spec": {"nodeName": "edge-1"},
+    }]
+    core.runtime_services = [{
+        "metadata": {
+            "name": "renamed-service",
+            "uid": "service-uid",
+            "ownerReferences": [{"uid": "runtime-uid"}],
+        },
+    }]
+    core.runtime_endpoints = [{
+        "metadata": {
+            "name": "renamed-service",
+            "uid": "endpoints-uid",
+            "ownerReferences": [{"uid": "service-uid"}],
+        },
+    }]
+    custom = FakeCustom(collections={
+        ("apps", "v1", "deployments"): [{
+            "metadata": {
+                "name": "renamed-deployment",
+                "uid": "deployment-uid",
+                "ownerReferences": [{"uid": "runtime-uid"}],
+            },
+        }],
+        ("apps", "v1", "replicasets"): [{
+            "metadata": {
+                "name": "renamed-replicaset",
+                "uid": "replicaset-uid",
+                "ownerReferences": [{"uid": "deployment-uid"}],
+            },
+        }],
+        ("discovery.k8s.io", "v1", "endpointslices"): [{
+            "metadata": {
+                "name": "renamed-slice",
+                "uid": "slice-uid",
+                "ownerReferences": [{"uid": "service-uid"}],
+            },
+        }],
+    })
+
+    resources = make_client(core=core, custom=custom).runtime_cleanup_resources(
+        "install-a",
+        ownership={
+            "runtime_service_uids": ["runtime-uid"],
+            "service_uids": ["service-uid"],
+        },
+    )
+
+    assert {resource["kind"] for resource in resources} == {
+        "Deployment", "ReplicaSet", "Pod", "Service", "Endpoints", "EndpointSlice",
+    }
+
+
+def test_runtime_cleanup_resources_caches_endpoint_slice_v1beta1_fallback():
+    class LegacyEndpointSliceCustom(FakeCustom):
+        def list_namespaced_custom_object(self, **kwargs):
+            if (
+                kwargs.get("group") == "discovery.k8s.io"
+                and kwargs.get("version") == "v1"
+            ):
+                self.calls.append(kwargs)
+                raise ApiException(status=404)
+            return super().list_namespaced_custom_object(**kwargs)
+
+    custom = LegacyEndpointSliceCustom(collections={
+        ("apps", "v1", "deployments"): [],
+        ("apps", "v1", "replicasets"): [],
+        ("discovery.k8s.io", "v1beta1", "endpointslices"): [],
+    })
+    client = make_client(custom=custom)
+
+    client.runtime_cleanup_resources("install-a")
+    client.runtime_cleanup_resources("install-a")
+
+    versions = [
+        call["version"] for call in custom.calls
+        if call.get("group") == "discovery.k8s.io"
+    ]
+    assert versions == ["v1", "v1beta1", "v1beta1"]
+
+
+def test_runtime_cleanup_resources_reprobes_v1_after_cached_beta_disappears():
+    class UpgradingEndpointSliceCustom(FakeCustom):
+        modern = False
+
+        def list_namespaced_custom_object(self, **kwargs):
+            if kwargs.get("group") == "discovery.k8s.io":
+                self.calls.append(kwargs)
+                version = kwargs.get("version")
+                if (not self.modern and version == "v1") or (
+                    self.modern and version == "v1beta1"
+                ):
+                    raise ApiException(status=404)
+                return {"items": []}
+            return super().list_namespaced_custom_object(**kwargs)
+
+    custom = UpgradingEndpointSliceCustom(collections={
+        ("apps", "v1", "deployments"): [],
+        ("apps", "v1", "replicasets"): [],
+    })
+    client = make_client(custom=custom)
+    client.runtime_cleanup_resources("install-a")
+    custom.modern = True
+
+    client.runtime_cleanup_resources("install-a")
+
+    versions = [
+        call["version"] for call in custom.calls
+        if call.get("group") == "discovery.k8s.io"
+    ]
+    assert versions == ["v1", "v1beta1", "v1beta1", "v1"]
+    assert client._endpoint_slice_version == "v1"
 
 
 def test_runtime_metrics_batches_pods_metrics_and_nodes_and_requires_exact_uid():

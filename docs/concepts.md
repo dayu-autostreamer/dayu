@@ -187,14 +187,18 @@ an install-id mismatch is rejected. The request is idempotent when this state is
 separate. Scheduler failure cannot make them an uninstall lock because Backend proceeds with complete exact-UID
 teardown. After the best-effort fence and clear, Scheduler itself is deleted before the remaining workers; this is the
 definitive admission fence when its metadata APIs were unavailable. RuntimeService deletion uses UID preconditions and
-`Background` propagation: lifecycle completion waits only for apiserver acceptance or proof that the exact UID is
-absent, while dependent-object garbage collection continues asynchronously.
+`Foreground` propagation. Apiserver acceptance starts deletion but is not lifecycle completion: Backend retains the
+RuntimeSession and observes the old install's RuntimeServices, Deployments, ReplicaSets, Pods, Services, Endpoints, and
+EndpointSlices. Only a complete empty snapshot removes the Session and reopens install admission. An unchanged resource
+set eventually produces a persistent delayed warning while reconciliation continues with backoff; it is not a timeout
+that force-deletes resources or pretends uninstall succeeded.
 
 ## Runtime Session
 
 Backend persists the control-plane transaction in the `dayu-runtime-session` ConfigMap. The compact record includes
 the install/operation ids, phase, active directory revision, active/pending RuntimeService identities, normalized
-source deployment, at most one lease-protected retirement, and an exact-UID cleanup backlog. During the crash-sensitive
+source deployment, at most one lease-protected retirement, an exact-UID rollout cleanup backlog, and durable uninstall
+progress containing timestamps plus the remaining Kubernetes object identities. During the crash-sensitive
 `publishing-rollout` phase, the retirement first records the old revision and exact ownership with no deadline. The
 Scheduler proposal commit then atomically switches routes, creates the immutable deadline, and clamps old leases;
 Backend persists that returned deadline and fencing result when it finalizes the session. After the deadline, deletion
@@ -211,13 +215,21 @@ contain a mutable route cache. Generator obtains exact routes from Scheduler and
 revision and routes into each `Task`.
 
 The task is protected by a lease keyed by `(directory_revision, root_uuid)`. Generator acquires it once before first
-submission. Controller and Processor do not access the lease API. Distributor renews once immediately before durable
-result persistence, requires a successful Scheduler scenario acknowledgement, and then releases. A transient acquire
-failure drops only the current task and leaves the Generator loop running; a retired response requests a fresh schedule
-for the next ingestion round. The normal TTL covers end-to-end processing. Redeployment gives the previous revision a
-bounded immutable deadline that clamps every old lease and remains the hard upper bound; expiry revokes any remainder
-and releases the rollout gate. Uninstall does not wait for lease count or expiry: it requests an immediate fence and
-proceeds with exact-UID administrative teardown.
+submission. A transient admission failure retains the already materialized task and applies source backpressure; only
+an explicit retired-revision fence rejects it and requests a fresh schedule. Controller and Processor do not access
+the lease API. Distributor renews once immediately before durable result persistence and then performs Scheduler
+scenario feedback and release as post-persistence completion work. The normal TTL covers end-to-end processing.
+Redeployment gives the previous revision a bounded immutable deadline that clamps every old lease and remains the hard
+upper bound; expiry revokes any remainder and releases the rollout gate. Uninstall does not wait for lease count or
+expiry: it requests an immediate fence and proceeds with exact-UID administrative teardown.
+
+`simple` queue means queued Task metadata is never intentionally evicted, but end-to-end ownership also requires its
+media artifact and every network handoff. Dayu therefore uses the existing lease identity for one immutable node-local
+artifact, publishes uploads atomically, and transfers Task ownership only after an exact task-UUID ACK. A Processor
+requeues inference failures, retains a computed result while Controller is unavailable, and never treats `200 null` as
+success. Parallel join arrivals are idempotent by predecessor and remain in Redis until their merged next hop is
+acknowledged. Artifacts with no progress for one full lease TTL are reclaimed by the Controller cleaner; intermediate
+branches, queue clearing, Controller startup, and Controller shutdown do not delete them.
 
 Runtime Pods set `automountServiceAccountToken: false`. Runtime code therefore has no Kubernetes package, kubeconfig,
 Pod/Node/Service discovery, topology cache, or forced-refresh API.

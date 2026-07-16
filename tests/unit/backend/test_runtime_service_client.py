@@ -359,6 +359,32 @@ def test_delete_many_accepts_uid_guarded_background_deletes_without_waiting_for_
     assert lists == []
 
 
+def test_delete_many_submits_uid_guarded_foreground_deletes_for_uninstall():
+    item = runtime_obj("runtime-a", resource_version="3")
+    item["metadata"]["uid"] = "uid-a"
+    api = FakeAPI([item])
+    client = RuntimeServiceClient("dayu", api=api)
+
+    assert client.delete_many(
+        {"runtime-a": "uid-a"},
+        propagation_policy="Foreground",
+    ) is True
+
+    delete = next(kwargs for operation, kwargs in api.calls if operation == "delete")
+    assert delete["body"]["preconditions"] == {"uid": "uid-a"}
+    assert delete["body"]["propagationPolicy"] == "Foreground"
+
+
+def test_delete_many_rejects_unknown_propagation_policy():
+    client = RuntimeServiceClient("dayu", api=FakeAPI([]))
+
+    with pytest.raises(ValueError, match="propagation_policy"):
+        client.delete_many(
+            {"runtime-a": "uid-a"},
+            propagation_policy="Orphan",
+        )
+
+
 def test_delete_many_shares_one_deadline_across_deletes_list_and_watch(monkeypatch):
     class Clock:
         now = 0.0

@@ -91,7 +91,7 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | --- | --- | --- | --- | --- |
 | `POST` | `/install` | Resolve policy + datasource mapping and deploy the runtime stack. | JSON body described below, including a client-generated canonical UUID `install_id` | `{state, msg, warning?}`; success acknowledges this request, while `/install_state` remains the lifecycle source of truth |
 | `POST` | `/stop_service` | Accept an asynchronous uninstall: close query admission, persist or expose cancellation intent, and start background teardown. | JSON `{install_id}` binds the command to the observed target; an omitted id is a trusted system-teardown fallback | `{state, msg}`; success means accepted or already absent, not completed |
-| `GET` | `/install_state` | Check install admission, session ownership, and lifecycle phase; failed/recovering sessions remain `install` until safely uninstalled. | None | `{state, phase, ready, install_id, install_pending, operation_id, updated_at, active_directory_revision, active_runtime_count, pending_runtime_count, cleanup_runtime_count, retirement_revision, retirement_deadline, last_error}` |
+| `GET` | `/install_state` | Check install admission, session ownership, lifecycle phase, and uninstall cleanup diagnostics; failed/recovering sessions remain `install` until safely uninstalled. | None | `{state, phase, ready, install_id, install_pending, operation_id, updated_at, active_directory_revision, active_runtime_count, pending_runtime_count, cleanup_runtime_count, cleanup, retirement_revision, retirement_deadline, last_error}` |
 | `POST` | `/submit_query` | Open datasource playback for a datasource label and begin result collection. | JSON body with `source_label` | `{state, msg}` |
 | `POST` | `/stop_query` | Stop datasource playback and clear in-memory task results. | None | `{state, msg}` |
 | `GET` | `/query_state` | Get query state for the current datasource. | None | `{state: "open"|"close"|"disabled", source_label}` |
@@ -131,6 +131,12 @@ accepted operation, `phase` is `cancelling-install`, `preparing-uninstall`, `uni
 `finalizing-uninstall`, and `last_error` reports the latest background failure while the reconcile worker keeps the
 exact ownership record for retry. `preparing-uninstall` still owns the same target and is neither durable acceptance nor
 a completion signal; its new `operation_id` is the delivery acknowledgement that prevents duplicate in-flight POSTs.
+During durable cleanup, `cleanup.status` is `progressing` or `delayed` and includes the start/last-progress timestamps,
+seconds without progress, remaining counts by Kubernetes kind, affected Pod nodes, and a bounded list of remaining objects with
+deletion timestamps and finalizers. Object details are deterministically limited to 25 entries; `remaining_count`,
+`remaining_by_kind`, and `truncated_count` preserve the complete aggregate. `delayed` is a persistent warning after 180
+seconds without the remaining identity set shrinking; it never changes the lifecycle phase, ends reconciliation, or
+releases install admission.
 
 `POST /install` expects a deployment request shaped like:
 
@@ -305,14 +311,15 @@ array. Before the first successful sample, visualizers use their existing empty/
 - `POST /install` fails closed if any required processor/cloud target lacks a Ready Sedna LC/EdgeMesh agent, if a fixed
   source is outside the resolved source permission set, if activation identity is
   incomplete, or if RuntimeDirectory readback differs from the published revision/hash.
-- `POST /stop_service` is idempotent admission for a background operation and never waits for task leases or resource
-  deletion. Backend subsequently deletes generators first, sends
+- `POST /stop_service` is idempotent admission for a background operation and never keeps the HTTP request open for task
+  leases or resource deletion. Backend subsequently deletes generators first, sends
   `deadline=now` retirement fences for every possibly published revision, and attempts the install-id-guarded
   RuntimeDirectory/proposal clear. Fence or clear failure is logged and does not veto administrative teardown. Backend
-  then persists `finalizing-uninstall`, deletes Scheduler by exact UID as the definitive admission fence, deletes the
-  remaining workers by exact UID, and removes `dayu-runtime-session` after every UID-guarded `Background` DELETE is
-  accepted by the apiserver or the exact target is already absent. It does not wait for dependent objects to disappear
-  physically. An API rejection or timeout preserves the session phase and error for retry; retrying
+  then persists `finalizing-uninstall`, submits UID-guarded `Foreground` deletion for Scheduler as the definitive
+  admission fence, and submits the remaining workers. The background reconciler removes `dayu-runtime-session` only
+  after a complete namespace snapshot proves that the old install's RuntimeServices, Deployments, ReplicaSets, Pods,
+  Services, Endpoints, and EndpointSlices are all absent. A remaining object is normal pending work; an API rejection,
+  observation failure, or timeout preserves the session and error for retry. Retrying
   `finalizing-uninstall` does not require a live Scheduler API.
   If install is still activating or planning, stop first cancels its lifecycle token and then enters serialized
   cleanup. Pre-publication cleanup uses the persisted install identity and exact UID discovery without calling an

@@ -82,6 +82,9 @@ class FakeCluster:
         self.inventory_timeouts = []
         self.preflight_calls = []
         self.metric_calls = []
+        self.cleanup_resources = []
+        self.cleanup_calls = []
+        self.cleanup_error = None
 
     def node_inventory(self, request_timeout_seconds=None):
         self.inventory_calls += 1
@@ -122,6 +125,14 @@ class FakeCluster:
             request_timeout_seconds,
         ))
         return {}
+
+    def runtime_cleanup_resources(
+        self, install_id, ownership=None, request_timeout_seconds=None,
+    ):
+        self.cleanup_calls.append((install_id, copy.deepcopy(ownership), request_timeout_seconds))
+        if self.cleanup_error is not None:
+            raise self.cleanup_error
+        return copy.deepcopy(self.cleanup_resources)
 
 
 class FakeRenderer:
@@ -314,6 +325,7 @@ class FakeRuntimeClient:
         self.created = {}
         self.wait_batches = []
         self.deleted = []
+        self.delete_batches = []
         self.delete_many_failures = {}
 
     def create(self, manifest, request_timeout_seconds=None):
@@ -343,6 +355,7 @@ class FakeRuntimeClient:
         return True
 
     def delete_many(self, identities, **kwargs):
+        self.delete_batches.append((copy.deepcopy(dict(identities)), copy.deepcopy(kwargs)))
         components = {
             (self.created.get(name, {}).get("spec") or {}).get("component", "unknown")
             for name in identities
@@ -2161,6 +2174,149 @@ def test_uninstall_retries_route_target_deletion_from_finalizing_state():
 
     assert sessions.deleted is True
     assert runtime.created == {}
+
+
+def test_uninstall_keeps_session_until_the_complete_resource_barrier_is_empty():
+    orchestrator, cluster, runtime, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    cluster.cleanup_resources = [{
+        "kind": "Pod",
+        "name": "detect-pod",
+        "uid": "pod-uid",
+        "node": "edge-a",
+        "deletion_timestamp": "2026-07-16T00:00:00Z",
+        "finalizers": ["example.io/cleanup"],
+    }]
+
+    assert orchestrator.uninstall() is True
+
+    pending = sessions.stored.session
+    assert pending.phase == "finalizing-uninstall"
+    assert pending.uninstall.deletion_submitted is True
+    assert [item.kind for item in pending.uninstall.remaining] == ["Pod"]
+    assert sessions.deleted is False
+    assert runtime.created == {}
+    assert all(
+        kwargs["propagation_policy"] == "Foreground"
+        for identities, kwargs in runtime.delete_batches
+        if identities
+    )
+
+    revision = sessions.revision
+    delete_batch_count = len(runtime.delete_batches)
+    assert orchestrator.uninstall() is False
+    assert sessions.revision == revision
+    assert len(runtime.delete_batches) == delete_batch_count
+
+    cluster.cleanup_resources = []
+    assert orchestrator.uninstall() is True
+    assert sessions.deleted is True
+    assert orchestrator.current_session() is None
+
+
+def test_uninstall_barrier_keeps_runtime_service_with_missing_labels():
+    orchestrator, _, runtime, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    for manifest in runtime.created.values():
+        manifest["metadata"]["labels"] = {}
+    runtime.delete_many = lambda identities, **kwargs: True
+
+    orchestrator.uninstall()
+
+    pending = sessions.stored.session
+    assert pending.phase == "finalizing-uninstall"
+    assert pending.uninstall.deletion_submitted is True
+    assert pending.uninstall.remaining
+    assert {
+        resource.kind for resource in pending.uninstall.remaining
+    } == {"RuntimeService"}
+    assert sessions.deleted is False
+
+
+def test_fresh_orchestrator_resumes_finalizing_barrier_without_resubmitting_deletes():
+    orchestrator, cluster, runtime, sessions, scheduler, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    cluster.cleanup_resources = [{
+        "kind": "Pod", "name": "processor-pod", "uid": "pod-uid",
+    }]
+    orchestrator.uninstall()
+    assert sessions.stored.session.uninstall.deletion_submitted is True
+    delete_batches = len(runtime.delete_batches)
+    scheduler_calls = len(scheduler.calls)
+
+    recovered = RuntimeOrchestrator(
+        orchestrator.template_helper,
+        "dayu",
+        cluster_client=cluster,
+        runtime_client=runtime,
+        session_store=sessions,
+        request=scheduler,
+        clock=orchestrator._clock,
+        wall_clock=orchestrator._wall_clock,
+    )
+
+    assert recovered.uninstall() is False
+    assert len(runtime.delete_batches) == delete_batches
+    assert len(scheduler.calls) == scheduler_calls
+    assert sessions.stored.session.phase == "finalizing-uninstall"
+
+
+def test_uninstall_progress_clock_moves_only_when_the_resource_identity_set_shrinks():
+    clock = FakeClock()
+    orchestrator, cluster, _, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]}, clock=clock,
+    )
+    install(orchestrator, "detect")
+    first = {
+        "kind": "Pod", "name": "first", "uid": "first-uid",
+    }
+    second = {
+        "kind": "Service", "name": "second", "uid": "second-uid",
+    }
+    replacement = {
+        "kind": "Pod", "name": "replacement", "uid": "replacement-uid",
+    }
+    cluster.cleanup_resources = [first, second]
+    orchestrator.uninstall()
+    initial_progress_at = sessions.stored.session.uninstall.last_progress_at
+
+    clock.value += 10
+    cluster.cleanup_resources = [replacement, second]
+    assert orchestrator.uninstall() is False
+    assert sessions.stored.session.uninstall.last_progress_at == initial_progress_at
+
+    clock.value += 10
+    cluster.cleanup_resources = [replacement]
+    assert orchestrator.uninstall() is True
+    assert sessions.stored.session.uninstall.last_progress_at != initial_progress_at
+
+
+def test_uninstall_observation_error_is_fail_closed_and_identical_error_is_not_rewritten():
+    orchestrator, cluster, _, sessions, _, _ = make_orchestrator(
+        {"detect": ["edge-a"]},
+    )
+    install(orchestrator, "detect")
+    cluster.cleanup_error = RuntimeError("cleanup inventory unavailable")
+
+    with pytest.raises(RuntimeError, match="inventory unavailable"):
+        orchestrator.uninstall()
+
+    failed = sessions.stored.session
+    assert failed.phase == "finalizing-uninstall"
+    assert failed.last_error == "cleanup inventory unavailable"
+    assert sessions.deleted is False
+    revision = sessions.revision
+
+    with pytest.raises(RuntimeError, match="inventory unavailable"):
+        orchestrator.uninstall()
+
+    assert sessions.revision == revision
 
 
 def test_install_checks_shared_operation_deadline_between_scheduler_decisions():

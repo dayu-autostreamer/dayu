@@ -37,6 +37,21 @@ const snapshot = (overrides = {}) => ({
 	install_pending: false,
 	operation_id: '',
 	last_error: '',
+	cleanup: null,
+	...overrides,
+});
+
+const cleanup = (overrides = {}) => ({
+	status: 'progressing',
+	started_at: '2026-07-16T00:00:00+00:00',
+	last_progress_at: '2026-07-16T00:01:00+00:00',
+	seconds_without_progress: 30,
+	warning_after_seconds: 180,
+	remaining_count: 1,
+	remaining_by_kind: { Pod: 1 },
+	affected_nodes: ['edge-a'],
+	blocking_objects: [{ kind: 'Pod', name: 'processor-pod', uid: 'pod-uid', node: 'edge-a' }],
+	truncated_count: 0,
 	...overrides,
 });
 
@@ -264,6 +279,154 @@ test('preparing-uninstall stops duplicate command delivery before durable cleanu
 	assert.equal(store.canUninstall, false);
 	assert.equal(resolved, true);
 	assert.equal(await observed, true);
+});
+
+test('delayed cleanup remains uninstalling and completes only when the target identity disappears', async (context) => {
+	useSnapshots(context, [
+		snapshot({
+			state: 'install',
+			phase: 'active',
+			ready: true,
+			install_id: INSTALL_A,
+			operation_id: 'install-op',
+		}),
+		snapshot({
+			state: 'install',
+			phase: 'finalizing-uninstall',
+			install_id: INSTALL_A,
+			operation_id: 'stop-op',
+			cleanup: cleanup(),
+		}),
+		snapshot({
+			state: 'install',
+			phase: 'finalizing-uninstall',
+			install_id: INSTALL_A,
+			operation_id: 'stop-op',
+			cleanup: cleanup({ status: 'delayed', seconds_without_progress: 180 }),
+		}),
+		snapshot(),
+	]);
+	const store = createStore();
+	await hydrate(store);
+	const actionId = store.beginUninstall();
+	const completion = store.waitUntilUninstallCompletes(actionId);
+	let resolved = false;
+	void completion.then(() => {
+		resolved = true;
+	});
+
+	await store.refresh({ fresh: true });
+	assert.equal(store.cleanupDelayed, false);
+	assert.equal(store.isUninstalling, true);
+	assert.equal(store.canInstall, false);
+	assert.equal(store.canUninstall, false);
+	await store.refresh({ fresh: true });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(store.cleanupDelayed, true);
+	assert.equal(store.cleanup.remaining_count, 1);
+	assert.equal(resolved, false);
+
+	await store.refresh({ fresh: true });
+	assert.equal(await completion, true);
+	store.finishUninstall(actionId);
+	assert.equal(store.cleanup, null);
+	assert.equal(store.canInstall, true);
+});
+
+test('another window derives delayed cleanup entirely from the shared server snapshot', async (context) => {
+	useSnapshots(context, [
+		snapshot({
+			state: 'install',
+			phase: 'finalizing-uninstall',
+			install_id: INSTALL_A,
+			operation_id: 'stop-op',
+			cleanup: cleanup({ status: 'delayed', seconds_without_progress: 240 }),
+		}),
+	]);
+	const store = createStore();
+
+	await hydrate(store);
+
+	assert.equal(store.uninstallRequested, false);
+	assert.equal(store.isUninstalling, true);
+	assert.equal(store.cleanupDelayed, true);
+	assert.equal(store.canInstall, false);
+	assert.equal(store.canUninstall, false);
+});
+
+test('leaving the page detaches only the local completion waiter', async (context) => {
+	useSnapshots(context, [
+		snapshot({
+			state: 'install',
+			phase: 'active',
+			ready: true,
+			install_id: INSTALL_A,
+			operation_id: 'install-op',
+		}),
+		snapshot({
+			state: 'install',
+			phase: 'finalizing-uninstall',
+			install_id: INSTALL_A,
+			operation_id: 'stop-op',
+			cleanup: cleanup({ status: 'delayed' }),
+		}),
+	]);
+	const store = createStore();
+	await hydrate(store);
+	const actionId = store.beginUninstall();
+	const completion = store.waitUntilUninstallCompletes(actionId);
+	await store.refresh({ fresh: true });
+
+	store.detachUninstallWaiter();
+
+	assert.equal(await completion, false);
+	assert.equal(store.uninstallRequested, false);
+	assert.equal(store.isUninstalling, true);
+	assert.equal(store.canInstall, false);
+});
+
+test('partial cleanup diagnostics are normalized at the fetch boundary', async (context) => {
+	useSnapshots(context, [
+		snapshot({
+			state: 'install',
+			phase: 'finalizing-uninstall',
+			install_id: INSTALL_A,
+			cleanup: {
+				status: 'delayed',
+				remaining_count: 2,
+				affected_nodes: null,
+				blocking_objects: null,
+			},
+		}),
+	]);
+	const store = createStore();
+
+	await hydrate(store);
+
+	assert.equal(store.cleanupDelayed, true);
+	assert.equal(store.cleanup.remaining_count, 2);
+	assert.deepEqual(store.cleanup.affected_nodes, []);
+	assert.deepEqual(store.cleanup.blocking_objects, []);
+	assert.equal(store.cleanup.truncated_count, 0);
+	assert.equal(store.isUninstalling, true);
+});
+
+test('cleanup diagnostics never leak into an active generation', async (context) => {
+	useSnapshots(context, [
+		snapshot({
+			state: 'install',
+			phase: 'active',
+			ready: true,
+			install_id: INSTALL_A,
+			cleanup: cleanup({ status: 'delayed' }),
+		}),
+	]);
+	const store = createStore();
+
+	await hydrate(store);
+
+	assert.equal(store.cleanup, null);
+	assert.equal(store.cleanupDelayed, false);
 });
 
 test('a stop admission that reverts to a failed target releases the uninstall action', async (context) => {

@@ -1224,6 +1224,92 @@ def test_runtime_reconcile_worker_completes_an_accepted_uninstall(
     assert backend_core_instance._runtime_reconcile_thread is None
 
 
+def test_runtime_reconcile_backs_off_when_uninstall_resources_make_no_progress(
+        backend_core_instance,
+):
+    class FourWaitEvent:
+        def __init__(self):
+            self.waits = []
+
+        def wait(self, timeout):
+            self.waits.append(timeout)
+            return len(self.waits) >= 4
+
+        @staticmethod
+        def is_set():
+            return False
+
+    event = FourWaitEvent()
+    orchestrator = backend_core_instance.runtime_orchestrator
+    orchestrator.session.phase = "finalizing-uninstall"
+    orchestrator.session.uninstall = SimpleNamespace(
+        deletion_submitted=True,
+        remaining=(SimpleNamespace(kind="Pod", name="pod-a", uid="pod-uid"),),
+    )
+    calls = []
+
+    def pending_uninstall(expected_install_id=""):
+        calls.append(expected_install_id)
+        return False
+
+    orchestrator.uninstall = pending_uninstall
+    backend_core_instance._runtime_reconcile_stop_event = event
+    backend_core_instance.processor_redeployment_interval_s = 0
+
+    backend_core_instance.run_runtime_reconcile(event, "install-a")
+
+    assert event.waits == [1.0, 2.0, 4.0, 8.0]
+    assert calls == ["install-a", "install-a", "install-a"]
+
+
+def test_runtime_reconcile_does_not_treat_cleanup_identity_churn_as_progress(
+        backend_core_instance,
+):
+    class FourWaitEvent:
+        def __init__(self):
+            self.waits = []
+
+        def wait(self, timeout):
+            self.waits.append(timeout)
+            return len(self.waits) >= 4
+
+        @staticmethod
+        def is_set():
+            return False
+
+    event = FourWaitEvent()
+    orchestrator = backend_core_instance.runtime_orchestrator
+    orchestrator.session.phase = "finalizing-uninstall"
+    orchestrator.session.uninstall = SimpleNamespace(
+        deletion_submitted=True,
+        remaining=(SimpleNamespace(kind="Pod", name="pod-a", uid="pod-uid-0"),),
+    )
+    calls = []
+
+    def pending_uninstall(expected_install_id=""):
+        calls.append(expected_install_id)
+        orchestrator.session.uninstall = SimpleNamespace(
+            deletion_submitted=True,
+            remaining=(
+                SimpleNamespace(
+                    kind="Pod",
+                    name="pod-a",
+                    uid=f"pod-uid-{len(calls)}",
+                ),
+            ),
+        )
+        return False
+
+    orchestrator.uninstall = pending_uninstall
+    backend_core_instance._runtime_reconcile_stop_event = event
+    backend_core_instance.processor_redeployment_interval_s = 0
+
+    backend_core_instance.run_runtime_reconcile(event, "install-a")
+
+    assert event.waits == [1.0, 2.0, 4.0, 8.0]
+    assert calls == ["install-a", "install-a", "install-a"]
+
+
 def test_backend_close_cancels_query_runtime_worker_and_telemetry(backend_core_instance):
     reconcile_stop = threading.Event()
     query_stop = threading.Event()

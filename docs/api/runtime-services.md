@@ -11,7 +11,9 @@ This document describes the internal APIs used by Dayu runtime components. These
 | Scheduler/resource updates | Scheduler endpoints often receive JSON encoded into a form field named `data`. |
 | Runtime bootstrap | `DAYU_RUNTIME_BOOTSTRAP` supplies immutable install context and static infrastructure endpoints; it is never a Kubernetes discovery cache. |
 | Exact task routing | `Task` serializes `runtime_directory_revision`, `runtime_routes`, and `root_uuid`. Controller/processor routes must be complete exact identities. |
-| Task ownership and retirement | Generator acquires one Scheduler lease keyed by `(runtime_directory_revision, root_uuid)`; Distributor performs the final renew/persist/scenario-ack/release sequence. Backend may place one immutable deadline on an old revision. |
+| Task ownership and retirement | Generator acquires one Scheduler lease keyed by `(runtime_directory_revision, root_uuid)`; Distributor performs final renew/persist followed by scenario/release completion. Backend may place one immutable deadline on an old revision. |
+| Task delivery ACK | A task write succeeds only with `{accepted: true, task_uuid: "<exact task uuid>"}`. `200 null`, a mismatched UUID, timeout, or connection failure never transfers ownership. |
+| Task artifact | All branches of one lease identity share one immutable, atomically published node-local artifact. Different roots/revisions cannot reuse the same temp path. |
 
 Runtime service code does not import Kubernetes, load a kubeconfig, or discover Pods, Nodes, or Services. Missing or
 ambiguous task routes fail closed.
@@ -23,17 +25,19 @@ Implementation entrypoint: `dependency/core/controller/controller_server.py`
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `POST` | `/check` | Check processors referenced by exact local runtime routes. | Optional form `data` with JSON containing `runtime_routes` | `{status: "ok"|"not ok"}` |
-| `POST` | `/submit_task` | Accept a new task from generator or another controller. | Multipart with `file` and serialized `data` | Empty `200` response after background enqueue |
-| `POST` | `/process_return_task` | Accept a processed task returned by processor. | Form field `data` with serialized task | Empty `200` response after background enqueue |
+| `POST` | `/submit_task` | Accept a new task from generator or another controller. | Multipart with `file` and serialized `data` | Exact task delivery ACK after downstream ownership transfer |
+| `POST` | `/process_return_task` | Accept a processed task returned by processor. | Form field `data` with serialized task | Exact task delivery ACK after Redis retention or downstream ownership transfer |
 | `POST` | `/processor_queues_clear` | Fan out a dry-run or destructive queue-clear request through exact local processor routes. | Form `data` with `{runtime_routes,services?,timeout_s?,reason?,max_count?,dry_run?}` | Aggregate `{ok,device,service_count,matched_count,cleared_count,remaining_count,services}` |
 
 Operational notes:
 
-- The FastAPI lifespan owns temp-file cleanup: it clears the temp directory at startup and shutdown, and is the only
-  place that starts or stops a `FileCleaner`.
-- If `DELETE_TEMP_FILES` is enabled, that single lifespan-managed cleaner uses the task-lease TTL, rather than a fixed
-  short timeout, so a legitimate long-running processor cannot lose its controller-side file mid-task.
-- `submit_task` stores the uploaded file in the temp directory and forwards the task into the controller pipeline asynchronously.
+- The FastAPI lifespan owns one task-lease-TTL `FileCleaner`. Controller startup, shutdown, intermediate DAG branches,
+  and processor queue clearing never delete the shared artifact directory or a sibling branch's artifact.
+- Uploads are atomically published with `os.replace`; active Controller/Processor transitions refresh the artifact
+  timestamp. Files with no progress for one full task-lease TTL are reclaimed without another cleanup setting.
+- `submit_task` returns only after the file is complete and every selected next hop has acknowledged ownership.
+- Parallel joins use predecessor service names as idempotency keys. A ready join remains in Redis until its merged task
+  is acknowledged downstream, so retrying one branch cannot consume or over-count the barrier.
 - Controller resolves downstream controller/processor targets only from the Task's exact route snapshot. It does not
   call the task-lease API; a missing or invalid route stops forwarding.
 
@@ -44,8 +48,8 @@ Implementation entrypoint: `dependency/core/processor/processor_server.py`
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `GET` | `/health` | Basic health probe. | None | `{status: "ok"}` |
-| `POST` | `/predict` | Queue a task that includes a file payload. | Multipart with `file` and serialized `data` | Empty `200` response after background enqueue |
-| `POST` | `/predict_local` | Queue a task that does not require an uploaded file. | Form field `data` | Empty `200` response after background enqueue |
+| `POST` | `/predict` | Queue a task that includes a file payload. | Multipart with `file` and serialized `data` | Exact task delivery ACK after atomic file publication and queue insertion |
+| `POST` | `/predict_local` | Queue a task that uses the shared local artifact. | Form field `data` | Exact task delivery ACK after artifact validation and queue insertion |
 | `POST` | `/predict_and_return` | Process a task synchronously and return the serialized result. | Multipart with `file` and serialized `data` | Serialized task string or `null` |
 | `GET` | `/queue_length` | Return current queue size. | None | Integer |
 | `POST` | `/queue_clear` | Preview or remove queued processor tasks. | Form field `data` with JSON such as `{"dry_run": true, "max_count": 10, "reason": "manual_queue_clear"}` | Queue clear summary with matched, cleared, remaining, and dropped task metadata |
@@ -57,6 +61,10 @@ Operational notes:
 - `PROCESSOR_NAME` selects the processor implementation.
 - `PRO_QUEUE_NAME` selects the queue strategy.
 - A background thread drains the task queue and posts results back to controller through `/process_return_task`.
+  A non-dropping queue requeues processing failures/empty results, and a completed inference result stays in the worker
+  until Controller returns the exact ACK; delivery retries do not run inference again.
+- Fork UUIDs are deterministic for one root-task DAG stage. Processor remembers accepted UUIDs for one lease
+  TTL and ACKs a replay without enqueuing it again, giving the HTTP path at-least-once delivery without duplicate inference.
 - Processor validates the exact task route and does not call the task-lease API or resolve service placement from
   local or cluster state. Normal end-to-end execution is covered by the lease TTL acquired by Generator.
 - `/queue_clear` supports dry-run previews when the selected queue exposes `get_all_without_drop()`. Destructive clears
@@ -166,9 +174,11 @@ session's retryable cleanup backlog; an accepted request means the apiserver acc
 the exact UID is already absent, not that every dependent object has physically disappeared. The cleanup lane advances
 independently from retirement and does not hold the next rollout gate. Normal uninstall sends `deadline=now` fences
 without waiting for lease release, attempts the install-scoped directory/proposal clear, and proceeds with exact-UID
-teardown even when Scheduler is unavailable. Scheduler is then deleted before the remaining workers as the definitive
-admission fence. Every RuntimeService name includes both an installation digest and its revision, so a new installation
-cannot reuse a name while an old installation's dependents are still being garbage-collected.
+`Foreground` teardown even when Scheduler is unavailable. Scheduler is then deleted before the remaining workers as the
+definitive admission fence. Unlike the rollout cleanup lane, uninstall retains its RuntimeSession until a complete
+resource snapshot proves that every RuntimeService and its Deployment, ReplicaSet, Pod, Service, Endpoints, and
+EndpointSlice dependents are absent. Every RuntimeService name includes both an installation digest and its revision,
+but name separation is not used as permission to overlap old and new install generations.
 Expired lease entries are pruned on access. In-memory storage is reserved for explicit test/local-harness injection;
 it is never an automatic production fallback.
 
@@ -197,7 +207,7 @@ Implementation entrypoint: `dependency/core/distributor/distributor_server.py`
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `POST` | `/distribute` | Persist a finished task and forward scenario data to scheduler. | Multipart with `file` and serialized `data` | Empty `200` response after background processing |
+| `POST` | `/distribute` | Persist a finished task and forward scenario data to scheduler. | Multipart with `file` and serialized `data` | Exact task delivery ACK after durable SQLite persistence |
 | `GET` | `/result` | Incrementally fetch stored task results. | JSON body `{"size","time_ticket"}` | `{result, time_ticket, size}` |
 | `GET` | `/file` | Download a generated file and schedule it for deletion. | JSON body `{"file":"<path>"}` | File response |
 | `GET` | `/result_by_time` | Query results for a time range. | JSON body `{"start_time","end_time","source_id?"}` | `{result, size}` |
@@ -206,10 +216,11 @@ Implementation entrypoint: `dependency/core/distributor/distributor_server.py`
 | `POST` | `/clear_database` | Clear the result database. | None | `null` |
 | `GET` | `/is_database_empty` | Check whether the result database contains records. | None | Boolean |
 
-Distributor first renews the task lease to reject a result that arrived after its revision retired. It then stores the
-result durably, requires Scheduler to return `{"accepted": true}` for the scenario update, and releases the lease. A
-failed final renewal drops the result before persistence; a release transport failure is logged and left to TTL expiry.
-The old-revision retirement deadline remains the hard upper bound during redeployment.
+Distributor first accepts an idempotent retry already stored for the same root identity, or renews the task lease to
+reject a new result that arrived after its revision retired and then stores it durably. Durable persistence defines the
+delivery ACK boundary. Scheduler scenario feedback and lease release are post-persistence completion work: failures are
+reported but cannot turn an already stored result back into a lost task; an unreleased lease converges through its TTL
+or immutable retirement deadline.
 
 Implementation note:
 

@@ -556,14 +556,14 @@ class RuntimeServiceClient:
         identities: Mapping[str, Optional[str]],
         timeout_seconds: float = 120,
         cancel_event=None,
+        propagation_policy: str = "Background",
     ) -> bool:
         """Submit exact UID-guarded deletions inside one shared deadline.
 
         Kubernetes has no collection delete with per-object UID preconditions,
         so the requests remain one per immutable resource. A successful return
         means the apiserver accepted every deletion (or proved the exact UID is
-        already absent); Background garbage collection may still be removing
-        dependents. Lifecycle completion must not wait on remote-node finalizers.
+        already absent); the caller still owns any dependent-resource barrier.
         """
 
         identities = {
@@ -581,6 +581,8 @@ class RuntimeServiceClient:
         timeout_seconds = float(timeout_seconds)
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
+        if propagation_policy not in {"Background", "Foreground"}:
+            raise ValueError("propagation_policy must be Background or Foreground")
         expected = set(identities)
         deadline = time.monotonic() + timeout_seconds
 
@@ -618,7 +620,7 @@ class RuntimeServiceClient:
                     name,
                     identities[name],
                     request_timeout_provider=remaining_request_timeout,
-                    propagation_policy="Background",
+                    propagation_policy=propagation_policy,
                 )
             except Exception:
                 _raise_if_cancelled(cancel_event)

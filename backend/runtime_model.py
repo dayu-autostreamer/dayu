@@ -14,6 +14,7 @@ import math
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 from core.lib.network import connection_host
@@ -48,6 +49,17 @@ def _optional_text(value: Any, *, max_length: int = 253) -> str:
     value = str(value or "").strip()
     if len(value) > max_length:
         raise ValueError(f"value must not exceed {max_length} characters")
+    return value
+
+
+def _require_timestamp(name: str, value: Any) -> str:
+    value = _require_text(name, value, max_length=128)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{name} must include a timezone")
     return value
 
 
@@ -529,6 +541,132 @@ class RuntimeRetirement:
 
 
 @dataclass(frozen=True)
+class RuntimeCleanupResource:
+    """One Kubernetes object that still belongs to an uninstalling session."""
+
+    kind: str
+    name: str
+    uid: str
+    node: str = ""
+    deletion_timestamp: str = ""
+    finalizers: Tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self):
+        object.__setattr__(self, "kind", _require_text("kind", self.kind, max_length=63))
+        object.__setattr__(self, "name", _require_text("name", self.name))
+        object.__setattr__(self, "uid", _require_text("uid", self.uid, max_length=128))
+        object.__setattr__(self, "node", _optional_text(self.node))
+        object.__setattr__(
+            self,
+            "deletion_timestamp",
+            _optional_text(self.deletion_timestamp, max_length=128),
+        )
+        object.__setattr__(
+            self,
+            "finalizers",
+            tuple(sorted({
+                _require_text("finalizer", value)
+                for value in (self.finalizers or ())
+            })),
+        )
+
+    @property
+    def identity(self) -> Tuple[str, str, str]:
+        return self.kind, self.name, self.uid
+
+    def to_dict(self) -> Dict[str, Any]:
+        value: Dict[str, Any] = {
+            "kind": self.kind,
+            "name": self.name,
+            "uid": self.uid,
+        }
+        if self.node:
+            value["node"] = self.node
+        if self.deletion_timestamp:
+            value["deletion_timestamp"] = self.deletion_timestamp
+        if self.finalizers:
+            value["finalizers"] = list(self.finalizers)
+        return value
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeCleanupResource":
+        return cls(
+            kind=data.get("kind", ""),
+            name=data.get("name", ""),
+            uid=data.get("uid", ""),
+            node=data.get("node", ""),
+            deletion_timestamp=data.get(
+                "deletion_timestamp", data.get("deletionTimestamp", ""),
+            ),
+            finalizers=tuple(data.get("finalizers") or ()),
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeUninstallProgress:
+    """Durable cleanup barrier and progress clock for one uninstall."""
+
+    started_at: str
+    last_progress_at: str
+    deletion_submitted: bool = False
+    remaining: Tuple[RuntimeCleanupResource, ...] = field(default_factory=tuple)
+
+    def __post_init__(self):
+        object.__setattr__(
+            self,
+            "started_at",
+            _require_timestamp("uninstall started_at", self.started_at),
+        )
+        object.__setattr__(
+            self,
+            "last_progress_at",
+            _require_timestamp(
+                "uninstall last_progress_at",
+                self.last_progress_at,
+            ),
+        )
+        object.__setattr__(self, "deletion_submitted", bool(self.deletion_submitted))
+        resources: Dict[Tuple[str, str, str], RuntimeCleanupResource] = {}
+        for resource in self.remaining or ():
+            if not isinstance(resource, RuntimeCleanupResource):
+                resource = RuntimeCleanupResource.from_dict(resource)
+            resources[resource.identity] = resource
+        object.__setattr__(
+            self,
+            "remaining",
+            tuple(resources[key] for key in sorted(resources)),
+        )
+
+    @property
+    def identities(self) -> frozenset:
+        return frozenset(resource.identity for resource in self.remaining)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "started_at": self.started_at,
+            "last_progress_at": self.last_progress_at,
+            "deletion_submitted": self.deletion_submitted,
+            "remaining": [resource.to_dict() for resource in self.remaining],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeUninstallProgress":
+        return cls(
+            started_at=data.get("started_at", data.get("startedAt", "")),
+            last_progress_at=data.get(
+                "last_progress_at", data.get("lastProgressAt", ""),
+            ),
+            deletion_submitted=data.get(
+                "deletion_submitted", data.get("deletionSubmitted", False),
+            ),
+            remaining=tuple(
+                RuntimeCleanupResource.from_dict(item)
+                for item in (data.get("remaining") or ())
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class RuntimeSession:
     install_id: str
     operation_id: str
@@ -539,6 +677,7 @@ class RuntimeSession:
     pending: Tuple[RuntimeUnit, ...] = field(default_factory=tuple)
     retirement: Optional[RuntimeRetirement] = None
     cleanup: Tuple[RuntimeCleanupRef, ...] = field(default_factory=tuple)
+    uninstall: Optional[RuntimeUninstallProgress] = None
     source_label: str = ""
     policy_id: str = ""
     source_deploy: Any = field(default_factory=list)
@@ -569,6 +708,12 @@ class RuntimeSession:
         object.__setattr__(self, "retirement", retirement)
         cleanup = _normalize_ownership(self.cleanup)
         object.__setattr__(self, "cleanup", cleanup)
+        uninstall = self.uninstall
+        if uninstall is not None and not isinstance(uninstall, RuntimeUninstallProgress):
+            uninstall = RuntimeUninstallProgress.from_dict(uninstall)
+        if uninstall is not None and phase not in {"uninstalling", "finalizing-uninstall"}:
+            raise ValueError("uninstall progress requires an uninstall lifecycle phase")
+        object.__setattr__(self, "uninstall", uninstall)
 
         active_ids = {unit.runtime_id for unit in self.active}
         pending_ids = {unit.runtime_id for unit in self.pending}
@@ -636,6 +781,7 @@ class RuntimeSession:
             "pending": [unit.to_state_dict() for unit in self.pending],
             "retirement": self.retirement.to_dict() if self.retirement else None,
             "cleanup": [unit.to_dict() for unit in self.cleanup],
+            "uninstall": self.uninstall.to_dict() if self.uninstall else None,
             "source_label": self.source_label,
             "policy_id": self.policy_id,
             "source_deploy": deepcopy(self.source_deploy),
@@ -660,6 +806,10 @@ class RuntimeSession:
             cleanup=tuple(
                 RuntimeCleanupRef.from_dict(item)
                 for item in (data.get("cleanup") or ())
+            ),
+            uninstall=(
+                RuntimeUninstallProgress.from_dict(data["uninstall"])
+                if data.get("uninstall") else None
             ),
             source_label=data.get("source_label", data.get("sourceLabel", "")),
             policy_id=data.get("policy_id", data.get("policyID", "")),

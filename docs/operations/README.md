@@ -56,8 +56,11 @@ overwriting or deleting another namespace's binding.
 | API | Resources | Verbs | Purpose |
 | --- | --- | --- | --- |
 | namespaced `sedna.io` | `runtimeservices` | `get,list,watch,create,delete` | immutable lifecycle and condition watch |
+| namespaced core | `services,endpoints` | `list` | uninstall cleanup barrier |
+| namespaced `apps` | `deployments,replicasets` | `list` | uninstall cleanup barrier |
+| namespaced `discovery.k8s.io` | `endpointslices` | `list` | uninstall cleanup barrier |
 | cluster core | `nodes` | `list` | backend-owned inventory snapshot |
-| cluster core | `pods` | `list` | managed-agent preflight and exact-UID telemetry join |
+| cluster core | `pods` | `list` | managed-agent preflight, exact-UID telemetry join, and uninstall barrier |
 | namespaced core | `configmaps` | `get,create,update,delete` | CAS runtime-session record |
 | namespaced `metrics.k8s.io` | `pods` | `list` | optional telemetry snapshot |
 
@@ -127,11 +130,11 @@ endpoints, the active directory revision, and the lease TTL. It is not a Kuberne
 
 Scheduler returns `runtime_directory_revision` and compact `runtime_routes` with each schedule. Generator copies them
 into the Task and acquires `(revision, root_uuid)` once before first submission. Controller and Processor do not access
-the lease API. Distributor performs the final renewal immediately before durable storage, requires Scheduler scenario
-acknowledgement, and then releases. A transient acquire outage drops only the current task while Generator keeps its
-source loop alive; a retired response requests a fresh schedule for the next round. The normal TTL covers end-to-end
-processing. A failed release expires by TTL during normal operation; during redeployment the previous revision's
-immutable retirement deadline clamps the lease and remains the hard upper bound.
+the lease API. A transient admission or task-delivery outage retains the current task and backpressures the source or
+Processor; a retired response requests a fresh schedule. Distributor performs the final renewal immediately before
+durable storage, then sends scenario feedback and releases. A failed release expires by TTL during normal operation;
+during redeployment the previous revision's immutable retirement deadline clamps the lease and remains the hard upper
+bound.
 
 Scheduler runs as one direct Uvicorn process. Its synchronous Redis-backed directory and lease endpoints execute in
 FastAPI's thread pool, so Redis latency does not block the ASGI event loop or trigger a supervisor heartbeat timeout.
@@ -214,7 +217,10 @@ same target `install_id`, expose the stop command's `operation_id`, and cannot b
 success only after the target `install_id` disappears; an immediately created replacement session cannot keep the old
 action spinning. A newly observed `preparing-uninstall` acknowledges command delivery and stops duplicate POSTs without
 pretending the Session transition is durable; if that preparation reverts with an error, the UI releases the spinner and
-permits retry. Failed initial sessions remain cleanable through Uninstall.
+permits retry. In durable cleanup, a persistent panel reports the remaining Kubernetes objects. After 180 seconds with no
+object-identity reduction it changes to a delayed warning, but the button keeps spinning and Install remains disabled;
+this warning is diagnostic state shared by every browser, not an operation timeout. Failed initial sessions remain
+cleanable through Uninstall.
 
 After the new directory CAS is finalized, management reads consume the immutable
 session snapshot without taking the lifecycle transaction lock. Node inventory
@@ -279,19 +285,24 @@ The background operation uses the CAS session as its exact ownership record:
 3. attempt the install-id-guarded atomic clear of the active RuntimeDirectory and indexed proposals;
 4. persist `finalizing-uninstall`, then delete Scheduler RuntimeService(s) by exact UID;
 5. delete controller/processor/distributor/monitor units by exact UID;
-6. delete `dayu-runtime-session` after all owned exact-UID `Background` DELETE requests are accepted or their targets
-   are already absent.
+6. observe RuntimeService, Deployment, ReplicaSet, Pod, Service, Endpoints, and EndpointSlice resources for the old
+   `install_id`, and delete `dayu-runtime-session` only after one complete snapshot proves that all seven sets are empty.
+
+The observer lists each kind once within the Dayu namespace and resolves ownership in memory from the install label,
+persisted RuntimeService/Pod/Service names and UIDs, and Kubernetes owner references. A missing mutable label therefore
+cannot turn a still-owned object into false completion.
 
 Uninstall does not poll lease counts, wait for releases, or inherit the redeployment grace. A Scheduler fence or
 directory-clear failure is logged but cannot make task state veto administrative teardown. Scheduler remains available
 through the best-effort fence and clear, then its own exact-UID deletion is the definitive admission fence: it is
 removed before workers so no surviving control plane can route to workers already being torn down. Exact name/UID
 ownership checks still prevent a retry from deleting a replacement object. Once `finalizing-uninstall` is persisted, a
-retry needs no Scheduler API and resumes Scheduler/worker deletion before removing the ConfigMap CAS record. A failed
-exact-UID API request preserves that retry boundary and error. Acceptance does not wait for Sedna-owned dependents or
-finalizers to disappear physically; Kubernetes garbage collection proceeds asynchronously. RuntimeService names carry
-an installation digest as well as the revision, preventing an immediate reinstall from colliding with dependents of
-the old UID during that asynchronous cleanup. There is no local manifest fallback.
+retry needs no Scheduler API. RuntimeService deletion uses UID preconditions and `Foreground` propagation; accepted
+DELETE requests are persisted once, and later reconciles observe the dependent-resource barrier with exponential
+backoff. A failed DELETE or incomplete/failed observation preserves the retry boundary and error. An unchanged remaining
+set is pending work rather than a terminal failure, so there is no hard timeout, automatic force deletion, finalizer
+removal, or install-admission escape hatch. Kubernetes object absence is the strongest control-plane guarantee available;
+it cannot by itself prove that an unreachable host has stopped an orphan process. There is no local manifest fallback.
 
 ```bash
 TEMPLATE=template ACTION=stop bash dayu.sh
@@ -320,6 +331,23 @@ unsuccessful graceful uninstall, Scheduler's install-id-guarded directory/propos
 host-mounted Redis directory remains intact. Its keys are install-id scoped and cannot route a later installation;
 pending proposals and ordinary task-lease records retain their own expiry behavior. Remove persisted Redis data
 manually only while the support Redis is stopped and discarding the old installation state is intentional.
+
+## Diagnosing Task Delivery
+
+`[To Controller]`, `[To Device]`, `[To Service]`, and `[To Distributor]` are emitted only after the receiver returns an
+exact task-UUID ACK. A connection warning without the corresponding success line therefore means the sender still owns
+and retries the task; it is not a silent success. For a task that has not reached Distributor, check in this order:
+
+1. Generator or Processor delivery-retry logs for the task id;
+2. Processor queue length and processing exceptions/empty results;
+3. `dayu:dag:joint_service:<root_uuid>:<service>` in Redis, where one field per predecessor is retained until the merged
+   next hop acknowledges ownership;
+4. Distributor SQLite for the `(source_id, task_id)` terminal record.
+
+Every branch of one root task uses the same atomically published node-local artifact, while different lease identities
+use different paths. Intermediate branches, queue clearing, and Controller Pod lifecycle never delete that shared
+artifact. A file disappears only after it has made no progress for the configured task-lease TTL, so repeated zero-frame
+errors now indicate genuinely unreadable input or an expired/fenced task rather than a sibling-cleanup race.
 
 ## Why Edge Nodes Do Not Pay Kubernetes Discovery Cost
 

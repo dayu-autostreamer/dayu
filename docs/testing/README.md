@@ -156,7 +156,9 @@ For backend code, mature open source projects also usually keep orchestration te
   bandwidth projection/conflict handling, and frontend settle-then-schedule/abort contracts
 - connection-boundary DNS canonicalization for HTTP, Redis, iperf, simulated datasource, and shell-rendered support
   endpoints while persisted RuntimeDirectory identities remain unchanged
-- Controller temporary-file cleanup with one lifespan-owned cleaner and action-aware immediate reclamation
+- root-task artifact isolation, atomic publication, and one lifespan-owned lease-TTL cleaner with no branch/Pod cleanup
+- exact task-delivery ACK validation, persistent Generator/Processor ownership, and replay-safe multipart retries
+- idempotent predecessor barriers retained until the merged next hop acknowledges ownership
 - config validation, snapshot export, and state persistence helpers
 - backend-only failure handling that should not require component or end-to-end tests
 
@@ -164,7 +166,9 @@ Frontend lifecycle transitions use Node's built-in test runner in `frontend/test
 lifecycle projection, request/JSON-body timeouts, HTTP-safe UUID generation, identity-bound install acceptance,
 single-flight snapshot application, action-waiter invalidation, stale refresh serialization, cancellation availability,
 permanent gateway-error rejection, non-ready metric fencing, failed-session cleanup, and target-bound uninstall
-completion across an immediate replacement Session. The Python frontend contract tests
+completion across an immediate replacement Session. They also verify that progressing or delayed cleanup keeps the
+same uninstall spinner and install lock until the target identity disappears, including in a browser that did not issue
+the command. The Python frontend contract tests
 additionally verify that components consume the single Pinia lifecycle observer rather than issuing their own
 `/install_state` polls.
 

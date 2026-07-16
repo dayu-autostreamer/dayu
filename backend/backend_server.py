@@ -2,7 +2,7 @@ import copy
 import json
 import math
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks, HTTPException, Request
@@ -20,6 +20,73 @@ _RESOURCE_FIELDS = {
     "cpu": ("usage_millicores", "reference_millicores"),
     "memory": ("usage_bytes", "reference_bytes"),
 }
+_UNINSTALL_STALL_WARNING_SECONDS = 180
+_CLEANUP_BLOCKER_DETAIL_LIMIT = 25
+
+
+def _seconds_since(timestamp):
+    try:
+        value = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return 0
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - value).total_seconds()))
+
+
+def _cleanup_diagnostics(session, phase):
+    if session is None:
+        return None
+    progress = getattr(session, 'uninstall', None)
+    if progress is None:
+        if phase not in {'uninstalling', 'finalizing-uninstall'}:
+            return None
+        return {
+            'status': 'progressing',
+            'started_at': '',
+            'last_progress_at': '',
+            'seconds_without_progress': 0,
+            'warning_after_seconds': _UNINSTALL_STALL_WARNING_SECONDS,
+            'remaining_count': 0,
+            'remaining_by_kind': {},
+            'affected_nodes': [],
+            'blocking_objects': [],
+            'truncated_count': 0,
+        }
+
+    remaining = tuple(progress.remaining)
+    remaining_by_kind = {}
+    for resource in remaining:
+        remaining_by_kind[resource.kind] = (
+            remaining_by_kind.get(resource.kind, 0) + 1
+        )
+    seconds_without_progress = _seconds_since(progress.last_progress_at)
+    return {
+        'status': (
+            'delayed'
+            if seconds_without_progress >= _UNINSTALL_STALL_WARNING_SECONDS
+            else 'progressing'
+        ),
+        'started_at': progress.started_at,
+        'last_progress_at': progress.last_progress_at,
+        'seconds_without_progress': seconds_without_progress,
+        'warning_after_seconds': _UNINSTALL_STALL_WARNING_SECONDS,
+        'remaining_count': len(remaining),
+        'remaining_by_kind': {
+            kind: remaining_by_kind[kind]
+            for kind in sorted(remaining_by_kind)
+        },
+        'affected_nodes': sorted({
+            resource.node for resource in remaining if resource.node
+        }),
+        'blocking_objects': [
+            resource.to_dict()
+            for resource in remaining[:_CLEANUP_BLOCKER_DETAIL_LIMIT]
+        ],
+        'truncated_count': max(
+            0, len(remaining) - _CLEANUP_BLOCKER_DETAIL_LIMIT,
+        ),
+    }
 
 
 def _json_object(data):
@@ -790,6 +857,7 @@ class BackendServer:
                 'active_runtime_count': 0,
                 'pending_runtime_count': 0,
                 'cleanup_runtime_count': 0,
+                'cleanup': None,
                 'retirement_revision': 0,
                 'retirement_deadline': None,
                 'last_error': '',
@@ -826,6 +894,7 @@ class BackendServer:
             'active_runtime_count': len(session.active),
             'pending_runtime_count': len(session.pending),
             'cleanup_runtime_count': len(session.cleanup),
+            'cleanup': _cleanup_diagnostics(session, phase),
             'retirement_revision': retirement.revision if retirement else 0,
             'retirement_deadline': retirement.deadline if retirement else None,
             'last_error': local_error or session.last_error,

@@ -462,6 +462,9 @@ def test_backend_observer_rbac_uses_only_the_list_verbs_called_by_backend():
 
     assert 'resources: ["nodes"]\n    verbs: ["list"]' in script
     assert 'resources: ["pods"]\n    verbs: ["list"]' in script
+    assert 'resources: ["services", "endpoints"]\n    verbs: ["list"]' in script
+    assert 'apiGroups: ["apps"]\n    resources: ["deployments", "replicasets"]\n    verbs: ["list"]' in script
+    assert 'apiGroups: ["discovery.k8s.io"]\n    resources: ["endpointslices"]\n    verbs: ["list"]' in script
     assert 'apiGroups: ["metrics.k8s.io"]\n    resources: ["pods"]\n    verbs: ["list"]' in script
 
 

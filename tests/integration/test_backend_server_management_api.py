@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from runtime_model import RuntimeCleanupResource, RuntimeUninstallProgress
+
 INSTALL_ID = "11111111-1111-4111-8111-111111111111"
 
 
@@ -538,6 +540,7 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
         "active_runtime_count": 0,
         "pending_runtime_count": 0,
         "cleanup_runtime_count": 0,
+        "cleanup": None,
         "retirement_revision": 0,
         "retirement_deadline": None,
         "last_error": "",
@@ -559,6 +562,7 @@ def test_backend_server_covers_delete_dag_and_install_state_routes(management_ba
         "active_runtime_count": 0,
         "pending_runtime_count": 0,
         "cleanup_runtime_count": 0,
+        "cleanup": None,
         "retirement_revision": 0,
         "retirement_deadline": None,
         "last_error": "",
@@ -633,6 +637,73 @@ def test_install_state_projects_admission_and_local_projection_failures(
     assert projection_failure["phase"] == "failed"
     assert projection_failure["ready"] is False
     assert projection_failure["last_error"].endswith("bind failed")
+
+
+@pytest.mark.integration
+def test_install_state_reports_delayed_cleanup_without_releasing_session_ownership(
+        management_backend,
+):
+    _, backend, _, _ = management_backend
+    backend.server.install_state = True
+    session = copy.copy(backend.server.runtime_orchestrator.current_session())
+    session.phase = "finalizing-uninstall"
+    session.uninstall = RuntimeUninstallProgress(
+        started_at="2020-01-01T00:00:00+00:00",
+        last_progress_at="2020-01-01T00:01:00+00:00",
+        deletion_submitted=True,
+        remaining=(RuntimeCleanupResource(
+            kind="Pod",
+            name="processor-pod",
+            uid="pod-uid",
+            node="edge-a",
+            deletion_timestamp="2020-01-01T00:00:30+00:00",
+            finalizers=("example.io/cleanup",),
+        ),),
+    )
+
+    state = backend._install_state_response(session)
+
+    assert state["state"] == "install"
+    assert state["phase"] == "finalizing-uninstall"
+    assert state["ready"] is False
+    assert state["install_id"] == INSTALL_ID
+    assert state["cleanup"]["status"] == "delayed"
+    assert state["cleanup"]["remaining_by_kind"] == {"Pod": 1}
+    assert state["cleanup"]["affected_nodes"] == ["edge-a"]
+    assert state["cleanup"]["blocking_objects"][0]["finalizers"] == [
+        "example.io/cleanup",
+    ]
+    assert state["cleanup"]["truncated_count"] == 0
+
+
+@pytest.mark.integration
+def test_install_state_bounds_cleanup_details_without_losing_aggregate_count(
+        management_backend,
+):
+    _, backend, _, _ = management_backend
+    backend.server.install_state = True
+    session = copy.copy(backend.server.runtime_orchestrator.current_session())
+    session.phase = "finalizing-uninstall"
+    session.uninstall = RuntimeUninstallProgress(
+        started_at="2026-07-16T00:00:00+00:00",
+        last_progress_at="2026-07-16T00:01:00+00:00",
+        deletion_submitted=True,
+        remaining=tuple(
+            RuntimeCleanupResource(
+                kind="Pod",
+                name=f"processor-{index}",
+                uid=f"pod-uid-{index}",
+            )
+            for index in range(30)
+        ),
+    )
+
+    cleanup = backend._install_state_response(session)["cleanup"]
+
+    assert cleanup["remaining_count"] == 30
+    assert cleanup["remaining_by_kind"] == {"Pod": 30}
+    assert len(cleanup["blocking_objects"]) == 25
+    assert cleanup["truncated_count"] == 5
 
 
 @pytest.mark.integration

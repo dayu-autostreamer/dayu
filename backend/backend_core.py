@@ -521,7 +521,7 @@ class BackendCore:
                 admission.done_event.set()
 
     def parse_and_delete_templates(self, expected_install_id=''):
-        """Fence task admission and remove the managed runtime session."""
+        """Persist stop intent and start managed runtime cleanup."""
         expected_install_id = str(expected_install_id or '').strip()
         if expected_install_id:
             try:
@@ -1216,6 +1216,7 @@ class BackendCore:
             )
 
         retirement = getattr(session, 'retirement', None)
+        uninstall = getattr(session, 'uninstall', None)
         return (
             getattr(session, 'install_id', ''),
             getattr(session, 'operation_id', ''),
@@ -1228,6 +1229,17 @@ class BackendCore:
                 getattr(retirement, 'revision', 0),
                 runtime_ids(getattr(retirement, 'units', ())),
             ) if retirement is not None else None,
+            (
+                bool(getattr(uninstall, 'deletion_submitted', False)),
+                tuple(
+                    (
+                        getattr(resource, 'kind', ''),
+                        getattr(resource, 'name', ''),
+                        getattr(resource, 'uid', ''),
+                    )
+                    for resource in getattr(uninstall, 'remaining', ())
+                ),
+            ) if uninstall is not None else None,
         )
 
     def run_runtime_reconcile(self, stop_event, install_id):
@@ -1242,6 +1254,7 @@ class BackendCore:
                 before_key = None
                 cycle_failed = False
                 progressed = False
+                uninstall_cycle = False
                 try:
                     with self._runtime_reconcile_lock:
                         if (
@@ -1261,11 +1274,17 @@ class BackendCore:
                     before_key = self._runtime_progress_key(session)
                     if stop_event.is_set():
                         return
-                    if session.phase in {'uninstalling', 'finalizing-uninstall'}:
-                        self.runtime_orchestrator.uninstall(install_id)
+                    uninstall_cycle = session.phase in {
+                        'uninstalling', 'finalizing-uninstall',
+                    }
+                    if uninstall_cycle:
+                        cleanup_progressed = self.runtime_orchestrator.uninstall(
+                            install_id,
+                        )
                         session = self.runtime_orchestrator.current_session()
                         if session is None:
                             return
+                        progressed = bool(cleanup_progressed)
                     else:
                         if session.phase == 'active':
                             progressed = self._ensure_local_runtime_projection(
@@ -1303,10 +1322,20 @@ class BackendCore:
                                 return
                         progressed = bool(changed) or progressed
 
-                    progressed = (
-                        progressed
-                        or self._runtime_progress_key(session) != before_key
-                    )
+                    if not uninstall_cycle:
+                        progressed = (
+                            progressed
+                            or self._runtime_progress_key(session) != before_key
+                        )
+                    if (
+                            session is not None
+                            and session.phase in {'uninstalling', 'finalizing-uninstall'}
+                            and not progressed):
+                        # Remaining cleanup is expected, not an exception. It
+                        # still uses the existing reconcile backoff so a stuck
+                        # resource cannot turn frontend polling into Kubernetes
+                        # list traffic.
+                        cycle_failed = True
                     deferred_failure = bool(
                         session is not None
                         and getattr(session, 'last_error', '')
@@ -1324,7 +1353,8 @@ class BackendCore:
                     except Exception:
                         current = None
                     progressed = (
-                        before_key is not None
+                        not uninstall_cycle
+                        and before_key is not None
                         and self._runtime_progress_key(current) != before_key
                     )
                     cycle_failed = True

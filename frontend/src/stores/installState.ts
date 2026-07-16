@@ -17,6 +17,29 @@ type InstallStateSnapshot = {
 	install_pending?: boolean;
 	operation_id?: string;
 	last_error?: string;
+	cleanup?: unknown;
+};
+
+export type CleanupObject = {
+	kind: string;
+	name: string;
+	uid: string;
+	node?: string;
+	deletion_timestamp?: string;
+	finalizers?: string[];
+};
+
+export type CleanupDiagnostics = {
+	status: 'progressing' | 'delayed';
+	started_at: string;
+	last_progress_at: string;
+	seconds_without_progress: number;
+	warning_after_seconds: number;
+	remaining_count: number;
+	remaining_by_kind: Record<string, number>;
+	affected_nodes: string[];
+	blocking_objects: CleanupObject[];
+	truncated_count: number;
 };
 
 export type InstallCompletion = 'active' | 'cancelled' | 'failed' | 'unknown';
@@ -32,6 +55,59 @@ const UNINSTALL_ACCEPTANCE_RETRY_MS = 250;
 
 function isAbortError(error: unknown) {
 	return error instanceof Error && error.name === 'AbortError';
+}
+
+function nonNegativeInteger(value: unknown, fallback = 0) {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+}
+
+function stringArray(value: unknown) {
+	return Array.isArray(value) ? value.map((item) => String(item || '')).filter(Boolean) : [];
+}
+
+function normalizeCleanup(value: unknown): CleanupDiagnostics | null {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+	const raw = value as Record<string, unknown>;
+	const remainingByKind: Record<string, number> = {};
+	if (raw.remaining_by_kind && typeof raw.remaining_by_kind === 'object' && !Array.isArray(raw.remaining_by_kind)) {
+		for (const [kind, count] of Object.entries(raw.remaining_by_kind)) {
+			const normalized = nonNegativeInteger(count, -1);
+			if (kind && normalized >= 0) remainingByKind[kind] = normalized;
+		}
+	}
+	const blockingObjects = Array.isArray(raw.blocking_objects)
+		? raw.blocking_objects.flatMap((value) => {
+				if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+				const item = value as Record<string, unknown>;
+				const kind = String(item.kind || '');
+				const name = String(item.name || '');
+				const uid = String(item.uid || '');
+				if (!kind || !name || !uid) return [];
+				return [
+					{
+						kind,
+						name,
+						uid,
+						node: String(item.node || ''),
+						deletion_timestamp: String(item.deletion_timestamp || ''),
+						finalizers: stringArray(item.finalizers),
+					},
+				];
+			})
+		: [];
+	const truncatedCount = nonNegativeInteger(raw.truncated_count);
+	return {
+		status: raw.status === 'delayed' ? 'delayed' : 'progressing',
+		started_at: String(raw.started_at || ''),
+		last_progress_at: String(raw.last_progress_at || ''),
+		seconds_without_progress: nonNegativeInteger(raw.seconds_without_progress),
+		warning_after_seconds: nonNegativeInteger(raw.warning_after_seconds),
+		remaining_count: nonNegativeInteger(raw.remaining_count, blockingObjects.length + truncatedCount),
+		remaining_by_kind: remainingByKind,
+		affected_nodes: stringArray(raw.affected_nodes),
+		blocking_objects: blockingObjects,
+		truncated_count: truncatedCount,
+	};
 }
 
 export function createInstallId() {
@@ -56,6 +132,7 @@ export const useInstallStateStore = defineStore('install_state', () => {
 	const serverInstallPending = ref(false);
 	const operationId = ref('');
 	const lastError = ref('');
+	const cleanup = ref<CleanupDiagnostics | null>(null);
 	const uninstallRequested = ref(false);
 	const installCancelRequested = ref(false);
 	const uninstallCancelsInstall = ref(false);
@@ -87,6 +164,7 @@ export const useInstallStateStore = defineStore('install_state', () => {
 	const canInstall = computed(() => lifecycle.value.canInstall);
 	const canUninstall = computed(() => lifecycle.value.canUninstall);
 	const hasTerminalInstallFailure = computed(() => lifecycle.value.hasTerminalInstallFailure);
+	const cleanupDelayed = computed(() => cleanup.value?.status === 'delayed');
 
 	let uninstallActionSequence = 0;
 	let pollingActive = false;
@@ -114,6 +192,7 @@ export const useInstallStateStore = defineStore('install_state', () => {
 		serverInstallPending.value = Boolean(snapshot.install_pending);
 		operationId.value = String(snapshot.operation_id || '');
 		lastError.value = String(snapshot.last_error || '');
+		cleanup.value = UNINSTALL_PHASES.has(phase.value) ? normalizeCleanup(snapshot.cleanup) : null;
 		hydrated.value = true;
 		lifecycleSnapshotSequence.value += 1;
 
@@ -209,6 +288,7 @@ export const useInstallStateStore = defineStore('install_state', () => {
 		uninstallCommandObservedAt = 0;
 		uninstallCommandOperationId = '';
 		activeInstallIdentityObserved = false;
+		cleanup.value = null;
 		initialized.value = false;
 	}
 
@@ -286,6 +366,10 @@ export const useInstallStateStore = defineStore('install_state', () => {
 		uninstallRequested.value = false;
 		uninstallCancelsInstall.value = false;
 		installCancelRequested.value = false;
+	}
+
+	function detachUninstallWaiter() {
+		if (activeUninstallAction.value) rejectUninstall(activeUninstallAction.value);
 	}
 
 	function hasUninstallCompleted(actionId: number) {
@@ -433,6 +517,8 @@ export const useInstallStateStore = defineStore('install_state', () => {
 		serverInstallPending,
 		operationId,
 		lastError,
+		cleanup,
+		cleanupDelayed,
 		installRequestPending,
 		uninstallRequested,
 		uninstallCommandObserved,
@@ -459,6 +545,7 @@ export const useInstallStateStore = defineStore('install_state', () => {
 		beginUninstall,
 		markUninstallCommandObserved,
 		rejectUninstall,
+		detachUninstallWaiter,
 		finishUninstall,
 		waitUntilInstallSettles,
 		waitUntilUninstallCommandObserved,

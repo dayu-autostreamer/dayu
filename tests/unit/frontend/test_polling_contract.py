@@ -78,6 +78,11 @@ def test_service_query_detail_and_uninstall_requests_follow_lifecycle_state():
     assert "phase === 'cancelling-install'" not in source
     assert "await this.install_state.waitUntilUninstallCompletes(actionId)" in source
     assert "this.install_state.finishUninstall(actionId)" in source
+    assert 'v-if="install_state.cleanup"' in source
+    assert "Cleanup is taking longer than expected" in source
+    assert "Installation remains unavailable until cleanup is complete" in source
+    assert "install_state.cleanup.blocking_objects" in source
+    assert "this.install_state.detachUninstallWaiter()" in source
     assert "'Installation cancelled successfully'" in source
     assert "'Uninstall services successfully'" in source
     assert "setPhase('uninstalling')" not in source
@@ -133,6 +138,10 @@ def test_install_state_separates_session_ownership_from_runtime_readiness():
     assert "hasInstallIdentity" in store
     assert "serverInstallPending" in store
     assert "lastError" in store
+    assert "cleanupDelayed" in store
+    assert "snapshot.cleanup" in store
+    assert "normalizeCleanup" in store
+    assert "truncated_count" in store
     assert "installCancelRequested" in store
     assert "reconcileInstallAcceptance" in store
     assert "reconcileUninstallCommand" in store

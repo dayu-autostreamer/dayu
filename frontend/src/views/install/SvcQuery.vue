@@ -17,6 +17,50 @@
 			</div>
 		</div>
 
+		<section
+			v-if="install_state.cleanup"
+			class="cleanup-notice"
+			:class="{ 'is-delayed': install_state.cleanupDelayed }"
+			role="status"
+			aria-live="polite"
+		>
+			<strong>
+				{{
+					install_state.cleanupDelayed
+						? 'Cleanup is taking longer than expected'
+						: 'Uninstall is continuing in the background'
+				}}
+			</strong>
+			<p>Dayu is still reconciling Kubernetes resources. Installation remains unavailable until cleanup is complete.</p>
+			<p v-if="install_state.cleanupDelayed" class="cleanup-notice__summary">
+				The remaining resource set has not decreased for {{ install_state.cleanup.seconds_without_progress }} seconds.
+				Inspect the remaining objects and cluster controllers.
+			</p>
+			<p v-if="install_state.cleanup.remaining_count" class="cleanup-notice__summary">
+				Remaining: {{ install_state.cleanup.remaining_count }}
+				<span v-if="cleanupKindSummary"> ({{ cleanupKindSummary }})</span>
+			</p>
+			<p v-if="install_state.cleanup.affected_nodes.length" class="cleanup-notice__summary">
+				Affected nodes: {{ install_state.cleanup.affected_nodes.join(', ') }}
+			</p>
+			<details v-if="install_state.cleanup.blocking_objects.length">
+				<summary>
+					Inspect remaining Kubernetes objects
+					<span v-if="install_state.cleanup.truncated_count">
+						(first {{ install_state.cleanup.blocking_objects.length }} of {{ install_state.cleanup.remaining_count }})
+					</span>
+				</summary>
+				<ul>
+					<li v-for="item in install_state.cleanup.blocking_objects" :key="`${item.kind}:${item.uid}`">
+						{{ item.kind }}/{{ item.name }}
+						<span v-if="item.node"> · node {{ item.node }}</span>
+						<span v-if="item.deletion_timestamp"> · deletion requested</span>
+						<span v-if="item.finalizers?.length"> · finalizers: {{ item.finalizers.join(', ') }}</span>
+					</li>
+				</ul>
+			</details>
+		</section>
+
 		<section class="panel-section">
 			<div class="section-heading">
 				<div class="section-heading__title">Service List</div>
@@ -144,14 +188,20 @@
 				:loading="install_state.isUninstalling"
 				:disabled="!install_state.canUninstall"
 				:title="
-					install_state.uninstallCancelsInstall || install_state.isInstalling || install_state.isCancellingInstall
+					install_state.cleanupDelayed
+						? 'Cleanup is delayed; Dayu is still retrying'
+						: install_state.uninstallCancelsInstall || install_state.isInstalling || install_state.isCancellingInstall
 						? 'Cancel installation and clean up created resources'
 						: 'Uninstall services'
 				"
 				@click="uninstallServices"
 			>
 				{{
-					install_state.uninstallCancelsInstall || install_state.isInstalling || install_state.isCancellingInstall
+					install_state.isUninstalling
+						? install_state.uninstallCancelsInstall || install_state.isCancellingInstall
+							? 'Cancelling Install'
+							: 'Uninstalling'
+						: install_state.uninstallCancelsInstall || install_state.isInstalling || install_state.isCancellingInstall
 						? 'Cancel Install'
 						: 'Uninstall'
 				}}
@@ -192,9 +242,15 @@ export default {
 		const install_state = useInstallStateStore();
 		const runtimeReady = computed(() => install_state.isReady);
 		const runtimeGeneration = computed(() => (install_state.isReady ? install_state.installId : ''));
+		const cleanupKindSummary = computed(() =>
+			Object.entries(install_state.cleanup?.remaining_by_kind || {})
+				.map(([kind, count]) => `${kind}: ${count}`)
+				.join(', ')
+		);
 
 		return {
 			install_state,
+			cleanupKindSummary,
 			runtimeGeneration,
 			runtimeReady,
 		};
@@ -502,6 +558,7 @@ export default {
 	},
 	beforeUnmount() {
 		this.componentUnmounted = true;
+		this.install_state.detachUninstallWaiter();
 		this.uninstallCommandController?.abort();
 		this.uninstallCommandController = null;
 		this.stopServiceInfoPolling();
@@ -543,6 +600,45 @@ export default {
 	font-size: 12px;
 	color: #b45309;
 	word-break: break-word;
+}
+
+.cleanup-notice {
+	padding: 14px 16px;
+	border: 1px solid #bfdbfe;
+	border-radius: 16px;
+	background: #eff6ff;
+	color: #1e3a8a;
+}
+
+.cleanup-notice.is-delayed {
+	border-color: #f59e0b;
+	background: #fffbeb;
+	color: #92400e;
+}
+
+.cleanup-notice p {
+	margin: 6px 0 0;
+	font-size: 13px;
+}
+
+.cleanup-notice__summary,
+.cleanup-notice summary,
+.cleanup-notice li {
+	font-size: 12px;
+}
+
+.cleanup-notice details {
+	margin-top: 8px;
+}
+
+.cleanup-notice summary {
+	cursor: pointer;
+	font-weight: 700;
+}
+
+.cleanup-notice ul {
+	margin: 8px 0 0;
+	padding-left: 20px;
 }
 
 .panel-actions {
