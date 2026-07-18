@@ -121,6 +121,7 @@ def test_generator_request_schedule_policy_and_generate_task_follow_hook_contrac
         return {
             "plan": {"buffer_size": 2},
             "runtime_directory_revision": 1,
+            "runtime_directory_hash": "runtime-directory-hash-1",
             "runtime_routes": runtime_routes("edge-node"),
         }
 
@@ -169,6 +170,81 @@ def test_generator_request_schedule_policy_and_generate_task_follow_hook_contrac
     )
     assert routed_task.get_runtime_directory_revision() == 1
     assert routed_task.get_runtime_routes() == runtime_routes("edge-node")
+    assert generator.runtime_directory_hash == "runtime-directory-hash-1"
+
+
+@pytest.mark.unit
+def test_generator_runtime_directory_hash_allows_plan_specific_compact_routes(monkeypatch):
+    generator_module = importlib.import_module("core.generator.generator")
+    hooks = {
+        "GEN_BSO": lambda system: {},
+        "GEN_ASO": lambda system, response: None,
+        "GEN_GETTER": lambda system: None,
+        "GEN_BSTO": lambda system, task: None,
+    }
+    patch_generator_runtime(monkeypatch, generator_module, hooks)
+
+    class DummyGenerator(generator_module.Generator):
+        def run(self):
+            raise NotImplementedError
+
+    generator = DummyGenerator(
+        source_id=7,
+        metadata={"fps": 25, "buffer_size": 1},
+        task_dag=build_dag_deployment(execute_device="edge-target"),
+    )
+
+    initial_routes = runtime_routes("edge-node")
+    alternate_routes = runtime_routes("edge-target")
+    assert generator._accept_runtime_directory({
+        "runtime_directory_revision": 7,
+        "runtime_directory_hash": "runtime-directory-hash-7",
+        "runtime_routes": initial_routes,
+    }) is True
+
+    assert generator._accept_runtime_directory({
+        "runtime_directory_revision": 7,
+        "runtime_directory_hash": "runtime-directory-hash-7",
+        "runtime_routes": alternate_routes,
+    }) is True
+    assert generator.runtime_routes == alternate_routes
+
+    accepted_state = (
+        generator.runtime_directory_revision,
+        generator.runtime_directory_hash,
+        generator.runtime_routes,
+    )
+    assert generator._accept_runtime_directory({
+        "runtime_directory_revision": 7,
+        "runtime_directory_hash": "changed-hash",
+        "runtime_routes": initial_routes,
+    }) is False
+    assert (
+        generator.runtime_directory_revision,
+        generator.runtime_directory_hash,
+        generator.runtime_routes,
+    ) == accepted_state
+
+    for missing_hash in (None, "", "   "):
+        assert generator._accept_runtime_directory({
+            "runtime_directory_revision": 8,
+            "runtime_directory_hash": missing_hash,
+            "runtime_routes": initial_routes,
+        }) is False
+        assert (
+            generator.runtime_directory_revision,
+            generator.runtime_directory_hash,
+            generator.runtime_routes,
+        ) == accepted_state
+
+    assert generator._accept_runtime_directory({
+        "runtime_directory_revision": 8,
+        "runtime_directory_hash": "runtime-directory-hash-8",
+        "runtime_routes": initial_routes,
+    }) is True
+    assert generator.runtime_directory_revision == 8
+    assert generator.runtime_directory_hash == "runtime-directory-hash-8"
+    assert generator.runtime_routes == initial_routes
 
 
 @pytest.mark.unit

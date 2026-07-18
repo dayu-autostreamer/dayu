@@ -31,6 +31,7 @@ class Generator:
         # Version 0 means the scheduler does not distinguish deployment versions.
         self.deployment_version = 0
         self.runtime_directory_revision = 0
+        self.runtime_directory_hash = ""
         self.runtime_routes = {}
         self._runtime_schedule_refresh_required = threading.Event()
         # raw_meta_data contains meta configuration of source
@@ -82,21 +83,25 @@ class Generator:
     @staticmethod
     def _extract_runtime_directory(response):
         if not isinstance(response, dict):
-            return None, None
+            return None, None, None
         directory = response.get("runtime_directory", response.get("runtimeDirectory"))
         directory = directory if isinstance(directory, dict) else {}
         revision = response.get(
             "runtime_directory_revision",
             response.get("runtimeDirectoryRevision", directory.get("revision")),
         )
+        directory_hash = response.get(
+            "runtime_directory_hash",
+            response.get("runtimeDirectoryHash", directory.get("hash")),
+        )
         routes = response.get(
             "runtime_routes",
             response.get("runtimeRoutes", directory.get("routes")),
         )
-        return revision, routes
+        return revision, directory_hash, routes
 
     def _accept_runtime_directory(self, response):
-        revision, routes = self._extract_runtime_directory(response)
+        revision, directory_hash, routes = self._extract_runtime_directory(response)
         try:
             revision = int(revision)
         except (TypeError, ValueError):
@@ -105,12 +110,29 @@ class Generator:
         if revision < 1:
             LOGGER.error("[Runtime Directory] Directory revision must be positive.")
             return False
+        if not isinstance(directory_hash, str) or not directory_hash.strip():
+            LOGGER.error("[Runtime Directory] Scheduler response has no valid directory hash.")
+            return False
+        directory_hash = directory_hash.strip()
         if revision < self.runtime_directory_revision:
             LOGGER.warning(
                 f"[Runtime Directory] Ignore stale scheduler response revision {revision}; "
                 f"current revision is {self.runtime_directory_revision}."
             )
             return False
+        if revision == self.runtime_directory_revision and revision > 0:
+            if not self.runtime_directory_hash:
+                LOGGER.error(
+                    f"[Runtime Directory] Revision {revision} has no previously accepted "
+                    "full-directory hash."
+                )
+                return False
+            if directory_hash != self.runtime_directory_hash:
+                LOGGER.error(
+                    f"[Runtime Directory] Revision {revision} changed full-directory hash; "
+                    "reject non-immutable snapshot."
+                )
+                return False
         try:
             endpoints = RuntimeResolver.list_routes(routes or {})
         except (TypeError, ValueError) as exc:
@@ -126,13 +148,8 @@ class Generator:
         except ValueError as exc:
             LOGGER.error(f"[Runtime Directory] Incomplete exact route identity: {exc}")
             return False
-        if revision == self.runtime_directory_revision and self.runtime_routes and routes != self.runtime_routes:
-            LOGGER.error(
-                f"[Runtime Directory] Revision {revision} changed contents; reject non-immutable snapshot."
-            )
-            return False
-
         self.runtime_directory_revision = revision
+        self.runtime_directory_hash = directory_hash
         self.runtime_routes = copy.deepcopy(routes)
         return True
 
