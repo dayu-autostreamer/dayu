@@ -2,6 +2,7 @@ import abc
 import random
 from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, TaskConstant, LOGGER
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling import service_waiting_count
 
 from .base_agent import BaseAgent
 
@@ -15,7 +16,7 @@ class OfflineProfilingAgent(BaseAgent, abc.ABC):
     - If bandwidth > threshold n, all stages execute on cloud
     - If bandwidth <= threshold n, probabilistically select edge devices using weighted latency
       (latency * service_importance_weight); lower effective latency -> higher probability
-    - Resource `queue_length` per device (scalar or per-service dict): if > 5, that device's
+    - Resource `queue_state[service].waiting_count` per device: if > 5, that device's
       relative score is halved before probabilities are re-normalized.
     """
 
@@ -83,28 +84,8 @@ class OfflineProfilingAgent(BaseAgent, abc.ABC):
 
     @staticmethod
     def _resource_queue_length(resource, service_name: str) -> float:
-        """从 scheduler resource 条目解析队列长度：标量或 {服务: 长度}；缺省为 0。"""
-        if not isinstance(resource, dict):
-            return 0.0
-        ql = resource.get('queue_length')
-        if ql is None:
-            return 0.0
-        if isinstance(ql, (int, float)):
-            return float(ql)
-        if isinstance(ql, dict):
-            if service_name in ql:
-                try:
-                    return float(ql[service_name])
-                except (TypeError, ValueError):
-                    pass
-            vals = []
-            for v in ql.values():
-                try:
-                    vals.append(float(v))
-                except (TypeError, ValueError):
-                    continue
-            return max(vals) if vals else 0.0
-        return 0.0
+        """从 scheduler 的结构化 queue state 中读取服务等待数量。"""
+        return service_waiting_count(resource, service_name)
 
     def _device_queue_length(self, device: str, service_name: str) -> float:
         resource_table = self.system.get_scheduler_resource()

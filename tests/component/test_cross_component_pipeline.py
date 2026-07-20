@@ -173,7 +173,7 @@ class FakeScheduler:
             "routes": self.compact_runtime_routes(plan, source_device),
         }
 
-    def acquire_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
+    def acquire_task_lease(self, revision, root_uuid, ttl_seconds=60.0, commitment=None):
         self.lease_operations.append(("acquire", int(revision), str(root_uuid)))
         self.leases.add((int(revision), str(root_uuid)))
         return {

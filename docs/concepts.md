@@ -211,11 +211,16 @@ manifest file or cache to refresh.
 ## Runtime Bootstrap And Task Lease
 
 `DAYU_RUNTIME_BOOTSTRAP` contains immutable install context and support endpoints needed to start a worker. It does not
-contain a mutable route cache. Generator obtains exact routes from Scheduler and copies the committed directory
-revision and routes into each `Task`.
+contain a mutable route cache. After an ingestion round is permitted, Generator reserves a root `TaskIdentity`, sends
+it to Scheduler as `task_context`, applies the returned plan, and only then materializes source data into a Task with
+that same identity. It also copies the committed directory revision, exact routes, schedule decision id, and plan
+digest into the Task; forks preserve all root-level scheduling fields.
 
 The task is protected by a lease keyed by `(directory_revision, root_uuid)`. Generator acquires it once before first
-submission. A transient admission failure retains the already materialized task and applies source backpressure; only
+submission and attaches a commitment containing the immutable identity, DAG mapping, metadata, and decision
+attribution. Scheduler keeps those active commitments synchronized with the lease lifecycle and makes a copied view
+available to schedule agents together with resource telemetry. A transient admission failure retains the already
+materialized task and applies source backpressure; only
 an explicit retired-revision fence rejects it and requests a fresh schedule. Controller and Processor do not access
 the lease API. Distributor renews once immediately before durable result persistence and then performs Scheduler
 scenario feedback and release as post-persistence completion work. The normal TTL covers end-to-end processing.

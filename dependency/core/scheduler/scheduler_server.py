@@ -16,6 +16,7 @@ from core.lib.common import LOGGER
 from core.lib.content import Task
 from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 from core.lib.scheduling.deployment_plan import dag_services
+from core.lib.scheduling import build_schedule_decision
 
 from .scheduler import Scheduler
 from .runtime_directory import (
@@ -192,6 +193,16 @@ class SchedulerServer:
     async def generate_schedule_plan(self, data: str = Form(...)):
         data = json.loads(data)
 
+        task_context = data.get('task_context')
+        if task_context is not None:
+            if not isinstance(task_context, dict):
+                raise HTTPException(status_code=422, detail='task_context must be an object')
+            if task_context.get('source_id') != data.get('source_id'):
+                raise HTTPException(
+                    status_code=422,
+                    detail='task_context source_id must match schedule source_id',
+                )
+
         self.scheduler.register_schedule_table(data['source_id'])
         plan = self.scheduler.get_schedule_plan(data)
 
@@ -218,6 +229,12 @@ class SchedulerServer:
             'runtime_directory_hash': runtime_state['hash'],
             'runtime_routes': runtime_state['routes'],
         }
+        response['schedule_decision'] = build_schedule_decision(
+            data,
+            plan,
+            deployment_version,
+            runtime_state['revision'],
+        )
 
         return response
 
@@ -309,6 +326,7 @@ class SchedulerServer:
                 revision,
                 root_uuid,
                 payload.get('ttl_seconds', payload.get('ttlSeconds', 60.0)),
+                commitment=payload.get('commitment'),
             )
         except TaskLeaseRetired as exc:
             return self._retired_task_lease(exc, root_uuid)

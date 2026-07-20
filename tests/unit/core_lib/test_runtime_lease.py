@@ -83,6 +83,43 @@ def test_runtime_lease_client_uses_exact_task_key_and_scheduler_endpoint():
 
 
 @pytest.mark.unit
+def test_runtime_lease_client_attaches_commitment_only_to_admission():
+    calls = []
+
+    def requester(**kwargs):
+        calls.append(json.loads(kwargs["data"]["data"]))
+        payload = calls[-1]
+        response = {
+            "revision": payload["revision"],
+            "root_uuid": payload["root_uuid"],
+        }
+        if kwargs["method"] == NetworkAPIMethod.SCHEDULER_RELEASE_TASK_LEASE:
+            response["released"] = True
+        else:
+            response.update({"expires_at": 123.0, "valid_for_seconds": 45.0})
+        return response
+
+    class CommittedLeaseTask(LeaseTask):
+        @staticmethod
+        def get_schedule_commitment():
+            return {
+                "root_uuid": "root-7",
+                "runtime_directory_revision": 7,
+                "decision_id": "decision-7",
+            }
+
+    client = RuntimeLeaseClient(runtime_context(), requester=requester)
+    task = CommittedLeaseTask()
+    client.acquire(task)
+    client.renew(task)
+    client.release(task)
+
+    assert calls[0]["commitment"]["decision_id"] == "decision-7"
+    assert "commitment" not in calls[1]
+    assert "commitment" not in calls[2]
+
+
+@pytest.mark.unit
 def test_runtime_lease_client_fails_closed_on_invalid_task_or_response():
     client = RuntimeLeaseClient(runtime_context(), requester=lambda **kwargs: None)
 

@@ -104,6 +104,16 @@ class RuntimeLeaseClient:
         }
         if include_ttl:
             payload["ttl_seconds"] = self.ttl_seconds
+        if operation == "acquire":
+            commitment_getter = getattr(task, "get_schedule_commitment", None)
+            if callable(commitment_getter):
+                commitment = commitment_getter()
+                if commitment is not None:
+                    if not isinstance(commitment, dict):
+                        raise RuntimeLeaseIdentityError(
+                            "task scheduling commitment must be an object"
+                        )
+                    payload["commitment"] = commitment
         try:
             response = self.requester(
                 url=self._url(),

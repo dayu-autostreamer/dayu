@@ -5,6 +5,8 @@ from collections import deque
 
 import numpy as np
 
+from core.lib.scheduling import queue_waiting_counts
+
 
 class StateBuffer:
     """Runtime state used by the plain DeepVA DRL baseline.
@@ -185,14 +187,10 @@ class StateBuffer:
             if bandwidth > 0:
                 self.bandwidth[d_idx] = bandwidth
 
-            queue_lengths = resource.get("queue_length")
-            if isinstance(queue_lengths, dict):
-                for service_name, value in queue_lengths.items():
-                    s_idx = self.service_to_idx.get(str(service_name))
-                    if s_idx is not None:
-                        self.queue_lengths[s_idx, d_idx] = max(0.0, self._safe_float(value, 0.0))
-            elif queue_lengths is not None:
-                self.queue_lengths[:, d_idx] = max(0.0, self._safe_float(queue_lengths, 0.0))
+            for service_name, value in queue_waiting_counts(resource).items():
+                s_idx = self.service_to_idx.get(service_name)
+                if s_idx is not None:
+                    self.queue_lengths[s_idx, d_idx] = value
 
             for service_name, s_idx in self.service_to_idx.items():
                 model_flops = self._resource_service_value(resource, "model_flops", service_name, 0.0)

@@ -6,6 +6,7 @@ from core.lib.common import Context
 
 class BaseAgent(metaclass=abc.ABCMeta):
     def __init__(self, system, agent_id):
+        self.system = system
         self.cloud_device = str(getattr(system, 'cloud_device', '') or '')
         self.source_selection_policy = Context.get_algorithm('SCH_SELECTION_POLICY',
                                                              system=system, agent_id=agent_id)

@@ -29,7 +29,10 @@ class Task:
                  root_uuid: str = '',
                  deployment_version: int = 0,
                  runtime_directory_revision: int = 0,
-                 runtime_routes=None):
+                 runtime_routes=None,
+                 created_at: float = 0.0,
+                 schedule_decision_id: str = '',
+                 schedule_plan_digest: str = ''):
 
         # delivery identity for one logical root-task DAG stage
         self.__task_uuid = task_uuid or str(uuid.uuid4())
@@ -37,6 +40,13 @@ class Task:
         self.__parent_uuid = parent_uuid
         # unique uuid for each task
         self.__root_uuid = root_uuid or self.__task_uuid
+        # Wall-clock creation time of the logical root task. Generators reserve
+        # this identity before scheduling and source-data materialization.
+        self.__created_at = float(created_at or 0.0)
+        # The decision may be shared by several tasks when a policy is reused
+        # for a positive REQUEST_SCHEDULING_INTERVAL.
+        self.__schedule_decision_id = str(schedule_decision_id or '')
+        self.__schedule_plan_digest = str(schedule_plan_digest or '')
 
         # sequential id for each source
         self.__source_id = source_id
@@ -297,6 +307,40 @@ class Task:
     def set_root_uuid(self, root_uuid: str):
         self.__root_uuid = root_uuid
 
+    def get_created_at(self):
+        return self.__created_at
+
+    def set_created_at(self, created_at):
+        self.__created_at = float(created_at or 0.0)
+
+    def get_schedule_decision_id(self):
+        return self.__schedule_decision_id
+
+    def set_schedule_decision_id(self, decision_id):
+        self.__schedule_decision_id = str(decision_id or '')
+
+    def get_schedule_plan_digest(self):
+        return self.__schedule_plan_digest
+
+    def set_schedule_plan_digest(self, plan_digest):
+        self.__schedule_plan_digest = str(plan_digest or '')
+
+    def get_schedule_commitment(self):
+        """Return the immutable scheduling facts needed while this root runs."""
+
+        return {
+            'source_id': self.get_source_id(),
+            'task_id': self.get_task_id(),
+            'task_uuid': self.get_task_uuid(),
+            'root_uuid': self.get_root_uuid(),
+            'created_at': self.get_created_at(),
+            'decision_id': self.get_schedule_decision_id(),
+            'plan_digest': self.get_schedule_plan_digest(),
+            'runtime_directory_revision': self.get_runtime_directory_revision(),
+            'dag': self.get_dag_deployment_info(),
+            'metadata': copy.deepcopy(self.get_metadata()),
+        }
+
     def get_current_content(self):
         return self.__dag_flow.get_node(self.__cur_flow_index).service.get_content_data()
 
@@ -522,6 +566,9 @@ class Task:
             'task_uuid': self.get_task_uuid(),
             'parent_uuid': self.get_parent_uuid(),
             'root_uuid': self.get_root_uuid(),
+            'created_at': self.get_created_at(),
+            'schedule_decision_id': self.get_schedule_decision_id(),
+            'schedule_plan_digest': self.get_schedule_plan_digest(),
         }
 
     @classmethod
@@ -548,6 +595,9 @@ class Task:
         task.set_task_uuid(dag_dict['task_uuid']) if 'task_uuid' in dag_dict else None
         task.set_parent_uuid(dag_dict['parent_uuid']) if 'parent_uuid' in dag_dict else None
         task.set_root_uuid(dag_dict['root_uuid']) if 'root_uuid' in dag_dict else None
+        task.set_created_at(dag_dict.get('created_at', 0.0))
+        task.set_schedule_decision_id(dag_dict.get('schedule_decision_id', ''))
+        task.set_schedule_plan_digest(dag_dict.get('schedule_plan_digest', ''))
 
         return task
 

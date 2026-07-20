@@ -191,6 +191,78 @@ def test_scheduler_updates_scenarios_resources_and_supports_plans_and_overhead(m
 
 
 @pytest.mark.unit
+def test_scheduler_snapshot_tracks_resources_and_active_task_commitments(monkeypatch):
+    now = [100.0]
+
+    def fake_get_algorithm(name, **kwargs):
+        if name == "SCH_CONFIG_EXTRACTION":
+            return lambda scheduler: None
+        if name == "SCH_SCENARIO_RETRIEVAL":
+            return lambda task: {}
+        if name == "SCH_POLICY_RETRIEVAL":
+            return lambda task: {}
+        if name == "SCH_STARTUP_POLICY":
+            return lambda info: {"dag": {}}
+        raise AssertionError(f"Unexpected algorithm request: {name}")
+
+    monkeypatch.setattr(scheduler_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
+    scheduler = scheduler_module.Scheduler(
+        runtime_context=FakeRuntimeContext(),
+        runtime_directory=RuntimeDirectoryStore(),
+        task_lease_store=InMemoryTaskLeaseStore(clock=lambda: now[0]),
+    )
+    scheduler._runtime_clock = lambda: now[0]
+    scheduler.runtime_directory_revision = lambda: 1
+    scheduler.update_scheduler_resource({
+        "device": "edge-node",
+        "resource": {"queue_state": {"detector": {"waiting_count": 2, "busy": False}}},
+    })
+    scheduler.acquire_task_lease(
+        1,
+        "root-1",
+        ttl_seconds=20,
+        commitment={
+            "source_id": 3,
+            "task_id": 8,
+            "root_uuid": "root-1",
+            "runtime_directory_revision": 1,
+            "decision_id": "decision-1",
+            "plan_digest": "digest-1",
+            "dag": {"detector": {"service": {"execute_device": "edge-node"}}},
+        },
+    )
+
+    snapshot = scheduler.get_scheduling_snapshot()
+    assert snapshot["runtime_directory_revision"] == 1
+    assert snapshot["resources"] == {
+        "edge-node": {"queue_state": {"detector": {"waiting_count": 2, "busy": False}}}
+    }
+    assert snapshot["commitments"][0]["root_uuid"] == "root-1"
+    assert snapshot["commitments"][0]["decision_id"] == "decision-1"
+    snapshot["resources"]["edge-node"]["queue_state"]["detector"]["waiting_count"] = 99
+    assert scheduler.get_scheduler_resource()["edge-node"]["queue_state"]["detector"]["waiting_count"] == 2
+
+    changed_commitment = {
+        key: value for key, value in snapshot["commitments"][0].items()
+        if key not in {"admitted_at", "expires_at", "status"}
+    }
+    changed_commitment["plan_digest"] = "digest-2"
+    with pytest.raises(scheduler_module.RuntimeDirectoryConflict):
+        scheduler.acquire_task_lease(
+            1,
+            "root-1",
+            ttl_seconds=40,
+            commitment=changed_commitment,
+        )
+    assert scheduler.get_scheduling_snapshot()["commitments"][0]["plan_digest"] == "digest-1"
+
+    renewed = scheduler.renew_task_lease(1, "root-1", ttl_seconds=30)
+    assert scheduler.get_scheduling_snapshot()["commitments"][0]["expires_at"] == renewed["expires_at"]
+    scheduler.release_task_lease(1, "root-1")
+    assert scheduler.get_scheduling_snapshot()["commitments"] == []
+
+
+@pytest.mark.unit
 def test_scheduler_resource_lock_passthrough_and_existing_registration(monkeypatch):
     lock_calls = []
 

@@ -18,6 +18,13 @@ no longer ship the Kubernetes Python client or accept legacy discovery/cache con
   observer binding (`backend`).
 - Unify all deployment policies on the validated `logical service -> node list` contract and add explicit cloud-only
   deployment/scheduling policies with no fixed cloud hostname (`scheduler`).
+- Change the Generator hook lifecycle to filter an ingestion round, reserve its root task identity, schedule when due,
+  and only then materialize source data (`generator`/`scheduler`).
+- Add task-aware scheduling contracts with framework-reserved `TaskIdentity`, identity-attributed schedule decisions,
+  canonical plan digests, acquire-time task commitments, and a mutation-safe Scheduler snapshot of resources and active
+  commitments (`generator`/`scheduler`).
+- Replace queue length with structured queue state monitor contract covering both waiting and running work (`processor`/
+  `monitor`/`scheduler`).
 
 ### Bug Fix
 
@@ -31,17 +38,20 @@ no longer ship the Kubernetes Python client or accept legacy discovery/cache con
   cancellable, and bounded by an explicit Distributor request timeout and batch size (`backend`/`distributor`).
 - Make install lifecycle-cancellable: stop signals an in-flight RuntimeService activation/planning transaction before
   serialized cleanup, preserves its crash-recoverable ownership session, and removes pre-publication resources without
-  waiting for an unready Scheduler or the full activation timeout.
+  waiting for an unready Scheduler or the full activation timeout (`backend`).
 - Keep uninstall ownership until Foreground RuntimeService deletion and the complete Kubernetes dependent-resource
   barrier are empty; prolonged no-progress cleanup now remains retryable and install-fenced while exposing durable
-  diagnostics to every frontend window.
+  diagnostics to every frontend window (`backend`/`frontend`).
 - Prevent Scheduler supervisor heartbeat timeouts and cascading Generator exits by running one direct Uvicorn process,
-  dispatching blocking Redis endpoints through FastAPI's thread pool, reducing each task to Generator acquire plus
-  Distributor final-renew/release, and applying source backpressure during transient lease admission failures.
+  dispatching blocking Redis endpoints through FastAPI's thread pool,  and reducing each task to Generator acquire plus
+  Distributor final-renew/release (`generator`/`scheduler`).
 - Prevent silent task loss with root-lease-scoped atomic artifacts, exact per-hop ownership ACKs, Generator/Processor
-  backpressure, retry-safe parallel joins, and idempotent durable Distributor acceptance.
+  backpressure, retry-safe parallel joins, and idempotent durable Distributor acceptance (`generator`/`processor`/
+  `distributor`).
 - Preserve Scheduler management rejection details through Backend RuntimeSession state and frontend presentation, and
   emit bounded Scheduler 4xx diagnostics without logging complete request payloads.
+- Prevent schedule-plan corruption by isolating after-schedule hook mutations, and fix before-submit hooks
+  to operate on the task passed by the Generator instead of an undefined Generator field (`scheudler`).
 
 ### Minor Update
 

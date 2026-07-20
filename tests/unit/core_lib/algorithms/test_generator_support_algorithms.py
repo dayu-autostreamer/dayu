@@ -283,20 +283,17 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
 
 @pytest.mark.unit
 def test_before_submit_task_operations_track_file_metadata_and_last_frame_state(monkeypatch, tmp_path):
-    task = build_task()
-    current_task = build_task()
     compressed_file = tmp_path / "buffer.mp4"
     compressed_file.write_bytes(b"payload" * 4)
-    new_task = SimpleNamespace(
-        get_file_path=lambda: str(compressed_file),
-        get_hash_data=lambda: ["hash-new"],
-    )
-    system = SimpleNamespace(current_task=current_task)
+    new_task = build_task()
+    new_task.set_file_path(str(compressed_file))
+    new_task.set_hash_data(["hash-new"])
+    system = SimpleNamespace()
 
     before_submit_module.SimpleBSTOperation()(system, new_task)
 
     before_submit_module.CEVASBSTOperation()(system, new_task)
-    assert current_task.get_tmp_data()["file_size"] == pytest.approx(compressed_file.stat().st_size / 1024)
+    assert new_task.get_tmp_data()["file_size"] == pytest.approx(compressed_file.stat().st_size / 1024)
 
     steady_task = build_task()
     steady_task.set_file_path(str(compressed_file))
@@ -325,17 +322,17 @@ def test_before_submit_task_operations_track_file_metadata_and_last_frame_state(
     before_submit_module.ChameleonBSTOperation()(chameleon_system, new_task)
     assert chameleon_system.temp_encoded_frame == ""
 
-    casva_system = SimpleNamespace(current_task=task)
+    casva_system = SimpleNamespace()
     casva_operation = before_submit_module.CASVABSTOperation()
     casva_operation(casva_system, new_task)
-    assert task.get_tmp_data()["file_size"] > 0
-    assert task.get_tmp_data()["file_dynamics"] == 0
+    assert new_task.get_tmp_data()["file_size"] > 0
+    assert new_task.get_tmp_data()["file_dynamics"] == 0
 
     casva_system.past_metadata = {"resolution": "480p", "fps": 5}
     casva_system.past_file_size = 0.5
-    task.set_metadata({"resolution": "720p", "fps": 10, "buffer_size": 2, "encoding": "mp4v"})
+    new_task.set_metadata({"resolution": "720p", "fps": 10, "buffer_size": 2, "encoding": "mp4v"})
     casva_operation(casva_system, new_task)
-    assert "file_dynamics" in task.get_tmp_data()
+    assert "file_dynamics" in new_task.get_tmp_data()
     assert casva_operation.get_fps_adjust_mode(20, 20) == ("same", 0, 0)
     assert casva_operation.get_fps_adjust_mode(20, 15) == ("skip", 4, 0)
     assert casva_operation.get_fps_adjust_mode(20, 4) == ("remain", 0, 5)

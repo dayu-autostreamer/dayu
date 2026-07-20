@@ -267,6 +267,30 @@ def test_task_pipeline_conversion_stage_navigation_and_branch_merge():
 
 
 @pytest.mark.unit
+def test_task_preserves_root_schedule_commitment_across_forks_and_serialization():
+    task = build_branching_task()
+    task.set_created_at(123.5)
+    task.set_schedule_decision_id("decision-1")
+    task.set_schedule_plan_digest("digest-1")
+    task.set_runtime_directory_revision(7)
+
+    branch = task.step_to_next_stage()[0]
+    restored = Task.deserialize(branch.serialize())
+
+    assert restored.get_created_at() == 123.5
+    assert restored.get_schedule_decision_id() == "decision-1"
+    assert restored.get_schedule_plan_digest() == "digest-1"
+    commitment = restored.get_schedule_commitment()
+    assert commitment["root_uuid"] == task.get_root_uuid()
+    assert commitment["task_uuid"] == branch.get_task_uuid()
+    assert commitment["runtime_directory_revision"] == 7
+    assert commitment["decision_id"] == "decision-1"
+    assert commitment["plan_digest"] == "digest-1"
+    commitment["metadata"]["buffer_size"] = 99
+    assert restored.get_metadata()["buffer_size"] == 2
+
+
+@pytest.mark.unit
 def test_task_delay_calculation_time_tickets_and_estimator_helpers(monkeypatch):
     task = Task(
         source_id=3,

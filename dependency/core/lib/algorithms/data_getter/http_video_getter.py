@@ -6,6 +6,7 @@ import copy
 from .base_getter import BaseDataGetter
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, Counter, NameMaintainer
+from core.lib.content import TaskIdentity
 from core.lib.network import http_request
 
 __all__ = ('HttpVideoGetter',)
@@ -67,8 +68,10 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
         )
         return max(1 / system.meta_data['fps'] * buffer_size - elapsed_since_last_submit, 0)
 
-    def __call__(self, system):
-        new_task_id = Counter.get_count('task_id')
+    def __call__(self, system, task_identity=None):
+        if task_identity is None:
+            task_identity = TaskIdentity.create(system.source_id, Counter.get_count('task_id'))
+        new_task_id = task_identity.task_id
 
         if not self.request_source_data(system, new_task_id):
             LOGGER.info(f'[Camera Simulation] source {system.source_id}: datasource exhausted, skip current round')
@@ -94,7 +97,8 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
             new_task = system.generate_task(new_task_id, copy.deepcopy(system.task_dag),
                                             copy.deepcopy(system.service_deployment),
                                             copy.deepcopy(system.meta_data),
-                                            self.file_name, self.hash_codes)
+                                            self.file_name, self.hash_codes,
+                                            task_identity=task_identity)
             submitted = system.submit_task_to_controller(new_task)
             # Admission failures are still generation attempts. Advancing this
             # timestamp preserves the configured source cadence and prevents a

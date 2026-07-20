@@ -77,7 +77,7 @@ flowchart TD
     REG --> MON["Monitor hooks"]
     REG --> VIZ["Visualization hooks"]
 
-    GEN --> GENFLOW["BSO -> Scheduler -> ASO -> GetterFilter -> Getter -> BSTO"]
+    GEN --> GENFLOW["GetterFilter -> reserve identity -> BSO -> Scheduler -> ASO -> Getter -> BSTO"]
     SCH --> SCHFLOW["ConfigExtraction -> Agent -> Selection / Deployment / Redeployment"]
     PROC --> PROCFLOW["Processor -> Scenario extractors -> Queue"]
     MON --> MONFLOW["Resource monitors -> Scheduler /resource"]
@@ -101,6 +101,17 @@ flowchart TD
 | `GEN_COMPRESS` | Persist a frame buffer to a file |
 | `GEN_GETTER_FILTER` | Decide whether the generator should skip this round entirely |
 
+The call order is a framework contract. After a round passes `GEN_GETTER_FILTER`, `VideoGenerator` reserves one
+`TaskIdentity`. When a schedule is initial or due, Generator appends that identity as `task_context`, calls Scheduler,
+and applies `GEN_ASO` before invoking `GEN_GETTER(system, task_identity)`. Scheduling remains before source
+materialization because existing policies can change buffer size, frame rate, resolution, encoding, and the full DAG
+device mapping. The getter must pass the same identity to `Generator.generate_task`; it must not allocate a second id.
+Built-in getters still accept `task_identity=None` for direct local/test use.
+
+`REQUEST_SCHEDULING_INTERVAL <= 0` means schedule every accepted generation round. A positive interval preserves the
+existing decision-reuse behavior. Every Task still receives a distinct root identity even when it shares the same
+schedule decision with nearby tasks.
+
 ### Scheduler
 
 `Scheduler` resolves startup hooks once and then instantiates one `SCH_AGENT` per source:
@@ -111,7 +122,7 @@ flowchart TD
 | `SCH_SCENARIO_RETRIEVAL` | Convert a processed task into scheduler state |
 | `SCH_POLICY_RETRIEVAL` | Recover the currently applied policy from a task |
 | `SCH_STARTUP_POLICY` | Provide a fallback plan before an agent can decide |
-| `SCH_AGENT` | Maintain policy-specific scheduling state per source |
+| `SCH_AGENT` | Maintain policy-specific scheduling state per source; `BaseAgent.system` exposes the Scheduler and its mutation-safe `get_scheduling_snapshot()` plugin API |
 | `SCH_SELECTION_POLICY` | Select the execution node for a source |
 | `SCH_INITIAL_DEPLOYMENT_POLICY` | Compute deployment for first install |
 | `SCH_REDEPLOYMENT_POLICY` | Compute deployment updates after install |

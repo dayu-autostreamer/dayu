@@ -3,6 +3,7 @@ import abc
 from core.lib.common import ClassFactory, ClassType
 from core.lib.content import Task
 from core.lib.runtime import RuntimeResolver
+from core.lib.scheduling import service_waiting_count
 
 from .base_visualizer import BaseVisualizer
 
@@ -20,15 +21,7 @@ class ServiceQueueLengthVisualizer(BaseVisualizer, abc.ABC):
         if not isinstance(device_resource, dict):
             return 0
 
-        queue_lengths = device_resource.get("queue_length")
-        if not isinstance(queue_lengths, dict):
-            return 0
-
-        value = queue_lengths.get(service_name, 0)
-        try:
-            return max(0.0, float(value))
-        except (TypeError, ValueError):
-            return 0
+        return service_waiting_count(device_resource, service_name)
 
     @staticmethod
     def _format_replica_label(device_name, pod_name):

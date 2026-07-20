@@ -45,17 +45,6 @@ def build_task(service_names, flow_index, file_path="payload.bin"):
     )
 
 
-class DummyThread:
-    def __init__(self, target=None, name=None, daemon=None):
-        self.target = target
-        self.name = name
-        self.daemon = daemon
-        self.started = False
-
-    def start(self):
-        self.started = True
-
-
 class FakeProcessor:
     def __init__(self):
         self.calls = []
@@ -108,13 +97,15 @@ def server_context(monkeypatch):
     monkeypatch.setattr(processor_server_module.Context, "get_parameter", staticmethod(fake_get_parameter))
     monkeypatch.setenv("DAYU_RUNTIME_BOOTSTRAP", '{"local_node":"edge-node","cloud_node":"cloud-node"}')
     RuntimeContext.reset_default()
-    monkeypatch.setattr(processor_server_module.threading, "Thread", DummyThread)
+    loop_process = processor_server_module.ProcessorServer.loop_process
+    monkeypatch.setattr(processor_server_module.ProcessorServer, "loop_process", lambda self: None)
     monkeypatch.setattr(
         processor_server_module.FileOps,
         "touch_task_file_in_temp",
         staticmethod(lambda task: True),
     )
     server = processor_server_module.ProcessorServer()
+    monkeypatch.setattr(processor_server_module.ProcessorServer, "loop_process", loop_process)
     return SimpleNamespace(
         server=server,
         queue=fake_queue,
@@ -139,7 +130,11 @@ def test_processor_server_task_endpoints_return_ack_after_queue_ownership(server
     assert saved == [(task.get_task_uuid(), b"payload")]
 
     assert asyncio.run(server.health_check()) == {"status": "ok"}
-    assert asyncio.run(server.query_queue_length()) == 1
+    queue_state = asyncio.run(server.query_queue_state())
+    assert queue_state["waiting_count"] == 1
+    assert queue_state["busy"] is False
+    assert queue_state["capacity"] == 1
+    assert queue_state["running_task"] is None
     assert asyncio.run(server.query_model_flops()) == 456.0
     assert isinstance(asyncio.run(server.query_model_memory()), int)
 
@@ -448,12 +443,21 @@ def test_processor_server_loop_process_consumes_queue_once_and_forwards_results(
 
     monkeypatch.setattr(server, "task_queue", OneShotQueue(task))
     monkeypatch.setattr(server, "process_task_service", lambda current_task: current_task)
-    monkeypatch.setattr(server, "send_result_back_to_controller", lambda current_task: forwarded.append(current_task))
+    observed_states = []
+
+    def forward(current_task):
+        observed_states.append(asyncio.run(server.query_queue_state()))
+        forwarded.append(current_task)
+
+    monkeypatch.setattr(server, "send_result_back_to_controller", forward)
 
     with pytest.raises(StopIteration):
         server.loop_process()
 
     assert forwarded == [task]
+    assert observed_states[0]["busy"] is True
+    assert observed_states[0]["running_task"]["root_uuid"] == task.get_root_uuid()
+    assert asyncio.run(server.query_queue_state())["busy"] is False
 
 
 @pytest.mark.unit

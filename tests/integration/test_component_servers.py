@@ -281,6 +281,13 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
                     "next_nodes": [],
                 }
             },
+            "task_context": {
+                "source_id": 7,
+                "task_id": 11,
+                "task_uuid": "root-11",
+                "root_uuid": "root-11",
+                "created_at": 123.5,
+            },
         }
         schedule_response = client.request(
             "GET",
@@ -295,6 +302,12 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert {route["component"] for route in schedule_response.json()["runtime_routes"]} == {
             "controller", "processor",
         }
+        decision = schedule_response.json()["schedule_decision"]
+        assert decision["source_id"] == 7
+        assert decision["task_id"] == 11
+        assert decision["root_uuid"] == "root-11"
+        assert decision["decision_id"]
+        assert decision["plan_digest"]
 
         assert client.get("/overhead").json() == 0.0123
 
@@ -641,7 +654,18 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
                 "frame_count": 1,
             },
         }
-        assert client.get("/queue_length").json() == 0
+        queue_state = client.get("/queue_state").json()
+        observed_at = queue_state.pop("observed_at")
+        sequence = queue_state.pop("sequence")
+        assert observed_at > 0
+        assert sequence >= 1
+        assert queue_state == {
+            "waiting_count": 0,
+            "busy": False,
+            "running_elapsed_s": 0.0,
+            "capacity": 1,
+            "running_task": None,
+        }
         assert client.get("/model_flops").json() == 321.0
 
 

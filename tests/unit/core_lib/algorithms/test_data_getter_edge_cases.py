@@ -172,7 +172,7 @@ def test_rtsp_video_getter_call_retries_until_filtered_buffer_is_filled(monkeypa
     monkeypatch.setattr(
         getter,
         "generate_and_send_new_task",
-        lambda *args: submitted.append(args) or True,
+        lambda *args, **kwargs: submitted.append((args, kwargs)) or True,
     )
 
     system = SimpleNamespace(
@@ -188,7 +188,8 @@ def test_rtsp_video_getter_call_retries_until_filtered_buffer_is_filled(monkeypa
 
     assert system.cumulative_scheduling_frame_count == 4
     assert len(submitted) == 1
-    assert len(submitted[0][1]) == 2
+    assert len(submitted[0][0][1]) == 2
+    assert submitted[0][1]["task_identity"].task_id == 6
     assert getter.frame_buffer == []
 
 

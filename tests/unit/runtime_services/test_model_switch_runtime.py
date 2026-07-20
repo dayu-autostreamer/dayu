@@ -20,10 +20,13 @@ def test_model_switch_queue_query_is_process_local(monkeypatch):
     monkeypatch.setattr(
         base_inference_module,
         "http_request",
-        lambda url, method=None, timeout=None: calls.append((url, method, timeout)) or 3,
+        lambda url, method=None, timeout=None: calls.append((url, method, timeout)) or {
+            "waiting_count": 3,
+            "busy": True,
+        },
     )
 
     instance = SimpleNamespace()
     assert base_inference_module.BaseInference.get_queue(instance) == 3
-    assert calls == [("http://127.0.0.1:9100/queue_length", "GET", 5)]
+    assert calls == [("http://127.0.0.1:9100/queue_state", "GET", 5)]
     assert instance.processor_port == 9100

@@ -6,6 +6,7 @@ import time
 from .base_getter import BaseDataGetter
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Counter, NameMaintainer
+from core.lib.content import TaskIdentity
 
 __all__ = ('RtspVideoGetter',)
 
@@ -78,7 +79,16 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
 
         return frame
 
-    def generate_and_send_new_task(self, system, frame_buffer, new_task_id, task_dag, service_deployment, meta_data, ):
+    def generate_and_send_new_task(
+        self,
+        system,
+        frame_buffer,
+        new_task_id,
+        task_dag,
+        service_deployment,
+        meta_data,
+        task_identity=None,
+    ):
         source_id = system.source_id
 
         LOGGER.debug(f'[Frame Buffer] (source {system.source_id} / task {new_task_id}) '
@@ -92,12 +102,20 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
 
         try:
             self.compress_frames(system, frame_buffer, file_name)
-            new_task = system.generate_task(new_task_id, task_dag, service_deployment, meta_data, file_name, None)
+            new_task = system.generate_task(
+                new_task_id,
+                task_dag,
+                service_deployment,
+                meta_data,
+                file_name,
+                None,
+                task_identity=task_identity,
+            )
             return system.submit_task_to_controller(new_task)
         finally:
             FileOps.remove_file(file_name)
 
-    def __call__(self, system):
+    def __call__(self, system, task_identity=None):
         while len(self.frame_buffer) < system.meta_data['buffer_size']:
             frame = self.get_one_frame(system)
             if self.filter_frame(system, frame):
@@ -106,7 +124,9 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
         # Submission is deliberately serial: when the non-dropping data path
         # applies backpressure, the source must not create unbounded child
         # processes and continue consuming frames that have no owner.
-        new_task_id = Counter.get_count('task_id')
+        if task_identity is None:
+            task_identity = TaskIdentity.create(system.source_id, Counter.get_count('task_id'))
+        new_task_id = task_identity.task_id
         system.cumulative_scheduling_frame_count += int(system.meta_data.get('buffer_size', 0) *
                                                      system.raw_meta_data.get('fps', 0) /
                                                      system.meta_data.get('fps', 1))
@@ -119,4 +139,5 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
             copy.deepcopy(system.task_dag),
             copy.deepcopy(system.service_deployment),
             copy.deepcopy(system.meta_data),
+            task_identity=task_identity,
         )

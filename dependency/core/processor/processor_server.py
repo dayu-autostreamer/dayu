@@ -1,3 +1,4 @@
+import copy
 import json
 import threading
 import time
@@ -41,10 +42,10 @@ class ProcessorServer:
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.PROCESSOR_PROCESS_RETURN]
                      ),
-            APIRoute(NetworkAPIPath.PROCESSOR_QUEUE_LENGTH,
-                     self.query_queue_length,
+            APIRoute(NetworkAPIPath.PROCESSOR_QUEUE_STATE,
+                     self.query_queue_state,
                      response_class=JSONResponse,
-                     methods=[NetworkAPIMethod.PROCESSOR_QUEUE_LENGTH]
+                     methods=[NetworkAPIMethod.PROCESSOR_QUEUE_STATE]
                      ),
             APIRoute(NetworkAPIPath.PROCESSOR_CLEAR_QUEUE,
                      self.clear_queue,
@@ -77,6 +78,10 @@ class ProcessorServer:
         self._accepted_tasks = {}
         self._accepted_task_expirations = deque()
         self._accepted_tasks_lock = threading.Lock()
+        self._queue_state_lock = threading.Lock()
+        self._queue_state_sequence = 0
+        self._running_task = None
+        self._running_started_at = None
 
         threading.Thread(target=self.loop_process, name="ProcessorLoop", daemon=True).start()
 
@@ -120,6 +125,7 @@ class ProcessorServer:
             if task_uuid in self._accepted_tasks:
                 return False
             self.task_queue.put(task)
+            self._mark_queue_state_changed()
             expires_at = now + self.runtime_context.lease_ttl_seconds
             self._accepted_tasks[task_uuid] = expires_at
             self._accepted_task_expirations.append((expires_at, task_uuid))
@@ -146,8 +152,52 @@ class ProcessorServer:
             return new_task.serialize()
         return None
 
-    async def query_queue_length(self):
-        return self.task_queue.size()
+    @staticmethod
+    def _task_identity(task):
+        if task is None:
+            return None
+        return {
+            'source_id': task.get_source_id(),
+            'task_id': task.get_task_id(),
+            'task_uuid': task.get_task_uuid(),
+            'root_uuid': task.get_root_uuid(),
+            'flow_index': task.get_flow_index(),
+        }
+
+    def _mark_queue_state_changed(self):
+        with self._queue_state_lock:
+            self._queue_state_sequence += 1
+
+    def _set_running_task(self, task):
+        with self._queue_state_lock:
+            self._running_task = self._task_identity(task)
+            self._running_started_at = time.monotonic()
+            self._queue_state_sequence += 1
+
+    def _clear_running_task(self):
+        with self._queue_state_lock:
+            self._running_task = None
+            self._running_started_at = None
+            self._queue_state_sequence += 1
+
+    async def query_queue_state(self):
+        now = time.monotonic()
+        with self._queue_state_lock:
+            busy = self._running_task is not None
+            running_elapsed_s = (
+                max(0.0, now - self._running_started_at)
+                if busy and self._running_started_at is not None
+                else 0.0
+            )
+            return {
+                'waiting_count': self.task_queue.size(),
+                'busy': busy,
+                'running_elapsed_s': running_elapsed_s,
+                'capacity': 1,
+                'sequence': self._queue_state_sequence,
+                'running_task': copy.deepcopy(self._running_task),
+                'observed_at': time.time(),
+            }
 
     @staticmethod
     def _normalize_queue_clear_limit(value):
@@ -217,6 +267,8 @@ class ProcessorServer:
             f"[Task Queue] Cleared queued tasks: reason={reason}, dry_run={dry_run}, "
             f"dropped={len(dropped_records)}, remaining={self.task_queue.size()}"
         )
+        if not dry_run and dropped_records:
+            self._mark_queue_state_changed()
         return {
             "ok": True,
             "device": self.local_device,
@@ -245,21 +297,26 @@ class ProcessorServer:
                 time.sleep(0.01)
                 continue
             LOGGER.debug(f'[Task Queue] Queue Size (loop): {self.task_queue.size()}')
-
+            self._set_running_task(task)
             try:
-                new_task = self.process_task_service(task)
-            except Exception as e:
-                LOGGER.critical("[Processor Error] Processor encountered error when processing data.")
-                LOGGER.exception(e)
-                self.task_queue.put(task)
-                time.sleep(0.1)
-                continue
+                try:
+                    new_task = self.process_task_service(task)
+                except Exception as e:
+                    LOGGER.critical("[Processor Error] Processor encountered error when processing data.")
+                    LOGGER.exception(e)
+                    self.task_queue.put(task)
+                    self._mark_queue_state_changed()
+                    time.sleep(0.1)
+                    continue
 
-            if new_task is None:
-                self.task_queue.put(task)
-                time.sleep(0.1)
-                continue
-            self.send_result_back_to_controller(new_task)
+                if new_task is None:
+                    self.task_queue.put(task)
+                    self._mark_queue_state_changed()
+                    time.sleep(0.1)
+                    continue
+                self.send_result_back_to_controller(new_task)
+            finally:
+                self._clear_running_task()
 
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')

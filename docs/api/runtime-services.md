@@ -6,12 +6,12 @@ This document describes the internal APIs used by Dayu runtime components. These
 
 | Topic | Behavior |
 | --- | --- |
-| Task payload | Internal services exchange serialized `Task` strings produced by `Task.serialize()`. |
+| Task payload | Internal services exchange serialized `Task` strings produced by `Task.serialize()`. Root tasks also carry `created_at`, `schedule_decision_id`, and `schedule_plan_digest`; forks preserve them. |
 | File transfer | Binary task content is sent as `multipart/form-data` with a `file` field plus a `data` field containing the serialized task. |
 | Scheduler/resource updates | Scheduler endpoints often receive JSON encoded into a form field named `data`. |
 | Runtime bootstrap | `DAYU_RUNTIME_BOOTSTRAP` supplies immutable install context and static infrastructure endpoints; it is never a Kubernetes discovery cache. |
 | Exact task routing | `Task` serializes `runtime_directory_revision`, `runtime_routes`, and `root_uuid`. Controller/processor routes must be complete exact identities. |
-| Task ownership and retirement | Generator acquires one Scheduler lease keyed by `(runtime_directory_revision, root_uuid)`; Distributor performs final renew/persist followed by scenario/release completion. Backend may place one immutable deadline on an old revision. |
+| Task ownership and retirement | Generator acquires one Scheduler lease keyed by `(runtime_directory_revision, root_uuid)` and attaches the root's immutable scheduling commitment; Distributor performs final renew/persist followed by scenario/release completion. Backend may place one immutable deadline on an old revision. |
 | Task delivery ACK | A task write succeeds only with `{accepted: true, task_uuid: "<exact task uuid>"}`. `200 null`, a mismatched UUID, timeout, or connection failure never transfers ownership. |
 | Task artifact | All branches of one lease identity share one immutable, atomically published node-local artifact. Different roots/revisions cannot reuse the same temp path. |
 
@@ -51,7 +51,7 @@ Implementation entrypoint: `dependency/core/processor/processor_server.py`
 | `POST` | `/predict` | Queue a task that includes a file payload. | Multipart with `file` and serialized `data` | Exact task delivery ACK after atomic file publication and queue insertion |
 | `POST` | `/predict_local` | Queue a task that uses the shared local artifact. | Form field `data` | Exact task delivery ACK after artifact validation and queue insertion |
 | `POST` | `/predict_and_return` | Process a task synchronously and return the serialized result. | Multipart with `file` and serialized `data` | Serialized task string or `null` |
-| `GET` | `/queue_length` | Return current queue size. | None | Integer |
+| `GET` | `/queue_state` | Return the background processor lane's structured waiting and running state. | None | `{waiting_count,busy,running_elapsed_s,capacity,sequence,running_task,observed_at}` |
 | `POST` | `/queue_clear` | Preview or remove queued processor tasks. | Form field `data` with JSON such as `{"dry_run": true, "max_count": 10, "reason": "manual_queue_clear"}` | Queue clear summary with matched, cleared, remaining, and dropped task metadata |
 | `GET` | `/model_flops` | Return the processor model FLOPs value. | None | Numeric FLOPs value |
 | `GET` | `/model_memory` | Return the processor process RSS in bytes. | None | Integer memory usage |
@@ -89,7 +89,7 @@ supervisor also removes its worker-heartbeat timeout from this path.
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `GET` | `/schedule` | Generate a schedule plan plus exact routes for one source. | Form field `data` with JSON object | `{plan,deployment,deployment_version,runtime_directory_revision,runtime_directory_hash,runtime_routes}` |
+| `GET` | `/schedule` | Generate a schedule plan plus exact routes for one source. | Form field `data` with JSON object and optional `task_context` | `{plan,deployment,deployment_version,runtime_directory_revision,runtime_directory_hash,runtime_routes,schedule_decision}` |
 | `GET` | `/overhead` | Get average scheduler overhead across agents. | None | Number of seconds |
 | `POST` | `/scenario` | Update scheduler state with a processed task scenario. | Form field `data` with serialized task | `{accepted: boolean}` |
 | `POST` | `/resource` | Update scheduler resource table for one device. | Form field `data` with JSON `{"device","resource"}` | `null` |
@@ -152,7 +152,7 @@ keys are intentionally separate and retain their lease-derived expiry.
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `GET` | `/runtime-directory/task-leases?revision=N` | Read lease and retirement status for one revision. | Query `revision` | `{revision,count,deadline,retired,revoked_count}` |
-| `POST` | `/runtime-directory/task-leases` | Acquire a lease only for the currently active revision. | Form `data` with `{revision,root_uuid,ttl_seconds}` | `{revision,root_uuid,expires_at,valid_for_seconds}` |
+| `POST` | `/runtime-directory/task-leases` | Acquire a lease only for the currently active revision and register its optional immutable scheduling commitment. | Form `data` with `{revision,root_uuid,ttl_seconds,commitment?}` | `{revision,root_uuid,expires_at,valid_for_seconds}` |
 | `PUT` | `/runtime-directory/task-leases` | Renew an existing unexpired lease. | Form `data` with `{revision,root_uuid,ttl_seconds}` | `{revision,root_uuid,expires_at,valid_for_seconds}` |
 | `DELETE` | `/runtime-directory/task-leases` | Release an existing lease. | Form `data` with `{revision,root_uuid}` | `{revision,root_uuid,expires_at,released}` |
 | `PATCH` | `/runtime-directory/task-leases` | Establish or reconcile one revision's immutable retirement deadline. The effective deadline may only stay the same or move earlier. | Form `data` with `{revision,deadline}` | `{revision,count,deadline,retired,revoked_count}` |
@@ -164,6 +164,13 @@ lease after its revision has retired is idempotent and reports it as already rel
 Scheduler-computed relative `valid_for_seconds` instead of comparing cloud and edge wall clocks.
 An inactive revision without a persisted retirement marker cannot renew: Scheduler rejects it fail-closed instead of
 assuming that a missing marker means an unbounded grace period.
+
+The optional acquire-time `commitment` contains the admitted root's source/task identity, creation timestamp,
+decision id and plan digest, runtime-directory revision, DAG device mapping, and task metadata. Scheduler validates
+that its root and revision match the lease. It keeps active commitments synchronized with acquire, renew, expiry, and
+release and exposes them together with one copied resource-table view through
+`Scheduler.get_scheduling_snapshot()` to schedule agents. This is an in-process plugin API, not a new HTTP endpoint or
+a second route-authority store.
 
 The normal per-task sequence is deliberately small: Generator acquires once before first submission; Controller and
 Processor never access this API; Distributor renews once immediately before durable persistence, sends the scenario
@@ -200,11 +207,21 @@ it is never an automatic production fallback.
   "dag": {
     "start": {"service": {"execute_device": "edgex1"}},
     "car-detection": {"service": {"execute_device": "cloudx1"}}
+  },
+  "task_context": {
+    "source_id": 0,
+    "task_id": 42,
+    "task_uuid": "root-task-uuid",
+    "root_uuid": "root-task-uuid",
+    "created_at": 1752969600.0
   }
 }
 ```
 
 Different `GEN_BSO` implementations may append scheduler-specific fields such as `skip_count`, `frame`, or `hash_code`.
+Generator appends `task_context` after `GEN_BSO`; hooks must not create or replace that framework-owned identity.
+`schedule_decision` binds the response plan to the reserved root through a stable decision id and canonical plan
+digest. A positive scheduling interval may reuse that decision for later root tasks, but never reuses their task UUID.
 The schedule is not usable unless Scheduler can also return an active positive directory revision and unambiguous
 exact routes required by the plan; otherwise `/schedule` returns `503`.
 
@@ -286,7 +303,7 @@ These runtime components are important for understanding the system but do not e
 
 | Component | Behavior | Main code path |
 | --- | --- | --- |
-| Generator | Waits for schedulable exact routes, acquires one revision lease per task, and copies routes into Task. A transient lease outage drops only that task; a retired revision requests a fresh schedule while the source loop remains alive. | `dependency/core/generator/generator_server.py` |
+| Generator | Filters an ingestion round, reserves a TaskIdentity, schedules before materializing source data, then creates the Task with that identity and acquires its revision lease plus commitment. A transient lease outage retains and retries the materialized task; a retired revision requests a fresh schedule while the source loop remains alive. | `dependency/core/generator/generator_server.py` |
 | Monitor | Periodically samples `MON_PRAM` hooks and posts resource data to scheduler. | `dependency/core/monitor/monitor.py` |
 | Datasource supervisor | Polls backend `/datasource_state` and starts or stops local source processes. | `datasource/datasource_server.py` |
 | RTSP stream source | Reads `rtsp_video/manifest.json` through `VideoDataset` and streams clips to the configured RTSP address. | `datasource/rtsp_video.py` |

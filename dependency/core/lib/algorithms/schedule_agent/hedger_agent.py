@@ -7,6 +7,7 @@ from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, Conf
     TaskConstant
 from core.lib.content import Task
 from core.lib.algorithms.shared.hedger import Hedger
+from core.lib.scheduling import queue_waiting_counts
 
 from .base_agent import BaseAgent
 
@@ -203,14 +204,14 @@ class HedgerAgent(BaseAgent, abc.ABC):
         gpu_usage = resource.get('gpu_usage')
         memory_usage = resource.get('memory_usage')
 
-        queue_length = resource.get('queue_length')
+        queue_lengths = queue_waiting_counts(resource)
         observe_queue = getattr(self.hedger, "update_latency_guard_queue_lengths", None)
-        if queue_length is not None and callable(observe_queue):
-            observe_queue(device, queue_length)
-        if isinstance(queue_length, dict) and queue_length:
+        if queue_lengths and callable(observe_queue):
+            observe_queue(device, queue_lengths)
+        if queue_lengths:
             self.hedger.state_buffer.add_queue_lengths(
                 device,
-                queue_length,
+                queue_lengths,
                 deployment_version=self.hedger.get_active_deployment_version(),
             )
 
@@ -227,8 +228,8 @@ class HedgerAgent(BaseAgent, abc.ABC):
             updated_fields.append(f"gpu_usage={self._format_utilization_for_log(gpu_usage)}")
         if memory_usage is not None:
             updated_fields.append(f"mem_usage={self._format_utilization_for_log(memory_usage)}")
-        if isinstance(queue_length, dict) and queue_length:
-            updated_fields.append(self._summarize_numeric_mapping_for_log("queue_length", queue_length))
+        if queue_lengths:
+            updated_fields.append(self._summarize_numeric_mapping_for_log("queue_length", queue_lengths))
         if model_flops_updates:
             updated_fields.append(self._summarize_numeric_mapping_for_log("model_flops", model_flops_updates))
         if model_memory_updates:

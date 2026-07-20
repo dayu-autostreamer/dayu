@@ -10,7 +10,7 @@ that appear in templates, environment variables, and visualization configs.
 | `GEN_BSO`                       | `__call__(system)`                                                  |
 | `GEN_ASO`                       | `__call__(system, scheduler_response)`                              |
 | `GEN_BSTO`                      | `__call__(system, new_task)`                                        |
-| `GEN_GETTER`                    | `__call__(system)`                                                  |
+| `GEN_GETTER`                    | `__call__(system, task_identity=None)`                              |
 | `GEN_GETTER_FILTER`             | `__call__(system)`                                                  |
 | `GEN_FILTER`                    | `__call__(system, frame) -> bool`                                   |
 | `GEN_PROCESS`                   | `__call__(system, frame, source_resolution, target_resolution)`     |
@@ -33,7 +33,7 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias   | Module                                         | Purpose                                                                                                            |
 |---------|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
-| `video` | `dependency/core/generator/video_generator.py` | Main generator loop for video sources. Resolves generator-side data hooks and periodically requests new schedules. |
+| `video` | `dependency/core/generator/video_generator.py` | Main generator loop for video sources. Filters first, reserves a root identity, schedules when due, then materializes a Task with that identity. |
 
 ### `GEN_BSO`
 
@@ -64,9 +64,9 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias        | Module                                                            | Purpose                                                           | Notes                                                                                                                             |
 |--------------|-------------------------------------------------------------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `http_video` | `dependency/core/lib/algorithms/data_getter/http_video_getter.py` | Pull buffered clips from the simulated HTTP datasource service.   | Uses `/source` then `/file` on `datasource/http_video.py`.                                                                        |
-| `rtsp_video` | `dependency/core/lib/algorithms/data_getter/rtsp_video_getter.py` | Read frames directly from an RTSP stream and build tasks locally. | Typically consumes streams produced by `datasource/rtsp_video.py`; handles reconnects and offloads compression into a subprocess. |
-| `v4l2_video` | `dependency/core/lib/algorithms/data_getter/v4l2_video_getter.py` | Read frames from a local V4L2 camera device and build tasks.      | Used by real-camera datasource configs such as `config/datasource_configs/real_camera.yaml`.                                      |
+| `http_video` | `dependency/core/lib/algorithms/data_getter/http_video_getter.py` | Pull buffered clips from the simulated HTTP datasource service.   | Uses `/source` then `/file` and materializes the framework-reserved `task_identity`. |
+| `rtsp_video` | `dependency/core/lib/algorithms/data_getter/rtsp_video_getter.py` | Read frames directly from an RTSP stream and build tasks locally. | Handles reconnects and materializes the framework-reserved `task_identity`. |
+| `v4l2_video` | `dependency/core/lib/algorithms/data_getter/v4l2_video_getter.py` | Read frames from a local V4L2 camera device and build tasks.      | Inherits the RTSP getter's identity contract; used by real-camera datasource configs. |
 
 ### `GEN_GETTER_FILTER`
 
@@ -240,7 +240,7 @@ that appear in templates, environment variables, and visualization configs.
 | `memory_usage`        | `dependency/core/lib/algorithms/parameter_monitor/memory_usage_monitor.py`        | Report host memory utilization via `psutil`.                                       |
 | `memory_capacity`     | `dependency/core/lib/algorithms/parameter_monitor/memory_capacity_monitor.py`     | Report total host memory capacity in GB.                                           |
 | `available_bandwidth` | `dependency/core/lib/algorithms/parameter_monitor/available_bandwidth_monitor.py` | Use a Scheduler lock so one edge client measures edge-to-cloud bandwidth against the cloud iperf server. Cloud/non-holder nodes return `-1` and probe failure returns `0`; Backend projects the unique positive result as a shared system measurement. |
-| `queue_length`        | `dependency/core/lib/algorithms/parameter_monitor/queue_length_monitor.py`        | Query queue lengths through exact local processor routes from `RuntimeDirectory`.  |
+| `queue_state`         | `dependency/core/lib/algorithms/parameter_monitor/queue_state_monitor.py`         | `QueueStateMonitor` reports each local service replica's structured waiting count, running-lane state, task identity, and observation metadata. |
 | `model_flops`         | `dependency/core/lib/algorithms/parameter_monitor/model_flops_monitor.py`         | Query model FLOPs through exact local processor routes from `RuntimeDirectory`.    |
 | `model_memory`        | `dependency/core/lib/algorithms/parameter_monitor/model_memory_monitor.py`        | Query processor-reported RSS through exact routes and retain the observed maximum. |
 | `cpu_flops`           | `dependency/core/lib/algorithms/parameter_monitor/cpu_flops_monitor.py`           | Estimate host CPU peak FLOPs from `lscpu`.                                         |

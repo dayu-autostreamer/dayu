@@ -70,9 +70,14 @@ class BaseInference(ABC):
         self.processor_port = Context.get_parameter('GUNICORN_PORT')
         queue_url = merge_address('127.0.0.1',
                                   port=self.processor_port,
-                                  path=NetworkAPIPath.PROCESSOR_QUEUE_LENGTH)
-        result = http_request(url=queue_url, method=NetworkAPIMethod.PROCESSOR_QUEUE_LENGTH, timeout=5)
-        return result
+                                  path=NetworkAPIPath.PROCESSOR_QUEUE_STATE)
+        result = http_request(url=queue_url, method=NetworkAPIMethod.PROCESSOR_QUEUE_STATE, timeout=5)
+        if not isinstance(result, dict):
+            return 0
+        try:
+            return max(0, int(result.get('waiting_count', 0)))
+        except (TypeError, ValueError):
+            return 0
 
     @abstractmethod
     def prepare_update_stats(self, image: np.ndarray, boxes, scores, labels, inference_latency):

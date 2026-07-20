@@ -1,5 +1,8 @@
 """Stable scheduling contracts shared by Backend, Scheduler and plugins."""
 
+from .decision import build_schedule_decision, canonical_digest
+from .queue_state import queue_waiting_counts, service_waiting_count
+
 from .source_selection import (
     ALL_EDGE_NODES,
     SELECTED_EDGE_NODES,
@@ -12,6 +15,10 @@ from .source_selection import (
 )
 
 __all__ = (
+    "build_schedule_decision",
+    "canonical_digest",
+    "queue_waiting_counts",
+    "service_waiting_count",
     "ALL_EDGE_NODES",
     "SELECTED_EDGE_NODES",
     "SOURCE_CANDIDATE_NODES_FIELD",

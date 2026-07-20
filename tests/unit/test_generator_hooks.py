@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.lib.content import Task
+from core.lib.content import Task, TaskIdentity
 from core.lib.runtime import (
     RuntimeContext,
     RuntimeLeaseIdentityError,
@@ -151,13 +151,15 @@ def test_generator_request_schedule_policy_and_generate_task_follow_hook_contrac
     assert task.get_raw_metadata() == {"fps": 25, "buffer_size": 1}
     assert task.get_hash_data() == [11, 12, 13]
 
-    assert generator.request_schedule_policy() is True
+    task_identity = TaskIdentity.create(source_id=7, task_id=4)
+    assert generator.request_schedule_policy(task_identity) is True
 
     assert captured_request["url"] == "http://cloud-node:9001/schedule"
     assert captured_request["method"] == "GET"
     assert json.loads(captured_request["data"]["data"]) == {
         "source_id": 7,
         "meta_data": {"fps": 25, "buffer_size": 1},
+        "task_context": task_identity.to_dict(),
     }
     assert hook_calls["after"]["plan"] == {"buffer_size": 2}
     routed_task = generator.generate_task(
@@ -167,7 +169,13 @@ def test_generator_request_schedule_policy_and_generate_task_follow_hook_contrac
         meta_data={"fps": 15},
         compressed_path="payload.bin",
         hash_codes=[],
+        task_identity=task_identity,
     )
+    assert routed_task.get_task_uuid() == task_identity.task_uuid
+    assert routed_task.get_root_uuid() == task_identity.root_uuid
+    assert routed_task.get_created_at() == task_identity.created_at
+    assert routed_task.get_schedule_decision_id()
+    assert routed_task.get_schedule_plan_digest()
     assert routed_task.get_runtime_directory_revision() == 1
     assert routed_task.get_runtime_routes() == runtime_routes("edge-node")
     assert generator.runtime_directory_hash == "runtime-directory-hash-1"
@@ -469,8 +477,8 @@ def test_video_generator_run_requests_initial_schedule_after_health_before_data_
     def after_schedule(system, scheduler_response):
         after_schedule_calls.append(scheduler_response)
 
-    def data_getter(system):
-        data_getter_calls.append(system.source_id)
+    def data_getter(system, task_identity):
+        data_getter_calls.append(task_identity)
         system.cumulative_scheduling_frame_count = (
             system.request_scheduling_interval * system.raw_meta_data["fps"] + 1
         )
@@ -503,8 +511,14 @@ def test_video_generator_run_requests_initial_schedule_after_health_before_data_
 
     request_count = {"value": 0}
 
-    def fake_request_schedule_policy():
-        schedule_requests.append(generator.cumulative_scheduling_frame_count)
+    task_identities = iter([
+        TaskIdentity.create(source_id=9, task_id=100),
+        TaskIdentity.create(source_id=9, task_id=101),
+    ])
+    monkeypatch.setattr(generator, "create_task_identity", lambda: next(task_identities))
+
+    def fake_request_schedule_policy(task_identity=None):
+        schedule_requests.append((generator.cumulative_scheduling_frame_count, task_identity))
         request_count["value"] += 1
         if request_count["value"] >= 2:
             raise StopGeneratorLoop
@@ -517,8 +531,10 @@ def test_video_generator_run_requests_initial_schedule_after_health_before_data_
 
     assert after_schedule_calls == [None]
     assert getter_filter_calls == [9, 9, 9]
-    assert data_getter_calls == [9]
-    assert schedule_requests == [0, 6]
+    assert [identity.task_id for identity in data_getter_calls] == [100]
+    assert [count for count, _ in schedule_requests] == [0, 6]
+    assert [identity.task_id for _, identity in schedule_requests] == [100, 101]
+    assert data_getter_calls[0] is schedule_requests[0][1]
 
 
 @pytest.mark.unit
@@ -528,8 +544,8 @@ def test_video_generator_run_refreshes_schedule_after_retired_lease(monkeypatch)
 
     data_getter_calls = []
 
-    def data_getter(system):
-        data_getter_calls.append(system.source_id)
+    def data_getter(system, task_identity):
+        data_getter_calls.append(task_identity)
         system._runtime_schedule_refresh_required.set()
 
     hooks = {
@@ -557,8 +573,14 @@ def test_video_generator_run_refreshes_schedule_after_retired_lease(monkeypatch)
     )
     schedule_requests = []
 
-    def fake_request_schedule_policy():
-        schedule_requests.append(generator.cumulative_scheduling_frame_count)
+    task_identities = iter([
+        TaskIdentity.create(source_id=10, task_id=200),
+        TaskIdentity.create(source_id=10, task_id=201),
+    ])
+    monkeypatch.setattr(generator, "create_task_identity", lambda: next(task_identities))
+
+    def fake_request_schedule_policy(task_identity=None):
+        schedule_requests.append((generator.cumulative_scheduling_frame_count, task_identity))
         if len(schedule_requests) == 2:
             raise StopGeneratorLoop
         return True
@@ -568,5 +590,6 @@ def test_video_generator_run_refreshes_schedule_after_retired_lease(monkeypatch)
     with pytest.raises(StopGeneratorLoop):
         generator.run()
 
-    assert data_getter_calls == [10]
-    assert schedule_requests == [0, 0]
+    assert [identity.task_id for identity in data_getter_calls] == [200]
+    assert [count for count, _ in schedule_requests] == [0, 0]
+    assert [identity.task_id for _, identity in schedule_requests] == [200, 201]

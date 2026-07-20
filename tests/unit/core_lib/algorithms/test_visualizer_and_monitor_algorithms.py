@@ -19,7 +19,7 @@ memory_capacity_module = importlib.import_module("core.lib.algorithms.parameter_
 memory_usage_module = importlib.import_module("core.lib.algorithms.parameter_monitor.memory_usage_monitor")
 model_flops_module = importlib.import_module("core.lib.algorithms.parameter_monitor.model_flops_monitor")
 model_memory_module = importlib.import_module("core.lib.algorithms.parameter_monitor.model_memory_monitor")
-queue_length_module = importlib.import_module("core.lib.algorithms.parameter_monitor.queue_length_monitor")
+queue_state_module = importlib.import_module("core.lib.algorithms.parameter_monitor.queue_state_monitor")
 result_base_module = importlib.import_module("core.lib.algorithms.result_visualizer.base_visualizer")
 result_curve_module = importlib.import_module("core.lib.algorithms.result_visualizer.curve_visualizer")
 result_topology_module = importlib.import_module("core.lib.algorithms.result_visualizer.topology_visualizer")
@@ -183,8 +183,24 @@ def test_local_and_remote_parameter_monitors_collect_expected_values(monkeypatch
     monkeypatch.setattr(model_flops_module, "http_request", lambda address, method=None, **kwargs: 3e9)
     assert model_flops_module.ModelFlopsMonitor(system).get_parameter_value() == {"detector": 3.0, "face": 3.0}
 
-    monkeypatch.setattr(queue_length_module, "http_request", lambda address, method=None, **kwargs: 7)
-    assert queue_length_module.QueueLengthMonitor(system).get_parameter_value() == {"detector": 7, "face": 7}
+    processor_state = {
+        "waiting_count": 7,
+        "busy": True,
+        "running_elapsed_s": 0.5,
+        "capacity": 1,
+        "sequence": 4,
+        "running_task": {"task_uuid": "task-1"},
+        "observed_at": 123.0,
+    }
+    monkeypatch.setattr(queue_state_module, "http_request", lambda address, method=None, **kwargs: processor_state)
+    queue_monitor = queue_state_module.QueueStateMonitor(system)
+    assert queue_monitor.get_parameter_value() == {
+        "detector": processor_state,
+        "face": processor_state,
+    }
+    queue_monitor.run_monitor(system)
+    assert system.resource_info["queue_state"]["detector"]["waiting_count"] == 7
+    assert system.resource_info["queue_state"]["detector"]["busy"] is True
 
     monkeypatch.setattr(
         model_memory_module,
@@ -453,8 +469,13 @@ def test_service_queue_length_visualizer_renders_replica_queue_bars():
     result = visualizer(
         build_visualization_task(),
         resource={
-            "edge-a": {"queue_length": {"detector": 7}},
-            "edge-b": {"queue_length": {"detector": 2, "classifier": 5}},
+            "edge-a": {"queue_state": {"detector": {"waiting_count": 7}}},
+            "edge-b": {
+                "queue_state": {
+                    "detector": {"waiting_count": 2},
+                    "classifier": {"waiting_count": 5},
+                }
+            },
         },
     )
 

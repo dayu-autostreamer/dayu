@@ -21,7 +21,7 @@ class SimpleASOperation(BaseASOperation, abc.ABC):
             Task.set_execute_device(system.task_dag, system.cloud_device)
             system.deployment_version = 0
         else:
-            scheduler_policy = scheduler_response['plan']
+            scheduler_policy = copy.deepcopy(scheduler_response['plan'])
             system.service_deployment = scheduler_response.get('deployment', {})
             deployment_version = scheduler_response.get('deployment_version', 0)
             system.deployment_version = 0 if deployment_version is None else deployment_version
@@ -32,5 +32,5 @@ class SimpleASOperation(BaseASOperation, abc.ABC):
             dag.get_start_node().service.set_execute_device(system.local_device)
             dag.get_end_node().service.set_execute_device(system.cloud_device)
             system.task_dag = copy.deepcopy(dag)
-            del scheduler_policy['dag']
+            scheduler_policy.pop('dag')
             system.meta_data.update(scheduler_policy)

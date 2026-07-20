@@ -29,19 +29,12 @@ class VideoGenerator(Generator):
         self.after_schedule_operation(self, None)
 
         initial_schedule_pending = True
+        pending_task_identity = None
         while True:
             if self._runtime_schedule_refresh_required.is_set():
                 initial_schedule_pending = True
+                pending_task_identity = None
                 self._runtime_schedule_refresh_required.clear()
-
-            if initial_schedule_pending:
-                LOGGER.debug('[Scheduling Request] Request an initial routable scheduling policy.')
-                if not self.request_schedule_policy():
-                    LOGGER.debug('[Runtime Directory] Exact routes are not ready; postpone data ingestion.')
-                    time.sleep(0.5)
-                    continue
-                self.cumulative_scheduling_frame_count = 0
-                initial_schedule_pending = False
 
             # Skip this round when the getter filter decides not to ingest data.
             if not self.getter_filter(self):
@@ -49,16 +42,30 @@ class VideoGenerator(Generator):
                 time.sleep(0.5)
                 continue
 
+            # Reserve the root identity before scheduling so the policy can
+            # reason about the exact task that may consume its decision. Source
+            # data is fetched afterwards because existing policies can change
+            # buffer size, frame rate, resolution, encoding, and DAG routing.
+            if pending_task_identity is None:
+                pending_task_identity = self.create_task_identity()
+
             # Refresh scheduling policy periodically after enough frames have
             # been processed since the last scheduling decision.
             scheduling_threshold = self.request_scheduling_interval * self.raw_meta_data.get('fps', 0)
-            if self.cumulative_scheduling_frame_count > scheduling_threshold:
-                LOGGER.debug('[Scheduling Request] Request a Scheduling policy from scheduler.')
-                if not self.request_schedule_policy():
+            should_schedule = (
+                initial_schedule_pending
+                or self.request_scheduling_interval <= 0
+                or self.cumulative_scheduling_frame_count > scheduling_threshold
+            )
+            if should_schedule:
+                LOGGER.debug('[Scheduling Request] Request a task-aware scheduling policy.')
+                if not self.request_schedule_policy(pending_task_identity):
                     LOGGER.debug('[Runtime Directory] Updated scheduling policy is not routable; postpone ingestion.')
                     time.sleep(0.5)
                     continue
                 self.cumulative_scheduling_frame_count = 0
+                initial_schedule_pending = False
 
             # Ingest the next chunk/frame from the source.
-            self.data_getter(self)
+            self.data_getter(self, pending_task_identity)
+            pending_task_identity = None

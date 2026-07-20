@@ -133,10 +133,12 @@ def test_http_video_getter_call_generates_tasks_and_cleans_files(monkeypatch, tm
         cumulative_scheduling_frame_count=0,
         task_dag=build_task().get_dag(),
         service_deployment={"detector": ["edge-a"]},
-        generate_task=lambda task_id, dag, deployment, metadata, file_name, hash_codes: {
+        generate_task=lambda task_id, dag, deployment, metadata, file_name, hash_codes,
+                             task_identity=None: {
             "task_id": task_id,
             "file_name": file_name,
             "hashes": hash_codes,
+            "root_uuid": task_identity.root_uuid,
         },
         submit_task_to_controller=lambda task: submitted.append(task) or True,
     )
@@ -152,7 +154,10 @@ def test_http_video_getter_call_generates_tasks_and_cleans_files(monkeypatch, tm
     assert getter(system) is True
 
     assert system.cumulative_scheduling_frame_count == 4
-    assert submitted == [{"task_id": 11, "file_name": "payload.mp4", "hashes": ["hash-0", "hash-1"]}]
+    assert submitted[0]["task_id"] == 11
+    assert submitted[0]["file_name"] == "payload.mp4"
+    assert submitted[0]["hashes"] == ["hash-0", "hash-1"]
+    assert submitted[0]["root_uuid"]
     assert removed == ["payload.mp4"]
 
 
@@ -168,7 +173,7 @@ def test_http_video_getter_cleans_file_when_retired_task_is_explicitly_rejected(
         cumulative_scheduling_frame_count=0,
         task_dag=build_task().get_dag(),
         service_deployment={"detector": ["edge-a"]},
-        generate_task=lambda *args: object(),
+        generate_task=lambda *args, **kwargs: object(),
         submit_task_to_controller=lambda task: False,
     )
 
@@ -205,7 +210,8 @@ def test_http_video_getter_rate_limits_between_task_submissions(monkeypatch, tmp
         cumulative_scheduling_frame_count=0,
         task_dag=build_task().get_dag(),
         service_deployment={"detector": ["edge-a"]},
-        generate_task=lambda task_id, dag, deployment, metadata, file_name, hash_codes: {
+        generate_task=lambda task_id, dag, deployment, metadata, file_name, hash_codes,
+                             task_identity=None: {
             "task_id": task_id,
             "file_name": file_name,
             "hashes": hash_codes,
@@ -289,7 +295,8 @@ def test_rtsp_video_getter_helpers_reconnect_and_dispatch(monkeypatch):
     monkeypatch.setattr(rtsp_getter_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
     run_system = SimpleNamespace(
         source_id=2,
-        generate_task=lambda task_id, dag, deployment, metadata, file_name, hash_codes: {"task_id": task_id, "file": file_name},
+        generate_task=lambda task_id, dag, deployment, metadata, file_name, hash_codes,
+                             task_identity=None: {"task_id": task_id, "file": file_name},
         submit_task_to_controller=lambda task: generated.append(("submit", task)) or True,
         raw_meta_data={"resolution": "1080p"},
         meta_data={"resolution": "720p"},
@@ -342,12 +349,13 @@ def test_rtsp_video_getter_helpers_reconnect_and_dispatch(monkeypatch):
     monkeypatch.setattr(
         getter,
         "generate_and_send_new_task",
-        lambda *args: dispatched.append(args) or True,
+        lambda *args, **kwargs: dispatched.append((args, kwargs)) or True,
     )
     assert getter(dispatch_system) is True
     assert dispatch_system.cumulative_scheduling_frame_count == 4
     assert len(dispatched) == 1
-    assert dispatched[0][2] == 8
+    assert dispatched[0][0][2] == 8
+    assert dispatched[0][1]["task_identity"].task_id == 8
     assert getter.frame_buffer == []
 
 

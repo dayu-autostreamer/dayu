@@ -3,10 +3,11 @@ import json
 import threading
 import time
 
-from core.lib.common import Context, LOGGER
-from core.lib.content import Task
+from core.lib.common import Context, Counter, LOGGER
+from core.lib.content import Task, TaskIdentity
 from core.lib.network import deliver_task, http_request, NetworkAPIPath, NetworkAPIMethod
 from core.lib.estimation import TimeEstimator
+from core.lib.scheduling import build_schedule_decision
 from core.lib.runtime import (
     RuntimeContext,
     RuntimeLeaseClient,
@@ -33,11 +34,16 @@ class Generator:
         self.runtime_directory_revision = 0
         self.runtime_directory_hash = ""
         self.runtime_routes = {}
+        self.active_schedule_decision = {}
         self._runtime_schedule_refresh_required = threading.Event()
         # raw_meta_data contains meta configuration of source
         self.raw_meta_data = metadata.copy()
         # meta_data contains data configuration decisions
         self.meta_data = metadata.copy()
+        # Existing cross-layer policies may feed materialized-task features
+        # into the next scheduling request.
+        self.temp_encoded_frame = ''
+        self.temp_hash_code = ''
 
         """distributed devices information"""
         self.runtime_context = RuntimeContext.get_default()
@@ -68,16 +74,77 @@ class Generator:
         self.before_submit_task_operation = Context.get_algorithm('GEN_BSTO')
         self.request_scheduling_interval = Context.get_parameter('REQUEST_SCHEDULING_INTERVAL', direct=False)
 
-    def request_schedule_policy(self):
+    def create_task_identity(self):
+        return TaskIdentity.create(
+            source_id=self.source_id,
+            task_id=Counter.get_count('task_id'),
+        )
+
+    @staticmethod
+    def _task_context(task_identity):
+        if task_identity is None:
+            return None
+        if isinstance(task_identity, TaskIdentity):
+            return task_identity.to_dict()
+        if isinstance(task_identity, dict):
+            return copy.deepcopy(task_identity)
+        raise TypeError('task identity must be TaskIdentity, dict, or None')
+
+    def _schedule_decision_from_response(self, response, request_params, task_identity):
+        task_context = self._task_context(task_identity) or {}
+        provided = response.get('schedule_decision')
+        provided = provided if isinstance(provided, dict) else {}
+        expected = build_schedule_decision(
+            request_params,
+            response.get('plan'),
+            response.get('deployment_version', 0),
+            response.get('runtime_directory_revision'),
+            created_at=provided.get('created_at'),
+        )
+        if not provided:
+            return expected
+
+        root_uuid = str(provided.get('root_uuid') or '')
+        if task_context and root_uuid != str(task_context.get('root_uuid') or ''):
+            raise ValueError('scheduler decision root_uuid does not match task identity')
+        if str(provided.get('plan_digest') or '') != expected['plan_digest']:
+            raise ValueError('scheduler decision plan_digest does not match response plan')
+        if task_context and str(provided.get('decision_id') or '') != expected['decision_id']:
+            raise ValueError('scheduler decision_id does not match task and plan')
+        decision = copy.deepcopy(provided)
+        decision['decision_id'] = str(decision.get('decision_id') or expected['decision_id'])
+        decision['plan_digest'] = expected['plan_digest']
+        return decision
+
+    def request_schedule_policy(self, task_identity=None):
         params = self.before_schedule_operation(self)
+        if not isinstance(params, dict):
+            raise TypeError('before-schedule operation must return a dictionary')
+        params = copy.deepcopy(params)
+        task_context = self._task_context(task_identity)
+        if task_context is not None:
+            params['task_context'] = task_context
         response = http_request(url=self.schedule_address,
                                 method=NetworkAPIMethod.SCHEDULER_SCHEDULE,
                                 data={'data': json.dumps(params)})
         if response is None:
             return self.runtime_routes_ready()
+        if not isinstance(response, dict):
+            LOGGER.error('[Scheduling Decision] Scheduler response must be an object.')
+            return False
+        try:
+            schedule_decision = self._schedule_decision_from_response(
+                response,
+                params,
+                task_identity,
+            )
+        except (TypeError, ValueError) as exc:
+            LOGGER.error(f'[Scheduling Decision] Reject invalid scheduler decision: {exc}')
+            return False
         if not self._accept_runtime_directory(response):
             return False
-        self.after_schedule_operation(self, response)
+        self.after_schedule_operation(self, copy.deepcopy(response))
+        self.active_schedule_decision = schedule_decision
         return self.runtime_routes_ready()
 
     @staticmethod
@@ -197,8 +264,25 @@ class Generator:
                                     is_end=False,
                                     sub_tag='transmit')
 
-    def generate_task(self, task_id, task_dag, service_deployment, meta_data, compressed_path, hash_codes):
+    def generate_task(
+        self,
+        task_id,
+        task_dag,
+        service_deployment,
+        meta_data,
+        compressed_path,
+        hash_codes,
+        task_identity=None,
+    ):
         """generate a new task"""
+        if task_identity is not None and not isinstance(task_identity, TaskIdentity):
+            raise TypeError('task_identity must be a TaskIdentity')
+        if task_identity is not None:
+            if task_identity.source_id != int(self.source_id):
+                raise ValueError('task identity source_id does not match generator')
+            if task_identity.task_id != int(task_id):
+                raise ValueError('task identity task_id does not match generated task')
+        decision = self.active_schedule_decision
         return Task(source_id=self.source_id,
                     task_id=task_id,
                     source_device=self.local_device,
@@ -211,7 +295,12 @@ class Generator:
                     metadata=meta_data,
                     raw_metadata=self.raw_meta_data,
                     hash_data=hash_codes,
-                    file_path=compressed_path)
+                    file_path=compressed_path,
+                    task_uuid=task_identity.task_uuid if task_identity else '',
+                    root_uuid=task_identity.root_uuid if task_identity else '',
+                    created_at=task_identity.created_at if task_identity else 0.0,
+                    schedule_decision_id=decision.get('decision_id', ''),
+                    schedule_plan_digest=decision.get('plan_digest', ''))
 
     def submit_task_to_controller(self, cur_task):
         assert cur_task, 'Task is empty when submit to controller!'
