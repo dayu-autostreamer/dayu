@@ -27,6 +27,7 @@ class Scheduler:
         self.schedule_table = {}
         self.resource_table = {}
         self._resource_received_at = {}
+        self._resource_runtime_revision = {}
 
         self.resource_lock_manager = ResourceLockManager()
         self._runtime_state_lock = threading.RLock()
@@ -175,7 +176,9 @@ class Scheduler:
             }
 
     def replace_runtime_directory(self, directory, expected_revision):
-        with self._runtime_state_lock:
+        # A schedule transaction must observe one immutable active revision
+        # from state reconstruction through reservation creation.
+        with self._schedule_decision_lock, self._runtime_state_lock:
             return self.runtime_directory.replace(directory, expected_revision)
 
     def propose_runtime_directory(self, directory, base_revision, proposal_id=None, ttl_seconds=60.0):
@@ -200,7 +203,7 @@ class Scheduler:
         the directory CAS, retirement marker write, and lease-score clamp.
         """
 
-        with self._runtime_state_lock:
+        with self._schedule_decision_lock, self._runtime_state_lock:
             try:
                 expected_revision = int(expected_revision)
             except (TypeError, ValueError) as exc:
@@ -249,7 +252,7 @@ class Scheduler:
             return self.runtime_directory.reject(proposal_id, reason)
 
     def clear_runtime_directory(self, install_id):
-        with self._runtime_state_lock:
+        with self._schedule_decision_lock, self._runtime_state_lock:
             return self.runtime_directory.clear(install_id)
 
     def _ensure_scheduling_state(self):
@@ -261,6 +264,8 @@ class Scheduler:
             self._schedule_decision_lock = threading.RLock()
         if not hasattr(self, '_resource_received_at'):
             self._resource_received_at = {}
+        if not hasattr(self, '_resource_runtime_revision'):
+            self._resource_runtime_revision = {}
         if not hasattr(self, 'resource_table'):
             self.resource_table = {}
         if not hasattr(self, 'task_barriers'):
@@ -480,11 +485,19 @@ class Scheduler:
     def update_scheduler_resource(self, info):
         device = info['device']
         resource = copy.deepcopy(info['resource'])
+        reported_revision = info.get('runtime_directory_revision')
+        try:
+            reported_revision = int(reported_revision)
+        except (TypeError, ValueError):
+            reported_revision = None
+        if reported_revision is not None and reported_revision < 1:
+            reported_revision = None
         self._ensure_scheduling_state()
         received_at = time.time()
         with self._scheduling_state_lock:
             self.resource_table[device] = resource
             self._resource_received_at[device] = received_at
+            self._resource_runtime_revision[device] = reported_revision
             agents = list(self.schedule_table.values())
 
         for agent in agents:
@@ -501,17 +514,32 @@ class Scheduler:
         """Return one mutation-safe view for schedule-agent decisions."""
 
         self._ensure_scheduling_state()
-        captured_at = time.time()
-        directory_revision = self.runtime_directory_revision()
         with self._scheduling_state_lock:
+            # Read the revision and its deployment while directory commits are
+            # excluded.  A scheduling snapshot must never combine revision N
+            # commitments with revision N+1 replicas.
+            with self._runtime_state_lock:
+                directory_revision = self.runtime_directory_revision()
+                deployment = copy.deepcopy(self.runtime_service_nodes())
+            captured_at = time.time()
             resources = copy.deepcopy(self.resource_table)
             resource_received_at = copy.deepcopy(self._resource_received_at)
+            resource_runtime_revision = copy.deepcopy(
+                self._resource_runtime_revision
+            )
             reservations = [
                 copy.deepcopy(record)
                 for record in self.task_leases.list_reservations()
                 if record.get('runtime_directory_revision') == directory_revision
             ]
-            commitments = copy.deepcopy(self.task_leases.list_active())
+            # Task leases deliberately retain old revisions while their
+            # immutable routes drain. Scheduling decisions for revision N must
+            # not project those tasks onto revision N+1 processor queues.
+            commitments = [
+                copy.deepcopy(record)
+                for record in self.task_leases.list_active()
+                if record.get('runtime_directory_revision') == directory_revision
+            ]
         reservations.sort(key=lambda item: (
             float(item.get('reserved_at') or 0.0),
             str(item.get('root_uuid') or ''),
@@ -528,8 +556,10 @@ class Scheduler:
         return {
             'captured_at': captured_at,
             'runtime_directory_revision': directory_revision,
+            'deployment': deployment,
             'resources': resources,
             'resource_received_at': resource_received_at,
+            'resource_runtime_revision': resource_runtime_revision,
             'reservations': reservations,
             'commitments': commitments,
             'task_barriers': task_barriers,

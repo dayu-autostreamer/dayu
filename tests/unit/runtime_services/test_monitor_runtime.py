@@ -56,11 +56,13 @@ def test_monitor_initializes_workers_waits_by_interval_and_posts_resource_state(
     monkeypatch.setattr(monitor_module.time, "monotonic", lambda: next(timestamps))
     monkeypatch.setattr(monitor_module.time, "sleep", lambda seconds: sleeps.append(seconds))
     monkeypatch.setattr(monitor_module.LOGGER, "info", lambda message: None)
-    monkeypatch.setattr(
-        monitor_module,
-        "http_request",
-        lambda url, method=None, **kwargs: requests.append((url, method, kwargs)),
-    )
+    def fake_http_request(url, method=None, **kwargs):
+        requests.append((url, method, kwargs))
+        if url.endswith("/runtime-directory"):
+            return {"revision": 7, "routes": []}
+        return None
+
+    monkeypatch.setattr(monitor_module, "http_request", fake_http_request)
 
     monitor = monitor_module.Monitor()
     monitor.monitor_resource()
@@ -78,10 +80,16 @@ def test_monitor_initializes_workers_waits_by_interval_and_posts_resource_state(
     assert sleeps == [3.0]
     assert monitor._next_monitor_deadline == 20.0
 
-    payload = json.loads(requests[0][2]["data"]["data"])
-    assert requests[0][0] == "http://10.0.0.8:9001/resource"
-    assert requests[0][1] == "POST"
-    assert payload == {"device": "edge-node", "resource": {"cpu": 0.4, "memory": 0.6}}
+    assert requests[0][0] == "http://10.0.0.8:9001/runtime-directory"
+    assert requests[0][1] == "GET"
+    payload = json.loads(requests[1][2]["data"]["data"])
+    assert requests[1][0] == "http://10.0.0.8:9001/resource"
+    assert requests[1][1] == "POST"
+    assert payload == {
+        "device": "edge-node",
+        "resource": {"cpu": 0.4, "memory": 0.6},
+        "runtime_directory_revision": 7,
+    }
 
 
 @pytest.mark.unit

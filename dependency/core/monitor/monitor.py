@@ -1,3 +1,4 @@
+import copy
 import json
 import threading
 import time
@@ -31,6 +32,7 @@ class Monitor:
         self._directory_lock = threading.Lock()
         self._directory = {}
         self._directory_fetched_at = 0.0
+        self._monitor_cycle_directory = None
 
         monitor_parameters_text = Context.get_parameter('MONITORS', direct=False)
         if not isinstance(monitor_parameters_text, (list, tuple)) or not all(
@@ -46,17 +48,12 @@ class Monitor:
             )
 
     def runtime_routes(self, component=None, target_node=None, logical_service=None):
-        with self._directory_lock:
-            now = time.time()
-            if now - self._directory_fetched_at >= self.monitor_interval:
-                directory = http_request(
-                    self.scheduler_endpoint.url(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY),
-                    method=NetworkAPIMethod.SCHEDULER_GET_RUNTIME_DIRECTORY,
-                    timeout=self._RUNTIME_REQUEST_TIMEOUT_SECONDS,
-                )
-                self._directory = directory if isinstance(directory, dict) else {}
-                self._directory_fetched_at = now
-            routes = (self._directory or {}).get('routes') or []
+        directory = (
+            copy.deepcopy(self._monitor_cycle_directory)
+            if self._monitor_cycle_directory is not None
+            else self._runtime_directory_snapshot()
+        )
+        routes = directory.get('routes') or []
         endpoints = [RuntimeEndpoint.from_value(route) for route in routes]
         matches = [
             endpoint for endpoint in endpoints
@@ -67,7 +64,36 @@ class Monitor:
                 endpoint.validate_exact()
         return matches
 
+    def _runtime_directory_snapshot(self):
+        with self._directory_lock:
+            now = time.time()
+            if now - self._directory_fetched_at >= self.monitor_interval:
+                directory = http_request(
+                    self.scheduler_endpoint.url(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY),
+                    method=NetworkAPIMethod.SCHEDULER_GET_RUNTIME_DIRECTORY,
+                    timeout=self._RUNTIME_REQUEST_TIMEOUT_SECONDS,
+                )
+                self._directory = directory if isinstance(directory, dict) else {}
+                self._directory_fetched_at = now
+            return copy.deepcopy(self._directory or {})
+
+    def runtime_directory_revision(self):
+        directory = (
+            self._monitor_cycle_directory
+            if self._monitor_cycle_directory is not None
+            else self._runtime_directory_snapshot()
+        )
+        try:
+            revision = int(directory.get('revision') or 0)
+        except (TypeError, ValueError):
+            return 0
+        return revision if revision > 0 else 0
+
     def monitor_resource(self):
+        # Queue hooks and the revision attached to their resource payload must
+        # come from the same immutable directory snapshot, even when polling
+        # takes longer than one monitor interval.
+        self._monitor_cycle_directory = self._runtime_directory_snapshot()
         threads = [mp() for mp in self.monitor_parameters]
 
         for thread in threads:
@@ -94,8 +120,14 @@ class Monitor:
         LOGGER.info(f'[Monitor Resource] info: {self.resource_info}')
 
         data = {'device': self.local_device, 'resource': self.resource_info}
+        revision = self.runtime_directory_revision()
+        if revision:
+            data['runtime_directory_revision'] = revision
 
-        http_request(self.scheduler_address,
-                     method=NetworkAPIMethod.SCHEDULER_POST_RESOURCE,
-                     timeout=self._RUNTIME_REQUEST_TIMEOUT_SECONDS,
-                     data={'data': json.dumps(data)})
+        try:
+            http_request(self.scheduler_address,
+                         method=NetworkAPIMethod.SCHEDULER_POST_RESOURCE,
+                         timeout=self._RUNTIME_REQUEST_TIMEOUT_SECONDS,
+                         data={'data': json.dumps(data)})
+        finally:
+            self._monitor_cycle_directory = None

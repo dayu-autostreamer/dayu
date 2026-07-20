@@ -154,6 +154,13 @@ class FakeScheduler:
     def runtime_directory_revision():
         return 1
 
+    def runtime_directory_snapshot(self):
+        return {
+            "revision": self.runtime_directory_revision(),
+            "hash": "component-runtime-directory",
+            "routes": self.compact_runtime_routes({}, "edge-node"),
+        }
+
     @staticmethod
     def compact_runtime_routes(plan, source_device=""):
         common = {
@@ -801,5 +808,8 @@ def test_monitor_reports_resource_state_to_scheduler(mounted_runtime, monkeypatc
         assert scheduler_server.scheduler.resource_table == {
             "edge-node": {"cpu_usage": 0.51, "memory_usage": 0.73}
         }
+        assert scheduler_server.scheduler.resource_updates[0][
+            "runtime_directory_revision"
+        ] == 1
     finally:
         scheduler_client.close()

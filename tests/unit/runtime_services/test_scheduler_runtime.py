@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.lib.content import Task
+from core.lib.scheduling import build_schedule_decision
 from core.scheduler.runtime_directory import RuntimeDirectoryStore
 from core.scheduler.task_lease import InMemoryTaskLeaseStore
 
@@ -46,6 +47,26 @@ def build_task(source_id=7):
         raw_metadata={"buffer_size": 1},
         file_path="payload.bin",
     )
+
+
+@pytest.mark.unit
+def test_schedule_decision_preserves_task_identity_creation_time():
+    decision = build_schedule_decision(
+        {
+            "source_id": 7,
+            "task_context": {
+                "source_id": 7,
+                "task_id": 3,
+                "root_uuid": "root-3",
+                "created_at": 12.5,
+            },
+        },
+        {"dag": {}},
+        deployment_version=1,
+        runtime_directory_revision=2,
+    )
+
+    assert decision["created_at"] == 12.5
 
 
 class FakeAgent:
@@ -233,6 +254,7 @@ def test_scheduler_snapshot_tracks_resources_and_active_task_commitments(monkeyp
     scheduler.runtime_directory_revision = lambda: 1
     scheduler.update_scheduler_resource({
         "device": "edge-node",
+        "runtime_directory_revision": 1,
         "resource": {"queue_state": {"detector": {"waiting_count": 2, "busy": False}}},
     })
     scheduler.acquire_task_lease(
@@ -260,14 +282,28 @@ def test_scheduler_snapshot_tracks_resources_and_active_task_commitments(monkeyp
         active_revision=2,
         ttl_seconds=20,
     )
+    scheduler.task_leases.acquire(
+        2,
+        "root-old-revision",
+        active_revision=2,
+        ttl_seconds=20,
+        context={
+            "root_uuid": "root-old-revision",
+            "runtime_directory_revision": 2,
+            "dag": {"detector": {"prev_nodes": []}},
+        },
+    )
 
     snapshot = scheduler.get_scheduling_snapshot()
     assert snapshot["runtime_directory_revision"] == 1
+    assert snapshot["deployment"] == {}
+    assert snapshot["resource_runtime_revision"] == {"edge-node": 1}
     assert snapshot["reservations"] == []
     assert snapshot["resources"] == {
         "edge-node": {"queue_state": {"detector": {"waiting_count": 2, "busy": False}}}
     }
     assert snapshot["commitments"][0]["root_uuid"] == "root-1"
+    assert len(snapshot["commitments"]) == 1
     assert snapshot["commitments"][0]["decision_id"] == "decision-1"
     assert snapshot["task_barriers"][0]["barrier"] == "join"
     assert barrier_requests[0] == [{

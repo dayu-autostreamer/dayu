@@ -1,0 +1,85 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+
+    # Replace this hostname with the camera/source node used by the experiment.
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'scope': 'all_edge_nodes',
+          'fixed_value': 'edgexn33',
+          'fixed_type': 'hostname'
+        }
+
+    # Example fixed deployment for driving_risk_perception.dag. Keep this
+    # policy byte-for-byte equivalent to the one in fragsplice.yaml: the cold
+    # sampler profiles only the service-device pairs that are actually active.
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'policy': {
+            'traffic-detection': ['edgexn23', 'edgexn24'],
+            'road-context-segmentation': ['edgexn27', 'edgexn28'],
+            'traffic-signal-recognition': ['edgexn23', 'edgexn24', 'edgexn32', 'edgexn34'],
+            'vehicle-tracking': ['edgexn27', 'edgexn32'],
+            'vehicle-attribute-recognition': ['edgexn28', 'edgexn34'],
+            'vehicle-trajectory-prediction': ['edgexn27'],
+            'pedestrian-pose-estimation': ['edgexn28'],
+            'pedestrian-intent-recognition': ['edgexn32'],
+            'risk-graph-generation': ['edgexn34']
+          }
+        }
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'policy': {
+            'traffic-detection': ['edgexn23', 'edgexn24'],
+            'road-context-segmentation': ['edgexn27', 'edgexn28'],
+            'traffic-signal-recognition': ['edgexn23', 'edgexn24', 'edgexn32', 'edgexn34'],
+            'vehicle-tracking': ['edgexn27', 'edgexn32'],
+            'vehicle-attribute-recognition': ['edgexn28', 'edgexn34'],
+            'vehicle-trajectory-prediction': ['edgexn27'],
+            'pedestrian-pose-estimation': ['edgexn28'],
+            'pedestrian-intent-recognition': ['edgexn32'],
+            'risk-graph-generation': ['edgexn34']
+          }
+        }
+
+    - name: SCH_AGENT_NAME
+      value: fragsplice_cold_sample
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'configuration': {
+            'resolution': '720p',
+            'fps': 6,
+            'encoding': 'mp4v',
+            'buffer_size': 2
+          },
+          'profile_path': 'fragsplice-profile.json',
+          'warmup_samples': 2,
+          'samples_per_pair': 30
+        }
+
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/fragsplice/'

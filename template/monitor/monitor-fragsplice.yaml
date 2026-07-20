@@ -1,0 +1,15 @@
+position: both
+pod-template:
+  image: monitor
+  imagePullPolicy: Always
+  env:
+    # FragSplice consumes ordered processor queue state. A 5-second generic
+    # monitor interval is too coarse for invocation-level future-state repair.
+    - name: INTERVAL
+      value: "0.5"
+    - name: MONITORS
+      value: >
+        ['queue_state']
+port-open:
+  pos: cloud
+  port: 9000
