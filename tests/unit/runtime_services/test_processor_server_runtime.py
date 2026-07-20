@@ -132,9 +132,14 @@ def test_processor_server_task_endpoints_return_ack_after_queue_ownership(server
     assert asyncio.run(server.health_check()) == {"status": "ok"}
     queue_state = asyncio.run(server.query_queue_state())
     assert queue_state["waiting_count"] == 1
+    assert [item["root_uuid"] for item in queue_state["waiting_tasks"]] == [
+        task.get_root_uuid()
+    ]
     assert queue_state["busy"] is False
     assert queue_state["capacity"] == 1
     assert queue_state["running_task"] is None
+    assert queue_state["running_phase"] is None
+    assert queue_state["phase_elapsed_s"] == 0.0
     assert asyncio.run(server.query_model_flops()) == 456.0
     assert isinstance(asyncio.run(server.query_model_memory()), int)
 
@@ -457,7 +462,41 @@ def test_processor_server_loop_process_consumes_queue_once_and_forwards_results(
     assert forwarded == [task]
     assert observed_states[0]["busy"] is True
     assert observed_states[0]["running_task"]["root_uuid"] == task.get_root_uuid()
+    assert observed_states[0]["running_phase"] == "handoff"
     assert asyncio.run(server.query_queue_state())["busy"] is False
+
+
+@pytest.mark.unit
+def test_processor_queue_state_keeps_waiting_and_running_ownership_atomic(server_context):
+    server = server_context.server
+    first = build_task(["detector"], "detector", file_path="first.bin")
+    second = build_task(["detector"], "detector", file_path="second.bin")
+
+    assert server._enqueue_task_once(first) is True
+    assert server._enqueue_task_once(second) is True
+    queued = asyncio.run(server.query_queue_state())
+    assert queued["waiting_count"] == 2
+    assert [item["root_uuid"] for item in queued["waiting_tasks"]] == [
+        first.get_root_uuid(),
+        second.get_root_uuid(),
+    ]
+
+    assert server._dequeue_task() is first
+    running = asyncio.run(server.query_queue_state())
+    assert running["busy"] is True
+    assert running["running_phase"] == "processing"
+    assert running["running_task"]["root_uuid"] == first.get_root_uuid()
+    assert [item["root_uuid"] for item in running["waiting_tasks"]] == [
+        second.get_root_uuid()
+    ]
+
+    server._finish_running_task(requeue_task=first)
+    requeued = asyncio.run(server.query_queue_state())
+    assert requeued["busy"] is False
+    assert [item["root_uuid"] for item in requeued["waiting_tasks"]] == [
+        second.get_root_uuid(),
+        first.get_root_uuid(),
+    ]
 
 
 @pytest.mark.unit

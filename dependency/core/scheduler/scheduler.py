@@ -4,7 +4,7 @@ import time
 
 from core.lib.common import Context, LOGGER, ResourceLockManager
 from core.lib.scheduling.deployment_plan import validate_plan
-from core.lib.runtime import RuntimeContext
+from core.lib.runtime import RuntimeContext, TaskBarrierStore
 
 from .runtime_directory import (
     RedisRuntimeDirectoryStore,
@@ -17,15 +17,21 @@ from .task_lease import RedisTaskLeaseStore, create_task_lease_store
 
 
 class Scheduler:
-    def __init__(self, runtime_context=None, runtime_directory=None, task_lease_store=None):
+    def __init__(
+        self,
+        runtime_context=None,
+        runtime_directory=None,
+        task_lease_store=None,
+        task_barrier_store=None,
+    ):
         self.schedule_table = {}
         self.resource_table = {}
         self._resource_received_at = {}
-        self._task_commitments = {}
 
         self.resource_lock_manager = ResourceLockManager()
         self._runtime_state_lock = threading.RLock()
         self._scheduling_state_lock = threading.RLock()
+        self._schedule_decision_lock = threading.RLock()
 
         self.runtime_context = runtime_context or RuntimeContext.get_default()
         initial_directory = runtime_directory
@@ -47,6 +53,15 @@ class Scheduler:
                 initial=initial_directory,
             )
         self.task_leases = task_lease_store or create_task_lease_store(self.runtime_context)
+        if task_barrier_store is not None:
+            self.task_barriers = task_barrier_store
+        elif isinstance(self.task_leases, RedisTaskLeaseStore):
+            self.task_barriers = TaskBarrierStore(
+                self.task_leases.redis,
+                ttl_seconds=self.runtime_context.lease_ttl_seconds,
+            )
+        else:
+            self.task_barriers = None
         self._runtime_clock = (
             getattr(self.task_leases, "clock", None)
             or getattr(self.task_leases, "_clock", None)
@@ -76,13 +91,22 @@ class Scheduler:
 
     def add_scheduler_agent(self, source_id):
         agent = Context.get_algorithm('SCH_AGENT', system=self, agent_id=source_id)
-        threading.Thread(target=agent.run).start()
         self.schedule_table[source_id] = agent
+        threading.Thread(target=agent.run).start()
+        return agent
 
     def register_schedule_table(self, source_id):
-        if source_id in self.schedule_table:
-            return
-        self.add_scheduler_agent(source_id)
+        self._ensure_scheduling_state()
+        with self._scheduling_state_lock:
+            if source_id in self.schedule_table:
+                return self.schedule_table[source_id]
+            return self.add_scheduler_agent(source_id)
+
+    def schedule_transaction(self):
+        """Serialize task-aware scheduling decisions and their reservations."""
+
+        self._ensure_scheduling_state()
+        return self._schedule_decision_lock
 
     def get_schedule_plan(self, info):
         source_id = info['source_id']
@@ -233,12 +257,46 @@ class Scheduler:
         # state initialization lazy also makes this helper safe for subclasses.
         if not hasattr(self, '_scheduling_state_lock'):
             self._scheduling_state_lock = threading.RLock()
-        if not hasattr(self, '_task_commitments'):
-            self._task_commitments = {}
+        if not hasattr(self, '_schedule_decision_lock'):
+            self._schedule_decision_lock = threading.RLock()
         if not hasattr(self, '_resource_received_at'):
             self._resource_received_at = {}
         if not hasattr(self, 'resource_table'):
             self.resource_table = {}
+        if not hasattr(self, 'task_barriers'):
+            self.task_barriers = None
+
+    @staticmethod
+    def _task_barrier_requests(commitments):
+        requests = []
+        seen = set()
+        for commitment in commitments:
+            if not isinstance(commitment, dict):
+                continue
+            root_uuid = str(commitment.get('root_uuid') or '')
+            dag = commitment.get('dag')
+            if not root_uuid or not isinstance(dag, dict):
+                continue
+            for barrier, node in dag.items():
+                if not isinstance(node, dict):
+                    continue
+                predecessors = sorted({
+                    str(item) for item in node.get('prev_nodes', [])
+                    if str(item or '').strip()
+                })
+                if len(predecessors) < 2:
+                    continue
+                identity = (root_uuid, str(barrier))
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                requests.append({
+                    'root_uuid': root_uuid,
+                    'barrier': str(barrier),
+                    'expected_branches': predecessors,
+                    'required_count': len(predecessors),
+                })
+        return requests
 
     @staticmethod
     def _normalize_task_commitment(commitment, revision, root_uuid):
@@ -265,38 +323,62 @@ class Scheduler:
         normalized['runtime_directory_revision'] = committed_revision
         return normalized
 
-    @staticmethod
-    def _assert_task_commitment_unchanged(previous, current):
-        if previous is None:
-            return
-        previous_facts = {
-            key: value for key, value in previous.items()
-            if key not in {'admitted_at', 'expires_at', 'status'}
-        }
-        if previous_facts != current:
-            raise RuntimeDirectoryConflict(
-                'task commitment changed for an existing root_uuid'
-            )
-
-    def _record_task_commitment(self, commitment, lease):
-        self._ensure_scheduling_state()
-        normalized = self._normalize_task_commitment(
-            commitment,
-            lease['revision'],
-            lease['root_uuid'],
+    def reserve_task_context(self, revision, root_uuid, context, ttl_seconds=None):
+        normalized = self._normalize_task_commitment(context, revision, root_uuid)
+        ttl_seconds = (
+            self.runtime_context.lease_ttl_seconds
+            if ttl_seconds is None else ttl_seconds
         )
-        now = float(getattr(self, '_runtime_clock', time.time)())
-        normalized.update({
-            'admitted_at': now,
-            'expires_at': float(lease['expires_at']),
-            'status': 'active',
-        })
+        self._ensure_scheduling_state()
         with self._scheduling_state_lock:
-            previous = self._task_commitments.get(lease['root_uuid'])
-            if previous is not None:
-                self._assert_task_commitment_unchanged(previous, normalized)
-                normalized['admitted_at'] = previous.get('admitted_at', now)
-            self._task_commitments[lease['root_uuid']] = normalized
+            if isinstance(self.task_leases, RedisTaskLeaseStore):
+                reservation = self.task_leases.reserve(
+                    revision=revision,
+                    root_uuid=root_uuid,
+                    context=normalized,
+                    active_revision=None,
+                    ttl_seconds=ttl_seconds,
+                )
+            else:
+                with self._runtime_state_lock:
+                    reservation = self.task_leases.reserve(
+                        revision=revision,
+                        root_uuid=root_uuid,
+                        context=normalized,
+                        active_revision=self.runtime_directory_revision(),
+                        ttl_seconds=ttl_seconds,
+                    )
+            return reservation
+
+    def get_task_reservation(self, revision, root_uuid, task_context=None):
+        """Return the current task-bound decision, if one is still pending."""
+
+        try:
+            revision = int(revision)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeDirectoryError(
+                'task reservation runtime_directory_revision must be an integer'
+            ) from exc
+        root_uuid = str(root_uuid or '').strip()
+        if not root_uuid:
+            return None
+        task_context = task_context if isinstance(task_context, dict) else {}
+        self._ensure_scheduling_state()
+        with self._scheduling_state_lock:
+            for reservation in self.task_leases.list_reservations():
+                if reservation.get('root_uuid') != root_uuid:
+                    continue
+                if reservation.get('runtime_directory_revision') != revision:
+                    continue
+                for field in ('source_id', 'task_id'):
+                    expected = reservation.get(field)
+                    actual = task_context.get(field)
+                    if expected not in (None, '') and expected != actual:
+                        raise RuntimeDirectoryConflict(
+                            f'task reservation {field} does not match schedule request'
+                        )
+                return copy.deepcopy(reservation)
+        return None
 
     def acquire_task_lease(
         self,
@@ -315,8 +397,6 @@ class Scheduler:
         )
         self._ensure_scheduling_state()
         with self._scheduling_state_lock:
-            previous = self._task_commitments.get(str(root_uuid))
-            self._assert_task_commitment_unchanged(previous, normalized_commitment)
             if isinstance(self.task_leases, RedisTaskLeaseStore):
                 # The Redis Lua transaction reads the active directory and
                 # admits the lease atomically. A Python-side snapshot would add
@@ -326,6 +406,7 @@ class Scheduler:
                     root_uuid=root_uuid,
                     active_revision=None,
                     ttl_seconds=ttl_seconds,
+                    context=normalized_commitment,
                 )
             else:
                 with self._runtime_state_lock:
@@ -334,9 +415,9 @@ class Scheduler:
                         root_uuid=root_uuid,
                         active_revision=self.runtime_directory_revision(),
                         ttl_seconds=ttl_seconds,
+                        context=normalized_commitment,
                     )
-            self._record_task_commitment(normalized_commitment, lease)
-        return lease
+            return lease
 
     def renew_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
         # Existing work may renew an inactive revision only while the atomic
@@ -355,18 +436,10 @@ class Scheduler:
                     ttl_seconds=ttl_seconds,
                     active_revision=self.runtime_directory_revision(),
                 )
-        self._ensure_scheduling_state()
-        with self._scheduling_state_lock:
-            commitment = self._task_commitments.get(str(root_uuid))
-            if commitment is not None:
-                commitment['expires_at'] = float(lease['expires_at'])
         return lease
 
     def release_task_lease(self, revision, root_uuid):
         result = self.task_leases.release(revision, root_uuid)
-        self._ensure_scheduling_state()
-        with self._scheduling_state_lock:
-            self._task_commitments.pop(str(root_uuid), None)
         return result
 
     def count_task_leases(self, revision):
@@ -412,9 +485,9 @@ class Scheduler:
         with self._scheduling_state_lock:
             self.resource_table[device] = resource
             self._resource_received_at[device] = received_at
+            agents = list(self.schedule_table.values())
 
-        for source_id in self.schedule_table:
-            agent = self.schedule_table[source_id]
+        for agent in agents:
             agent.update_resource(device, resource)
 
         # LOGGER.info(f'[Update Resource] Device {device}: {resource}')
@@ -429,27 +502,37 @@ class Scheduler:
 
         self._ensure_scheduling_state()
         captured_at = time.time()
-        runtime_clock = getattr(self, '_runtime_clock', time.time)
-        lease_now = float(runtime_clock())
+        directory_revision = self.runtime_directory_revision()
         with self._scheduling_state_lock:
-            self._task_commitments = {
-                root_uuid: commitment
-                for root_uuid, commitment in self._task_commitments.items()
-                if float(commitment.get('expires_at') or 0.0) > lease_now
-            }
             resources = copy.deepcopy(self.resource_table)
             resource_received_at = copy.deepcopy(self._resource_received_at)
-            commitments = copy.deepcopy(list(self._task_commitments.values()))
+            reservations = [
+                copy.deepcopy(record)
+                for record in self.task_leases.list_reservations()
+                if record.get('runtime_directory_revision') == directory_revision
+            ]
+            commitments = copy.deepcopy(self.task_leases.list_active())
+        reservations.sort(key=lambda item: (
+            float(item.get('reserved_at') or 0.0),
+            str(item.get('root_uuid') or ''),
+        ))
         commitments.sort(key=lambda item: (
             float(item.get('admitted_at') or 0.0),
             str(item.get('root_uuid') or ''),
         ))
+        task_barriers = (
+            self.task_barriers.snapshot(self._task_barrier_requests(commitments))
+            if self.task_barriers is not None
+            else []
+        )
         return {
             'captured_at': captured_at,
-            'runtime_directory_revision': self.runtime_directory_revision(),
+            'runtime_directory_revision': directory_revision,
             'resources': resources,
             'resource_received_at': resource_received_at,
+            'reservations': reservations,
             'commitments': commitments,
+            'task_barriers': task_barriers,
         }
 
     async def get_resource_lock(self, info):

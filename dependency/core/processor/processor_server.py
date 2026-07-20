@@ -78,10 +78,12 @@ class ProcessorServer:
         self._accepted_tasks = {}
         self._accepted_task_expirations = deque()
         self._accepted_tasks_lock = threading.Lock()
-        self._queue_state_lock = threading.Lock()
+        self._queue_state_lock = threading.RLock()
         self._queue_state_sequence = 0
         self._running_task = None
         self._running_started_at = None
+        self._running_phase = None
+        self._running_phase_started_at = None
 
         threading.Thread(target=self.loop_process, name="ProcessorLoop", daemon=True).start()
 
@@ -124,8 +126,9 @@ class ProcessorServer:
                     self._accepted_tasks.pop(accepted_uuid, None)
             if task_uuid in self._accepted_tasks:
                 return False
-            self.task_queue.put(task)
-            self._mark_queue_state_changed()
+            with self._queue_state_lock:
+                self.task_queue.put(task)
+                self._queue_state_sequence += 1
             expires_at = now + self.runtime_context.lease_ttl_seconds
             self._accepted_tasks[task_uuid] = expires_at
             self._accepted_task_expirations.append((expires_at, task_uuid))
@@ -162,22 +165,44 @@ class ProcessorServer:
             'task_uuid': task.get_task_uuid(),
             'root_uuid': task.get_root_uuid(),
             'flow_index': task.get_flow_index(),
+            'runtime_directory_revision': task.get_runtime_directory_revision(),
         }
 
-    def _mark_queue_state_changed(self):
-        with self._queue_state_lock:
-            self._queue_state_sequence += 1
+    def _waiting_tasks_locked(self):
+        peek = getattr(self.task_queue, 'get_all_without_drop', None)
+        if not callable(peek):
+            return None
+        return [self._task_identity(task) for task in peek()]
 
-    def _set_running_task(self, task):
+    def _dequeue_task(self):
         with self._queue_state_lock:
+            task = self.task_queue.get()
+            if not task:
+                return task
+            now = time.monotonic()
             self._running_task = self._task_identity(task)
-            self._running_started_at = time.monotonic()
+            self._running_started_at = now
+            self._running_phase = 'processing'
+            self._running_phase_started_at = now
+            self._queue_state_sequence += 1
+            return task
+
+    def _set_running_phase(self, phase):
+        with self._queue_state_lock:
+            if self._running_task is None:
+                return
+            self._running_phase = str(phase)
+            self._running_phase_started_at = time.monotonic()
             self._queue_state_sequence += 1
 
-    def _clear_running_task(self):
+    def _finish_running_task(self, requeue_task=None):
         with self._queue_state_lock:
+            if requeue_task is not None:
+                self.task_queue.put(requeue_task)
             self._running_task = None
             self._running_started_at = None
+            self._running_phase = None
+            self._running_phase_started_at = None
             self._queue_state_sequence += 1
 
     async def query_queue_state(self):
@@ -189,10 +214,24 @@ class ProcessorServer:
                 if busy and self._running_started_at is not None
                 else 0.0
             )
+            phase_elapsed_s = (
+                max(0.0, now - self._running_phase_started_at)
+                if busy and self._running_phase_started_at is not None
+                else 0.0
+            )
+            waiting_tasks = self._waiting_tasks_locked()
+            waiting_count = (
+                len(waiting_tasks)
+                if waiting_tasks is not None
+                else self.task_queue.size()
+            )
             return {
-                'waiting_count': self.task_queue.size(),
+                'waiting_count': waiting_count,
+                'waiting_tasks': copy.deepcopy(waiting_tasks),
                 'busy': busy,
                 'running_elapsed_s': running_elapsed_s,
+                'running_phase': self._running_phase,
+                'phase_elapsed_s': phase_elapsed_s,
                 'capacity': 1,
                 'sequence': self._queue_state_sequence,
                 'running_task': copy.deepcopy(self._running_task),
@@ -242,33 +281,35 @@ class ProcessorServer:
         dry_run = bool(payload.get("dry_run", False))
         reason = str(payload.get("reason") or "manual_queue_clear")
 
-        if dry_run:
-            peek = getattr(self.task_queue, "get_all_without_drop", None)
-            if not callable(peek):
-                return {
-                    "ok": False,
-                    "error": "queue does not support dry_run preview",
-                }
-            queued_tasks = peek()
-            dropped_tasks = queued_tasks[:max_count] if max_count is not None else queued_tasks
-        else:
-            drain = getattr(self.task_queue, "drain", None)
-            if callable(drain):
-                dropped_tasks = drain(max_count=max_count)
+        with self._queue_state_lock:
+            if dry_run:
+                peek = getattr(self.task_queue, "get_all_without_drop", None)
+                if not callable(peek):
+                    return {
+                        "ok": False,
+                        "error": "queue does not support dry_run preview",
+                    }
+                queued_tasks = peek()
+                dropped_tasks = queued_tasks[:max_count] if max_count is not None else queued_tasks
             else:
-                dropped_tasks = []
-                while max_count is None or len(dropped_tasks) < max_count:
-                    task = self.task_queue.get()
-                    if task is None:
-                        break
-                    dropped_tasks.append(task)
+                drain = getattr(self.task_queue, "drain", None)
+                if callable(drain):
+                    dropped_tasks = drain(max_count=max_count)
+                else:
+                    dropped_tasks = []
+                    while max_count is None or len(dropped_tasks) < max_count:
+                        task = self.task_queue.get()
+                        if task is None:
+                            break
+                        dropped_tasks.append(task)
+                if dropped_tasks:
+                    self._queue_state_sequence += 1
+            remaining_count = self.task_queue.size()
         dropped_records = [self._task_drop_record(task) for task in dropped_tasks]
         LOGGER.warning(
             f"[Task Queue] Cleared queued tasks: reason={reason}, dry_run={dry_run}, "
-            f"dropped={len(dropped_records)}, remaining={self.task_queue.size()}"
+            f"dropped={len(dropped_records)}, remaining={remaining_count}"
         )
-        if not dry_run and dropped_records:
-            self._mark_queue_state_changed()
         return {
             "ok": True,
             "device": self.local_device,
@@ -276,7 +317,7 @@ class ProcessorServer:
             "dry_run": dry_run,
             "cleared_count": 0 if dry_run else len(dropped_records),
             "matched_count": len(dropped_records),
-            "remaining_count": self.task_queue.size(),
+            "remaining_count": remaining_count,
             "dropped_tasks": dropped_records,
         }
 
@@ -292,31 +333,30 @@ class ProcessorServer:
     def loop_process(self):
         LOGGER.info('Start processing loop..')
         while True:
-            task = self.task_queue.get()
+            task = self._dequeue_task()
             if not task:
                 time.sleep(0.01)
                 continue
             LOGGER.debug(f'[Task Queue] Queue Size (loop): {self.task_queue.size()}')
-            self._set_running_task(task)
             try:
-                try:
-                    new_task = self.process_task_service(task)
-                except Exception as e:
-                    LOGGER.critical("[Processor Error] Processor encountered error when processing data.")
-                    LOGGER.exception(e)
-                    self.task_queue.put(task)
-                    self._mark_queue_state_changed()
-                    time.sleep(0.1)
-                    continue
+                new_task = self.process_task_service(task)
+            except Exception as e:
+                LOGGER.critical("[Processor Error] Processor encountered error when processing data.")
+                LOGGER.exception(e)
+                self._finish_running_task(requeue_task=task)
+                time.sleep(0.1)
+                continue
 
-                if new_task is None:
-                    self.task_queue.put(task)
-                    self._mark_queue_state_changed()
-                    time.sleep(0.1)
-                    continue
+            if new_task is None:
+                self._finish_running_task(requeue_task=task)
+                time.sleep(0.1)
+                continue
+
+            self._set_running_phase('handoff')
+            try:
                 self.send_result_back_to_controller(new_task)
             finally:
-                self._clear_running_task()
+                self._finish_running_task()
 
     def process_task_service(self, task: Task):
         LOGGER.debug(f'[Monitor Task] (Process start) Source: {task.get_source_id()} / Task: {task.get_task_id()} ')

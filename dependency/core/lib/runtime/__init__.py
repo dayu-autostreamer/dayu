@@ -10,6 +10,7 @@ from .lease import (
     RuntimeLeaseRetired,
     RuntimeLeaseUnavailable,
 )
+from .task_barrier import TaskBarrierError, TaskBarrierStore
 
 __all__ = [
     "RuntimeContext",
@@ -20,4 +21,6 @@ __all__ = [
     "RuntimeLeaseIdentityError",
     "RuntimeLeaseRetired",
     "RuntimeLeaseUnavailable",
+    "TaskBarrierError",
+    "TaskBarrierStore",
 ]

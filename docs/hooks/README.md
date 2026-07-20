@@ -122,7 +122,7 @@ schedule decision with nearby tasks.
 | `SCH_SCENARIO_RETRIEVAL` | Convert a processed task into scheduler state |
 | `SCH_POLICY_RETRIEVAL` | Recover the currently applied policy from a task |
 | `SCH_STARTUP_POLICY` | Provide a fallback plan before an agent can decide |
-| `SCH_AGENT` | Maintain policy-specific scheduling state per source; `BaseAgent.system` exposes the Scheduler and its mutation-safe `get_scheduling_snapshot()` plugin API |
+| `SCH_AGENT` | Maintain policy-specific scheduling state per source; `BaseAgent.system.get_scheduling_snapshot()` returns copied resources with observation times, pending task-bound decisions, active lease records, and known task barriers |
 | `SCH_SELECTION_POLICY` | Select the execution node for a source |
 | `SCH_INITIAL_DEPLOYMENT_POLICY` | Compute deployment for first install |
 | `SCH_REDEPLOYMENT_POLICY` | Compute deployment updates after install |

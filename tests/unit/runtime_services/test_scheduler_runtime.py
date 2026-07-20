@@ -193,6 +193,23 @@ def test_scheduler_updates_scenarios_resources_and_supports_plans_and_overhead(m
 @pytest.mark.unit
 def test_scheduler_snapshot_tracks_resources_and_active_task_commitments(monkeypatch):
     now = [100.0]
+    barrier_requests = []
+
+    class FakeBarrierStore:
+        def snapshot(self, requests):
+            barrier_requests.append(requests)
+            return [
+                {
+                    "root_uuid": request["root_uuid"],
+                    "barrier": request["barrier"],
+                    "arrived_branches": [request["expected_branches"][0]],
+                    "expected_branches": request["expected_branches"],
+                    "required_count": request["required_count"],
+                    "ready": False,
+                    "expires_in_seconds": 20,
+                }
+                for request in requests
+            ]
 
     def fake_get_algorithm(name, **kwargs):
         if name == "SCH_CONFIG_EXTRACTION":
@@ -210,6 +227,7 @@ def test_scheduler_snapshot_tracks_resources_and_active_task_commitments(monkeyp
         runtime_context=FakeRuntimeContext(),
         runtime_directory=RuntimeDirectoryStore(),
         task_lease_store=InMemoryTaskLeaseStore(clock=lambda: now[0]),
+        task_barrier_store=FakeBarrierStore(),
     )
     scheduler._runtime_clock = lambda: now[0]
     scheduler.runtime_directory_revision = lambda: 1
@@ -228,17 +246,36 @@ def test_scheduler_snapshot_tracks_resources_and_active_task_commitments(monkeyp
             "runtime_directory_revision": 1,
             "decision_id": "decision-1",
             "plan_digest": "digest-1",
-            "dag": {"detector": {"service": {"execute_device": "edge-node"}}},
+            "dag": {
+                "detector-a": {"prev_nodes": []},
+                "detector-b": {"prev_nodes": []},
+                "join": {"prev_nodes": ["detector-a", "detector-b"]},
+            },
         },
+    )
+    scheduler.task_leases.reserve(
+        2,
+        "root-stale-reservation",
+        {"root_uuid": "root-stale-reservation"},
+        active_revision=2,
+        ttl_seconds=20,
     )
 
     snapshot = scheduler.get_scheduling_snapshot()
     assert snapshot["runtime_directory_revision"] == 1
+    assert snapshot["reservations"] == []
     assert snapshot["resources"] == {
         "edge-node": {"queue_state": {"detector": {"waiting_count": 2, "busy": False}}}
     }
     assert snapshot["commitments"][0]["root_uuid"] == "root-1"
     assert snapshot["commitments"][0]["decision_id"] == "decision-1"
+    assert snapshot["task_barriers"][0]["barrier"] == "join"
+    assert barrier_requests[0] == [{
+        "root_uuid": "root-1",
+        "barrier": "join",
+        "expected_branches": ["detector-a", "detector-b"],
+        "required_count": 2,
+    }]
     snapshot["resources"]["edge-node"]["queue_state"]["detector"]["waiting_count"] = 99
     assert scheduler.get_scheduler_resource()["edge-node"]["queue_state"]["detector"]["waiting_count"] == 2
 

@@ -83,6 +83,66 @@ def _valid_for_seconds(expires_at, now, ttl_seconds):
     return max(0.0, min(ttl_seconds, expires_at - now))
 
 
+def _task_context(value, revision, root_uuid):
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise RuntimeDirectoryError("task execution context must be an object")
+    try:
+        normalized = json.loads(json.dumps(value, sort_keys=True))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeDirectoryError("task execution context must be JSON serializable") from exc
+    normalized_root = str(normalized.get("root_uuid") or root_uuid)
+    if normalized_root != root_uuid:
+        raise RuntimeDirectoryError("task execution context root_uuid does not match lease")
+    normalized_revision = normalized.get("runtime_directory_revision", revision)
+    try:
+        normalized_revision = int(normalized_revision)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeDirectoryError(
+            "task execution context runtime_directory_revision must be an integer"
+        ) from exc
+    if normalized_revision != revision:
+        raise RuntimeDirectoryError(
+            "task execution context runtime_directory_revision does not match lease"
+        )
+    normalized["root_uuid"] = root_uuid
+    normalized["runtime_directory_revision"] = revision
+    return normalized
+
+
+def _context_json(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _reservation_matches_context(reservation, context):
+    for field in (
+        "source_id",
+        "task_id",
+        "decision_id",
+        "plan_digest",
+        "deployment_version",
+    ):
+        expected = reservation.get(field)
+        actual = context.get(field)
+        if expected not in (None, "") and expected != actual:
+            return False
+    return True
+
+
+def _record_payload(context, timestamp, expires_at, status):
+    payload = dict(context)
+    payload.update({
+        "expires_at": float(expires_at),
+        "status": status,
+    })
+    if status == "pending":
+        payload["reserved_at"] = float(timestamp)
+    else:
+        payload["admitted_at"] = float(timestamp)
+    return payload
+
+
 class TaskLeaseRetired(RuntimeDirectoryConflict):
     """Raised when a task tries to use a fenced directory revision."""
 
@@ -96,10 +156,28 @@ class TaskLeaseRetired(RuntimeDirectoryConflict):
 
 
 class TaskLeaseStore(ABC):
-    """Persistence interface for task leases and revision retirement."""
+    """Persistence interface for task admission, leases, and retirement."""
 
     @abstractmethod
-    def acquire(self, revision, root_uuid, active_revision, ttl_seconds=60.0):
+    def reserve(
+        self,
+        revision,
+        root_uuid,
+        context,
+        active_revision,
+        ttl_seconds=60.0,
+    ):
+        raise NotImplementedError
+
+    @abstractmethod
+    def acquire(
+        self,
+        revision,
+        root_uuid,
+        active_revision,
+        ttl_seconds=60.0,
+        context=None,
+    ):
         raise NotImplementedError
 
     @abstractmethod
@@ -128,6 +206,14 @@ class TaskLeaseStore(ABC):
     def retire(self, revision, deadline):
         raise NotImplementedError
 
+    @abstractmethod
+    def list_reservations(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_active(self):
+        raise NotImplementedError
+
 
 class InMemoryTaskLeaseStore(TaskLeaseStore):
     """Thread-safe implementation for tests and bootstrap-less development."""
@@ -137,6 +223,8 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
         self._lock = threading.RLock()
         self._leases = {}
         self._retirements = {}
+        self._reservations = {}
+        self._contexts = {}
 
     def _prune_locked(self):
         now = self._clock()
@@ -156,6 +244,15 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
             key: expires_at for key, expires_at in self._leases.items()
             if expires_at > now
         }
+        self._contexts = {
+            key: record for key, record in self._contexts.items()
+            if key in self._leases
+        }
+        self._reservations = {
+            root_uuid: record
+            for root_uuid, record in self._reservations.items()
+            if record["expires_at"] > now
+        }
 
     def _retire_if_due_locked(self, revision, now=None):
         retirement = self._retirements.get(revision)
@@ -168,6 +265,11 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
         self._leases = {
             key: expires_at
             for key, expires_at in self._leases.items()
+            if key[0] != revision
+        }
+        self._contexts = {
+            key: record
+            for key, record in self._contexts.items()
             if key[0] != revision
         }
         retirement["retired"] = True
@@ -186,11 +288,69 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
             "revoked_count": retirement["revoked_count"] if retirement else 0,
         }
 
-    def acquire(self, revision, root_uuid, active_revision, ttl_seconds=60.0):
+    def reserve(
+        self,
+        revision,
+        root_uuid,
+        context,
+        active_revision,
+        ttl_seconds=60.0,
+    ):
         revision = _revision(revision)
         active_revision = _revision(active_revision)
         root_uuid = _root_uuid(root_uuid)
         ttl_seconds = _ttl(ttl_seconds)
+        normalized = _task_context(context, revision, root_uuid)
+        with self._lock:
+            self._prune_locked()
+            retirement = self._retirements.get(revision)
+            if retirement is not None:
+                raise TaskLeaseRetired(revision, retirement["deadline"])
+            if revision != active_revision:
+                raise RuntimeDirectoryConflict(
+                    f"task reservation revision {revision} is not active "
+                    f"(active revision is {active_revision})"
+                )
+            if any(active_root == root_uuid for _, active_root in self._contexts):
+                raise RuntimeDirectoryConflict(
+                    "task reservation root_uuid is already admitted"
+                )
+            previous = self._reservations.get(root_uuid)
+            if (
+                previous is not None
+                and previous["context"].get("runtime_directory_revision") != revision
+            ):
+                self._reservations.pop(root_uuid, None)
+                previous = None
+            if previous is not None and previous["context"] != normalized:
+                raise RuntimeDirectoryConflict(
+                    "task reservation changed for an existing root_uuid"
+                )
+            now = self._clock()
+            expires_at = now + ttl_seconds
+            reserved_at = previous["reserved_at"] if previous else now
+            self._reservations[root_uuid] = {
+                "context": normalized,
+                "reserved_at": reserved_at,
+                "expires_at": expires_at,
+            }
+            return _record_payload(
+                normalized, reserved_at, expires_at, "pending"
+            )
+
+    def acquire(
+        self,
+        revision,
+        root_uuid,
+        active_revision,
+        ttl_seconds=60.0,
+        context=None,
+    ):
+        revision = _revision(revision)
+        active_revision = _revision(active_revision)
+        root_uuid = _root_uuid(root_uuid)
+        ttl_seconds = _ttl(ttl_seconds)
+        normalized = _task_context(context, revision, root_uuid)
         with self._lock:
             self._prune_locked()
             retirement = self._retirements.get(revision)
@@ -201,9 +361,28 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
                     f"task lease revision {revision} is not active "
                     f"(active revision is {active_revision})"
                 )
+            key = (revision, root_uuid)
+            previous = self._contexts.get(key)
+            if previous is not None and previous["context"] != normalized:
+                raise RuntimeDirectoryConflict(
+                    "task execution context changed for an existing root_uuid"
+                )
+            reservation = self._reservations.get(root_uuid)
+            if reservation is not None and not _reservation_matches_context(
+                reservation["context"], normalized
+            ):
+                raise RuntimeDirectoryConflict(
+                    "task execution context does not match its reservation"
+                )
             now = self._clock()
             expires_at = now + ttl_seconds
-            self._leases[(revision, root_uuid)] = expires_at
+            self._leases[key] = expires_at
+            admitted_at = previous["admitted_at"] if previous else now
+            self._contexts[key] = {
+                "context": normalized,
+                "admitted_at": admitted_at,
+            }
+            self._reservations.pop(root_uuid, None)
             return _lease_payload(
                 revision,
                 root_uuid,
@@ -262,6 +441,7 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
                     return result
                 raise RuntimeDirectoryNotFound("task lease does not exist or expired")
             del self._leases[key]
+            self._contexts.pop(key, None)
             result = _lease_payload(revision, root_uuid, self._clock())
             result["released"] = True
             return result
@@ -302,9 +482,87 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
             self._retire_if_due_locked(revision)
             return self._status_locked(revision)
 
+    def list_reservations(self):
+        with self._lock:
+            self._prune_locked()
+            return [
+                _record_payload(
+                    record["context"],
+                    record["reserved_at"],
+                    record["expires_at"],
+                    "pending",
+                )
+                for record in self._reservations.values()
+            ]
+
+    def list_active(self):
+        with self._lock:
+            self._prune_locked()
+            return [
+                _record_payload(
+                    record["context"],
+                    record["admitted_at"],
+                    self._leases[key],
+                    "active",
+                )
+                for key, record in self._contexts.items()
+            ]
+
 
 class RedisTaskLeaseStore(TaskLeaseStore):
-    """Redis ZSET implementation used by scheduler replicas in production."""
+    """Redis implementation used by the production Scheduler."""
+
+    _RESERVE_SCRIPT = """
+local revision = tonumber(ARGV[1])
+local retirement_raw = redis.call('GET', KEYS[2])
+if retirement_raw then
+  local retirement = cjson.decode(retirement_raw)
+  return {1, tostring(retirement.deadline)}
+end
+local active_raw = redis.call('GET', KEYS[1])
+local active_revision = 0
+if active_raw then
+  local active = cjson.decode(active_raw)
+  active_revision = tonumber(active.revision or active.directory_revision or 0)
+end
+if active_revision ~= revision then
+  return {0, tostring(active_revision)}
+end
+local now = tonumber(ARGV[2])
+local expires = tonumber(ARGV[3])
+local member = ARGV[4]
+local context = ARGV[5]
+local reserved_at = now
+if redis.call('HGET', KEYS[5], member) then
+  return {4, ''}
+end
+local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now)
+for _, expired_member in ipairs(expired) do
+  redis.call('HDEL', KEYS[4], expired_member)
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now)
+local score = redis.call('ZSCORE', KEYS[3], member)
+local existing = redis.call('HGET', KEYS[4], member)
+if existing then
+  local record = cjson.decode(existing)
+  local previous_context = cjson.decode(record.context)
+  if tonumber(previous_context.runtime_directory_revision or 0) ~= revision then
+    redis.call('ZREM', KEYS[3], member)
+    redis.call('HDEL', KEYS[4], member)
+    existing = false
+  else
+    if record.context ~= context then
+      return {3, existing}
+    end
+    reserved_at = tonumber(record.reserved_at)
+  end
+end
+if not existing then
+  redis.call('HSET', KEYS[4], member, cjson.encode({context=context, reserved_at=now}))
+end
+redis.call('ZADD', KEYS[3], expires, member)
+return {2, tostring(expires), tostring(reserved_at)}
+"""
 
     _ACQUIRE_SCRIPT = """
 local revision = tonumber(ARGV[1])
@@ -324,9 +582,54 @@ if active_revision ~= revision then
 end
 local now = tonumber(ARGV[2])
 local expires = tonumber(ARGV[3])
+local member = ARGV[4]
+local ttl = tonumber(ARGV[5])
+local context = ARGV[6]
+local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now)
+for _, expired_member in ipairs(expired) do
+  redis.call('HDEL', KEYS[4], expired_member)
+end
 redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now)
-redis.call('ZADD', KEYS[3], expires, ARGV[4])
-redis.call('EXPIRE', KEYS[3], tonumber(ARGV[5]))
+local existing = redis.call('HGET', KEYS[4], member)
+if existing then
+  local record = cjson.decode(existing)
+  if record.context ~= context then
+    return {3, existing}
+  end
+end
+local expired_reservations = redis.call('ZRANGEBYSCORE', KEYS[5], '-inf', now)
+for _, expired_member in ipairs(expired_reservations) do
+  redis.call('HDEL', KEYS[6], expired_member)
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[5], '-inf', now)
+local reservation_score = redis.call('ZSCORE', KEYS[5], member)
+local reservation_raw = redis.call('HGET', KEYS[6], member)
+if reservation_score and reservation_raw then
+  local reservation = cjson.decode(reservation_raw)
+  local expected = cjson.decode(reservation.context)
+  local actual = cjson.decode(context)
+  local fields = {
+    'source_id',
+    'task_id',
+    'decision_id',
+    'plan_digest',
+    'deployment_version'
+  }
+  for _, field in ipairs(fields) do
+    if expected[field] ~= nil and expected[field] ~= '' then
+      if actual[field] == nil or tostring(expected[field]) ~= tostring(actual[field]) then
+        return {4, reservation_raw}
+      end
+    end
+  end
+end
+if not existing then
+  redis.call('HSET', KEYS[4], member, cjson.encode({context=context, admitted_at=now}))
+end
+redis.call('ZADD', KEYS[3], expires, member)
+redis.call('ZREM', KEYS[5], member)
+redis.call('HDEL', KEYS[6], member)
+redis.call('EXPIRE', KEYS[3], ttl)
 return {2, tostring(expires)}
 """
 
@@ -338,6 +641,7 @@ local member = ARGV[1]
 local now = tonumber(ARGV[2])
 local expires = tonumber(ARGV[3])
 local revision = tonumber(ARGV[5])
+local ttl = tonumber(ARGV[4])
 local retirement_raw = redis.call('GET', retirement_key)
 if not retirement_raw then
   local active_raw = redis.call('GET', active_key)
@@ -355,8 +659,16 @@ if retirement_raw then
   local deadline = tonumber(retirement.deadline)
   if retirement.retired == true or deadline <= now then
     if retirement.retired ~= true then
+      local expired = redis.call('ZRANGEBYSCORE', key, '-inf', '(' .. tostring(deadline))
+      for _, expired_member in ipairs(expired) do
+        redis.call('HDEL', KEYS[4], expired_member)
+      end
       redis.call('ZREMRANGEBYSCORE', key, '-inf', '(' .. tostring(deadline))
       local revoked = redis.call('ZCARD', key)
+      local revoked_members = redis.call('ZRANGE', key, 0, -1)
+      for _, revoked_member in ipairs(revoked_members) do
+        redis.call('HDEL', KEYS[4], revoked_member)
+      end
       redis.call('DEL', key)
       retirement.retired = true
       retirement.revoked_count = tonumber(retirement.revoked_count or 0) + revoked
@@ -368,12 +680,16 @@ if retirement_raw then
     expires = deadline
   end
 end
+local expired = redis.call('ZRANGEBYSCORE', key, '-inf', now)
+for _, expired_member in ipairs(expired) do
+  redis.call('HDEL', KEYS[4], expired_member)
+end
 redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
 if redis.call('ZSCORE', key, member) == false then
   return {0, ''}
 end
 redis.call('ZADD', key, expires, member)
-redis.call('EXPIRE', key, tonumber(ARGV[4]))
+redis.call('EXPIRE', key, ttl)
 return {1, tostring(expires)}
 """
 
@@ -382,9 +698,14 @@ local key = KEYS[1]
 local retirement_key = KEYS[2]
 local member = ARGV[1]
 local now = tonumber(ARGV[2])
+local expired = redis.call('ZRANGEBYSCORE', key, '-inf', now)
+for _, expired_member in ipairs(expired) do
+  redis.call('HDEL', KEYS[3], expired_member)
+end
 redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
 local removed = redis.call('ZREM', key, member)
 if removed == 1 then
+  redis.call('HDEL', KEYS[3], member)
   return 1
 end
 if redis.call('GET', retirement_key) then
@@ -410,12 +731,24 @@ if requested_deadline < tonumber(retirement.deadline) then
 end
 local deadline = tonumber(retirement.deadline)
 if retirement.retired ~= true and deadline <= now then
+  local expired = redis.call('ZRANGEBYSCORE', key, '-inf', '(' .. tostring(deadline))
+  for _, expired_member in ipairs(expired) do
+    redis.call('HDEL', KEYS[3], expired_member)
+  end
   redis.call('ZREMRANGEBYSCORE', key, '-inf', '(' .. tostring(deadline))
   local revoked = redis.call('ZCARD', key)
+  local revoked_members = redis.call('ZRANGE', key, 0, -1)
+  for _, revoked_member in ipairs(revoked_members) do
+    redis.call('HDEL', KEYS[3], revoked_member)
+  end
   redis.call('DEL', key)
   retirement.retired = true
   retirement.revoked_count = tonumber(retirement.revoked_count or 0) + revoked
 elseif retirement.retired ~= true then
+  local expired = redis.call('ZRANGEBYSCORE', key, '-inf', now)
+  for _, expired_member in ipairs(expired) do
+    redis.call('HDEL', KEYS[3], expired_member)
+  end
   redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
   local leases = redis.call('ZRANGE', key, 0, -1, 'WITHSCORES')
   for index = 1, #leases, 2 do
@@ -448,8 +781,16 @@ if retirement_raw then
   retired = retirement.retired == true
   revoked_count = tonumber(retirement.revoked_count or 0)
   if not retired and deadline <= now then
+    local expired = redis.call('ZRANGEBYSCORE', key, '-inf', '(' .. tostring(deadline))
+    for _, expired_member in ipairs(expired) do
+      redis.call('HDEL', KEYS[3], expired_member)
+    end
     redis.call('ZREMRANGEBYSCORE', key, '-inf', '(' .. tostring(deadline))
     revoked_count = revoked_count + redis.call('ZCARD', key)
+    local revoked_members = redis.call('ZRANGE', key, 0, -1)
+    for _, revoked_member in ipairs(revoked_members) do
+      redis.call('HDEL', KEYS[3], revoked_member)
+    end
     redis.call('DEL', key)
     retired = true
     retirement.retired = true
@@ -458,6 +799,10 @@ if retirement_raw then
   end
 end
 if not retired then
+  local expired = redis.call('ZRANGEBYSCORE', key, '-inf', now)
+  for _, expired_member in ipairs(expired) do
+    redis.call('HDEL', KEYS[3], expired_member)
+  end
   redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
 end
 return cjson.encode({
@@ -506,25 +851,112 @@ return cjson.encode({
     def _retirement_key(self, revision):
         return f"{self.key_prefix}:{self.install_id}:{revision}:retirement"
 
-    def acquire(self, revision, root_uuid, active_revision, ttl_seconds=60.0):
+    @property
+    def _context_key(self):
+        return f"{self.key_prefix}:{self.install_id}:contexts"
+
+    @property
+    def _reservation_key(self):
+        return f"{self.key_prefix}:{self.install_id}:reservations"
+
+    @property
+    def _reservation_context_key(self):
+        return f"{self.key_prefix}:{self.install_id}:reservation-contexts"
+
+    @staticmethod
+    def _decode_record(raw, label):
+        try:
+            record = json.loads(raw)
+            context = json.loads(record["context"])
+            if not isinstance(context, dict):
+                raise TypeError
+            return record, context
+        except (TypeError, ValueError, KeyError) as exc:
+            raise RuntimeDirectoryError(
+                f"persisted task {label} is corrupt"
+            ) from exc
+
+    def reserve(
+        self,
+        revision,
+        root_uuid,
+        context,
+        active_revision,
+        ttl_seconds=60.0,
+    ):
         revision = _revision(revision)
         if active_revision is not None:
             _revision(active_revision)
         root_uuid = _root_uuid(root_uuid)
         ttl_seconds = _ttl(ttl_seconds)
+        normalized = _task_context(context, revision, root_uuid)
+        now = self.clock()
+        expires_at = now + ttl_seconds
+        result = self.redis.eval(
+            self._RESERVE_SCRIPT,
+            5,
+            self._active_key,
+            self._retirement_key(revision),
+            self._reservation_key,
+            self._reservation_context_key,
+            self._context_key,
+            revision,
+            now,
+            expires_at,
+            root_uuid,
+            _context_json(normalized),
+        )
+        code, value = int(result[0]), result[1]
+        if code == 0:
+            raise RuntimeDirectoryConflict(
+                f"task reservation revision {revision} is not active "
+                f"(active revision is {value})"
+            )
+        if code == 1:
+            raise TaskLeaseRetired(revision, float(value))
+        if code == 3:
+            raise RuntimeDirectoryConflict(
+                "task reservation changed for an existing root_uuid"
+            )
+        if code == 4:
+            raise RuntimeDirectoryConflict(
+                "task reservation root_uuid is already admitted"
+            )
+        expires_at = float(value)
+        reserved_at = float(result[2]) if len(result) > 2 else now
+        return _record_payload(normalized, reserved_at, expires_at, "pending")
+
+    def acquire(
+        self,
+        revision,
+        root_uuid,
+        active_revision,
+        ttl_seconds=60.0,
+        context=None,
+    ):
+        revision = _revision(revision)
+        if active_revision is not None:
+            _revision(active_revision)
+        root_uuid = _root_uuid(root_uuid)
+        ttl_seconds = _ttl(ttl_seconds)
+        normalized = _task_context(context, revision, root_uuid)
         now = self.clock()
         expires_at = now + ttl_seconds
         code, value = self.redis.eval(
             self._ACQUIRE_SCRIPT,
-            3,
+            6,
             self._active_key,
             self._retirement_key(revision),
             self._key(revision),
+            self._context_key,
+            self._reservation_key,
+            self._reservation_context_key,
             revision,
             now,
             expires_at,
             root_uuid,
             max(1, int(math.ceil(ttl_seconds)) + 60),
+            _context_json(normalized),
         )
         code = int(code)
         if code == 0:
@@ -533,6 +965,14 @@ return cjson.encode({
             )
         if code == 1:
             raise TaskLeaseRetired(revision, float(value))
+        if code == 3:
+            raise RuntimeDirectoryConflict(
+                "task execution context changed for an existing root_uuid"
+            )
+        if code == 4:
+            raise RuntimeDirectoryConflict(
+                "task execution context does not match its reservation"
+            )
         expires_at = float(value)
         valid_for_seconds = _valid_for_seconds(
             expires_at, self.clock(), ttl_seconds
@@ -557,10 +997,11 @@ return cjson.encode({
         expires_at = now + ttl_seconds
         result = self.redis.eval(
             self._RENEW_SCRIPT,
-            3,
+            4,
             self._key(revision),
             self._retirement_key(revision),
             self._active_key,
+            self._context_key,
             root_uuid,
             now,
             expires_at,
@@ -592,9 +1033,10 @@ return cjson.encode({
         root_uuid = _root_uuid(root_uuid)
         release_code = int(self.redis.eval(
             self._RELEASE_SCRIPT,
-            2,
+            3,
             self._key(revision),
             self._retirement_key(revision),
+            self._context_key,
             root_uuid,
             self.clock(),
         ) or 0)
@@ -613,9 +1055,10 @@ return cjson.encode({
         revision = _revision(revision)
         raw = self.redis.eval(
             self._STATUS_SCRIPT,
-            2,
+            3,
             self._key(revision),
             self._retirement_key(revision),
+            self._context_key,
             self.clock(),
         )
         try:
@@ -638,9 +1081,10 @@ return cjson.encode({
         deadline = _deadline(deadline)
         raw = self.redis.eval(
             self._RETIRE_SCRIPT,
-            2,
+            3,
             self._key(revision),
             self._retirement_key(revision),
+            self._context_key,
             self.clock(),
             deadline,
         )
@@ -655,6 +1099,48 @@ return cjson.encode({
             }
         except (TypeError, ValueError, KeyError) as exc:
             raise RuntimeDirectoryError("persisted task lease retirement is corrupt") from exc
+
+    def list_reservations(self):
+        now = self.clock()
+        records = []
+        stale = []
+        for root_uuid, raw in self.redis.hgetall(self._reservation_context_key).items():
+            score = self.redis.zscore(self._reservation_key, root_uuid)
+            if score is None or float(score) <= now:
+                stale.append(root_uuid)
+                continue
+            record, context = self._decode_record(raw, "reservation")
+            records.append(_record_payload(
+                context,
+                float(record["reserved_at"]),
+                float(score),
+                "pending",
+            ))
+        if stale:
+            self.redis.hdel(self._reservation_context_key, *stale)
+            self.redis.zrem(self._reservation_key, *stale)
+        return records
+
+    def list_active(self):
+        now = self.clock()
+        records = []
+        stale = []
+        for root_uuid, raw in self.redis.hgetall(self._context_key).items():
+            record, context = self._decode_record(raw, "execution context")
+            revision = _revision(context.get("runtime_directory_revision"))
+            score = self.redis.zscore(self._key(revision), root_uuid)
+            if score is None or float(score) <= now:
+                stale.append(root_uuid)
+                continue
+            records.append(_record_payload(
+                context,
+                float(record["admitted_at"]),
+                float(score),
+                "active",
+            ))
+        if stale:
+            self.redis.hdel(self._context_key, *stale)
+        return records
 
 
 def create_task_lease_store(runtime_context):

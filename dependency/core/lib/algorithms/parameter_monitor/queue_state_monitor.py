@@ -1,4 +1,5 @@
 import abc
+import copy
 
 from core.lib.common import ClassFactory, ClassType
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod, http_request
@@ -30,6 +31,7 @@ class QueueStateMonitor(BaseMonitor, abc.ABC):
             state['waiting_count'] = 0
         state['busy'] = bool(state.get('busy', False))
         state['running_elapsed_s'] = cls._non_negative_number(state.get('running_elapsed_s'))
+        state['phase_elapsed_s'] = cls._non_negative_number(state.get('phase_elapsed_s'))
         try:
             state['capacity'] = max(1, int(state.get('capacity', 1) or 1))
         except (TypeError, ValueError):
@@ -38,9 +40,37 @@ class QueueStateMonitor(BaseMonitor, abc.ABC):
             state['sequence'] = max(0, int(state.get('sequence', 0)))
         except (TypeError, ValueError):
             state['sequence'] = 0
+        waiting_tasks = state.get('waiting_tasks')
+        state['waiting_tasks'] = (
+            [copy.deepcopy(item) for item in waiting_tasks if isinstance(item, dict)]
+            if isinstance(waiting_tasks, list)
+            else None
+        )
+        running_phase = state.get('running_phase')
+        state['running_phase'] = (
+            str(running_phase) if running_phase not in (None, '') else None
+        )
         state.setdefault('running_task', None)
+        if not state['busy']:
+            state['running_task'] = None
+            state['running_phase'] = None
+            state['running_elapsed_s'] = 0.0
+            state['phase_elapsed_s'] = 0.0
         state.setdefault('observed_at', None)
         return state
+
+    @staticmethod
+    def _runtime_identity(endpoint):
+        return {
+            'component': endpoint.component,
+            'target_node': endpoint.target_node,
+            'logical_service': endpoint.logical_service,
+            'runtime_id': endpoint.runtime_id,
+            'runtime_service_uid': endpoint.runtime_service_uid,
+            'service_uid': endpoint.service_uid,
+            'endpoint_pod_uid': endpoint.endpoint_pod_uid,
+            'deployment_revision': endpoint.deployment_revision,
+        }
 
     def get_parameter_value(self):
         queue_states = {}
@@ -50,5 +80,7 @@ class QueueStateMonitor(BaseMonitor, abc.ABC):
                 method=NetworkAPIMethod.PROCESSOR_QUEUE_STATE,
                 timeout=2,
             )
-            queue_states[endpoint.logical_service] = self._normalize_queue_state(response)
+            state = self._normalize_queue_state(response)
+            state['runtime'] = self._runtime_identity(endpoint)
+            queue_states[endpoint.logical_service] = state
         return queue_states

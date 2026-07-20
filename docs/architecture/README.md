@@ -171,9 +171,11 @@ sequenceDiagram
     S-->>BE: CAS commit + canonical hash + atomic retirement status
     G->>G: getter filter + reserve TaskIdentity
     G->>S: schedule request carrying task_context
+    S->>S: persist expiring task-bound decision reservation
     S-->>G: plan + decision identity + exact routes
     G->>G: materialize source data with the reserved identity
     G->>S: acquire lease + immutable task commitment
+    S->>S: verify reservation and promote active record
     G->>W: task carrying decision, routes, and revision
     W->>D: completed task
     D->>S: final renew before persistence
@@ -221,9 +223,11 @@ More concretely:
    lease identity, publishing is atomic, and no intermediate branch or Pod lifecycle may delete it.
 6. Distributor renews once to fence a late new result and durably persists it. Persistence is the terminal delivery
    ACK; scheduler scenario feedback and lease release then converge independently.
-7. Monitor periodically reports resource state to scheduler. Structured processor `queue_state` telemetry reports
-   waiting work, whether the single background execution lane is busy, its running task identity, and observation
-   metadata for every local logical service.
+7. Monitor periodically reports resource state to scheduler. Structured processor `queue_state` telemetry atomically
+   reports ordered waiting identities, whether the single background execution lane is busy, its running task and
+   processing/handoff phase, and observation metadata for every local logical service. Scheduler combines that copied
+   resource view with expiring schedule reservations, active lease records, and exact known fork/join barrier state in
+   the common in-process snapshot available to all schedule agents.
 8. Backend polls distributor and scheduler to produce frontend-facing result and system visualizations.
 
 ## Runtime Ownership By Component
@@ -233,9 +237,9 @@ More concretely:
 | Backend | Kubernetes access, validated plan composition, RuntimeService/session lifecycle, install/query lifecycle, visualization, source state | task routing or low-level inference behavior |
 | Datasource | source playback, manifest interpretation, clip or frame indexing | scheduling decisions |
 | Generator | source segmentation, task creation, pre-schedule and pre-submit hooks | inference execution |
-| Scheduler | policy/resource state, source/deployment plans, an in-process mutation-safe scheduling snapshot, persistent-AOF Redis RuntimeDirectory CAS and revision leases | Kubernetes discovery, Pod/RuntimeService recovery, or result persistence |
-| Controller | transport timing, acknowledged task forwarding, idempotent parallel barriers | scheduling, lease management, or artifact deletion by an intermediate branch |
-| Processor | AI inference, scenario extraction, queue discipline, retaining computed results until ACK | deployment, lease management, or visualization |
+| Scheduler | policy/resource state, source/deployment plans, an in-process copied snapshot of resources, task admission/lease records and known barriers, persistent-AOF Redis RuntimeDirectory CAS and revision leases | Kubernetes discovery, Pod/RuntimeService recovery, or result persistence |
+| Controller | transport timing, acknowledged task forwarding, idempotent queryable task barriers | scheduling, lease management, or artifact deletion by an intermediate branch |
+| Processor | AI inference, scenario extraction, queue discipline, atomic waiting/running state, retaining computed results until ACK | deployment, lease management, or visualization |
 | Distributor | final task-lease validation/release, durable result storage, incremental result queries, export files | operator workflows |
 | Monitor | resource sampling through committed local routes | Kubernetes discovery or task-level scheduling decisions |
 

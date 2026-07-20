@@ -172,8 +172,9 @@ The first directory is published only after the complete runtime is activated. L
 proposal followed by compare-and-swap commit against the expected base revision. Missing or ambiguous routes fail
 closed; a worker never falls back to Kubernetes discovery or a bootstrap endpoint.
 
-Production Scheduler persists the active snapshot and expiring proposals in Redis; task leases use install/revision-
-scoped Redis ZSETs. The support Redis uses a host-mounted append-only file with synchronous fsync, so this state survives
+Production Scheduler persists the active snapshot and expiring proposals in Redis; task admission records and leases
+use install/revision-scoped Redis hashes and ZSETs. The support Redis uses a host-mounted append-only file with
+synchronous fsync, so this state survives
 Scheduler or Redis Pod replacement while the cloud-node host path is retained. Process memory is used only by tests or
 an explicitly constructed local harness. A production Scheduler with no bootstrap Redis endpoint fails at startup.
 Scheduler itself runs as one direct Uvicorn process. Its synchronous Redis-backed directory and lease endpoints execute
@@ -216,10 +217,14 @@ it to Scheduler as `task_context`, applies the returned plan, and only then mate
 that same identity. It also copies the committed directory revision, exact routes, schedule decision id, and plan
 digest into the Task; forks preserve all root-level scheduling fields.
 
-The task is protected by a lease keyed by `(directory_revision, root_uuid)`. Generator acquires it once before first
-submission and attaches a commitment containing the immutable identity, DAG mapping, metadata, and decision
-attribution. Scheduler keeps those active commitments synchronized with the lease lifecycle and makes a copied view
-available to schedule agents together with resource telemetry. A transient admission failure retains the already
+For a task-aware schedule, Scheduler first stores a short-lived `pending` record containing the exact returned decision
+and plan. The task is then protected by a lease keyed by `(directory_revision, root_uuid)`. Generator acquires it once
+before first submission and attaches a commitment containing the immutable identity, DAG mapping, metadata, and
+decision attribution. Admission verifies the reserved decision fields and atomically promotes the record to `active`.
+Retrying the same task-aware scheduling request replays its pending decision instead of advancing the agent twice.
+Scheduler keeps active records synchronized with lease renewal, expiry, release, and retirement. It makes copied
+pending/active records available to every schedule agent together with resource telemetry and exact snapshots of
+known Redis task barriers. A transient admission failure retains the already
 materialized task and applies source backpressure; only
 an explicit retired-revision fence rejects it and requests a fresh schedule. Controller and Processor do not access
 the lease API. Distributor renews once immediately before durable result persistence and then performs Scheduler
@@ -232,8 +237,10 @@ expiry: it requests an immediate fence and proceeds with exact-UID administrativ
 media artifact and every network handoff. Dayu therefore uses the existing lease identity for one immutable node-local
 artifact, publishes uploads atomically, and transfers Task ownership only after an exact task-UUID ACK. A Processor
 requeues inference failures, retains a computed result while Controller is unavailable, and never treats `200 null` as
-success. Parallel join arrivals are idempotent by predecessor and remain in Redis until their merged next hop is
-acknowledged. Artifacts with no progress for one full lease TTL are reclaimed by the Controller cleaner; intermediate
+success. Its queue snapshot changes atomically with enqueue, dequeue, requeue, completion, and clearing, and reports
+ordered waiting identities plus the running processing/handoff phase. Parallel join arrivals are idempotent by
+predecessor, remain in Redis until their merged next hop is acknowledged, and are queryable through exact known keys.
+Artifacts with no progress for one full lease TTL are reclaimed by the Controller cleaner; intermediate
 branches, queue clearing, Controller startup, and Controller shutdown do not delete them.
 
 Runtime Pods set `automountServiceAccountToken: false`. Runtime code therefore has no Kubernetes package, kubeconfig,

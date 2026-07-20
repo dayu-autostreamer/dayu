@@ -336,6 +336,7 @@ class Task:
             'created_at': self.get_created_at(),
             'decision_id': self.get_schedule_decision_id(),
             'plan_digest': self.get_schedule_plan_digest(),
+            'deployment_version': self.get_deployment_version(),
             'runtime_directory_revision': self.get_runtime_directory_revision(),
             'dag': self.get_dag_deployment_info(),
             'metadata': copy.deepcopy(self.get_metadata()),

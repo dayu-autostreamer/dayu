@@ -1,3 +1,4 @@
+import copy
 import json
 
 from fastapi import FastAPI, Form, HTTPException
@@ -190,6 +191,28 @@ class SchedulerServer:
         cls._log_api_error(request, 422, detail)
         return await request_validation_exception_handler(request, exc)
 
+    @staticmethod
+    def _split_schedule_plan(plan):
+        deployment_version = 0
+        if isinstance(plan, dict) and 'deployment_version' in plan:
+            plan = plan.copy()
+            deployment_version = plan.pop('deployment_version')
+            if deployment_version is None:
+                deployment_version = 0
+        return plan, deployment_version
+
+    def _runtime_state_for_plan(self, plan, source_device):
+        try:
+            return self.scheduler.schedule_runtime_state(
+                plan,
+                source_device=source_device,
+            )
+        except RuntimeDirectoryError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f'no valid runtime route for schedule plan: {exc}',
+            )
+
     async def generate_schedule_plan(self, data: str = Form(...)):
         data = json.loads(data)
 
@@ -203,38 +226,91 @@ class SchedulerServer:
                     detail='task_context source_id must match schedule source_id',
                 )
 
-        self.scheduler.register_schedule_table(data['source_id'])
-        plan = self.scheduler.get_schedule_plan(data)
-
-        deployment_version = 0
-        if isinstance(plan, dict) and 'deployment_version' in plan:
-            plan = plan.copy()
-            deployment_version = plan.pop('deployment_version')
-            if deployment_version is None:
-                deployment_version = 0
-
-        try:
-            runtime_state = self.scheduler.schedule_runtime_state(
-                plan,
-                source_device=data.get('source_device', ''),
+        with self.scheduler.schedule_transaction():
+            self.scheduler.register_schedule_table(data['source_id'])
+            current_revision = self.scheduler.runtime_directory_revision()
+            reservation = self.scheduler.get_task_reservation(
+                current_revision,
+                task_context.get('root_uuid') if task_context else '',
+                task_context,
             )
-        except RuntimeDirectoryError as exc:
-            raise HTTPException(status_code=503, detail=f'no valid runtime route for schedule plan: {exc}')
+            if reservation is None:
+                plan, deployment_version = self._split_schedule_plan(
+                    self.scheduler.get_schedule_plan(data)
+                )
+            else:
+                plan = copy.deepcopy(reservation.get('plan'))
+                if not isinstance(plan, dict):
+                    raise self._translate_runtime_error(
+                        RuntimeDirectoryError('persisted task reservation has no valid plan'),
+                        data.get('source_id'),
+                    )
+                deployment_version = reservation.get('deployment_version', 0)
 
-        response = {
-            'plan': plan,
-            'deployment': runtime_state['deployment'],
-            'deployment_version': deployment_version,
-            'runtime_directory_revision': runtime_state['revision'],
-            'runtime_directory_hash': runtime_state['hash'],
-            'runtime_routes': runtime_state['routes'],
-        }
-        response['schedule_decision'] = build_schedule_decision(
-            data,
-            plan,
-            deployment_version,
-            runtime_state['revision'],
-        )
+            runtime_state = self._runtime_state_for_plan(
+                plan,
+                data.get('source_device', ''),
+            )
+
+            if reservation is not None and runtime_state['revision'] != current_revision:
+                reservation = None
+                plan, deployment_version = self._split_schedule_plan(
+                    self.scheduler.get_schedule_plan(data)
+                )
+                runtime_state = self._runtime_state_for_plan(
+                    plan,
+                    data.get('source_device', ''),
+                )
+
+            response = {
+                'plan': plan,
+                'deployment': runtime_state['deployment'],
+                'deployment_version': deployment_version,
+                'runtime_directory_revision': runtime_state['revision'],
+                'runtime_directory_hash': runtime_state['hash'],
+                'runtime_routes': runtime_state['routes'],
+            }
+            if reservation is None:
+                response['schedule_decision'] = build_schedule_decision(
+                    data,
+                    plan,
+                    deployment_version,
+                    runtime_state['revision'],
+                )
+            else:
+                response['schedule_decision'] = {
+                    key: reservation.get(key)
+                    for key in (
+                        'decision_id',
+                        'plan_digest',
+                        'source_id',
+                        'task_id',
+                        'root_uuid',
+                        'created_at',
+                    )
+                }
+            decision = response['schedule_decision']
+            if decision.get('root_uuid'):
+                try:
+                    self.scheduler.reserve_task_context(
+                        runtime_state['revision'],
+                        decision['root_uuid'],
+                        {
+                            **decision,
+                            'runtime_directory_revision': runtime_state['revision'],
+                            'deployment_version': deployment_version,
+                            'plan': copy.deepcopy(plan),
+                            'metadata': copy.deepcopy(
+                                (
+                                    reservation.get('metadata')
+                                    if reservation is not None
+                                    else data.get('meta_data')
+                                ) or {}
+                            ),
+                        },
+                    )
+                except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+                    raise self._translate_runtime_error(exc, data.get('source_id'))
 
         return response
 

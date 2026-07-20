@@ -185,8 +185,11 @@ def test_local_and_remote_parameter_monitors_collect_expected_values(monkeypatch
 
     processor_state = {
         "waiting_count": 7,
+        "waiting_tasks": [{"task_uuid": "task-2"}],
         "busy": True,
         "running_elapsed_s": 0.5,
+        "running_phase": "processing",
+        "phase_elapsed_s": 0.25,
         "capacity": 1,
         "sequence": 4,
         "running_task": {"task_uuid": "task-1"},
@@ -194,10 +197,21 @@ def test_local_and_remote_parameter_monitors_collect_expected_values(monkeypatch
     }
     monkeypatch.setattr(queue_state_module, "http_request", lambda address, method=None, **kwargs: processor_state)
     queue_monitor = queue_state_module.QueueStateMonitor(system)
-    assert queue_monitor.get_parameter_value() == {
-        "detector": processor_state,
-        "face": processor_state,
+    queue_states = queue_monitor.get_parameter_value()
+    assert queue_states["detector"] == {
+        **processor_state,
+        "runtime": {
+            "component": "processor",
+            "target_node": "edge-a",
+            "logical_service": "detector",
+            "runtime_id": "",
+            "runtime_service_uid": "",
+            "service_uid": "",
+            "endpoint_pod_uid": "",
+            "deployment_revision": 0,
+        },
     }
+    assert queue_states["face"]["runtime"]["logical_service"] == "face"
     queue_monitor.run_monitor(system)
     assert system.resource_info["queue_state"]["detector"]["waiting_count"] == 7
     assert system.resource_info["queue_state"]["detector"]["busy"] is True

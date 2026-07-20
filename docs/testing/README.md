@@ -105,7 +105,7 @@ For `dependency/core/lib/` outside `algorithms/`, the current state is now much 
 | `common/class_factory.py`, `common/context.py` | Strong direct coverage | Hook registration, lookup, env/config resolution, and error branches are tested directly |
 | `common/cache.py`, `common/config.py`, `common/queue.py`, `common/resource.py`, `common/service.py`, `common/utils.py`, `common/record.py`, `common/instance.py` | Strong direct coverage | Runtime helper contracts are covered with isolated unit tests |
 | `common/counter.py`, `common/encode_ops.py`, `common/hash_ops.py`, `common/name.py`, `common/video_ops.py`, `common/yaml_ops.py`, `common/file_ops.py` | Direct coverage added | Serialization, naming, media conversion, filesystem helpers, and temp-file lifecycle now have dedicated unit tests |
-| `runtime/model.py`, `runtime/context.py`, `runtime/resolver.py`, `runtime/lease.py` | Strong direct coverage | Bootstrap parsing, immutable endpoint identities, exact task routes, scheduler-backed lease identities, ambiguity rejection, and fail-closed behavior are unit-tested without a Kubernetes client |
+| `runtime/model.py`, `runtime/context.py`, `runtime/resolver.py`, `runtime/lease.py`, `runtime/task_barrier.py` | Strong direct coverage | Bootstrap parsing, immutable endpoint identities, exact task routes, scheduler-backed lease identities, queryable task barriers, ambiguity rejection, and fail-closed behavior are unit-tested without a Kubernetes client |
 | `scheduling/deployment_plan.py` | Strong direct coverage | Canonical service-to-node-list normalization, complete DAG coverage, candidate scoping, explicit cloud identity, and invalid-plan rejection are tested independently from policy implementations |
 | `scheduling/source_selection.py` | Strong direct coverage | Strict scope parsing, independent Backend-authorized source candidates, selected/all-edge semantics, and rejection of legacy discovery inputs are tested directly and through Backend install transactions |
 | `content/service.py`, `content/dag.py`, `content/task.py` | Strong direct coverage | DAG extraction, service timing, and task lifecycle are exercised directly |
@@ -124,17 +124,20 @@ For service-layer code, the most useful unit tests are not â€œdoes FastAPI workâ
 - task-lease tests should prove one Generator acquire per task, no Controller/Processor lease calls, Distributor final
   renew/persist/scenario-ack/release ordering, transient acquire failure isolation, retired-schedule refresh, atomic
   directory commit plus old-lease clamping, inactive-revision renewal rejection without a marker, immutable retirement
-  deadlines/forced revocation, and fail-closed behavior without contacting Kubernetes.
+  deadlines/forced revocation, task-bound reservation promotion, restart-persistent active records, and fail-closed
+  behavior without contacting Kubernetes.
 - structured application unit tests should prove each application service can be instantiated independently, returns only
   service-specific `outputs`, and does not encode DAG membership or shared DAG schemas.
 - `monitor` unit tests should prove how monitor workers are instantiated, scheduled, joined, and posted to the scheduler API.
 - `distributor` unit tests should prove persistence ordering, incremental reads, export behavior, and scheduler forwarding without needing a full pipeline run.
 - `generator_server` unit tests should prove context parameters are collected and passed into the selected generator hook correctly.
 - `scheduler` unit tests should prove direct single-process Uvicorn startup, thread-pool-safe synchronous Redis handlers,
-  startup-policy fallback, backup offloading, scenario/resource propagation, resource-lock passthrough, unchanged
-  structured 4xx responses, and bounded rejection logging without depending on research agents.
+  startup-policy fallback, backup offloading, scenario/resource propagation, task reservation/admission snapshots,
+  exact known-barrier reads, resource-lock passthrough, unchanged structured 4xx responses, and bounded rejection
+  logging without depending on policy-specific agents.
 - package `__init__` tests should prove optional imports degrade gracefully when third-party dependencies are absent, while real core import errors still surface immediately.
-- `*_server` unit tests should prove queueing, background handling, serialization, timing hooks, and outbound request contracts.
+- `*_server` unit tests should prove atomic ordered queue/running snapshots, background handling, serialization, timing
+  hooks, retry requeue order, and outbound request contracts.
 
 This is now reflected in `tests/unit/runtime_services/`, which gives Dayu a clearer place for service-shell behavior without pushing everything into slower integration tests.
 

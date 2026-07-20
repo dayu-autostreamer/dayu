@@ -4,7 +4,13 @@ import redis
 
 from core.lib.common import Context, LOGGER
 from core.lib.content import Task
-from core.lib.runtime import RuntimeContext, RuntimeEndpoint, RuntimeResolver
+from core.lib.runtime import (
+    RuntimeContext,
+    RuntimeEndpoint,
+    RuntimeResolver,
+    TaskBarrierError,
+    TaskBarrierStore,
+)
 
 
 class TaskCoordinationError(RuntimeError):
@@ -12,24 +18,16 @@ class TaskCoordinationError(RuntimeError):
 
 
 class TaskCoordinator:
-    _ARRIVE_SCRIPT = """
-local key = KEYS[1]
-local branch = ARGV[1]
-local payload = ARGV[2]
-local ttl = tonumber(ARGV[3])
-local required = tonumber(ARGV[4])
-redis.call('HSET', key, branch, payload)
-redis.call('EXPIRE', key, ttl)
-if redis.call('HLEN', key) < required then
-  return {}
-end
-return redis.call('HGETALL', key)
-"""
-
-    def __init__(self, runtime_context=None, redis_endpoint=None):
+    def __init__(self, runtime_context=None, redis_endpoint=None, barrier_store=None):
         runtime_context = runtime_context or RuntimeContext.get_default()
         self.max_connections = int(Context.get_parameter('MAX_REDIS_CONNECTIONS', '10', direct=False))
         self.storage_timeout = max(1, int(math.ceil(runtime_context.lease_ttl_seconds)))
+        self.joint_service_key_prefix = 'dayu:dag:joint_service'
+        if barrier_store is not None:
+            self.barrier_store = barrier_store
+            self.redis = barrier_store.redis
+            self.pool = getattr(barrier_store, 'pool', None)
+            return
         endpoint = RuntimeEndpoint.from_value(redis_endpoint, component="redis") if redis_endpoint else None
         endpoint = endpoint or RuntimeResolver(runtime_context).resolve(
             "redis", target_node=runtime_context.cloud_node or None
@@ -42,10 +40,14 @@ return redis.call('HGETALL', key)
             max_connections=self.max_connections,
         )
         self.redis = redis.Redis(connection_pool=self.pool)
-        self.joint_service_key_prefix = 'dayu:dag:joint_service'
+        self.barrier_store = TaskBarrierStore(
+            self.redis,
+            ttl_seconds=self.storage_timeout,
+            key_prefix=self.joint_service_key_prefix,
+        )
 
     def _get_joint_service_key(self, root_uuid, joint_service_name):
-        return f"{self.joint_service_key_prefix}:{root_uuid}:{joint_service_name}"
+        return self.barrier_store.key(root_uuid, joint_service_name)
 
     def arrive(self, task, joint_service_name, required_count):
         """Idempotently retain one predecessor and return a ready barrier.
@@ -59,16 +61,14 @@ return redis.call('HGETALL', key)
         if not branch:
             raise TaskCoordinationError("parallel task has no predecessor identity")
         try:
-            result = self.redis.eval(
-                self._ARRIVE_SCRIPT,
-                1,
-                self._get_joint_service_key(task.get_root_uuid(), joint_service_name),
+            result = self.barrier_store.arrive(
+                task.get_root_uuid(),
+                joint_service_name,
                 branch,
                 task.serialize(),
-                self.storage_timeout,
                 required_count,
             )
-        except Exception as exc:
+        except TaskBarrierError as exc:
             raise TaskCoordinationError(f"failed to retain parallel task: {exc}") from exc
 
         if not result:
@@ -100,6 +100,6 @@ return redis.call('HGETALL', key)
     def complete(self, root_uuid, joint_service_name):
         """Commit a barrier only after its merged task is owned downstream."""
         try:
-            self.redis.delete(self._get_joint_service_key(root_uuid, joint_service_name))
-        except Exception as exc:
+            self.barrier_store.complete(root_uuid, joint_service_name)
+        except TaskBarrierError as exc:
             raise TaskCoordinationError(f"failed to complete parallel task barrier: {exc}") from exc

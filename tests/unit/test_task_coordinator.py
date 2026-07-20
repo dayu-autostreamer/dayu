@@ -3,7 +3,7 @@ import importlib
 import pytest
 
 from core.lib.content import Task
-from core.lib.runtime import RuntimeContext
+from core.lib.runtime import RuntimeContext, TaskBarrierStore
 
 
 def build_join_task(past_flow_index, current_flow_index="join", root_uuid="root-task-0", value=None):
@@ -68,14 +68,20 @@ class FakeRedis:
         self.deleted.append(storage_key)
         self.storage.pop(storage_key, None)
 
+    def hkeys(self, storage_key):
+        return list(self.storage.get(storage_key, {}))
+
+    def ttl(self, storage_key):
+        return self.expiry.get(storage_key, -2)
+
 
 def build_coordinator(redis_client, storage_timeout=3600):
     module = importlib.import_module("core.controller.task_coordinator")
-    coordinator = object.__new__(module.TaskCoordinator)
-    coordinator.redis = redis_client
-    coordinator.storage_timeout = storage_timeout
-    coordinator.joint_service_key_prefix = "dayu:dag:joint_service"
-    return coordinator
+    runtime_context = RuntimeContext({"lease_ttl_seconds": storage_timeout})
+    return module.TaskCoordinator(
+        runtime_context=runtime_context,
+        barrier_store=TaskBarrierStore(redis_client, ttl_seconds=storage_timeout),
+    )
 
 
 @pytest.mark.unit
@@ -115,6 +121,43 @@ def test_ready_barrier_is_retained_until_downstream_completion():
 
     assert storage_key not in redis_client.storage
     assert redis_client.deleted == [storage_key]
+
+
+@pytest.mark.unit
+def test_barrier_store_reports_only_exact_requested_active_barriers():
+    redis_client = FakeRedis()
+    store = TaskBarrierStore(redis_client, ttl_seconds=3600)
+    coordinator = build_coordinator(redis_client)
+    left = build_join_task("detector-a")
+    right = build_join_task("detector-b")
+
+    assert coordinator.arrive(left, "join", 2) is None
+    waiting = store.snapshot([{
+        "root_uuid": left.get_root_uuid(),
+        "barrier": "join",
+        "expected_branches": ["detector-a", "detector-b"],
+    }])
+    assert waiting == [{
+        "root_uuid": left.get_root_uuid(),
+        "barrier": "join",
+        "arrived_branches": ["detector-a"],
+        "expected_branches": ["detector-a", "detector-b"],
+        "required_count": 2,
+        "ready": False,
+        "expires_in_seconds": 3600,
+    }]
+
+    assert coordinator.arrive(right, "join", 2)
+    assert store.snapshot([{
+        "root_uuid": left.get_root_uuid(),
+        "barrier": "join",
+        "expected_branches": ["detector-a", "detector-b"],
+    }])[0]["ready"] is True
+    assert store.snapshot([{
+        "root_uuid": "unknown-root",
+        "barrier": "join",
+        "expected_branches": ["detector-a", "detector-b"],
+    }]) == []
 
 
 @pytest.mark.unit

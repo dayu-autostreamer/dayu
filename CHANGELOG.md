@@ -21,10 +21,10 @@ no longer ship the Kubernetes Python client or accept legacy discovery/cache con
 - Change the Generator hook lifecycle to filter an ingestion round, reserve its root task identity, schedule when due,
   and only then materialize source data (`generator`/`scheduler`).
 - Add task-aware scheduling contracts with framework-reserved `TaskIdentity`, identity-attributed schedule decisions,
-  canonical plan digests, acquire-time task commitments, and a mutation-safe Scheduler snapshot of resources and active
-  commitments (`generator`/`scheduler`).
-- Replace queue length with structured queue state monitor contract covering both waiting and running work (`processor`/
-  `monitor`/`scheduler`).
+  canonical plan digests, idempotent Redis-backed pending-to-active task admission records, and a common Scheduler
+  snapshot of resources, reservations, active tasks, and known task barriers (`generator`/`controller`/`scheduler`).
+- Replace queue length with an atomic structured queue-state contract covering ordered waiting identities, running
+  identity, and processing/handoff phase (`processor`/`monitor`/`scheduler`).
 
 ### Bug Fix
 
@@ -51,7 +51,7 @@ no longer ship the Kubernetes Python client or accept legacy discovery/cache con
 - Preserve Scheduler management rejection details through Backend RuntimeSession state and frontend presentation, and
   emit bounded Scheduler 4xx diagnostics without logging complete request payloads.
 - Prevent schedule-plan corruption by isolating after-schedule hook mutations, and fix before-submit hooks
-  to operate on the task passed by the Generator instead of an undefined Generator field (`scheudler`).
+  to operate on the task passed by the Generator instead of an undefined Generator field (`scheduler`).
 
 ### Minor Update
 

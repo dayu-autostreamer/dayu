@@ -1,6 +1,7 @@
 import importlib
 import gzip
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +44,25 @@ class FakeScheduler:
         self.resource_table = {}
         self.resource_locks = {}
         self.scenario_tasks = []
+        self.reservations = []
+
+    @staticmethod
+    def schedule_transaction():
+        return nullcontext()
+
+    def reserve_task_context(self, revision, root_uuid, context, ttl_seconds=None):
+        for existing in self.reservations:
+            if existing[0:2] == (revision, root_uuid):
+                assert existing[2] == context
+                return existing[2]
+        self.reservations.append((revision, root_uuid, context, ttl_seconds))
+        return context
+
+    def get_task_reservation(self, revision, root_uuid, task_context=None):
+        for existing_revision, existing_root, context, _ in self.reservations:
+            if (existing_revision, existing_root) == (revision, root_uuid):
+                return dict(context)
+        return None
 
     def register_schedule_table(self, source_id):
         return None
@@ -308,6 +328,30 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert decision["root_uuid"] == "root-11"
         assert decision["decision_id"]
         assert decision["plan_digest"]
+        assert server.scheduler.reservations[0][0:2] == (3, "root-11")
+        assert server.scheduler.reservations[0][2]["plan_digest"] == decision["plan_digest"]
+
+        retry_response = client.request(
+            "GET",
+            "/schedule",
+            data={"data": json.dumps(payload)},
+        )
+        assert retry_response.status_code == 200
+        assert retry_response.json()["schedule_decision"] == decision
+        assert len(server.scheduler.schedule_calls) == 1
+        assert len(server.scheduler.reservations) == 1
+
+        legacy_payload = dict(payload)
+        legacy_payload.pop("task_context")
+        legacy_response = client.request(
+            "GET",
+            "/schedule",
+            data={"data": json.dumps(legacy_payload)},
+        )
+        assert legacy_response.status_code == 200
+        assert legacy_response.json()["schedule_decision"]["root_uuid"] == ""
+        assert len(server.scheduler.schedule_calls) == 2
+        assert len(server.scheduler.reservations) == 1
 
         assert client.get("/overhead").json() == 0.0123
 
@@ -661,8 +705,11 @@ def test_processor_server_exposes_queue_processing_and_return_contract(mounted_r
         assert sequence >= 1
         assert queue_state == {
             "waiting_count": 0,
+            "waiting_tasks": [],
             "busy": False,
             "running_elapsed_s": 0.0,
+            "running_phase": None,
+            "phase_elapsed_s": 0.0,
             "capacity": 1,
             "running_task": None,
         }

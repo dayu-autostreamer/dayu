@@ -231,6 +231,8 @@ class FakeTaskLeaseRedis:
         self.active_revision = active_revision
         self.leases = {}
         self.retirements = {}
+        self.contexts = {}
+        self.reservations = {}
 
     @staticmethod
     def _revision(key):
@@ -238,10 +240,24 @@ class FakeTaskLeaseRedis:
         return int(parts[-2] if parts[-1] == "retirement" else parts[-1])
 
     def _prune(self, revision, now):
+        expired = {
+            member
+            for member, expiry in self.leases.get(revision, {}).items()
+            if expiry <= now
+        }
         self.leases[revision] = {
             member: expiry
             for member, expiry in self.leases.get(revision, {}).items()
             if expiry > now
+        }
+        for member in expired:
+            self.contexts.pop(member, None)
+
+    def _prune_reservations(self, now):
+        self.reservations = {
+            member: record
+            for member, record in self.reservations.items()
+            if record["expires_at"] > now
         }
 
     def _status(self, revision, now):
@@ -253,6 +269,8 @@ class FakeTaskLeaseRedis:
                 if expiry >= retirement["deadline"]
             }
             retirement["revoked_count"] += len(self.leases.get(revision, {}))
+            for member in self.leases.get(revision, {}):
+                self.contexts.pop(member, None)
             self.leases[revision] = {}
             retirement["retired"] = True
         elif not (retirement and retirement["retired"]):
@@ -267,21 +285,82 @@ class FakeTaskLeaseRedis:
     def eval(self, script, key_count, *values):
         keys = values[:key_count]
         args = values[key_count:]
-        revision = self._revision(keys[-1] if script == RedisTaskLeaseStore._ACQUIRE_SCRIPT else keys[0])
-        if script == RedisTaskLeaseStore._ACQUIRE_SCRIPT:
-            assert key_count == 3
+        if script == RedisTaskLeaseStore._RESERVE_SCRIPT:
+            assert key_count == 5
             assert keys[0].endswith(":active")
-            requested, now, expiry, member, _ttl = args
+            revision = self._revision(keys[1])
+            requested, now, expiry, member, context = args
             retirement = self.retirements.get(revision)
             if retirement:
                 return [1, str(retirement["deadline"])]
             if self.active_revision != int(requested):
                 return [0, str(self.active_revision)]
-            self._prune(revision, float(now))
-            self.leases.setdefault(revision, {})[str(member)] = float(expiry)
+            now = float(now)
+            self._prune_reservations(now)
+            member = str(member)
+            if member in self.contexts:
+                return [4, ""]
+            previous = self.reservations.get(member)
+            if previous is not None:
+                previous_context = json.loads(previous["context"])
+                if int(previous_context["runtime_directory_revision"]) != int(requested):
+                    self.reservations.pop(member, None)
+                    previous = None
+            if previous is not None and previous["context"] != context:
+                return [3, previous["raw"]]
+            reserved_at = previous["reserved_at"] if previous else now
+            raw = json.dumps({"context": context, "reserved_at": reserved_at})
+            self.reservations[member] = {
+                "context": context,
+                "reserved_at": reserved_at,
+                "expires_at": float(expiry),
+                "raw": raw,
+            }
+            return [2, str(expiry), str(reserved_at)]
+        if script == RedisTaskLeaseStore._ACQUIRE_SCRIPT:
+            assert key_count == 6
+            assert keys[0].endswith(":active")
+            revision = self._revision(keys[2])
+            requested, now, expiry, member, _ttl, context = args
+            retirement = self.retirements.get(revision)
+            if retirement:
+                return [1, str(retirement["deadline"])]
+            if self.active_revision != int(requested):
+                return [0, str(self.active_revision)]
+            now = float(now)
+            member = str(member)
+            self._prune(revision, now)
+            self._prune_reservations(now)
+            previous = self.contexts.get(member)
+            if previous is not None and previous["context"] != context:
+                return [3, previous["raw"]]
+            reservation = self.reservations.get(member)
+            if reservation is not None:
+                expected = json.loads(reservation["context"])
+                actual = json.loads(context)
+                for field in (
+                    "source_id",
+                    "task_id",
+                    "decision_id",
+                    "plan_digest",
+                    "deployment_version",
+                ):
+                    if expected.get(field) not in (None, ""):
+                        if str(expected[field]) != str(actual.get(field)):
+                            return [4, reservation["raw"]]
+            if previous is None:
+                raw = json.dumps({"context": context, "admitted_at": now})
+                self.contexts[member] = {
+                    "context": context,
+                    "admitted_at": now,
+                    "raw": raw,
+                }
+            self.leases.setdefault(revision, {})[member] = float(expiry)
+            self.reservations.pop(member, None)
             return [2, str(expiry)]
         if script == RedisTaskLeaseStore._RENEW_SCRIPT:
-            assert key_count == 3
+            assert key_count == 4
+            revision = self._revision(keys[0])
             assert keys[2].endswith(":active")
             member, now, expiry, _ttl, requested_revision = args
             if (
@@ -299,12 +378,17 @@ class FakeTaskLeaseRedis:
             self.leases[revision][str(member)] = float(expiry)
             return [1, str(expiry)]
         if script == RedisTaskLeaseStore._RELEASE_SCRIPT:
+            assert key_count == 3
+            revision = self._revision(keys[0])
             member, now = args
             self._prune(revision, float(now))
             if self.leases.get(revision, {}).pop(str(member), None) is not None:
+                self.contexts.pop(str(member), None)
                 return 1
             return 2 if revision in self.retirements else 0
         if script == RedisTaskLeaseStore._RETIRE_SCRIPT:
+            assert key_count == 3
+            revision = self._revision(keys[0])
             now, deadline = map(float, args)
             retirement = self.retirements.setdefault(revision, {
                 "deadline": deadline,
@@ -314,6 +398,8 @@ class FakeTaskLeaseRedis:
             retirement["deadline"] = min(retirement["deadline"], deadline)
             if retirement["deadline"] <= now and not retirement["retired"]:
                 retirement["revoked_count"] += len(self.leases.get(revision, {}))
+                for member in self.leases.get(revision, {}):
+                    self.contexts.pop(member, None)
                 self.leases[revision] = {}
                 retirement["retired"] = True
             elif not retirement["retired"]:
@@ -324,8 +410,35 @@ class FakeTaskLeaseRedis:
                 }
             return json.dumps(self._status(revision, now))
         if script == RedisTaskLeaseStore._STATUS_SCRIPT:
+            assert key_count == 3
+            revision = self._revision(keys[0])
             return json.dumps(self._status(revision, float(args[0])))
         raise AssertionError("unexpected task lease Lua script")
+
+    def hgetall(self, key):
+        if key.endswith(":reservation-contexts"):
+            return {member: record["raw"] for member, record in self.reservations.items()}
+        if key.endswith(":contexts"):
+            return {member: record["raw"] for member, record in self.contexts.items()}
+        raise AssertionError(f"unexpected task lease hash: {key}")
+
+    def hdel(self, key, *members):
+        target = self.reservations if key.endswith(":reservation-contexts") else self.contexts
+        for member in members:
+            target.pop(str(member), None)
+
+    def zscore(self, key, member):
+        member = str(member)
+        if key.endswith(":reservations"):
+            record = self.reservations.get(member)
+            return None if record is None else record["expires_at"]
+        return self.leases.get(self._revision(key), {}).get(member)
+
+    def zrem(self, key, *members):
+        if not key.endswith(":reservations"):
+            raise AssertionError(f"unexpected task lease zset: {key}")
+        for member in members:
+            self.reservations.pop(str(member), None)
 
 
 @pytest.mark.unit
@@ -438,6 +551,100 @@ def test_task_lease_retirement_is_bounded_and_idempotent():
     with pytest.raises(TaskLeaseRetired, match="deadline 115.0"):
         leases.renew(3, "task-a")
     assert leases.release(3, "task-a")["already_released"] is True
+
+
+@pytest.mark.unit
+def test_task_context_reservation_promotes_atomically_and_expires_without_admission():
+    now = [100.0]
+    leases = InMemoryTaskLeaseStore(clock=lambda: now[0])
+    reserved = {
+        "source_id": 3,
+        "task_id": 7,
+        "root_uuid": "root-7",
+        "runtime_directory_revision": 2,
+        "decision_id": "decision-7",
+        "plan_digest": "digest-7",
+        "deployment_version": 4,
+        "plan": {"dag": {}},
+    }
+
+    leases.reserve(2, "root-7", reserved, active_revision=2, ttl_seconds=10)
+    assert leases.list_reservations()[0]["status"] == "pending"
+    with pytest.raises(RuntimeDirectoryConflict, match="does not match"):
+        leases.acquire(
+            2,
+            "root-7",
+            active_revision=2,
+            context={
+                **reserved,
+                "plan_digest": "changed",
+            },
+        )
+    assert len(leases.list_reservations()) == 1
+
+    with pytest.raises(RuntimeDirectoryConflict, match="does not match"):
+        leases.acquire(
+            2,
+            "root-7",
+            active_revision=2,
+            context={
+                **reserved,
+                "deployment_version": 5,
+            },
+        )
+    assert len(leases.list_reservations()) == 1
+
+    admitted_context = {
+        key: value for key, value in reserved.items() if key != "plan"
+    }
+    leases.acquire(
+        2,
+        "root-7",
+        active_revision=2,
+        ttl_seconds=20,
+        context=admitted_context,
+    )
+    assert leases.list_reservations() == []
+    assert leases.list_active()[0]["decision_id"] == "decision-7"
+    with pytest.raises(RuntimeDirectoryConflict, match="already admitted"):
+        leases.reserve(
+            2,
+            "root-7",
+            admitted_context,
+            active_revision=2,
+        )
+    with pytest.raises(RuntimeDirectoryConflict, match="already admitted"):
+        leases.reserve(
+            3,
+            "root-7",
+            {**admitted_context, "runtime_directory_revision": 3},
+            active_revision=3,
+        )
+
+    leases.reserve(
+        2,
+        "root-never-admitted",
+        {"root_uuid": "root-never-admitted"},
+        active_revision=2,
+        ttl_seconds=5,
+    )
+    now[0] = 106.0
+    assert leases.list_reservations() == []
+
+    leases.reserve(
+        2,
+        "root-reused-after-rollout",
+        {"root_uuid": "root-reused-after-rollout", "plan_digest": "old"},
+        active_revision=2,
+    )
+    replacement = leases.reserve(
+        3,
+        "root-reused-after-rollout",
+        {"root_uuid": "root-reused-after-rollout", "plan_digest": "new"},
+        active_revision=3,
+    )
+    assert replacement["runtime_directory_revision"] == 3
+    assert replacement["plan_digest"] == "new"
 
 
 @pytest.mark.unit
@@ -778,6 +985,55 @@ def test_redis_task_lease_retirement_survives_restart_and_checks_active_atomical
     with pytest.raises(TaskLeaseRetired, match="revision 3"):
         restarted.renew(3, "task-a")
     assert restarted.release(3, "task-a")["already_released"] is True
+
+
+@pytest.mark.unit
+def test_redis_task_context_records_survive_scheduler_restart():
+    now = [100.0]
+    redis = FakeTaskLeaseRedis(active_revision=3)
+    first = RedisTaskLeaseStore(redis, install_id="test", clock=lambda: now[0])
+    context = {
+        "source_id": 5,
+        "task_id": 9,
+        "root_uuid": "root-9",
+        "runtime_directory_revision": 3,
+        "decision_id": "decision-9",
+        "plan_digest": "digest-9",
+        "deployment_version": 4,
+    }
+
+    first.reserve(3, "root-9", context, active_revision=3, ttl_seconds=20)
+    restarted = RedisTaskLeaseStore(redis, install_id="test", clock=lambda: now[0])
+    assert restarted.list_reservations()[0]["root_uuid"] == "root-9"
+
+    with pytest.raises(RuntimeDirectoryConflict, match="does not match"):
+        restarted.acquire(
+            3,
+            "root-9",
+            active_revision=3,
+            ttl_seconds=30,
+            context={**context, "deployment_version": 5},
+        )
+
+    restarted.acquire(
+        3,
+        "root-9",
+        active_revision=3,
+        ttl_seconds=30,
+        context=context,
+    )
+    second_restart = RedisTaskLeaseStore(redis, install_id="test", clock=lambda: now[0])
+    assert second_restart.list_reservations() == []
+    assert second_restart.list_active()[0]["decision_id"] == "decision-9"
+    with pytest.raises(RuntimeDirectoryConflict, match="already admitted"):
+        second_restart.reserve(
+            3,
+            "root-9",
+            context,
+            active_revision=3,
+        )
+    second_restart.release(3, "root-9")
+    assert second_restart.list_active() == []
 
 
 @pytest.mark.unit

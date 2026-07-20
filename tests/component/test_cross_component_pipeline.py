@@ -2,6 +2,7 @@ import copy
 import importlib
 import json
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -78,6 +79,25 @@ class FakeScheduler:
         self.resource_updates = []
         self.leases = set()
         self.lease_operations = []
+        self.reservations = []
+
+    @staticmethod
+    def schedule_transaction():
+        return nullcontext()
+
+    def reserve_task_context(self, revision, root_uuid, context, ttl_seconds=None):
+        for existing in self.reservations:
+            if existing[0:2] == (revision, root_uuid):
+                assert existing[2] == context
+                return existing[2]
+        self.reservations.append((revision, root_uuid, copy.deepcopy(context)))
+        return context
+
+    def get_task_reservation(self, revision, root_uuid, task_context=None):
+        for existing_revision, existing_root, context in self.reservations:
+            if (existing_revision, existing_root) == (revision, root_uuid):
+                return copy.deepcopy(context)
+        return None
 
     def register_schedule_table(self, source_id):
         return None

@@ -272,6 +272,7 @@ def test_task_preserves_root_schedule_commitment_across_forks_and_serialization(
     task.set_created_at(123.5)
     task.set_schedule_decision_id("decision-1")
     task.set_schedule_plan_digest("digest-1")
+    task.set_deployment_version(11)
     task.set_runtime_directory_revision(7)
 
     branch = task.step_to_next_stage()[0]
@@ -284,6 +285,7 @@ def test_task_preserves_root_schedule_commitment_across_forks_and_serialization(
     assert commitment["root_uuid"] == task.get_root_uuid()
     assert commitment["task_uuid"] == branch.get_task_uuid()
     assert commitment["runtime_directory_revision"] == 7
+    assert commitment["deployment_version"] == 11
     assert commitment["decision_id"] == "decision-1"
     assert commitment["plan_digest"] == "digest-1"
     commitment["metadata"]["buffer_size"] = 99
