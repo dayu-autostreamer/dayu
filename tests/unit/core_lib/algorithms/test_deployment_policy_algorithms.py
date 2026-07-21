@@ -162,18 +162,22 @@ def test_initial_and_redeployment_policies_cover_full_random_and_non_redeploymen
     assert bounded_plan == {"detector": ["edge-a"], "tracker": ["edge-a"]}
     assert any("cannot be deployed" in message for message in warnings)
 
+    current_deployment = {"value": {"detector": ["edge-a"]}}
     runtime_system = SimpleNamespace(
         cloud_device="cloud-a",
-        runtime_service_nodes=lambda: {"detector": ["edge-a"]}
+        runtime_service_nodes=lambda: current_deployment["value"],
     )
     non_policy = non_redeployment_module.NonRedeploymentPolicy(runtime_system, 0)
     with pytest.raises(ValueError, match="omitted current DAG services"):
         non_policy(info)
 
-    runtime_system.runtime_service_nodes = lambda: {
-        "detector": ["edge-a"], "tracker": ["cloud-a"], "unused-service": ["edge-a"],
+    # Non-redeployment must read the active directory at call time. Agents are
+    # commonly constructed before the initial Processor deployment exists.
+    current_deployment["value"] = {
+        "detector": ["edge-a", "edge-c"],
+        "tracker": ["cloud-a"],
+        "unused-service": ["edge-a"],
     }
-    non_policy = non_redeployment_module.NonRedeploymentPolicy(runtime_system, 0)
     assert non_policy(info) == {"detector": ["edge-a"], "tracker": ["cloud-a"]}
 
     assert cloud_initial_module.CloudInitialDeploymentPolicy(runtime_system, 0)(info) == {
@@ -183,10 +187,11 @@ def test_initial_and_redeployment_policies_cover_full_random_and_non_redeploymen
         "detector": ["cloud-a"], "tracker": ["cloud-a"],
     }
 
-    with pytest.raises(RuntimeError, match="runtime directory deployment is not initialized"):
-        non_redeployment_module.NonRedeploymentPolicy(
-            SimpleNamespace(runtime_service_nodes=lambda: None), 0
-        )
+    uninitialized_policy = non_redeployment_module.NonRedeploymentPolicy(
+        SimpleNamespace(runtime_service_nodes=lambda: None), 0
+    )
+    with pytest.raises(ValueError, match="current runtime deployment is not initialized"):
+        uninitialized_policy(info)
 
 
 @pytest.mark.unit

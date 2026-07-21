@@ -50,7 +50,9 @@ class FragSpliceLatencyModel:
     counting the same content variation twice.
     """
 
-    PROFILE_VERSION = 2
+    PROFILE_VERSION = 3
+    PROFILE_METRIC = "real_execute_time_seconds"
+    PROFILE_CONTEXT_FIELDS = ("configuration", "deployment", "dag")
     _SAVE_LOCK = threading.Lock()
 
     def __init__(self, profile=None, history_size=128, drift_alpha=0.15):
@@ -62,9 +64,168 @@ class FragSpliceLatencyModel:
         )
         self._pair_log_drift = defaultdict(dict)
         self._task_residuals = defaultdict(lambda: deque(maxlen=self.history_size))
+        self._profile_context = None
         self._lock = threading.RLock()
         if profile:
             self.load(profile)
+
+    @staticmethod
+    def _normalize_configuration(configuration):
+        if not isinstance(configuration, dict):
+            raise TypeError("FragSplice profile configuration must be a mapping")
+        try:
+            return json.loads(json.dumps(
+                configuration,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+            ))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "FragSplice profile configuration must be JSON serializable"
+            ) from exc
+
+    @staticmethod
+    def _normalize_deployment(deployment):
+        if not isinstance(deployment, dict):
+            raise TypeError("FragSplice profile deployment must be a mapping")
+        normalized = {}
+        for service, raw_devices in sorted(deployment.items(), key=lambda item: str(item[0])):
+            if isinstance(raw_devices, str):
+                raw_devices = [raw_devices]
+            if not isinstance(raw_devices, (list, tuple, set)):
+                raise TypeError(
+                    f"FragSplice profile deployment for {service!r} must be a node list"
+                )
+            normalized[str(service)] = sorted({
+                str(device).strip()
+                for device in raw_devices
+                if str(device).strip()
+            })
+        return normalized
+
+    @staticmethod
+    def _normalize_dag(dag):
+        converter = getattr(dag, "to_dict", None)
+        if callable(converter):
+            dag = converter()
+        if not isinstance(dag, dict):
+            raise TypeError("FragSplice profile DAG must be a mapping")
+        normalized = {}
+        for raw_name, raw_node in sorted(dag.items(), key=lambda item: str(item[0])):
+            name = str(raw_name)
+            node = raw_node if isinstance(raw_node, dict) else {}
+            service = node.get("service")
+            service = service if isinstance(service, dict) else {}
+            service_name = node.get(
+                "service_name",
+                service.get("service_name", name),
+            )
+            normalized[name] = {
+                "service_name": str(service_name),
+                "prev_nodes": sorted(str(item) for item in node.get("prev_nodes", [])),
+                "next_nodes": sorted(str(item) for item in node.get("next_nodes", [])),
+            }
+        return normalized
+
+    @classmethod
+    def build_profile_context(cls, configuration, deployment, dag):
+        return {
+            "configuration": cls._normalize_configuration(configuration),
+            "deployment": cls._normalize_deployment(deployment),
+            "dag": cls._normalize_dag(dag),
+        }
+
+    @classmethod
+    def _normalize_profile_context(cls, context):
+        if not isinstance(context, dict):
+            raise ValueError("FragSplice latency profile has no valid context")
+        missing = [field for field in cls.PROFILE_CONTEXT_FIELDS if field not in context]
+        if missing:
+            raise ValueError(
+                "FragSplice latency profile context is incomplete: "
+                + ", ".join(missing)
+            )
+        return cls.build_profile_context(
+            context["configuration"],
+            context["deployment"],
+            context["dag"],
+        )
+
+    @classmethod
+    def validate_profile_context(cls, profile, configuration):
+        """Reject persisted profiles that predate or mismatch strict context."""
+        if not profile:
+            return None
+        if profile.get("version") != cls.PROFILE_VERSION:
+            raise ValueError(
+                f"FragSplice latency profile version {profile.get('version')!r} is not "
+                f"compatible with strict context version {cls.PROFILE_VERSION}; "
+                "collect a new cold profile"
+            )
+        if profile.get("metric") != cls.PROFILE_METRIC:
+            raise ValueError(
+                "FragSplice latency profile metric must be "
+                f"{cls.PROFILE_METRIC!r}"
+            )
+        context = cls._normalize_profile_context(profile.get("context"))
+        expected = cls._normalize_configuration(configuration)
+        if context["configuration"] != expected:
+            raise ValueError(
+                "FragSplice latency profile context mismatch for configuration"
+            )
+        return context
+
+    def ensure_profile_context(
+        self,
+        configuration=None,
+        deployment=None,
+        dag=None,
+        require_complete=False,
+    ):
+        supplied = {}
+        if configuration is not None:
+            supplied["configuration"] = self._normalize_configuration(configuration)
+        if deployment is not None:
+            supplied["deployment"] = self._normalize_deployment(deployment)
+        if dag is not None:
+            supplied["dag"] = self._normalize_dag(dag)
+
+        with self._lock:
+            if self._profile_context is None:
+                self._profile_context = {}
+            for field, expected in supplied.items():
+                actual = self._profile_context.get(field)
+                if actual is not None and actual != expected:
+                    raise ValueError(
+                        f"FragSplice latency profile context mismatch for {field}"
+                    )
+                self._profile_context[field] = copy.deepcopy(expected)
+            if require_complete:
+                missing = [
+                    field for field in self.PROFILE_CONTEXT_FIELDS
+                    if field not in self._profile_context
+                ]
+                if missing:
+                    raise ValueError(
+                        "FragSplice latency profile context is not initialized: "
+                        + ", ".join(missing)
+                    )
+            return copy.deepcopy(self._profile_context)
+
+    def _ensure_pair_in_context(self, service, device):
+        if self._profile_context is None:
+            return
+        deployment = self._profile_context.get("deployment")
+        if deployment is None:
+            return
+        service = str(service)
+        device = str(device)
+        if device not in deployment.get(service, []):
+            raise ValueError(
+                "FragSplice latency profile contains a sample outside its "
+                f"deployment context: {service}@{device}"
+            )
 
     @staticmethod
     def _pair_samples(value):
@@ -93,10 +254,15 @@ class FragSpliceLatencyModel:
         if not isinstance(pairs, dict):
             raise TypeError("FragSplice profile pairs must be a mapping")
         with self._lock:
+            if profile.get("context") is not None:
+                self._profile_context = self._normalize_profile_context(
+                    profile["context"]
+                )
             for service, devices in pairs.items():
                 if not isinstance(devices, dict):
                     continue
                 for device, value in devices.items():
+                    self._ensure_pair_in_context(service, device)
                     for sample in self._pair_samples(value):
                         self._samples[str(service)][str(device)].append(sample)
             handoffs = profile.get("handoff_pairs", {})
@@ -105,6 +271,7 @@ class FragSpliceLatencyModel:
                     if not isinstance(devices, dict):
                         continue
                     for device, value in devices.items():
+                        self._ensure_pair_in_context(service, device)
                         for sample in self._pair_samples(value):
                             self._handoff_samples[str(service)][str(device)].append(sample)
             drifts = profile.get("pair_log_drift", {})
@@ -113,6 +280,7 @@ class FragSpliceLatencyModel:
                     if not isinstance(devices, dict):
                         continue
                     for device, value in devices.items():
+                        self._ensure_pair_in_context(service, device)
                         try:
                             value = float(value)
                         except (TypeError, ValueError):
@@ -141,6 +309,7 @@ class FragSpliceLatencyModel:
         if duration is None:
             return False
         with self._lock:
+            self._ensure_pair_in_context(service, device)
             self._samples[str(service)][str(device)].append(duration)
             handoff = _non_negative(handoff)
             if handoff is not None:
@@ -274,6 +443,7 @@ class FragSpliceLatencyModel:
                 device = str(service.get_execute_device() or "")
                 if duration is None or not device:
                     continue
+                self._ensure_pair_in_context(service_name, device)
                 if not self._samples[str(service_name)][device]:
                     self._samples[str(service_name)][device].append(duration)
                 base = self._base_estimate(service_name, device, 0.5)
@@ -330,6 +500,7 @@ class FragSpliceLatencyModel:
                 device = str(service.get_execute_device() or "")
                 if duration is None or not device:
                     continue
+                self._ensure_pair_in_context(service_name, device)
                 baseline = self.estimate(service_name, device, 0.5)
                 residual[str(service_name)] = math.log(
                     duration / max(baseline, 1e-9)
@@ -341,6 +512,10 @@ class FragSpliceLatencyModel:
         return True
 
     def to_profile(self, deployment=None, cold_progress=None):
+        context = self.ensure_profile_context(
+            deployment=deployment,
+            require_complete=True,
+        )
         with self._lock:
             pairs = {}
             for service, devices in sorted(self._samples.items()):
@@ -383,8 +558,9 @@ class FragSpliceLatencyModel:
             }
         payload = {
             "version": self.PROFILE_VERSION,
-            "metric": "real_execute_time_seconds",
-            "deployment": copy.deepcopy(deployment or {}),
+            "metric": self.PROFILE_METRIC,
+            "context": context,
+            "deployment": copy.deepcopy(context["deployment"]),
             "pairs": pairs,
             "handoff_pairs": handoffs,
             "pair_log_drift": drifts,

@@ -64,6 +64,10 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
                     self.profile_path,
                     exc,
                 )
+        profile_context = FragSpliceLatencyModel.validate_profile_context(
+            profile,
+            self.configuration,
+        )
         seen = self._load_progress(profile.get("cold_progress"), profile)
         revision_getter = getattr(system, "runtime_directory_revision", None)
         revision = revision_getter() if callable(revision_getter) else 0
@@ -74,6 +78,15 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
             profile=profile,
             seen=seen,
         )
+        if profile_context is not None:
+            self._state.model.ensure_profile_context(
+                **profile_context,
+                require_complete=True,
+            )
+        else:
+            self._state.model.ensure_profile_context(
+                configuration=self.configuration,
+            )
         self.overhead_estimator = OverheadEstimator(
             "FragSpliceColdSample", "scheduler/fragsplice", agent_id=agent_id
         )
@@ -135,6 +148,8 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
         if deployment is None:
             deployment = self.system.runtime_service_nodes()
         current = self._normalize_deployment(deployment)
+        if current:
+            self._state.model.ensure_profile_context(deployment=current)
         if current != self._state.deployment:
             self._state.deployment = current
             for service, devices in current.items():
@@ -204,6 +219,12 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
             )
             planned = self._planned_pair_counts(snapshot)
             dag = copy.deepcopy(info["dag"])
+            self._state.model.ensure_profile_context(
+                configuration=self.configuration,
+                deployment=self._state.deployment,
+                dag=dag,
+                require_complete=True,
+            )
             for service in dag:
                 if service == TaskConstant.START.value:
                     device = str(info.get("source_device") or "")
@@ -219,7 +240,17 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
 
     def update_task(self, task):
         with self._state.lock:
-            self._refresh_deployment()
+            deployment_getter = getattr(task, "get_deployment", None)
+            deployment = deployment_getter() if callable(deployment_getter) else None
+            self._refresh_deployment(
+                deployment if isinstance(deployment, dict) and deployment else None
+            )
+            self._state.model.ensure_profile_context(
+                configuration=self.configuration,
+                deployment=self._state.deployment,
+                dag=task.get_dag(),
+                require_complete=True,
+            )
             recorded = 0
             progressed = 0
             for service_name in task.get_dag().nodes:

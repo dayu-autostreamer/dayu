@@ -66,7 +66,7 @@ def test_fragsplice_hooks_are_registered():
 
 
 @pytest.mark.unit
-def test_fragsplice_templates_share_fixed_deployment_and_profile_mount():
+def test_fragsplice_templates_share_fixed_initial_deployment_and_disable_redeployment():
     root = Path(__file__).resolve().parents[4]
 
     def load_template(name):
@@ -85,22 +85,21 @@ def test_fragsplice_templates_share_fixed_deployment_and_profile_mount():
     cold_initial = ast.literal_eval(
         cold_env["SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS"]
     )
-    cold_redeployment = ast.literal_eval(
-        cold_env["SCH_REDEPLOYMENT_POLICY_PARAMETERS"]
-    )
     main_initial = ast.literal_eval(
         main_env["SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS"]
-    )
-    main_redeployment = ast.literal_eval(
-        main_env["SCH_REDEPLOYMENT_POLICY_PARAMETERS"]
     )
     cold_agent = ast.literal_eval(cold_env["SCH_AGENT_PARAMETERS"])
     main_agent = ast.literal_eval(main_env["SCH_AGENT_PARAMETERS"])
 
     assert cold_env["SCH_AGENT_NAME"] == "fragsplice_cold_sample"
     assert main_env["SCH_AGENT_NAME"] == "fragsplice"
-    assert cold_initial == cold_redeployment == main_initial == main_redeployment
+    assert cold_initial == main_initial
+    assert cold_env["SCH_REDEPLOYMENT_POLICY_NAME"] == "non"
+    assert main_env["SCH_REDEPLOYMENT_POLICY_NAME"] == "non"
+    assert "SCH_REDEPLOYMENT_POLICY_PARAMETERS" not in cold_env
+    assert "SCH_REDEPLOYMENT_POLICY_PARAMETERS" not in main_env
     assert cold_agent["profile_path"] == main_agent["latency_profile"]
+    assert cold_agent["configuration"] == main_agent["configuration"]
     assert cold["file-mount"] == main["file-mount"] == [{
         "pos": "cloud",
         "path": "scheduler/fragsplice/",
@@ -691,23 +690,33 @@ class FakeService:
 
 
 class FakeTask:
-    def __init__(self, task_id, assignments):
+    def __init__(self, task_id, assignments, dag_value=None, deployment=None):
         self.task_id = task_id
+        self.dag_value = copy.deepcopy(dag_value or dag())
+        self.deployment = copy.deepcopy(
+            deployment or FakeSystem().runtime_service_nodes()
+        )
         self.services = {
             name: FakeService(device, 0.1 + 0.01 * task_id)
             for name, device in assignments.items()
         }
-        self.graph = SimpleNamespace(nodes={
-            "_start": None,
-            **{name: None for name in assignments},
-            "_end": None,
-        })
+        self.graph = SimpleNamespace(
+            nodes={
+                "_start": None,
+                **{name: None for name in assignments},
+                "_end": None,
+            },
+            to_dict=lambda: copy.deepcopy(self.dag_value),
+        )
 
     def get_dag(self):
         return self.graph
 
     def get_service(self, name):
         return self.services[name]
+
+    def get_deployment(self):
+        return copy.deepcopy(self.deployment)
 
     def get_source_id(self):
         return 1
@@ -719,6 +728,9 @@ class FakeTask:
 class FakeSystem:
     cloud_device = "cloud"
 
+    def __init__(self, revision=1):
+        self.revision = revision
+
     def runtime_service_nodes(self):
         return {
             "detect": ["edge-a", "edge-b"],
@@ -726,7 +738,7 @@ class FakeSystem:
         }
 
     def runtime_directory_revision(self):
-        return 1
+        return self.revision
 
     def get_scheduling_snapshot(self):
         return {
@@ -735,6 +747,21 @@ class FakeSystem:
             "task_barriers": [],
             "resources": {},
         }
+
+
+def contextual_profile(configuration, deployment, dag_value, pairs, **extra):
+    profile = {
+        "version": FragSpliceLatencyModel.PROFILE_VERSION,
+        "metric": FragSpliceLatencyModel.PROFILE_METRIC,
+        "context": FragSpliceLatencyModel.build_profile_context(
+            configuration,
+            deployment,
+            dag_value,
+        ),
+        "pairs": pairs,
+    }
+    profile.update(extra)
+    return profile
 
 
 @pytest.mark.unit
@@ -748,12 +775,15 @@ def test_main_agent_returns_complete_plan_without_mutating_request(tmp_path, mon
         FakeSystem(),
         agent_id=1,
         configuration={"fps": 6},
-        latency_profile={
-            "pairs": {
+        latency_profile=contextual_profile(
+            {"fps": 6},
+            FakeSystem().runtime_service_nodes(),
+            original,
+            {
                 "detect": {"edge-a": [0.1], "edge-b": [0.2]},
                 "classify": {"edge-c": [0.1]},
-            }
-        },
+            },
+        ),
         latency_slo_s=10.0,
         scenario_count=8,
         max_scenarios=8,
@@ -819,6 +849,11 @@ def test_cold_sampler_profiles_only_pairs_in_fixed_deployment(tmp_path, monkeypa
     assert set(saved["pairs"]["classify"]) == {"edge-c"}
     assert "cloud" not in saved["pairs"]["detect"]
     assert saved["task_residuals"]["1"]
+    assert saved["context"] == FragSpliceLatencyModel.build_profile_context(
+        {"fps": 6},
+        FakeSystem().runtime_service_nodes(),
+        dag(),
+    )
 
 
 @pytest.mark.unit
@@ -828,13 +863,15 @@ def test_cold_sampler_resumes_completed_fixed_deployment_profile(tmp_path, monke
         "DATA_PATH_PREFIX": str(tmp_path),
     })
     profile_path = tmp_path / "fragsplice.json"
-    profile_path.write_text(json.dumps({
-        "version": 2,
-        "pairs": {
+    profile_path.write_text(json.dumps(contextual_profile(
+        {},
+        FakeSystem().runtime_service_nodes(),
+        dag(),
+        {
             "detect": {"edge-a": [0.1], "edge-b": [0.2]},
             "classify": {"edge-c": [0.1]},
         },
-        "cold_progress": {
+        cold_progress={
             "warmup_samples": 0,
             "samples_per_pair": 1,
             "seen": {
@@ -842,7 +879,7 @@ def test_cold_sampler_resumes_completed_fixed_deployment_profile(tmp_path, monke
                 "classify": {"edge-c": 1},
             },
         },
-    }), encoding="utf-8")
+    )), encoding="utf-8")
 
     agent = FragSpliceColdSampleAgent(
         FakeSystem(),
@@ -863,13 +900,15 @@ def test_main_agent_persists_online_feedback_atomically(tmp_path, monkeypatch):
         "DATA_PATH_PREFIX": str(tmp_path),
     })
     profile_path = tmp_path / "fragsplice.json"
-    profile_path.write_text(json.dumps({
-        "version": 2,
-        "pairs": {
+    profile_path.write_text(json.dumps(contextual_profile(
+        {},
+        FakeSystem().runtime_service_nodes(),
+        dag(),
+        {
             "detect": {"edge-a": [0.1], "edge-b": [0.2]},
             "classify": {"edge-c": [0.1]},
         },
-    }), encoding="utf-8")
+    )), encoding="utf-8")
     agent = FragSpliceAgent(
         FakeSystem(),
         agent_id=3,
@@ -881,6 +920,128 @@ def test_main_agent_persists_online_feedback_atomically(tmp_path, monkeypatch):
     agent.update_task(FakeTask(1, {"detect": "edge-a", "classify": "edge-c"}))
     saved = json.loads(profile_path.read_text(encoding="utf-8"))
 
-    assert saved["version"] == 2
+    assert saved["version"] == FragSpliceLatencyModel.PROFILE_VERSION
+    assert saved["context"] == FragSpliceLatencyModel.build_profile_context(
+        {},
+        FakeSystem().runtime_service_nodes(),
+        dag(),
+    )
     assert saved["task_residuals"]["1"]
     assert "pair_log_drift" in saved
+
+
+@pytest.mark.unit
+def test_main_agent_rejects_legacy_and_configuration_mismatched_profiles():
+    pairs = {
+        "detect": {"edge-a": [0.1], "edge-b": [0.2]},
+        "classify": {"edge-c": [0.1]},
+    }
+    with pytest.raises(ValueError, match="strict context version"):
+        FragSpliceAgent(
+            FakeSystem(),
+            agent_id=11,
+            configuration={"fps": 6},
+            latency_profile={"version": 2, "pairs": pairs},
+        )
+
+    profile = contextual_profile(
+        {"fps": 6},
+        FakeSystem().runtime_service_nodes(),
+        dag(),
+        pairs,
+    )
+    with pytest.raises(ValueError, match="configuration"):
+        FragSpliceAgent(
+            FakeSystem(),
+            agent_id=12,
+            configuration={"fps": 4},
+            latency_profile=profile,
+        )
+
+
+@pytest.mark.unit
+def test_agents_reject_deployment_and_dag_context_mismatches(tmp_path, monkeypatch):
+    monkeypatch.setattr(Context, "parameters", {
+        "DEFAULT_MOUNT_PATH": str(tmp_path),
+        "DATA_PATH_PREFIX": str(tmp_path),
+    })
+    pairs = {
+        "detect": {"edge-a": [0.1], "edge-b": [0.2]},
+        "classify": {"edge-c": [0.1]},
+    }
+    profile_path = tmp_path / "fragsplice.json"
+    profile_path.write_text(json.dumps(contextual_profile(
+        {},
+        {"detect": ["edge-a"], "classify": ["edge-c"]},
+        dag(),
+        {
+            "detect": {"edge-a": [0.1]},
+            "classify": {"edge-c": [0.1]},
+        },
+    )), encoding="utf-8")
+    cold_agent = FragSpliceColdSampleAgent(
+        FakeSystem(revision=13),
+        agent_id=13,
+        profile_path=str(profile_path),
+    )
+    with pytest.raises(ValueError, match="deployment"):
+        cold_agent.is_complete()
+
+    with pytest.raises(ValueError, match="dag"):
+        main_agent = FragSpliceAgent(
+            FakeSystem(revision=14),
+            agent_id=14,
+            latency_profile=contextual_profile(
+                {},
+                FakeSystem().runtime_service_nodes(),
+                one_service_dag(),
+                pairs,
+            ),
+            scenario_count=8,
+            max_scenarios=8,
+        )
+        main_agent.get_schedule_plan({
+            "source_id": 1,
+            "source_device": "source",
+            "all_edge_devices": ["edge-a", "edge-b", "edge-c"],
+            "dag": dag(),
+            "meta_data": {},
+        })
+
+
+@pytest.mark.unit
+def test_profile_context_rejects_mismatched_feedback_and_outside_pair(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(Context, "parameters", {
+        "DEFAULT_MOUNT_PATH": str(tmp_path),
+        "DATA_PATH_PREFIX": str(tmp_path),
+    })
+    pairs = {
+        "detect": {"edge-a": [0.1], "edge-b": [0.2]},
+        "classify": {"edge-c": [0.1]},
+    }
+    profile = contextual_profile(
+        {},
+        FakeSystem().runtime_service_nodes(),
+        dag(),
+        pairs,
+    )
+    agent = FragSpliceAgent(
+        FakeSystem(revision=15),
+        agent_id=15,
+        latency_profile=profile,
+        scenario_count=8,
+        max_scenarios=8,
+    )
+    with pytest.raises(ValueError, match="dag"):
+        agent.update_task(FakeTask(
+            1,
+            {"detect": "edge-a", "classify": "edge-c"},
+            dag_value=one_service_dag(),
+        ))
+
+    model = FragSpliceLatencyModel(profile)
+    with pytest.raises(ValueError, match="outside its deployment context"):
+        model.record_sample("detect", "edge-z", 0.1)

@@ -57,6 +57,10 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             if isinstance(latency_profile, str) else None
         )
         profile = _load_mapping(latency_profile, "latency_profile")
+        profile_context = FragSpliceLatencyModel.validate_profile_context(
+            profile,
+            self.configuration,
+        )
         revision_getter = getattr(system, "runtime_directory_revision", None)
         revision = revision_getter() if callable(revision_getter) else 0
         self.latency_model = GlobalInstanceManager.get_instance(
@@ -64,6 +68,15 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             ("fragsplice", id(system), revision),
             profile=profile,
         )
+        if profile_context is not None:
+            self.latency_model.ensure_profile_context(
+                **profile_context,
+                require_complete=True,
+            )
+        else:
+            self.latency_model.ensure_profile_context(
+                configuration=self.configuration,
+            )
         self.optimizer = FragSpliceOptimizer(
             self.latency_model,
             default_slo_s=latency_slo_s,
@@ -110,6 +123,12 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             deployment = snapshot.get("deployment")
             if not isinstance(deployment, dict):
                 deployment = self.system.runtime_service_nodes()
+            self.latency_model.ensure_profile_context(
+                configuration=self.configuration,
+                deployment=deployment,
+                dag=dag,
+                require_complete=True,
+            )
             self._validate_profile_coverage(dag, deployment)
             result = self.optimizer.solve(
                 decision_info,
@@ -147,11 +166,21 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
 
     def update_task(self, task):
         with self._lock:
+            deployment_getter = getattr(task, "get_deployment", None)
+            deployment = deployment_getter() if callable(deployment_getter) else None
+            if not isinstance(deployment, dict) or not deployment:
+                deployment = self.system.runtime_service_nodes()
+            self.latency_model.ensure_profile_context(
+                configuration=self.configuration,
+                deployment=deployment,
+                dag=task.get_dag(),
+                require_complete=True,
+            )
             updated = self.latency_model.update_task(task)
             if updated and self.latency_profile_path:
                 self.latency_model.save(
                     self.latency_profile_path,
-                    deployment=self.system.runtime_service_nodes(),
+                    deployment=deployment,
                 )
         if updated:
             LOGGER.debug(

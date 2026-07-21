@@ -510,16 +510,20 @@ class SchedulerServer:
     async def generate_redeployment_plan(self, data: str = Form(...)):
         data = json.loads(data)
         plan = {}
-        for source_data in data:
-            source_id = source_data['source']['id']
-            self.scheduler.register_schedule_table(source_id=source_id)
-            try:
-                source_plan = self.scheduler.get_redeployment_plan(source_id, source_data)
-                self._merge_deployment_plan(
-                    plan, source_plan, allowed_services=dag_services(source_data),
-                )
-            except (RuntimeDirectoryError, ValueError) as exc:
-                raise self._translate_runtime_error(exc, source_id)
+        # A redeployment response is one global plan assembled from all source
+        # DAGs. Keep the active runtime revision immutable for the whole read so
+        # a concurrent directory commit cannot mix two deployments.
+        with self.scheduler.schedule_transaction():
+            for source_data in data:
+                source_id = source_data['source']['id']
+                self.scheduler.register_schedule_table(source_id=source_id)
+                try:
+                    source_plan = self.scheduler.get_redeployment_plan(source_id, source_data)
+                    self._merge_deployment_plan(
+                        plan, source_plan, allowed_services=dag_services(source_data),
+                    )
+                except (RuntimeDirectoryError, ValueError) as exc:
+                    raise self._translate_runtime_error(exc, source_id)
 
         return {'plan': plan}
 
