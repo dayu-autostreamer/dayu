@@ -75,9 +75,14 @@ class FragSpliceLatencyModel:
     multiplied by one jointly resampled task residual vector. Pair samples are
     not sampled again after a joint residual is available, which avoids
     counting the same content variation twice.
+
+    Non-Processor overhead distributions are collected only by the
+    single-in-flight cold profiler. Online traces may contain queueing,
+    temporary routing failures, or recovery stalls that the future-state
+    simulator must not learn as an intrinsic dispatch/control/handoff cost.
     """
 
-    PROFILE_VERSION = 4
+    PROFILE_VERSION = 5
     PROFILE_METRIC = "real_execute_time_seconds"
     PROFILE_CONTEXT_FIELDS = ("configuration", "deployment", "dag")
     _SAVE_LOCK = threading.Lock()
@@ -708,11 +713,13 @@ class FragSpliceLatencyModel:
             return None
 
     def record_task_overheads(self, task, include_dispatch=False):
-        """Record causal non-Processor intervals from one completed task.
+        """Record cold-profile non-Processor intervals from one task.
 
-        ``include_dispatch`` is reserved for low-concurrency cold profiling:
-        online ``execute_start -> real_execute_start`` intervals may contain
-        FIFO waiting and would otherwise be counted twice by the event model.
+        This method is intentionally called only by the single-in-flight cold
+        sampler. Online ``execute_start -> real_execute_start`` and
+        predecessor-to-release intervals may contain queueing or infrastructure
+        recovery stalls and would otherwise poison the intrinsic overhead
+        distributions used by every later scenario.
         """
 
         dag = self._task_dag_dict(task)
@@ -822,14 +829,10 @@ class FragSpliceLatencyModel:
                     "duration": duration,
                     "base": base,
                     "drift": drift,
-                    "handoff": _handoff_duration(service),
                 })
 
-            overhead_updated = self.record_task_overheads(
-                task, include_dispatch=False
-            )
             if not observations:
-                return overhead_updated
+                return False
 
             # Separate a task-wide content component from pair-specific drift.
             # This keeps recent video complexity in one joint residual vector
@@ -853,8 +856,6 @@ class FragSpliceLatencyModel:
                 )
                 self._pair_log_drift[service][device] = new_drift
                 residual[service] = raw - new_drift
-                if item["handoff"] is not None:
-                    self._handoff_samples[service][device].append(item["handoff"])
             self._task_residuals[source_key].append(residual)
         return True
 

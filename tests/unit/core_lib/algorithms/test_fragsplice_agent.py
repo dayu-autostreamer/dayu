@@ -1679,6 +1679,60 @@ class FakeSystem:
         }
 
 
+@pytest.mark.unit
+def test_online_feedback_freezes_cold_non_processor_distributions(monkeypatch):
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {"edge-a": {"samples": [0.1]}},
+            "classify": {"edge-c": {"samples": [0.2]}},
+        },
+        "handoff_pairs": {
+            "detect": {"edge-a": {"samples": [0.01]}},
+            "classify": {"edge-c": {"samples": [0.02]}},
+        },
+        "transfer_pairs": {
+            "detect": {"edge-a": {"samples": [0.03]}},
+        },
+        "dispatch_pairs": {
+            "detect": {"edge-a": {"samples": [0.04]}},
+        },
+        "control_pairs": {
+            "detect": {"edge-a": {"samples": [0.05]}},
+        },
+        "completion_overhead": {
+            "1": {"samples": [0.06]},
+        },
+    })
+    task = FakeTask(
+        1,
+        {"detect": "edge-a", "classify": "edge-c"},
+    )
+    task.services["detect"].timing = {
+        "real_execute_end": 1.0,
+        "execute_end": 1001.0,
+    }
+
+    def unexpected_online_overhead_update(*args, **kwargs):
+        raise AssertionError(
+            "online traces must not update cold non-Processor distributions"
+        )
+
+    monkeypatch.setattr(
+        model,
+        "record_task_overheads",
+        unexpected_online_overhead_update,
+    )
+    assert model.update_task(task) is True
+
+    assert model.handoff_values("detect", "edge-a") == [0.01]
+    assert model.transfer_values("detect", "edge-a") == [0.03]
+    assert model.dispatch_values("detect", "edge-a") == [0.04]
+    assert model.control_values("detect", "edge-a") == [0.05]
+    assert model.completion_values(1) == [0.06]
+    assert model._task_residuals["1"]
+    assert model._pair_log_drift["detect"]["edge-a"] != 0.0
+
+
 def contextual_profile(configuration, deployment, dag_value, pairs, **extra):
     profile = {
         "version": FragSpliceLatencyModel.PROFILE_VERSION,
