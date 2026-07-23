@@ -313,10 +313,32 @@ class FragSpliceOptimizer:
         anytime lower-bound semantics are unchanged.
         """
 
+        def complete_partial_plans(entries):
+            ranked = []
+            seen = set()
+            for partial, score in entries:
+                complete = dict(preferred_plan)
+                complete.update(partial)
+                key = tuple(sorted(complete.items()))
+                if key in seen:
+                    continue
+                seen.add(key)
+                ranked.append((
+                    score if score is not None else (float("inf"),) * 5,
+                    key,
+                    complete,
+                ))
+            ranked.sort(key=lambda item: (item[0], item[1]))
+            plans = [dict(plan) for _, _, plan in ranked]
+            preferred_key = tuple(sorted(preferred_plan.items()))
+            if preferred_key not in seen:
+                plans.append(dict(preferred_plan))
+            return plans or [dict(preferred_plan)]
+
         beam = [({}, None)]
         for service in services:
             if deadline is not None and time.monotonic() >= deadline:
-                return [dict(preferred_plan)]
+                return complete_partial_plans(beam)
             expanded = []
             for partial, _ in beam:
                 for device in candidates[service]:
@@ -324,7 +346,7 @@ class FragSpliceOptimizer:
                         deadline is not None
                         and time.monotonic() >= deadline
                     ):
-                        return [dict(preferred_plan)]
+                        return complete_partial_plans(expanded or beam)
                     child = dict(partial)
                     child[service] = device
                     complete = dict(preferred_plan)
@@ -349,15 +371,7 @@ class FragSpliceOptimizer:
             ))
             beam = expanded[:self.screening_beam_width]
 
-        ranked = sorted(
-            ((score, plan) for plan, score in beam),
-            key=lambda item: (item[0], tuple(sorted(item[1].items()))),
-        )
-        plans = [dict(plan) for _, plan in ranked]
-        preferred_key = tuple(sorted(preferred_plan.items()))
-        if all(tuple(sorted(plan.items())) != preferred_key for plan in plans):
-            plans.append(dict(preferred_plan))
-        return plans
+        return complete_partial_plans(beam)
 
     @staticmethod
     def _score_plan(
@@ -506,11 +520,13 @@ class FragSpliceOptimizer:
         if deadline is not None and time.monotonic() >= deadline:
             return fallback("budget_exhausted_before_state_evaluation")
 
-        # Build one committed-work calendar, then spend only a small bounded
-        # slice selecting which feasible plan deserves the first expensive
-        # all-scenario evaluation. This preserves a valid anytime incumbent
-        # while preventing the previous plan from monopolizing every tight
-        # decision budget after its replica becomes congested.
+        # Build one committed-work calendar and use it to choose a full-DAG
+        # incumbent before the first expensive all-scenario evaluation.
+        # Scoring the previous plan first consumed almost the whole online
+        # budget on realistic commitment sets, leaving the multi-stage beam
+        # unable to inspect any complete alternative. Calendar screening is a
+        # primal ordering heuristic only; exact scenario scoring and the
+        # admissible DP lower bounds remain authoritative.
         screen_seed = seeds[0]
         if screen_seed not in baseline_cache:
             baseline_cache[screen_seed] = state.simulate(
@@ -518,19 +534,16 @@ class FragSpliceOptimizer:
             )
         if deadline is not None and time.monotonic() >= deadline:
             return fallback("budget_exhausted_after_baseline")
-        prescreen_deadline = deadline
+
+        screening_deadline = deadline
         if deadline is not None:
             now = time.monotonic()
             remaining = max(0.0, deadline - now)
-            prescreen_deadline = min(
+            screening_deadline = min(
                 deadline,
-                now + min(0.015, 0.10 * remaining),
+                now + min(0.04, 0.25 * remaining),
             )
-        (
-            incumbent_plan,
-            prescreened_plans,
-            prescreening_completed,
-        ) = self._prescreen_incumbent(
+        screened_plans = self._screening_plans(
             state,
             dag,
             services,
@@ -542,10 +555,18 @@ class FragSpliceOptimizer:
             slo,
             screen_seed,
             baseline_cache[screen_seed],
-            deadline=prescreen_deadline,
+            deadline=screening_deadline,
+        )
+        screening_completed = not (
+            screening_deadline is not None
+            and time.monotonic() >= screening_deadline
+        )
+        incumbent_plan = (
+            dict(screened_plans[0])
+            if screened_plans else dict(preferred_plan)
         )
         screened_keys = {
-            tuple(sorted(plan.items())) for plan in prescreened_plans
+            tuple(sorted(plan.items())) for plan in screened_plans
         }
         incumbent_score = self._score_plan(
             state,
@@ -599,45 +620,13 @@ class FragSpliceOptimizer:
                 ),
                 "expanded": expanded,
                 "screened": max(1, len(screened_keys)),
-                "screening_completed": prescreening_completed,
+                "screening_completed": screening_completed,
                 "score_evaluated": True,
                 "fallback_reason": "",
                 "optimality_proven": True,
                 "best_open_lower_bound": incumbent_score,
             }
 
-        # Screening is a primal warm-start heuristic, not the optimizer. Give
-        # it at most one quarter of the remaining budget (and never more than
-        # 40 ms), preserving most of the deadline for exact branch-and-bound.
-        screening_deadline = deadline
-        if deadline is not None:
-            now = time.monotonic()
-            remaining = max(0.0, deadline - now)
-            screening_deadline = min(
-                deadline,
-                now + min(0.04, 0.25 * remaining),
-            )
-        screened_plans = self._screening_plans(
-            state,
-            dag,
-            services,
-            candidates,
-            incumbent_plan,
-            source_id,
-            candidate_root,
-            candidate_created_at,
-            slo,
-            screen_seed,
-            baseline_cache[screen_seed],
-            deadline=screening_deadline,
-        )
-        screening_completed = not (
-            screening_deadline is not None
-            and time.monotonic() >= screening_deadline
-        ) and prescreening_completed
-        screened_keys.update(
-            tuple(sorted(plan.items())) for plan in screened_plans
-        )
         warm_limit = max(1, self.incumbent_neighborhood_size)
         warm_plans = screened_plans[:warm_limit]
 

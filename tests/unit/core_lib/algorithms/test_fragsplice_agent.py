@@ -1365,7 +1365,7 @@ def test_screening_deadline_returns_a_complete_preferred_plan():
 
 
 @pytest.mark.unit
-def test_tight_budget_scores_incumbent_before_slow_screening(monkeypatch):
+def test_tight_budget_still_scores_incumbent_after_bounded_screening(monkeypatch):
     original = FragSpliceExecutionState.screen_candidate
 
     def slow_screen(self, *args, **kwargs):
@@ -1425,6 +1425,88 @@ def test_tight_budget_scores_incumbent_before_slow_screening(monkeypatch):
     assert result["selected_outcome_scenarios"] == 8
     assert result["screening_completed"] is False
     assert result["fallback_reason"] != "budget_exhausted_during_screening"
+
+
+@pytest.mark.unit
+def test_first_exact_evaluation_uses_full_dag_calendar_screening(monkeypatch):
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [1.0]},
+                "edge-b": {"samples": [1.0]},
+            },
+            "classify": {
+                "edge-c": {"samples": [1.0]},
+                "edge-d": {"samples": [1.0]},
+            },
+        },
+    })
+    optimizer = FragSpliceOptimizer(
+        model,
+        scenario_count=8,
+        max_scenarios=8,
+        search_time_limit_s=0.12,
+        screening_beam_width=4,
+    )
+    original_score = optimizer._score_plan
+    scored_plans = []
+
+    def record_score(*args, **kwargs):
+        scored_plans.append(copy.deepcopy(args[2]))
+        return original_score(*args, **kwargs)
+
+    monkeypatch.setattr(optimizer, "_score_plan", record_score)
+    result = optimizer.solve(
+        {
+            "source_id": 1,
+            "source_device": "source",
+            "task_context": {"root_uuid": "new"},
+            "dag": dag(),
+            "meta_data": {"slo_seconds": 10.0},
+        },
+        {
+            "captured_at": 10.0,
+            "runtime_directory_revision": 1,
+            "reservations": [],
+            "commitments": [],
+            "task_barriers": [],
+            "resources": {
+                "edge-a": {"queue_state": {"detect": {
+                    "busy": True,
+                    "running_phase": "processing",
+                    "phase_elapsed_s": 0.0,
+                    "observed_at": 10.0,
+                }}},
+                "edge-c": {"queue_state": {"classify": {
+                    "busy": True,
+                    "running_phase": "processing",
+                    "phase_elapsed_s": 0.0,
+                    "observed_at": 10.0,
+                }}},
+            },
+            "resource_received_at": {
+                "edge-a": 10.0,
+                "edge-c": 10.0,
+            },
+            "resource_runtime_revision": {
+                "edge-a": 1,
+                "edge-c": 1,
+            },
+        },
+        {
+            "detect": ["edge-a", "edge-b"],
+            "classify": ["edge-c", "edge-d"],
+        },
+        "cloud",
+        initial_plan={"detect": "edge-a", "classify": "edge-c"},
+    )
+
+    assert scored_plans
+    assert scored_plans[0] == {
+        "detect": "edge-b",
+        "classify": "edge-d",
+    }
+    assert result["score_evaluated"] is True
 
 
 @pytest.mark.unit
