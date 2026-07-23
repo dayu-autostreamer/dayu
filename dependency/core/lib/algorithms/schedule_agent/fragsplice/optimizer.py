@@ -64,8 +64,13 @@ class FragSpliceOptimizer:
             result[service] = devices
         return result
 
-    def _optimistic_latency(self, dag, candidates, partial):
+    def _optimistic_latency(
+        self, dag, candidates, partial, source_id=None
+    ):
         finish = {START: 0.0}
+        sample_lower_bound = getattr(
+            self.latency_model, "sample_lower_bound", None
+        )
         for service in topological_order(dag):
             if service == START:
                 continue
@@ -78,7 +83,11 @@ class FragSpliceOptimizer:
                 continue
             devices = [partial[service]] if service in partial else candidates[service]
             demand = min(
-                self.latency_model.lower_bound(service, device)
+                (
+                    sample_lower_bound(source_id, service, device)
+                    if callable(sample_lower_bound)
+                    else self.latency_model.lower_bound(service, device)
+                )
                 + self.latency_model.lower_bound_handoff(service, device)
                 for device in devices
             )
@@ -88,9 +97,17 @@ class FragSpliceOptimizer:
         sinks = [name for name in dag if not dag[name].get("next_nodes")]
         return max((finish.get(name, 0.0) for name in sinks), default=0.0)
 
-    def _lower_score(self, dag, candidates, partial, slo, elapsed=0.0):
+    def _lower_score(
+        self,
+        dag,
+        candidates,
+        partial,
+        slo,
+        elapsed=0.0,
+        source_id=None,
+    ):
         latency = max(0.0, float(elapsed)) + self._optimistic_latency(
-            dag, candidates, partial
+            dag, candidates, partial, source_id=source_id
         )
         miss = 1.0 if latency > slo else 0.0
         tardiness = max(0.0, latency - slo) / slo
@@ -373,7 +390,9 @@ class FragSpliceOptimizer:
         candidate_count = math.prod(
             len(candidates[service]) for service in services
         )
-        root_bound = self._lower_score(dag, candidates, {}, slo)
+        root_bound = self._lower_score(
+            dag, candidates, {}, slo, source_id=source_id
+        )
 
         def fallback(reason, screened=0, screening_completed=False):
             # The action remains valid even when the budget is consumed before
@@ -384,7 +403,11 @@ class FragSpliceOptimizer:
             return {
                 "plan": dict(preferred_plan),
                 "score": self._lower_score(
-                    dag, candidates, preferred_plan, slo
+                    dag,
+                    candidates,
+                    preferred_plan,
+                    slo,
+                    source_id=source_id,
                 ),
                 "evaluated": [],
                 "expanded": 0,
@@ -399,6 +422,10 @@ class FragSpliceOptimizer:
         if deadline is not None and time.monotonic() >= deadline:
             return fallback("budget_exhausted_before_state_evaluation")
 
+        # Establish one completely scored feasible incumbent before spending
+        # time on heuristic screening. A screening beam may visit many cheap
+        # projections; under a tight online budget it must never consume the
+        # only opportunity to obtain a valid stochastic objective.
         screen_seed = seeds[0]
         if screen_seed not in baseline_cache:
             baseline_cache[screen_seed] = state.simulate(
@@ -406,39 +433,7 @@ class FragSpliceOptimizer:
             )
         if deadline is not None and time.monotonic() >= deadline:
             return fallback("budget_exhausted_after_baseline")
-        screened_plans = self._screening_plans(
-            state,
-            dag,
-            services,
-            candidates,
-            preferred_plan,
-            source_id,
-            candidate_root,
-            candidate_created_at,
-            slo,
-            screen_seed,
-            baseline_cache[screen_seed],
-            deadline=deadline,
-        )
-        screening_completed = not (
-            deadline is not None and time.monotonic() >= deadline
-        )
-        if not screening_completed:
-            return fallback(
-                "budget_exhausted_during_screening",
-                screened=len(screened_plans),
-                screening_completed=False,
-            )
-        warm_limit = max(1, self.incumbent_neighborhood_size)
-        warm_plans = screened_plans[:warm_limit]
-        preferred_key = tuple(sorted(preferred_plan.items()))
-        if all(
-            tuple(sorted(plan.items())) != preferred_key
-            for plan in warm_plans
-        ):
-            warm_plans.append(preferred_plan)
-
-        incumbent_plan = warm_plans[0]
+        incumbent_plan = dict(preferred_plan)
         incumbent_score = self._score_plan(
             state,
             dag,
@@ -455,8 +450,6 @@ class FragSpliceOptimizer:
         if incumbent_score is None:
             return fallback(
                 "budget_exhausted_during_incumbent_evaluation",
-                screened=len(screened_plans),
-                screening_completed=screening_completed,
             )
         evaluated_by_plan = {
             tuple(sorted(incumbent_plan.items())): (
@@ -473,20 +466,68 @@ class FragSpliceOptimizer:
                     evaluated_by_plan.values(), key=lambda item: item[0]
                 ),
                 "expanded": expanded,
-                "screened": len(screened_plans),
-                "screening_completed": screening_completed,
+                "screened": 0,
+                "screening_completed": False,
                 "score_evaluated": True,
                 "fallback_reason": "budget_exhausted_after_incumbent",
                 "optimality_proven": candidate_count == 1,
                 "best_open_lower_bound": root_bound,
             }
 
+        if candidate_count == 1:
+            return {
+                "plan": incumbent_plan,
+                "score": incumbent_score,
+                "evaluated": sorted(
+                    evaluated_by_plan.values(), key=lambda item: item[0]
+                ),
+                "expanded": expanded,
+                "screened": 1,
+                "screening_completed": True,
+                "score_evaluated": True,
+                "fallback_reason": "",
+                "optimality_proven": True,
+                "best_open_lower_bound": incumbent_score,
+            }
+
+        # Screening is a primal warm-start heuristic, not the optimizer. Give
+        # it at most one quarter of the remaining budget (and never more than
+        # 40 ms), preserving most of the deadline for exact branch-and-bound.
+        screening_deadline = deadline
+        if deadline is not None:
+            now = time.monotonic()
+            remaining = max(0.0, deadline - now)
+            screening_deadline = min(
+                deadline,
+                now + min(0.04, 0.25 * remaining),
+            )
+        screened_plans = self._screening_plans(
+            state,
+            dag,
+            services,
+            candidates,
+            preferred_plan,
+            source_id,
+            candidate_root,
+            candidate_created_at,
+            slo,
+            screen_seed,
+            baseline_cache[screen_seed],
+            deadline=screening_deadline,
+        )
+        screening_completed = not (
+            screening_deadline is not None
+            and time.monotonic() >= screening_deadline
+        )
+        warm_limit = max(1, self.incumbent_neighborhood_size)
+        warm_plans = screened_plans[:warm_limit]
+
         # Spend the first full-simulation evaluations on plans selected by the
         # commitment calendar. This can change several service assignments at
         # once, unlike a one-exchange warm start, while exact scores still use
         # all configured common-random-number scenarios.
         budget_interrupted = False
-        for plan in warm_plans[1:]:
+        for plan in warm_plans:
             if deadline is not None and time.monotonic() >= deadline:
                 budget_interrupted = True
                 break
@@ -531,7 +572,12 @@ class FragSpliceOptimizer:
         # lease admission, so scheduler/search time is not task latency.
         elapsed = 0.0
         root_bound = self._lower_score(
-            dag, candidates, {}, slo, elapsed=elapsed
+            dag,
+            candidates,
+            {},
+            slo,
+            elapsed=elapsed,
+            source_id=source_id,
         )
         heapq.heappush(heap, (root_bound, serial, 0, {}))
 
@@ -582,7 +628,12 @@ class FragSpliceOptimizer:
                 child = dict(partial)
                 child[service] = device
                 bound = self._lower_score(
-                    dag, candidates, child, slo, elapsed=elapsed
+                    dag,
+                    candidates,
+                    child,
+                    slo,
+                    elapsed=elapsed,
+                    source_id=source_id,
                 )
                 if bound >= incumbent_score:
                     continue
@@ -687,11 +738,14 @@ class FragSpliceOptimizer:
 
         result = None
         used = 0
+        selected_seeds = []
+        scenario_refinement_exhausted = False
         baseline_cache = {}
         outcome_cache = {}
         incumbent_plan = initial_plan if isinstance(initial_plan, dict) else None
-        for count in counts:
+        for index, count in enumerate(counts):
             if deadline is not None and time.monotonic() >= deadline and result is not None:
+                scenario_refinement_exhausted = index < len(counts)
                 break
             previous_result = result
             seeds = [
@@ -712,9 +766,23 @@ class FragSpliceOptimizer:
                 outcome_cache,
                 initial_plan=incumbent_plan,
             )
+            if (
+                isinstance(previous_result, dict)
+                and previous_result.get("score_evaluated", True)
+                and not current.get("score_evaluated", True)
+            ):
+                # A partially evaluated larger scenario set must not replace a
+                # complete incumbent from the previous refinement round.
+                result = dict(previous_result)
+                result["fallback_reason"] = (
+                    "budget_exhausted_during_scenario_refinement"
+                )
+                scenario_refinement_exhausted = True
+                break
             result = current
             incumbent_plan = current["plan"]
             used = count
+            selected_seeds = seeds
             if self._scenario_result_is_stable(
                 current, previous_result, count
             ):
@@ -729,6 +797,7 @@ class FragSpliceOptimizer:
             {},
             slo,
             elapsed=elapsed_before_execution,
+            source_id=source_id,
         )[0] >= 1.0
         selected_key = tuple(sorted(result["plan"].items()))
         selected_root = str(
@@ -736,7 +805,7 @@ class FragSpliceOptimizer:
         )
         selected_misses = []
         selected_outcome_scenarios = 0
-        for seed in seeds:
+        for seed in selected_seeds:
             outcome = outcome_cache.get((selected_key, seed))
             if isinstance(outcome, dict):
                 selected_outcome_scenarios += 1
@@ -754,6 +823,9 @@ class FragSpliceOptimizer:
             "search_seconds": time.monotonic() - started,
             "state_build_seconds": state_build_seconds,
             "selected_outcome_scenarios": selected_outcome_scenarios,
+            "scenario_refinement_exhausted": bool(
+                scenario_refinement_exhausted
+            ),
             "prediction_complete": bool(
                 selected_outcome_scenarios == used
                 and result.get("score_evaluated", True)
@@ -770,7 +842,10 @@ class FragSpliceOptimizer:
             "budget_exhausted": bool(
                 deadline is not None
                 and time.monotonic() >= deadline
-                and not result["optimality_proven"]
+                and (
+                    scenario_refinement_exhausted
+                    or not result["optimality_proven"]
+                )
             ),
             "candidate_count": math.prod(len(candidates[name]) for name in candidates),
         })
@@ -824,7 +899,11 @@ class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
             return {
                 "plan": default_plan,
                 "score": self._lower_score(
-                    dag, candidates, default_plan, slo
+                    dag,
+                    candidates,
+                    default_plan,
+                    slo,
+                    source_id=source_id,
                 ),
                 "evaluated": [],
                 "expanded": 0,
@@ -836,7 +915,7 @@ class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
                 ),
                 "optimality_proven": candidate_count == 1,
                 "best_open_lower_bound": self._lower_score(
-                    dag, candidates, {}, slo
+                    dag, candidates, {}, slo, source_id=source_id
                 ),
             }
         plan = {}
@@ -920,7 +999,9 @@ class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
         )
         score_evaluated = score is not None
         if not score_evaluated:
-            score = self._lower_score(dag, candidates, plan, slo)
+            score = self._lower_score(
+                dag, candidates, plan, slo, source_id=source_id
+            )
             budget_interrupted = True
         optimality_proven = candidate_count == 1
         return {
@@ -940,7 +1021,7 @@ class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
             "optimality_proven": optimality_proven,
             "best_open_lower_bound": (
                 score if optimality_proven else self._lower_score(
-                    dag, candidates, {}, slo
+                    dag, candidates, {}, slo, source_id=source_id
                 )
             ),
         }

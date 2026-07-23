@@ -1086,6 +1086,45 @@ def test_joint_residual_sampling_uses_exponential_recency_weights():
 
 
 @pytest.mark.unit
+def test_source_sample_lower_bound_is_admissible_with_drift_and_residuals():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [1.0, 1.0]},
+            },
+        },
+        "pair_log_drift": {
+            "detect": {"edge-a": math.log(10.0)},
+        },
+        "task_residuals": {
+            "1": [
+                {"detect": math.log(0.01), "__shared__": math.log(0.01)},
+                {"detect": math.log(0.02), "__shared__": math.log(0.02)},
+            ],
+        },
+    })
+    plan = {"detect": "edge-a"}
+    bound = model.sample_lower_bound(1, "detect", "edge-a")
+    samples = [
+        model.sample_task(1, plan, random.Random(seed))["detect"]
+        for seed in range(100)
+    ]
+
+    assert model.lower_bound("detect", "edge-a") == pytest.approx(10.0)
+    assert bound == pytest.approx(0.1)
+    assert min(samples) >= bound
+    optimizer = FragSpliceOptimizer(
+        model, scenario_count=8, max_scenarios=8
+    )
+    assert optimizer._optimistic_latency(
+        one_service_dag(),
+        {"detect": ["edge-a"]},
+        {},
+        source_id=1,
+    ) == pytest.approx(bound)
+
+
+@pytest.mark.unit
 def test_incumbent_neighborhood_checks_high_cost_service_first():
     model = FragSpliceLatencyModel({
         "pairs": {
@@ -1252,6 +1291,178 @@ def test_screening_deadline_returns_a_complete_preferred_plan():
     )
 
     assert plans == [preferred]
+
+
+@pytest.mark.unit
+def test_tight_budget_scores_incumbent_before_slow_screening(monkeypatch):
+    original = FragSpliceExecutionState.screen_candidate
+
+    def slow_screen(self, *args, **kwargs):
+        time.sleep(0.04)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        FragSpliceExecutionState,
+        "screen_candidate",
+        slow_screen,
+    )
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [0.1]},
+                "edge-b": {"samples": [0.1]},
+            },
+            "classify": {
+                "edge-a": {"samples": [0.1]},
+                "edge-b": {"samples": [0.1]},
+            },
+        },
+    })
+    optimizer = FragSpliceOptimizer(
+        model,
+        default_slo_s=10.0,
+        scenario_count=8,
+        max_scenarios=8,
+        search_time_limit_s=0.12,
+    )
+
+    result = optimizer.solve(
+        {
+            "source_id": 1,
+            "source_device": "source",
+            "task_context": {"root_uuid": "new"},
+            "dag": dag(),
+            "meta_data": {"slo_seconds": 10.0},
+        },
+        {
+            "captured_at": 10.0,
+            "runtime_directory_revision": 1,
+            "reservations": [],
+            "commitments": [],
+            "task_barriers": [],
+            "resources": {},
+        },
+        {
+            "detect": ["edge-a", "edge-b"],
+            "classify": ["edge-a", "edge-b"],
+        },
+        "cloud",
+    )
+
+    assert result["score_evaluated"] is True
+    assert result["prediction_complete"] is True
+    assert result["selected_outcome_scenarios"] == 8
+    assert result["screening_completed"] is False
+    assert result["fallback_reason"] != "budget_exhausted_during_screening"
+
+
+@pytest.mark.unit
+def test_incomplete_scenario_refinement_preserves_complete_incumbent(
+    monkeypatch,
+):
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {"edge-a": {"samples": [0.1]}},
+            "classify": {"edge-a": {"samples": [0.1]}},
+        },
+    })
+    optimizer = FragSpliceOptimizer(
+        model,
+        default_slo_s=10.0,
+        scenario_count=8,
+        max_scenarios=16,
+    )
+    plan = {"detect": "edge-a", "classify": "edge-a"}
+    score = (0.0, 0.0, 0.2, 0.0, 0.2)
+
+    def fake_search(
+        state,
+        task_dag,
+        candidates,
+        source_id,
+        candidate_root,
+        candidate_created_at,
+        slo,
+        seeds,
+        deadline,
+        baseline_cache,
+        outcome_cache,
+        initial_plan=None,
+    ):
+        del (
+            state,
+            task_dag,
+            candidates,
+            source_id,
+            candidate_created_at,
+            slo,
+            deadline,
+            baseline_cache,
+            initial_plan,
+        )
+        if len(seeds) == 8:
+            key = tuple(sorted(plan.items()))
+            for seed in seeds:
+                outcome_cache[(key, seed)] = {
+                    "latency": {candidate_root: 0.2},
+                }
+            return {
+                "plan": dict(plan),
+                "score": score,
+                "evaluated": [(score, dict(plan))],
+                "expanded": 1,
+                "screened": 1,
+                "screening_completed": True,
+                "score_evaluated": True,
+                "fallback_reason": "",
+                "optimality_proven": True,
+                "best_open_lower_bound": score,
+            }
+        return {
+            "plan": dict(plan),
+            "score": score,
+            "evaluated": [],
+            "expanded": 0,
+            "screened": 0,
+            "screening_completed": False,
+            "score_evaluated": False,
+            "fallback_reason": "budget_exhausted_during_incumbent_evaluation",
+            "optimality_proven": False,
+            "best_open_lower_bound": (0.0, 0.0, 0.1, 0.0, 0.0),
+        }
+
+    monkeypatch.setattr(optimizer, "_search", fake_search)
+    result = optimizer.solve(
+        {
+            "source_id": 1,
+            "source_device": "source",
+            "task_context": {"root_uuid": "new"},
+            "dag": dag(),
+            "meta_data": {"slo_seconds": 10.0},
+        },
+        {
+            "captured_at": 10.0,
+            "runtime_directory_revision": 1,
+            "reservations": [],
+            "commitments": [],
+            "task_barriers": [],
+            "resources": {},
+        },
+        {
+            "detect": ["edge-a"],
+            "classify": ["edge-a"],
+        },
+        "cloud",
+    )
+
+    assert result["scenario_count"] == 8
+    assert result["selected_outcome_scenarios"] == 8
+    assert result["score_evaluated"] is True
+    assert result["prediction_complete"] is True
+    assert result["scenario_refinement_exhausted"] is True
+    assert result["fallback_reason"] == (
+        "budget_exhausted_during_scenario_refinement"
+    )
 
 
 @pytest.mark.unit

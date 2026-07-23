@@ -514,6 +514,52 @@ class FragSpliceLatencyModel:
             return self.estimate(service, device, 0.5)
         return max(1e-6, min(values) * math.exp(drift))
 
+    @staticmethod
+    def _task_residual(record, service):
+        raw = (
+            record.get(str(service), record.get("__shared__", 0.0))
+            if isinstance(record, dict) else 0.0
+        )
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+        return value if math.isfinite(value) else 0.0
+
+    def sample_lower_bound(self, source_id, service, device):
+        """Return the infimum of ``sample_task`` for this source and pair.
+
+        ``lower_bound`` describes the cold pair samples after current pair
+        drift. Once task residual history exists, however, ``sample_task``
+        draws from the residual-conditioned median rather than directly from
+        those pair samples. Pair drift and task residuals may use different
+        gauges while still cancelling in the sampled duration, so the pair
+        minimum is not necessarily a lower bound on scenario samples.
+        """
+        source_key = str(source_id)
+        with self._lock:
+            histories = list(self._task_residuals.get(source_key, ()))
+            drift = self._pair_drift(service, device)
+            base = (
+                self._base_estimate(service, device, 0.5)
+                * math.exp(drift)
+            )
+            pair_values = list(
+                self._samples.get(str(service), {}).get(str(device), ())
+            )
+        if histories:
+            residual = min(
+                self._task_residual(record, service)
+                for record in histories
+            )
+            return max(1e-6, base * math.exp(residual))
+        if pair_values:
+            return max(
+                1e-6,
+                min(pair_values) * math.exp(drift),
+            )
+        return max(1e-6, base)
+
     def estimate_handoff(self, service, device, quantile=0.5):
         values = self.handoff_values(service, device)
         if not values:
@@ -581,13 +627,7 @@ class FragSpliceLatencyModel:
             device = str(plan[service])
             base = self.estimate(service, device, 0.5)
             if histories:
-                shared = residual.get(
-                    str(service), residual.get("__shared__", 0.0)
-                )
-                try:
-                    shared = float(shared)
-                except (TypeError, ValueError):
-                    shared = 0.0
+                shared = self._task_residual(residual, service)
                 sampled[service] = max(1e-6, base * math.exp(shared))
             else:
                 values = self.pair_values(service, device)
@@ -987,6 +1027,10 @@ class FragSpliceStaticLatencyModel:
         )
 
     def lower_bound(self, service, device):
+        return self.estimate(service, device)
+
+    def sample_lower_bound(self, source_id, service, device):
+        del source_id
         return self.estimate(service, device)
 
     def estimate_handoff(self, service, device, quantile=0.5):

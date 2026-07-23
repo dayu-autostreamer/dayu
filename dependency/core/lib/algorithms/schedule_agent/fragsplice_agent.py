@@ -204,7 +204,8 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             LOGGER.info(
                 "[FragSplice] source=%s plans=%s screened=%s scenarios=%s/%s evaluated=%s "
                 "optimal=%s unschedulable=%s intrinsic_slo_infeasible=%s "
-                "budget_exhausted=%s score_evaluated=%s fallback=%s "
+                "budget_exhausted=%s refinement_exhausted=%s "
+                "score_evaluated=%s fallback=%s "
                 "future_commitments=%s predicted_miss=%.3f score=%s "
                 "lower_bound=%s plan=%s state_build=%.4fs overhead=%.4fs "
                 "overrun=%.4fs",
@@ -218,6 +219,7 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
                 result["unschedulable"],
                 result["intrinsic_slo_infeasible"],
                 result["budget_exhausted"],
+                result.get("scenario_refinement_exhausted", False),
                 result.get("score_evaluated", True),
                 result.get("fallback_reason") or "-",
                 self.future_state_estimator_enabled,
