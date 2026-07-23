@@ -500,6 +500,31 @@ def test_processor_queue_state_keeps_waiting_and_running_ownership_atomic(server
 
 
 @pytest.mark.unit
+def test_processor_records_exact_fifo_wait_and_accumulates_requeue_wait(server_context, monkeypatch):
+    server = server_context.server
+    task = build_task(["detector"], "detector", file_path="queued.bin")
+    wall_clock = iter([100.0, 100.25, 101.0, 101.50])
+    monkeypatch.setattr(processor_server_module.time, "time", lambda: next(wall_clock))
+
+    assert server._enqueue_task_once(task) is True
+    assert server._dequeue_task() is task
+    timing = task.get_current_service().get_tmp_data()
+    assert timing["queue_first_enter"] == pytest.approx(100.0)
+    assert timing["queue_leave"] == pytest.approx(100.25)
+    assert timing["queue_wait_time"] == pytest.approx(0.25)
+    assert timing["queue_attempts"] == 1
+    assert "queue_enter" not in timing
+
+    server._finish_running_task(requeue_task=task)
+    assert server._dequeue_task() is task
+    timing = task.get_current_service().get_tmp_data()
+    assert timing["queue_leave"] == pytest.approx(101.50)
+    assert timing["queue_wait_time"] == pytest.approx(0.75)
+    assert timing["queue_attempts"] == 2
+    assert "queue_enter" not in timing
+
+
+@pytest.mark.unit
 def test_processor_server_loop_process_skips_empty_none_error_and_none_result(server_context, monkeypatch):
     server = server_context.server
     task = build_task(["detector"], "detector")

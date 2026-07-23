@@ -49,7 +49,7 @@ def test_base_catalog_is_cached_but_callers_receive_isolated_copies(mounted_runt
     first["services"].clear()
 
     second = helper.load_base_info()
-    assert second["namespace"] == "dayu"
+    assert second["namespace"] == helper._read_template("base.yaml")["namespace"]
     assert second["services"]
     assert not hasattr(module, "KubeHelper")
     assert not hasattr(module, "NodeInfo")

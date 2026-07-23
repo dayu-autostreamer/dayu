@@ -125,3 +125,66 @@ def test_process_return_keeps_ready_barrier_when_downstream_rejects_delivery():
 
     assert len(controller.task_coordinator.stored_tasks) == 2
     assert controller.task_coordinator.completed == []
+
+
+@pytest.mark.unit
+def test_merge_task_preserves_completed_ancestors_from_nested_join():
+    dag_deployment = {
+        "left": {
+            "service": {"service_name": "left", "execute_device": "edge-node"},
+            "next_nodes": ["nested-leaf"],
+        },
+        "right": {
+            "service": {"service_name": "right", "execute_device": "edge-node"},
+            "next_nodes": ["nested-join", "final-join"],
+        },
+        "nested-leaf": {
+            "service": {"service_name": "nested-leaf", "execute_device": "edge-node"},
+            "next_nodes": ["nested-join"],
+        },
+        "nested-join": {
+            "service": {"service_name": "nested-join", "execute_device": "edge-node"},
+            "next_nodes": ["final-join"],
+        },
+        "final-join": {
+            "service": {"service_name": "final-join", "execute_device": "edge-node"},
+            "next_nodes": [],
+        },
+    }
+
+    def build_task(past_flow_index, completed):
+        task = Task(
+            source_id=0,
+            task_id=0,
+            source_device="edge-node",
+            all_edge_devices=["edge-node"],
+            dag=Task.extract_dag_from_dag_deployment(dag_deployment),
+            flow_index="final-join",
+            past_flow_index=past_flow_index,
+            metadata={"buffer_size": 1},
+            raw_metadata={"buffer_size": 1},
+            file_path="payload.bin",
+            root_uuid="nested-root",
+            runtime_directory_revision=1,
+        )
+        for service_name, duration in completed.items():
+            task.get_service(service_name).set_real_execute_time(duration)
+        return task
+
+    final_base = build_task("right", {"right": 2.0})
+    nested_branch = build_task(
+        "nested-join",
+        {
+            "left": 1.0,
+            "right": 2.0,
+            "nested-leaf": 3.0,
+            "nested-join": 4.0,
+        },
+    )
+
+    final_base.merge_task(nested_branch)
+
+    assert final_base.get_service("left").get_real_execute_time() == 1.0
+    assert final_base.get_service("right").get_real_execute_time() == 2.0
+    assert final_base.get_service("nested-leaf").get_real_execute_time() == 3.0
+    assert final_base.get_service("nested-join").get_real_execute_time() == 4.0

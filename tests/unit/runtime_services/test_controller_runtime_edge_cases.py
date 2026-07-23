@@ -162,6 +162,7 @@ def test_send_task_to_other_device_uploads_task_file_and_records_transmit_timest
 
     assert transmit_records == [(2, False)]
     assert request_calls[0]["method"] == controller_module.NetworkAPIMethod.CONTROLLER_TASK
+    assert request_calls[0]["persistent"] is True
     assert Path(request_calls[0]["file_path"]).read_bytes() == b"payload"
 
 
@@ -192,10 +193,12 @@ def test_send_task_to_distributor_supports_hidden_and_display_upload_modes(
     controller.is_display = False
     assert controller.send_task_to_distributor(task) is True
     assert request_calls[0]["file_content"] == b""
+    assert request_calls[0]["persistent"] is True
 
     controller.is_display = True
     assert controller.send_task_to_distributor(task) is True
     assert Path(request_calls[1]["file_path"]).read_bytes() == b"renderable"
+    assert request_calls[1]["persistent"] is True
 
     assert transmit_records == [(2, False), (2, False)]
 

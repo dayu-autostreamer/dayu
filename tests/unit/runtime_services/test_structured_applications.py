@@ -348,9 +348,11 @@ def test_traffic_signal_recognition_runs_model_only_on_traffic_light_crops():
     class Detector:
         def __init__(self):
             self.sources = []
+            self.kwargs = []
 
         def predict(self, source, **kwargs):
             self.sources.append(source)
+            self.kwargs.append(kwargs)
             return [Result()]
 
     detector = Detector()
@@ -375,6 +377,7 @@ def test_traffic_signal_recognition_runs_model_only_on_traffic_light_crops():
 
     assert len(detector.sources) == 1
     assert detector.sources[0].shape == (40, 20, 3)
+    assert detector.kwargs[0]["imgsz"] == 320
     assert result == {"text": [{
         "frame_index": 0,
         "items": [{
@@ -392,6 +395,46 @@ def test_traffic_signal_recognition_runs_model_only_on_traffic_light_crops():
             "frame_index": 0,
         }],
     }]}
+
+
+@pytest.mark.unit
+def test_traffic_signal_recognition_batches_unmatched_crops_in_one_frame():
+    class Boxes:
+        def __init__(self, class_index):
+            self.conf = [0.9]
+            self.cls = [class_index]
+
+    class Result:
+        names = {0: "red", 1: "green", 2: "yellow"}
+
+        def __init__(self, class_index):
+            self.boxes = Boxes(class_index)
+
+    class BatchDetector:
+        def __init__(self):
+            self.sources = []
+
+        def predict(self, source, **kwargs):
+            self.sources.append(source)
+            return [Result(index) for index, _ in enumerate(source)]
+
+    detector = BatchDetector()
+    processor = TrafficSignalRecognitionWithoutTensorRT(inference_batch_size=4)
+    processor.model = {"loaded": True, "model": detector}
+    frame = np.zeros((100, 120, 3), dtype=np.uint8)
+
+    result = processor(traffic_signal_payload([frame], [(0, [
+        traffic_light("light-0", bbox=[0, 10, 20, 40]),
+        traffic_light("light-1", bbox=[30, 10, 50, 40]),
+        traffic_light("light-2", bbox=[60, 10, 80, 40]),
+    ])]))
+
+    assert len(detector.sources) == 1
+    assert isinstance(detector.sources[0], list)
+    assert len(detector.sources[0]) == 3
+    assert [item["state"] for item in result["text"][0]["items"]] == [
+        "red", "green", "yellow",
+    ]
 
 
 @pytest.mark.unit
@@ -566,9 +609,13 @@ def test_traffic_signal_recognition_wrapper_passes_temporal_reuse_parameters():
         reuse_iou_threshold=0.5,
         reuse_hist_correlation=0.9,
         reuse_value_delta=0.1,
+        inference_batch_size=3,
+        inference_imgsz=416,
     )
 
     assert processor.model.temporal_reuse is False
     assert processor.model.reuse_iou_threshold == 0.5
     assert processor.model.reuse_hist_correlation == 0.9
     assert processor.model.reuse_value_delta == 0.1
+    assert processor.model.inference_batch_size == 3
+    assert processor.model.inference_imgsz == 416

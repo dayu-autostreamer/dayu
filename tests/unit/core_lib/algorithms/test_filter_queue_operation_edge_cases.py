@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.lib.common import Counter, TaskConstant
+from core.lib.common import TaskConstant
 from core.lib.content import Task
 
 
@@ -49,9 +49,21 @@ def test_simple_filter_covers_same_skip_and_remain_modes():
     assert simple_filter.get_fps_adjust_mode(20, 12) == ("skip", 2, 0)
     assert simple_filter.get_fps_adjust_mode(20, 4) == ("remain", 0, 5)
 
-    Counter.reset_all_counts()
     remain_system = SimpleNamespace(raw_meta_data={"fps": 20}, meta_data={"fps": 4})
-    assert [simple_filter(remain_system, object()) for _ in range(5)] == [False, False, False, False, True]
+    decisions = [simple_filter(remain_system, object()) for _ in range(20)]
+    assert decisions[0] is True
+    assert sum(decisions) == 4
+
+
+@pytest.mark.unit
+def test_simple_filter_preserves_non_integer_frame_rate_ratio():
+    simple_filter = simple_filter_module.SimpleFilter()
+    system = SimpleNamespace(raw_meta_data={"fps": 30}, meta_data={"fps": 8})
+
+    decisions = [simple_filter(system, object()) for _ in range(30)]
+
+    assert decisions[0] is True
+    assert sum(decisions) == 8
 
 
 @pytest.mark.unit

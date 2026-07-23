@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -96,14 +97,16 @@ def test_controller_lifespan_only_owns_one_lease_ttl_cleaner(monkeypatch):
 
 
 @pytest.mark.unit
-def test_accept_task_publishes_file_and_returns_ack_without_branch_cleanup(monkeypatch):
+def test_accept_task_publishes_file_and_enqueues_before_ack(monkeypatch):
     module = importlib.import_module("core.controller.controller_server")
     server = object.__new__(module.ControllerServer)
+    server.controller = FakeController()
+    server._init_inbox()
     task = FakeTask()
     calls = []
     server.controller = SimpleNamespace(
+        runtime_context=SimpleNamespace(lease_ttl_seconds=3600.0),
         record_transmit_ts=lambda current, is_end: calls.append(("record", current, is_end)),
-        submit_task=lambda current: calls.append(("submit", current)) or True,
     )
     monkeypatch.setattr(module.Task, "deserialize", staticmethod(lambda data: task))
     monkeypatch.setattr(
@@ -124,24 +127,30 @@ def test_accept_task_publishes_file_and_returns_ack_without_branch_cleanup(monke
     assert calls == [
         ("save", task, b"payload"),
         ("record", task, True),
-        ("submit", task),
     ]
+    assert server._inbox.get_nowait() == ("task", task)
 
-    server.controller.submit_task = lambda current: False
-    with pytest.raises(HTTPException) as exc_info:
-        server.accept_task("serialized", b"payload")
-    assert exc_info.value.status_code == 503
+    # An upstream retry receives the same ownership ACK without replaying the
+    # Controller work or inflating the transmit timestamp.
+    assert server.accept_task("serialized", b"payload") == {
+        "accepted": True,
+        "task_uuid": "branch-1",
+    }
+    assert server._inbox.empty()
+    assert calls == [("save", task, b"payload"), ("record", task, True)]
 
 
 @pytest.mark.unit
-def test_accept_result_refreshes_artifact_and_propagates_failure(monkeypatch):
+def test_accept_result_refreshes_artifact_and_enqueues_before_ack(monkeypatch):
     module = importlib.import_module("core.controller.controller_server")
     server = object.__new__(module.ControllerServer)
+    server.controller = FakeController()
+    server._init_inbox()
     task = FakeTask()
     calls = []
     server.controller = SimpleNamespace(
+        runtime_context=SimpleNamespace(lease_ttl_seconds=3600.0),
         record_execute_ts=lambda current, is_end: calls.append(("record", current, is_end)),
-        process_return=lambda current: calls.append(("return", current)) or True,
     )
     monkeypatch.setattr(module.Task, "deserialize", staticmethod(lambda data: task))
     monkeypatch.setattr(
@@ -151,22 +160,52 @@ def test_accept_result_refreshes_artifact_and_propagates_failure(monkeypatch):
     )
 
     assert server.accept_result("serialized") == {"accepted": True, "task_uuid": "branch-1"}
-    assert calls == [("touch", task), ("record", task, True), ("return", task)]
+    assert calls == [("touch", task), ("record", task, True)]
+    assert server._inbox.get_nowait() == ("result", task)
 
+    assert server.accept_result("serialized") == {"accepted": True, "task_uuid": "branch-1"}
+    assert server._inbox.empty()
+    assert calls == [("touch", task), ("record", task, True)]
+
+    second_server = object.__new__(module.ControllerServer)
+    second_server.controller = SimpleNamespace(
+        runtime_context=SimpleNamespace(lease_ttl_seconds=3600.0),
+        record_execute_ts=lambda current, is_end: None,
+    )
+    second_server._init_inbox()
     monkeypatch.setattr(module.FileOps, "touch_task_file_in_temp", staticmethod(lambda current: False))
     with pytest.raises(HTTPException) as exc_info:
-        server.accept_result("serialized")
-    assert exc_info.value.status_code == 503
-
-    monkeypatch.setattr(module.FileOps, "touch_task_file_in_temp", staticmethod(lambda current: True))
-    server.controller.process_return = lambda current: False
-    with pytest.raises(HTTPException) as exc_info:
-        server.accept_result("serialized")
+        second_server.accept_result("serialized")
     assert exc_info.value.status_code == 503
 
 
 @pytest.mark.unit
-def test_task_endpoints_wait_for_synchronous_ownership_ack(monkeypatch):
+def test_controller_inbox_worker_forwards_accepted_work(monkeypatch):
+    module = importlib.import_module("core.controller.controller_server")
+    server = object.__new__(module.ControllerServer)
+    task = FakeTask()
+    forwarded = threading.Event()
+    server.controller = SimpleNamespace(
+        runtime_context=SimpleNamespace(lease_ttl_seconds=3600.0),
+        record_transmit_ts=lambda current, is_end: None,
+        submit_task=lambda current: forwarded.set() or True,
+        process_return=lambda current: True,
+    )
+    server._init_inbox()
+    server._inbox_worker_count = 1
+    monkeypatch.setattr(module.Task, "deserialize", staticmethod(lambda data: task))
+    monkeypatch.setattr(module.FileOps, "save_task_file_in_temp", staticmethod(lambda current, payload: None))
+
+    server._start_inbox_workers()
+    try:
+        assert server.accept_task("serialized", b"payload")["accepted"] is True
+        assert forwarded.wait(timeout=1.0)
+    finally:
+        server._stop_inbox_workers(timeout=1.0)
+
+
+@pytest.mark.unit
+def test_task_endpoints_return_local_ownership_ack(monkeypatch):
     module = importlib.import_module("core.controller.controller_server")
     server = object.__new__(module.ControllerServer)
     server.accept_task = lambda data, payload: {"accepted": True, "task_uuid": "upload"}

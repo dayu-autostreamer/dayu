@@ -27,9 +27,10 @@ def test_fill_datasource_config_uses_stable_in_cluster_service_dns(backend_core_
 
     assert filled["source_label"] == "source_config_0"
     assert [source["id"] for source in filled["source_list"]] == [0, 1]
+    namespace = backend_core_instance.namespace
     assert [source["url"] for source in filled["source_list"]] == [
-        "http://datasource-edge.dayu.svc.cluster.local.:8000/video0",
-        "http://datasource-edge.dayu.svc.cluster.local.:8000/video1",
+        f"http://datasource-edge.{namespace}.svc.cluster.local.:8000/video0",
+        f"http://datasource-edge.{namespace}.svc.cluster.local.:8000/video1",
     ]
 
 

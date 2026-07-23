@@ -2,6 +2,7 @@ import copy
 import importlib
 import json
 import threading
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import urlparse
@@ -337,7 +338,15 @@ class ComponentRouter:
         if self.source_client:
             self.client_by_port["9010"] = self.source_client
 
+        # TestClient is used without a context manager in this in-process
+        # integration harness, so FastAPI's lifespan hook does not start the
+        # Controller's asynchronous forwarding inbox.  Mirror production
+        # startup explicitly and wait for the resulting eventual delivery in
+        # tests below.
+        self.controller_server._start_inbox_workers()
+
     def close(self):
+        self.controller_server._stop_inbox_workers(timeout=2.0)
         self.scheduler_client.close()
         self.controller_client.close()
         self.processor_client.close()
@@ -367,6 +376,25 @@ class ComponentRouter:
         if no_decode:
             return response
         return response.json() if binary else response.content.decode("utf-8")
+
+    def wait_for_result_size(self, expected, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        response = None
+        while time.monotonic() < deadline:
+            response = self.distributor_client.get("/all_result")
+            if response.status_code == 200 and response.json()["size"] == expected:
+                return response
+            time.sleep(0.01)
+        return response
+
+    def wait_for_lease_operation_count(self, expected, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            operations = self.scheduler_server.scheduler.lease_operations
+            if len(operations) >= expected:
+                return operations
+            time.sleep(0.01)
+        return self.scheduler_server.scheduler.lease_operations
 
 
 @pytest.mark.component
@@ -549,7 +577,7 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
         generator.record_total_start_ts(task)
         generator.submit_task_to_controller(task)
 
-        query_response = router.distributor_client.get("/all_result")
+        query_response = router.wait_for_result_size(1)
         assert query_response.status_code == 200
         assert query_response.json()["size"] == 1
 
@@ -707,7 +735,7 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
         )
         generator.run_stream(rounds=3)
 
-        query_response = router.distributor_client.get("/all_result")
+        query_response = router.wait_for_result_size(3)
         assert query_response.status_code == 200
         assert query_response.json()["size"] == 3
 
@@ -735,15 +763,17 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
             "obj_num": 1,
             "payload": "stream-batch-2",
         }
-        assert scheduler_server.scheduler.lease_operations == [
-            operation
+        router.wait_for_lease_operation_count(3 * len(stored_tasks))
+        operations_by_root = {
+            task.get_root_uuid(): [] for task in stored_tasks
+        }
+        for operation, revision, root_uuid in scheduler_server.scheduler.lease_operations:
+            assert revision == 1
+            operations_by_root[root_uuid].append(operation)
+        assert operations_by_root == {
+            task.get_root_uuid(): ["acquire", "renew", "release"]
             for task in stored_tasks
-            for operation in (
-                ("acquire", 1, task.get_root_uuid()),
-                ("renew", 1, task.get_root_uuid()),
-                ("release", 1, task.get_root_uuid()),
-            )
-        ]
+        }
     finally:
         router.close()
 

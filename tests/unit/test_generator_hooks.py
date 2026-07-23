@@ -593,3 +593,57 @@ def test_video_generator_run_refreshes_schedule_after_retired_lease(monkeypatch)
     assert [identity.task_id for identity in data_getter_calls] == [200]
     assert [count for count, _ in schedule_requests] == [0, 0]
     assert [identity.task_id for _, identity in schedule_requests] == [200, 201]
+
+
+@pytest.mark.unit
+def test_video_generator_replays_same_pending_identity_while_datasource_is_exhausted(monkeypatch):
+    generator_module = importlib.import_module("core.generator.generator")
+    video_generator_module = importlib.import_module("core.generator.video_generator")
+
+    getter_calls = []
+
+    def data_getter(system, task_identity):
+        getter_calls.append(task_identity)
+        if len(getter_calls) == 2:
+            raise StopGeneratorLoop
+        return False
+
+    hooks = {
+        "GEN_BSO": lambda system: {},
+        "GEN_ASO": lambda system, response: None,
+        "GEN_GETTER": data_getter,
+        "GEN_BSTO": lambda system, task: None,
+        "GEN_FILTER": object(),
+        "GEN_PROCESS": object(),
+        "GEN_COMPRESS": object(),
+        "GEN_GETTER_FILTER": lambda system: True,
+    }
+    patch_generator_runtime(
+        monkeypatch,
+        generator_module,
+        hooks,
+        video_generator_module=video_generator_module,
+    )
+
+    generator = video_generator_module.VideoGenerator(
+        source_id=11,
+        source_url="http://source/video",
+        source_metadata={"fps": 5},
+        dag=build_dag_deployment(),
+    )
+    identity = TaskIdentity.create(source_id=11, task_id=300)
+    monkeypatch.setattr(generator, "create_task_identity", lambda: identity)
+
+    schedule_requests = []
+
+    def fake_request_schedule_policy(task_identity=None):
+        schedule_requests.append(task_identity)
+        return True
+
+    monkeypatch.setattr(generator, "request_schedule_policy", fake_request_schedule_policy)
+
+    with pytest.raises(StopGeneratorLoop):
+        generator.run()
+
+    assert getter_calls == [identity, identity]
+    assert schedule_requests == [identity]

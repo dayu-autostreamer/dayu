@@ -100,6 +100,7 @@ def test_fragsplice_templates_share_fixed_initial_deployment_and_disable_redeplo
     assert "SCH_REDEPLOYMENT_POLICY_PARAMETERS" not in main_env
     assert cold_agent["profile_path"] == main_agent["latency_profile"]
     assert cold_agent["configuration"] == main_agent["configuration"]
+    assert cold_agent["max_inflight_tasks"] == 1
     assert cold["file-mount"] == main["file-mount"] == [{
         "pos": "cloud",
         "path": "scheduler/fragsplice/",
@@ -322,7 +323,7 @@ def test_optimizer_accounts_for_pending_reservations_before_admission():
 
 
 @pytest.mark.unit
-def test_optimizer_uses_task_creation_time_for_end_to_end_slo():
+def test_optimizer_starts_candidate_slo_after_identity_reservation():
     model = FragSpliceLatencyModel({
         "pairs": {"detect": {"edge-a": {"samples": [1.0]}}},
     })
@@ -349,9 +350,123 @@ def test_optimizer_uses_task_creation_time_for_end_to_end_slo():
         "cloud",
     )
 
-    assert result["score"][0] == 1.0
-    assert result["intrinsic_slo_infeasible"] is True
-    assert result["unschedulable"] is True
+    assert result["score"][0] == 0.0
+    assert result["score"][2] == pytest.approx(1.0)
+    assert result["intrinsic_slo_infeasible"] is False
+    assert result["unschedulable"] is False
+
+
+@pytest.mark.unit
+def test_optimizer_prioritizes_incremental_latency_before_fragmentation():
+    """Fragmentation cannot beat latency when SLO risk is identical."""
+
+    class StubState:
+        @staticmethod
+        def simulate(candidate, seed, include_calendar=False):
+            if candidate is None:
+                return {
+                    "latency": {"old": 1.0},
+                    "deadlines": {"old": 10.0},
+                    "candidate_noqueue": 0.0,
+                    "replica_work": {},
+                }
+            device = candidate["plan"]["detect"]
+            if device == "fast-fragmented":
+                candidate_latency = 2.0
+                candidate_noqueue = 1.0
+                replica_work = {("detect", device): 2.0}
+            else:
+                candidate_latency = 3.0
+                candidate_noqueue = 3.0
+                replica_work = {("detect", device): 1.0}
+            return {
+                "latency": {"old": 1.0, "new": candidate_latency},
+                "deadlines": {"old": 10.0, "new": 10.0},
+                "candidate_noqueue": candidate_noqueue,
+                "replica_work": replica_work,
+            }
+
+    common = dict(
+        state=StubState(),
+        dag=one_service_dag(),
+        source_id=1,
+        candidate_root="new",
+        candidate_created_at=0.0,
+        slo=10.0,
+        seeds=[1],
+        baseline_cache={},
+        outcome_cache={},
+    )
+    fast_score = FragSpliceOptimizer._score_plan(
+        plan={"detect": "fast-fragmented"}, **common
+    )
+    slow_score = FragSpliceOptimizer._score_plan(
+        plan={"detect": "slow-compact"}, **common
+    )
+
+    assert fast_score[:2] == slow_score[:2] == (0.0, 0.0)
+    assert fast_score[2] < slow_score[2]
+    assert fast_score[3] > slow_score[3]
+    assert fast_score < slow_score
+
+
+@pytest.mark.unit
+def test_execution_state_models_causal_non_processor_overheads_and_exact_slo_start():
+    model = FragSpliceLatencyModel({
+        "pairs": {"detect": {"edge-a": {"samples": [1.0]}}},
+        "handoff_pairs": {"detect": {"edge-a": {"samples": [0.1]}}},
+        "transfer_pairs": {
+            "detect": {"edge-a": {"samples": [0.2]}},
+            "_end": {"cloud": {"samples": [0.5]}},
+        },
+        "dispatch_pairs": {
+            "detect": {"edge-a": {"samples": [0.4]}},
+        },
+        "control_pairs": {
+            "detect": {"edge-a": {"samples": [0.3]}},
+            "_end": {"cloud": {"samples": [0.6]}},
+        },
+        "completion_overhead": {"1": {"samples": [0.7]}},
+    })
+    task_dag = one_service_dag("edge-a")
+    snapshot = {
+        "captured_at": 10.0,
+        "runtime_directory_revision": 1,
+        "reservations": [],
+        "commitments": [{
+            "root_uuid": "old",
+            "source_id": 1,
+            "source_device": "source",
+            "created_at": 1.0,
+            "slo_started_at": 8.0,
+            "runtime_directory_revision": 1,
+            "dag": task_dag,
+        }],
+        "task_barriers": [],
+        "resources": {},
+    }
+    state = FragSpliceExecutionState(snapshot, model, default_slo_s=20.0)
+
+    active = state.simulate(None, seed=7)
+    empty_state = FragSpliceExecutionState(
+        {**snapshot, "commitments": []}, model, default_slo_s=20.0
+    )
+    candidate = empty_state.simulate({
+        "root": "new",
+        "source": 1,
+        "dag": task_dag,
+        "plan": {"detect": "edge-a"},
+        "created_at": 1.0,
+        "slo": 20.0,
+    }, seed=7)
+
+    # No-queue path: control .3 + transfer .2 + dispatch .4 + processing 1
+    # + handoff .1 + end control .6 + end transfer .5 + completion .7.
+    assert candidate["candidate_noqueue"] == pytest.approx(3.8)
+    # The candidate starts its SLO clock at captured_at, not created_at.
+    assert candidate["latency"]["new"] == pytest.approx(3.8)
+    # The admitted task uses its exact SLO start: 2 seconds have elapsed.
+    assert active["latency"]["old"] == pytest.approx(5.8)
 
 
 @pytest.mark.unit
@@ -673,6 +788,135 @@ def test_joint_residual_sampling_does_not_resample_content_variation_twice():
     assert values == {1.0, 4.0}
 
 
+@pytest.mark.unit
+def test_joint_residual_sampling_uses_exponential_recency_weights():
+    histories = [
+        {"detect": float(index), "__shared__": float(index)}
+        for index in range(17)
+    ]
+    model = FragSpliceLatencyModel(
+        {
+            "pairs": {"detect": {"edge-a": {"samples": [1.0]}}},
+            "task_residuals": {"1": histories},
+        },
+        residual_half_life_tasks=8.0,
+    )
+
+    class CapturingRandom:
+        def __init__(self):
+            self.weights = None
+
+        def choices(self, population, weights, k):
+            self.weights = list(weights)
+            return [population[-1]]
+
+    rng = CapturingRandom()
+    model.sample_task(1, {"detect": "edge-a"}, rng)
+
+    assert rng.weights[-1] == pytest.approx(1.0)
+    assert rng.weights[0] == pytest.approx(0.25)
+
+
+@pytest.mark.unit
+def test_incumbent_neighborhood_checks_high_cost_service_first():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "light": {
+                "edge-a": {"samples": [0.1]},
+                "edge-b": {"samples": [0.2]},
+            },
+            "heavy": {
+                "edge-a": {"samples": [1.0]},
+                "edge-b": {"samples": [1.2]},
+            },
+        },
+    })
+    optimizer = FragSpliceOptimizer(
+        model,
+        scenario_count=8,
+        max_scenarios=8,
+        incumbent_neighborhood_size=1,
+    )
+    preferred = {"light": "edge-a", "heavy": "edge-a"}
+
+    plans = optimizer._incumbent_neighborhood(
+        ["light", "heavy"],
+        {
+            "light": ["edge-a", "edge-b"],
+            "heavy": ["edge-a", "edge-b"],
+        },
+        preferred,
+    )
+
+    assert plans == [{"light": "edge-a", "heavy": "edge-b"}]
+
+
+@pytest.mark.unit
+def test_commitment_calendar_screening_warm_start_can_change_multiple_stages():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [1.0]},
+                "edge-b": {"samples": [1.0]},
+            },
+            "classify": {
+                "edge-c": {"samples": [1.0]},
+                "edge-d": {"samples": [1.0]},
+            },
+        },
+    })
+    optimizer = FragSpliceOptimizer(
+        model,
+        scenario_count=8,
+        max_scenarios=8,
+        screening_beam_width=4,
+    )
+    task_dag = dag()
+    snapshot = {
+        "captured_at": 10.0,
+        "runtime_directory_revision": 1,
+        "reservations": [],
+        "commitments": [],
+        "task_barriers": [],
+        "resources": {
+            "edge-a": {"queue_state": {"detect": {
+                "busy": True,
+                "running_phase": "processing",
+                "phase_elapsed_s": 0.0,
+            }}},
+            "edge-c": {"queue_state": {"classify": {
+                "busy": True,
+                "running_phase": "processing",
+                "phase_elapsed_s": 0.0,
+            }}},
+        },
+        "resource_received_at": {"edge-a": 10.0, "edge-c": 10.0},
+        "resource_runtime_revision": {"edge-a": 1, "edge-c": 1},
+    }
+    state = FragSpliceExecutionState(snapshot, model, default_slo_s=10.0)
+    seed = optimizer.random_seed
+    baseline = state.simulate(None, seed, include_calendar=True)
+
+    plans = optimizer._screening_plans(
+        state,
+        task_dag,
+        ["detect", "classify"],
+        {
+            "detect": ["edge-a", "edge-b"],
+            "classify": ["edge-c", "edge-d"],
+        },
+        {"detect": "edge-a", "classify": "edge-c"},
+        1,
+        "new",
+        10.0,
+        10.0,
+        seed,
+        baseline,
+    )
+
+    assert plans[0] == {"detect": "edge-b", "classify": "edge-d"}
+
+
 class FakeService:
     def __init__(self, device, duration, timing=None):
         self.device = device
@@ -805,6 +1049,84 @@ def test_main_agent_returns_complete_plan_without_mutating_request(tmp_path, mon
 
 
 @pytest.mark.unit
+def test_main_agent_current_state_ablation_removes_only_future_commitments(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Context, "parameters", {
+        "DEFAULT_MOUNT_PATH": str(tmp_path),
+        "DATA_PATH_PREFIX": str(tmp_path),
+    })
+
+    class CommitmentSystem(FakeSystem):
+        def get_scheduling_snapshot(self):
+            return {
+                "captured_at": 1.0,
+                "deployment": self.runtime_service_nodes(),
+                "reservations": [{"root_uuid": "pending"}],
+                "commitments": [{"root_uuid": "active"}],
+                "task_barriers": [{"root_uuid": "active"}],
+                "resources": {"edge-a": {"queue_state": {"detect": {
+                    "waiting_count": 2,
+                }}}},
+            }
+
+    system = CommitmentSystem(revision=31)
+    original = dag()
+    agent = FragSpliceAgent(
+        system,
+        agent_id=31,
+        configuration={"fps": 6},
+        latency_profile=contextual_profile(
+            {"fps": 6},
+            system.runtime_service_nodes(),
+            original,
+            {
+                "detect": {"edge-a": [0.1], "edge-b": [0.2]},
+                "classify": {"edge-c": [0.1]},
+            },
+        ),
+        scenario_count=8,
+        max_scenarios=8,
+        use_future_commitments=False,
+    )
+    captured = {}
+
+    def fake_solve(info, snapshot, deployment, cloud_device, initial_plan=None):
+        captured["snapshot"] = snapshot
+        return {
+            "plan": {"detect": "edge-a", "classify": "edge-c"},
+            "candidate_count": 2,
+            "screened": 2,
+            "scenario_count": 8,
+            "evaluated": [((0.0,), {})],
+            "optimality_proven": True,
+            "unschedulable": False,
+            "intrinsic_slo_infeasible": False,
+            "budget_exhausted": False,
+            "predicted_miss_probability": 0.0,
+            "score": (0.0, 0.0, 0.0, 0.0, 0.2),
+            "best_open_lower_bound": (0.0, 0.0, 0.0, 0.0, 0.2),
+            "search_seconds": 0.01,
+        }
+
+    monkeypatch.setattr(agent.optimizer, "solve", fake_solve)
+    agent.get_schedule_plan({
+        "source_id": 1,
+        "source_device": "source",
+        "dag": original,
+        "meta_data": {},
+    })
+
+    snapshot = captured["snapshot"]
+    assert snapshot["reservations"] == []
+    assert snapshot["commitments"] == []
+    assert snapshot["task_barriers"] == []
+    assert snapshot["resources"]["edge-a"]["queue_state"]["detect"][
+        "waiting_count"
+    ] == 2
+
+
+@pytest.mark.unit
 def test_cold_sampler_profiles_only_pairs_in_fixed_deployment(tmp_path, monkeypatch):
     parameters = {
         "DEFAULT_MOUNT_PATH": str(tmp_path),
@@ -894,6 +1216,49 @@ def test_cold_sampler_resumes_completed_fixed_deployment_profile(tmp_path, monke
 
 
 @pytest.mark.unit
+def test_cold_sampler_bounds_pending_and_active_roots(tmp_path, monkeypatch):
+    monkeypatch.setattr(Context, "parameters", {
+        "DEFAULT_MOUNT_PATH": str(tmp_path),
+        "DATA_PATH_PREFIX": str(tmp_path),
+    })
+
+    class BusySystem(FakeSystem):
+        def get_scheduling_snapshot(self):
+            return {
+                "captured_at": 1.0,
+                "deployment": self.runtime_service_nodes(),
+                "reservations": [
+                    {"root_uuid": "pending-root"},
+                    {"root_uuid": "shared-root"},
+                ],
+                "commitments": [
+                    {"root_uuid": "shared-root"},
+                    {"root_uuid": "active-root"},
+                ],
+                "task_barriers": [],
+                "resources": {},
+            }
+
+    agent = FragSpliceColdSampleAgent(
+        BusySystem(revision=18),
+        agent_id=18,
+        profile_path=str(tmp_path / "fragsplice.json"),
+        warmup_samples=0,
+        samples_per_pair=1,
+        max_inflight_tasks=3,
+    )
+
+    decision = agent.should_generate({})
+
+    assert decision == {
+        "generate": False,
+        "reason": "fragsplice_profile_inflight_limit",
+        "inflight_tasks": 3,
+        "max_inflight_tasks": 3,
+    }
+
+
+@pytest.mark.unit
 def test_main_agent_persists_online_feedback_atomically(tmp_path, monkeypatch):
     monkeypatch.setattr(Context, "parameters", {
         "DEFAULT_MOUNT_PATH": str(tmp_path),
@@ -960,7 +1325,10 @@ def test_main_agent_rejects_legacy_and_configuration_mismatched_profiles():
 
 
 @pytest.mark.unit
-def test_agents_reject_deployment_and_dag_context_mismatches(tmp_path, monkeypatch):
+def test_cold_sampler_resets_deployment_mismatch_but_main_rejects_dag_mismatch(
+    tmp_path,
+    monkeypatch,
+):
     monkeypatch.setattr(Context, "parameters", {
         "DEFAULT_MOUNT_PATH": str(tmp_path),
         "DATA_PATH_PREFIX": str(tmp_path),
@@ -984,8 +1352,18 @@ def test_agents_reject_deployment_and_dag_context_mismatches(tmp_path, monkeypat
         agent_id=13,
         profile_path=str(profile_path),
     )
-    with pytest.raises(ValueError, match="deployment"):
-        cold_agent.is_complete()
+    assert cold_agent.is_complete() is False
+    cold_agent.get_schedule_plan({
+        "source_device": "source",
+        "dag": dag(),
+    })
+    reset_profile = cold_agent.get_profile()
+    assert reset_profile["pairs"] == {}
+    assert reset_profile["context"] == FragSpliceLatencyModel.build_profile_context(
+        {},
+        FakeSystem().runtime_service_nodes(),
+        dag(),
+    )
 
     with pytest.raises(ValueError, match="dag"):
         main_agent = FragSpliceAgent(
@@ -1007,6 +1385,41 @@ def test_agents_reject_deployment_and_dag_context_mismatches(tmp_path, monkeypat
             "dag": dag(),
             "meta_data": {},
         })
+
+
+@pytest.mark.unit
+def test_cold_sampler_resets_incompatible_persisted_configuration(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(Context, "parameters", {
+        "DEFAULT_MOUNT_PATH": str(tmp_path),
+        "DATA_PATH_PREFIX": str(tmp_path),
+    })
+    profile_path = tmp_path / "fragsplice.json"
+    profile_path.write_text(json.dumps(contextual_profile(
+        {"fps": 6},
+        FakeSystem().runtime_service_nodes(),
+        dag(),
+        {
+            "detect": {"edge-a": [0.1], "edge-b": [0.2]},
+            "classify": {"edge-c": [0.1]},
+        },
+    )), encoding="utf-8")
+
+    agent = FragSpliceColdSampleAgent(
+        FakeSystem(revision=16),
+        agent_id=16,
+        configuration={"fps": 4},
+        profile_path=str(profile_path),
+        warmup_samples=0,
+        samples_per_pair=1,
+    )
+    agent.get_schedule_plan({"source_device": "source", "dag": dag()})
+
+    profile = agent.get_profile()
+    assert profile["pairs"] == {}
+    assert profile["context"]["configuration"] == {"fps": 4}
 
 
 @pytest.mark.unit

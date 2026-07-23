@@ -99,6 +99,7 @@ def test_controller_processor_delivery_requires_exact_task_route(controller_unde
     monkeypatch.setattr(module, "deliver_task", lambda **kwargs: calls.append(kwargs) or True)
     assert controller.send_task_to_service(task, "face-detection") is True
     assert calls[0]["url"] == "http://processor-face-detection-edgex1.dayu.svc:31000/predict_local"
+    assert calls[0]["persistent"] is True
 
     missing = FakeTask(routes=[route("processor", "cloudx1", 31000, "face-detection")])
     assert controller.send_task_to_service(missing, "face-detection") is False
@@ -117,6 +118,7 @@ def test_controller_remote_delivery_uses_task_controller_identity(controller_und
     monkeypatch.setattr(module, "deliver_task", lambda **kwargs: calls.append(kwargs) or True)
     assert controller.send_task_to_other_device(task, "cloudx1") is True
     assert calls[0]["url"] == "http://controller-runtime-cloudx1.dayu.svc:9002/submit_task"
+    assert calls[0]["persistent"] is True
 
 
 @pytest.mark.unit

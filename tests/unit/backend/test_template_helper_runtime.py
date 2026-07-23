@@ -29,7 +29,8 @@ def test_runtime_renderer_wrapper_emits_tokenless_runtime_service(mounted_runtim
     manifest = rendered.manifest
     assert manifest["apiVersion"] == "sedna.io/v1alpha1"
     assert manifest["kind"] == "RuntimeService"
-    assert manifest["metadata"]["namespace"] == "dayu"
+    namespace = helper.load_base_info()["namespace"]
+    assert manifest["metadata"]["namespace"] == namespace
     assert manifest["spec"]["targetNode"] == "edge-a"
     assert manifest["spec"]["deploymentRevision"] == 3
     assert manifest["spec"]["endpoint"] == {"port": 9000}
@@ -45,7 +46,9 @@ def test_runtime_renderer_wrapper_emits_tokenless_runtime_service(mounted_runtim
     assert env["NODE_NAME"] == "edge-a"
     assert env["GUNICORN_PORT"] == "9000"
     assert not ({"KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "KUBE_CACHE_TTL"} & set(env))
-    assert rendered.unit.endpoint.dns_name.endswith(".dayu.svc.cluster.local")
+    assert rendered.unit.endpoint.dns_name.endswith(
+        f".{namespace}.svc.cluster.local"
+    )
 
 
 @pytest.mark.unit

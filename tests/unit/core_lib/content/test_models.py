@@ -274,6 +274,8 @@ def test_task_preserves_root_schedule_commitment_across_forks_and_serialization(
     task.set_schedule_plan_digest("digest-1")
     task.set_deployment_version(11)
     task.set_runtime_directory_revision(7)
+    prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
+    task.get_tmp_data()[f"{prefix}:total_start_time"] = 124.0
 
     branch = task.step_to_next_stage()[0]
     restored = Task.deserialize(branch.serialize())
@@ -283,6 +285,8 @@ def test_task_preserves_root_schedule_commitment_across_forks_and_serialization(
     assert restored.get_schedule_plan_digest() == "digest-1"
     commitment = restored.get_schedule_commitment()
     assert commitment["root_uuid"] == task.get_root_uuid()
+    assert commitment["source_device"] == task.get_source_device()
+    assert commitment["slo_started_at"] == 124.0
     assert commitment["task_uuid"] == branch.get_task_uuid()
     assert commitment["runtime_directory_revision"] == 7
     assert commitment["deployment_version"] == 11
@@ -323,6 +327,8 @@ def test_task_delay_calculation_time_tickets_and_estimator_helpers(monkeypatch):
     task.set_flow_index(TaskConstant.END.value)
 
     assert task.get_real_end_to_end_time() == pytest.approx(6.0)
+    assert task.get_slo_start_time() == pytest.approx(10.0)
+    assert task.get_slo_end_time() == pytest.approx(16.0)
     assert task.calculate_total_time() == pytest.approx(1.5)
     assert task.calculate_cloud_edge_transmit_time() == pytest.approx(0.5)
     assert "total delay:1.5000s" in task.get_delay_info()
