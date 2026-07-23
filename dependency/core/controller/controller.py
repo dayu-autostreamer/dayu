@@ -181,6 +181,7 @@ class Controller:
             method=NetworkAPIMethod.CONTROLLER_TASK,
             task=cur_task,
             file_path=FileOps.get_task_file_in_temp(cur_task),
+            persistent=True,
         )
         if accepted:
             LOGGER.info(f'[To Device {device}] source: {cur_task.get_source_id()}  '
@@ -216,6 +217,7 @@ class Controller:
             url=service_address,
             method=NetworkAPIMethod.PROCESSOR_PROCESS_LOCAL,
             task=cur_task,
+            persistent=True,
         )
         if accepted:
             LOGGER.info(f'[To Service {service} Local] source: {cur_task.get_source_id()}  '
@@ -240,7 +242,7 @@ class Controller:
             delivery["file_path"] = task_file_path
         else:
             delivery["file_content"] = b''
-        accepted = deliver_task(**delivery)
+        accepted = deliver_task(**delivery, persistent=True)
         if accepted:
             LOGGER.info(f'[To Distributor] source: {cur_task.get_source_id()}  '
                         f'task: {cur_task.get_task_id()} current service: {cur_task.get_flow_index()}')

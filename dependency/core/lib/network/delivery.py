@@ -37,12 +37,14 @@ def deliver_task(
 ):
     """Transfer task ownership only after the receiver returns an exact ACK.
 
-    Controller forwarding performs one attempt and propagates failure to the
-    upstream owner. Generator and Processor use ``persistent=True`` so they
-    retain their current task and apply backpressure until another component
-    accepts it. File uploads reopen the immutable artifact for every attempt,
-    replaying the complete payload without buffering a video in memory or
-    reusing an exhausted file handle.
+    Runtime owners use ``persistent=True`` so they retain their current task
+    and apply backpressure until the next component accepts it.  In
+    particular, a Controller may already have released one fork branch when a
+    later branch encounters a transient route failure; retrying inside that
+    same Controller call avoids replaying the completed upstream invocation
+    and re-running the fork. File uploads reopen the immutable artifact for
+    every attempt, replaying the complete payload without buffering a video in
+    memory or reusing an exhausted file handle.
     """
     if file_path is not None and file_content is not None:
         raise ValueError("task delivery accepts either file_path or file_content, not both")
