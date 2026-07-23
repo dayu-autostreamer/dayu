@@ -10,7 +10,8 @@ class TrafficSignalRecognition:
     signal_categories = {'traffic_light'}
 
     def __init__(self, weights='', device=0, confidence_threshold=0.25, temporal_reuse=True,
-                 reuse_iou_threshold=0.40, reuse_hist_correlation=0.95, reuse_value_delta=0.08):
+                 reuse_iou_threshold=0.40, reuse_hist_correlation=0.95, reuse_value_delta=0.08,
+                 inference_batch_size=1, inference_imgsz=320):
         self.weights = weights
         self.device = device
         self.confidence_threshold = float(confidence_threshold)
@@ -18,6 +19,8 @@ class TrafficSignalRecognition:
         self.reuse_iou_threshold = float(reuse_iou_threshold)
         self.reuse_hist_correlation = float(reuse_hist_correlation)
         self.reuse_value_delta = float(reuse_value_delta)
+        self.inference_batch_size = max(1, int(inference_batch_size))
+        self.inference_imgsz = max(32, int(inference_imgsz))
         self.model = self._load_model(self.weights)
         self.flops = 0
 
@@ -90,11 +93,23 @@ class TrafficSignalRecognition:
             matches = self._match_previous_frame(previous_inferences, current_entries)
             current_inferences = []
 
+            pending_indices = [
+                current_index
+                for current_index in range(len(current_entries))
+                if current_index not in matches
+            ]
+            inferred = {}
+            for offset in range(0, len(pending_indices), self.inference_batch_size):
+                batch_indices = pending_indices[offset:offset + self.inference_batch_size]
+                batch_crops = [current_entries[index]['crop'] for index in batch_indices]
+                predictions = self._predict_crops(batch_crops)
+                inferred.update(zip(batch_indices, predictions))
+            inference_count += len(pending_indices)
+
             for current_index, entry in enumerate(current_entries):
                 prediction = matches.get(current_index)
                 if prediction is None:
-                    prediction = self._predict_crop(entry['crop'])
-                    inference_count += 1
+                    prediction = inferred.get(current_index)
                     if prediction is not None and entry['signature'] is not None:
                         current_inferences.append({
                             'bbox': entry['detection'].get('bbox', []),
@@ -125,18 +140,32 @@ class TrafficSignalRecognition:
         return signals
 
     def _predict_crop(self, crop):
+        return self._predict_crops([crop])[0]
+
+    def _predict_crops(self, crops):
+        if not crops:
+            return []
         detector = self.model.get('model')
         try:
             results = detector.predict(
-                source=crop,
+                source=crops[0] if len(crops) == 1 else crops,
                 verbose=False,
                 conf=self.confidence_threshold,
                 device=self._ultralytics_device(),
+                imgsz=self.inference_imgsz,
             )
         except Exception as exc:  # pragma: no cover - hardware/runtime dependent.
             self.model['error'] = str(exc)
-            return None
-        return self._best_state(results, detector)
+            return [None] * len(crops)
+
+        results = list(results or [])
+        predictions = [
+            self._best_state([result], detector)
+            for result in results[:len(crops)]
+        ]
+        if len(predictions) < len(crops):
+            predictions.extend([None] * (len(crops) - len(predictions)))
+        return predictions
 
     @staticmethod
     def _signal_item(detection, original_index, frame_index, prediction):
