@@ -127,12 +127,49 @@ class ProcessorServer:
             if task_uuid in self._accepted_tasks:
                 return False
             with self._queue_state_lock:
+                self._record_queue_enter(task)
                 self.task_queue.put(task)
                 self._queue_state_sequence += 1
             expires_at = now + self.runtime_context.lease_ttl_seconds
             self._accepted_tasks[task_uuid] = expires_at
             self._accepted_task_expirations.append((expires_at, task_uuid))
             return True
+
+    @staticmethod
+    def _service_timing(task):
+        """Return the mutable timing map for the task's current service."""
+        service = task.get_current_service()
+        timing = service.get_tmp_data()
+        if not isinstance(timing, dict):
+            timing = {}
+            service.set_tmp_data(timing)
+        return timing
+
+    @classmethod
+    def _record_queue_enter(cls, task):
+        """Start one processor-local FIFO wait interval."""
+        entered_at = time.time()
+        timing = cls._service_timing(task)
+        timing.setdefault('queue_first_enter', entered_at)
+        timing['queue_enter'] = entered_at
+
+    @classmethod
+    def _record_queue_leave(cls, task):
+        """Close and accumulate one processor-local FIFO wait interval."""
+        left_at = time.time()
+        timing = cls._service_timing(task)
+        entered_at = timing.pop('queue_enter', None)
+        if entered_at is not None:
+            try:
+                wait = max(0.0, left_at - float(entered_at))
+            except (TypeError, ValueError):
+                wait = 0.0
+            timing['queue_wait_time'] = max(
+                0.0,
+                float(timing.get('queue_wait_time') or 0.0),
+            ) + wait
+        timing['queue_leave'] = left_at
+        timing['queue_attempts'] = int(timing.get('queue_attempts') or 0) + 1
 
     async def process_return_service(self, file: UploadFile = File(...),
                                      data: str = Form(...)):
@@ -179,6 +216,7 @@ class ProcessorServer:
             task = self.task_queue.get()
             if not task:
                 return task
+            self._record_queue_leave(task)
             now = time.monotonic()
             self._running_task = self._task_identity(task)
             self._running_started_at = now
@@ -198,6 +236,7 @@ class ProcessorServer:
     def _finish_running_task(self, requeue_task=None):
         with self._queue_state_lock:
             if requeue_task is not None:
+                self._record_queue_enter(requeue_task)
                 self.task_queue.put(requeue_task)
             self._running_task = None
             self._running_started_at = None
