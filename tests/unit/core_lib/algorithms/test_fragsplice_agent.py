@@ -1159,6 +1159,77 @@ def test_incumbent_neighborhood_checks_high_cost_service_first():
 
 
 @pytest.mark.unit
+def test_prescreen_incumbent_escapes_a_newly_congested_previous_plan():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [1.0]},
+                "edge-b": {"samples": [1.2]},
+            },
+        },
+    })
+    optimizer = FragSpliceOptimizer(
+        model,
+        default_slo_s=10.0,
+        scenario_count=8,
+        max_scenarios=8,
+        incumbent_neighborhood_size=1,
+    )
+    task_dag = one_service_dag("edge-a")
+    snapshot = {
+        "captured_at": 5.0,
+        "runtime_directory_revision": 1,
+        "reservations": [],
+        "commitments": [{
+            "root_uuid": "old",
+            "source_id": 1,
+            "admitted_at": 4.0,
+            "dag": task_dag,
+        }],
+        "task_barriers": [],
+        "resources": {
+            "edge-a": {"queue_state": {"detect": {
+                "busy": True,
+                "running_elapsed_s": 0.0,
+                "running_task": {"root_uuid": "old"},
+                "waiting_tasks": [],
+                "observed_at": 5.0,
+            }}},
+            "edge-b": {"queue_state": {"detect": {
+                "busy": False,
+                "waiting_tasks": [],
+                "observed_at": 5.0,
+            }}},
+        },
+        "resource_received_at": {"edge-a": 5.0, "edge-b": 5.0},
+        "resource_runtime_revision": {"edge-a": 1, "edge-b": 1},
+    }
+    state = FragSpliceExecutionState(
+        snapshot, model, default_slo_s=10.0
+    )
+    seed = optimizer.random_seed
+    baseline = state.simulate(None, seed, include_calendar=True)
+
+    plan, screened, completed = optimizer._prescreen_incumbent(
+        state,
+        task_dag,
+        ["detect"],
+        {"detect": ["edge-a", "edge-b"]},
+        {"detect": "edge-a"},
+        1,
+        "new",
+        5.0,
+        10.0,
+        seed,
+        baseline,
+    )
+
+    assert completed is True
+    assert len(screened) == 2
+    assert plan == {"detect": "edge-b"}
+
+
+@pytest.mark.unit
 def test_commitment_calendar_screening_warm_start_can_change_multiple_stages():
     model = FragSpliceLatencyModel({
         "pairs": {

@@ -185,6 +185,80 @@ class FragSpliceOptimizer:
                     return plans
         return plans
 
+    def _prescreen_incumbent(
+        self,
+        state,
+        dag,
+        services,
+        candidates,
+        preferred_plan,
+        source_id,
+        candidate_root,
+        candidate_created_at,
+        slo,
+        seed,
+        baseline,
+        deadline=None,
+    ):
+        """Choose the first fully scored plan from cheap calendar projections.
+
+        Full stochastic scoring scales with every in-flight root. Under a
+        bounded online budget it may consume the whole deadline while scoring
+        only the previous plan, which makes an otherwise anytime optimizer
+        repeat a newly congested assignment indefinitely. Screen the previous
+        plan, the static profile plan, and a small one-replica neighborhood
+        first. The projection is only a primal heuristic; the selected plan is
+        still scored with the complete common-random-number scenario set.
+        """
+
+        plans = [dict(preferred_plan)]
+        profile_plan = self._preferred_plan(
+            services, candidates, initial_plan=None
+        )
+        plans.append(profile_plan)
+        plans.extend(
+            self._incumbent_neighborhood(
+                services, candidates, preferred_plan
+            )
+        )
+
+        unique = []
+        seen = set()
+        for plan in plans:
+            key = tuple(sorted(plan.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(plan)
+
+        ranked = []
+        completed = True
+        for plan in unique:
+            if deadline is not None and time.monotonic() >= deadline:
+                completed = False
+                break
+            candidate = self._candidate_payload(
+                dag,
+                plan,
+                source_id,
+                candidate_root,
+                candidate_created_at,
+                slo,
+            )
+            projection = state.screen_candidate(
+                candidate, seed, baseline
+            )
+            ranked.append((
+                self._screen_score(projection, slo),
+                tuple(sorted(plan.items())),
+                dict(plan),
+            ))
+
+        if not ranked:
+            return dict(preferred_plan), [], completed
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        return ranked[0][2], [item[2] for item in ranked], completed
+
     @staticmethod
     def _candidate_payload(
         dag,
@@ -394,18 +468,28 @@ class FragSpliceOptimizer:
             dag, candidates, {}, slo, source_id=source_id
         )
 
-        def fallback(reason, screened=0, screening_completed=False):
+        def fallback(
+            reason,
+            plan=None,
+            screened=0,
+            screening_completed=False,
+        ):
             # The action remains valid even when the budget is consumed before
             # a stochastic score can be evaluated. Reuse the previous valid
-            # plan when available; otherwise use the profile-median plan.
+            # plan when available; otherwise use the best calendar-screened
+            # plan or the profile-median plan.
             # score_evaluated makes the optimistic bound impossible to mistake
             # for a simulated objective.
+            fallback_plan = (
+                dict(plan) if isinstance(plan, dict)
+                else dict(preferred_plan)
+            )
             return {
-                "plan": dict(preferred_plan),
+                "plan": fallback_plan,
                 "score": self._lower_score(
                     dag,
                     candidates,
-                    preferred_plan,
+                    fallback_plan,
                     slo,
                     source_id=source_id,
                 ),
@@ -422,10 +506,11 @@ class FragSpliceOptimizer:
         if deadline is not None and time.monotonic() >= deadline:
             return fallback("budget_exhausted_before_state_evaluation")
 
-        # Establish one completely scored feasible incumbent before spending
-        # time on heuristic screening. A screening beam may visit many cheap
-        # projections; under a tight online budget it must never consume the
-        # only opportunity to obtain a valid stochastic objective.
+        # Build one committed-work calendar, then spend only a small bounded
+        # slice selecting which feasible plan deserves the first expensive
+        # all-scenario evaluation. This preserves a valid anytime incumbent
+        # while preventing the previous plan from monopolizing every tight
+        # decision budget after its replica becomes congested.
         screen_seed = seeds[0]
         if screen_seed not in baseline_cache:
             baseline_cache[screen_seed] = state.simulate(
@@ -433,7 +518,35 @@ class FragSpliceOptimizer:
             )
         if deadline is not None and time.monotonic() >= deadline:
             return fallback("budget_exhausted_after_baseline")
-        incumbent_plan = dict(preferred_plan)
+        prescreen_deadline = deadline
+        if deadline is not None:
+            now = time.monotonic()
+            remaining = max(0.0, deadline - now)
+            prescreen_deadline = min(
+                deadline,
+                now + min(0.015, 0.10 * remaining),
+            )
+        (
+            incumbent_plan,
+            prescreened_plans,
+            prescreening_completed,
+        ) = self._prescreen_incumbent(
+            state,
+            dag,
+            services,
+            candidates,
+            preferred_plan,
+            source_id,
+            candidate_root,
+            candidate_created_at,
+            slo,
+            screen_seed,
+            baseline_cache[screen_seed],
+            deadline=prescreen_deadline,
+        )
+        screened_keys = {
+            tuple(sorted(plan.items())) for plan in prescreened_plans
+        }
         incumbent_score = self._score_plan(
             state,
             dag,
@@ -450,6 +563,9 @@ class FragSpliceOptimizer:
         if incumbent_score is None:
             return fallback(
                 "budget_exhausted_during_incumbent_evaluation",
+                plan=incumbent_plan,
+                screened=len(screened_keys),
+                screening_completed=False,
             )
         evaluated_by_plan = {
             tuple(sorted(incumbent_plan.items())): (
@@ -466,7 +582,7 @@ class FragSpliceOptimizer:
                     evaluated_by_plan.values(), key=lambda item: item[0]
                 ),
                 "expanded": expanded,
-                "screened": 0,
+                "screened": len(screened_keys),
                 "screening_completed": False,
                 "score_evaluated": True,
                 "fallback_reason": "budget_exhausted_after_incumbent",
@@ -482,8 +598,8 @@ class FragSpliceOptimizer:
                     evaluated_by_plan.values(), key=lambda item: item[0]
                 ),
                 "expanded": expanded,
-                "screened": 1,
-                "screening_completed": True,
+                "screened": max(1, len(screened_keys)),
+                "screening_completed": prescreening_completed,
                 "score_evaluated": True,
                 "fallback_reason": "",
                 "optimality_proven": True,
@@ -506,7 +622,7 @@ class FragSpliceOptimizer:
             dag,
             services,
             candidates,
-            preferred_plan,
+            incumbent_plan,
             source_id,
             candidate_root,
             candidate_created_at,
@@ -518,6 +634,9 @@ class FragSpliceOptimizer:
         screening_completed = not (
             screening_deadline is not None
             and time.monotonic() >= screening_deadline
+        ) and prescreening_completed
+        screened_keys.update(
+            tuple(sorted(plan.items())) for plan in screened_plans
         )
         warm_limit = max(1, self.incumbent_neighborhood_size)
         warm_plans = screened_plans[:warm_limit]
@@ -647,7 +766,7 @@ class FragSpliceOptimizer:
             "score": incumbent_score,
             "evaluated": evaluated,
             "expanded": expanded,
-            "screened": len(screened_plans),
+            "screened": len(screened_keys),
             "screening_completed": screening_completed,
             "score_evaluated": True,
             "fallback_reason": (
