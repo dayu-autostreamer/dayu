@@ -76,7 +76,7 @@ class HttpVideoGetter(BaseDataGetter, abc.ABC):
         if not self.request_source_data(system, new_task_id):
             LOGGER.info(f'[Camera Simulation] source {system.source_id}: datasource exhausted, skip current round')
             time.sleep(1)
-            return
+            return False
 
         try:
             actual_buffer_size = len(self.hash_codes) if self.hash_codes else 0

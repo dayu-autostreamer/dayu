@@ -30,10 +30,12 @@ class VideoGenerator(Generator):
 
         initial_schedule_pending = True
         pending_task_identity = None
+        pending_schedule_ready = False
         while True:
             if self._runtime_schedule_refresh_required.is_set():
                 initial_schedule_pending = True
                 pending_task_identity = None
+                pending_schedule_ready = False
                 self._runtime_schedule_refresh_required.clear()
 
             # Skip this round when the getter filter decides not to ingest data.
@@ -48,14 +50,18 @@ class VideoGenerator(Generator):
             # buffer size, frame rate, resolution, encoding, and DAG routing.
             if pending_task_identity is None:
                 pending_task_identity = self.create_task_identity()
+                pending_schedule_ready = False
 
             # Refresh scheduling policy periodically after enough frames have
             # been processed since the last scheduling decision.
             scheduling_threshold = self.request_scheduling_interval * self.raw_meta_data.get('fps', 0)
             should_schedule = (
-                initial_schedule_pending
-                or self.request_scheduling_interval <= 0
-                or self.cumulative_scheduling_frame_count > scheduling_threshold
+                not pending_schedule_ready
+                and (
+                    initial_schedule_pending
+                    or self.request_scheduling_interval <= 0
+                    or self.cumulative_scheduling_frame_count > scheduling_threshold
+                )
             )
             if should_schedule:
                 LOGGER.debug('[Scheduling Request] Request a task-aware scheduling policy.')
@@ -65,7 +71,22 @@ class VideoGenerator(Generator):
                     continue
                 self.cumulative_scheduling_frame_count = 0
                 initial_schedule_pending = False
+                pending_schedule_ready = True
+            elif not pending_schedule_ready:
+                # The periodic threshold did not request a fresh plan, so this
+                # task deliberately reuses the last accepted routable plan.
+                pending_schedule_ready = self.runtime_routes_ready()
+                if not pending_schedule_ready:
+                    time.sleep(0.5)
+                    continue
 
             # Ingest the next chunk/frame from the source.
-            self.data_getter(self, pending_task_identity)
-            pending_task_identity = None
+            ingested = self.data_getter(self, pending_task_identity)
+            # An exhausted/closed HTTP datasource returns ``False``.  Retain
+            # the same reserved identity so the next scheduling request is a
+            # replay of the pending decision instead of advancing the online
+            # policy for a task that never exists.  Successful getters in the
+            # existing hook ecosystem may return either ``True`` or ``None``.
+            if ingested is not False:
+                pending_task_identity = None
+                pending_schedule_ready = False
