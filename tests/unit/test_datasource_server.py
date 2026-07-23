@@ -130,12 +130,49 @@ def test_open_datasource_returns_immediately_when_source_is_already_open(monkeyp
 
     datasource = datasource_server_module.DataSource()
     datasource.source_open = True
+    datasource.source_label = "demo-source"
     datasource.process_list = ["process-1"]
 
     datasource.open_datasource("video", "demo-source", "http_video", build_source_list())
 
     assert started_commands == []
     assert datasource.process_list == ["process-1"]
+
+
+@pytest.mark.unit
+def test_open_datasource_restarts_when_source_label_changes(monkeypatch, tmp_path):
+    datasource_server_module = importlib.import_module("datasource_server")
+    configure_runtime(monkeypatch, datasource_server_module, tmp_path)
+
+    for source in build_source_list():
+        (tmp_path / "video" / source["dir"] / "http_video").mkdir(parents=True, exist_ok=True)
+
+    stopped_processes = []
+    started_commands = []
+    monkeypatch.setattr(
+        datasource_server_module.ScriptHelper,
+        "stop_script",
+        staticmethod(lambda process: stopped_processes.append(process)),
+    )
+    monkeypatch.setattr(
+        datasource_server_module.ScriptHelper,
+        "start_script",
+        staticmethod(lambda command: started_commands.append(command) or f"new-process-{len(started_commands)}"),
+    )
+    monkeypatch.setattr(datasource_server_module.time, "sleep", lambda _seconds: None)
+
+    datasource = datasource_server_module.DataSource()
+    datasource.source_open = True
+    datasource.source_label = "old-source"
+    datasource.process_list = ["old-process"]
+
+    datasource.open_datasource("video", "new-source", "http_video", build_source_list())
+
+    assert stopped_processes == ["old-process"]
+    assert datasource.source_open is True
+    assert datasource.source_label == "new-source"
+    assert datasource.process_list == ["new-process-1", "new-process-2"]
+    assert len(started_commands) == 2
 
 
 @pytest.mark.unit

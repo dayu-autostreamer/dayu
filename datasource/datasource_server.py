@@ -37,7 +37,9 @@ class DataSource:
 
     def open_datasource(self, modal, label, mode, source_list):
         if self.source_open:
-            return
+            if self.source_label == label:
+                return
+            self.close_datasource()
 
         if not os.path.exists(f'{mode}.py'):
             LOGGER.warning(f'Datasource Mode of "{mode}" does not exist. ({mode}.py)')
