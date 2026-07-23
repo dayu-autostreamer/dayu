@@ -611,6 +611,20 @@ class Scheduler:
         return normalized
 
     def should_generate(self, source_id, data):
+        # Runtime services start reporting telemetry before the backend has
+        # atomically committed the first complete runtime directory.  A
+        # generator may therefore reach this endpoint while revision 0 still
+        # exposes only the bootstrap view.  No task can be routed or leased
+        # against that view, so keep generation closed instead of invoking an
+        # agent with a transient, incomplete deployment.
+        revision = self.runtime_directory_revision()
+        if revision < 1:
+            return {
+                "generate": False,
+                "reason": "runtime_directory_not_ready",
+                "runtime_directory_revision": revision,
+            }
+
         agent = self.schedule_table[source_id]
         hook = getattr(agent, "should_generate", None)
         if not callable(hook):

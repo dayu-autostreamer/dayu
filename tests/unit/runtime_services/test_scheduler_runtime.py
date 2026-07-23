@@ -207,8 +207,37 @@ def test_scheduler_updates_scenarios_resources_and_supports_plans_and_overhead(m
     deployment_info = {"node_set": ["edgex1"], "dag": {"detector": {}}}
     assert scheduler.get_initial_deployment_plan(1, deployment_info) == {"detector": ["edgex1"]}
     assert scheduler.get_redeployment_plan(1, deployment_info) == {"detector": ["edgex1"]}
+    scheduler.runtime_directory_revision = lambda: 1
     assert scheduler.should_generate(1, {"allow": False}) == {"generate": False, "reason": "fake_agent"}
     assert scheduler.get_schedule_overhead() == 0.2
+
+
+@pytest.mark.unit
+def test_scheduler_blocks_generation_before_first_runtime_directory_commit(monkeypatch):
+    def fake_get_algorithm(name, **kwargs):
+        if name == "SCH_CONFIG_EXTRACTION":
+            return lambda scheduler: None
+        if name == "SCH_SCENARIO_RETRIEVAL":
+            return lambda task: {}
+        if name == "SCH_POLICY_RETRIEVAL":
+            return lambda task: {}
+        if name == "SCH_STARTUP_POLICY":
+            return lambda info: {"dag": {}}
+        raise AssertionError(f"Unexpected algorithm request: {name}")
+
+    monkeypatch.setattr(scheduler_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
+    scheduler = scheduler_module.Scheduler(
+        runtime_context=FakeRuntimeContext(),
+        runtime_directory=RuntimeDirectoryStore(),
+        task_lease_store=InMemoryTaskLeaseStore(),
+    )
+    scheduler.schedule_table = {1: FakeAgent()}
+
+    assert scheduler.should_generate(1, {}) == {
+        "generate": False,
+        "reason": "runtime_directory_not_ready",
+        "runtime_directory_revision": 0,
+    }
 
 
 @pytest.mark.unit
