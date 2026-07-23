@@ -5,7 +5,7 @@ import uuid
 from .service import Service
 from .dag import DAG
 
-from core.lib.solver import LCASolver, IntermediateNodeSolver, PathSolver
+from core.lib.solver import PathSolver
 from core.lib.common import NameMaintainer, TaskConstant
 
 
@@ -325,15 +325,37 @@ class Task:
     def set_schedule_plan_digest(self, plan_digest):
         self.__schedule_plan_digest = str(plan_digest or '')
 
+    def get_slo_start_time(self):
+        """Return the exact generator-to-distributor SLO start, if recorded."""
+
+        tag_prefix = NameMaintainer.get_time_ticket_tag_prefix(self)
+        try:
+            value = float(self.__tmp_data.get(f'{tag_prefix}:total_start_time'))
+        except (TypeError, ValueError):
+            return 0.0
+        return value if value > 0.0 else 0.0
+
+    def get_slo_end_time(self):
+        """Return the exact generator-to-distributor SLO end, if recorded."""
+
+        tag_prefix = NameMaintainer.get_time_ticket_tag_prefix(self)
+        try:
+            value = float(self.__tmp_data.get(f'{tag_prefix}:total_end_time'))
+        except (TypeError, ValueError):
+            return 0.0
+        return value if value > 0.0 else 0.0
+
     def get_schedule_commitment(self):
         """Return the immutable scheduling facts needed while this root runs."""
 
         return {
             'source_id': self.get_source_id(),
+            'source_device': self.get_source_device(),
             'task_id': self.get_task_id(),
             'task_uuid': self.get_task_uuid(),
             'root_uuid': self.get_root_uuid(),
             'created_at': self.get_created_at(),
+            'slo_started_at': self.get_slo_start_time(),
             'decision_id': self.get_schedule_decision_id(),
             'plan_digest': self.get_schedule_plan_digest(),
             'deployment_version': self.get_deployment_version(),
@@ -400,13 +422,14 @@ class Task:
     def get_real_end_to_end_time(self):
         """get real end to end time of task: from generator to distributor by estimation"""
         tag_prefix = NameMaintainer.get_time_ticket_tag_prefix(self)
-        if f'{tag_prefix}:total_start_time' not in self.__tmp_data:
+        start_time = self.get_slo_start_time()
+        if start_time <= 0.0:
             raise ValueError(f'Timestamp of task starting lacks: "{tag_prefix}:total_start_time"')
-        if f'{tag_prefix}:total_end_time' not in self.__tmp_data:
+        end_time = self.get_slo_end_time()
+        if end_time <= 0.0:
             raise ValueError(f'Timestamp of task ending lacks: "{tag_prefix}:total_end_time"')
 
-        return (self.__tmp_data[f'{tag_prefix}:total_end_time'] -
-                self.__tmp_data[f'{tag_prefix}:total_start_time'])
+        return end_time - start_time
 
     def calculate_total_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
@@ -513,17 +536,23 @@ class Task:
         return new_task
 
     def merge_task(self, other_task: 'Task'):
-        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_past_flow_index(),
-                                                               other_task.get_past_flow_index())
-
         merged_dag = self.get_dag()
         other_dag = other_task.get_dag()
 
-        # Complete missing part of merged_task with other_task
-        # missing part contains intermediate nodes between "LCA" and "current node of other_task" (including latter)
-        nodes_for_merge = IntermediateNodeSolver(merged_dag).get_intermediate_nodes(lca_service_name,
-                                                                                    other_task.get_past_flow_index())
-        nodes_for_merge.add(other_task.get_past_flow_index())
+        # A task waiting at a join contains the completed state of its direct
+        # predecessor and every ancestor required to release that predecessor.
+        # Copy that full completed closure.  Restricting the copy to the path
+        # between the two current predecessors loses state already merged by a
+        # nested join (for example, pose-estimation state inside the intent
+        # branch when the final risk-graph join is assembled).
+        nodes_for_merge = set()
+        pending = [other_task.get_past_flow_index()]
+        while pending:
+            node = pending.pop()
+            if node in nodes_for_merge:
+                continue
+            nodes_for_merge.add(node)
+            pending.extend(other_dag.get_prev_nodes(node))
 
         for node in nodes_for_merge:
             merged_dag.set_node_service(node, other_dag.get_node(node).service)
