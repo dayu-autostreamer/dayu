@@ -187,6 +187,38 @@
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-fragsplice.yaml
+- id: ibdash
+  name: IBDASH Baseline
+  yaml: ibdash.yaml
+  dependency:
+    generator: generator-fragsplice.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-fragsplice.yaml
+- id: distream
+  name: Distream Baseline
+  yaml: distream.yaml
+  dependency:
+    generator: generator-fragsplice.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-fragsplice.yaml
+- id: dtodrl-train
+  name: DTODRL Baseline Training
+  yaml: dtodrl-train.yaml
+  dependency:
+    generator: generator-fragsplice.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-fragsplice.yaml
+- id: dtodrl
+  name: DTODRL Baseline Inference
+  yaml: dtodrl.yaml
+  dependency:
+    generator: generator-fragsplice.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-fragsplice.yaml
 - id: hei
   name: Hierarchical Embodied Intelligence (Hier-EI)
   yaml: hei.yaml

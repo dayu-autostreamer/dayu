@@ -1,0 +1,63 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'scope': 'all_edge_nodes',
+          'fixed_value': 'edgexn33',
+          'fixed_type': 'hostname'
+        }
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'policy': {
+            'traffic-detection': ['edgexn23', 'edgexn27'],
+            'road-context-segmentation': ['edgexn24', 'edgexn28'],
+            'traffic-signal-recognition': ['edgexn31', 'edgexn32'],
+            'vehicle-tracking': ['edgexn23', 'edgexn24', 'edgexn27'],
+            'vehicle-attribute-recognition': ['edgexn28', 'edgexn31', 'edgexn32'],
+            'vehicle-trajectory-prediction': ['edgexn27', 'edgexn32'],
+            'pedestrian-pose-estimation': ['edgexn24', 'edgexn28'],
+            'pedestrian-intent-recognition': ['edgexn28', 'edgexn32'],
+            'risk-graph-generation': ['edgexn23']
+          }
+        }
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: non
+    - name: SCH_AGENT_NAME
+      value: distream
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'configuration': {
+            'resolution': '720p',
+            'fps': 8,
+            'encoding': 'mp4v',
+            'buffer_size': 4
+          },
+          'latency_profile': 'fragsplice-profile.json',
+          'profile_quantile': 0.5,
+          'queue_state_max_age_s': 1.5
+        }
+
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/fragsplice/'

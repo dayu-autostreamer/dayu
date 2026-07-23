@@ -290,6 +290,79 @@ class FragSpliceOptimizer:
             float(projection["max_replica_work"]),
         )
 
+    def _screening_service_order(
+        self,
+        services,
+        candidates,
+        preferred_plan,
+        baseline,
+        now,
+    ):
+        """Branch first on services whose current replica choice is costly.
+
+        Calendar screening is deadline bounded, so a topological traversal can
+        expire before it reaches a congested service late in the DAG.  Partial
+        assignments do not require a topological order because every screening
+        projection is completed with ``preferred_plan`` before simulation.
+        Rank only services with a real choice, using the projected relief from
+        moving away from the preferred replica, then its committed backlog and
+        profiled tail demand.
+        """
+
+        calendars = baseline.get("replica_intervals", {})
+        now = float(now)
+
+        def available_at(service, device):
+            return max(
+                [now]
+                + [
+                    float(finish)
+                    for _, finish in calendars.get((service, device), ())
+                    if float(finish) > now
+                ]
+            )
+
+        def projected_cost(service, device, quantile):
+            return (
+                available_at(service, device)
+                + self.latency_model.estimate(service, device, quantile)
+                + self.latency_model.estimate_handoff(
+                    service, device, quantile
+                )
+            )
+
+        ranked = []
+        for service in services:
+            devices = candidates[service]
+            if len(devices) <= 1:
+                continue
+            preferred = preferred_plan[service]
+            preferred_available = available_at(service, preferred)
+            preferred_cost = projected_cost(service, preferred, 0.5)
+            best_cost = min(
+                projected_cost(service, device, 0.5)
+                for device in devices
+            )
+            relief = max(0.0, preferred_cost - best_cost)
+            backlog = max(0.0, preferred_available - now)
+            tail_demand = max(
+                self.latency_model.estimate(service, device, 0.9)
+                + self.latency_model.estimate_handoff(
+                    service, device, 0.9
+                )
+                for device in devices
+            )
+            ranked.append(
+                (
+                    -relief,
+                    -backlog,
+                    -tail_demand,
+                    service,
+                )
+            )
+        ranked.sort()
+        return [service for _, _, _, service in ranked]
+
     def _screening_plans(
         self,
         state,
@@ -335,8 +408,18 @@ class FragSpliceOptimizer:
                 plans.append(dict(preferred_plan))
             return plans or [dict(preferred_plan)]
 
+        screening_services = self._screening_service_order(
+            services,
+            candidates,
+            preferred_plan,
+            baseline,
+            state.now,
+        )
+        if not screening_services:
+            return [dict(preferred_plan)]
+
         beam = [({}, None)]
-        for service in services:
+        for service in screening_services:
             if deadline is not None and time.monotonic() >= deadline:
                 return complete_partial_plans(beam)
             expanded = []

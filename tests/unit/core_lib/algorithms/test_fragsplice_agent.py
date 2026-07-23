@@ -1296,6 +1296,47 @@ def test_commitment_calendar_screening_warm_start_can_change_multiple_stages():
 
 
 @pytest.mark.unit
+def test_calendar_screening_prioritizes_late_congested_service():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "early": {
+                "edge-a": {"samples": [0.1]},
+                "edge-b": {"samples": [0.1]},
+            },
+            "late-heavy": {
+                "edge-c": {"samples": [0.8]},
+                "edge-d": {"samples": [0.9]},
+            },
+            "fixed": {
+                "edge-e": {"samples": [2.0]},
+            },
+        },
+    })
+    optimizer = FragSpliceOptimizer(model)
+    order = optimizer._screening_service_order(
+        ["early", "fixed", "late-heavy"],
+        {
+            "early": ["edge-a", "edge-b"],
+            "fixed": ["edge-e"],
+            "late-heavy": ["edge-c", "edge-d"],
+        },
+        {
+            "early": "edge-a",
+            "fixed": "edge-e",
+            "late-heavy": "edge-c",
+        },
+        {
+            "replica_intervals": {
+                ("late-heavy", "edge-c"): [(10.0, 16.0)],
+            },
+        },
+        now=10.0,
+    )
+
+    assert order == ["late-heavy", "early"]
+
+
+@pytest.mark.unit
 def test_candidate_only_sampling_preserves_common_random_numbers():
     model = FragSpliceLatencyModel({
         "pairs": {
