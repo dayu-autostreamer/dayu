@@ -108,7 +108,7 @@ def _deadline(commitment, default_slo):
 
 
 class FragSpliceExecutionState:
-    """White-box reconstruction of committed FIFO DAG execution.
+    """Future-State Estimator for committed FIFO DAG execution.
 
     Each processor ``service@device`` is one independent FIFO resource.  The
     model anchors the present using ordered queue telemetry, then releases the
@@ -463,7 +463,13 @@ class FragSpliceExecutionState:
             "max_replica_work": max(replica_work.values(), default=0.0),
         }
 
-    def simulate(self, candidate, seed, include_calendar=False):
+    def simulate(
+        self,
+        candidate,
+        seed,
+        include_calendar=False,
+        include_service_finish=False,
+    ):
         roots = self._sample_roots(candidate, seed)
         root_by_id = {root["root"]: root for root in roots}
         status = {
@@ -771,6 +777,11 @@ class FragSpliceExecutionState:
             "candidate_noqueue": candidate_noqueue,
             "replica_work": dict(replica_work),
         }
+        if include_service_finish:
+            result["service_finish"] = (
+                {candidate_root: dict(finish_time[candidate_root])}
+                if candidate_root else {}
+            )
         if include_calendar:
             result["replica_intervals"] = {
                 replica: sorted(intervals)

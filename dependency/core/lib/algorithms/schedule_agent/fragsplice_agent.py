@@ -14,7 +14,11 @@ from core.lib.common import (
 from core.lib.estimation import OverheadEstimator
 
 from .base_agent import BaseAgent
-from .fragsplice import FragSpliceLatencyModel, FragSpliceOptimizer
+from .fragsplice import (
+    FragSpliceLatencyModel,
+    FragSpliceOptimizer,
+    FragSpliceStaticLatencyModel,
+)
 
 __all__ = ("FragSpliceAgent",)
 
@@ -35,6 +39,11 @@ def _load_mapping(value, label):
 class FragSpliceAgent(BaseAgent, abc.ABC):
     """Commitment-aware full-DAG offloading under a fixed deployment."""
 
+    DISTRIBUTION_PROFILER_ENABLED = True
+    FUTURE_STATE_ESTIMATOR_ENABLED = True
+    FULL_PLAN_OPTIMIZER_ENABLED = True
+    OPTIMIZER_CLS = FragSpliceOptimizer
+
     def __init__(
         self,
         system,
@@ -50,7 +59,7 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
         residual_half_life_tasks=8.0,
         incumbent_neighborhood_size=4,
         screening_beam_width=16,
-        use_future_commitments=True,
+        use_future_commitments=None,
     ):
         super().__init__(system, agent_id)
         self.system = system
@@ -82,8 +91,20 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             self.latency_model.ensure_profile_context(
                 configuration=self.configuration,
             )
-        self.optimizer = FragSpliceOptimizer(
-            self.latency_model,
+        self.distribution_profiler_enabled = bool(
+            self.DISTRIBUTION_PROFILER_ENABLED
+        )
+        self.full_plan_optimizer_enabled = bool(
+            self.FULL_PLAN_OPTIMIZER_ENABLED
+        )
+        self.distribution_profiler = self.latency_model
+        self.planning_latency_model = (
+            self.distribution_profiler
+            if self.distribution_profiler_enabled
+            else FragSpliceStaticLatencyModel(self.distribution_profiler)
+        )
+        self.optimizer = self.OPTIMIZER_CLS(
+            self.planning_latency_model,
             default_slo_s=latency_slo_s,
             scenario_count=scenario_count,
             max_scenarios=max_scenarios,
@@ -96,7 +117,17 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
         self.overhead_estimator = OverheadEstimator(
             "FragSplice", "scheduler/fragsplice", agent_id=agent_id
         )
-        self.use_future_commitments = bool(use_future_commitments)
+        requested_future_state = (
+            True
+            if use_future_commitments is None
+            else bool(use_future_commitments)
+        )
+        self.future_state_estimator_enabled = bool(
+            self.FUTURE_STATE_ESTIMATOR_ENABLED
+            and requested_future_state
+        )
+        # Retain the old field for compatibility with existing diagnostics.
+        self.use_future_commitments = self.future_state_estimator_enabled
         self._lock = threading.RLock()
         self.last_decision = None
         if not self.latency_model.has_samples():
@@ -128,7 +159,7 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             decision_info = dict(info)
             decision_info["dag"] = dag
             snapshot = self.system.get_scheduling_snapshot()
-            if not self.use_future_commitments:
+            if not self.future_state_estimator_enabled:
                 # Current-state ablation: preserve the exact live replica
                 # telemetry and the same optimizer/search budget, but remove
                 # work that is known only through already committed full-DAG
@@ -184,7 +215,7 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
                 result["unschedulable"],
                 result["intrinsic_slo_infeasible"],
                 result["budget_exhausted"],
-                self.use_future_commitments,
+                self.future_state_estimator_enabled,
                 result["predicted_miss_probability"],
                 tuple(round(item, 6) for item in result["score"]),
                 tuple(round(item, 6) for item in result["best_open_lower_bound"]),
@@ -194,6 +225,7 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             return policy
 
     def update_task(self, task):
+        updated = False
         with self._lock:
             deployment_getter = getattr(task, "get_deployment", None)
             deployment = deployment_getter() if callable(deployment_getter) else None
@@ -205,12 +237,13 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
                 dag=task.get_dag(),
                 require_complete=True,
             )
-            updated = self.latency_model.update_task(task)
-            if updated and self.latency_profile_path:
-                self.latency_model.save(
-                    self.latency_profile_path,
-                    deployment=deployment,
-                )
+            if self.distribution_profiler_enabled:
+                updated = self.distribution_profiler.update_task(task)
+                if updated and self.latency_profile_path:
+                    self.distribution_profiler.save(
+                        self.latency_profile_path,
+                        deployment=deployment,
+                    )
         if updated:
             LOGGER.debug(
                 "[FragSplice] Updated service-time distribution from source=%s task=%s",

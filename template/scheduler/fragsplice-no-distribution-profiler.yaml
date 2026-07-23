@@ -40,7 +40,7 @@ pod-template:
     - name: SCH_REDEPLOYMENT_POLICY_NAME
       value: non
     - name: SCH_AGENT_NAME
-      value: fragsplice_no_future_state_estimator
+      value: fragsplice_no_distribution_profiler
     - name: SCH_AGENT_PARAMETERS
       value: >
         {

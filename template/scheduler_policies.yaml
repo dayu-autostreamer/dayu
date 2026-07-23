@@ -155,8 +155,32 @@
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-fragsplice.yaml
+- id: fragsplice-no-distribution-profiler
+  name: FragSplice No Distribution Profiler
+  yaml: fragsplice-no-distribution-profiler.yaml
+  dependency:
+    generator: generator-fragsplice.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-fragsplice.yaml
+- id: fragsplice-no-future-state-estimator
+  name: FragSplice No Future-State Estimator
+  yaml: fragsplice-no-future-state-estimator.yaml
+  dependency:
+    generator: generator-fragsplice.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-fragsplice.yaml
+- id: fragsplice-no-full-plan-optimizer
+  name: FragSplice No Full-Plan Optimizer
+  yaml: fragsplice-no-full-plan-optimizer.yaml
+  dependency:
+    generator: generator-fragsplice.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-fragsplice.yaml
 - id: fragsplice-current-state
-  name: FragSplice Current-State Ablation
+  name: FragSplice Current-State Ablation (Legacy Alias)
   yaml: fragsplice-current-state.yaml
   dependency:
     generator: generator-fragsplice.yaml

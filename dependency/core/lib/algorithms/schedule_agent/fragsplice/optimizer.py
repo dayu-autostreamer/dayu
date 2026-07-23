@@ -21,7 +21,7 @@ def _cvar(values, level=0.95):
 
 
 class FragSpliceOptimizer:
-    """Scenario evaluator plus DP-guided anytime branch-and-bound."""
+    """Full-Plan Optimizer with DP-guided anytime branch-and-bound."""
 
     def __init__(
         self,
@@ -514,6 +514,12 @@ class FragSpliceOptimizer:
             return True
         return second[2] - first[2] > max(1e-3, 0.05 * max(first[2], 1e-6))
 
+    def _scenario_result_is_stable(
+        self, current, previous, scenario_count
+    ):
+        del previous
+        return self._ranking_is_stable(current, scenario_count)
+
     def solve(
         self,
         info,
@@ -576,6 +582,7 @@ class FragSpliceOptimizer:
         for count in counts:
             if deadline is not None and time.monotonic() >= deadline and result is not None:
                 break
+            previous_result = result
             seeds = [
                 self.random_seed + 1_000_003 * index
                 for index in range(count)
@@ -597,7 +604,9 @@ class FragSpliceOptimizer:
             result = current
             incumbent_plan = current["plan"]
             used = count
-            if self._ranking_is_stable(current, count):
+            if self._scenario_result_is_stable(
+                current, previous_result, count
+            ):
                 break
         elapsed_before_execution = 0.0
         intrinsic_slo_infeasible = self._lower_score(
@@ -645,4 +654,136 @@ class FragSpliceOptimizer:
         return result
 
 
-__all__ = ("FragSpliceOptimizer",)
+class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
+    """Greedy stage-wise EFT used when full-plan optimization is removed."""
+
+    def _search(
+        self,
+        state,
+        dag,
+        candidates,
+        source_id,
+        candidate_root,
+        candidate_created_at,
+        slo,
+        seeds,
+        deadline,
+        baseline_cache,
+        outcome_cache,
+        initial_plan=None,
+    ):
+        del initial_plan
+        services = [
+            name for name in topological_order(dag)
+            if name not in (START, END)
+        ]
+        default_plan = {
+            service: min(
+                candidates[service],
+                key=lambda device: (
+                    self.latency_model.estimate(service, device, 0.5)
+                    + self.latency_model.estimate_handoff(
+                        service, device, 0.5
+                    ),
+                    device,
+                ),
+            )
+            for service in services
+        }
+        plan = {}
+        root = str(
+            candidate_root or f"__fragsplice_pending__:{source_id}"
+        )
+        local_evaluations = 0
+
+        for service in services:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            best = None
+            for device in candidates[service]:
+                trial = dict(default_plan)
+                trial.update(plan)
+                trial[service] = device
+                candidate = self._candidate_payload(
+                    dag,
+                    trial,
+                    source_id,
+                    candidate_root,
+                    candidate_created_at,
+                    slo,
+                )
+                plan_key = tuple(sorted(trial.items()))
+                finishes = []
+                for seed in seeds:
+                    cache_key = (plan_key, seed)
+                    if (
+                        cache_key not in outcome_cache
+                        or "service_finish" not in outcome_cache[cache_key]
+                    ):
+                        outcome_cache[cache_key] = state.simulate(
+                            candidate,
+                            seed,
+                            include_service_finish=True,
+                        )
+                    finish = (
+                        outcome_cache[cache_key]
+                        .get("service_finish", {})
+                        .get(root, {})
+                        .get(service, float("inf"))
+                    )
+                    finishes.append(max(0.0, float(finish) - state.now))
+                local_evaluations += 1
+                eft = sum(finishes) / len(finishes)
+                choice = (eft, str(device))
+                if best is None or choice < best[0]:
+                    best = (choice, str(device))
+            if best is None:
+                break
+            plan[service] = best[1]
+
+        for service in services:
+            plan.setdefault(service, default_plan[service])
+
+        score = self._score_plan(
+            state,
+            dag,
+            plan,
+            source_id,
+            candidate_root,
+            candidate_created_at,
+            slo,
+            seeds,
+            baseline_cache,
+            outcome_cache,
+        )
+        candidate_count = math.prod(
+            len(candidates[service]) for service in services
+        )
+        optimality_proven = candidate_count == 1
+        return {
+            "plan": plan,
+            "score": score,
+            "evaluated": [(score, dict(plan))],
+            "expanded": local_evaluations,
+            "screened": 0,
+            "optimality_proven": optimality_proven,
+            "best_open_lower_bound": (
+                score if optimality_proven else self._lower_score(
+                    dag, candidates, {}, slo
+                )
+            ),
+        }
+
+    def _scenario_result_is_stable(
+        self, current, previous, scenario_count
+    ):
+        del scenario_count
+        if current["optimality_proven"]:
+            return True
+        return (
+            isinstance(previous, dict)
+            and current["plan"] == previous.get("plan")
+        )
+
+
+__all__ = ("FragSpliceOptimizer", "FragSpliceStagewiseEFTOptimizer")

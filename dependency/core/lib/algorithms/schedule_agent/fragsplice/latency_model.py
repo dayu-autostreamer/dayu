@@ -68,7 +68,7 @@ def _timestamp(service, name):
 
 
 class FragSpliceLatencyModel:
-    """Factorized empirical service-time model with online correction.
+    """Distribution Profiler for service demand and non-Processor overheads.
 
     The model deliberately predicts processor demand (``real_execute_time``),
     never queue-inclusive service span. A stable service-device baseline is
@@ -961,4 +961,86 @@ class FragSpliceLatencyModel:
                     os.unlink(temporary)
 
 
-__all__ = ("FragSpliceLatencyModel",)
+class FragSpliceStaticLatencyModel:
+    """Deterministic cold-profile view used by the profiler ablation.
+
+    Every scenario receives the same P50 value from the validated cold
+    profile. Task residuals, pair drift, and online feedback are deliberately
+    excluded while the execution-state estimator and plan search remain
+    unchanged.
+    """
+
+    def __init__(self, source):
+        self.source = source
+
+    def estimate(self, service, device, quantile=0.5):
+        del quantile
+        values = self.source.pair_values(service, device)
+        if values:
+            return max(
+                1e-6,
+                self.source._quantile(values, 0.5, default=0.1),
+            )
+        return max(
+            1e-6,
+            self.source._base_estimate(service, device, 0.5),
+        )
+
+    def lower_bound(self, service, device):
+        return self.estimate(service, device)
+
+    def estimate_handoff(self, service, device, quantile=0.5):
+        del quantile
+        return self.source._quantile(
+            self.source.handoff_values(service, device), 0.5
+        )
+
+    def lower_bound_handoff(self, service, device):
+        return self.estimate_handoff(service, device)
+
+    def sample_task(self, source_id, plan, rng):
+        del source_id, rng
+        return {
+            service: self.estimate(service, device)
+            for service, device in sorted(plan.items())
+        }
+
+    def sample_handoffs(self, plan, rng):
+        del rng
+        return {
+            service: self.estimate_handoff(service, device)
+            for service, device in sorted(plan.items())
+        }
+
+    def sample_stage_overheads(self, source_id, dag, plan, rng):
+        del rng
+        transfer = {}
+        dispatch = {}
+        control = {}
+        for service in sorted(dag):
+            if service == TaskConstant.START.value:
+                continue
+            node = dag.get(service, {}) if isinstance(dag, dict) else {}
+            spec = node.get("service", {}) if isinstance(node, dict) else {}
+            device = str(plan.get(service) or spec.get("execute_device") or "")
+            transfer[service] = self.source._quantile(
+                self.source.transfer_values(service, device), 0.5
+            )
+            control[service] = self.source._quantile(
+                self.source.control_values(service, device), 0.5
+            )
+            if service != TaskConstant.END.value:
+                dispatch[service] = self.source._quantile(
+                    self.source.dispatch_values(service, device), 0.5
+                )
+        return {
+            "transfer": transfer,
+            "dispatch": dispatch,
+            "control": control,
+            "completion": self.source._quantile(
+                self.source.completion_values(source_id), 0.5
+            ),
+        }
+
+
+__all__ = ("FragSpliceLatencyModel", "FragSpliceStaticLatencyModel")

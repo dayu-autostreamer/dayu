@@ -14,6 +14,8 @@ from core.lib.common import ClassFactory, ClassType, Context
 from core.lib.algorithms.schedule_agent.fragsplice import (
     FragSpliceLatencyModel,
     FragSpliceOptimizer,
+    FragSpliceStagewiseEFTOptimizer,
+    FragSpliceStaticLatencyModel,
 )
 from core.lib.algorithms.schedule_agent.fragsplice.execution_state import (
     FragSpliceExecutionState,
@@ -21,6 +23,15 @@ from core.lib.algorithms.schedule_agent.fragsplice.execution_state import (
 from core.lib.algorithms.schedule_agent.fragsplice_agent import FragSpliceAgent
 from core.lib.algorithms.schedule_agent.fragsplice_cold_sample_agent import (
     FragSpliceColdSampleAgent,
+)
+from core.lib.algorithms.schedule_agent.fragsplice_no_distribution_profiler_agent import (
+    FragSpliceNoDistributionProfilerAgent,
+)
+from core.lib.algorithms.schedule_agent.fragsplice_no_full_plan_optimizer_agent import (
+    FragSpliceNoFullPlanOptimizerAgent,
+)
+from core.lib.algorithms.schedule_agent.fragsplice_no_future_state_estimator_agent import (
+    FragSpliceNoFutureStateEstimatorAgent,
 )
 
 
@@ -63,10 +74,31 @@ def test_fragsplice_hooks_are_registered():
         ClassFactory.get_cls(ClassType.SCH_AGENT, "fragsplice_cold_sample")
         is FragSpliceColdSampleAgent
     )
+    assert (
+        ClassFactory.get_cls(
+            ClassType.SCH_AGENT,
+            "fragsplice_no_distribution_profiler",
+        )
+        is FragSpliceNoDistributionProfilerAgent
+    )
+    assert (
+        ClassFactory.get_cls(
+            ClassType.SCH_AGENT,
+            "fragsplice_no_future_state_estimator",
+        )
+        is FragSpliceNoFutureStateEstimatorAgent
+    )
+    assert (
+        ClassFactory.get_cls(
+            ClassType.SCH_AGENT,
+            "fragsplice_no_full_plan_optimizer",
+        )
+        is FragSpliceNoFullPlanOptimizerAgent
+    )
 
 
 @pytest.mark.unit
-def test_fragsplice_templates_share_fixed_initial_deployment_and_disable_redeployment():
+def test_fragsplice_templates_share_fixed_deployment_and_common_parameters():
     root = Path(__file__).resolve().parents[4]
 
     def load_template(name):
@@ -81,6 +113,14 @@ def test_fragsplice_templates_share_fixed_initial_deployment_and_disable_redeplo
 
     cold, cold_env = load_template("fragsplice-cold-sample.yaml")
     main, main_env = load_template("fragsplice.yaml")
+    ablations = {
+        "fragsplice-no-distribution-profiler.yaml":
+            "fragsplice_no_distribution_profiler",
+        "fragsplice-no-future-state-estimator.yaml":
+            "fragsplice_no_future_state_estimator",
+        "fragsplice-no-full-plan-optimizer.yaml":
+            "fragsplice_no_full_plan_optimizer",
+    }
 
     cold_initial = ast.literal_eval(
         cold_env["SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS"]
@@ -105,6 +145,106 @@ def test_fragsplice_templates_share_fixed_initial_deployment_and_disable_redeplo
         "pos": "cloud",
         "path": "scheduler/fragsplice/",
     }]
+    for filename, agent_name in ablations.items():
+        ablation, ablation_env = load_template(filename)
+        assert ablation_env["SCH_AGENT_NAME"] == agent_name
+        assert ast.literal_eval(
+            ablation_env["SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS"]
+        ) == main_initial
+        assert ast.literal_eval(
+            ablation_env["SCH_AGENT_PARAMETERS"]
+        ) == main_agent
+        assert ablation_env["SCH_REDEPLOYMENT_POLICY_NAME"] == "non"
+        assert "SCH_REDEPLOYMENT_POLICY_PARAMETERS" not in ablation_env
+        assert ablation["file-mount"] == main["file-mount"]
+
+    _, legacy_env = load_template("fragsplice-current-state.yaml")
+    assert (
+        legacy_env["SCH_AGENT_NAME"]
+        == "fragsplice_no_future_state_estimator"
+    )
+    policies = yaml.safe_load(
+        (root / "template" / "scheduler_policies.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    policy_files = {
+        item["id"]: item["yaml"]
+        for item in policies
+    }
+    assert policy_files["fragsplice-no-distribution-profiler"] == (
+        "fragsplice-no-distribution-profiler.yaml"
+    )
+    assert policy_files["fragsplice-no-future-state-estimator"] == (
+        "fragsplice-no-future-state-estimator.yaml"
+    )
+    assert policy_files["fragsplice-no-full-plan-optimizer"] == (
+        "fragsplice-no-full-plan-optimizer.yaml"
+    )
+    assert policy_files["fragsplice-current-state"] == (
+        "fragsplice-current-state.yaml"
+    )
+
+
+@pytest.mark.unit
+def test_static_latency_model_uses_only_cold_profile_p50():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [1.0, 3.0, 9.0]},
+            },
+        },
+        "handoff_pairs": {
+            "detect": {
+                "edge-a": {"samples": [0.1, 0.2, 0.9]},
+            },
+        },
+        "transfer_pairs": {
+            "detect": {
+                "edge-a": {"samples": [0.3, 0.4, 1.0]},
+            },
+        },
+        "dispatch_pairs": {
+            "detect": {
+                "edge-a": {"samples": [0.5, 0.6, 1.1]},
+            },
+        },
+        "control_pairs": {
+            "detect": {
+                "edge-a": {"samples": [0.7, 0.8, 1.2]},
+            },
+        },
+        "completion_overhead": {
+            "1": {"samples": [0.9, 1.0, 1.3]},
+        },
+        "pair_log_drift": {
+            "detect": {"edge-a": math.log(2.0)},
+        },
+        "task_residuals": {
+            "1": [{"__shared__": math.log(4.0)}],
+        },
+    })
+    static = FragSpliceStaticLatencyModel(model)
+    plan = {"detect": "edge-a"}
+    task_dag = one_service_dag("edge-a")
+
+    assert model.estimate("detect", "edge-a") == pytest.approx(6.0)
+    assert static.estimate("detect", "edge-a", 0.95) == pytest.approx(3.0)
+    assert static.lower_bound("detect", "edge-a") == pytest.approx(3.0)
+    assert {
+        static.sample_task(1, plan, random.Random(seed))["detect"]
+        for seed in range(8)
+    } == {3.0}
+    assert static.sample_handoffs(
+        plan, random.Random(1)
+    )["detect"] == pytest.approx(0.2)
+    overheads = static.sample_stage_overheads(
+        1, task_dag, plan, random.Random(1)
+    )
+    assert overheads["transfer"]["detect"] == pytest.approx(0.4)
+    assert overheads["dispatch"]["detect"] == pytest.approx(0.6)
+    assert overheads["control"]["detect"] == pytest.approx(0.8)
+    assert overheads["completion"] == pytest.approx(1.0)
 
 
 @pytest.mark.unit
@@ -188,6 +328,133 @@ def test_optimizer_exactly_searches_small_space_and_uses_committed_running_work(
     assert result["candidate_count"] == 2
     assert result["optimality_proven"] is True
     assert len(result["evaluated"]) == 2
+
+
+@pytest.mark.unit
+def test_stagewise_eft_optimizer_uses_future_state_without_full_plan_search():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [1.0]},
+                "edge-b": {"samples": [1.2]},
+            },
+        },
+    })
+    optimizer = FragSpliceStagewiseEFTOptimizer(
+        model,
+        default_slo_s=10.0,
+        scenario_count=8,
+        max_scenarios=8,
+    )
+    task_dag = one_service_dag()
+    snapshot = {
+        "captured_at": 5.0,
+        "runtime_directory_revision": 1,
+        "reservations": [],
+        "commitments": [],
+        "task_barriers": [],
+        "resources": {
+            "edge-a": {"queue_state": {"detect": {
+                "busy": True,
+                "running_phase": "processing",
+                "phase_elapsed_s": 0.0,
+                "observed_at": 5.0,
+            }}},
+            "edge-b": {"queue_state": {"detect": {
+                "busy": False,
+                "observed_at": 5.0,
+            }}},
+        },
+        "resource_received_at": {
+            "edge-a": 5.0,
+            "edge-b": 5.0,
+        },
+        "resource_runtime_revision": {
+            "edge-a": 1,
+            "edge-b": 1,
+        },
+    }
+    result = optimizer.solve(
+        {
+            "source_id": 1,
+            "source_device": "source",
+            "task_context": {"root_uuid": "new"},
+            "dag": task_dag,
+            "meta_data": {"slo_seconds": 10.0},
+        },
+        snapshot,
+        {"detect": ["edge-a", "edge-b"]},
+        "cloud",
+    )
+
+    assert result["plan"] == {"detect": "edge-b"}
+    assert result["expanded"] == 2
+    assert result["screened"] == 0
+    assert len(result["evaluated"]) == 1
+    assert result["optimality_proven"] is False
+
+
+@pytest.mark.unit
+def test_stagewise_eft_ablation_does_not_optimize_downstream_full_plan():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [1.0]},
+                "edge-b": {"samples": [2.0]},
+            },
+            "classify": {
+                "edge-b": {"samples": [0.1]},
+            },
+        },
+        "transfer_pairs": {
+            "classify": {
+                "edge-b": {"samples": [10.0]},
+            },
+        },
+    })
+    common = {
+        "info": {
+            "source_id": 1,
+            "source_device": "source",
+            "task_context": {"root_uuid": "new"},
+            "dag": dag(),
+            "meta_data": {"slo_seconds": 20.0},
+        },
+        "snapshot": {
+            "captured_at": 5.0,
+            "runtime_directory_revision": 1,
+            "reservations": [],
+            "commitments": [],
+            "task_barriers": [],
+            "resources": {},
+        },
+        "deployment": {
+            "detect": ["edge-a", "edge-b"],
+            "classify": ["edge-b"],
+        },
+        "cloud_device": "cloud",
+    }
+    stagewise = FragSpliceStagewiseEFTOptimizer(
+        model,
+        default_slo_s=20.0,
+        scenario_count=8,
+        max_scenarios=8,
+    ).solve(**common)
+    full_plan = FragSpliceOptimizer(
+        model,
+        default_slo_s=20.0,
+        scenario_count=8,
+        max_scenarios=8,
+    ).solve(**common)
+
+    assert stagewise["plan"] == {
+        "detect": "edge-a",
+        "classify": "edge-b",
+    }
+    assert full_plan["plan"] == {
+        "detect": "edge-b",
+        "classify": "edge-b",
+    }
 
 
 @pytest.mark.unit
@@ -1009,6 +1276,77 @@ def contextual_profile(configuration, deployment, dag_value, pairs, **extra):
 
 
 @pytest.mark.unit
+def test_ablation_agents_disable_exactly_one_fragsplice_module(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Context, "parameters", {
+        "DEFAULT_MOUNT_PATH": str(tmp_path),
+        "DATA_PATH_PREFIX": str(tmp_path),
+    })
+    configuration = {"fps": 6}
+    deployment = FakeSystem().runtime_service_nodes()
+    task_dag = dag()
+    profile = contextual_profile(
+        configuration,
+        deployment,
+        task_dag,
+        {
+            "detect": {"edge-a": [0.1], "edge-b": [0.2]},
+            "classify": {"edge-c": [0.1]},
+        },
+    )
+
+    no_profiler = FragSpliceNoDistributionProfilerAgent(
+        FakeSystem(revision=101),
+        agent_id=101,
+        configuration=configuration,
+        latency_profile=profile,
+        scenario_count=8,
+        max_scenarios=8,
+    )
+    assert isinstance(
+        no_profiler.planning_latency_model,
+        FragSpliceStaticLatencyModel,
+    )
+    assert no_profiler.distribution_profiler_enabled is False
+    assert no_profiler.future_state_estimator_enabled is True
+    assert no_profiler.full_plan_optimizer_enabled is True
+    assert type(no_profiler.optimizer) is FragSpliceOptimizer
+
+    def unexpected_update(task):
+        raise AssertionError(f"unexpected profile update for {task}")
+
+    monkeypatch.setattr(
+        no_profiler.distribution_profiler,
+        "update_task",
+        unexpected_update,
+    )
+    no_profiler.update_task(FakeTask(
+        1,
+        {"detect": "edge-a", "classify": "edge-c"},
+        dag_value=task_dag,
+        deployment=deployment,
+    ))
+
+    no_optimizer = FragSpliceNoFullPlanOptimizerAgent(
+        FakeSystem(revision=102),
+        agent_id=102,
+        configuration=configuration,
+        latency_profile=profile,
+        scenario_count=8,
+        max_scenarios=8,
+    )
+    assert no_optimizer.planning_latency_model is no_optimizer.latency_model
+    assert no_optimizer.distribution_profiler_enabled is True
+    assert no_optimizer.future_state_estimator_enabled is True
+    assert no_optimizer.full_plan_optimizer_enabled is False
+    assert isinstance(
+        no_optimizer.optimizer,
+        FragSpliceStagewiseEFTOptimizer,
+    )
+
+
+@pytest.mark.unit
 def test_main_agent_returns_complete_plan_without_mutating_request(tmp_path, monkeypatch):
     monkeypatch.setattr(Context, "parameters", {
         "DEFAULT_MOUNT_PATH": str(tmp_path),
@@ -1072,7 +1410,7 @@ def test_main_agent_current_state_ablation_removes_only_future_commitments(
 
     system = CommitmentSystem(revision=31)
     original = dag()
-    agent = FragSpliceAgent(
+    agent = FragSpliceNoFutureStateEstimatorAgent(
         system,
         agent_id=31,
         configuration={"fps": 6},
@@ -1087,8 +1425,12 @@ def test_main_agent_current_state_ablation_removes_only_future_commitments(
         ),
         scenario_count=8,
         max_scenarios=8,
-        use_future_commitments=False,
     )
+    assert agent.planning_latency_model is agent.latency_model
+    assert agent.distribution_profiler_enabled is True
+    assert type(agent.optimizer) is FragSpliceOptimizer
+    assert agent.future_state_estimator_enabled is False
+    assert agent.full_plan_optimizer_enabled is True
     captured = {}
 
     def fake_solve(info, snapshot, deployment, cloud_device, initial_plan=None):
