@@ -61,6 +61,9 @@ def test_renderer_builds_complete_tokenless_runtime_service_and_native_mounts():
     assert "serviceAccountName" not in pod_spec
     assert "nodeName" not in pod_spec
     assert pod_spec["dnsPolicy"] == "ClusterFirst"
+    assert pod_spec["dnsConfig"] == {
+        "options": [{"name": "ndots", "value": "1"}],
+    }
     assert pod_spec["restartPolicy"] == "Always"
 
     container = pod_spec["containers"][0]

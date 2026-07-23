@@ -288,6 +288,18 @@ class RuntimeServiceRenderer:
         volumes = self._render_mounts(logical_template, slot.position, containers)
         pod_spec: Dict[str, Any] = {
             "automountServiceAccountToken": False,
+            # Runtime endpoints are emitted as fully-qualified Kubernetes
+            # service names.  With the Kubernetes default ``ndots:5`` those
+            # four-dot names are tried against every Pod search suffix before
+            # their absolute lookup.  A slow external search-domain resolver
+            # can therefore block an otherwise healthy in-cluster route.
+            # Prefer the absolute lookup while retaining ClusterFirst search
+            # behavior for ordinary single-label service names.
+            "dnsConfig": {
+                "options": [
+                    {"name": "ndots", "value": "1"},
+                ],
+            },
             "dnsPolicy": "ClusterFirst",
             "enableServiceLinks": False,
             "restartPolicy": "Always",
