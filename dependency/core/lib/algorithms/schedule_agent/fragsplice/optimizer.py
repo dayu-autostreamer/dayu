@@ -32,6 +32,8 @@ class FragSpliceOptimizer:
         search_time_limit_s=0.0,
         random_seed=0,
         queue_state_max_age_s=1.5,
+        incumbent_neighborhood_size=4,
+        screening_beam_width=16,
     ):
         self.latency_model = latency_model
         self.default_slo_s = max(1e-6, float(default_slo_s))
@@ -40,6 +42,10 @@ class FragSpliceOptimizer:
         self.search_time_limit_s = max(0.0, float(search_time_limit_s))
         self.random_seed = int(random_seed)
         self.queue_state_max_age_s = max(0.0, float(queue_state_max_age_s))
+        self.incumbent_neighborhood_size = max(
+            0, int(incumbent_neighborhood_size)
+        )
+        self.screening_beam_width = max(1, int(screening_beam_width))
 
     def _candidate_devices(self, dag, deployment, source_device, cloud_device):
         result = {}
@@ -88,7 +94,151 @@ class FragSpliceOptimizer:
         )
         miss = 1.0 if latency > slo else 0.0
         tardiness = max(0.0, latency - slo) / slo
-        return (miss, tardiness, 0.0, 0.0, latency)
+        # The candidate's optimistic no-contention latency is also a lower
+        # bound on system incremental latency: delaying existing tasks can
+        # only add non-negative externality.  Queue inflation and committed
+        # replica work have zero as their admissible lower bounds.
+        return (miss, tardiness, latency, 0.0, 0.0)
+
+    def _incumbent_neighborhood(self, services, candidates, preferred_plan):
+        """Return the most consequential one-replica exchanges first.
+
+        A short anytime budget can otherwise spend all of its full-plan
+        evaluations inside the branch containing the previous decision.  The
+        neighborhood is only a stronger primal warm start: branch-and-bound
+        remains responsible for exact search whenever time permits.
+        """
+        if self.incumbent_neighborhood_size <= 0:
+            return []
+        ranked_services = sorted(
+            (
+                service for service in services
+                if any(
+                    device != preferred_plan[service]
+                    for device in candidates[service]
+                )
+            ),
+            key=lambda service: (
+                -max(
+                    self.latency_model.estimate(service, device, 0.9)
+                    + self.latency_model.estimate_handoff(service, device, 0.9)
+                    for device in candidates[service]
+                ),
+                service,
+            ),
+        )
+        plans = []
+        for service in ranked_services:
+            alternatives = sorted(
+                (
+                    device for device in candidates[service]
+                    if device != preferred_plan[service]
+                ),
+                key=lambda device: (
+                    self.latency_model.estimate(service, device, 0.5)
+                    + self.latency_model.estimate_handoff(service, device, 0.5),
+                    device,
+                ),
+            )
+            for device in alternatives:
+                plan = dict(preferred_plan)
+                plan[service] = device
+                plans.append(plan)
+                if len(plans) >= self.incumbent_neighborhood_size:
+                    return plans
+        return plans
+
+    @staticmethod
+    def _candidate_payload(
+        dag,
+        plan,
+        source_id,
+        candidate_root,
+        candidate_created_at,
+        slo,
+    ):
+        return {
+            "root": str(
+                candidate_root or f"__fragsplice_pending__:{source_id}"
+            ),
+            "source": source_id,
+            "dag": dag,
+            "plan": plan,
+            "created_at": candidate_created_at,
+            "slo": slo,
+        }
+
+    @staticmethod
+    def _screen_score(projection, slo):
+        latency = float(projection["latency"])
+        return (
+            float(latency > slo),
+            max(0.0, latency - slo) / slo,
+            latency,
+            float(projection["queue_inflation"]),
+            float(projection["max_replica_work"]),
+        )
+
+    def _screening_plans(
+        self,
+        state,
+        dag,
+        services,
+        candidates,
+        preferred_plan,
+        source_id,
+        candidate_root,
+        candidate_created_at,
+        slo,
+        seed,
+        baseline,
+    ):
+        """Generate promising complete plans with a cheap calendar beam.
+
+        The calendar holds one sampled execution of already committed work.
+        It is used only to select primal warm starts and never to prune the
+        exact branch-and-bound tree. Therefore the small-space optimum and the
+        anytime lower-bound semantics are unchanged.
+        """
+
+        beam = [({}, None)]
+        for service in services:
+            expanded = []
+            for partial, _ in beam:
+                for device in candidates[service]:
+                    child = dict(partial)
+                    child[service] = device
+                    complete = dict(preferred_plan)
+                    complete.update(child)
+                    candidate = self._candidate_payload(
+                        dag,
+                        complete,
+                        source_id,
+                        candidate_root,
+                        candidate_created_at,
+                        slo,
+                    )
+                    projection = state.screen_candidate(
+                        candidate, seed, baseline
+                    )
+                    expanded.append((
+                        child,
+                        self._screen_score(projection, slo),
+                    ))
+            expanded.sort(key=lambda item: (
+                item[1], tuple(sorted(item[0].items()))
+            ))
+            beam = expanded[:self.screening_beam_width]
+
+        ranked = sorted(
+            ((score, plan) for plan, score in beam),
+            key=lambda item: (item[0], tuple(sorted(item[1].items()))),
+        )
+        plans = [dict(plan) for _, plan in ranked]
+        preferred_key = tuple(sorted(preferred_plan.items()))
+        if all(tuple(sorted(plan.items())) != preferred_key for plan in plans):
+            plans.append(dict(preferred_plan))
+        return plans
 
     @staticmethod
     def _score_plan(
@@ -103,24 +253,26 @@ class FragSpliceOptimizer:
         baseline_cache,
         outcome_cache,
     ):
-        root = str(candidate_root or f"__fragsplice_pending__:{source_id}")
-        candidate = {
-            "root": root,
-            "source": source_id,
-            "dag": dag,
-            "plan": plan,
-            "created_at": candidate_created_at,
-            "slo": slo,
-        }
+        candidate = FragSpliceOptimizer._candidate_payload(
+            dag,
+            plan,
+            source_id,
+            candidate_root,
+            candidate_created_at,
+            slo,
+        )
+        root = candidate["root"]
         miss_deltas = []
         tardiness_deltas = []
+        latency_impacts = []
         queue_inflation = []
         concentration = []
-        candidate_latency = []
         plan_key = tuple(sorted(plan.items()))
         for seed in seeds:
             if seed not in baseline_cache:
-                baseline_cache[seed] = state.simulate(None, seed)
+                baseline_cache[seed] = state.simulate(
+                    None, seed, include_calendar=True
+                )
             baseline = baseline_cache[seed]
             cache_key = (plan_key, seed)
             if cache_key not in outcome_cache:
@@ -141,7 +293,15 @@ class FragSpliceOptimizer:
             miss_deltas.append(max(0.0, current_miss - baseline_miss))
             tardiness_deltas.append(max(0.0, current_tardy - baseline_tardy))
             latency = outcome["latency"].get(root, float("inf"))
-            candidate_latency.append(latency)
+            old_task_externality = sum(
+                max(
+                    0.0,
+                    outcome["latency"].get(task_root, baseline_latency)
+                    - baseline_latency,
+                )
+                for task_root, baseline_latency in baseline["latency"].items()
+            )
+            latency_impacts.append(latency + old_task_externality)
             inflation = latency - outcome["candidate_noqueue"]
             queue_inflation.append(max(0.0, inflation) if inflation > 1e-9 else 0.0)
             work = list(outcome["replica_work"].values())
@@ -153,9 +313,9 @@ class FragSpliceOptimizer:
         return tuple(round(value, 12) for value in (
             sum(miss_deltas) / count,
             _cvar(tardiness_deltas, 0.95),
+            sum(latency_impacts) / count,
             sum(queue_inflation) / count,
             sum(concentration) / count,
-            sum(candidate_latency) / count,
         ))
 
     def _search(
@@ -174,8 +334,8 @@ class FragSpliceOptimizer:
         initial_plan=None,
     ):
         services = [name for name in topological_order(dag) if name not in (START, END)]
-        branch_order = {
-            service: sorted(
+        preferred_plan = {
+            service: min(
                 candidates[service],
                 key=lambda device: (
                     self.latency_model.estimate(service, device, 0.5),
@@ -184,16 +344,6 @@ class FragSpliceOptimizer:
             )
             for service in services
         }
-        heap = []
-        serial = 0
-        elapsed = max(0.0, state.now - candidate_created_at)
-        root_bound = self._lower_score(
-            dag, candidates, {}, slo, elapsed=elapsed
-        )
-        heapq.heappush(heap, (root_bound, serial, 0, {}))
-        preferred_plan = {
-            service: branch_order[service][0] for service in services
-        }
         if isinstance(initial_plan, dict) and all(
             initial_plan.get(service) in candidates[service]
             for service in services
@@ -201,7 +351,35 @@ class FragSpliceOptimizer:
             preferred_plan = {
                 service: initial_plan[service] for service in services
             }
-        incumbent_plan = preferred_plan
+
+        screen_seed = seeds[0]
+        if screen_seed not in baseline_cache:
+            baseline_cache[screen_seed] = state.simulate(
+                None, screen_seed, include_calendar=True
+            )
+        screened_plans = self._screening_plans(
+            state,
+            dag,
+            services,
+            candidates,
+            preferred_plan,
+            source_id,
+            candidate_root,
+            candidate_created_at,
+            slo,
+            screen_seed,
+            baseline_cache[screen_seed],
+        )
+        warm_limit = max(1, self.incumbent_neighborhood_size)
+        warm_plans = screened_plans[:warm_limit]
+        preferred_key = tuple(sorted(preferred_plan.items()))
+        if all(
+            tuple(sorted(plan.items())) != preferred_key
+            for plan in warm_plans
+        ):
+            warm_plans.append(preferred_plan)
+
+        incumbent_plan = warm_plans[0]
         incumbent_score = self._score_plan(
             state,
             dag,
@@ -220,6 +398,54 @@ class FragSpliceOptimizer:
             )
         }
         expanded = 0
+
+        # Spend the first full-simulation evaluations on plans selected by the
+        # commitment calendar. This can change several service assignments at
+        # once, unlike a one-exchange warm start, while exact scores still use
+        # all configured common-random-number scenarios.
+        for plan in warm_plans[1:]:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            plan_key = tuple(sorted(plan.items()))
+            if plan_key in evaluated_by_plan:
+                continue
+            score = self._score_plan(
+                state,
+                dag,
+                plan,
+                source_id,
+                candidate_root,
+                candidate_created_at,
+                slo,
+                seeds,
+                baseline_cache,
+                outcome_cache,
+            )
+            evaluated_by_plan[plan_key] = (score, plan)
+            if score < incumbent_score:
+                incumbent_score = score
+                incumbent_plan = plan
+
+        branch_order = {}
+        for service in services:
+            branch_order[service] = sorted(
+                candidates[service],
+                key=lambda device: (
+                    0 if device == incumbent_plan[service] else 1,
+                    self.latency_model.estimate(service, device, 0.5),
+                    device,
+                ),
+            )
+        heap = []
+        serial = 0
+        # A candidate task has only reserved an identity. Its application SLO
+        # clock starts after source data is materialized and immediately before
+        # lease admission, so scheduler/search time is not task latency.
+        elapsed = 0.0
+        root_bound = self._lower_score(
+            dag, candidates, {}, slo, elapsed=elapsed
+        )
+        heapq.heappush(heap, (root_bound, serial, 0, {}))
 
         while heap:
             if deadline is not None and time.monotonic() >= deadline:
@@ -271,6 +497,7 @@ class FragSpliceOptimizer:
             "score": incumbent_score,
             "evaluated": evaluated,
             "expanded": expanded,
+            "screened": len(screened_plans),
             "optimality_proven": not heap,
             "best_open_lower_bound": best_open,
         }
@@ -285,15 +512,30 @@ class FragSpliceOptimizer:
             return True
         if second[1] - first[1] > 0.02:
             return True
-        return second[4] - first[4] > max(1e-3, 0.05 * max(first[4], 1e-6))
+        return second[2] - first[2] > max(1e-3, 0.05 * max(first[2], 1e-6))
 
-    def solve(self, info, snapshot, deployment, cloud_device):
+    def solve(
+        self,
+        info,
+        snapshot,
+        deployment,
+        cloud_device,
+        initial_plan=None,
+    ):
         dag = info["dag"]
         source_id = info.get("source_id", "")
         task_context = info.get("task_context")
         task_context = task_context if isinstance(task_context, dict) else {}
         candidate_root = task_context.get("root_uuid")
         source_device = info.get("source_device", "")
+        if START in dag:
+            dag[START].setdefault("service", {})["execute_device"] = str(
+                source_device or ""
+            )
+        if END in dag:
+            dag[END].setdefault("service", {})["execute_device"] = str(
+                cloud_device or ""
+            )
         metadata = info.get("meta_data")
         metadata = metadata if isinstance(metadata, dict) else {}
         try:
@@ -312,12 +554,7 @@ class FragSpliceOptimizer:
             slo,
             queue_state_max_age_s=self.queue_state_max_age_s,
         )
-        try:
-            candidate_created_at = float(task_context.get("created_at"))
-        except (TypeError, ValueError):
-            candidate_created_at = state.now
-        if not math.isfinite(candidate_created_at) or candidate_created_at <= 0.0:
-            candidate_created_at = state.now
+        candidate_created_at = state.now
         started = time.monotonic()
         deadline = (
             started + self.search_time_limit_s
@@ -335,7 +572,7 @@ class FragSpliceOptimizer:
         used = 0
         baseline_cache = {}
         outcome_cache = {}
-        incumbent_plan = None
+        incumbent_plan = initial_plan if isinstance(initial_plan, dict) else None
         for count in counts:
             if deadline is not None and time.monotonic() >= deadline and result is not None:
                 break
@@ -362,7 +599,7 @@ class FragSpliceOptimizer:
             used = count
             if self._ranking_is_stable(current, count):
                 break
-        elapsed_before_execution = max(0.0, state.now - candidate_created_at)
+        elapsed_before_execution = 0.0
         intrinsic_slo_infeasible = self._lower_score(
             dag,
             candidates,

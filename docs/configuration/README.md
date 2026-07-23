@@ -104,7 +104,7 @@ Runtime control fields:
 
 | Field | Default | Meaning |
 | --- | ---: | --- |
-| `runtime.activation-timeout-seconds` | `300` | Maximum wait for exact Sedna `Activated` and dynamic `Ready` conditions. |
+| `runtime.activation-timeout-seconds` | `600` | Maximum wait for exact Sedna `Activated` and dynamic `Ready` conditions. Large multi-node deployments may require several minutes for edge route caches to converge. |
 | `runtime.operation-timeout-seconds` | `900` | End-to-end install/redeployment transaction budget used across activation and publication stages. |
 | `runtime.scheduler-request-timeout-seconds` | `30` | Maximum total time for one Scheduler control-plane call, including retries. Cancellation stops subsequent attempts/backoff; a running synchronous attempt remains bounded by its share of this budget. |
 | `runtime.inventory-ttl-seconds` | `30` | Backend-owned node snapshot TTL; callers cannot force refresh it. |

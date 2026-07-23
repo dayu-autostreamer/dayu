@@ -28,13 +28,13 @@ pod-template:
           'policy': {
             'traffic-detection': ['edgexn23', 'edgexn27'],
             'road-context-segmentation': ['edgexn24', 'edgexn28'],
-            'traffic-signal-recognition': ['edgexn23', 'edgexn24', 'edgexn32', 'edgexn34'],
-            'vehicle-tracking': ['edgexn23', 'edgexn27', 'edgexn34'],
-            'vehicle-attribute-recognition': ['edgexn28', 'edgexn32', 'edgexn34'],
+            'traffic-signal-recognition': ['edgexn31', 'edgexn32'],
+            'vehicle-tracking': ['edgexn23', 'edgexn27'],
+            'vehicle-attribute-recognition': ['edgexn28', 'edgexn32'],
             'vehicle-trajectory-prediction': ['edgexn27', 'edgexn32'],
             'pedestrian-pose-estimation': ['edgexn24', 'edgexn28'],
-            'pedestrian-intent-recognition': ['edgexn32', 'edgexn34'],
-            'risk-graph-generation': ['edgexn34']
+            'pedestrian-intent-recognition': ['edgexn28', 'edgexn32'],
+            'risk-graph-generation': ['edgexn23']
           }
         }
     - name: SCH_REDEPLOYMENT_POLICY_NAME
@@ -46,16 +46,19 @@ pod-template:
         {
           'configuration': {
             'resolution': '720p',
-            'fps': 4,
+            'fps': 8,
             'encoding': 'mp4v',
             'buffer_size': 4
           },
           'latency_profile': 'fragsplice-profile.json',
-          'latency_slo_s': 3.0,
-          'scenario_count': 32,
-          'max_scenarios': 256,
-          'search_time_limit_s': 1.0,
+          'latency_slo_s': 3.5,
+          'scenario_count': 8,
+          'max_scenarios': 64,
+          'search_time_limit_s': 0.2,
           'queue_state_max_age_s': 1.5,
+          'residual_half_life_tasks': 8.0,
+          'incumbent_neighborhood_size': 4,
+          'screening_beam_width': 16,
           'random_seed': 2026
         }
 

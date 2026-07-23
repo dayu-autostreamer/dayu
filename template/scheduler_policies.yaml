@@ -143,7 +143,7 @@
   name: FragSplice Cold Sample
   yaml: fragsplice-cold-sample.yaml
   dependency:
-    generator: generator-with-scheduler-permitted.yaml
+    generator: generator-fragsplice.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-fragsplice.yaml
@@ -151,7 +151,15 @@
   name: FragSplice
   yaml: fragsplice.yaml
   dependency:
-    generator: generator-with-scheduler-permitted.yaml
+    generator: generator-fragsplice.yaml
+    controller: controller-for-evaluation.yaml
+    distributor: distributor-base.yaml
+    monitor: monitor-fragsplice.yaml
+- id: fragsplice-current-state
+  name: FragSplice Current-State Ablation
+  yaml: fragsplice-current-state.yaml
+  dependency:
+    generator: generator-fragsplice.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
     monitor: monitor-fragsplice.yaml

@@ -40,6 +40,33 @@ def _handoff_duration(service):
     return max(0.0, execute_end - real_execute_end)
 
 
+def _dispatch_duration(service):
+    """Return Controller-dispatch to Processor-start time when recorded.
+
+    Cold profiling runs with one in-flight root, so this interval represents
+    serialization, local delivery, and Processor admission rather than FIFO
+    queueing. Online traces are deliberately not used for this component.
+    """
+
+    getter = getattr(service, "get_tmp_data", None)
+    timing = getter() if callable(getter) else {}
+    if not isinstance(timing, dict):
+        return None
+    execute_start = _non_negative(timing.get("execute_start"))
+    real_execute_start = _non_negative(timing.get("real_execute_start"))
+    if execute_start is None or real_execute_start is None:
+        return None
+    return max(0.0, real_execute_start - execute_start)
+
+
+def _timestamp(service, name):
+    getter = getattr(service, "get_tmp_data", None)
+    timing = getter() if callable(getter) else {}
+    if not isinstance(timing, dict):
+        return None
+    return _non_negative(timing.get(name))
+
+
 class FragSpliceLatencyModel:
     """Factorized empirical service-time model with online correction.
 
@@ -50,17 +77,38 @@ class FragSpliceLatencyModel:
     counting the same content variation twice.
     """
 
-    PROFILE_VERSION = 3
+    PROFILE_VERSION = 4
     PROFILE_METRIC = "real_execute_time_seconds"
     PROFILE_CONTEXT_FIELDS = ("configuration", "deployment", "dag")
     _SAVE_LOCK = threading.Lock()
 
-    def __init__(self, profile=None, history_size=128, drift_alpha=0.15):
+    def __init__(
+        self,
+        profile=None,
+        history_size=128,
+        drift_alpha=0.15,
+        residual_half_life_tasks=8.0,
+    ):
         self.history_size = max(16, int(history_size))
         self.drift_alpha = min(1.0, max(0.01, float(drift_alpha)))
+        self.residual_half_life_tasks = max(
+            1.0, float(residual_half_life_tasks)
+        )
         self._samples = defaultdict(lambda: defaultdict(lambda: deque(maxlen=self.history_size)))
         self._handoff_samples = defaultdict(
             lambda: defaultdict(lambda: deque(maxlen=self.history_size))
+        )
+        self._transfer_samples = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=self.history_size))
+        )
+        self._dispatch_samples = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=self.history_size))
+        )
+        self._control_samples = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=self.history_size))
+        )
+        self._completion_samples = defaultdict(
+            lambda: deque(maxlen=self.history_size)
         )
         self._pair_log_drift = defaultdict(dict)
         self._task_residuals = defaultdict(lambda: deque(maxlen=self.history_size))
@@ -247,6 +295,26 @@ class FragSpliceLatencyModel:
         parsed = [_positive(item) for item in raw]
         return [item for item in parsed if item is not None]
 
+    @staticmethod
+    def _overhead_samples(value):
+        if isinstance(value, (int, float)):
+            parsed = _non_negative(value)
+            return [parsed] if parsed is not None else []
+        if isinstance(value, list):
+            raw = value
+        elif isinstance(value, dict):
+            raw = value.get("samples") or value.get("values") or []
+            if not raw:
+                for key in ("median", "p50", "mean"):
+                    parsed = _non_negative(value.get(key))
+                    if parsed is not None:
+                        raw = [parsed]
+                        break
+        else:
+            raw = []
+        parsed = [_non_negative(item) for item in raw]
+        return [item for item in parsed if item is not None]
+
     def load(self, profile):
         if not isinstance(profile, dict):
             raise TypeError("FragSplice latency profile must be a mapping")
@@ -274,6 +342,25 @@ class FragSpliceLatencyModel:
                         self._ensure_pair_in_context(service, device)
                         for sample in self._pair_samples(value):
                             self._handoff_samples[str(service)][str(device)].append(sample)
+            for profile_key, target in (
+                ("transfer_pairs", self._transfer_samples),
+                ("dispatch_pairs", self._dispatch_samples),
+                ("control_pairs", self._control_samples),
+            ):
+                values_by_service = profile.get(profile_key, {})
+                if not isinstance(values_by_service, dict):
+                    continue
+                for service, devices in values_by_service.items():
+                    if not isinstance(devices, dict):
+                        continue
+                    for device, value in devices.items():
+                        for sample in self._overhead_samples(value):
+                            target[str(service)][str(device)].append(sample)
+            completions = profile.get("completion_overhead", {})
+            if isinstance(completions, dict):
+                for source, value in completions.items():
+                    for sample in self._overhead_samples(value):
+                        self._completion_samples[str(source)].append(sample)
             drifts = profile.get("pair_log_drift", {})
             if isinstance(drifts, dict):
                 for service, devices in drifts.items():
@@ -334,6 +421,56 @@ class FragSpliceLatencyModel:
                 self._handoff_samples.get(str(service), {}).get(str(device), ())
             )
 
+    @staticmethod
+    def _context_values(store, service, device):
+        service = str(service)
+        device = str(device)
+        values = list(store.get(service, {}).get(device, ()))
+        if not values:
+            values = [
+                item
+                for samples in store.get(service, {}).values()
+                for item in samples
+            ]
+        if not values:
+            values = [
+                item
+                for devices in store.values()
+                for samples in devices.values()
+                for item in samples
+            ]
+        return values
+
+    def transfer_values(self, service, device):
+        with self._lock:
+            return self._context_values(
+                self._transfer_samples, service, device
+            )
+
+    def dispatch_values(self, service, device):
+        with self._lock:
+            return self._context_values(
+                self._dispatch_samples, service, device
+            )
+
+    def control_values(self, service, device):
+        with self._lock:
+            return self._context_values(
+                self._control_samples, service, device
+            )
+
+    def completion_values(self, source_id):
+        source_key = str(source_id)
+        with self._lock:
+            values = list(self._completion_samples.get(source_key, ()))
+            if not values:
+                values = [
+                    item
+                    for samples in self._completion_samples.values()
+                    for item in samples
+                ]
+            return values
+
     def _pair_drift(self, service, device):
         return float(
             self._pair_log_drift.get(str(service), {}).get(str(device), 0.0)
@@ -390,13 +527,53 @@ class FragSpliceLatencyModel:
         values = self.handoff_values(service, device)
         return max(0.0, min(values)) if values else 0.0
 
+    @staticmethod
+    def _quantile(values, quantile, default=0.0):
+        if not values:
+            return max(0.0, float(default))
+        ordered = sorted(float(item) for item in values)
+        q = min(1.0, max(0.0, float(quantile)))
+        index = int(round(q * (len(ordered) - 1)))
+        return max(0.0, ordered[index])
+
+    def estimate_transfer(self, service, device, quantile=0.5):
+        return self._quantile(
+            self.transfer_values(service, device), quantile
+        )
+
+    def estimate_dispatch(self, service, device, quantile=0.5):
+        return self._quantile(
+            self.dispatch_values(service, device), quantile
+        )
+
+    def estimate_control(self, service, device, quantile=0.5):
+        return self._quantile(
+            self.control_values(service, device), quantile
+        )
+
+    def estimate_completion(self, source_id, quantile=0.5):
+        return self._quantile(
+            self.completion_values(source_id), quantile
+        )
+
     def sample_task(self, source_id, plan, rng):
         """Draw one correlated service-time vector for a full plan."""
         source_key = str(source_id)
         with self._lock:
             histories = list(self._task_residuals.get(source_key, ()))
+        # Video complexity is locally correlated but can change abruptly.  An
+        # exponential recency kernel gives the most recent completed tasks a
+        # well-defined influence horizon while retaining older modes as
+        # low-probability tail scenarios.
+        weights = [
+            2.0 ** (
+                -(len(histories) - 1 - index)
+                / self.residual_half_life_tasks
+            )
+            for index in range(len(histories))
+        ]
         residual = (
-            rng.choices(histories, weights=range(1, len(histories) + 1), k=1)[0]
+            rng.choices(histories, weights=weights, k=1)[0]
             if histories else {}
         )
         sampled = {}
@@ -431,6 +608,157 @@ class FragSpliceLatencyModel:
             sampled[service] = max(0.0, rng.choice(values)) if values else 0.0
         return sampled
 
+    def sample_stage_overheads(self, source_id, dag, plan, rng):
+        """Sample non-Processor timing components for one full DAG scenario."""
+
+        transfer = {}
+        dispatch = {}
+        control = {}
+        for service in sorted(dag):
+            if service == TaskConstant.START.value:
+                continue
+            node = dag.get(service, {}) if isinstance(dag, dict) else {}
+            spec = node.get("service", {}) if isinstance(node, dict) else {}
+            device = str(plan.get(service) or spec.get("execute_device") or "")
+            transfer_values = self.transfer_values(service, device)
+            control_values = self.control_values(service, device)
+            transfer[service] = (
+                max(0.0, rng.choice(transfer_values))
+                if transfer_values else 0.0
+            )
+            control[service] = (
+                max(0.0, rng.choice(control_values))
+                if control_values else 0.0
+            )
+            if service != TaskConstant.END.value:
+                dispatch_values = self.dispatch_values(service, device)
+                dispatch[service] = (
+                    max(0.0, rng.choice(dispatch_values))
+                    if dispatch_values else 0.0
+                )
+        completion_values = self.completion_values(source_id)
+        completion = (
+            max(0.0, rng.choice(completion_values))
+            if completion_values else 0.0
+        )
+        return {
+            "transfer": transfer,
+            "dispatch": dispatch,
+            "control": control,
+            "completion": completion,
+        }
+
+    @staticmethod
+    def _task_dag_dict(task):
+        dag_getter = getattr(task, "get_dag", None)
+        dag = dag_getter() if callable(dag_getter) else None
+        converter = getattr(dag, "to_dict", None)
+        if callable(converter):
+            dag = converter()
+        return dag if isinstance(dag, dict) else None
+
+    @staticmethod
+    def _task_slo_time(task, name):
+        getter = getattr(task, name, None)
+        if not callable(getter):
+            return None
+        try:
+            return _positive(getter())
+        except (TypeError, ValueError):
+            return None
+
+    def record_task_overheads(self, task, include_dispatch=False):
+        """Record causal non-Processor intervals from one completed task.
+
+        ``include_dispatch`` is reserved for low-concurrency cold profiling:
+        online ``execute_start -> real_execute_start`` intervals may contain
+        FIFO waiting and would otherwise be counted twice by the event model.
+        """
+
+        dag = self._task_dag_dict(task)
+        if dag is None:
+            return False
+        source_getter = getattr(task, "get_source_id", None)
+        source_id = source_getter() if callable(source_getter) else ""
+        slo_start = self._task_slo_time(task, "get_slo_start_time")
+        slo_end = self._task_slo_time(task, "get_slo_end_time")
+        observed = False
+        with self._lock:
+            for service_name, node in dag.items():
+                if service_name == TaskConstant.START.value:
+                    continue
+                service_getter = getattr(task, "get_service", None)
+                if not callable(service_getter):
+                    continue
+                try:
+                    service = service_getter(service_name)
+                except (KeyError, AssertionError):
+                    continue
+                device_getter = getattr(service, "get_execute_device", None)
+                device = str(device_getter() if callable(device_getter) else "")
+                if not device:
+                    continue
+
+                transfer_getter = getattr(service, "get_transmit_time", None)
+                transfer = _non_negative(
+                    transfer_getter() if callable(transfer_getter) else None
+                )
+                # A zero value means the predecessor and target Controller are
+                # co-located. The simulator already assigns zero to that case;
+                # retaining it in the remote-transfer distribution would bias
+                # cross-device plans downward.
+                if transfer is not None and transfer > 0.0:
+                    self._transfer_samples[str(service_name)][device].append(transfer)
+                    observed = True
+
+                predecessors = node.get("prev_nodes", []) if isinstance(node, dict) else []
+                predecessor_ends = []
+                for predecessor in predecessors:
+                    if predecessor == TaskConstant.START.value:
+                        if slo_start is not None:
+                            predecessor_ends.append(slo_start)
+                        continue
+                    try:
+                        predecessor_service = service_getter(predecessor)
+                    except (KeyError, AssertionError):
+                        continue
+                    predecessor_end = _timestamp(
+                        predecessor_service, "execute_end"
+                    )
+                    if predecessor_end is not None:
+                        predecessor_ends.append(predecessor_end)
+
+                release = _timestamp(service, "transmit_start")
+                if transfer is None or transfer <= 0.0 or release is None:
+                    release = _timestamp(service, "execute_start")
+                if service_name == TaskConstant.END.value:
+                    release = _timestamp(service, "transmit_start") or release
+                if release is not None and predecessor_ends:
+                    control = max(0.0, release - max(predecessor_ends))
+                    self._control_samples[str(service_name)][device].append(control)
+                    observed = True
+
+                if include_dispatch and service_name != TaskConstant.END.value:
+                    dispatch = _dispatch_duration(service)
+                    if dispatch is not None:
+                        self._dispatch_samples[str(service_name)][device].append(dispatch)
+                        observed = True
+
+            if slo_end is not None:
+                try:
+                    end_service = task.get_service(TaskConstant.END.value)
+                except (AttributeError, KeyError, AssertionError):
+                    end_service = None
+                transfer_end = (
+                    _timestamp(end_service, "transmit_end")
+                    if end_service is not None else None
+                )
+                if transfer_end is not None:
+                    completion = max(0.0, slo_end - transfer_end)
+                    self._completion_samples[str(source_id)].append(completion)
+                    observed = True
+        return observed
+
     def update_task(self, task):
         source_key = str(task.get_source_id())
         observations = []
@@ -457,8 +785,11 @@ class FragSpliceLatencyModel:
                     "handoff": _handoff_duration(service),
                 })
 
+            overhead_updated = self.record_task_overheads(
+                task, include_dispatch=False
+            )
             if not observations:
-                return False
+                return overhead_updated
 
             # Separate a task-wide content component from pair-specific drift.
             # This keeps recent video complexity in one joint residual vector
@@ -543,6 +874,38 @@ class FragSpliceLatencyModel:
                         "p50": ordered[int(round(0.50 * (len(ordered) - 1)))],
                         "p90": ordered[int(round(0.90 * (len(ordered) - 1)))],
                     }
+
+            def serialize_nested(store):
+                result = {}
+                for service, devices in sorted(store.items()):
+                    for device, raw_values in sorted(devices.items()):
+                        values = list(raw_values)
+                        if not values:
+                            continue
+                        ordered = sorted(values)
+                        result.setdefault(service, {})[device] = {
+                            "samples": values,
+                            "p50": ordered[int(round(0.50 * (len(ordered) - 1)))],
+                            "p90": ordered[int(round(0.90 * (len(ordered) - 1)))],
+                            "p95": ordered[int(round(0.95 * (len(ordered) - 1)))],
+                        }
+                return result
+
+            transfers = serialize_nested(self._transfer_samples)
+            dispatches = serialize_nested(self._dispatch_samples)
+            controls = serialize_nested(self._control_samples)
+            completions = {}
+            for source, raw_values in sorted(self._completion_samples.items()):
+                values = list(raw_values)
+                if not values:
+                    continue
+                ordered = sorted(values)
+                completions[source] = {
+                    "samples": values,
+                    "p50": ordered[int(round(0.50 * (len(ordered) - 1)))],
+                    "p90": ordered[int(round(0.90 * (len(ordered) - 1)))],
+                    "p95": ordered[int(round(0.95 * (len(ordered) - 1)))],
+                }
             drifts = {
                 service: {
                     device: value
@@ -563,6 +926,10 @@ class FragSpliceLatencyModel:
             "deployment": copy.deepcopy(context["deployment"]),
             "pairs": pairs,
             "handoff_pairs": handoffs,
+            "transfer_pairs": transfers,
+            "dispatch_pairs": dispatches,
+            "control_pairs": controls,
+            "completion_overhead": completions,
             "pair_log_drift": drifts,
             "task_residuals": residuals,
         }

@@ -23,14 +23,23 @@ __all__ = ("FragSpliceColdSampleAgent",)
 
 class _FragSpliceColdState:
     def __init__(self, history_size, profile=None, seen=None):
+        self.history_size = max(16, int(history_size))
         self.model = FragSpliceLatencyModel(
             profile=profile,
-            history_size=history_size,
+            history_size=self.history_size,
         )
         self.seen = dict(seen or {})
         self.decision_index = 0
         self.deployment = {}
         self.lock = threading.RLock()
+
+    def reset(self):
+        """Discard samples that belong to a different cold-profile context."""
+
+        self.model = FragSpliceLatencyModel(history_size=self.history_size)
+        self.seen.clear()
+        self.decision_index = 0
+        self.deployment = {}
 
 
 @ClassFactory.register(ClassType.SCH_AGENT, alias="fragsplice_cold_sample")
@@ -45,6 +54,7 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
         profile_path="fragsplice-profile.json",
         warmup_samples=2,
         samples_per_pair=30,
+        max_inflight_tasks=1,
     ):
         super().__init__(system, agent_id)
         self.system = system
@@ -53,6 +63,7 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
         self.profile_path = Context.get_file_path(str(profile_path))
         self.warmup_samples = max(0, int(warmup_samples))
         self.samples_per_pair = max(1, int(samples_per_pair))
+        self.max_inflight_tasks = max(1, int(max_inflight_tasks))
         profile = {}
         if os.path.exists(self.profile_path):
             try:
@@ -64,10 +75,23 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
                     self.profile_path,
                     exc,
                 )
-        profile_context = FragSpliceLatencyModel.validate_profile_context(
-            profile,
-            self.configuration,
-        )
+        try:
+            profile_context = FragSpliceLatencyModel.validate_profile_context(
+                profile,
+                self.configuration,
+            )
+        except ValueError as exc:
+            # Strict rejection is correct for the main scheduler, but this
+            # agent exists specifically to rebuild the profile for the active
+            # fixed deployment.  Treat an incompatible persisted profile as
+            # stale input instead of making cold sampling impossible.
+            LOGGER.warning(
+                "[FragSpliceColdSample] Reset incompatible profile %s: %s",
+                self.profile_path,
+                exc,
+            )
+            profile = {}
+            profile_context = None
         seen = self._load_progress(profile.get("cold_progress"), profile)
         revision_getter = getattr(system, "runtime_directory_revision", None)
         revision = revision_getter() if callable(revision_getter) else 0
@@ -78,23 +102,25 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
             profile=profile,
             seen=seen,
         )
-        if profile_context is not None:
-            self._state.model.ensure_profile_context(
-                **profile_context,
-                require_complete=True,
-            )
-        else:
-            self._state.model.ensure_profile_context(
-                configuration=self.configuration,
-            )
+        initial_context = (
+            profile_context
+            if profile_context is not None
+            else {"configuration": self.configuration}
+        )
+        self._ensure_cold_context(
+            **initial_context,
+            require_complete=profile_context is not None,
+        )
         self.overhead_estimator = OverheadEstimator(
             "FragSpliceColdSample", "scheduler/fragsplice", agent_id=agent_id
         )
         LOGGER.info(
-            "[FragSpliceColdSample] profile=%s warmup=%s samples_per_pair=%s",
+            "[FragSpliceColdSample] profile=%s warmup=%s "
+            "samples_per_pair=%s max_inflight_tasks=%s",
             self.profile_path,
             self.warmup_samples,
             self.samples_per_pair,
+            self.max_inflight_tasks,
         )
 
     def _load_progress(self, progress, profile):
@@ -144,12 +170,51 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
                 result[str(service)] = normalized
         return result
 
+    def _ensure_cold_context(self, require_complete=False, **context):
+        """Bind cold samples to one context, resetting stale observations.
+
+        Runtime-directory publication and generator startup can overlap, so a
+        cold agent may first observe an incomplete deployment and later the
+        final fixed deployment.  The main FragSplice agent must reject this
+        mismatch.  The cold agent must instead restart collection because no
+        sample from the old context is valid for the new one.
+        """
+
+        supplied = {"configuration": self.configuration}
+        supplied.update(context)
+        try:
+            return self._state.model.ensure_profile_context(
+                **supplied,
+                require_complete=require_complete,
+            )
+        except ValueError as exc:
+            LOGGER.warning(
+                "[FragSpliceColdSample] Active profile context changed; "
+                "restart cold collection: %s",
+                exc,
+            )
+            self._state.reset()
+            result = self._state.model.ensure_profile_context(
+                **supplied,
+                require_complete=require_complete,
+            )
+            deployment = supplied.get("deployment")
+            if isinstance(deployment, dict) and deployment:
+                self._state.deployment = self._normalize_deployment(deployment)
+                for service, devices in self._state.deployment.items():
+                    for device in devices:
+                        self._state.seen[(service, device)] = (
+                            self.warmup_samples
+                            + self._state.model.sample_count(service, device)
+                        )
+            return result
+
     def _refresh_deployment(self, deployment=None):
         if deployment is None:
             deployment = self.system.runtime_service_nodes()
         current = self._normalize_deployment(deployment)
         if current:
-            self._state.model.ensure_profile_context(deployment=current)
+            self._ensure_cold_context(deployment=current)
         if current != self._state.deployment:
             self._state.deployment = current
             for service, devices in current.items():
@@ -194,6 +259,25 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
                     counts[pair] = counts.get(pair, 0) + 1
         return counts
 
+    @staticmethod
+    def _inflight_task_count(snapshot):
+        """Count distinct pending or admitted roots in the active revision."""
+
+        roots = set()
+        anonymous = 0
+        records = list(snapshot.get("reservations", [])) + list(
+            snapshot.get("commitments", [])
+        )
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            root_uuid = str(record.get("root_uuid") or "").strip()
+            if root_uuid:
+                roots.add(root_uuid)
+            else:
+                anonymous += 1
+        return len(roots) + anonymous
+
     def _choose_device(self, service, planned):
         devices = self._state.deployment.get(service, [])
         if not devices:
@@ -219,8 +303,7 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
             )
             planned = self._planned_pair_counts(snapshot)
             dag = copy.deepcopy(info["dag"])
-            self._state.model.ensure_profile_context(
-                configuration=self.configuration,
+            self._ensure_cold_context(
                 deployment=self._state.deployment,
                 dag=dag,
                 require_complete=True,
@@ -245,8 +328,7 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
             self._refresh_deployment(
                 deployment if isinstance(deployment, dict) and deployment else None
             )
-            self._state.model.ensure_profile_context(
-                configuration=self.configuration,
+            self._ensure_cold_context(
                 deployment=self._state.deployment,
                 dag=task.get_dag(),
                 require_complete=True,
@@ -286,6 +368,9 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
                     for service, device in observed_pairs
                 ):
                     self._state.model.record_task_residual(task)
+                    self._state.model.record_task_overheads(
+                        task, include_dispatch=True
+                    )
                 self._state.model.save(
                     self.profile_path,
                     deployment=self._state.deployment,
@@ -307,9 +392,28 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
 
     def should_generate(self, info):
         complete = self.is_complete()
+        if complete:
+            return {
+                "generate": False,
+                "reason": "fragsplice_profile_complete",
+            }
+        snapshot_getter = getattr(self.system, "get_scheduling_snapshot", None)
+        snapshot = snapshot_getter() if callable(snapshot_getter) else {}
+        inflight = self._inflight_task_count(
+            snapshot if isinstance(snapshot, dict) else {}
+        )
+        if inflight >= self.max_inflight_tasks:
+            return {
+                "generate": False,
+                "reason": "fragsplice_profile_inflight_limit",
+                "inflight_tasks": inflight,
+                "max_inflight_tasks": self.max_inflight_tasks,
+            }
         return {
-            "generate": not complete,
-            "reason": "fragsplice_profile_complete" if complete else "fragsplice_profile_collecting",
+            "generate": True,
+            "reason": "fragsplice_profile_collecting",
+            "inflight_tasks": inflight,
+            "max_inflight_tasks": self.max_inflight_tasks,
         }
 
     def get_profile(self):

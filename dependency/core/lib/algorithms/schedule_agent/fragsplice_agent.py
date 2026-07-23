@@ -47,6 +47,10 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
         search_time_limit_s=0.0,
         random_seed=0,
         queue_state_max_age_s=1.5,
+        residual_half_life_tasks=8.0,
+        incumbent_neighborhood_size=4,
+        screening_beam_width=16,
+        use_future_commitments=True,
     ):
         super().__init__(system, agent_id)
         self.system = system
@@ -67,6 +71,7 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             FragSpliceLatencyModel,
             ("fragsplice", id(system), revision),
             profile=profile,
+            residual_half_life_tasks=residual_half_life_tasks,
         )
         if profile_context is not None:
             self.latency_model.ensure_profile_context(
@@ -85,10 +90,13 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             search_time_limit_s=search_time_limit_s,
             random_seed=random_seed,
             queue_state_max_age_s=queue_state_max_age_s,
+            incumbent_neighborhood_size=incumbent_neighborhood_size,
+            screening_beam_width=screening_beam_width,
         )
         self.overhead_estimator = OverheadEstimator(
             "FragSplice", "scheduler/fragsplice", agent_id=agent_id
         )
+        self.use_future_commitments = bool(use_future_commitments)
         self._lock = threading.RLock()
         self.last_decision = None
         if not self.latency_model.has_samples():
@@ -120,6 +128,16 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             decision_info = dict(info)
             decision_info["dag"] = dag
             snapshot = self.system.get_scheduling_snapshot()
+            if not self.use_future_commitments:
+                # Current-state ablation: preserve the exact live replica
+                # telemetry and the same optimizer/search budget, but remove
+                # work that is known only through already committed full-DAG
+                # plans.  This isolates the value of future-state inference
+                # without changing service-time prediction or planner cost.
+                snapshot = copy.deepcopy(snapshot)
+                snapshot["reservations"] = []
+                snapshot["commitments"] = []
+                snapshot["task_barriers"] = []
             deployment = snapshot.get("deployment")
             if not isinstance(deployment, dict):
                 deployment = self.system.runtime_service_nodes()
@@ -130,11 +148,16 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
                 require_complete=True,
             )
             self._validate_profile_coverage(dag, deployment)
+            previous_plan = (
+                self.last_decision.get("plan")
+                if isinstance(self.last_decision, dict) else None
+            )
             result = self.optimizer.solve(
                 decision_info,
                 snapshot,
                 deployment,
                 self.cloud_device,
+                initial_plan=previous_plan,
             )
             for service, device in result["plan"].items():
                 dag[service]["service"]["execute_device"] = device
@@ -148,18 +171,24 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             policy["dag"] = dag
             self.last_decision = copy.deepcopy(result)
             LOGGER.info(
-                "[FragSplice] source=%s plans=%s scenarios=%s evaluated=%s "
+                "[FragSplice] source=%s plans=%s screened=%s scenarios=%s evaluated=%s "
                 "optimal=%s unschedulable=%s intrinsic_slo_infeasible=%s "
-                "budget_exhausted=%s score=%s overhead=%.4fs",
+                "budget_exhausted=%s future_commitments=%s predicted_miss=%.3f "
+                "score=%s lower_bound=%s plan=%s overhead=%.4fs",
                 info.get("source_id"),
                 result["candidate_count"],
+                result["screened"],
                 result["scenario_count"],
                 len(result["evaluated"]),
                 result["optimality_proven"],
                 result["unschedulable"],
                 result["intrinsic_slo_infeasible"],
                 result["budget_exhausted"],
+                self.use_future_commitments,
+                result["predicted_miss_probability"],
                 tuple(round(item, 6) for item in result["score"]),
+                tuple(round(item, 6) for item in result["best_open_lower_bound"]),
+                result["plan"],
                 result["search_seconds"],
             )
             return policy
