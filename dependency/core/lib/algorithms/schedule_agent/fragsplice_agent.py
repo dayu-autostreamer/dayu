@@ -202,25 +202,32 @@ class FragSpliceAgent(BaseAgent, abc.ABC):
             policy["dag"] = dag
             self.last_decision = copy.deepcopy(result)
             LOGGER.info(
-                "[FragSplice] source=%s plans=%s screened=%s scenarios=%s evaluated=%s "
+                "[FragSplice] source=%s plans=%s screened=%s scenarios=%s/%s evaluated=%s "
                 "optimal=%s unschedulable=%s intrinsic_slo_infeasible=%s "
-                "budget_exhausted=%s future_commitments=%s predicted_miss=%.3f "
-                "score=%s lower_bound=%s plan=%s overhead=%.4fs",
+                "budget_exhausted=%s score_evaluated=%s fallback=%s "
+                "future_commitments=%s predicted_miss=%.3f score=%s "
+                "lower_bound=%s plan=%s state_build=%.4fs overhead=%.4fs "
+                "overrun=%.4fs",
                 info.get("source_id"),
                 result["candidate_count"],
                 result["screened"],
+                result.get("selected_outcome_scenarios", 0),
                 result["scenario_count"],
                 len(result["evaluated"]),
                 result["optimality_proven"],
                 result["unschedulable"],
                 result["intrinsic_slo_infeasible"],
                 result["budget_exhausted"],
+                result.get("score_evaluated", True),
+                result.get("fallback_reason") or "-",
                 self.future_state_estimator_enabled,
                 result["predicted_miss_probability"],
                 tuple(round(item, 6) for item in result["score"]),
                 tuple(round(item, 6) for item in result["best_open_lower_bound"]),
                 result["plan"],
+                result.get("state_build_seconds", 0.0),
                 result["search_seconds"],
+                result.get("budget_overrun_seconds", 0.0),
             )
             return policy
 

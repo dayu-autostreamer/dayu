@@ -279,40 +279,57 @@ class FragSpliceExecutionState:
             self._sample_root_cache[seed] = cached
         roots = list(cached[0])
         if candidate is not None:
-            rng = random.Random()
-            rng.setstate(cached[1])
-            dag = candidate["dag"]
-            order = self._dag_order(dag)
-            roots.append({
-                "root": candidate["root"],
-                "source": candidate.get("source", ""),
-                "dag": dag,
-                "order": order,
-                "services": tuple(
-                    service for service in order if service not in (START, END)
-                ),
-                "plan": candidate["plan"],
-                "durations": self.latency_model.sample_task(candidate.get("source", ""), candidate["plan"], rng),
-                "handoffs": self.latency_model.sample_handoffs(
-                    candidate["plan"], rng
-                ),
-                "overheads": self.latency_model.sample_stage_overheads(
-                    candidate.get("source", ""), dag, candidate["plan"], rng
-                ),
-                "source_device": str(
-                    candidate.get("source_device")
-                    or dag.get(START, {}).get("service", {}).get("execute_device")
-                    or ""
-                ),
-                # A candidate has not entered the generator-to-distributor SLO
-                # interval yet. Identity reservation and search time are not
-                # application latency.
-                "started": self.now,
-                "simulation_now": self.now,
-                "slo": float(candidate["slo"]),
-                "candidate": True,
-            })
+            roots.append(self._sample_candidate_root(candidate, seed))
         return roots
+
+    def _sample_candidate_root(self, candidate, seed):
+        """Sample only the candidate while preserving common random numbers.
+
+        The base commitment cache stores the RNG state immediately after all
+        in-flight roots have been sampled. Reusing that state gives every
+        candidate the same random variates without copying or scanning the
+        complete root set during calendar screening.
+        """
+
+        seed = int(seed)
+        if seed not in self._sample_root_cache:
+            self._sample_roots(None, seed)
+        _, candidate_rng_state = self._sample_root_cache[seed]
+        rng = random.Random()
+        rng.setstate(candidate_rng_state)
+        dag = candidate["dag"]
+        order = self._dag_order(dag)
+        return {
+            "root": candidate["root"],
+            "source": candidate.get("source", ""),
+            "dag": dag,
+            "order": order,
+            "services": tuple(
+                service for service in order if service not in (START, END)
+            ),
+            "plan": candidate["plan"],
+            "durations": self.latency_model.sample_task(
+                candidate.get("source", ""), candidate["plan"], rng
+            ),
+            "handoffs": self.latency_model.sample_handoffs(
+                candidate["plan"], rng
+            ),
+            "overheads": self.latency_model.sample_stage_overheads(
+                candidate.get("source", ""), dag, candidate["plan"], rng
+            ),
+            "source_device": str(
+                candidate.get("source_device")
+                or dag.get(START, {}).get("service", {}).get("execute_device")
+                or ""
+            ),
+            # A candidate has not entered the generator-to-distributor SLO
+            # interval yet. Identity reservation and search time are not
+            # application latency.
+            "started": self.now,
+            "simulation_now": self.now,
+            "slo": float(candidate["slo"]),
+            "candidate": True,
+        }
 
     @staticmethod
     def _node_device(root, service):
@@ -403,12 +420,12 @@ class FragSpliceExecutionState:
         budget on them.
         """
 
-        roots = self._sample_roots(candidate, seed)
-        root = next(item for item in roots if item["root"] == candidate["root"])
-        calendars = {
-            replica: list(intervals)
-            for replica, intervals in baseline.get("replica_intervals", {}).items()
-        }
+        root = self._sample_candidate_root(candidate, seed)
+        base_calendars = baseline.get("replica_intervals", {})
+        # Copy-on-write: screening touches at most one replica per candidate
+        # service. Copying every committed interval for every beam child made
+        # the warm-start phase scale with all in-flight work.
+        calendars = {}
         finish = {START: self.now}
         added_work = defaultdict(float)
         for service in root["order"]:
@@ -432,7 +449,10 @@ class FragSpliceExecutionState:
                 float(root["durations"].get(service, 0.0))
                 + float(root["handoffs"].get(service, 0.0))
             )
-            intervals = calendars.setdefault(replica, [])
+            intervals = calendars.get(replica)
+            if intervals is None:
+                intervals = list(base_calendars.get(replica, ()))
+                calendars[replica] = intervals
             start = self._calendar_start(intervals, ready, duration)
             end = start + duration
             intervals.append((start, end))

@@ -4,6 +4,7 @@ import itertools
 import json
 import math
 import random
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1182,6 +1183,213 @@ def test_commitment_calendar_screening_warm_start_can_change_multiple_stages():
     )
 
     assert plans[0] == {"detect": "edge-b", "classify": "edge-d"}
+
+
+@pytest.mark.unit
+def test_candidate_only_sampling_preserves_common_random_numbers():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {"edge-a": {"samples": [0.5, 1.0]}},
+            "classify": {"edge-b": {"samples": [0.25, 0.75]}},
+        },
+    })
+    state = FragSpliceExecutionState(
+        {
+            "captured_at": 10.0,
+            "runtime_directory_revision": 1,
+            "reservations": [],
+            "commitments": [],
+            "task_barriers": [],
+            "resources": {},
+        },
+        model,
+        default_slo_s=10.0,
+    )
+    candidate = {
+        "root": "new",
+        "source": 1,
+        "dag": dag(),
+        "plan": {"detect": "edge-a", "classify": "edge-b"},
+        "slo": 10.0,
+    }
+
+    from_full_simulation_path = state._sample_roots(candidate, 17)[-1]
+    candidate_only = state._sample_candidate_root(candidate, 17)
+
+    assert candidate_only["durations"] == from_full_simulation_path["durations"]
+    assert candidate_only["handoffs"] == from_full_simulation_path["handoffs"]
+    assert candidate_only["overheads"] == from_full_simulation_path["overheads"]
+
+
+@pytest.mark.unit
+def test_screening_deadline_returns_a_complete_preferred_plan():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {"edge-a": {"samples": [1.0]}},
+            "classify": {"edge-b": {"samples": [1.0]}},
+        },
+    })
+    optimizer = FragSpliceOptimizer(
+        model,
+        scenario_count=8,
+        max_scenarios=8,
+    )
+    preferred = {"detect": "edge-a", "classify": "edge-b"}
+
+    plans = optimizer._screening_plans(
+        SimpleNamespace(),
+        dag(),
+        ["detect", "classify"],
+        {"detect": ["edge-a"], "classify": ["edge-b"]},
+        preferred,
+        1,
+        "new",
+        10.0,
+        10.0,
+        0,
+        {},
+        deadline=time.monotonic() - 1.0,
+    )
+
+    assert plans == [preferred]
+
+
+@pytest.mark.unit
+def test_whole_decision_budget_bounds_large_commitment_fallback():
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [0.1]},
+                "edge-b": {"samples": [0.1]},
+            },
+            "classify": {
+                "edge-a": {"samples": [0.1]},
+                "edge-b": {"samples": [0.1]},
+            },
+        },
+    })
+    commitments = []
+    for index in range(50):
+        committed_dag = dag(
+            "edge-a" if index % 2 == 0 else "edge-b"
+        )
+        commitments.append({
+            "root_uuid": f"old-{index}",
+            "source_id": 1,
+            "created_at": 9.0 + index * 0.001,
+            "runtime_directory_revision": 1,
+            "dag": committed_dag,
+        })
+    optimizer = FragSpliceOptimizer(
+        model,
+        default_slo_s=10.0,
+        scenario_count=8,
+        max_scenarios=8,
+        search_time_limit_s=1e-9,
+    )
+    started = time.monotonic()
+    result = optimizer.solve(
+        {
+            "source_id": 1,
+            "source_device": "source",
+            "task_context": {"root_uuid": "new"},
+            "dag": dag(),
+            "meta_data": {"slo_seconds": 10.0},
+        },
+        {
+            "captured_at": 10.0,
+            "runtime_directory_revision": 1,
+            "reservations": [],
+            "commitments": commitments,
+            "task_barriers": [],
+            "resources": {},
+        },
+        {
+            "detect": ["edge-a", "edge-b"],
+            "classify": ["edge-a", "edge-b"],
+        },
+        "cloud",
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.25
+    assert set(result["plan"]) == {"detect", "classify"}
+    assert result["score_evaluated"] is False
+    assert result["budget_exhausted"] is True
+    assert result["prediction_complete"] is False
+    assert result["selected_outcome_scenarios"] == 0
+    assert result["fallback_reason"] == (
+        "budget_exhausted_before_state_evaluation"
+    )
+
+
+@pytest.mark.unit
+def test_scenario_scoring_stops_at_budget_boundary(monkeypatch):
+    import core.lib.algorithms.schedule_agent.fragsplice.optimizer as optimizer_module
+
+    original_state = optimizer_module.FragSpliceExecutionState
+
+    class SlowExecutionState(original_state):
+        def simulate(self, *args, **kwargs):
+            time.sleep(0.01)
+            return super().simulate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        optimizer_module,
+        "FragSpliceExecutionState",
+        SlowExecutionState,
+    )
+    model = FragSpliceLatencyModel({
+        "pairs": {
+            "detect": {
+                "edge-a": {"samples": [0.1]},
+                "edge-b": {"samples": [0.1]},
+            },
+            "classify": {
+                "edge-a": {"samples": [0.1]},
+                "edge-b": {"samples": [0.1]},
+            },
+        },
+    })
+    optimizer = optimizer_module.FragSpliceOptimizer(
+        model,
+        default_slo_s=10.0,
+        scenario_count=8,
+        max_scenarios=8,
+        search_time_limit_s=0.035,
+    )
+
+    result = optimizer.solve(
+        {
+            "source_id": 1,
+            "source_device": "source",
+            "task_context": {"root_uuid": "new"},
+            "dag": dag(),
+            "meta_data": {"slo_seconds": 10.0},
+        },
+        {
+            "captured_at": 10.0,
+            "runtime_directory_revision": 1,
+            "reservations": [],
+            "commitments": [],
+            "task_barriers": [],
+            "resources": {},
+        },
+        {
+            "detect": ["edge-a", "edge-b"],
+            "classify": ["edge-a", "edge-b"],
+        },
+        "cloud",
+    )
+
+    assert result["search_seconds"] < 0.12
+    assert result["budget_overrun_seconds"] < 0.08
+    assert result["score_evaluated"] is False
+    assert result["prediction_complete"] is False
+    assert 0 < result["selected_outcome_scenarios"] < 8
+    assert result["fallback_reason"] == (
+        "budget_exhausted_during_incumbent_evaluation"
+    )
 
 
 class FakeService:
