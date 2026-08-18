@@ -3,7 +3,7 @@ import abc
 from .base_extraction import BaseExtraction
 from core.lib.common import ClassFactory, ClassType
 
-from core.lib.common import LOGGER
+from core.lib.common import LOGGER, FileOps
 import os
 import cv2
 import numpy as np
@@ -35,7 +35,7 @@ class ObjectVelocityExtraction(BaseExtraction, abc.ABC):
 
         # LOGGER.info(f'ready for get obj_speed, test if TrackerCSRT_create exists')
 
-        data_file_path = task.get_file_path()
+        data_file_path = FileOps.get_task_file_in_temp(task)
         cap = cv2.VideoCapture(data_file_path)
         image_list = []
         success, frame = cap.read()

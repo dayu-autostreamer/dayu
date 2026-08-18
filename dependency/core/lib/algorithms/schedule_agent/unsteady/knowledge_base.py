@@ -58,7 +58,7 @@ class KnowledgeBase():
             self._lock = threading.Lock()
             self._thread = threading.Thread(target=self.train_new_classifier, daemon=True)
             self._thread.start()
-        
+
 
     def update_delay_cons(self, delay_cons):
         self.delay_cons = delay_cons
@@ -71,7 +71,7 @@ class KnowledgeBase():
 
     def update_acc_weight(self, acc_weight):
         self.acc_weight = acc_weight
-
+    
 
     def update_context_for_classifier_train(self, context_info):
         self.context_info_for_classifier_train = context_info
@@ -151,7 +151,7 @@ class KnowledgeBase():
         normalized_values = [x / vector_length for x in values]
         return {key: value for key, value in zip(dictionary.keys(), normalized_values)}
 
- 
+
     def pre_delay_and_acc(self, context_info, conf_info, record_path = None):
         
         delay = self.performance_predictor.delay_pre(context_info = context_info,
@@ -162,7 +162,7 @@ class KnowledgeBase():
         acc = self.performance_predictor.acc_pre(context_info = context_info,
                                                  conf_info = conf_info,
                                                  if_correct=True)
-
+        
         delay *= ( conf_info['fps'] / self.raw_meta_data['fps'])
 
         
@@ -219,7 +219,7 @@ class KnowledgeBase():
         left_knob_list = copy.deepcopy(all_knob_list)
 
         for i in range(0, len(left_knob_list)):
-            
+
             best_knob, best_dir, best_loss = self.choose_knob_by_loss(cur_policy = path_policy,
                                                     cur_context = cur_context,
                                                     cur_loss = path_loss,
@@ -262,7 +262,7 @@ class KnowledgeBase():
                                        cur_context=cur_context)
         if pred_res == None:
             return None
-        
+
         sorted_keys = sorted(pred_res, key=lambda k: pred_res[k], reverse = True)
 
         sorted_knob_list = []
@@ -278,7 +278,7 @@ class KnowledgeBase():
             sorted_knob_list = sorted_keys
         
         return sorted_knob_list
-
+ 
     def sorted_search(self, policy, cur_context, loss, sorted_knob_list):
 
         path_policy = copy.deepcopy(policy)
@@ -298,10 +298,10 @@ class KnowledgeBase():
                                                  cur_context = cur_context,
                                                  cur_loss = path_loss,
                                                  knob = knob)
-                      
+            
             if best_dir == 0:
                 break
-          
+
             elif best_dir in [1,-1]:
                 tmp_policy, tmp_loss = self.get_best_policy_loss_in_one_dir(cur_policy = path_policy,
                                                                               cur_loss = path_loss,
@@ -314,12 +314,12 @@ class KnowledgeBase():
                         'loss':tmp_loss
                     }
                 )
-                
+
                 if path_loss < 0.05 and tmp_loss < 0.05:
                     if 0 <= (path_loss - tmp_loss) <= self.stop_threshold*path_loss:
                         break
                 
-                
+
                 path_policy = tmp_policy
                 path_loss = tmp_loss
             else:
@@ -414,7 +414,7 @@ class KnowledgeBase():
             return None
 
         cluster_name, extreme_context, if_belong_cluster = self.process_context_for_cluster(cur_context=cur_context)
-
+    
         if cluster_name is not None:
             if if_belong_cluster == 1:
 
@@ -482,7 +482,7 @@ class KnowledgeBase():
             x_data.append(tmp_knob_idx )
 
         return x_data
-
+    
     def trans_knob_set_to_y_data(self, knob_set):
 
         y_data = []
@@ -510,7 +510,7 @@ class KnowledgeBase():
         for knob in list(start_policy.keys()):
             if conv_policy[knob] is not start_policy[knob]:
                 chosen_knob_list.append(knob)
-
+        
         return chosen_knob_list
 
         

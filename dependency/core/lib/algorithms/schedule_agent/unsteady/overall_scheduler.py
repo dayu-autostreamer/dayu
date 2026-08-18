@@ -1,6 +1,4 @@
-from .steady_record import SteadyRecord
 from .knowledge_base import KnowledgeBase
-from core.lib.common import LOGGER
 import asyncio
 import threading
 import copy
@@ -199,10 +197,10 @@ class MicroFeedback:
 
         self.coeff_info = copy.deepcopy(coeff_info)
         self.coeff_info['step_coeff']['cur_value'] = self.coeff_info['step_coeff']['start_value']
-
+        
         self.delay_loss = 0
         self.acc_loss = 0
-
+       
         self.all_knob_weight = {}
 
         self.knob_value_range_dict = copy.deepcopy(knob_value_range_dict)
@@ -245,13 +243,13 @@ class MicroFeedback:
 
         if if_add:
             if self.coeff_info[coeff_name]['cur_value'] + self.coeff_info[coeff_name]['add_interval'] <= self.coeff_info[coeff_name]['max_value']:
-
+                
                 self.coeff_info[coeff_name]['cur_value'] += self.coeff_info[coeff_name]['add_interval']
             else:
                 self.coeff_info[coeff_name]['cur_value'] = self.coeff_info[coeff_name]['max_value']
         else:
             if (self.coeff_info[coeff_name]['cur_value'] / 2.0 ) >= self.coeff_info[coeff_name]['min_value']:
-
+                
                 self.coeff_info[coeff_name]['cur_value'] /= 2.0 
             else:
                 self.coeff_info[coeff_name]['cur_value'] = self.coeff_info[coeff_name]['min_value']
@@ -305,12 +303,12 @@ class OverallScheduler:
                  macro_update_interval,
                  context_anylze_type,
                  coeff_info,
-                 steady_record_path,
-                 correct_record_path,
                  cluster_threshold,
+                 schedule_type,
+                 feedback_weight,
                  if_online_train
                  ):
-        
+          
         self.knob_value_range_dict = copy.copy(knob_value_range_dict)
         self.default_policy = default_policy
         self.delay_cons = delay_cons
@@ -321,8 +319,6 @@ class OverallScheduler:
 
         self.latest_real_time_loss = None
 
-        self.steady_record_path = steady_record_path
-        self.correct_record_path = correct_record_path
 
         self.cur_policy = None
         self.real_time_context_info = None
@@ -363,10 +359,13 @@ class OverallScheduler:
 
         self._loop = asyncio.new_event_loop() 
         self._stop_event = threading.Event() 
-        self._thread = threading.Thread(target=self._run_loop, daemon=True) 
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)  
 
-        
-        self._thread.start() 
+        self.schedule_type = schedule_type
+        self.feedback_weight = feedback_weight
+
+        if schedule_type == 'macro':   
+            self._thread.start() 
 
     def update_delay_cons(self, delay_cons):
         self.delay_cons = delay_cons
@@ -444,10 +443,10 @@ class OverallScheduler:
                 cur_loss = self.macro_search.cal_loss(delay = delay,
                                                             acc = acc)
                 if conv_loss > cur_loss * (1-self.stop_threshold):
-                    
+
                     if_need_macro_search = True
                 else:
-                    
+
                     pass
 
 
@@ -519,16 +518,21 @@ class OverallScheduler:
 
             return new_policy
         
-        elif self.chosen_knob_list is None or self.delay_decrease_weight is None or self.acc_increase_weight is None:
+        elif self.schedule_type == 'macro':
+            macro_output = self.get_macro_output()
+            path_record = macro_output['path_record']
 
             new_policy = copy.deepcopy(self.cur_policy)
+            if path_record is not None:
+                if len(path_record) > 0:
+                    new_policy = copy.deepcopy(path_record[-1]['policy'])
             return new_policy
-        
-        else: 
+
+        elif self.schedule_type == 'micro':
 
             if_meet_cons_before = False
             if_meet_cons_now = False
-            if self.latest_real_time_loss is not None: 
+            if self.latest_real_time_loss is not None:
                 if self.latest_real_time_loss == 0:
                     if_meet_cons_before = True
             
@@ -539,10 +543,8 @@ class OverallScheduler:
                 if_meet_cons_now = True
             self.latest_real_time_loss = real_time_loss
 
-            macro_output = self.get_macro_output()
-            chosen_knob_list = macro_output['chosen_knob_list']
-            delay_decrease_weight = macro_output['delay_decrease_weight']
-            acc_increase_weight = macro_output['acc_increase_weight']
+            delay_decrease_weight = self.feedback_weight['delay_decrease_weight']
+            acc_increase_weight = self.feedback_weight['acc_increase_weight']
 
             
             self.micro_feedback.update_delay_loss_and_acc_loss(delay_loss = self.macro_search.knowledge_base.cal_delay_loss(delay=real_time_delay),
@@ -554,35 +556,7 @@ class OverallScheduler:
             
             new_policy = self.micro_feedback.get_new_policy_by_feedback(old_policy = cur_policy)
 
-            delay, acc = self.macro_search.pre_delay_and_acc(context_info = context_info, conf_info = new_policy,
-                                                             record_path = self.correct_record_path)
-            if_new_policy_is_bad = False
-            if real_time_delay is not None and real_time_acc is not None:
-                real_time_loss = self.macro_search.knowledge_base.cal_loss(delay = real_time_delay,
-                                                                       acc = real_time_acc)
-                if real_time_loss < 0.05:
-                    if_new_policy_is_bad = True
-                    new_policy = cur_policy  
 
-            steady_record = SteadyRecord(
-                task_id = cur_task_id,
-                if_need_macro_search = macro_output['if_need_macro_search'],
-                path_record = macro_output['path_record'],
-                context_history = macro_output['context_history'],
-                macro_search_delay = macro_output['macro_search_delay'],
-                chosen_knob_list = macro_output['chosen_knob_list'],
-                delay_decrease_weight = macro_output['delay_decrease_weight'],
-                acc_increase_weight = macro_output['acc_increase_weight'],
-                delay_loss = self.micro_feedback.delay_loss,
-                acc_loss = self.micro_feedback.acc_loss,
-                coeff_info = self.micro_feedback.coeff_info,
-                if_new_policy_is_bad = if_new_policy_is_bad,
-                old_policy = cur_policy,
-                new_policy = new_policy
-            )
-            SteadyRecord.write_record(steady_record = steady_record,
-                                      file_path = self.steady_record_path)
-            
 
             return new_policy
 
