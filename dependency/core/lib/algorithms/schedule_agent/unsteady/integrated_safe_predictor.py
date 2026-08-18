@@ -3,15 +3,14 @@ import math
 import json
 import copy
 from .context_cluster import ContextCluster
-from .accuracy_prediction import AccuracyPrediction2fps, AccuracyPrediction2reso, resolution_wh
-from .correct_record import CorrectRecord
+from .accuracy_prediction import AccuracyPrediction2fps,AccuracyPrediction2reso, resolution_wh
 
 
 class PolynomialFitter:
 
     def __init__(self):
         pass
-    
+
     def fit(self, x_list:list, y_list:list, n:int):
  
         x_np = np.array(x_list)
@@ -85,25 +84,25 @@ class SimpleCorrector:
         self.y_sample_window_length = y_sample_window_length 
         self.polynomial_fitter = PolynomialFitter()
         
-        
+
         self.coeff_window = []
         for i in range(self.n+1):
             self.coeff_window.append([])
         
-        
+
         self.x_sample_window = []
-        
+
         self.x_y_sample_window = {}
-        
+
         self.context_sample_window = {}
-        
+
         self.context_names = context_names
         for context_name in self.context_names:
             self.context_sample_window[context_name] = {}
 
-    
+
     def update_sample_window(self,x_value,y_value, context_info):
-        
+
         if x_value not in self.x_sample_window:
             self.x_sample_window.append(x_value)
             if len(self.x_sample_window) > self.x_sample_window_length:
@@ -153,7 +152,7 @@ class SimpleCorrector:
             coeff_list, score = self.polynomial_fitter.fit(x_list=x_list,
                                                         y_list=y_list,
                                                         n=len(x_list)-1)
-    
+
         elif len(x_list) >= self.n + 1:
             coeff_list, score = self.polynomial_fitter.fit(x_list=x_list,
                                                         y_list=y_list,
@@ -593,7 +592,7 @@ class SimpleWaitPredictor():
                 if fit_pre > 0:
                     self.stable_wait_delay = fit_pre
                 
-                return fit_pre
+                return fit_pre         
 
         return y_mean
 
@@ -683,7 +682,7 @@ class IntegratedSafePredictor():
                  cluster_threshold):
         
         self.service_name_pipeline = []
-        
+
         for service_name in service_name_pipeline: 
             if service_name == 'end':
                 break
@@ -724,12 +723,6 @@ class IntegratedSafePredictor():
 
     def delay_pre(self, context_info,conf_info,latest_task_id,if_correct, record_path = None):
 
-        record_param = {}
-        record_param['coeff_window']={}
-        record_param['x_y_sample_window']={}
-        record_param['wait_delay_history_window']={}
-        record_param['wait_delay_history_window']['edge']={}
-        record_param['wait_delay_history_window']['cloud']={}
         exe_detect = 0 
         wait_detect = 0
         trans = 0
@@ -739,59 +732,32 @@ class IntegratedSafePredictor():
         all_coeff_window = self.corrected_predictor.get_all_coeff_window_by_context(context_info = context_info)
 
         coeff_window = all_coeff_window['detect_coeff_window']
-        record_param['coeff_window']['detect'] = coeff_window
-        record_param['x_y_sample_window']['detect'] = self.corrected_predictor.exe_corrector_detect.x_y_sample_window
         exe_detect = self.exe_pre_detect(context_info=context_info,
                                         conf_info=conf_info,
                                         if_correct=if_correct,
                                         cur_coeff_window = coeff_window)
-        record_param['wait_delay_history_window']['edge']['detect'] = self.wait_delay_predictor.detect_edge_predictor.wait_delay_history_window
-        record_param['wait_delay_history_window']['cloud']['detect'] = self.wait_delay_predictor.detect_cloud_predictor.wait_delay_history_window
         wait_detect = self.wait_detect_pre(conf_info=conf_info,
                                             latest_task_id=latest_task_id)
         
 
         coeff_window = all_coeff_window['trans_coeff_window']
-        record_param['coeff_window']['trans'] = coeff_window
-        record_param['x_y_sample_window']['trans'] = self.corrected_predictor.trans_corrector.x_y_sample_window
         trans = self.trans_pre(context_info=context_info,
                                 conf_info=conf_info,
                                 if_correct=if_correct)
         
 
-        record_param['context_info'] = context_info
-        record_param['conf_info'] = conf_info
-        record_param['task_total_delay'] = {}
-        record_param['task_total_delay']['exe_detect'] = exe_detect
-        record_param['task_total_delay']['wait_detect'] = wait_detect
-        record_param['task_total_delay']['trans'] = trans
         if len(self.service_name_pipeline) > 1:
 
             coeff_window = all_coeff_window['classify_coeff_window']
-            record_param['coeff_window']['classify'] = coeff_window
-            record_param['x_y_sample_window']['classify'] = self.corrected_predictor.exe_corrector_classify.x_y_sample_window
             exe_classify = self.exe_pre_classify(context_info=context_info,
                                                 conf_info=conf_info,
                                                 if_correct=if_correct,
                                                 cur_coeff_window = coeff_window)
-            record_param['wait_delay_history_window']['edge']['classify'] = self.wait_delay_predictor.classify_edge_predictor.wait_delay_history_window
-            record_param['wait_delay_history_window']['cloud']['classify'] = self.wait_delay_predictor.classify_cloud_predictor.wait_delay_history_window
             wait_classify = self.wait_classify_pre(conf_info=conf_info,
                                                 latest_task_id=latest_task_id)
-            record_param['task_total_delay']['exe_classify'] = exe_classify
-            record_param['task_total_delay']['wait_classify'] = wait_classify
-        
-        task_id = latest_task_id-1
-        task_id_for_pre = latest_task_id
 
-        if record_path is not None:
 
-            correct_record = CorrectRecord(task_id = task_id,
-                                        task_id_for_pre = task_id_for_pre,
-                                        record_param = record_param)
-            
-            CorrectRecord.write_record(correct_record = correct_record,
-                                       file_path = record_path)
+
 
         return exe_detect + exe_classify + trans + wait_detect + wait_classify
 
@@ -806,7 +772,7 @@ class IntegratedSafePredictor():
                                                        conf_info=conf_info,
                                                        if_correct=if_correct,
                                                        cur_coeff_window = coeff_window)
-    
+
     def exe_pre_classify(self,context_info,conf_info,if_correct,cur_coeff_window=None):
 
         coeff_window = None
@@ -829,7 +795,7 @@ class IntegratedSafePredictor():
                                                   conf_info=conf_info,
                                                   if_correct=if_correct,
                                                   cur_coeff_window = coeff_window)
-
+    
     def wait_detect_pre(self,conf_info,latest_task_id):
 
         return self.wait_delay_predictor.pre_detect(conf_info=conf_info,

@@ -3,14 +3,14 @@ import abc
 from core.lib.common import ClassFactory, ClassType, Context, TaskConstant, LOGGER
 from core.lib.content import Task
 
-from .steady import ContextRecord, AccuracyCalculation, OverallScheduler
+from .unsteady import ContextRecord, AccuracyCalculation, OverallScheduler
 
 import copy
 from collections import deque
 
 from .base_agent import BaseAgent
 
-__all__ = ('SteadyAgent',)
+__all__ = ('UnsteadyAgent',)
 
 '''
     get_source_selection_plan
@@ -22,10 +22,10 @@ __all__ = ('SteadyAgent',)
 '''
 
 
-@ClassFactory.register(ClassType.SCH_AGENT, alias='steady')
-class SteadyAgent(BaseAgent, abc.ABC):
+@ClassFactory.register(ClassType.SCH_AGENT, alias='unsteady')
+class UnsteadyAgent(BaseAgent, abc.ABC):
 
-    def __init__(self, system, agent_id: int, sch_param: dict, steady_param: dict):
+    def __init__(self, system, agent_id: int, sch_param: dict, unsteady_param: dict):
 
         super().__init__(system, agent_id)
         self.cur_resource_table = {}
@@ -46,10 +46,10 @@ class SteadyAgent(BaseAgent, abc.ABC):
         self.schedule_plan_num = 0
 
         self.if_stop_record_in_single_cycle = sch_param['if_stop_record_in_single_cycle']
-
-        self.all_delay_cons_info = steady_param['all_delay_cons_info']
-        self.all_acc_cons_info = steady_param['all_acc_cons_info']
-        self.all_delay_weight_info = steady_param['all_delay_weight_info']
+        
+        self.all_delay_cons_info = unsteady_param['all_delay_cons_info']
+        self.all_acc_cons_info = unsteady_param['all_acc_cons_info']
+        self.all_delay_weight_info = unsteady_param['all_delay_weight_info']
         self.all_cons_info_comb_list = []
         for delay_weight_info in self.all_delay_weight_info:
             for delay_cons_info in self.all_delay_cons_info:
@@ -59,10 +59,10 @@ class SteadyAgent(BaseAgent, abc.ABC):
                     cons_info_comb['delay_cons_info'] = delay_cons_info
                     cons_info_comb['acc_cons_info'] = acc_cons_info
                     self.all_cons_info_comb_list.append(cons_info_comb)
-        
+
         self.cons_info_comb_idx = 0
 
-        self.unit_logic_frame_num_max = steady_param['unit_logic_frame_num_max']
+        self.unit_logic_frame_num_max = unsteady_param['unit_logic_frame_num_max']
         self.unit_processed_frame_num = 0
         self.if_keep_record = True
 
@@ -71,22 +71,20 @@ class SteadyAgent(BaseAgent, abc.ABC):
         time_string = current_time.strftime("%Y-%m-%d-%H-%M-%S")
 
         self.record_path_prefix = Context.get_file_path(sch_param['record_path'])
-        self.steady_record_path_prefix = Context.get_file_path(steady_param['steady_record_path'])
-        self.correct_record_path_prefix = Context.get_file_path(steady_param['correct_record_path'])
 
         self.path_suffix =  str(agent_id) + '-online' + '-' + time_string + '.json'
 
         self.record_path = None
 
-        self.init_param = steady_param
+        self.init_param = unsteady_param
         self.init_param['context_names'] = ['band_Mbps', 'obj_num', 'obj_size_norm', 'obj_speed']
-        self.init_param['kb_path'] = Context.get_file_path(steady_param['kb_path'])
+        self.init_param['kb_path'] = Context.get_file_path(unsteady_param['kb_path'])
 
         self.overall_scheduler = None
 
         self.task_history_deque = deque(maxlen=10)
 
-        self.acc_sample_interval = steady_param['acc_sample_interval']
+        self.acc_sample_interval = unsteady_param['acc_sample_interval']
 
     def run(self):
         pass
@@ -102,18 +100,18 @@ class SteadyAgent(BaseAgent, abc.ABC):
 
     def update_task(self, task: Task):
         if task == None:
-            LOGGER.debug(f'{self.edge_device}[SteadyAgent] New task is None.')
+            LOGGER.debug(f'{self.edge_device} [UnsteadyAgent] New task is None.')
             return
         else:
-            LOGGER.debug(f'{self.edge_device}[SteadyAgent] New task id: {task.get_task_id()}')
+            LOGGER.debug(f'{self.edge_device} [UnsteadyAgent] New task id: {task.get_task_id()}')
 
         cur_task = copy.deepcopy(task)
 
         self.cur_task = cur_task
         self.update_record(cur_task=cur_task)
-        LOGGER.debug(f'{self.edge_device}[SteadyAgent] Finished updating the task record.')
+        LOGGER.debug(f'{self.edge_device} [UnsteadyAgent] Finished updating the task record.')
         self.update_aware(cur_task=cur_task)
-        LOGGER.debug(f'{self.edge_device}[SteadyAgent] Finished updating scheduler awareness.')
+        LOGGER.debug(f'{self.edge_device} [UnsteadyAgent] Finished updating scheduler awareness.')
 
     def update_record(self, cur_task: Task):
 
@@ -123,7 +121,7 @@ class SteadyAgent(BaseAgent, abc.ABC):
             cur_cons_info_comb = self.all_cons_info_comb_list[-1]
         else:
             cur_cons_info_comb = self.all_cons_info_comb_list[self.cons_info_comb_idx]
-        
+  
         if self.if_keep_record:
             cons_table = {}
             cons_table['delay_cons'] = cur_cons_info_comb['delay_cons_info']['value']
@@ -221,8 +219,6 @@ class SteadyAgent(BaseAgent, abc.ABC):
             adjusted_delay_weight = cur_cons_info_comb['delay_weight_info']['value'] * cur_cons_info_comb['delay_weight_info']['adjust']
             adjusted_acc_weight = 1 - adjusted_delay_weight
 
-            steady_record_path = self.steady_record_path_prefix + '-' + 'source_id' + '-' + str(info['source_id']) + '-' + info['source_device'] + '-' + self.path_suffix
-            correct_record_path = self.correct_record_path_prefix + '-' + 'source_id' + '-' + str(info['source_id']) + '-' + info['source_device'] + '-' + self.path_suffix
 
             self.overall_scheduler = OverallScheduler(
                 kb_path=self.init_param['kb_path'],
@@ -247,9 +243,9 @@ class SteadyAgent(BaseAgent, abc.ABC):
                 macro_update_interval=self.init_param['macro_update_interval'],
                 context_anylze_type=self.init_param['context_anylze_type'],
                 coeff_info=self.init_param['coeff_info'],
-                steady_record_path=steady_record_path,
-                correct_record_path=correct_record_path,
                 cluster_threshold=self.init_param['cluster_threshold'],
+                schedule_type=self.init_param['schedule_type'],
+                feedback_weight=self.init_param['feedback_weight'],
                 if_online_train = self.init_param['if_online_train']
             )
 
@@ -474,7 +470,7 @@ class SteadyAgent(BaseAgent, abc.ABC):
         task_info['task_id'] = task.get_task_id()
         task_info['real_trans'] = edge_cloud_trans_delay
 
-        LOGGER.debug(f'{self.edge_device}[SteadyAgent] task_info: {task_info}')
+        LOGGER.debug(f'{self.edge_device} [UnsteadyAgent] task_info: {task_info}')
 
         return task_info
 
