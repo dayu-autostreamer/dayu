@@ -1,12 +1,23 @@
 name: Dayu Images Build
 
+# Automatic publication only follows a successful push-triggered CI run on
+# main. Merging a PR creates that push; pull_request CI runs never publish.
 on:
-  push:
+  workflow_run:
+    workflows: [ CI ]
+    types: [ completed ]
     branches: [ main ]
   workflow_dispatch:
 
 concurrency:
-  group: dockerhub-build-${{ github.ref }}
+  group: >-
+    dockerhub-build-${{
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success')) &&
+      'main' || github.run_id
+    }}
   cancel-in-progress: false
 
 permissions:
@@ -15,76 +26,180 @@ permissions:
 
 jobs:
   gate:
-    name: triggering gate
+    name: Main push CI and cooldown gate
     runs-on: ubuntu-latest
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
       reason: ${{ steps.check.outputs.reason }}
+      target_sha: ${{ steps.check.outputs.target_sha }}
     steps:
       - id: check
-        name: Check if already ran in the last 60 days
+        name: Require successful main push CI and enforce the 60-day window
         uses: actions/github-script@v7
         env:
-          WORKFLOW_FILE: dockerhub-build.yml
+          REQUIRED_WORKFLOW_FILE: ci.yml
+          BUILD_WORKFLOW_FILE: dockerhub-build.yml
+          # Keep this synchronized with the build-and-push job name below.
+          BUILD_JOB_NAME: make all (buildx + push)
           GATE_WINDOW_DAYS: "60"
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const workflow_id = process.env.WORKFLOW_FILE;
+            const requiredWorkflowFile = process.env.REQUIRED_WORKFLOW_FILE;
+            const buildWorkflowFile = process.env.BUILD_WORKFLOW_FILE;
+            const buildJobName = process.env.BUILD_JOB_NAME;
             const gateWindowDays = Number(process.env.GATE_WINDOW_DAYS || "60");
             const gateWindowMs = gateWindowDays * 24 * 60 * 60 * 1000;
-            
-            const runs = [];
-            const perPage = 100;
-            let page = 1;
-            
-            while (true) {
-              const resp = await github.rest.actions.listWorkflowRuns({
-                owner,
-                repo,
-                workflow_id,
-                branch: "main",
-                per_page: perPage,
-                page
-              });
-              const pageRuns = resp.data.workflow_runs || [];
-              runs.push(...pageRuns);
-              
-              if (pageRuns.length < perPage) {
-                break;
-              }
-              
-              page += 1;
-            }
-            const thisRunId = context.runId;
-            
-            const now = new Date();
-            
-            const last = runs.find(r =>
-              r.id !== thisRunId &&
-              (r.event === "push" || r.event === "workflow_dispatch") &&
-              r.status === "completed" &&
-              r.conclusion === "success"
-            );
-            
-            if (!last) {
-              core.setOutput("allowed", "true");
-              core.setOutput("reason", "no previous run found");
+
+            const triggeringRun = context.payload.workflow_run;
+            const targetSha = triggeringRun?.head_sha || context.sha;
+            core.setOutput("target_sha", targetSha);
+
+            const deny = (reason) => {
+              core.setOutput("allowed", "false");
+              core.setOutput("reason", reason);
+              core.info(`Build denied: ${reason}`);
+            };
+
+            if (!targetSha) {
+              deny("unable to resolve the commit that must pass CI");
               return;
             }
-            
-            const lastDate = new Date(last.created_at);
+
+            let ciRun = triggeringRun;
+
+            if (context.eventName === "workflow_run") {
+              const isAutomaticMainPush =
+                ciRun?.event === "push" && ciRun?.head_branch === "main";
+
+              if (
+                !ciRun ||
+                ciRun.name !== "CI" ||
+                !isAutomaticMainPush ||
+                ciRun.status !== "completed" ||
+                ciRun.conclusion !== "success"
+              ) {
+                deny(
+                  `automatic builds require a successful push-triggered CI run on main ` +
+                  `(event=${ciRun?.event || "unknown"}, ` +
+                  `branch=${ciRun?.head_branch || "unknown"}, ` +
+                  `status=${ciRun?.status || "unknown"}, ` +
+                  `conclusion=${ciRun?.conclusion || "unknown"})`
+                );
+                return;
+              }
+            } else {
+              const ciRuns = await github.paginate(
+                github.rest.actions.listWorkflowRuns,
+                {
+                  owner,
+                  repo,
+                  workflow_id: requiredWorkflowFile,
+                  branch: "main",
+                  head_sha: targetSha,
+                  status: "success",
+                  per_page: 100
+                }
+              );
+
+              ciRun = ciRuns.find(run =>
+                run.head_branch === "main" &&
+                run.status === "completed" &&
+                run.conclusion === "success" &&
+                run.event === "push"
+              );
+
+              if (!ciRun) {
+                deny(
+                  `no successful push-triggered CI run found for ${targetSha} on main`
+                );
+                return;
+              }
+            }
+
+            const now = new Date();
+            const cutoff = new Date(now.getTime() - gateWindowMs);
+            const recentRuns = await github.paginate(
+              github.rest.actions.listWorkflowRuns,
+              {
+                owner,
+                repo,
+                workflow_id: buildWorkflowFile,
+                branch: "main",
+                status: "completed",
+                created: `>=${cutoff.toISOString()}`,
+                per_page: 100
+              }
+            );
+
+            recentRuns.sort(
+              (left, right) => new Date(right.created_at) - new Date(left.created_at)
+            );
+
+            const { data: currentRun } = await github.rest.actions.getWorkflowRun({
+              owner,
+              repo,
+              run_id: context.runId
+            });
+
+            let lastSuccessfulBuild = null;
+            const candidateRuns = [
+              currentRun,
+              ...recentRuns.filter(run => run.id !== context.runId)
+            ];
+
+            for (const run of candidateRuns) {
+              const jobs = await github.paginate(
+                github.rest.actions.listJobsForWorkflowRun,
+                {
+                  owner,
+                  repo,
+                  run_id: run.id,
+                  filter: "all",
+                  per_page: 100
+                }
+              );
+              const buildJob = jobs.find(job =>
+                job.name === buildJobName &&
+                job.status === "completed" &&
+                job.conclusion === "success"
+              );
+
+              if (buildJob) {
+                lastSuccessfulBuild = { run, buildJob };
+                break;
+              }
+            }
+
+            if (!lastSuccessfulBuild) {
+              const reason =
+                `CI run #${ciRun.run_number} succeeded and no successful image build ` +
+                `was found in the last ${gateWindowDays} days`;
+              core.setOutput("allowed", "true");
+              core.setOutput("reason", reason);
+              core.info(`Build allowed: ${reason}`);
+              return;
+            }
+
+            const lastDate = new Date(lastSuccessfulBuild.run.created_at);
             const elapsedMs = now.getTime() - lastDate.getTime();
             const elapsedDays = Math.floor(elapsedMs / (24 * 60 * 60 * 1000));
-            
+
             if (elapsedMs < gateWindowMs) {
-              core.setOutput("allowed", "false");
-              core.setOutput("reason", `already ran within the last ${gateWindowDays} days, last run: #${last.run_number} at ${last.created_at} (${elapsedDays} days ago)`);
+              deny(
+                `images were already built successfully within the last ${gateWindowDays} days ` +
+                `at ${lastSuccessfulBuild.run.created_at} (${elapsedDays} days ago)`
+              );
             } else {
+              const reason =
+                `CI run #${ciRun.run_number} succeeded and the last successful image build ` +
+                `is outside the ${gateWindowDays}-day window`;
               core.setOutput("allowed", "true");
-              core.setOutput("reason", `last successful run was outside the last ${gateWindowDays} days (${last.created_at})`);
+              core.setOutput("reason", reason);
+              core.info(`Build allowed: ${reason}`);
             }
+
   build-and-push:
     name: make all (buildx + push)
     runs-on: dayu-runner
@@ -98,6 +213,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.target_sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -118,7 +235,7 @@ jobs:
         run: make all REG=${{ env.REG }} REPO=${{ env.REPO }}
 
   skipped:
-    name: skipped (already ran in the last 60 days)
+    name: skipped (gate denied)
     runs-on: ubuntu-latest
     needs: gate
     if: needs.gate.outputs.allowed != 'true'
