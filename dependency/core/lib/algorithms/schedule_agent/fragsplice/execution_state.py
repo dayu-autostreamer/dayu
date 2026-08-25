@@ -4,38 +4,19 @@ import math
 import random
 from collections import defaultdict, deque
 
-from core.lib.common import TaskConstant
+from core.lib.scheduling import (
+    END,
+    START,
+    service_names,
+    snapshot_queue_states,
+    topological_order,
+)
 
-
-START = TaskConstant.START.value
-END = TaskConstant.END.value
-
-
-def service_names(dag):
-    return [name for name in dag if name not in (START, END)]
-
-
-def topological_order(dag):
-    nodes = list(dag)
-    indegree = {
-        name: len([item for item in dag[name].get("prev_nodes", []) if item in dag])
-        for name in nodes
-    }
-    ready = sorted(name for name, degree in indegree.items() if degree == 0)
-    result = []
-    while ready:
-        current = ready.pop(0)
-        result.append(current)
-        for successor in dag[current].get("next_nodes", []):
-            if successor not in indegree:
-                continue
-            indegree[successor] -= 1
-            if indegree[successor] == 0:
-                ready.append(successor)
-                ready.sort()
-    if len(result) != len(nodes):
-        raise ValueError("FragSplice requires an acyclic DAG")
-    return result
+__all__ = (
+    "FragSpliceExecutionState",
+    "FragSpliceRandomExecutionState",
+    "plan_from_dag",
+)
 
 
 def plan_from_dag(dag):
@@ -77,7 +58,7 @@ def _record_dag(record):
 def _record_started(record, fallback):
     """Return the exact SLO clock origin for an admitted root."""
 
-    for key in ("slo_started_at", "created_at", "reserved_at", "admitted_at"):
+    for key in ("slo_started_at", "admitted_at", "reserved_at"):
         try:
             value = float(record.get(key))
         except (TypeError, ValueError):
@@ -169,7 +150,7 @@ class FragSpliceExecutionState:
         # observed queue anchor and the sampled in-flight tasks are identical
         # for all candidates under a common scenario seed, so build them once
         # instead of reconstructing them for every leaf visited by BnB.
-        self._queue_state_cache = self._queue_states()
+        self._queue_state_cache = snapshot_queue_states(self.snapshot)
         self._sample_root_cache = {}
         self._dag_order_cache = {}
 
@@ -181,38 +162,6 @@ class FragSpliceExecutionState:
         order = tuple(topological_order(dag))
         self._dag_order_cache[key] = (dag, order)
         return order
-
-    def _queue_states(self):
-        states = {}
-        received_at = self.snapshot.get("resource_received_at") or {}
-        resource_revisions = self.snapshot.get("resource_runtime_revision") or {}
-        for device, resource in (self.snapshot.get("resources") or {}).items():
-            if not isinstance(resource, dict):
-                continue
-            try:
-                resource_revision = int(resource_revisions.get(device))
-            except (TypeError, ValueError):
-                resource_revision = None
-            if self.revision and resource_revision != self.revision:
-                continue
-            for service, state in (resource.get("queue_state") or {}).items():
-                if isinstance(state, dict):
-                    normalized = copy.deepcopy(state)
-                    # The Scheduler receive timestamp is in the same clock
-                    # domain as captured_at. Processor observed_at remains a
-                    # diagnostic field and is only a legacy fallback.
-                    try:
-                        observed_at = float(received_at.get(device))
-                    except (TypeError, ValueError):
-                        try:
-                            observed_at = float(normalized.get("observed_at"))
-                        except (TypeError, ValueError):
-                            observed_at = self.now
-                    if not math.isfinite(observed_at) or observed_at <= 0.0:
-                        observed_at = self.now
-                    normalized["_age_s"] = max(0.0, self.now - observed_at)
-                    states[(str(service), str(device))] = normalized
-        return states
 
     @staticmethod
     def _ancestors(dag, services):
@@ -271,6 +220,7 @@ class FragSpliceExecutionState:
                         _record_started(commitment, self.now)
                         if commitment.get("_slo_admitted") else self.now
                     ),
+                    "release_at": self.now,
                     "simulation_now": self.now,
                     "slo": _deadline(commitment, self.default_slo_s),
                     "candidate": False,
@@ -322,10 +272,10 @@ class FragSpliceExecutionState:
                 or dag.get(START, {}).get("service", {}).get("execute_device")
                 or ""
             ),
-            # A candidate has not entered the generator-to-distributor SLO
-            # interval yet. Identity reservation and search time are not
-            # application latency.
-            "started": self.now,
+            "started": float(candidate.get("ready_at") or self.now),
+            "release_at": max(
+                self.now, float(candidate.get("ready_at") or self.now)
+            ),
             "simulation_now": self.now,
             "slo": float(candidate["slo"]),
             "candidate": True,
@@ -388,7 +338,12 @@ class FragSpliceExecutionState:
             root.get("overheads", {}).get("completion", 0.0)
         )
         return (
-            max(0.0, root.get("simulation_now", 0.0) - root["started"])
+            max(
+                0.0,
+                root.get(
+                    "release_at", root.get("simulation_now", 0.0)
+                ) - root["started"],
+            )
             + path_latency
         )
 
@@ -426,7 +381,8 @@ class FragSpliceExecutionState:
         # service. Copying every committed interval for every beam child made
         # the warm-start phase scale with all in-flight work.
         calendars = {}
-        finish = {START: self.now}
+        release_at = root.get("release_at", self.now)
+        finish = {START: release_at}
         added_work = defaultdict(float)
         for service in root["order"]:
             if service == START:
@@ -434,10 +390,10 @@ class FragSpliceExecutionState:
             predecessors = root["dag"][service].get("prev_nodes", [])
             predecessor = max(
                 predecessors,
-                key=lambda item: finish.get(item, self.now),
+                key=lambda item: finish.get(item, release_at),
                 default=START,
             )
-            ready = finish.get(predecessor, self.now) + self._release_delay(
+            ready = finish.get(predecessor, release_at) + self._release_delay(
                 root, service, predecessor
             )
             if service == END:
@@ -467,8 +423,8 @@ class FragSpliceExecutionState:
                 if not root["dag"][name].get("next_nodes")
             ]
             completed = max(
-                (finish.get(name, self.now) for name in sinks),
-                default=self.now,
+                (finish.get(name, release_at) for name in sinks),
+                default=release_at,
             )
         completed += float(root.get("overheads", {}).get("completion", 0.0))
         latency = max(0.0, completed - root["started"])
@@ -478,7 +434,6 @@ class FragSpliceExecutionState:
             replica_work[replica] = replica_work.get(replica, 0.0) + duration
         return {
             "latency": latency,
-            "noqueue": noqueue,
             "queue_inflation": max(0.0, latency - noqueue),
             "max_replica_work": max(replica_work.values(), default=0.0),
         }
@@ -489,6 +444,7 @@ class FragSpliceExecutionState:
         seed,
         include_calendar=False,
         include_service_finish=False,
+        include_event_trace=False,
     ):
         roots = self._sample_roots(candidate, seed)
         root_by_id = {root["root"]: root for root in roots}
@@ -497,7 +453,6 @@ class FragSpliceExecutionState:
             for root in roots
         }
         finish_time = defaultdict(dict)
-        queue_wait = defaultdict(float)
         queue_states = self._queue_state_cache
         queues = defaultdict(deque)
         running = {}
@@ -506,6 +461,43 @@ class FragSpliceExecutionState:
         stage_evidence = defaultdict(set)
         replica_work = defaultdict(float)
         replica_intervals = defaultdict(list)
+        invocation_events = []
+        release_evidence = {}
+        replica_predecessor = {}
+
+        def append_invocation_event(
+            replica,
+            root_id,
+            service,
+            ready_at,
+            start_at,
+            finish_at,
+            origin,
+            last_predecessor="",
+        ):
+            if not include_event_trace:
+                return
+            predecessor = replica_predecessor.get(replica)
+            root = root_by_id.get(root_id)
+            invocation_events.append({
+                "root_uuid": str(root_id),
+                "service": str(service),
+                "device": str(replica[1]),
+                "ready_at": float(ready_at),
+                "start_at": float(start_at),
+                "finish_at": float(finish_at),
+                "queue_wait_s": max(0.0, float(start_at) - float(ready_at)),
+                "fifo_predecessor_root": (
+                    str(predecessor[0]) if predecessor else ""
+                ),
+                "fifo_predecessor_service": (
+                    str(predecessor[1]) if predecessor else ""
+                ),
+                "last_predecessor": str(last_predecessor or ""),
+                "origin": str(origin),
+                "candidate": bool(root and root.get("candidate")),
+            })
+            replica_predecessor[replica] = (str(root_id), str(service))
 
         def processing_duration(root_id, service, device):
             root = root_by_id.get(root_id)
@@ -586,6 +578,15 @@ class FragSpliceExecutionState:
                     replica_intervals[replica].append(
                         (self.now, self.now + remaining)
                     )
+                append_invocation_event(
+                    replica,
+                    running_root,
+                    service,
+                    self.now,
+                    self.now,
+                    self.now + remaining,
+                    "observed_running",
+                )
                 if running_root in status and service in status[running_root]:
                     status[running_root][service] = "RUNNING"
                 event_sequence += 1
@@ -612,6 +613,11 @@ class FragSpliceExecutionState:
                         stage_evidence[root_id].add(service)
                     if fresh:
                         queues[replica].append((root_id, service, self.now))
+                        release_evidence[(root_id, service)] = {
+                            "ready_at": self.now,
+                            "last_predecessor": "",
+                            "origin": "observed_waiting",
+                        }
                         if root_id in status and service in status[root_id]:
                             status[root_id][service] = "QUEUED"
                 if fresh:
@@ -625,10 +631,20 @@ class FragSpliceExecutionState:
                             f"__fragsplice_queue__:{service}:{device}:{index}"
                         )
                         queues[replica].append((anonymous, service, self.now))
+                        release_evidence[(anonymous, service)] = {
+                            "ready_at": self.now,
+                            "last_predecessor": "",
+                            "origin": "observed_waiting",
+                        }
             elif fresh:
                 for index in range(_non_negative_int(state.get("waiting_count"))):
                     anonymous = f"__fragsplice_queue__:{service}:{device}:{index}"
                     queues[replica].append((anonymous, service, self.now))
+                    release_evidence[(anonymous, service)] = {
+                        "ready_at": self.now,
+                        "last_predecessor": "",
+                        "origin": "observed_waiting",
+                    }
 
         # Barrier arrivals are exact evidence that the named predecessor and
         # its ancestors have completed, even though no processor queue owns it.
@@ -661,18 +677,25 @@ class FragSpliceExecutionState:
             return True
 
         def ready_time(root_id, service):
+            return ready_evidence(root_id, service)[0]
+
+        def ready_evidence(root_id, service):
             root = root_by_id[root_id]
+            release_at = root.get("release_at", self.now)
             predecessors = root["dag"][service].get("prev_nodes", [])
             predecessor = max(
                 predecessors,
-                key=lambda item: finish_time[root_id].get(item, self.now),
+                key=lambda item: finish_time[root_id].get(item, release_at),
                 default=START,
             )
             predecessor_finish = finish_time[root_id].get(
-                predecessor, self.now
+                predecessor, release_at
             )
-            return predecessor_finish + self._release_delay(
-                root, service, predecessor
+            return (
+                predecessor_finish + self._release_delay(
+                    root, service, predecessor
+                ),
+                predecessor,
             )
 
         def enqueue_frontier(root_id):
@@ -690,7 +713,19 @@ class FragSpliceExecutionState:
                     if not device:
                         continue
                     replica = (service, str(device))
-                    released = max(self.now, ready_time(root_id, service))
+                    raw_ready, last_predecessor = ready_evidence(
+                        root_id, service
+                    )
+                    released = max(
+                        self.now,
+                        root.get("release_at", self.now),
+                        raw_ready,
+                    )
+                    release_evidence[(root_id, service)] = {
+                        "ready_at": released,
+                        "last_predecessor": last_predecessor,
+                        "origin": "predicted_release",
+                    }
                     status[root_id][service] = "RELEASING"
                     event_sequence += 1
                     heapq.heappush(
@@ -723,9 +758,19 @@ class FragSpliceExecutionState:
                 replica_work[replica] += service_duration
                 if include_calendar:
                     replica_intervals[replica].append((at, end))
+                evidence = release_evidence.get((root_id, service), {})
+                append_invocation_event(
+                    replica,
+                    root_id,
+                    service,
+                    evidence.get("ready_at", released),
+                    at,
+                    end,
+                    evidence.get("origin", "predicted_release"),
+                    evidence.get("last_predecessor", ""),
+                )
                 if root_id in status and service in status[root_id]:
                     status[root_id][service] = "RUNNING"
-                    queue_wait[root_id] += max(0.0, at - released)
                 event_sequence += 1
                 heapq.heappush(
                     events,
@@ -792,8 +837,6 @@ class FragSpliceExecutionState:
         result = {
             "latency": latency,
             "deadlines": deadlines,
-            "queue_wait": dict(queue_wait),
-            "candidate_root": candidate_root,
             "candidate_noqueue": candidate_noqueue,
             "replica_work": dict(replica_work),
         }
@@ -807,12 +850,110 @@ class FragSpliceExecutionState:
                 replica: sorted(intervals)
                 for replica, intervals in replica_intervals.items()
             }
+        if include_event_trace:
+            result["invocation_events"] = sorted(
+                invocation_events,
+                key=lambda item: (
+                    item["start_at"],
+                    item["finish_at"],
+                    item["service"],
+                    item["device"],
+                    item["root_uuid"],
+                ),
+            )
         return result
 
 
-__all__ = (
-    "FragSpliceExecutionState",
-    "plan_from_dag",
-    "service_names",
-    "topological_order",
-)
+class FragSpliceRandomExecutionState:
+    """Build an uninformed synthetic snapshot for the profiler ablation.
+
+    No queue count, task identity, running phase, commitment, barrier, or
+    completed-task history from the live system is copied.  The remaining
+    Future-State Estimator receives the same schema as the full algorithm,
+    but every invocation token is sampled from a configured, task-independent
+    prior.  This makes the ablation boundary explicit: modules two and three
+    still run, yet they cannot recover a measured workload signal indirectly.
+    """
+
+    def __init__(
+        self,
+        random_workload_token_min=0,
+        random_workload_token_max=8,
+        random_running_elapsed_max_s=2.0,
+    ):
+        self.random_workload_token_min = max(
+            0, int(random_workload_token_min)
+        )
+        self.random_workload_token_max = max(
+            self.random_workload_token_min,
+            int(random_workload_token_max),
+        )
+        self.random_running_elapsed_max_s = max(
+            0.0, float(random_running_elapsed_max_s)
+        )
+
+    def synthetic_snapshot(self, snapshot, candidates, seed):
+        """Return one reproducible random state and its total token count."""
+
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        try:
+            captured_at = float(snapshot.get("captured_at") or 1.0)
+        except (TypeError, ValueError):
+            captured_at = 1.0
+        if not math.isfinite(captured_at) or captured_at <= 0.0:
+            captured_at = 1.0
+        try:
+            revision = int(
+                snapshot.get("runtime_directory_revision") or 0
+            )
+        except (TypeError, ValueError):
+            revision = 0
+
+        rng = random.Random(int(seed))
+        resources = {}
+        received_at = {}
+        resource_revisions = {}
+        total_tokens = 0
+        replica_tokens = {}
+        for service in sorted(candidates):
+            for raw_device in sorted(candidates[service]):
+                device = str(raw_device)
+                token_count = rng.randint(
+                    self.random_workload_token_min,
+                    self.random_workload_token_max,
+                )
+                busy = bool(token_count and rng.getrandbits(1))
+                waiting = token_count - int(busy)
+                elapsed = (
+                    rng.uniform(0.0, self.random_running_elapsed_max_s)
+                    if busy else 0.0
+                )
+                resource = resources.setdefault(device, {"queue_state": {}})
+                resource["queue_state"][str(service)] = {
+                    "waiting_count": waiting,
+                    "waiting_tasks": [],
+                    "busy": busy,
+                    "running_task": None,
+                    "running_phase": "processing",
+                    "running_elapsed_s": elapsed,
+                    "phase_elapsed_s": elapsed,
+                    "observed_at": captured_at,
+                }
+                received_at[device] = captured_at
+                resource_revisions[device] = revision
+                replica_tokens[(str(service), device)] = token_count
+                total_tokens += token_count
+
+        return ({
+            "captured_at": captured_at,
+            "runtime_directory_revision": revision,
+            "resources": resources,
+            "resource_received_at": received_at,
+            "resource_runtime_revision": resource_revisions,
+            "reservations": [],
+            "commitments": [],
+            "task_barriers": [],
+        }, {
+            "total": total_tokens,
+            "replicas": replica_tokens,
+        })

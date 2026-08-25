@@ -2,16 +2,18 @@
 
 from .latency_model import (
     FragSpliceLatencyModel,
-    FragSpliceStaticLatencyModel,
+    FragSpliceRandomLatencyModel,
 )
 from .optimizer import (
     FragSpliceOptimizer,
+    FragSpliceRandomInputOptimizer,
     FragSpliceStagewiseEFTOptimizer,
 )
 
 __all__ = (
     "FragSpliceLatencyModel",
+    "FragSpliceRandomLatencyModel",
     "FragSpliceOptimizer",
+    "FragSpliceRandomInputOptimizer",
     "FragSpliceStagewiseEFTOptimizer",
-    "FragSpliceStaticLatencyModel",
 )

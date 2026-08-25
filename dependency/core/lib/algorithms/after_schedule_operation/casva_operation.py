@@ -23,9 +23,12 @@ class CASVAASOperation(BaseASOperation, abc.ABC):
             system.deployment_version = 0
         else:
             scheduler_policy = copy.deepcopy(scheduler_response['plan'])
-            system.service_deployment = scheduler_response.get('deployment', {})
+            deployment = scheduler_response.get('deployment')
+            if isinstance(deployment, dict):
+                system.service_deployment = copy.deepcopy(deployment)
             deployment_version = scheduler_response.get('deployment_version', 0)
-            system.deployment_version = 0 if deployment_version is None else deployment_version
+            if deployment_version is not None:
+                system.deployment_version = deployment_version
 
             dag_deployment = scheduler_policy['dag']
             dag = Task.extract_dag_from_dag_deployment(dag_deployment)

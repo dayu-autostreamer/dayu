@@ -86,7 +86,7 @@ class FakeScheduler:
     def schedule_transaction():
         return nullcontext()
 
-    def reserve_task_context(self, revision, root_uuid, context, ttl_seconds=None):
+    def stage_task_context(self, revision, root_uuid, context, ttl_seconds=None):
         for existing in self.reservations:
             if existing[0:2] == (revision, root_uuid):
                 assert existing[2] == context
@@ -313,6 +313,10 @@ class FakeStreamDataSource:
         @self.app.get("/stream-0/file")
         async def get_source_file():
             return Response(content=self.pending_payload, media_type="application/octet-stream")
+
+        @self.app.get("/stream-0/shared_file")
+        async def get_shared_source_file():
+            return {"file_name": ""}
 
 
 class ComponentRouter:

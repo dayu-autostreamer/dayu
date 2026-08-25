@@ -2,8 +2,6 @@
 
 import hashlib
 import json
-import math
-import time
 import uuid
 
 
@@ -22,7 +20,6 @@ def build_schedule_decision(
     plan,
     deployment_version,
     runtime_directory_revision,
-    created_at=None,
 ):
     request = request if isinstance(request, dict) else {}
     task_context = request.get('task_context')
@@ -40,20 +37,10 @@ def build_schedule_decision(
         uuid.NAMESPACE_URL,
         'dayu:schedule:{}:{}:{}'.format(source_id, identity, plan_digest),
     ))
-    if created_at is None:
-        created_at = task_context.get('created_at')
-    try:
-        created_at = float(created_at)
-    except (TypeError, ValueError):
-        created_at = time.time()
-    if not math.isfinite(created_at) or created_at <= 0.0:
-        created_at = time.time()
-
     return {
         'decision_id': decision_id,
         'plan_digest': plan_digest,
         'source_id': source_id,
         'task_id': task_id,
         'root_uuid': root_uuid,
-        'created_at': created_at,
     }

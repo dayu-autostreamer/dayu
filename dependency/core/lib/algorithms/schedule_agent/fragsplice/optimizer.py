@@ -1,13 +1,19 @@
+import hashlib
 import heapq
 import math
 import time
 
+from core.lib.scheduling import END, START, service_names, topological_order
+
 from .execution_state import (
-    END,
-    START,
     FragSpliceExecutionState,
-    service_names,
-    topological_order,
+    FragSpliceRandomExecutionState,
+)
+
+__all__ = (
+    "FragSpliceOptimizer",
+    "FragSpliceRandomInputOptimizer",
+    "FragSpliceStagewiseEFTOptimizer",
 )
 
 
@@ -21,12 +27,12 @@ def _cvar(values, level=0.95):
 
 
 class FragSpliceOptimizer:
-    """Full-Plan Optimizer with DP-guided anytime branch-and-bound."""
+    """Plan Optimizer with DP-guided anytime branch-and-bound."""
 
     def __init__(
         self,
         latency_model,
-        default_slo_s=3.0,
+        default_slo_s=2.5,
         scenario_count=32,
         max_scenarios=256,
         search_time_limit_s=0.0,
@@ -47,7 +53,7 @@ class FragSpliceOptimizer:
         )
         self.screening_beam_width = max(1, int(screening_beam_width))
 
-    def _candidate_devices(self, dag, deployment, source_device, cloud_device):
+    def _candidate_devices(self, dag, deployment, cloud_device):
         result = {}
         for service in service_names(dag):
             raw = deployment.get(service, []) if isinstance(deployment, dict) else []
@@ -68,9 +74,6 @@ class FragSpliceOptimizer:
         self, dag, candidates, partial, source_id=None
     ):
         finish = {START: 0.0}
-        sample_lower_bound = getattr(
-            self.latency_model, "sample_lower_bound", None
-        )
         for service in topological_order(dag):
             if service == START:
                 continue
@@ -83,10 +86,8 @@ class FragSpliceOptimizer:
                 continue
             devices = [partial[service]] if service in partial else candidates[service]
             demand = min(
-                (
-                    sample_lower_bound(source_id, service, device)
-                    if callable(sample_lower_bound)
-                    else self.latency_model.lower_bound(service, device)
+                self.latency_model.sample_lower_bound(
+                    source_id, service, device
                 )
                 + self.latency_model.lower_bound_handoff(service, device)
                 for device in devices
@@ -140,7 +141,7 @@ class FragSpliceOptimizer:
     def _incumbent_neighborhood(self, services, candidates, preferred_plan):
         """Return the most consequential one-replica exchanges first.
 
-        A short anytime budget can otherwise spend all of its full-plan
+        A short anytime budget can otherwise spend all of its full-DAG plan
         evaluations inside the branch containing the previous decision.  The
         neighborhood is only a stronger primal warm start: branch-and-bound
         remains responsible for exact search whenever time permits.
@@ -194,7 +195,7 @@ class FragSpliceOptimizer:
         preferred_plan,
         source_id,
         candidate_root,
-        candidate_created_at,
+        candidate_ready_at,
         slo,
         seed,
         baseline,
@@ -242,7 +243,7 @@ class FragSpliceOptimizer:
                 plan,
                 source_id,
                 candidate_root,
-                candidate_created_at,
+                candidate_ready_at,
                 slo,
             )
             projection = state.screen_candidate(
@@ -265,7 +266,7 @@ class FragSpliceOptimizer:
         plan,
         source_id,
         candidate_root,
-        candidate_created_at,
+        candidate_ready_at,
         slo,
     ):
         return {
@@ -275,7 +276,7 @@ class FragSpliceOptimizer:
             "source": source_id,
             "dag": dag,
             "plan": plan,
-            "created_at": candidate_created_at,
+            "ready_at": candidate_ready_at,
             "slo": slo,
         }
 
@@ -297,6 +298,7 @@ class FragSpliceOptimizer:
         preferred_plan,
         baseline,
         now,
+        source_id=None,
     ):
         """Branch first on services whose current replica choice is costly.
 
@@ -323,9 +325,12 @@ class FragSpliceOptimizer:
             )
 
         def projected_cost(service, device, quantile):
+            demand = self.latency_model.estimate_task(
+                source_id, service, device, quantile
+            )
             return (
                 available_at(service, device)
-                + self.latency_model.estimate(service, device, quantile)
+                + demand
                 + self.latency_model.estimate_handoff(
                     service, device, quantile
                 )
@@ -372,11 +377,12 @@ class FragSpliceOptimizer:
         preferred_plan,
         source_id,
         candidate_root,
-        candidate_created_at,
+        candidate_ready_at,
         slo,
         seed,
         baseline,
         deadline=None,
+        score_sink=None,
     ):
         """Generate promising complete plans with a cheap calendar beam.
 
@@ -402,11 +408,22 @@ class FragSpliceOptimizer:
                     complete,
                 ))
             ranked.sort(key=lambda item: (item[0], item[1]))
+            if score_sink is not None:
+                score_sink[:] = [
+                    {
+                        "plan": dict(plan),
+                        "screen_score": tuple(score),
+                    }
+                    for score, _, plan in ranked
+                ]
             plans = [dict(plan) for _, _, plan in ranked]
             preferred_key = tuple(sorted(preferred_plan.items()))
             if preferred_key not in seen:
                 plans.append(dict(preferred_plan))
             return plans or [dict(preferred_plan)]
+
+        if deadline is not None and time.monotonic() >= deadline:
+            return [dict(preferred_plan)]
 
         screening_services = self._screening_service_order(
             services,
@@ -414,6 +431,7 @@ class FragSpliceOptimizer:
             preferred_plan,
             baseline,
             state.now,
+            source_id,
         )
         if not screening_services:
             return [dict(preferred_plan)]
@@ -439,7 +457,7 @@ class FragSpliceOptimizer:
                         complete,
                         source_id,
                         candidate_root,
-                        candidate_created_at,
+                        candidate_ready_at,
                         slo,
                     )
                     projection = state.screen_candidate(
@@ -463,7 +481,7 @@ class FragSpliceOptimizer:
         plan,
         source_id,
         candidate_root,
-        candidate_created_at,
+        candidate_ready_at,
         slo,
         seeds,
         baseline_cache,
@@ -475,7 +493,7 @@ class FragSpliceOptimizer:
             plan,
             source_id,
             candidate_root,
-            candidate_created_at,
+            candidate_ready_at,
             slo,
         )
         root = candidate["root"]
@@ -546,7 +564,7 @@ class FragSpliceOptimizer:
         candidates,
         source_id,
         candidate_root,
-        candidate_created_at,
+        candidate_ready_at,
         slo,
         seeds,
         deadline,
@@ -570,6 +588,7 @@ class FragSpliceOptimizer:
             plan=None,
             screened=0,
             screening_completed=False,
+            candidate_pool=None,
         ):
             # The action remains valid even when the budget is consumed before
             # a stochastic score can be evaluated. Reuse the previous valid
@@ -598,6 +617,7 @@ class FragSpliceOptimizer:
                 "fallback_reason": reason,
                 "optimality_proven": candidate_count == 1,
                 "best_open_lower_bound": root_bound,
+                "candidate_pool": list(candidate_pool or []),
             }
 
         if deadline is not None and time.monotonic() >= deadline:
@@ -626,6 +646,7 @@ class FragSpliceOptimizer:
                 deadline,
                 now + min(0.04, 0.25 * remaining),
             )
+        screened_pool = []
         screened_plans = self._screening_plans(
             state,
             dag,
@@ -634,11 +655,12 @@ class FragSpliceOptimizer:
             preferred_plan,
             source_id,
             candidate_root,
-            candidate_created_at,
+            candidate_ready_at,
             slo,
             screen_seed,
             baseline_cache[screen_seed],
             deadline=screening_deadline,
+            score_sink=screened_pool,
         )
         screening_completed = not (
             screening_deadline is not None
@@ -657,7 +679,7 @@ class FragSpliceOptimizer:
             incumbent_plan,
             source_id,
             candidate_root,
-            candidate_created_at,
+            candidate_ready_at,
             slo,
             seeds,
             baseline_cache,
@@ -670,6 +692,7 @@ class FragSpliceOptimizer:
                 plan=incumbent_plan,
                 screened=len(screened_keys),
                 screening_completed=False,
+                candidate_pool=screened_pool,
             )
         evaluated_by_plan = {
             tuple(sorted(incumbent_plan.items())): (
@@ -692,6 +715,7 @@ class FragSpliceOptimizer:
                 "fallback_reason": "budget_exhausted_after_incumbent",
                 "optimality_proven": candidate_count == 1,
                 "best_open_lower_bound": root_bound,
+                "candidate_pool": screened_pool,
             }
 
         if candidate_count == 1:
@@ -708,6 +732,7 @@ class FragSpliceOptimizer:
                 "fallback_reason": "",
                 "optimality_proven": True,
                 "best_open_lower_bound": incumbent_score,
+                "candidate_pool": screened_pool,
             }
 
         warm_limit = max(1, self.incumbent_neighborhood_size)
@@ -731,7 +756,7 @@ class FragSpliceOptimizer:
                 plan,
                 source_id,
                 candidate_root,
-                candidate_created_at,
+                candidate_ready_at,
                 slo,
                 seeds,
                 baseline_cache,
@@ -790,7 +815,7 @@ class FragSpliceOptimizer:
                         plan,
                         source_id,
                         candidate_root,
-                        candidate_created_at,
+                        candidate_ready_at,
                         slo,
                         seeds,
                         baseline_cache,
@@ -847,6 +872,7 @@ class FragSpliceOptimizer:
             ),
             "optimality_proven": not heap,
             "best_open_lower_bound": best_open,
+            "candidate_pool": screened_pool,
         }
 
     @staticmethod
@@ -907,9 +933,7 @@ class FragSpliceOptimizer:
         except (TypeError, ValueError):
             slo = self.default_slo_s
         slo = max(1e-6, slo)
-        candidates = self._candidate_devices(
-            dag, deployment, source_device, cloud_device
-        )
+        candidates = self._candidate_devices(dag, deployment, cloud_device)
         state_build_started = time.monotonic()
         state = FragSpliceExecutionState(
             snapshot,
@@ -918,7 +942,11 @@ class FragSpliceOptimizer:
             queue_state_max_age_s=self.queue_state_max_age_s,
         )
         state_build_seconds = time.monotonic() - state_build_started
-        candidate_created_at = state.now
+        # Evaluate the candidate at the latest causal snapshot. HTTP replay
+        # timing remains private to that data getter; load pressure reaches
+        # the optimizer only through observed queues, reservations,
+        # commitments, and barriers in this snapshot.
+        candidate_ready_at = state.now
         counts = []
         count = self.scenario_count
         while True:
@@ -949,7 +977,7 @@ class FragSpliceOptimizer:
                 candidates,
                 source_id,
                 candidate_root,
-                candidate_created_at,
+                candidate_ready_at,
                 slo,
                 seeds,
                 deadline,
@@ -981,7 +1009,9 @@ class FragSpliceOptimizer:
         result.setdefault("screening_completed", True)
         result.setdefault("score_evaluated", True)
         result.setdefault("fallback_reason", "")
-        elapsed_before_execution = 0.0
+        elapsed_before_execution = max(
+            0.0, state.now - candidate_ready_at
+        )
         intrinsic_slo_infeasible = self._lower_score(
             dag,
             candidates,
@@ -1047,8 +1077,94 @@ class FragSpliceOptimizer:
         return result
 
 
+class FragSpliceRandomInputOptimizer(FragSpliceOptimizer):
+    """Run the normal optimizer on wholly uninformed random inputs.
+
+    This is the no-profiler ablation used by the evaluation.  The stochastic
+    DP-guided Plan Optimizer is left intact, while both of its information
+    sources are replaced: service times come from a random latency prior and
+    the future-state snapshot contains only random anonymous invocation
+    tokens.  Live queue telemetry and immutable commitments are deliberately
+    discarded before ``FragSpliceExecutionState`` is constructed.
+    """
+
+    def __init__(
+        self,
+        latency_model,
+        random_workload_token_min=0,
+        random_workload_token_max=8,
+        **kwargs,
+    ):
+        super().__init__(latency_model, **kwargs)
+        self.random_execution_state = FragSpliceRandomExecutionState(
+            random_workload_token_min=random_workload_token_min,
+            random_workload_token_max=random_workload_token_max,
+            random_running_elapsed_max_s=(
+                latency_model.random_invocation_cost_max_s
+            ),
+        )
+
+    def _synthetic_state_seed(self, info):
+        task_context = info.get("task_context")
+        task_context = task_context if isinstance(task_context, dict) else {}
+        identity = (
+            task_context.get("root_uuid")
+            or task_context.get("task_id")
+            or info.get("task_id")
+            or "unknown"
+        )
+        payload = (
+            f"{self.random_seed}|{info.get('source_id')}|{identity}"
+        ).encode("utf-8")
+        return int.from_bytes(
+            hashlib.sha256(payload).digest()[:8], "big", signed=False
+        )
+
+    def solve(
+        self,
+        info,
+        snapshot,
+        deployment,
+        cloud_device,
+        initial_plan=None,
+    ):
+        dag = info["dag"]
+        candidates = self._candidate_devices(
+            dag,
+            deployment,
+            cloud_device,
+        )
+        seed = self._synthetic_state_seed(info)
+        synthetic_snapshot, token_summary = (
+            self.random_execution_state.synthetic_snapshot(
+                snapshot, candidates, seed
+            )
+        )
+        result = super().solve(
+            info,
+            synthetic_snapshot,
+            deployment,
+            cloud_device,
+            initial_plan=initial_plan,
+        )
+        result.update({
+            "planning_cost_domain": "random_uninformed",
+            "temporal_prediction_available": False,
+            "prediction_is_synthetic": True,
+            "synthetic_state": True,
+            "actual_state_consumed": False,
+            "synthetic_state_seed": seed,
+            "synthetic_workload_tokens": token_summary["total"],
+            "synthetic_replica_tokens": token_summary["replicas"],
+            "observed_workload_tokens": None,
+            "latent_workload_tokens": None,
+            "commitment_count": None,
+        })
+        return result
+
+
 class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
-    """Greedy stage-wise EFT used when full-plan optimization is removed."""
+    """Greedy stage-wise EFT used when the Plan Optimizer is removed."""
 
     def _search(
         self,
@@ -1057,7 +1173,7 @@ class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
         candidates,
         source_id,
         candidate_root,
-        candidate_created_at,
+        candidate_ready_at,
         slo,
         seeds,
         deadline,
@@ -1130,7 +1246,7 @@ class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
                     trial,
                     source_id,
                     candidate_root,
-                    candidate_created_at,
+                    candidate_ready_at,
                     slo,
                 )
                 plan_key = tuple(sorted(trial.items()))
@@ -1181,7 +1297,7 @@ class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
             plan,
             source_id,
             candidate_root,
-            candidate_created_at,
+            candidate_ready_at,
             slo,
             seeds,
             baseline_cache,
@@ -1227,6 +1343,3 @@ class FragSpliceStagewiseEFTOptimizer(FragSpliceOptimizer):
             isinstance(previous, dict)
             and current["plan"] == previous.get("plan")
         )
-
-
-__all__ = ("FragSpliceOptimizer", "FragSpliceStagewiseEFTOptimizer")

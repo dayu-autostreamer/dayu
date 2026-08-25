@@ -717,6 +717,13 @@ class BackendServer:
                 raise TypeError('source must be a list')
             if any(not isinstance(item, dict) for item in source_map_list):
                 raise TypeError('every source mapping must be an object')
+            task_offer_limit = data.get('task_offer_limit', 0)
+            if (
+                isinstance(task_offer_limit, bool)
+                or not isinstance(task_offer_limit, int)
+                or task_offer_limit < 0
+            ):
+                raise TypeError('task_offer_limit must be a non-negative integer')
             dag_list = [item['dag_selected'] for item in source_map_list]
             node_set_list = [item['node_selected'] for item in source_map_list]
             if any(not isinstance(nodes, list) for nodes in node_set_list):
@@ -748,6 +755,9 @@ class BackendServer:
                 return {'state': 'fail', 'msg': 'Install services failed: dag not exists'}
 
             source.update({'source_type': source_config['source_type'], 'source_mode': source_config['source_mode']})
+
+            if task_offer_limit:
+                source['task_offer_limit'] = task_offer_limit
 
             source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 

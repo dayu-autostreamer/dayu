@@ -16,7 +16,7 @@ from core.lib.estimation import OverheadEstimator
 
 from .base_agent import BaseAgent
 from .fragsplice.latency_model import FragSpliceLatencyModel
-from .fragsplice_agent import _load_mapping
+from .fragsplice_agent import _load_mapping, _system_instance_token
 
 __all__ = ("FragSpliceColdSampleAgent",)
 
@@ -57,8 +57,6 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
         max_inflight_tasks=1,
     ):
         super().__init__(system, agent_id)
-        self.system = system
-        self.agent_id = agent_id
         self.configuration = _load_mapping(configuration, "configuration")
         self.profile_path = Context.get_file_path(str(profile_path))
         self.warmup_samples = max(0, int(warmup_samples))
@@ -92,12 +90,11 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
             )
             profile = {}
             profile_context = None
-        seen = self._load_progress(profile.get("cold_progress"), profile)
-        revision_getter = getattr(system, "runtime_directory_revision", None)
-        revision = revision_getter() if callable(revision_getter) else 0
+        seen = self._load_progress(profile.get("cold_progress"))
+        revision = system.runtime_directory_revision()
         self._state = GlobalInstanceManager.get_instance(
             _FragSpliceColdState,
-            ("fragsplice-cold", id(system), revision),
+            ("fragsplice-cold", _system_instance_token(system), revision),
             history_size=max(64, self.samples_per_pair + self.warmup_samples),
             profile=profile,
             seen=seen,
@@ -123,7 +120,8 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
             self.max_inflight_tasks,
         )
 
-    def _load_progress(self, progress, profile):
+    @staticmethod
+    def _load_progress(progress):
         seen = {}
         raw_seen = progress.get("seen") if isinstance(progress, dict) else None
         if isinstance(raw_seen, dict):
@@ -136,15 +134,6 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
                     except (TypeError, ValueError):
                         continue
                     seen[(str(service), str(device))] = count
-        pairs = profile.get("pairs") if isinstance(profile, dict) else None
-        if isinstance(pairs, dict):
-            for service, devices in pairs.items():
-                if not isinstance(devices, dict):
-                    continue
-                for device, value in devices.items():
-                    samples = FragSpliceLatencyModel._pair_samples(value)
-                    pair = (str(service), str(device))
-                    seen.setdefault(pair, self.warmup_samples + len(samples))
         return seen
 
     def _progress(self):
@@ -203,10 +192,10 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
                 self._state.deployment = self._normalize_deployment(deployment)
                 for service, devices in self._state.deployment.items():
                     for device in devices:
-                        self._state.seen[(service, device)] = (
-                            self.warmup_samples
-                            + self._state.model.sample_count(service, device)
-                        )
+                        # A context reset discards every prior observation.  A
+                        # fresh pair must execute its warm-up requests; they
+                        # are not samples that can be credited in advance.
+                        self._state.seen[(service, device)] = 0
             return result
 
     def _refresh_deployment(self, deployment=None):
@@ -219,11 +208,10 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
             self._state.deployment = current
             for service, devices in current.items():
                 for device in devices:
-                    self._state.seen.setdefault(
-                        (service, device),
-                        self.warmup_samples
-                        + self._state.model.sample_count(service, device),
-                    )
+                    # Persisted progress is restored by _load_progress(). A
+                    # genuinely new pair has observed nothing yet, including
+                    # its configured warm-up executions.
+                    self._state.seen.setdefault((service, device), 0)
 
     def _target_reached(self, service, device):
         return self._state.seen.get((service, device), 0) >= self.warmup_samples + self.samples_per_pair
@@ -295,12 +283,13 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
 
     def get_schedule_plan(self, info):
         with self.overhead_estimator, self._state.lock:
-            snapshot_getter = getattr(self.system, "get_scheduling_snapshot", None)
-            snapshot = snapshot_getter() if callable(snapshot_getter) else {}
-            deployment = snapshot.get("deployment") if isinstance(snapshot, dict) else None
-            self._refresh_deployment(
-                deployment if isinstance(deployment, dict) else None
-            )
+            snapshot = self.system.get_scheduling_snapshot()
+            deployment = snapshot.get("deployment")
+            if not isinstance(deployment, dict):
+                raise ValueError(
+                    "FragSplice cold snapshot has no fixed deployment"
+                )
+            self._refresh_deployment(deployment)
             planned = self._planned_pair_counts(snapshot)
             dag = copy.deepcopy(info["dag"])
             self._ensure_cold_context(
@@ -323,11 +312,12 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
 
     def update_task(self, task):
         with self._state.lock:
-            deployment_getter = getattr(task, "get_deployment", None)
-            deployment = deployment_getter() if callable(deployment_getter) else None
-            self._refresh_deployment(
-                deployment if isinstance(deployment, dict) and deployment else None
-            )
+            deployment = task.get_deployment()
+            if not isinstance(deployment, dict) or not deployment:
+                raise ValueError(
+                    "FragSplice cold task has no fixed deployment context"
+                )
+            self._refresh_deployment(deployment)
             self._ensure_cold_context(
                 deployment=self._state.deployment,
                 dag=task.get_dag(),
@@ -397,11 +387,8 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
                 "generate": False,
                 "reason": "fragsplice_profile_complete",
             }
-        snapshot_getter = getattr(self.system, "get_scheduling_snapshot", None)
-        snapshot = snapshot_getter() if callable(snapshot_getter) else {}
-        inflight = self._inflight_task_count(
-            snapshot if isinstance(snapshot, dict) else {}
-        )
+        snapshot = self.system.get_scheduling_snapshot()
+        inflight = self._inflight_task_count(snapshot)
         if inflight >= self.max_inflight_tasks:
             return {
                 "generate": False,

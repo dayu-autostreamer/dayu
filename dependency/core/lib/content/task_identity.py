@@ -1,4 +1,3 @@
-import time
 import uuid
 from dataclasses import dataclass
 
@@ -11,7 +10,6 @@ class TaskIdentity:
     task_id: int
     task_uuid: str
     root_uuid: str
-    created_at: float
 
     @classmethod
     def create(cls, source_id, task_id):
@@ -21,7 +19,6 @@ class TaskIdentity:
             task_id=int(task_id),
             task_uuid=task_uuid,
             root_uuid=task_uuid,
-            created_at=time.time(),
         )
 
     def to_dict(self):
@@ -30,5 +27,4 @@ class TaskIdentity:
             'task_id': self.task_id,
             'task_uuid': self.task_uuid,
             'root_uuid': self.root_uuid,
-            'created_at': self.created_at,
         }

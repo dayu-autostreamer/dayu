@@ -6,6 +6,8 @@ import tempfile
 import torch
 from torch import nn
 
+__all__ = ("DTODRLPolicy", "GraphAttentionActorCritic")
+
 
 class GraphAttentionActorCritic(nn.Module):
     """Small graph-attention actor with one categorical head per service."""
@@ -79,6 +81,20 @@ class GraphAttentionActorCritic(nn.Module):
 class DTODRLPolicy:
     CHECKPOINT_VERSION = 1
 
+    @staticmethod
+    def _normalize_weight_signature(signature):
+        """Return only fields that define DTODRL weight compatibility.
+
+        Legacy checkpoints included the video configuration even though it
+        does not change the GAT/PPO tensor schema or action space.  Keep
+        accepting those checkpoints while retaining strict checks for every
+        model-relevant context field.
+        """
+        normalized = copy.deepcopy(signature)
+        if isinstance(normalized, dict):
+            normalized.pop("configuration", None)
+        return normalized
+
     def __init__(
         self,
         signature,
@@ -92,7 +108,20 @@ class DTODRLPolicy:
         random_seed=0,
         load_checkpoint=False,
     ):
-        self.signature = copy.deepcopy(signature)
+        # DTODRL evaluates a very small graph (single-digit services and only a
+        # few candidates per service).  PyTorch's default CPU thread pool costs
+        # substantially more than the matrix work itself on the cloud worker,
+        # and can make an otherwise lightweight inference miss the source
+        # cadence.  A single intra-op thread preserves the exact model while
+        # avoiding that implementation artefact.  Inter-op threads can only be
+        # configured before PyTorch starts parallel work, so tolerate a prior
+        # initialization in a reused process.
+        torch.set_num_threads(1)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
+        self.signature = self._normalize_weight_signature(signature)
         self.checkpoint_path = str(checkpoint_path)
         self.mode = str(mode)
         self.hidden_dim = max(8, int(hidden_dim))
@@ -148,13 +177,17 @@ class DTODRLPolicy:
     def select(self, state, deterministic):
         self.model.eval()
         with torch.no_grad():
-            distribution, value = self._distribution([state])
-            actions = (
-                distribution.logits.argmax(dim=-1)
-                if deterministic
-                else distribution.sample()
-            )
-            log_probability = distribution.log_prob(actions).sum(dim=-1)
+            if deterministic:
+                tensors = self._batch_tensors([state])
+                logits, value = self.model(*tensors)
+                actions = logits.argmax(dim=-1)
+                # Inference never consumes the old-policy probability.  Avoid
+                # building a Categorical object solely for a discarded value.
+                log_probability = logits.new_zeros((logits.shape[0],))
+            else:
+                distribution, value = self._distribution([state])
+                actions = distribution.sample()
+                log_probability = distribution.log_prob(actions).sum(dim=-1)
         return (
             [int(item) for item in actions[0].tolist()],
             float(log_probability.item()),
@@ -255,7 +288,10 @@ class DTODRLPolicy:
         payload = torch.load(self.checkpoint_path, map_location=self.device)
         if payload.get("version") != self.CHECKPOINT_VERSION:
             raise ValueError("DTODRL checkpoint version is incompatible")
-        if payload.get("signature") != self.signature:
+        checkpoint_signature = self._normalize_weight_signature(
+            payload.get("signature")
+        )
+        if checkpoint_signature != self.signature:
             raise ValueError(
                 "DTODRL checkpoint does not match the active scheduling context"
             )
@@ -266,6 +302,3 @@ class DTODRLPolicy:
             self.optimizer.load_state_dict(payload["optimizer"])
         self.update_count = max(0, int(payload.get("update_count") or 0))
         self.model.eval()
-
-
-__all__ = ("DTODRLPolicy", "GraphAttentionActorCritic")

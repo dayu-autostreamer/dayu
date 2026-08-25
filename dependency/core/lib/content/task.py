@@ -30,7 +30,6 @@ class Task:
                  deployment_version: int = 0,
                  runtime_directory_revision: int = 0,
                  runtime_routes=None,
-                 created_at: float = 0.0,
                  schedule_decision_id: str = '',
                  schedule_plan_digest: str = ''):
 
@@ -40,9 +39,6 @@ class Task:
         self.__parent_uuid = parent_uuid
         # unique uuid for each task
         self.__root_uuid = root_uuid or self.__task_uuid
-        # Wall-clock creation time of the logical root task. Generators reserve
-        # this identity before scheduling and source-data materialization.
-        self.__created_at = float(created_at or 0.0)
         # The decision may be shared by several tasks when a policy is reused
         # for a positive REQUEST_SCHEDULING_INTERVAL.
         self.__schedule_decision_id = str(schedule_decision_id or '')
@@ -72,8 +68,8 @@ class Task:
         self.__deployment_version = 0 if deployment_version is None else deployment_version
         # Exact runtime addresses are a control-plane snapshot, independent of
         # the scheduling algorithm's deployment_version.  Keeping both fields
-        # prevents route identity from being accidentally coupled to Hedger's
-        # policy feedback/version semantics.
+        # prevents route identity from being accidentally coupled to an
+        # extension's policy feedback/version semantics.
         self.__runtime_directory_revision = (
             0 if runtime_directory_revision is None else int(runtime_directory_revision)
         )
@@ -307,12 +303,6 @@ class Task:
     def set_root_uuid(self, root_uuid: str):
         self.__root_uuid = root_uuid
 
-    def get_created_at(self):
-        return self.__created_at
-
-    def set_created_at(self, created_at):
-        self.__created_at = float(created_at or 0.0)
-
     def get_schedule_decision_id(self):
         return self.__schedule_decision_id
 
@@ -354,7 +344,6 @@ class Task:
             'task_id': self.get_task_id(),
             'task_uuid': self.get_task_uuid(),
             'root_uuid': self.get_root_uuid(),
-            'created_at': self.get_created_at(),
             'slo_started_at': self.get_slo_start_time(),
             'decision_id': self.get_schedule_decision_id(),
             'plan_digest': self.get_schedule_plan_digest(),
@@ -596,7 +585,6 @@ class Task:
             'task_uuid': self.get_task_uuid(),
             'parent_uuid': self.get_parent_uuid(),
             'root_uuid': self.get_root_uuid(),
-            'created_at': self.get_created_at(),
             'schedule_decision_id': self.get_schedule_decision_id(),
             'schedule_plan_digest': self.get_schedule_plan_digest(),
         }
@@ -625,7 +613,6 @@ class Task:
         task.set_task_uuid(dag_dict['task_uuid']) if 'task_uuid' in dag_dict else None
         task.set_parent_uuid(dag_dict['parent_uuid']) if 'parent_uuid' in dag_dict else None
         task.set_root_uuid(dag_dict['root_uuid']) if 'root_uuid' in dag_dict else None
-        task.set_created_at(dag_dict.get('created_at', 0.0))
         task.set_schedule_decision_id(dag_dict.get('schedule_decision_id', ''))
         task.set_schedule_plan_digest(dag_dict.get('schedule_plan_digest', ''))
 

@@ -9,9 +9,12 @@ from core.lib.common import TaskConstant
 from core.lib.content import Task
 
 
-data_getter_base_module = importlib.import_module("core.lib.algorithms.data_getter.base_getter")
+data_getter_base_module = importlib.import_module(
+    "core.lib.algorithms.data_getter.base_getter"
+)
 http_getter_module = importlib.import_module("core.lib.algorithms.data_getter.http_video_getter")
 rtsp_getter_module = importlib.import_module("core.lib.algorithms.data_getter.rtsp_video_getter")
+v4l2_getter_module = importlib.import_module("core.lib.algorithms.data_getter.v4l2_video_getter")
 base_config_module = importlib.import_module("core.lib.algorithms.schedule_config_extraction.base_config_extraction")
 config_extraction_module = importlib.import_module("core.lib.algorithms.schedule_config_extraction")
 config_simple_module = importlib.import_module("core.lib.algorithms.schedule_config_extraction.simple_config_extraction")
@@ -72,6 +75,15 @@ def build_task():
 
 
 @pytest.mark.unit
+def test_video_getters_keep_base_getter_inheritance():
+    base_getter = data_getter_base_module.BaseDataGetter
+
+    assert issubclass(http_getter_module.HttpVideoGetter, base_getter)
+    assert issubclass(rtsp_getter_module.RtspVideoGetter, base_getter)
+    assert issubclass(v4l2_getter_module.V4L2VideoGetter, base_getter)
+
+
+@pytest.mark.unit
 def test_data_getter_base_and_http_video_getter_cover_success_and_exhaustion(monkeypatch, tmp_path):
     with pytest.raises(NotImplementedError):
         data_getter_base_module.BaseDataGetter()(SimpleNamespace())
@@ -106,7 +118,7 @@ def test_data_getter_base_and_http_video_getter_cover_success_and_exhaustion(mon
     )
     assert getter.request_source_data(system, task_id=1) is False
     assert exhausted_calls == ["http://datasource/source"]
-    assert http_getter_module.HttpVideoGetter.compute_cost_time(system, cost=0.05, actual_buffer_size=1) == pytest.approx(0.05)
+    assert getter._next_arrival_interval(system, actual_buffer_size=1) == pytest.approx(0.1)
 
     request_log = []
 
@@ -186,20 +198,27 @@ def test_http_video_getter_cleans_file_when_retired_task_is_explicitly_rejected(
     monkeypatch.setattr(getter, "request_source_data", fake_request_source_data)
     monkeypatch.setattr(http_getter_module.Counter, "get_count", staticmethod(lambda name: 12))
     monkeypatch.setattr(http_getter_module.time, "monotonic", lambda: 12.5)
-    monkeypatch.setattr(http_getter_module.time, "sleep", lambda seconds: None)
+    sleep_calls = []
+    monkeypatch.setattr(
+        http_getter_module.time,
+        "sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
     monkeypatch.setattr(http_getter_module.FileOps, "remove_file", lambda path: removed.append(path))
 
     assert getter(system) is False
-    assert getter.last_submit_ts == 12.5
+    assert sleep_calls == pytest.approx([0.1])
+    assert getter._next_arrival_monotonic == pytest.approx(12.6)
     assert removed == [str(payload_path)]
 
 
 @pytest.mark.unit
-def test_http_video_getter_rate_limits_between_task_submissions(monkeypatch, tmp_path):
+def test_http_video_getter_paces_next_offer_after_each_submission(monkeypatch, tmp_path):
     getter = http_getter_module.HttpVideoGetter()
     submitted = []
     removed = []
     sleep_calls = []
+    events = []
     clock = {"now": 100.0}
 
     system = SimpleNamespace(
@@ -216,7 +235,11 @@ def test_http_video_getter_rate_limits_between_task_submissions(monkeypatch, tmp
             "file_name": file_name,
             "hashes": hash_codes,
         },
-        submit_task_to_controller=lambda task: submitted.append((clock["now"], task)) or True,
+        submit_task_to_controller=lambda task: (
+            events.append(("submit", clock["now"])),
+            submitted.append((clock["now"], task)),
+            True,
+        )[-1],
     )
 
     def fake_request_source_data(cur_system, task_id):
@@ -228,6 +251,7 @@ def test_http_video_getter_rate_limits_between_task_submissions(monkeypatch, tmp
 
     def fake_sleep(seconds):
         sleep_calls.append(seconds)
+        events.append(("sleep", clock["now"]))
         clock["now"] += seconds
 
     task_ids = iter([11, 12])
@@ -235,20 +259,172 @@ def test_http_video_getter_rate_limits_between_task_submissions(monkeypatch, tmp
     monkeypatch.setattr(http_getter_module.Counter, "get_count", staticmethod(lambda name: next(task_ids)))
     monkeypatch.setattr(http_getter_module.time, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(http_getter_module.time, "sleep", fake_sleep)
-    monkeypatch.setattr(http_getter_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
+
+    def fake_remove(file_path):
+        removed.append(file_path)
+        events.append(("remove", clock["now"]))
+
+    monkeypatch.setattr(http_getter_module.FileOps, "remove_file", fake_remove)
 
     getter(system)
     getter(system)
 
-    assert sleep_calls == pytest.approx([0, 0.35])
+    assert sleep_calls == pytest.approx([0.35, 0.35])
     assert submitted[1][0] - submitted[0][0] == pytest.approx(0.4)
+    assert [event for event, _ in events] == [
+        "submit",
+        "remove",
+        "sleep",
+        "submit",
+        "remove",
+        "sleep",
+    ]
     assert [task["task_id"] for _, task in submitted] == [11, 12]
     assert len(removed) == 2
 
 
 @pytest.mark.unit
+def test_http_video_getter_owns_absolute_mean_preserving_burst(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv(
+        "HTTP_VIDEO_TASK_ARRIVAL_BURST",
+        "{'tasks_per_burst': 3, 'intra_burst_rate_multiplier': 2.0}",
+    )
+    getter = http_getter_module.HttpVideoGetter()
+    sleep_calls = []
+    submitted = []
+    offer_starts = []
+    clock = {"now": 100.0}
+
+    system = SimpleNamespace(
+        source_id=5,
+        meta_data={"fps": 10, "buffer_size": 2},
+        raw_meta_data={"fps": 10},
+        cumulative_scheduling_frame_count=0,
+        task_dag=build_task().get_dag(),
+        service_deployment={"detector": ["edge-a"]},
+        generate_task=lambda *args, **kwargs: object(),
+        submit_task_to_controller=lambda task: submitted.append(clock["now"]) or True,
+    )
+    task_ids = iter([1, 2, 3, 4])
+
+    def fake_request_source_data(cur_system, task_id):
+        offer_starts.append(clock["now"])
+        clock["now"] += 0.02
+        getter.hash_codes = ["hash-0", "hash-1"]
+        getter.file_name = str(tmp_path / f"fixed-{task_id}.mp4")
+        Path(getter.file_name).write_bytes(b"video")
+        return True
+
+    monkeypatch.setattr(getter, "request_source_data", fake_request_source_data)
+    monkeypatch.setattr(
+        http_getter_module.Counter,
+        "get_count",
+        staticmethod(lambda name: next(task_ids)),
+    )
+    monkeypatch.setattr(
+        http_getter_module.time, "monotonic", lambda: clock["now"]
+    )
+
+    def sleep(seconds):
+        sleep_calls.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(
+        http_getter_module.time, "sleep", sleep
+    )
+    monkeypatch.setattr(http_getter_module.FileOps, "remove_file", lambda path: None)
+
+    for _ in range(4):
+        assert getter(system) is True
+
+    assert offer_starts == pytest.approx([100.0, 100.1, 100.2, 100.6])
+    assert submitted == pytest.approx([100.02, 100.12, 100.22, 100.62])
+    assert sleep_calls == pytest.approx([0.08, 0.08, 0.38, 0.08])
+
+
+@pytest.mark.unit
+def test_http_video_getter_preserves_experiment_burst_shape_and_mean(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "HTTP_VIDEO_TASK_ARRIVAL_BURST",
+        "{'tasks_per_burst': 8, 'intra_burst_rate_multiplier': 3.0}",
+    )
+    getter = http_getter_module.HttpVideoGetter()
+    system = SimpleNamespace(meta_data={"fps": 10, "buffer_size": 3})
+
+    intervals = [
+        getter._next_arrival_interval(system, actual_buffer_size=3)
+        for _ in range(8)
+    ]
+
+    assert intervals[:7] == pytest.approx([0.1] * 7)
+    assert intervals[7] == pytest.approx(1.7)
+    assert sum(intervals) == pytest.approx(8 * 3 / 10)
+    assert getter._next_arrival_interval(
+        system, actual_buffer_size=3
+    ) == pytest.approx(0.1)
+
+
+@pytest.mark.unit
+def test_http_video_getter_burst_uses_actual_buffer_time_budget(monkeypatch):
+    monkeypatch.setenv(
+        "HTTP_VIDEO_TASK_ARRIVAL_BURST",
+        "{'tasks_per_burst': 3, 'intra_burst_rate_multiplier': 2.0}",
+    )
+    getter = http_getter_module.HttpVideoGetter()
+    system = SimpleNamespace(meta_data={"fps": 10, "buffer_size": 4})
+
+    intervals = [
+        getter._next_arrival_interval(system, actual_buffer_size=size)
+        for size in (4, 2, 1)
+    ]
+
+    assert intervals == pytest.approx([0.2, 0.1, 0.4])
+    assert sum(intervals) == pytest.approx((4 + 2 + 1) / 10)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("0.1,0.2", "must be a mapping"),
+        (
+            "{'tasks_per_burst': 1, 'intra_burst_rate_multiplier': 2}",
+            "tasks_per_burst",
+        ),
+        (
+            "{'tasks_per_burst': 3, 'intra_burst_rate_multiplier': 1}",
+            "intra_burst_rate_multiplier",
+        ),
+        (
+            "{'tasks_per_burst': 3, 'intra_burst_rate_multiplier': 2, "
+            "'interval_s': 0.1}",
+            "unknown fields",
+        ),
+    ],
+)
+def test_http_video_getter_rejects_invalid_burst_configuration(
+    monkeypatch,
+    value,
+    message,
+):
+    monkeypatch.setenv("HTTP_VIDEO_TASK_ARRIVAL_BURST", value)
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        http_getter_module.HttpVideoGetter()
+
+
+@pytest.mark.unit
 def test_rtsp_video_getter_helpers_reconnect_and_dispatch(monkeypatch):
+    monkeypatch.setenv(
+        "HTTP_VIDEO_TASK_ARRIVAL_BURST",
+        "{'tasks_per_burst': 8, 'intra_burst_rate_multiplier': 3.0}",
+    )
     getter = rtsp_getter_module.RtspVideoGetter()
+    assert not hasattr(getter, "_arrival_burst")
 
     system = SimpleNamespace(
         frame_filter=lambda cur_system, frame: frame.sum() >= 0,
@@ -370,8 +546,15 @@ def test_scheduler_helper_algorithms_cover_base_contracts_selection_and_retrieva
     with pytest.raises(NotImplementedError):
         base_startup_module.BaseStartupPolicy()({"dag": {}})
 
-    info = {"dag": {"detector": {}}, "source": {"id": 1}}
-    assert startup_policy_module.FixedStartupPolicy()(info)["dag"] == {"detector": {}}
+    info = {
+        "dag": Task.extract_dag_deployment_from_dag(build_task().get_dag()),
+        "source": {"id": 1},
+        "source_device": "edge-a",
+        "cloud_device": "cloud-a",
+    }
+    startup_dag = startup_policy_module.FixedStartupPolicy()(info)["dag"]
+    assert startup_dag[TaskConstant.START.value]["service"]["execute_device"] == "edge-a"
+    assert startup_dag["detector"]["service"]["execute_device"] == "cloud-a"
 
     task = build_task()
     task.get_service("detector").set_execute_time(0.8)

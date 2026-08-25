@@ -34,7 +34,7 @@ support-crd-meta:
   kind: JointMultiEdgeService
 # RuntimeService orchestration and bounded revision retirement.
 runtime:
-  activation-timeout-seconds: 300
+  activation-timeout-seconds: 600
   operation-timeout-seconds: 900
   # Total budget for one Scheduler control-plane HTTP call (including retries).
   scheduler-request-timeout-seconds: 30

@@ -3,8 +3,8 @@ pod-template:
   image: monitor
   imagePullPolicy: Always
   env:
-    # FragSplice consumes ordered processor queue state. A 5-second generic
-    # monitor interval is too coarse for invocation-level future-state repair.
+    # Invocation-level schedulers require a finer interval than the generic
+    # five-second resource monitor when they consume live processor queues.
     - name: INTERVAL
       value: "0.5"
     - name: MONITORS

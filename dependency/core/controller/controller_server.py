@@ -19,6 +19,9 @@ from core.lib.network import NetworkAPIMethod, NetworkAPIPath, task_ack
 from .controller import Controller
 
 
+DEFAULT_CONTROLLER_FORWARD_WORKERS = 32
+
+
 class ControllerServer:
     def __init__(self):
         self.controller = Controller()
@@ -113,9 +116,12 @@ class ControllerServer:
         self._inbox_stop = threading.Event()
         self._inbox_workers = []
         try:
-            configured_workers = int(os.getenv("CONTROLLER_FORWARD_WORKERS", "8"))
+            configured_workers = int(os.getenv(
+                "CONTROLLER_FORWARD_WORKERS",
+                str(DEFAULT_CONTROLLER_FORWARD_WORKERS),
+            ))
         except (TypeError, ValueError):
-            configured_workers = 8
+            configured_workers = DEFAULT_CONTROLLER_FORWARD_WORKERS
         self._inbox_worker_count = max(1, configured_workers)
 
     def _prune_accepted_work_locked(self, now):

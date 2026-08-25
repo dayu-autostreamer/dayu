@@ -65,6 +65,34 @@ class FakeUploadFile:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("configured_value", "expected_workers"),
+    [
+        (None, 32),
+        ("invalid", 32),
+        ("4", 4),
+        ("0", 1),
+    ],
+)
+def test_controller_forward_worker_configuration(
+    monkeypatch,
+    configured_value,
+    expected_workers,
+):
+    module = importlib.import_module("core.controller.controller_server")
+    if configured_value is None:
+        monkeypatch.delenv("CONTROLLER_FORWARD_WORKERS", raising=False)
+    else:
+        monkeypatch.setenv("CONTROLLER_FORWARD_WORKERS", configured_value)
+
+    server = object.__new__(module.ControllerServer)
+    server._init_inbox()
+
+    assert module.DEFAULT_CONTROLLER_FORWARD_WORKERS == 32
+    assert server._inbox_worker_count == expected_workers
+
+
+@pytest.mark.unit
 def test_controller_lifespan_only_owns_one_lease_ttl_cleaner(monkeypatch):
     module = importlib.import_module("core.controller.controller_server")
     FakeCleaner.instances = []

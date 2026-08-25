@@ -373,12 +373,28 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
     )
     assert invalid_policy["state"] == "fail"
 
+    invalid_task_limit = client.post(
+        "/install",
+        json={
+            "install_id": INSTALL_ID,
+            "source_config_label": "source-config-0",
+            "policy_id": "fixed",
+            "task_offer_limit": -1,
+            "source": [
+                {"id": 0, "dag_selected": 1, "node_selected": ["edgex1"]},
+                {"id": 1, "dag_selected": 1, "node_selected": ["edgex2"]},
+            ],
+        },
+    ).json()
+    assert invalid_task_limit["state"] == "fail"
+
     install_result = client.post(
         "/install",
         json={
             "install_id": INSTALL_ID,
             "source_config_label": "source-config-0",
             "policy_id": "fixed",
+            "task_offer_limit": 5,
             "source": [
                 {"id": 0, "dag_selected": 1, "node_selected": ["edgex1"]},
                 {"id": 1, "dag_selected": 1, "node_selected": ["edgex2"]},
@@ -394,6 +410,8 @@ def test_backend_server_covers_install_and_datasource_management_flows(managemen
     assert installed_state["ready"] is True
     assert len(backend.server.applied_templates) == 1
     assert backend.server.applied_templates[0]["source_deploy"][0]["source"]["source_mode"] == "http_video"
+    assert backend.server.applied_templates[0]["source_deploy"][0]["source"]["task_offer_limit"] == 5
+    assert backend.server.applied_templates[0]["source_deploy"][1]["source"]["task_offer_limit"] == 5
     assert backend.server.applied_templates[0]["source_label"] == "source-config-0"
 
     backend.server.install_exception = RuntimeError("boom")

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from core.lib.network import NetworkAPIMethod
+from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 from core.lib.runtime import (
     RuntimeContext,
     RuntimeLeaseClient,
@@ -80,6 +80,114 @@ def test_runtime_lease_client_uses_exact_task_key_and_scheduler_endpoint():
     }
     release_payload = json.loads(calls[-1]["data"]["data"])
     assert release_payload == {"revision": 7, "root_uuid": "root-7"}
+
+
+@pytest.mark.unit
+def test_runtime_lease_client_cancels_unmaterialized_reservation():
+    calls = []
+
+    def requester(**kwargs):
+        calls.append(kwargs)
+        payload = json.loads(kwargs["data"]["data"])
+        return {
+            "revision": payload["revision"],
+            "root_uuid": payload["root_uuid"],
+            "decision_id": payload["decision_id"],
+            "cancelled": True,
+        }
+
+    client = RuntimeLeaseClient(runtime_context(), requester=requester)
+    result = client.cancel_reservation(7, "root-eof", "decision-eof")
+
+    assert result["cancelled"] is True
+    assert calls[0]["method"] == NetworkAPIMethod.SCHEDULER_CANCEL_TASK_RESERVATION
+    assert calls[0]["url"].endswith(
+        NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_RESERVATIONS
+    )
+    assert json.loads(calls[0]["data"]["data"]) == {
+        "revision": 7,
+        "root_uuid": "root-eof",
+        "decision_id": "decision-eof",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("revision", "root_uuid", "message"),
+    [
+        ("invalid", "root", "must be an integer"),
+        (0, "root", "must be positive"),
+        (7, "", "root_uuid is required"),
+    ],
+)
+def test_runtime_lease_client_rejects_invalid_reservation_identity(
+    revision,
+    root_uuid,
+    message,
+):
+    client = RuntimeLeaseClient(runtime_context(), requester=lambda **kwargs: {})
+
+    with pytest.raises(RuntimeLeaseIdentityError, match=message):
+        client.cancel_reservation(revision, root_uuid)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (None, "was not confirmed"),
+        ({"cancelled": False}, "was not confirmed"),
+        (
+            {
+                "cancelled": True,
+                "revision": "invalid",
+                "root_uuid": "root-eof",
+            },
+            "no valid revision",
+        ),
+        (
+            {
+                "cancelled": True,
+                "revision": 8,
+                "root_uuid": "root-eof",
+            },
+            "identity mismatch",
+        ),
+        (
+            {
+                "cancelled": True,
+                "revision": 7,
+                "root_uuid": "different-root",
+            },
+            "identity mismatch",
+        ),
+    ],
+)
+def test_runtime_lease_client_fails_closed_on_invalid_cancellation_response(
+    response,
+    message,
+):
+    client = RuntimeLeaseClient(
+        runtime_context(),
+        requester=lambda **kwargs: response,
+    )
+
+    with pytest.raises(RuntimeLeaseUnavailable, match=message):
+        client.cancel_reservation(7, "root-eof", "decision-eof")
+
+
+@pytest.mark.unit
+def test_runtime_lease_client_wraps_reservation_transport_failure():
+    def requester(**kwargs):
+        raise OSError("connection reset")
+
+    client = RuntimeLeaseClient(runtime_context(), requester=requester)
+
+    with pytest.raises(
+        RuntimeLeaseUnavailable,
+        match="reservation cancellation failed: connection reset",
+    ):
+        client.cancel_reservation(7, "root-eof", "decision-eof")
 
 
 @pytest.mark.unit

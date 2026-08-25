@@ -71,6 +71,12 @@ class RuntimeLeaseClient:
         endpoint = self.runtime_context.resolve_static_endpoint("scheduler")
         return endpoint.url(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_LEASES)
 
+    def _reservation_url(self):
+        endpoint = self.runtime_context.resolve_static_endpoint("scheduler")
+        return endpoint.url(
+            NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_RESERVATIONS
+        )
+
     @staticmethod
     def _task_key(task) -> Tuple[int, str]:
         if task is None:
@@ -208,3 +214,57 @@ class RuntimeLeaseClient:
             "release",
             include_ttl=False,
         )
+
+    def cancel_reservation(self, revision, root_uuid, decision_id=None):
+        """Cancel a scheduler decision for which no Task was materialized."""
+
+        try:
+            revision = int(revision)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeLeaseIdentityError(
+                "task reservation revision must be an integer"
+            ) from exc
+        root_uuid = str(root_uuid or "").strip()
+        if revision < 1:
+            raise RuntimeLeaseIdentityError(
+                "task reservation revision must be positive"
+            )
+        if not root_uuid:
+            raise RuntimeLeaseIdentityError(
+                "task reservation root_uuid is required"
+            )
+        payload = {
+            "revision": revision,
+            "root_uuid": root_uuid,
+            "decision_id": str(decision_id or ""),
+        }
+        try:
+            response = self.requester(
+                url=self._reservation_url(),
+                method=NetworkAPIMethod.SCHEDULER_CANCEL_TASK_RESERVATION,
+                timeout=self.timeout_seconds,
+                retry=1,
+                data={"data": json.dumps(payload)},
+            )
+        except Exception as exc:
+            raise RuntimeLeaseUnavailable(
+                "runtime task reservation cancellation failed: {}".format(exc)
+            ) from exc
+        if not isinstance(response, dict) or response.get("cancelled") is not True:
+            raise RuntimeLeaseUnavailable(
+                "runtime task reservation cancellation was not confirmed by scheduler"
+            )
+        try:
+            response_revision = int(response.get("revision"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeLeaseUnavailable(
+                "runtime task reservation cancellation response has no valid revision"
+            ) from exc
+        if (
+            response_revision != revision
+            or str(response.get("root_uuid") or "") != root_uuid
+        ):
+            raise RuntimeLeaseUnavailable(
+                "runtime task reservation cancellation response identity mismatch"
+            )
+        return response

@@ -143,82 +143,74 @@
   name: FragSplice Cold Sample
   yaml: fragsplice-cold-sample.yaml
   dependency:
-    generator: generator-fragsplice.yaml
+    generator: generator-with-scheduler-permitted.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
+    monitor: monitor-queue-state.yaml
 - id: fragsplice
   name: FragSplice
   yaml: fragsplice.yaml
   dependency:
-    generator: generator-fragsplice.yaml
+    generator: generator-with-bursty.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
+    monitor: monitor-queue-state.yaml
 - id: fragsplice-no-distribution-profiler
   name: FragSplice No Distribution Profiler
   yaml: fragsplice-no-distribution-profiler.yaml
   dependency:
-    generator: generator-fragsplice.yaml
+    generator: generator-with-bursty.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
+    monitor: monitor-queue-state.yaml
 - id: fragsplice-no-future-state-estimator
   name: FragSplice No Future-State Estimator
   yaml: fragsplice-no-future-state-estimator.yaml
   dependency:
-    generator: generator-fragsplice.yaml
+    generator: generator-with-bursty.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
-- id: fragsplice-no-full-plan-optimizer
-  name: FragSplice No Full-Plan Optimizer
-  yaml: fragsplice-no-full-plan-optimizer.yaml
+    monitor: monitor-queue-state.yaml
+- id: fragsplice-no-plan-optimizer
+  name: FragSplice No Plan Optimizer
+  yaml: fragsplice-no-plan-optimizer.yaml
   dependency:
-    generator: generator-fragsplice.yaml
+    generator: generator-with-bursty.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
-- id: fragsplice-current-state
-  name: FragSplice Current-State Ablation (Legacy Alias)
-  yaml: fragsplice-current-state.yaml
-  dependency:
-    generator: generator-fragsplice.yaml
-    controller: controller-for-evaluation.yaml
-    distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
+    monitor: monitor-queue-state.yaml
 - id: ibdash
   name: IBDASH Baseline
   yaml: ibdash.yaml
   dependency:
-    generator: generator-fragsplice.yaml
+    generator: generator-with-bursty.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
+    monitor: monitor-queue-state.yaml
 - id: distream
   name: Distream Baseline
   yaml: distream.yaml
   dependency:
-    generator: generator-fragsplice.yaml
+    generator: generator-with-bursty.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
+    monitor: monitor-queue-state.yaml
 - id: dtodrl-train
   name: DTODRL Baseline Training
   yaml: dtodrl-train.yaml
   dependency:
-    generator: generator-fragsplice.yaml
+    generator: generator-with-bursty.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
+    monitor: monitor-queue-state.yaml
 - id: dtodrl
   name: DTODRL Baseline Inference
   yaml: dtodrl.yaml
   dependency:
-    generator: generator-fragsplice.yaml
+    generator: generator-with-bursty.yaml
     controller: controller-for-evaluation.yaml
     distributor: distributor-base.yaml
-    monitor: monitor-fragsplice.yaml
+    monitor: monitor-queue-state.yaml
 - id: hei
   name: Hierarchical Embodied Intelligence (Hier-EI)
   yaml: hei.yaml

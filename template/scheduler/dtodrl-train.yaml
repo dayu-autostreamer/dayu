@@ -26,11 +26,11 @@ pod-template:
       value: >
         {
           'policy': {
-            'traffic-detection': ['edgexn23', 'edgexn27'],
-            'road-context-segmentation': ['edgexn24', 'edgexn28'],
-            'traffic-signal-recognition': ['edgexn31', 'edgexn32'],
-            'vehicle-tracking': ['edgexn23', 'edgexn24', 'edgexn27'],
-            'vehicle-attribute-recognition': ['edgexn28', 'edgexn31', 'edgexn32'],
+            'traffic-detection': ['edgexn23', 'edgexn27', 'edgexn33'],
+            'road-context-segmentation': ['edgexn24', 'edgexn28', 'edgexn33'],
+            'traffic-signal-recognition': ['edgexn31', 'edgexn32', 'edgexn34'],
+            'vehicle-tracking': ['edgexn23', 'edgexn24', 'edgexn27', 'edgexn34'],
+            'vehicle-attribute-recognition': ['edgexn26', 'edgexn28', 'edgexn31', 'edgexn32', 'edgexn34'],
             'vehicle-trajectory-prediction': ['edgexn27', 'edgexn32'],
             'pedestrian-pose-estimation': ['edgexn24', 'edgexn28'],
             'pedestrian-intent-recognition': ['edgexn28', 'edgexn32'],
@@ -46,12 +46,12 @@ pod-template:
         {
           'configuration': {
             'resolution': '720p',
-            'fps': 8,
+            'fps': 10,
             'encoding': 'mp4v',
-            'buffer_size': 4
+            'buffer_size': 3
           },
-          'latency_profile': 'fragsplice-profile.json',
-          'latency_slo_s': 3.0,
+          'latency_profile': 'dtodrl-profile.json',
+          'latency_slo_s': 2.5,
           'mode': 'train',
           'checkpoint_path': 'dtodrl-agent-{agent_id}.pt',
           'load_checkpoint': False,
@@ -61,7 +61,7 @@ pod-template:
           'ppo_clip': 0.2,
           'entropy_weight': 0.01,
           'ppo_epochs': 4,
-          'save_interval': 1,
+          'save_interval': 5,
           'profile_quantile': 0.5,
           'queue_state_max_age_s': 1.5,
           'random_seed': 2026
@@ -72,4 +72,4 @@ port-open:
   port: 9000
 file-mount:
   - pos: cloud
-    path: 'scheduler/fragsplice/'
+    path: 'scheduler/dtodrl/'

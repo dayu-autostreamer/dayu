@@ -50,7 +50,7 @@ class FakeScheduler:
     def schedule_transaction():
         return nullcontext()
 
-    def reserve_task_context(self, revision, root_uuid, context, ttl_seconds=None):
+    def stage_task_context(self, revision, root_uuid, context, ttl_seconds=None):
         for existing in self.reservations:
             if existing[0:2] == (revision, root_uuid):
                 assert existing[2] == context
@@ -224,6 +224,63 @@ class FakeScheduler:
         }
 
 
+@pytest.mark.integration
+def test_scheduler_rejects_schedule_until_runtime_directory_is_published(
+    monkeypatch,
+):
+    scheduler_server_module = importlib.import_module(
+        "core.scheduler.scheduler_server"
+    )
+
+    class NotReadyScheduler(FakeScheduler):
+        def __init__(self):
+            super().__init__()
+            self.register_calls = []
+
+        @staticmethod
+        def runtime_directory_revision():
+            return 0
+
+        def register_schedule_table(self, source_id):
+            self.register_calls.append(source_id)
+
+    monkeypatch.setattr(
+        scheduler_server_module,
+        "Scheduler",
+        NotReadyScheduler,
+    )
+    server = scheduler_server_module.SchedulerServer()
+    payload = {
+        "source_id": 7,
+        "meta_data": {"buffer_size": 2},
+        "source_device": "edge-node",
+        "all_edge_devices": ["edge-node"],
+        "dag": {
+            "face-detection": {
+                "service": {
+                    "service_name": "face-detection",
+                    "execute_device": "edge-node",
+                },
+                "next_nodes": [],
+            }
+        },
+    }
+
+    with TestClient(server.app) as client:
+        response = client.request(
+            "GET",
+            "/schedule",
+            data={"data": json.dumps(payload)},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "runtime directory is not ready for scheduling"
+    }
+    assert server.scheduler.register_calls == []
+    assert server.scheduler.schedule_calls == []
+
+
 def test_scheduler_deployment_plan_merge_has_one_service_to_nodes_contract():
     scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
     plan = {}
@@ -306,7 +363,6 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
                 "task_id": 11,
                 "task_uuid": "root-11",
                 "root_uuid": "root-11",
-                "created_at": 123.5,
             },
         }
         schedule_response = client.request(
@@ -331,13 +387,25 @@ def test_scheduler_server_covers_schedule_resource_and_deployment_contracts(monk
         assert server.scheduler.reservations[0][0:2] == (3, "root-11")
         assert server.scheduler.reservations[0][2]["plan_digest"] == decision["plan_digest"]
 
+        compact_payload = dict(payload)
+        compact_payload.update({
+            "runtime_directory_revision": 3,
+            "runtime_directory_hash": "runtime-directory-hash-3",
+            "runtime_route_cache_keys": [
+                schedule_response.json()["runtime_routes_cache_key"]
+            ],
+        })
         retry_response = client.request(
             "GET",
             "/schedule",
-            data={"data": json.dumps(payload)},
+            data={"data": json.dumps(compact_payload)},
         )
         assert retry_response.status_code == 200
         assert retry_response.json()["schedule_decision"] == decision
+        assert retry_response.json()["runtime_directory_unchanged"] is True
+        assert retry_response.json()["runtime_routes_cached"] is True
+        assert "deployment" not in retry_response.json()
+        assert "runtime_routes" not in retry_response.json()
         assert len(server.scheduler.schedule_calls) == 1
         assert len(server.scheduler.reservations) == 1
 

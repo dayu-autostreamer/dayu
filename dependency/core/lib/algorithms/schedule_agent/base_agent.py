@@ -54,6 +54,12 @@ class BaseAgent(metaclass=abc.ABCMeta):
         return {
             "generate": True,
             "reason": "default_allow",
+            # Most scheduling agents never apply source backpressure.  Let the
+            # generator reuse this affirmative decision briefly instead of
+            # paying one cloud-edge admission round trip for every segment.
+            # Agents with dynamic admission guards override this method and
+            # deliberately omit the cache hint.
+            "cache_for_s": 2.0,
         }
 
     def get_schedule_overhead(self):

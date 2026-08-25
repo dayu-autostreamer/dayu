@@ -9,6 +9,8 @@ from statistics import median
 
 from core.lib.common import TaskConstant
 
+__all__ = ("FragSpliceLatencyModel", "FragSpliceRandomLatencyModel")
+
 
 def _positive(value):
     try:
@@ -282,48 +284,24 @@ class FragSpliceLatencyModel:
 
     @staticmethod
     def _pair_samples(value):
-        if isinstance(value, (int, float)):
-            parsed = _positive(value)
-            return [parsed] if parsed is not None else []
-        if isinstance(value, list):
-            raw = value
-        elif isinstance(value, dict):
-            raw = value.get("samples") or value.get("values") or []
-            if not raw:
-                for key in ("median", "p50", "mean"):
-                    parsed = _positive(value.get(key))
-                    if parsed is not None:
-                        raw = [parsed]
-                        break
-        else:
-            raw = []
+        raw = value.get("samples", []) if isinstance(value, dict) else []
+        if not isinstance(raw, list):
+            return []
         parsed = [_positive(item) for item in raw]
         return [item for item in parsed if item is not None]
 
     @staticmethod
     def _overhead_samples(value):
-        if isinstance(value, (int, float)):
-            parsed = _non_negative(value)
-            return [parsed] if parsed is not None else []
-        if isinstance(value, list):
-            raw = value
-        elif isinstance(value, dict):
-            raw = value.get("samples") or value.get("values") or []
-            if not raw:
-                for key in ("median", "p50", "mean"):
-                    parsed = _non_negative(value.get(key))
-                    if parsed is not None:
-                        raw = [parsed]
-                        break
-        else:
-            raw = []
+        raw = value.get("samples", []) if isinstance(value, dict) else []
+        if not isinstance(raw, list):
+            return []
         parsed = [_non_negative(item) for item in raw]
         return [item for item in parsed if item is not None]
 
     def load(self, profile):
         if not isinstance(profile, dict):
             raise TypeError("FragSplice latency profile must be a mapping")
-        pairs = profile.get("pairs", profile)
+        pairs = profile.get("pairs", {})
         if not isinstance(pairs, dict):
             raise TypeError("FragSplice profile pairs must be a mapping")
         with self._lock:
@@ -511,6 +489,64 @@ class FragSpliceLatencyModel:
             drift = self._pair_drift(service, device)
         return max(1e-6, base * math.exp(drift))
 
+    @staticmethod
+    def _weighted_quantile(values, weights, quantile):
+        pairs = sorted(
+            (
+                (float(value), max(0.0, float(weight)))
+                for value, weight in zip(values, weights)
+                if math.isfinite(float(value))
+                and math.isfinite(float(weight))
+                and float(weight) > 0.0
+            ),
+            key=lambda item: item[0],
+        )
+        if not pairs:
+            return None
+        threshold = min(1.0, max(0.0, float(quantile))) * sum(
+            weight for _, weight in pairs
+        )
+        cumulative = 0.0
+        for value, weight in pairs:
+            cumulative += weight
+            if cumulative >= threshold:
+                return value
+        return pairs[-1][0]
+
+    def estimate_task(self, source_id, service, device, quantile=0.5):
+        """Estimate task-conditioned demand at a requested risk quantile.
+
+        ``estimate`` describes the cold service-device distribution.  Once
+        completed roots are available, scenario sampling instead multiplies
+        the drift-corrected pair median by a recency-weighted, service-specific
+        task residual.  Fast-path planning must use the same distribution;
+        otherwise it silently discards the online complexity feedback that the
+        full stochastic optimizer consumes.
+        """
+
+        source_key = str(source_id)
+        with self._lock:
+            histories = list(self._task_residuals.get(source_key, ()))
+            drift = self._pair_drift(service, device)
+            base = self._base_estimate(service, device, 0.5) * math.exp(drift)
+        if not histories:
+            return self.estimate(service, device, quantile)
+        residuals = [
+            self._task_residual(record, service)
+            for record in histories
+        ]
+        weights = [
+            2.0 ** (
+                -(len(histories) - 1 - index)
+                / self.residual_half_life_tasks
+            )
+            for index in range(len(histories))
+        ]
+        residual = self._weighted_quantile(residuals, weights, quantile)
+        if residual is None:
+            return max(1e-6, base)
+        return max(1e-6, base * math.exp(residual))
+
     def lower_bound(self, service, device):
         with self._lock:
             values = list(self._samples.get(str(service), {}).get(str(device), ()))
@@ -530,6 +566,39 @@ class FragSpliceLatencyModel:
         except (TypeError, ValueError):
             return 0.0
         return value if math.isfinite(value) else 0.0
+
+    def _recent_service_residual(self, source_key, service):
+        """Return a recency-weighted service-content residual.
+
+        Pair drift and task complexity are only identifiable when their time
+        scales are separated.  Completed tasks provide the transferable
+        service-level content signal; a device-specific correction is allowed
+        to move only relative to that recent signal.  This prevents a burst of
+        difficult video segments from being mislabeled as every selected
+        replica becoming tens of times slower.
+        """
+
+        histories = list(self._task_residuals.get(str(source_key), ()))
+        values = []
+        for index, record in enumerate(histories):
+            if not isinstance(record, dict):
+                continue
+            residual = self._task_residual(record, service)
+            weight = 2.0 ** (
+                -(len(histories) - 1 - index)
+                / self.residual_half_life_tasks
+            )
+            values.append((residual, weight))
+        if not values:
+            return 0.0, 0
+        values.sort(key=lambda item: item[0])
+        threshold = 0.5 * sum(weight for _, weight in values)
+        cumulative = 0.0
+        for residual, weight in values:
+            cumulative += weight
+            if cumulative >= threshold:
+                return residual, len(values)
+        return values[-1][0], len(values)
 
     def sample_lower_bound(self, source_id, service, device):
         """Return the infimum of ``sample_task`` for this source and pair.
@@ -600,11 +669,6 @@ class FragSpliceLatencyModel:
     def estimate_control(self, service, device, quantile=0.5):
         return self._quantile(
             self.control_values(service, device), quantile
-        )
-
-    def estimate_completion(self, source_id, quantile=0.5):
-        return self._quantile(
-            self.completion_values(source_id), quantile
         )
 
     def sample_task(self, source_id, plan, rng):
@@ -702,16 +766,6 @@ class FragSpliceLatencyModel:
             dag = converter()
         return dag if isinstance(dag, dict) else None
 
-    @staticmethod
-    def _task_slo_time(task, name):
-        getter = getattr(task, name, None)
-        if not callable(getter):
-            return None
-        try:
-            return _positive(getter())
-        except (TypeError, ValueError):
-            return None
-
     def record_task_overheads(self, task, include_dispatch=False):
         """Record cold-profile non-Processor intervals from one task.
 
@@ -725,10 +779,20 @@ class FragSpliceLatencyModel:
         dag = self._task_dag_dict(task)
         if dag is None:
             return False
-        source_getter = getattr(task, "get_source_id", None)
-        source_id = source_getter() if callable(source_getter) else ""
-        slo_start = self._task_slo_time(task, "get_slo_start_time")
-        slo_end = self._task_slo_time(task, "get_slo_end_time")
+        source_id = task.get_source_id()
+        slo_end = _positive(task.get_slo_end_time())
+        # Anchor START edges at the observed arrival of the root Task at the
+        # Controller. Charging time before delivery would turn the cold
+        # profiler's admission gate into an intrinsic control cost.
+        start_release = None
+        service_getter = getattr(task, "get_service", None)
+        if callable(service_getter):
+            try:
+                start_service = service_getter(TaskConstant.START.value)
+            except (KeyError, AssertionError):
+                start_service = None
+            if start_service is not None:
+                start_release = _timestamp(start_service, "transmit_end")
         observed = False
         with self._lock:
             for service_name, node in dag.items():
@@ -762,8 +826,8 @@ class FragSpliceLatencyModel:
                 predecessor_ends = []
                 for predecessor in predecessors:
                     if predecessor == TaskConstant.START.value:
-                        if slo_start is not None:
-                            predecessor_ends.append(slo_start)
+                        if start_release is not None:
+                            predecessor_ends.append(start_release)
                         continue
                     try:
                         predecessor_service = service_getter(predecessor)
@@ -834,28 +898,63 @@ class FragSpliceLatencyModel:
             if not observations:
                 return False
 
-            # Separate a task-wide content component from pair-specific drift.
-            # This keeps recent video complexity in one joint residual vector
-            # instead of folding it into every service-device baseline.
-            content_components = [
-                math.log(item["duration"] / max(item["base"], 1e-9))
-                - item["drift"]
-                for item in observations
-            ]
-            shared = median(content_components)
-            residual = {"__shared__": shared}
+            # Factor online demand into a service-level content residual that
+            # transfers across replicas and a slowly varying pair correction.
+            # The previous implementation used one task-wide median as the
+            # content component.  Content-dependent services (for example a
+            # detector fan-out classifier) could then fold nearly all of their
+            # workload variation into pair drift.  Since old residual records
+            # retained the earlier drift gauge, scenario sampling became
+            # inconsistent over a long run.
+            residual = {}
             for item in observations:
                 service = item["service"]
                 device = item["device"]
                 raw = math.log(item["duration"] / max(item["base"], 1e-9))
-                target_drift = raw - shared
                 old_drift = item["drift"]
-                new_drift = (
-                    (1.0 - self.drift_alpha) * old_drift
-                    + self.drift_alpha * target_drift
+                expected_content, history_count = self._recent_service_residual(
+                    source_key, service
                 )
+                if history_count < 8:
+                    # Establish the content scale before trying to identify a
+                    # device drift from it.  Cold profiles normally already
+                    # satisfy this gate; it chiefly protects fresh sources.
+                    new_drift = old_drift
+                else:
+                    target_drift = raw - expected_content
+                    # One completed task may be an input outlier.  Bound the
+                    # target movement to 25% before applying the EWMA so pair
+                    # health adapts over several observations rather than one
+                    # video segment.
+                    maximum_step = math.log(1.25)
+                    target_drift = min(
+                        old_drift + maximum_step,
+                        max(old_drift - maximum_step, target_drift),
+                    )
+                    new_drift = (
+                        (1.0 - self.drift_alpha) * old_drift
+                        + self.drift_alpha * target_drift
+                    )
                 self._pair_log_drift[service][device] = new_drift
-                residual[service] = raw - new_drift
+                # Pair drift is a *relative* service-device correction.  Fix
+                # its otherwise unidentifiable common gauge by keeping the
+                # geometric mean correction of all profiled replicas at one.
+                # A service-wide slowdown is therefore represented by the
+                # transferable content residual rather than duplicated in
+                # every replica correction.
+                service_drifts = self._pair_log_drift[service]
+                profiled_devices = list(self._samples.get(service, {}))
+                if profiled_devices:
+                    center = sum(
+                        float(service_drifts.get(name, 0.0))
+                        for name in profiled_devices
+                    ) / len(profiled_devices)
+                    for name in profiled_devices:
+                        service_drifts[name] = (
+                            float(service_drifts.get(name, 0.0)) - center
+                        )
+                residual[service] = raw - self._pair_drift(service, device)
+            residual["__shared__"] = median(residual.values())
             self._task_residuals[source_key].append(residual)
         return True
 
@@ -964,7 +1063,6 @@ class FragSpliceLatencyModel:
             "version": self.PROFILE_VERSION,
             "metric": self.PROFILE_METRIC,
             "context": context,
-            "deployment": copy.deepcopy(context["deployment"]),
             "pairs": pairs,
             "handoff_pairs": handoffs,
             "transfer_pairs": transfers,
@@ -1002,90 +1100,205 @@ class FragSpliceLatencyModel:
                     os.unlink(temporary)
 
 
-class FragSpliceStaticLatencyModel:
-    """Deterministic cold-profile view used by the profiler ablation.
+class FragSpliceRandomLatencyModel:
+    """Uninformed random timing input for the profiler ablation.
 
-    Every scenario receives the same P50 value from the validated cold
-    profile. Task residuals, pair drift, and online feedback are deliberately
-    excluded while the execution-state estimator and plan search remain
-    unchanged.
+    No profile, queue observation, or completed-task trace is consumed.  The
+    deterministic pair values are pseudo-random draws used only by heuristic
+    screening; scenario evaluation draws fresh values from the configured
+    uniform distributions with the optimizer-provided common RNG.
     """
 
-    def __init__(self, source):
-        self.source = source
+    def __init__(
+        self,
+        random_invocation_cost_min_s=0.0,
+        random_invocation_cost_max_s=2.0,
+        random_overhead_cost_min_s=0.0,
+        random_overhead_cost_max_s=0.2,
+        random_seed=0,
+        state=None,
+    ):
+        if isinstance(state, dict):
+            random_invocation_cost_min_s = state.get(
+                "random_invocation_cost_min_s",
+                random_invocation_cost_min_s,
+            )
+            random_invocation_cost_max_s = state.get(
+                "random_invocation_cost_max_s",
+                random_invocation_cost_max_s,
+            )
+            random_overhead_cost_min_s = state.get(
+                "random_overhead_cost_min_s",
+                random_overhead_cost_min_s,
+            )
+            random_overhead_cost_max_s = state.get(
+                "random_overhead_cost_max_s",
+                random_overhead_cost_max_s,
+            )
+            random_seed = state.get("random_seed", random_seed)
+        self.random_invocation_cost_min_s = max(
+            0.0, float(random_invocation_cost_min_s)
+        )
+        self.random_invocation_cost_max_s = max(
+            self.random_invocation_cost_min_s,
+            float(random_invocation_cost_max_s),
+        )
+        self.random_overhead_cost_min_s = max(
+            0.0, float(random_overhead_cost_min_s)
+        )
+        self.random_overhead_cost_max_s = max(
+            self.random_overhead_cost_min_s,
+            float(random_overhead_cost_max_s),
+        )
+        self.random_seed = int(random_seed)
+
+    def _stable_draw(self, service, device, channel, lower, upper):
+        import hashlib
+
+        material = "|".join((
+            str(self.random_seed),
+            str(channel),
+            str(service),
+            str(device),
+        )).encode("utf-8")
+        integer = int.from_bytes(
+            hashlib.sha256(material).digest()[:8], "big"
+        )
+        unit = integer / float((1 << 64) - 1)
+        return lower + (upper - lower) * unit
+
+    def _scenario_draw(
+        self, rng, service, device, channel, lower, upper
+    ):
+        """Draw a pair-specific value under common random numbers.
+
+        Candidate plans receive identically seeded RNGs.  Consuming one nonce
+        per service preserves that coupling, while hashing the selected device
+        ensures that alternate replicas still receive distinct random costs.
+        """
+
+        nonce = rng.getrandbits(64)
+        return self._stable_draw(
+            service,
+            f"{device}|{nonce}",
+            channel,
+            lower,
+            upper,
+        )
 
     def estimate(self, service, device, quantile=0.5):
         del quantile
-        values = self.source.pair_values(service, device)
-        if values:
-            return max(
-                1e-6,
-                self.source._quantile(values, 0.5, default=0.1),
-            )
-        return max(
-            1e-6,
-            self.source._base_estimate(service, device, 0.5),
-        )
+        return max(1e-6, self._stable_draw(
+            service,
+            device,
+            "invocation",
+            self.random_invocation_cost_min_s,
+            self.random_invocation_cost_max_s,
+        ))
+
+    def estimate_task(self, source_id, service, device, quantile=0.5):
+        del source_id
+        return self.estimate(service, device, quantile)
 
     def lower_bound(self, service, device):
-        return self.estimate(service, device)
+        del service, device
+        return max(1e-6, self.random_invocation_cost_min_s)
 
     def sample_lower_bound(self, source_id, service, device):
         del source_id
-        return self.estimate(service, device)
+        return self.lower_bound(service, device)
 
     def estimate_handoff(self, service, device, quantile=0.5):
         del quantile
-        return self.source._quantile(
-            self.source.handoff_values(service, device), 0.5
+        return self._stable_draw(
+            service,
+            device,
+            "handoff",
+            self.random_overhead_cost_min_s,
+            self.random_overhead_cost_max_s,
         )
 
     def lower_bound_handoff(self, service, device):
-        return self.estimate_handoff(service, device)
+        del service, device
+        return self.random_overhead_cost_min_s
 
     def sample_task(self, source_id, plan, rng):
-        del source_id, rng
+        del source_id
         return {
-            service: self.estimate(service, device)
-            for service, device in sorted(plan.items())
+            service: max(1e-6, self._scenario_draw(
+                rng,
+                service,
+                plan[service],
+                "scenario-invocation",
+                self.random_invocation_cost_min_s,
+                self.random_invocation_cost_max_s,
+            ))
+            for service in sorted(plan)
         }
 
     def sample_handoffs(self, plan, rng):
-        del rng
         return {
-            service: self.estimate_handoff(service, device)
-            for service, device in sorted(plan.items())
+            service: self._scenario_draw(
+                rng,
+                service,
+                plan[service],
+                "scenario-handoff",
+                self.random_overhead_cost_min_s,
+                self.random_overhead_cost_max_s,
+            )
+            for service in sorted(plan)
         }
 
     def sample_stage_overheads(self, source_id, dag, plan, rng):
-        del rng
-        transfer = {}
-        dispatch = {}
-        control = {}
-        for service in sorted(dag):
-            if service == TaskConstant.START.value:
-                continue
-            node = dag.get(service, {}) if isinstance(dag, dict) else {}
-            spec = node.get("service", {}) if isinstance(node, dict) else {}
-            device = str(plan.get(service) or spec.get("execute_device") or "")
-            transfer[service] = self.source._quantile(
-                self.source.transfer_values(service, device), 0.5
+        del source_id
+
+        def draw(service, channel):
+            return self._scenario_draw(
+                rng,
+                service,
+                plan.get(service, ""),
+                channel,
+                self.random_overhead_cost_min_s,
+                self.random_overhead_cost_max_s,
             )
-            control[service] = self.source._quantile(
-                self.source.control_values(service, device), 0.5
-            )
-            if service != TaskConstant.END.value:
-                dispatch[service] = self.source._quantile(
-                    self.source.dispatch_values(service, device), 0.5
-                )
+
+        services = [
+            service for service in sorted(dag)
+            if service != TaskConstant.START.value
+        ]
+        dispatch_services = [
+            service for service in services
+            if service != TaskConstant.END.value
+        ]
         return {
-            "transfer": transfer,
-            "dispatch": dispatch,
-            "control": control,
-            "completion": self.source._quantile(
-                self.source.completion_values(source_id), 0.5
-            ),
+            "transfer": {
+                service: draw(service, "scenario-transfer")
+                for service in services
+            },
+            "dispatch": {
+                service: draw(service, "scenario-dispatch")
+                for service in dispatch_services
+            },
+            "control": {
+                service: draw(service, "scenario-control")
+                for service in services
+            },
+            "completion": draw(TaskConstant.END.value, "scenario-completion"),
         }
 
-
-__all__ = ("FragSpliceLatencyModel", "FragSpliceStaticLatencyModel")
+    def to_state(self):
+        return {
+            "random_invocation_cost_min_s": (
+                self.random_invocation_cost_min_s
+            ),
+            "random_invocation_cost_max_s": (
+                self.random_invocation_cost_max_s
+            ),
+            "random_overhead_cost_min_s": (
+                self.random_overhead_cost_min_s
+            ),
+            "random_overhead_cost_max_s": (
+                self.random_overhead_cost_max_s
+            ),
+            "random_seed": self.random_seed,
+        }

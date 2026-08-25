@@ -77,6 +77,13 @@ def test_renderer_builds_complete_tokenless_runtime_service_and_native_mounts():
     assert env["LOG_LEVEL"] == "DEBUG"
     assert env["CLOUD_NODE"] == "cloud-1"
     assert env["GUNICORN_PORT"] == "9000"
+    assert container["readinessProbe"] == {
+        "tcpSocket": {"port": 9000},
+        "periodSeconds": 2,
+        "timeoutSeconds": 1,
+        "failureThreshold": 3,
+        "successThreshold": 1,
+    }
     assert env["DEFAULT_MOUNT_PATH"] == "/home/data/processor/face"
     assert env["TEMP_PATH"] == "/temp"
 
@@ -146,6 +153,8 @@ def test_renderer_does_not_expose_position_mismatched_port():
         edge.manifest["spec"]["podTemplate"]["spec"]["containers"][0]
     )
     assert cloud.manifest["spec"]["endpoint"] == {"port": 9000}
+    cloud_container = cloud.manifest["spec"]["podTemplate"]["spec"]["containers"][0]
+    assert "readinessProbe" not in cloud_container
 
 
 def test_rollout_hash_ignores_revision_bootstrap_and_runtime_name_but_tracks_workload_changes():
@@ -222,7 +231,18 @@ def test_generator_renderer_creates_one_deterministic_runtime_per_source_even_on
     first_env = env_map(rendered[0].manifest["spec"]["podTemplate"]["spec"]["containers"][0])
     assert first_env["SOURCE_ID"] == "0"
     assert first_env["SOURCE_URL"] == "rtsp://camera/0"
+    assert first_env["TASK_OFFER_LIMIT"] == "0"
     assert "face" in first_env["DAG"]
+
+    limited_sources = copy.deepcopy(source_deploy)
+    limited_sources[0]["source"]["task_offer_limit"] = 17
+    limited = renderer.render_generator_sources(
+        logical, limited_sources[:1], revision=2, selected_nodes={0: "edge-1"},
+    )
+    limited_env = env_map(
+        limited[0].manifest["spec"]["podTemplate"]["spec"]["containers"][0]
+    )
+    assert limited_env["TASK_OFFER_LIMIT"] == "17"
 
     rerendered = renderer.render_generator_sources(
         copy.deepcopy(logical), copy.deepcopy(source_deploy), 2,

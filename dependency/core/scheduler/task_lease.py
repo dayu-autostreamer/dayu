@@ -170,6 +170,12 @@ class TaskLeaseStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def cancel_reservation(self, revision, root_uuid, decision_id=None):
+        """Cancel a pending decision that never became a task lease."""
+
+        raise NotImplementedError
+
+    @abstractmethod
     def acquire(
         self,
         revision,
@@ -208,6 +214,12 @@ class TaskLeaseStore(ABC):
 
     @abstractmethod
     def list_reservations(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_reservation(self, revision, root_uuid):
+        """Return one live pending reservation without scanning the store."""
+
         raise NotImplementedError
 
     @abstractmethod
@@ -390,6 +402,39 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
                 _valid_for_seconds(expires_at, self._clock(), ttl_seconds),
             )
 
+    def cancel_reservation(self, revision, root_uuid, decision_id=None):
+        revision = _revision(revision)
+        root_uuid = _root_uuid(root_uuid)
+        decision_id = str(decision_id or "").strip()
+        with self._lock:
+            self._prune_locked()
+            reservation = self._reservations.get(root_uuid)
+            if reservation is None:
+                return {
+                    "revision": revision,
+                    "root_uuid": root_uuid,
+                    "cancelled": True,
+                    "already_cancelled": True,
+                    "decision_id": decision_id,
+                }
+            context = reservation["context"]
+            if int(context.get("runtime_directory_revision") or 0) != revision:
+                raise RuntimeDirectoryConflict(
+                    "task reservation revision does not match cancellation request"
+                )
+            expected_decision = str(context.get("decision_id") or "")
+            if decision_id and expected_decision != decision_id:
+                raise RuntimeDirectoryConflict(
+                    "task reservation decision_id does not match cancellation request"
+                )
+            self._reservations.pop(root_uuid, None)
+            return {
+                "revision": revision,
+                "root_uuid": root_uuid,
+                "cancelled": True,
+                "decision_id": expected_decision,
+            }
+
     def renew(
         self,
         revision,
@@ -495,6 +540,24 @@ class InMemoryTaskLeaseStore(TaskLeaseStore):
                 for record in self._reservations.values()
             ]
 
+    def get_reservation(self, revision, root_uuid):
+        revision = _revision(revision)
+        root_uuid = _root_uuid(root_uuid)
+        with self._lock:
+            self._prune_locked()
+            record = self._reservations.get(root_uuid)
+            if record is None:
+                return None
+            context = record["context"]
+            if int(context.get("runtime_directory_revision") or 0) != revision:
+                return None
+            return _record_payload(
+                context,
+                record["reserved_at"],
+                record["expires_at"],
+                "pending",
+            )
+
     def list_active(self):
         with self._lock:
             self._prune_locked()
@@ -562,6 +625,35 @@ if not existing then
 end
 redis.call('ZADD', KEYS[3], expires, member)
 return {2, tostring(expires), tostring(reserved_at)}
+"""
+
+    _CANCEL_RESERVATION_SCRIPT = """
+local revision = tonumber(ARGV[1])
+local now = tonumber(ARGV[2])
+local member = ARGV[3]
+local decision_id = ARGV[4]
+local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now)
+for _, expired_member in ipairs(expired) do
+  redis.call('HDEL', KEYS[2], expired_member)
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+local score = redis.call('ZSCORE', KEYS[1], member)
+local raw = redis.call('HGET', KEYS[2], member)
+if not score or not raw then
+  return {0, ''}
+end
+local record = cjson.decode(raw)
+local context = cjson.decode(record.context)
+if tonumber(context.runtime_directory_revision or 0) ~= revision then
+  return {2, tostring(context.runtime_directory_revision or '')}
+end
+local expected_decision = tostring(context.decision_id or '')
+if decision_id ~= '' and expected_decision ~= decision_id then
+  return {3, expected_decision}
+end
+redis.call('ZREM', KEYS[1], member)
+redis.call('HDEL', KEYS[2], member)
+return {1, expected_decision}
 """
 
     _ACQUIRE_SCRIPT = """
@@ -876,6 +968,20 @@ return cjson.encode({
                 f"persisted task {label} is corrupt"
             ) from exc
 
+    def _zscore_many(self, requests):
+        """Read many scores in one Redis round trip when pipelines exist."""
+
+        requests = list(requests)
+        if not requests:
+            return []
+        pipeline_factory = getattr(self.redis, "pipeline", None)
+        if not callable(pipeline_factory):
+            return [self.redis.zscore(key, member) for key, member in requests]
+        pipeline = pipeline_factory(transaction=False)
+        for key, member in requests:
+            pipeline.zscore(key, member)
+        return pipeline.execute()
+
     def reserve(
         self,
         revision,
@@ -980,6 +1086,52 @@ return cjson.encode({
         return _lease_payload(
             revision, root_uuid, expires_at, valid_for_seconds
         )
+
+    def cancel_reservation(self, revision, root_uuid, decision_id=None):
+        revision = _revision(revision)
+        root_uuid = _root_uuid(root_uuid)
+        decision_id = str(decision_id or "").strip()
+        result = self.redis.eval(
+            self._CANCEL_RESERVATION_SCRIPT,
+            2,
+            self._reservation_key,
+            self._reservation_context_key,
+            revision,
+            self.clock(),
+            root_uuid,
+            decision_id,
+        )
+        if not isinstance(result, (list, tuple)) or len(result) < 2:
+            raise RuntimeDirectoryError(
+                "Redis task reservation cancellation returned an invalid result"
+            )
+        code, value = int(result[0]), str(result[1] or "")
+        if code == 0:
+            return {
+                "revision": revision,
+                "root_uuid": root_uuid,
+                "cancelled": True,
+                "already_cancelled": True,
+                "decision_id": decision_id,
+            }
+        if code == 2:
+            raise RuntimeDirectoryConflict(
+                "task reservation revision does not match cancellation request"
+            )
+        if code == 3:
+            raise RuntimeDirectoryConflict(
+                "task reservation decision_id does not match cancellation request"
+            )
+        if code != 1:
+            raise RuntimeDirectoryError(
+                "Redis task reservation cancellation returned an unknown result"
+            )
+        return {
+            "revision": revision,
+            "root_uuid": root_uuid,
+            "cancelled": True,
+            "decision_id": value,
+        }
 
     def renew(
         self,
@@ -1104,8 +1256,11 @@ return cjson.encode({
         now = self.clock()
         records = []
         stale = []
-        for root_uuid, raw in self.redis.hgetall(self._reservation_context_key).items():
-            score = self.redis.zscore(self._reservation_key, root_uuid)
+        persisted = self.redis.hgetall(self._reservation_context_key)
+        scores = self._zscore_many(
+            (self._reservation_key, root_uuid) for root_uuid in persisted
+        )
+        for (root_uuid, raw), score in zip(persisted.items(), scores):
             if score is None or float(score) <= now:
                 stale.append(root_uuid)
                 continue
@@ -1121,14 +1276,48 @@ return cjson.encode({
             self.redis.zrem(self._reservation_key, *stale)
         return records
 
+    def get_reservation(self, revision, root_uuid):
+        revision = _revision(revision)
+        root_uuid = _root_uuid(root_uuid)
+        now = self.clock()
+        pipeline_factory = getattr(self.redis, "pipeline", None)
+        if callable(pipeline_factory):
+            pipeline = pipeline_factory(transaction=False)
+            pipeline.hget(self._reservation_context_key, root_uuid)
+            pipeline.zscore(self._reservation_key, root_uuid)
+            raw, score = pipeline.execute()
+        else:
+            raw = self.redis.hget(self._reservation_context_key, root_uuid)
+            score = self.redis.zscore(self._reservation_key, root_uuid)
+        if raw is None or score is None or float(score) <= now:
+            if raw is not None or score is not None:
+                self.redis.hdel(self._reservation_context_key, root_uuid)
+                self.redis.zrem(self._reservation_key, root_uuid)
+            return None
+        record, context = self._decode_record(raw, "reservation")
+        if int(context.get("runtime_directory_revision") or 0) != revision:
+            return None
+        return _record_payload(
+            context,
+            float(record["reserved_at"]),
+            float(score),
+            "pending",
+        )
+
     def list_active(self):
         now = self.clock()
         records = []
         stale = []
-        for root_uuid, raw in self.redis.hgetall(self._context_key).items():
+        persisted = self.redis.hgetall(self._context_key)
+        decoded = []
+        score_requests = []
+        for root_uuid, raw in persisted.items():
             record, context = self._decode_record(raw, "execution context")
             revision = _revision(context.get("runtime_directory_revision"))
-            score = self.redis.zscore(self._key(revision), root_uuid)
+            decoded.append((root_uuid, record, context))
+            score_requests.append((self._key(revision), root_uuid))
+        scores = self._zscore_many(score_requests)
+        for (root_uuid, record, context), score in zip(decoded, scores):
             if score is None or float(score) <= now:
                 stale.append(root_uuid)
                 continue

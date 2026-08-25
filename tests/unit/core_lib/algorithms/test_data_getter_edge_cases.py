@@ -31,7 +31,10 @@ def action_routes(node="edge-a"):
 
 
 @pytest.mark.unit
-def test_http_video_getter_waits_for_hashes_before_fetching_payload(monkeypatch, tmp_path):
+def test_http_video_getter_retries_until_source_and_remote_payload_are_available(
+    monkeypatch,
+    tmp_path,
+):
     getter = http_getter_module.HttpVideoGetter()
     system = SimpleNamespace(
         source_id=3,
@@ -54,7 +57,12 @@ def test_http_video_getter_waits_for_hashes_before_fetching_payload(monkeypatch,
         def __init__(self, content):
             self.content = content
 
-    responses = iter([None, ["hash-0"], FakeResponse(b"video-bytes")])
+    responses = iter([
+        None,
+        ["hash-0"],
+        None,
+        FakeResponse(b"video-bytes"),
+    ])
 
     def fake_http_request(url, method=None, **kwargs):
         request_log.append(url)
@@ -68,7 +76,69 @@ def test_http_video_getter_waits_for_hashes_before_fetching_payload(monkeypatch,
     assert request_log == [
         "http://datasource/source",
         "http://datasource/source",
+        "http://datasource/shared_file",
         "http://datasource/file",
+    ]
+
+
+@pytest.mark.unit
+def test_http_video_getter_stops_on_explicit_source_exhaustion(monkeypatch):
+    getter = http_getter_module.HttpVideoGetter()
+    system = SimpleNamespace(
+        source_id=3,
+        video_data_source="http://datasource",
+        meta_data={"fps": 10, "buffer_size": 2},
+        raw_meta_data={"fps": 20},
+    )
+    request_log = []
+
+    def fake_http_request(url, method=None, **kwargs):
+        request_log.append((url, method, kwargs))
+        assert url.endswith("/source")
+        return []
+
+    monkeypatch.setattr(http_getter_module, "http_request", fake_http_request)
+
+    assert getter.request_source_data(system, task_id=7) is False
+    assert getter.file_name is None
+    assert getter.hash_codes == []
+    assert len(request_log) == 1
+
+
+@pytest.mark.unit
+def test_http_video_getter_uses_colocated_shared_payload(monkeypatch, tmp_path):
+    getter = http_getter_module.HttpVideoGetter()
+    shared_payload = tmp_path / "shared.mp4"
+    shared_payload.write_bytes(b"shared-video")
+    system = SimpleNamespace(
+        source_id=3,
+        video_data_source="http://datasource",
+        meta_data={"fps": 10, "buffer_size": 2},
+        raw_meta_data={"fps": 20},
+    )
+    request_log = []
+
+    monkeypatch.setattr(
+        http_getter_module.Context,
+        "get_parameter",
+        staticmethod(lambda key: "simple"),
+    )
+
+    def fake_http_request(url, method=None, **kwargs):
+        request_log.append(url)
+        if url.endswith("/source"):
+            return ["hash-0"]
+        if url.endswith("/shared_file"):
+            return {"file_name": str(shared_payload)}
+        raise AssertionError("shared payload must avoid the /file transfer")
+
+    monkeypatch.setattr(http_getter_module, "http_request", fake_http_request)
+
+    assert getter.request_source_data(system, task_id=7) is True
+    assert getter.file_name == str(shared_payload)
+    assert request_log == [
+        "http://datasource/source",
+        "http://datasource/shared_file",
     ]
 
 
@@ -79,6 +149,7 @@ def test_http_video_getter_call_skips_round_when_datasource_is_exhausted(monkeyp
     submitted = []
     system = SimpleNamespace(
         source_id=3,
+        video_data_source="http://datasource/source-3",
         meta_data={"fps": 10, "buffer_size": 2},
         raw_meta_data={"fps": 20},
         cumulative_scheduling_frame_count=0,
@@ -89,13 +160,50 @@ def test_http_video_getter_call_skips_round_when_datasource_is_exhausted(monkeyp
 
     monkeypatch.setattr(http_getter_module.Counter, "get_count", staticmethod(lambda name: 11))
     monkeypatch.setattr(getter, "request_source_data", lambda current_system, task_id: False)
+    monkeypatch.setattr(
+        getter,
+        "_source_status",
+        lambda current_system: {"instance_id": "source-instance-a", "exhausted": True},
+    )
     monkeypatch.setattr(http_getter_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
 
-    getter(system)
+    result = getter(system)
 
+    assert result is http_getter_module.DataGetterStatus.EXHAUSTED
     assert sleep_calls == [1]
     assert system.cumulative_scheduling_frame_count == 0
     assert submitted == []
+    assert getter._exhausted_instance_id == "source-instance-a"
+
+
+@pytest.mark.unit
+def test_http_video_getter_waits_for_a_new_finite_source_instance(monkeypatch):
+    monkeypatch.setenv(
+        "HTTP_VIDEO_TASK_ARRIVAL_BURST",
+        "{'tasks_per_burst': 3, 'intra_burst_rate_multiplier': 2.0}",
+    )
+    getter = http_getter_module.HttpVideoGetter()
+    getter._next_arrival_monotonic = 10.0
+    system = SimpleNamespace(
+        video_data_source="http://datasource/source-3",
+        meta_data={"fps": 10, "buffer_size": 2},
+    )
+    assert getter._next_arrival_interval(system, 2) == pytest.approx(0.1)
+    assert getter._arrival_burst._task_index == 1
+    statuses = iter([
+        {"instance_id": "source-instance-a", "exhausted": True},
+        None,
+        {"instance_id": "source-instance-b", "exhausted": False},
+    ])
+    monkeypatch.setattr(getter, "_source_status", lambda current_system: next(statuses))
+
+    getter.mark_source_exhausted(system)
+    assert getter.datasource_reset_ready(system) is False
+    assert getter.datasource_reset_ready(system) is True
+    assert getter._exhausted_instance_id == ""
+    assert getter._exhausted_endpoint_went_down is False
+    assert getter._next_arrival_monotonic is None
+    assert getter._arrival_burst._task_index == 0
 
 
 @pytest.mark.unit
@@ -222,6 +330,33 @@ def scheduler_filter_env(monkeypatch):
 
 
 @pytest.mark.unit
+def test_scheduler_permitted_filter_defaults_to_fail_open(
+    scheduler_filter_env,
+    monkeypatch,
+):
+    getter_filter = (
+        scheduler_filter_module.SchedulerPermittedDataGetterFilter()
+    )
+    monkeypatch.setattr(
+        scheduler_filter_module,
+        "http_request",
+        lambda *args, **kwargs: None,
+    )
+
+    system = SimpleNamespace(
+        source_id=7,
+        local_device="edge-a",
+        meta_data={},
+        raw_meta_data={},
+        runtime_directory_revision=1,
+    )
+
+    assert getter_filter.fail_open is True
+    assert getter_filter.timeout_s == 1.0
+    assert getter_filter(system) is True
+
+
+@pytest.mark.unit
 def test_scheduler_permitted_filter_fail_open_and_throttled_logging(scheduler_filter_env, monkeypatch):
     log_messages = []
     time_values = iter([100.0, 100.5, 102.0, 200.0, 200.2, 202.5, 300.0])
@@ -265,6 +400,50 @@ def test_scheduler_permitted_filter_fail_open_and_throttled_logging(scheduler_fi
 
 
 @pytest.mark.unit
+def test_scheduler_permitted_filter_reuses_revision_bound_allowance(
+    scheduler_filter_env, monkeypatch
+):
+    requests = []
+    monotonic = [10.0]
+
+    def fake_http_request(*args, **kwargs):
+        requests.append((args, kwargs))
+        return {
+            "generate": True,
+            "reason": "default_allow",
+            "cache_for_s": 2.0,
+            "runtime_directory_revision": 3,
+        }
+
+    monkeypatch.setattr(scheduler_filter_module, "http_request", fake_http_request)
+    monkeypatch.setattr(
+        scheduler_filter_module.time, "monotonic", lambda: monotonic[0]
+    )
+    getter_filter = scheduler_filter_module.SchedulerPermittedDataGetterFilter(
+        max_allow_cache_s=1.0
+    )
+    system = SimpleNamespace(
+        source_id=7,
+        local_device="edge-a",
+        meta_data={},
+        raw_meta_data={},
+        runtime_routes=action_routes(),
+        runtime_directory_revision=3,
+    )
+
+    assert getter_filter(system) is True
+    monotonic[0] = 10.5
+    assert getter_filter(system) is True
+    assert len(requests) == 1
+
+    # A directory change invalidates the positive cache immediately.
+    system.runtime_directory_revision = 4
+    monotonic[0] = 10.6
+    assert getter_filter(system) is True
+    assert len(requests) == 2
+
+
+@pytest.mark.unit
 def test_scheduler_permitted_filter_executes_clear_queue_actions_once(scheduler_filter_env, monkeypatch):
     action_requests = []
     admission_payloads = []
@@ -274,6 +453,10 @@ def test_scheduler_permitted_filter_executes_clear_queue_actions_once(scheduler_
             {
                 "generate": False,
                 "reason": "queue_pressure",
+                "runtime_directory": {
+                    "revision": 11,
+                    "routes": action_routes(),
+                },
                 "actions": {
                     "type": "clear_processor_queues",
                     "command_id": "clear-1",
@@ -313,7 +496,7 @@ def test_scheduler_permitted_filter_executes_clear_queue_actions_once(scheduler_
         local_device="edge-a",
         meta_data={"fps": 10},
         raw_meta_data={"fps": 30},
-        runtime_routes=action_routes(),
+        runtime_routes=[],
         runtime_directory_revision=1,
     )
 
@@ -331,6 +514,9 @@ def test_scheduler_permitted_filter_executes_clear_queue_actions_once(scheduler_
         )
     ]
     assert "clear-1:edge-a" in getter_filter._completed_action_targets
+    action_payload = json.loads(action_requests[0][2]["data"]["data"])
+    assert action_payload["runtime_directory_revision"] == 11
+    assert len(action_payload["runtime_routes"]) == 1
     assert admission_payloads[0]
     assert '"completed_action_targets": []' in admission_payloads[0]
     assert '"completed_action_targets": ["clear-1:edge-a"]' in admission_payloads[1]

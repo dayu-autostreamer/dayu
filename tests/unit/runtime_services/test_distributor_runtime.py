@@ -1,8 +1,10 @@
 import asyncio
+import concurrent.futures
 import gzip
 import importlib
 import json
 import sqlite3
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -124,6 +126,36 @@ def distributor_instance(monkeypatch, tmp_path):
 
     distributor = distributor_module.Distributor()
     return SimpleNamespace(instance=distributor, db_path=db_path, requests=requests)
+
+
+@pytest.mark.unit
+def test_distributor_database_initialization_is_safe_across_workers(tmp_path):
+    db_path = tmp_path / "concurrent-records.db"
+    worker_count = 8
+    gate = threading.Barrier(worker_count)
+
+    def initialize():
+        distributor = object.__new__(distributor_module.Distributor)
+        distributor.record_path = str(db_path)
+        gate.wait(timeout=5)
+        distributor._init_db()
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=worker_count
+    ) as executor:
+        futures = [executor.submit(initialize) for _ in range(worker_count)]
+        for future in futures:
+            future.result(timeout=30)
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "records" in tables
 
 
 @pytest.mark.unit

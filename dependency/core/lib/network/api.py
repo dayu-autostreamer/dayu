@@ -37,6 +37,7 @@ class NetworkAPIPath:
     SCHEDULER_RUNTIME_DIRECTORY_PROPOSAL_COMMIT = '/runtime-directory/proposals/{proposal_id}/commit'
     SCHEDULER_RUNTIME_DIRECTORY_PROPOSAL_REJECT = '/runtime-directory/proposals/{proposal_id}/reject'
     SCHEDULER_RUNTIME_DIRECTORY_TASK_LEASES = '/runtime-directory/task-leases'
+    SCHEDULER_RUNTIME_DIRECTORY_TASK_RESERVATIONS = '/runtime-directory/task-reservations'
 
     BACKEND_GET_POLICY = '/policy'
     BACKEND_INSTALL_SERVICE = '/install'
@@ -112,6 +113,7 @@ class NetworkAPIMethod:
     SCHEDULER_RENEW_TASK_LEASE = 'PUT'
     SCHEDULER_RELEASE_TASK_LEASE = 'DELETE'
     SCHEDULER_RETIRE_TASK_LEASES = 'PATCH'
+    SCHEDULER_CANCEL_TASK_RESERVATION = 'DELETE'
 
     BACKEND_GET_POLICY = 'GET'
     BACKEND_INSTALL_SERVICE = 'POST'

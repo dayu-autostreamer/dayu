@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import threading
 import time
@@ -10,11 +11,27 @@ from core.lib.estimation import TimeEstimator
 from core.lib.scheduling import build_schedule_decision
 from core.lib.runtime import (
     RuntimeContext,
+    RuntimeLeaseError,
     RuntimeLeaseClient,
     RuntimeLeaseRetired,
     RuntimeLeaseUnavailable,
     RuntimeResolver,
 )
+
+
+_HOST_SCHEDULE_CONTEXT_FIELDS = (
+    'source_id',
+    'meta_data',
+    'current_configuration',
+    'source_device',
+    'all_edge_devices',
+    'dag',
+    'deployment_version',
+    'runtime_directory_revision',
+    'runtime_directory_hash',
+    'runtime_route_cache_keys',
+)
+_SCHEDULER_REQUEST_TIMEOUT_SECONDS = 5.0
 
 
 class Generator:
@@ -34,7 +51,9 @@ class Generator:
         self.runtime_directory_revision = 0
         self.runtime_directory_hash = ""
         self.runtime_routes = {}
+        self._runtime_route_cache = {}
         self.active_schedule_decision = {}
+        self._schedule_request_attempts = {}
         self._runtime_schedule_refresh_required = threading.Event()
         # raw_meta_data contains meta configuration of source
         self.raw_meta_data = metadata.copy()
@@ -58,7 +77,6 @@ class Generator:
             Context.get_parameter('ALL_EDGE_DEVICES', direct=False)
             or self.runtime_context.edge_nodes()
         )
-        self.task_dag = Task.set_execute_device(self.task_dag, self.local_device)
 
         """network communication base information"""
         self.schedule_address = self.runtime_resolver.resolve_url(
@@ -80,6 +98,29 @@ class Generator:
             task_id=Counter.get_count('task_id'),
         )
 
+    def schedule_request_context(self):
+        """Return host-owned context shared by every scheduling extension."""
+
+        context = {
+            'source_id': self.source_id,
+            'meta_data': copy.deepcopy(self.raw_meta_data),
+            'current_configuration': copy.deepcopy(self.meta_data),
+            'source_device': self.local_device,
+            'all_edge_devices': copy.deepcopy(self.all_edge_devices),
+            'dag': Task.extract_dag_deployment_from_dag(self.task_dag),
+            'deployment_version': self.deployment_version,
+        }
+        revision = int(self.runtime_directory_revision or 0)
+        directory_hash = str(self.runtime_directory_hash or '').strip()
+        if revision < 1 or not directory_hash:
+            return context
+        context.update({
+            'runtime_directory_revision': revision,
+            'runtime_directory_hash': directory_hash,
+            'runtime_route_cache_keys': self.runtime_route_cache_keys(),
+        })
+        return context
+
     @staticmethod
     def _task_context(task_identity):
         if task_identity is None:
@@ -99,7 +140,6 @@ class Generator:
             response.get('plan'),
             response.get('deployment_version', 0),
             response.get('runtime_directory_revision'),
-            created_at=provided.get('created_at'),
         )
         if not provided:
             return expected
@@ -121,14 +161,28 @@ class Generator:
         if not isinstance(params, dict):
             raise TypeError('before-schedule operation must return a dictionary')
         params = copy.deepcopy(params)
+        # The host owns the current scheduling state; hooks only contribute
+        # algorithm-specific observations. Apply host fields after the hook so
+        # extensions cannot accidentally freeze or fabricate another state.
+        for field in _HOST_SCHEDULE_CONTEXT_FIELDS:
+            params.pop(field, None)
+        params.update(self.schedule_request_context())
         task_context = self._task_context(task_identity)
         if task_context is not None:
             params['task_context'] = task_context
+            root_uuid = str(task_context.get('root_uuid') or '')
+            attempt = self._schedule_request_attempts.get(root_uuid, 0) + 1
+            self._schedule_request_attempts[root_uuid] = attempt
+            params['schedule_request_attempt'] = attempt
         response = http_request(url=self.schedule_address,
                                 method=NetworkAPIMethod.SCHEDULER_SCHEDULE,
+                                timeout=_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
                                 data={'data': json.dumps(params)})
         if response is None:
-            return self.runtime_routes_ready()
+            # A previous route snapshot proves only that the old decision was
+            # routable.  It must never stand in for the fresh task-bound
+            # decision requested above.
+            return False
         if not isinstance(response, dict):
             LOGGER.error('[Scheduling Decision] Scheduler response must be an object.')
             return False
@@ -145,7 +199,36 @@ class Generator:
             return False
         self.after_schedule_operation(self, copy.deepcopy(response))
         self.active_schedule_decision = schedule_decision
+        if task_context is not None:
+            self._schedule_request_attempts.pop(
+                str(task_context.get('root_uuid') or ''), None
+            )
         return self.runtime_routes_ready()
+
+    def cancel_schedule_reservation(self, task_identity):
+        """Cancel the exact task-bound decision if no source data materialized."""
+
+        task_context = self._task_context(task_identity) or {}
+        root_uuid = str(task_context.get("root_uuid") or "")
+        decision = self.active_schedule_decision
+        if not root_uuid or str(decision.get("root_uuid") or "") != root_uuid:
+            # Periodic policies may intentionally reuse an older plan without
+            # creating a reservation for this identity.
+            return True
+        try:
+            self.runtime_lease_client.cancel_reservation(
+                self.runtime_directory_revision,
+                root_uuid,
+                decision_id=decision.get("decision_id"),
+            )
+        except RuntimeLeaseError as exc:
+            LOGGER.warning(
+                f'[Scheduling Decision] Unable to cancel unmaterialized task '
+                f'reservation root={root_uuid}: {exc}'
+            )
+            return False
+        self.active_schedule_decision = {}
+        return True
 
     @staticmethod
     def _extract_runtime_directory(response):
@@ -166,6 +249,26 @@ class Generator:
             response.get("runtimeRoutes", directory.get("routes")),
         )
         return revision, directory_hash, routes
+
+    @staticmethod
+    def _runtime_routes_cache_key(routes):
+        payload = json.dumps(
+            routes,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def runtime_route_cache_keys(self):
+        return list(self._runtime_route_cache)[-16:]
+
+    def _remember_runtime_routes(self, routes, cache_key):
+        self._runtime_route_cache.pop(cache_key, None)
+        self._runtime_route_cache[cache_key] = copy.deepcopy(routes)
+        while len(self._runtime_route_cache) > 16:
+            oldest = next(iter(self._runtime_route_cache))
+            self._runtime_route_cache.pop(oldest, None)
 
     def _accept_runtime_directory(self, response):
         revision, directory_hash, routes = self._extract_runtime_directory(response)
@@ -200,6 +303,27 @@ class Generator:
                     "reject non-immutable snapshot."
                 )
                 return False
+        route_cache_key = str(
+            response.get(
+                "runtime_routes_cache_key",
+                response.get("runtimeRoutesCacheKey", ""),
+            )
+            or ""
+        ).strip()
+        routes_cached = bool(
+            response.get(
+                "runtime_routes_cached",
+                response.get("runtimeRoutesCached", False),
+            )
+        )
+        if routes is None and routes_cached:
+            routes = self._runtime_route_cache.get(route_cache_key)
+            if routes is None:
+                LOGGER.error(
+                    "[Runtime Directory] Scheduler referenced an unknown "
+                    f"route cache key {route_cache_key!r}."
+                )
+                return False
         try:
             endpoints = RuntimeResolver.list_routes(routes or {})
         except (TypeError, ValueError) as exc:
@@ -215,6 +339,16 @@ class Generator:
         except ValueError as exc:
             LOGGER.error(f"[Runtime Directory] Incomplete exact route identity: {exc}")
             return False
+        computed_cache_key = self._runtime_routes_cache_key(routes)
+        if route_cache_key and route_cache_key != computed_cache_key:
+            LOGGER.error(
+                "[Runtime Directory] Route cache key does not match exact routes."
+            )
+            return False
+        route_cache_key = route_cache_key or computed_cache_key
+        if revision != self.runtime_directory_revision:
+            self._runtime_route_cache.clear()
+        self._remember_runtime_routes(routes, route_cache_key)
         self.runtime_directory_revision = revision
         self.runtime_directory_hash = directory_hash
         self.runtime_routes = copy.deepcopy(routes)
@@ -298,11 +432,16 @@ class Generator:
                     file_path=compressed_path,
                     task_uuid=task_identity.task_uuid if task_identity else '',
                     root_uuid=task_identity.root_uuid if task_identity else '',
-                    created_at=task_identity.created_at if task_identity else 0.0,
                     schedule_decision_id=decision.get('decision_id', ''),
                     schedule_plan_digest=decision.get('plan_digest', ''))
 
-    def submit_task_to_controller(self, cur_task):
+    def _submit_task_to_controller(
+        self,
+        cur_task,
+        *,
+        file_path=None,
+        file_content=None,
+    ):
         assert cur_task, 'Task is empty when submit to controller!'
 
         self.before_submit_task_operation(self, cur_task)
@@ -341,13 +480,20 @@ class Generator:
             url=controller_address,
             method=NetworkAPIMethod.CONTROLLER_TASK,
             task=cur_task,
-            file_path=cur_task.get_file_path(),
+            file_path=file_path,
+            file_content=file_content,
             persistent=True,
         )
         LOGGER.info(f'[To Controller {dst_device}] source: {cur_task.get_source_id()}  '
                     f'task: {cur_task.get_task_id()}  '
                     f'file: {cur_task.get_file_path()}')
         return True
+
+    def submit_task_to_controller(self, cur_task):
+        return self._submit_task_to_controller(
+            cur_task,
+            file_path=cur_task.get_file_path() if cur_task else None,
+        )
 
     def run(self):
         assert None, 'Base Generator should not be invoked directly!'

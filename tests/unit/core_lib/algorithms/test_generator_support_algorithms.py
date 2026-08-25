@@ -214,9 +214,11 @@ def test_before_schedule_operations_export_source_metadata_and_reset_filter():
     system = SimpleNamespace(
         source_id=7,
         raw_meta_data={"fps": 20, "buffer_size": 2},
+        meta_data={"fps": 15, "buffer_size": 3},
         local_device="edge-a",
         all_edge_devices=["edge-a", "edge-b"],
         task_dag=task.get_dag(),
+        deployment_version=4,
         getter_filter=getter_filter,
         temp_encoded_frame="frame-b64",
         temp_hash_code="hash-1",
@@ -226,16 +228,14 @@ def test_before_schedule_operations_export_source_metadata_and_reset_filter():
     casva_payload = before_schedule_module.CASVABSOperation()(system)
     chameleon_payload = before_schedule_module.ChameleonBSOperation()(system)
 
-    assert simple_payload["source_id"] == 7
-    assert simple_payload["meta_data"] == {"fps": 20, "buffer_size": 2}
-    assert simple_payload["source_device"] == "edge-a"
-    assert simple_payload["all_edge_devices"] == ["edge-a", "edge-b"]
-    assert set(simple_payload["dag"]) == {TaskConstant.START.value, "detector", "classifier", TaskConstant.END.value}
+    assert simple_payload == {}
 
-    assert casva_payload["skip_count"] == 3
+    assert casva_payload == {"skip_count": 3}
     assert getter_filter.skip_count == 0
-    assert chameleon_payload["frame"] == "frame-b64"
-    assert chameleon_payload["hash_code"] == "hash-1"
+    assert chameleon_payload == {
+        "frame": "frame-b64",
+        "hash_code": "hash-1",
+    }
 
 
 @pytest.mark.unit
@@ -248,14 +248,19 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
         cloud_device="cloud-a",
         meta_data={"fps": 10, "buffer_size": 2},
         service_deployment={},
+        deployment_version=4,
     )
 
+    original_dag = Task.extract_dag_deployment_from_dag(system.task_dag)
     after_schedule_module.SimpleASOperation()(system, None)
-    assert all(
-        node.service.get_execute_device() == "cloud-a"
-        for name, node in system.task_dag.nodes.items()
-        if name not in (TaskConstant.START.value, TaskConstant.END.value)
+    assert Task.extract_dag_deployment_from_dag(system.task_dag) == original_dag
+    assert system.deployment_version == 4
+
+    after_schedule_module.SimpleASOperation()(
+        system,
+        {"plan": {}, "deployment_version": None},
     )
+    assert system.deployment_version == 4
 
     dag_deployment = Task.extract_dag_deployment_from_dag(build_task().get_dag())
     dag_deployment["detector"]["service"]["execute_device"] = "edge-b"
@@ -268,7 +273,8 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
     assert system.meta_data["fps"] == 5
     assert system.service_deployment == {"detector": ["edge-b"]}
     assert system.task_dag.get_node("detector").service.get_execute_device() == "edge-b"
-    assert system.task_dag.get_end_node().service.get_execute_device() == "cloud-a"
+    assert system.task_dag.get_end_node().service.get_execute_device() == ""
+    assert system.deployment_version == 4
 
     casva_system = SimpleNamespace(
         task_dag=build_task().get_dag(),

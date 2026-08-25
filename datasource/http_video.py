@@ -1,11 +1,14 @@
 import json
 import uvicorn
 import argparse
+import copy
+import os
 import socket
 import requests
 import threading
 import time
 import asyncio
+import uuid
 from pydantic import BaseModel
 
 from fastapi import FastAPI, Form, BackgroundTasks
@@ -35,10 +38,13 @@ class VideoSource:
         self.router = APIRouter()
         self.router.add_api_route('/source', self.get_source_data, methods=['GET'])
         self.router.add_api_route('/file', self.get_source_file, methods=['GET'])
+        self.router.add_api_route('/shared_file', self.get_shared_source_file, methods=['GET'])
+        self.router.add_api_route('/status', self.get_source_status, methods=['GET'])
 
         self.data_root = data_root
         self.play_mode = play_mode
         self.player = VideoDatasetPlayer(self.data_root, self.play_mode)
+        self.instance_id = str(uuid.uuid4())
 
         self.file_name = None
 
@@ -53,66 +59,112 @@ class VideoSource:
 
         self.file_suffix = 'mp4'
         self.sampled_frame_indices = []
+        self._frame_filter_name = None
+        self._frame_process_name = None
+        self._frame_compress_name = None
+        # The player and frame-filter state are ordered stream state.  Keep one
+        # source request atomic while allowing status/file endpoints to remain
+        # independent FastAPI requests.
+        self._source_lock = threading.Lock()
+        self._temporary_root = os.getenv('TEMP_PATH') or os.getcwd()
+        os.makedirs(self._temporary_root, exist_ok=True)
 
     def get_one_frame(self):
         return self.player.read_frame()
 
-    def get_source_data(self, data: str = Form(...)):
-        if self.player.is_end:
-            return []
+    def get_source_status(self):
+        return {
+            'instance_id': self.instance_id,
+            'exhausted': bool(self.player.is_end),
+            'ready': True,
+        }
 
-        data = json.loads(data)
-
+    def _configure_request(self, data):
         self.source_id = data['source_id']
         self.task_id = data['task_id']
-        self.meta_data = data['meta_data']
-        self.raw_meta_data = data['raw_meta_data']
+        self.meta_data = copy.deepcopy(data['meta_data'])
+        self.raw_meta_data = copy.deepcopy(data['raw_meta_data'])
 
-        frame_filter_name = data['gen_filter_name']
-        frame_process_name = data['gen_process_name']
-        frame_compress_name = data['gen_compress_name']
+        algorithm_fields = (
+            ('frame_filter', '_frame_filter_name', 'GEN_FILTER', 'gen_filter_name'),
+            ('frame_process', '_frame_process_name', 'GEN_PROCESS', 'gen_process_name'),
+            ('frame_compress', '_frame_compress_name', 'GEN_COMPRESS', 'gen_compress_name'),
+        )
+        for attribute, name_attribute, algorithm_type, request_field in algorithm_fields:
+            requested_name = str(data[request_field])
+            if getattr(self, name_attribute) != requested_name:
+                setattr(
+                    self,
+                    attribute,
+                    Context.get_algorithm(algorithm_type, al_name=requested_name),
+                )
+                setattr(self, name_attribute, requested_name)
 
-        buffer_size = self.meta_data['buffer_size']
-
-        self.frame_filter = Context.get_algorithm('GEN_FILTER', al_name=frame_filter_name) \
-            if self.frame_filter is None else self.frame_filter
-        self.frame_process = Context.get_algorithm('GEN_PROCESS', al_name=frame_process_name) \
-            if self.frame_process is None else self.frame_process
-        self.frame_compress = Context.get_algorithm('GEN_COMPRESS', al_name=frame_compress_name) \
-            if self.frame_compress is None else self.frame_compress
-
-        self.sampled_frame_indices = []
-        frames_buffer = []
-        while len(frames_buffer) < buffer_size:
+    def _select_frames(self):
+        frames = []
+        indices = []
+        target = int(self.meta_data['buffer_size'])
+        while len(frames) < target:
             frame, frame_index = self.get_one_frame()
             if frame is None:
                 break
             if self.frame_filter(self, frame):
-                frames_buffer.append(frame)
-                # hash_data is the real ground-truth frame index used by accuracy_estimation.
-                self.sampled_frame_indices.append(frame_index)
+                frames.append(frame)
+                indices.append(frame_index)
+        return frames, indices
 
-        if not frames_buffer:
-            return JSONResponse([])
+    def get_source_data(self, data: str = Form(...)):
+        data = json.loads(data)
+        with self._source_lock:
+            if self.player.is_end:
+                return []
+            self._configure_request(data)
+            frames, self.sampled_frame_indices = self._select_frames()
+            if not frames:
+                return JSONResponse([])
 
-        frames_buffer = [
-            self.frame_process(self, frame, self.raw_meta_data['resolution'], self.meta_data['resolution'])
-            for frame in frames_buffer
-        ]
-
-        self.file_name = NameMaintainer.get_task_data_file_name(
-            self.source_id,
-            self.task_id,
-            file_suffix=self.file_suffix
-        )
-        self.frame_compress(self, frames_buffer, self.file_name)
-
-        return JSONResponse(self.sampled_frame_indices)
+            frames = [
+                self.frame_process(
+                    self,
+                    frame,
+                    self.raw_meta_data['resolution'],
+                    self.meta_data['resolution'],
+                )
+                for frame in frames
+            ]
+            self.file_name = os.path.join(
+                self._temporary_root,
+                NameMaintainer.get_task_data_file_name(
+                    self.source_id,
+                    self.task_id,
+                    file_suffix=self.file_suffix,
+                ),
+            )
+            self.frame_compress(self, frames, self.file_name)
+            return JSONResponse(self.sampled_frame_indices)
 
     def get_source_file(self, backtask: BackgroundTasks):
-        backtask.add_task(FileOps.remove_file, self.file_name)
-        return FileResponse(path=self.file_name, filename=self.file_name, media_type='application/octet-stream',
+        file_name = self.file_name
+        backtask.add_task(FileOps.remove_file, file_name)
+        return FileResponse(path=file_name, filename=os.path.basename(file_name), media_type='application/octet-stream',
                             background=backtask)
+
+    def get_shared_source_file(self):
+        """Expose the shared TEMP_PATH artifact to a colocated Generator.
+
+        Generator and datasource runtime pods on the same source node mount the
+        same hostPath at ``/temp``.  Returning the path avoids an unnecessary
+        HTTP download; consumers on another node simply fail the local-path
+        check and use the existing ``/file`` endpoint.
+        """
+        return {'file_name': self.file_name}
+
+    def close(self):
+        if self.file_name:
+            FileOps.remove_file(self.file_name)
+        close_player = getattr(self.player, 'close', None)
+        if callable(close_player):
+            close_player()
 
 
 @app.post("/admin/add_source")
@@ -123,6 +175,14 @@ async def add_source(request: SourceRequest):
     app.include_router(source.router, prefix=f"/{request.path}")
     sources[request.path] = source
     return {"status": "success"}
+
+
+@app.on_event("shutdown")
+async def close_sources():
+    for source in list(sources.values()):
+        close = getattr(source, 'close', None)
+        if callable(close):
+            close()
 
 
 def is_port_in_use(port: int) -> bool:

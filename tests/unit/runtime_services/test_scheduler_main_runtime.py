@@ -17,6 +17,7 @@ SCHEDULER_DOCKERFILE_PATH = (
 
 def install_fake_scheduler_runtime(monkeypatch, *, port=19040):
     run_calls = []
+    constructed_servers = []
     app_token = object()
 
     uvicorn_module = ModuleType("uvicorn")
@@ -26,6 +27,7 @@ def install_fake_scheduler_runtime(monkeypatch, *, port=19040):
 
     class FakeSchedulerServer:
         def __init__(self):
+            constructed_servers.append(self)
             self.app = app_token
 
     scheduler_module.SchedulerServer = FakeSchedulerServer
@@ -50,7 +52,7 @@ def install_fake_scheduler_runtime(monkeypatch, *, port=19040):
     monkeypatch.setitem(sys.modules, "core.lib.common", common_module)
     monkeypatch.setitem(sys.modules, "core.scheduler", scheduler_module)
 
-    return app_token, run_calls
+    return app_token, run_calls, constructed_servers
 
 
 def load_module_from_path(path: Path, module_name: str):
@@ -61,21 +63,28 @@ def load_module_from_path(path: Path, module_name: str):
 
 
 @pytest.mark.unit
-def test_scheduler_main_exposes_app_without_starting_server(monkeypatch):
-    app_token, run_calls = install_fake_scheduler_runtime(monkeypatch)
+def test_scheduler_main_exposes_side_effect_free_app_factory(monkeypatch):
+    app_token, run_calls, constructed_servers = install_fake_scheduler_runtime(
+        monkeypatch
+    )
 
     module = load_module_from_path(
         SCHEDULER_MAIN_PATH,
         "_test_scheduler_main_runtime",
     )
 
-    assert module.app is app_token
+    assert constructed_servers == []
+    assert module.create_app() is app_token
+    assert len(constructed_servers) == 1
     assert run_calls == []
 
 
 @pytest.mark.unit
 def test_scheduler_main_runs_one_uvicorn_worker_when_executed(monkeypatch):
-    app_token, run_calls = install_fake_scheduler_runtime(monkeypatch, port=29090)
+    app_token, run_calls, constructed_servers = install_fake_scheduler_runtime(
+        monkeypatch,
+        port=29090,
+    )
 
     runpy.run_path(str(SCHEDULER_MAIN_PATH), run_name="__main__")
 
@@ -84,6 +93,7 @@ def test_scheduler_main_runs_one_uvicorn_worker_when_executed(monkeypatch):
         "port": 29090,
         "workers": 1,
     })]
+    assert len(constructed_servers) == 1
 
 
 @pytest.mark.unit

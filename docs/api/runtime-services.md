@@ -6,7 +6,7 @@ This document describes the internal APIs used by Dayu runtime components. These
 
 | Topic | Behavior |
 | --- | --- |
-| Task payload | Internal services exchange serialized `Task` strings produced by `Task.serialize()`. Root tasks also carry `created_at`, `schedule_decision_id`, and `schedule_plan_digest`; forks preserve them. |
+| Task payload | Internal services exchange serialized `Task` strings produced by `Task.serialize()`. Root tasks carry `schedule_decision_id` and `schedule_plan_digest`; forks preserve them. Source replay timing remains private to the selected data-getter and is never serialized into a `Task`. |
 | File transfer | Binary task content is sent as `multipart/form-data` with a `file` field plus a `data` field containing the serialized task. |
 | Scheduler/resource updates | Scheduler endpoints often receive JSON encoded into a form field named `data`. |
 | Runtime bootstrap | `DAYU_RUNTIME_BOOTSTRAP` supplies immutable install context and static infrastructure endpoints; it is never a Kubernetes discovery cache. |
@@ -216,8 +216,10 @@ it is never an automatic production fallback.
 {
   "source_id": 0,
   "meta_data": {"resolution": "720p", "fps": 5, "buffer_size": 4, "encoding": "mp4v"},
+  "current_configuration": {"resolution": "720p", "fps": 5, "buffer_size": 4, "encoding": "mp4v"},
   "source_device": "edgex1",
   "all_edge_devices": ["edgex1", "edgex2"],
+  "deployment_version": 3,
   "dag": {
     "start": {"service": {"execute_device": "edgex1"}},
     "car-detection": {"service": {"execute_device": "cloudx1"}}
@@ -226,14 +228,18 @@ it is never an automatic production fallback.
     "source_id": 0,
     "task_id": 42,
     "task_uuid": "root-task-uuid",
-    "root_uuid": "root-task-uuid",
-    "created_at": 1752969600.0
+    "root_uuid": "root-task-uuid"
   }
 }
 ```
 
-Different `GEN_BSO` implementations may append scheduler-specific fields such as `skip_count`, `frame`, or `hash_code`.
-Generator appends `task_context` after `GEN_BSO`; hooks must not create or replace that framework-owned identity.
+Different `GEN_BSO` implementations may append scheduler-specific observations such as `skip_count`, `frame`, or
+`hash_code`. Generator owns and overwrites the source identity, raw/current configuration, current DAG, candidate
+devices, deployment version, runtime-directory state, and `task_context`; hooks cannot fabricate or freeze these host
+fields. A per-task scheduling agent may return any partial combination of configuration fields, `dag` offloading, and
+`deployment_version`. Missing fields preserve current state, while an absent/unroutable first DAG is completed by the
+selected startup-policy hook. Replica placement remains controlled by the independent initial-deployment and
+redeployment hook lifecycle; `/schedule` returns its effective deployment and version for task attribution.
 `schedule_decision` binds the response plan to the reserved root through a stable decision id and canonical plan
 digest. A positive scheduling interval may reuse that decision for later root tasks, but never reuses their task UUID.
 The schedule is not usable unless Scheduler can also return an active positive directory revision and unambiguous

@@ -1,5 +1,7 @@
 import copy
+import hashlib
 import json
+import time
 
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.exception_handlers import (
@@ -125,6 +127,10 @@ class SchedulerServer:
                      self.retire_task_leases,
                      response_class=JSONResponse,
                      methods=[NetworkAPIMethod.SCHEDULER_RETIRE_TASK_LEASES]),
+            APIRoute(NetworkAPIPath.SCHEDULER_RUNTIME_DIRECTORY_TASK_RESERVATIONS,
+                     self.cancel_task_reservation,
+                     response_class=JSONResponse,
+                     methods=[NetworkAPIMethod.SCHEDULER_CANCEL_TASK_RESERVATION]),
         ])
 
         self.app.add_middleware(
@@ -192,14 +198,78 @@ class SchedulerServer:
         return await request_validation_exception_handler(request, exc)
 
     @staticmethod
-    def _split_schedule_plan(plan):
-        deployment_version = 0
+    def _split_schedule_plan(plan, current_deployment_version=0):
+        deployment_version = current_deployment_version
         if isinstance(plan, dict) and 'deployment_version' in plan:
             plan = plan.copy()
             deployment_version = plan.pop('deployment_version')
             if deployment_version is None:
-                deployment_version = 0
+                deployment_version = current_deployment_version
         return plan, deployment_version
+
+    @staticmethod
+    def _dag_has_runtime_targets(dag):
+        if not isinstance(dag, dict):
+            return False
+        has_runtime_service = False
+        for service_name, node in dag.items():
+            if service_name in ('_start', '_end', 'start', 'end'):
+                continue
+            has_runtime_service = True
+            service = node.get('service') if isinstance(node, dict) else None
+            if not isinstance(service, dict):
+                return False
+            if not str(service.get('execute_device') or '').strip():
+                return False
+        return has_runtime_service
+
+    def _complete_schedule_plan(self, plan, request):
+        """Compose a full effective plan from a policy's partial decision.
+
+        Policy hooks may schedule configuration, DAG offloading, deployment
+        version, or any combination.  Unspecified dimensions inherit the
+        current Generator state.  Only an unroutable first DAG is supplied by
+        the selected startup-policy hook; the framework itself chooses no
+        algorithm-specific default.
+        """
+
+        if not isinstance(plan, dict):
+            raise HTTPException(
+                status_code=422,
+                detail='schedule policy must return an object',
+            )
+        request = request if isinstance(request, dict) else {}
+        current_configuration = request.get('current_configuration', {})
+        if current_configuration is None:
+            current_configuration = {}
+        if not isinstance(current_configuration, dict):
+            raise HTTPException(
+                status_code=422,
+                detail='current_configuration must be an object',
+            )
+
+        effective = copy.deepcopy(current_configuration)
+        effective.update(copy.deepcopy(plan))
+        dag = effective.get('dag')
+        if dag is None:
+            current_dag = copy.deepcopy(request.get('dag'))
+            if self._dag_has_runtime_targets(current_dag):
+                dag = current_dag
+            else:
+                startup_plan = self.scheduler.get_startup_policy(request)
+                if not isinstance(startup_plan, dict):
+                    raise HTTPException(
+                        status_code=422,
+                        detail='startup policy must return an object',
+                    )
+                dag = copy.deepcopy(startup_plan.get('dag'))
+        if not isinstance(dag, dict):
+            raise HTTPException(
+                status_code=422,
+                detail='effective schedule plan must contain a dag object',
+            )
+        effective['dag'] = dag
+        return effective
 
     def _runtime_state_for_plan(self, plan, source_device):
         try:
@@ -213,7 +283,18 @@ class SchedulerServer:
                 detail=f'no valid runtime route for schedule plan: {exc}',
             )
 
+    @staticmethod
+    def _route_cache_key(routes):
+        payload = json.dumps(
+            routes,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     async def generate_schedule_plan(self, data: str = Form(...)):
+        request_started = time.monotonic()
         data = json.loads(data)
 
         task_context = data.get('task_context')
@@ -227,17 +308,47 @@ class SchedulerServer:
                 )
 
         with self.scheduler.schedule_transaction():
+            state_started = time.monotonic()
+            try:
+                current_revision = int(
+                    self.scheduler.runtime_directory_revision()
+                )
+            except (TypeError, ValueError):
+                current_revision = 0
+            if current_revision < 1:
+                # Runtime components are activated before the orchestrator
+                # publishes revision 1.  Do not construct or invoke any
+                # scheduling extension until an immutable routing snapshot is
+                # available for the resulting plan.
+                raise HTTPException(
+                    status_code=503,
+                    detail='runtime directory is not ready for scheduling',
+                )
             self.scheduler.register_schedule_table(data['source_id'])
-            current_revision = self.scheduler.runtime_directory_revision()
-            reservation = self.scheduler.get_task_reservation(
-                current_revision,
-                task_context.get('root_uuid') if task_context else '',
-                task_context,
-            )
+            state_seconds = time.monotonic() - state_started
+            try:
+                schedule_attempt = int(data.get('schedule_request_attempt') or 0)
+            except (TypeError, ValueError):
+                schedule_attempt = 0
+            # A fresh root UUID cannot have a persisted reservation.  Skip one
+            # Redis lookup on its first request; a retry explicitly carries an
+            # incremented attempt and restores the idempotent lookup path.
+            reservation = None
+            lookup_started = time.monotonic()
+            if schedule_attempt != 1:
+                reservation = self.scheduler.get_task_reservation(
+                    current_revision,
+                    task_context.get('root_uuid') if task_context else '',
+                    task_context,
+                )
+            lookup_seconds = time.monotonic() - lookup_started
+            agent_started = time.monotonic()
             if reservation is None:
                 plan, deployment_version = self._split_schedule_plan(
-                    self.scheduler.get_schedule_plan(data)
+                    self.scheduler.get_schedule_plan(data),
+                    data.get('deployment_version', 0),
                 )
+                plan = self._complete_schedule_plan(plan, data)
             else:
                 plan = copy.deepcopy(reservation.get('plan'))
                 if not isinstance(plan, dict):
@@ -246,7 +357,10 @@ class SchedulerServer:
                         data.get('source_id'),
                     )
                 deployment_version = reservation.get('deployment_version', 0)
+                plan = self._complete_schedule_plan(plan, data)
+            agent_seconds = time.monotonic() - agent_started
 
+            routing_started = time.monotonic()
             runtime_state = self._runtime_state_for_plan(
                 plan,
                 data.get('source_device', ''),
@@ -255,21 +369,48 @@ class SchedulerServer:
             if reservation is not None and runtime_state['revision'] != current_revision:
                 reservation = None
                 plan, deployment_version = self._split_schedule_plan(
-                    self.scheduler.get_schedule_plan(data)
+                    self.scheduler.get_schedule_plan(data),
+                    data.get('deployment_version', 0),
                 )
+                plan = self._complete_schedule_plan(plan, data)
                 runtime_state = self._runtime_state_for_plan(
                     plan,
                     data.get('source_device', ''),
                 )
+            routing_seconds = time.monotonic() - routing_started
 
+            response_started = time.monotonic()
+            client_revision = data.get('runtime_directory_revision')
+            try:
+                client_revision = int(client_revision)
+            except (TypeError, ValueError):
+                client_revision = 0
+            client_hash = str(data.get('runtime_directory_hash') or '').strip()
+            directory_unchanged = (
+                client_revision == runtime_state['revision']
+                and client_hash == runtime_state['hash']
+            )
+            route_cache_key = self._route_cache_key(runtime_state['routes'])
+            cached_route_keys = data.get('runtime_route_cache_keys') or []
+            if not isinstance(cached_route_keys, (list, tuple, set)):
+                cached_route_keys = []
+            routes_cached = (
+                directory_unchanged
+                and route_cache_key in {str(item) for item in cached_route_keys}
+            )
             response = {
                 'plan': plan,
-                'deployment': runtime_state['deployment'],
                 'deployment_version': deployment_version,
                 'runtime_directory_revision': runtime_state['revision'],
                 'runtime_directory_hash': runtime_state['hash'],
-                'runtime_routes': runtime_state['routes'],
+                'runtime_directory_unchanged': directory_unchanged,
+                'runtime_routes_cache_key': route_cache_key,
+                'runtime_routes_cached': routes_cached,
             }
+            if not directory_unchanged:
+                response['deployment'] = runtime_state['deployment']
+            if not routes_cached:
+                response['runtime_routes'] = runtime_state['routes']
             if reservation is None:
                 response['schedule_decision'] = build_schedule_decision(
                     data,
@@ -286,13 +427,14 @@ class SchedulerServer:
                         'source_id',
                         'task_id',
                         'root_uuid',
-                        'created_at',
                     )
                 }
+            response_seconds = time.monotonic() - response_started
             decision = response['schedule_decision']
+            staging_started = time.monotonic()
             if decision.get('root_uuid'):
                 try:
-                    self.scheduler.reserve_task_context(
+                    self.scheduler.stage_task_context(
                         runtime_state['revision'],
                         decision['root_uuid'],
                         {
@@ -311,7 +453,27 @@ class SchedulerServer:
                     )
                 except (RuntimeDirectoryError, TypeError, ValueError) as exc:
                     raise self._translate_runtime_error(exc, data.get('source_id'))
+            staging_seconds = time.monotonic() - staging_started
 
+        LOGGER.info(
+            "[SchedulePath] source=%s task=%s attempt=%s reused=%s "
+            "directory_unchanged=%s routes_cached=%s state=%.4fs "
+            "lookup=%.4fs agent=%.4fs routing=%.4fs response=%.4fs "
+            "staging=%.4fs total=%.4fs",
+            data.get('source_id'),
+            (task_context or {}).get('task_id'),
+            schedule_attempt,
+            reservation is not None,
+            directory_unchanged,
+            routes_cached,
+            state_seconds,
+            lookup_seconds,
+            agent_seconds,
+            routing_seconds,
+            response_seconds,
+            staging_seconds,
+            time.monotonic() - request_started,
+        )
         return response
 
     @staticmethod
@@ -439,6 +601,17 @@ class SchedulerServer:
             return self.scheduler.release_task_lease(
                 payload.get('revision', payload.get('runtime_directory_revision')),
                 payload.get('root_uuid', payload.get('rootUUID')),
+            )
+        except (RuntimeDirectoryError, TypeError, ValueError) as exc:
+            raise self._translate_runtime_error(exc)
+
+    def cancel_task_reservation(self, data: str = Form(...)):
+        payload = json.loads(data)
+        try:
+            return self.scheduler.cancel_task_reservation(
+                payload.get('revision', payload.get('runtime_directory_revision')),
+                payload.get('root_uuid', payload.get('rootUUID')),
+                decision_id=payload.get('decision_id', payload.get('decisionID')),
             )
         except (RuntimeDirectoryError, TypeError, ValueError) as exc:
             raise self._translate_runtime_error(exc)

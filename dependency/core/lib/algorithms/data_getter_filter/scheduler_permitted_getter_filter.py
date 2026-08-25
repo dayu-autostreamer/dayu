@@ -26,15 +26,19 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
     """
 
     def __init__(self, fail_open: bool = True, timeout_s: float = 1.0,
-                 log_interval_s: float = 10.0, action_retry_interval_s: float = 5.0):
+                 log_interval_s: float = 10.0, action_retry_interval_s: float = 5.0,
+                 max_allow_cache_s: float = 5.0):
         self.fail_open = bool(fail_open)
         self.timeout_s = max(0.1, float(timeout_s))
         self.log_interval_s = max(1.0, float(log_interval_s))
         self.action_retry_interval_s = max(0.0, float(action_retry_interval_s))
+        self.max_allow_cache_s = max(0.0, float(max_allow_cache_s))
         self._last_block_log_t = 0.0
         self._last_error_log_t = 0.0
         self._completed_action_targets = set()
         self._action_attempt_timestamps = {}
+        self._allow_cache_until = 0.0
+        self._allow_cache_revision = 0
 
         self.runtime_context = RuntimeContext.get_default()
         self.runtime_resolver = RuntimeResolver(self.runtime_context)
@@ -84,16 +88,32 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
         return True
 
     @staticmethod
-    def _action_routes(action, system):
+    def _action_runtime_directory(action, response):
         directory = action.get("runtime_directory", action.get("runtimeDirectory"))
-        if isinstance(directory, dict) and directory.get("routes") is not None:
+        if isinstance(directory, dict):
+            return directory
+        directory = response.get(
+            "runtime_directory",
+            response.get("runtimeDirectory"),
+        )
+        return directory if isinstance(directory, dict) else {}
+
+    @classmethod
+    def _action_routes(cls, action, response, system):
+        directory = cls._action_runtime_directory(action, response)
+        if directory.get("routes") is not None:
             return directory.get("routes")
         routes = action.get("runtime_routes", action.get("runtimeRoutes"))
         if routes is not None:
             return routes
         return getattr(system, "runtime_routes", None)
 
-    def _clear_processor_queues_from_action(self, action: dict, system):
+    def _clear_processor_queues_from_action(
+        self,
+        action: dict,
+        response: dict,
+        system,
+    ):
         command_id = str(action.get("command_id") or "")
         target_devices = action.get("target_devices") or action.get("devices") or []
         if isinstance(target_devices, str):
@@ -119,7 +139,11 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
                 continue
 
             try:
-                routes = self._action_routes(action, system)
+                runtime_directory = self._action_runtime_directory(
+                    action,
+                    response,
+                )
+                routes = self._action_routes(action, response, system)
                 controller_address = self.runtime_resolver.resolve_url(
                     "controller",
                     path=NetworkAPIPath.CONTROLLER_CLEAR_PROCESSOR_QUEUES,
@@ -130,7 +154,20 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
                 request = dict(request)
                 request["runtime_directory_revision"] = action.get(
                     "runtime_directory_revision",
-                    action.get("runtimeDirectoryRevision", getattr(system, "runtime_directory_revision", 0)),
+                    action.get(
+                        "runtimeDirectoryRevision",
+                        runtime_directory.get(
+                            "revision",
+                            runtime_directory.get(
+                                "directory_revision",
+                                getattr(
+                                    system,
+                                    "runtime_directory_revision",
+                                    0,
+                                ),
+                            ),
+                        ),
+                    ),
                 )
                 request["runtime_routes"] = [
                     endpoint.validate_exact().to_dict()
@@ -181,9 +218,23 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
                 continue
             action_type = str(action.get("type") or "").strip().lower()
             if action_type == "clear_processor_queues":
-                self._clear_processor_queues_from_action(action, system)
+                self._clear_processor_queues_from_action(
+                    action,
+                    response,
+                    system,
+                )
 
     def __call__(self, system):
+        current_revision = int(
+            getattr(system, "runtime_directory_revision", 0) or 0
+        )
+        if (
+            current_revision > 0
+            and current_revision == self._allow_cache_revision
+            and time.monotonic() < self._allow_cache_until
+        ):
+            return True
+
         payload = {
             "source_id": system.source_id,
             "source_device": system.local_device,
@@ -199,6 +250,7 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
         )
 
         if not isinstance(response, dict):
+            self._allow_cache_until = 0.0
             self._log_throttled(
                 f"[Getter Filter] Scheduler generation-admission response is unavailable; "
                 f"{'allow' if self.fail_open else 'block'} getter by fail_open={self.fail_open}.",
@@ -209,6 +261,27 @@ class SchedulerPermittedDataGetterFilter(BaseDataGetterFilter, abc.ABC):
         self._execute_scheduler_actions(response, system)
 
         generate = bool(response.get("generate", response.get("allow", True)))
+        actions = response.get("actions") or response.get("commands") or []
+        if generate and not actions:
+            try:
+                cache_for_s = float(response.get("cache_for_s") or 0.0)
+                response_revision = int(
+                    response.get("runtime_directory_revision") or 0
+                )
+            except (TypeError, ValueError):
+                cache_for_s = 0.0
+                response_revision = 0
+            if (
+                cache_for_s > 0.0
+                and response_revision > 0
+                and response_revision == current_revision
+            ):
+                self._allow_cache_revision = response_revision
+                self._allow_cache_until = time.monotonic() + min(
+                    cache_for_s, self.max_allow_cache_s
+                )
+        else:
+            self._allow_cache_until = 0.0
         if not generate:
             reason = response.get("reason", "scheduler_blocked")
             self._log_throttled(

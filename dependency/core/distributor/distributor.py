@@ -3,6 +3,7 @@ import json
 import gzip
 import sqlite3
 import tempfile
+import time
 from datetime import datetime
 
 from core.lib.content import Task
@@ -29,6 +30,8 @@ class Distributor:
     _BUSY_TIMEOUT_MS = 5000  # PRAGMA busy_timeout: how long SQLite will wait for locks inside a connection
     _JOURNAL_MODE = "WAL"  # Better read/write concurrency
     _SYNCHRONOUS = "NORMAL"  # Reasonable durability with good throughput (can be "FULL" if you prefer)
+    _INIT_RETRY_SECONDS = 20.0
+    _INIT_RETRY_INTERVAL_SECONDS = 0.05
     _DEFAULT_RESULT_LOG_EXPORT_BATCH_SIZE = 500 # Batch size used when generating compressed export files
     _DEFAULT_RESULT_LOG_RETENTION_RECORDS = 0 # Keep the latest N task results in distributor storage to avoid unbounded growth
     _DEFAULT_RESULT_LOG_RETENTION_PRUNE_INTERVAL = 200 # Prune stale result records every N writes
@@ -77,7 +80,9 @@ class Distributor:
         Create a new SQLite connection with:
         - timeout: waits for the specified seconds if the DB is locked
         - busy_timeout: additional in-connection wait for locks
-        - WAL mode & tuned synchronous for better concurrency
+        - tuned synchronous/cache settings for better concurrency
+        WAL mode is established once by `_init_db` because changing persistent
+        journal metadata on every request races with other workers.
         Set autocommit with isolation_level=None if you want BEGIN/COMMIT explicitly.
         """
         isolation_level = None if autocommit else ""  # None => autocommit on; "" => sqlite default (implicit transactions)
@@ -89,9 +94,13 @@ class Distributor:
             check_same_thread=True,  # set False only if you truly share the connection across threads
         )
         cur = conn.cursor()
-        # Apply pragmas every time (safe & ensures settings survive across new connections)
+        # ``journal_mode`` is persistent database metadata and requires an
+        # exclusive lock when it changes.  Setting it on every connection lets
+        # multiple Gunicorn workers race during boot and can kill the whole Pod
+        # with ``database is locked``.  `_init_db` establishes WAL once under a
+        # bounded retry loop; ordinary request connections only apply local
+        # connection settings.
         cur.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS};")
-        cur.execute(f"PRAGMA journal_mode={self._JOURNAL_MODE};")
         cur.execute(f"PRAGMA synchronous={self._SYNCHRONOUS};")
         # Slightly bigger page cache can help for repeated scans
         cur.execute("PRAGMA cache_size=-8000;")  # ~8MB cache; negative means KB
@@ -105,10 +114,20 @@ class Distributor:
         if dirpath:
             os.makedirs(dirpath, exist_ok=True)
 
-        with self._connect(autocommit=True) as conn:
-            c = conn.cursor()
-            # Primary key is (source_id, task_id).
-            c.execute("""
+        deadline = time.monotonic() + self._INIT_RETRY_SECONDS
+        while True:
+            try:
+                with self._connect(autocommit=True) as conn:
+                    c = conn.cursor()
+                    mode = c.execute(
+                        f"PRAGMA journal_mode={self._JOURNAL_MODE};"
+                    ).fetchone()
+                    if not mode or str(mode[0]).lower() != self._JOURNAL_MODE.lower():
+                        raise RuntimeError(
+                            "failed to establish Distributor SQLite WAL mode"
+                        )
+                    # Primary key is (source_id, task_id).
+                    c.execute("""
                       CREATE TABLE IF NOT EXISTS records
                       (
                           source_id
@@ -127,12 +146,20 @@ class Distributor:
                       )
                           );
                       """)
-            # Index to accelerate incremental scans by time
-            c.execute("""
+                    # Index to accelerate incremental scans by time.
+                    c.execute("""
                       CREATE INDEX IF NOT EXISTS idx_records_ctime
                           ON records(ctime);
                       """)
-            conn.commit()
+                    conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if (
+                    "locked" not in str(exc).lower()
+                    and "busy" not in str(exc).lower()
+                ) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(self._INIT_RETRY_INTERVAL_SECONDS)
 
     def distribute_data(self, cur_task: Task):
         assert cur_task, 'Current task is None'

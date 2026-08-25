@@ -281,6 +281,23 @@ class RuntimeServiceRenderer:
         if port is not None:
             for container in containers:
                 _upsert_env(container, {"GUNICORN_PORT": port})
+                if slot.component != "monitor":
+                    # RuntimeService Ready must mean that a routable application
+                    # endpoint is accepting traffic, not merely that the
+                    # container process exists.  Monitor workers are different:
+                    # they actively push observations to Scheduler and only use
+                    # ``port-open`` as the iperf target advertised in the runtime
+                    # directory; MonitorServer itself does not bind that port.
+                    container.setdefault(
+                        "readinessProbe",
+                        {
+                            "tcpSocket": {"port": port},
+                            "periodSeconds": 2,
+                            "timeoutSeconds": 1,
+                            "failureThreshold": 3,
+                            "successThreshold": 1,
+                        },
+                    )
             declared = containers[0].setdefault("ports", [])
             if not any(int(item.get("containerPort", 0)) == port for item in declared):
                 declared.append({"name": "runtime", "containerPort": port, "protocol": "TCP"})
@@ -425,6 +442,7 @@ class RuntimeServiceRenderer:
                 "SOURCE_TYPE": source.get("source_type", ""),
                 "SOURCE_ID": source_id,
                 "SOURCE_METADATA": str(source.get("metadata", {})),
+                "TASK_OFFER_LIMIT": str(source.get("task_offer_limit", 0)),
                 "ALL_EDGE_DEVICES": str(node_set),
                 "DAG": str(self._generator_dag(source_info.get("dag") or {})),
             }

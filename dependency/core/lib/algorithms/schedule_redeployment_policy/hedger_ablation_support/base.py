@@ -3,6 +3,7 @@ import copy
 
 from core.lib.common import ConfigLoader, Context, GlobalInstanceManager, LOGGER
 from core.lib.content import Task
+from core.lib.scheduling.deployment_plan import validate_plan
 
 from ..base_redeployment_policy import BaseRedeploymentPolicy
 
@@ -40,17 +41,6 @@ class HedgerAblationRedeploymentPolicyBase(BaseRedeploymentPolicy, abc.ABC):
                 config=hedger_config,
             )
 
-    @staticmethod
-    def _normalize_plan_for_backend(plan: dict, dag: dict, node_set) -> dict:
-        plan = copy.deepcopy(plan) if isinstance(plan, dict) else {}
-        normalized = {}
-        for service in list(dag.keys()):
-            selected_nodes = plan.get(service, list(node_set))
-            if not isinstance(selected_nodes, (list, tuple, set)):
-                selected_nodes = [selected_nodes]
-            normalized[service] = list(dict.fromkeys(node for node in selected_nodes if node in node_set))
-        return normalized
-
     def __call__(self, info):
         source_id = info['source']['id']
         dag = info['dag']
@@ -61,10 +51,16 @@ class HedgerAblationRedeploymentPolicyBase(BaseRedeploymentPolicy, abc.ABC):
         self.hedger.register_physical_topology(list(node_set), source_device)
         self.hedger.register_state_buffer()
 
+        default_plan = validate_plan(
+            copy.deepcopy(self.default_deployment),
+            info,
+            cloud_node=self.system.cloud_device,
+        )
+
         if self.use_heuristic_deployment:
             deploy_plan = self.hedger.set_heuristic_deployment_plan(
                 info=info,
-                default_deployment=self.default_deployment,
+                default_deployment=default_plan,
                 mark_version=True,
             )
         else:
@@ -74,9 +70,21 @@ class HedgerAblationRedeploymentPolicyBase(BaseRedeploymentPolicy, abc.ABC):
                     f"[HedgerAblation][Redeployment] alias={self.controller_alias}, source={source_id}, "
                     "no learned redeployment plan available; fall back to default deployment."
                 )
-                deploy_plan = copy.deepcopy(self.default_deployment) or {}
+                deploy_plan = copy.deepcopy(default_plan)
 
-        deploy_plan = self._normalize_plan_for_backend(deploy_plan, dag, node_set)
+        deploy_plan = validate_plan(
+            copy.deepcopy(deploy_plan),
+            info,
+            cloud_node=self.system.cloud_device,
+        )
+        deployment_version = int(self.hedger.get_active_deployment_version())
+        plan_history = copy.deepcopy(
+            getattr(self.hedger, "_deployment_plan_history", {}) or {}
+        )
+        plan_history[deployment_version] = copy.deepcopy(deploy_plan)
+        for old_version in sorted(plan_history)[:-16]:
+            plan_history.pop(old_version, None)
+        self.hedger._deployment_plan_history = plan_history
         total_replicas = sum(len(nodes) for nodes in deploy_plan.values())
         LOGGER.info(
             f"[HedgerAblation][Redeployment] alias={self.controller_alias}, source={source_id}, "

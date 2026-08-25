@@ -358,6 +358,22 @@ class FakeTaskLeaseRedis:
             self.leases.setdefault(revision, {})[member] = float(expiry)
             self.reservations.pop(member, None)
             return [2, str(expiry)]
+        if script == RedisTaskLeaseStore._CANCEL_RESERVATION_SCRIPT:
+            assert key_count == 2
+            requested, now, member, decision_id = args
+            self._prune_reservations(float(now))
+            member = str(member)
+            reservation = self.reservations.get(member)
+            if reservation is None:
+                return [0, ""]
+            context = json.loads(reservation["context"])
+            if int(context.get("runtime_directory_revision") or 0) != int(requested):
+                return [2, str(context.get("runtime_directory_revision") or "")]
+            expected = str(context.get("decision_id") or "")
+            if str(decision_id or "") and str(decision_id) != expected:
+                return [3, expected]
+            self.reservations.pop(member, None)
+            return [1, expected]
         if script == RedisTaskLeaseStore._RENEW_SCRIPT:
             assert key_count == 4
             revision = self._revision(keys[0])
@@ -421,6 +437,9 @@ class FakeTaskLeaseRedis:
         if key.endswith(":contexts"):
             return {member: record["raw"] for member, record in self.contexts.items()}
         raise AssertionError(f"unexpected task lease hash: {key}")
+
+    def hget(self, key, member):
+        return self.hgetall(key).get(str(member))
 
     def hdel(self, key, *members):
         target = self.reservations if key.endswith(":reservation-contexts") else self.contexts
@@ -645,6 +664,48 @@ def test_task_context_reservation_promotes_atomically_and_expires_without_admiss
     )
     assert replacement["runtime_directory_revision"] == 3
     assert replacement["plan_digest"] == "new"
+
+
+@pytest.mark.unit
+def test_task_reservation_cancellation_is_exact_and_idempotent():
+    leases = InMemoryTaskLeaseStore(clock=lambda: 100.0)
+    context = {
+        "root_uuid": "root-abandoned",
+        "runtime_directory_revision": 2,
+        "decision_id": "decision-abandoned",
+    }
+    leases.reserve(
+        2,
+        "root-abandoned",
+        context,
+        active_revision=2,
+        ttl_seconds=3600,
+    )
+
+    with pytest.raises(RuntimeDirectoryConflict, match="decision_id"):
+        leases.cancel_reservation(
+            2,
+            "root-abandoned",
+            decision_id="different",
+        )
+    assert len(leases.list_reservations()) == 1
+
+    cancelled = leases.cancel_reservation(
+        2,
+        "root-abandoned",
+        decision_id="decision-abandoned",
+    )
+    assert cancelled["cancelled"] is True
+    assert cancelled.get("already_cancelled") is not True
+    assert leases.list_reservations() == []
+
+    replay = leases.cancel_reservation(
+        2,
+        "root-abandoned",
+        decision_id="decision-abandoned",
+    )
+    assert replay["cancelled"] is True
+    assert replay["already_cancelled"] is True
 
 
 @pytest.mark.unit
@@ -1034,6 +1095,30 @@ def test_redis_task_context_records_survive_scheduler_restart():
         )
     second_restart.release(3, "root-9")
     assert second_restart.list_active() == []
+
+
+@pytest.mark.unit
+def test_redis_task_reservation_cancellation_survives_retry():
+    redis = FakeTaskLeaseRedis(active_revision=3)
+    store = RedisTaskLeaseStore(redis, install_id="test", clock=lambda: 100.0)
+    context = {
+        "root_uuid": "root-eof",
+        "runtime_directory_revision": 3,
+        "decision_id": "decision-eof",
+    }
+    store.reserve(3, "root-eof", context, active_revision=3, ttl_seconds=3600)
+
+    with pytest.raises(RuntimeDirectoryConflict, match="decision_id"):
+        store.cancel_reservation(3, "root-eof", decision_id="wrong")
+    assert len(store.list_reservations()) == 1
+
+    assert store.cancel_reservation(
+        3, "root-eof", decision_id="decision-eof"
+    )["cancelled"] is True
+    replay = store.cancel_reservation(
+        3, "root-eof", decision_id="decision-eof"
+    )
+    assert replay["already_cancelled"] is True
 
 
 @pytest.mark.unit
