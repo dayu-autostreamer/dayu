@@ -49,6 +49,7 @@ define HELP_INFO
 #   make lint-python
 #   make python-syntax
 #   make test-python
+#   make test-python-ml
 #   make test-unit-integration
 #   make test-component
 #   make test-e2e
@@ -72,7 +73,7 @@ define HELP_INFO
 #   make frontend-format
 endef
 
-.PHONY: help build all validate-build install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-test frontend-build frontend-check check
+.PHONY: help build all validate-build install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python test-python-ml coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-test frontend-build frontend-check check
 
 help:
 	@echo "$${HELP_INFO}"
@@ -108,6 +109,7 @@ lint-python:
 		backend/backend_core.py \
 		backend/backend_server.py \
 		backend/cluster_client.py \
+		backend/runtime_orchestrator.py \
 		backend/runtime_telemetry.py \
 		backend/template_helper.py \
 		dependency/core/lib/network/utils.py \
@@ -138,6 +140,13 @@ test-e2e:
 
 test-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest $(PYTEST_ARGS)
+
+test-python-ml:
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
+		tests \
+		-m ml \
+		--require-ml-dependencies \
+		$(PYTEST_ARGS)
 
 coverage-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \

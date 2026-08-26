@@ -812,7 +812,8 @@ def test_long_uninstall_does_not_block_install_state_event_loop(management_backe
 
     async def exercise():
         uninstall = asyncio.create_task(backend.uninstall_service(None))
-        assert await asyncio.to_thread(started.wait, 1)
+        loop = asyncio.get_running_loop()
+        assert await loop.run_in_executor(None, started.wait, 1)
         state = await asyncio.wait_for(backend.get_install_state(), timeout=0.2)
         release.set()
         result = await uninstall

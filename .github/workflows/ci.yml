@@ -114,6 +114,7 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements-dev.txt
+            .github/requirements/torch-cpu.txt
             backend/requirements.txt
             dependency/core/lib/requirements.txt
             dependency/core/controller/requirements.txt
@@ -126,7 +127,7 @@ jobs:
           python -m pip install -r .github/requirements/torch-cpu.txt
 
       - name: Run unit and integration tests
-        run: make test-unit-integration
+        run: make test-unit-integration PYTEST_ARGS=--require-ml-dependencies
 
   python-coverage:
     name: Python coverage
@@ -164,7 +165,7 @@ jobs:
           python -m pip install -r .github/requirements/torch-cpu.txt
 
       - name: Run full Python suite with coverage
-        run: make coverage-python
+        run: make coverage-python PYTEST_ARGS=--require-ml-dependencies
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
