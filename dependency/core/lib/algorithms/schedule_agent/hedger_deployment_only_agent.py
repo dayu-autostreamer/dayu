@@ -21,7 +21,6 @@ class HedgerDeploymentOnlyAgent(HedgerAblationAgentBase, abc.ABC):
         source_edge_device = info['source_device']
         all_edge_devices = info['all_edge_devices']
         cloud_device = self.cloud_device
-        all_devices = [*all_edge_devices, cloud_device]
         dag = info['dag']
 
         self.hedger.register_logical_topology(Task.extract_dag_from_dag_deployment(dag))
@@ -40,17 +39,18 @@ class HedgerDeploymentOnlyAgent(HedgerAblationAgentBase, abc.ABC):
                 offloading = self._normalize_mapping(self.default_offloading)
                 used_default_offloading = True
 
-        deployment_version = self.hedger.get_active_deployment_version()
         policy = {}
         policy.update(configuration)
-        service_info = self.system.runtime_service_nodes()
-        for service_name in dag:
-            if service_name in service_info and service_name in offloading and offloading[service_name] in all_devices:
-                dag[service_name]['service']['execute_device'] = offloading[service_name]
-            elif service_name == TaskConstant.START.value:
-                dag[service_name]['service']['execute_device'] = source_edge_device
-            else:
-                dag[service_name]['service']['execute_device'] = cloud_device
+        runtime_snapshot = self._get_live_runtime_snapshot()
+        service_info = runtime_snapshot.get("deployment", {})
+        deployment_version = self._get_live_deployment_version(service_info)
+        dag, route_substitutions = self._assign_live_routes(
+            dag,
+            offloading,
+            service_info,
+            all_edge_devices,
+            source_edge_device,
+        )
         policy.update({'dag': dag, 'deployment_version': deployment_version})
 
         service_names = [name for name in dag if name not in (TaskConstant.START.value, TaskConstant.END.value)]
@@ -61,6 +61,7 @@ class HedgerDeploymentOnlyAgent(HedgerAblationAgentBase, abc.ABC):
         LOGGER.info(
             f"[HedgerDeploymentOnly][Schedule] source={source_id}, services={len(service_names)}, "
             f"deployment_version={deployment_version}, cloud={cloud_count}/{len(service_names) if service_names else 0}, "
-            f"used_default_offloading={used_default_offloading}"
+            f"used_default_offloading={used_default_offloading}, "
+            f"runtime_route_substitutions={len(route_substitutions)}"
         )
         return policy

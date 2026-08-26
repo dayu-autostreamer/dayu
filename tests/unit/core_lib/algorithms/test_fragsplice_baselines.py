@@ -395,11 +395,16 @@ def test_reactive_baselines_do_not_build_future_commitment_snapshot(
 
 
 @pytest.mark.unit
+@pytest.mark.ml
 def test_dtodrl_train_then_inference_uses_same_full_plan_action_space(
     tmp_path,
     monkeypatch,
 ):
-    pytest.importorskip("torch")
+    pytest.importorskip(
+        "torch",
+        reason="DTODRL checkpoint tests require the real PyTorch runtime",
+        exc_type=ModuleNotFoundError,
+    )
     policy_module = importlib.import_module(
         "core.lib.algorithms.schedule_agent.dtodrl.policy"
     )
@@ -471,11 +476,16 @@ def test_dtodrl_train_then_inference_uses_same_full_plan_action_space(
 
 
 @pytest.mark.unit
+@pytest.mark.ml
 def test_dtodrl_loads_legacy_weights_across_equivalent_video_configuration(
     tmp_path,
     monkeypatch,
 ):
-    torch = pytest.importorskip("torch")
+    torch = pytest.importorskip(
+        "torch",
+        reason="DTODRL checkpoint tests require the real PyTorch runtime",
+        exc_type=ModuleNotFoundError,
+    )
     policy_module = importlib.import_module(
         "core.lib.algorithms.schedule_agent.dtodrl.policy"
     )

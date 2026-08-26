@@ -7,7 +7,7 @@ from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, Conf
     TaskConstant
 from core.lib.content import Task
 from core.lib.algorithms.shared.hedger import Hedger
-from core.lib.scheduling import queue_waiting_counts
+from core.lib.scheduling import SchedulingSnapshotScope, queue_waiting_counts
 
 from .base_agent import BaseAgent
 
@@ -97,12 +97,134 @@ class HedgerAgent(BaseAgent, abc.ABC):
             f"sample=[{sample_text}]"
         )
 
+    def _get_live_runtime_snapshot(self):
+        snapshot = self.system.get_scheduling_snapshot(
+            scope=SchedulingSnapshotScope.LIVE,
+        )
+        if not isinstance(snapshot, dict):
+            raise ValueError("Hedger requires a scheduling snapshot object")
+        deployment = snapshot.get("deployment")
+        if not isinstance(deployment, dict):
+            raise ValueError("Hedger scheduling snapshot requires a deployment object")
+        for service, nodes in deployment.items():
+            if not isinstance(nodes, list):
+                raise ValueError(
+                    f"Hedger live deployment for service {service!r} must be a node list"
+                )
+        return copy.deepcopy(snapshot)
+
+    def _get_live_deployment_version(self, deployment):
+        served_version = int(self.hedger.get_active_deployment_version())
+        plan_history = getattr(self.hedger, "_deployment_plan_history", {}) or {}
+        if not plan_history:
+            return served_version
+
+        active_routes = {
+            str(service): {str(node) for node in nodes}
+            for service, nodes in deployment.items()
+        }
+        candidate_versions = sorted(
+            (
+                int(version)
+                for version in plan_history
+                if int(version) <= served_version
+            ),
+            reverse=True,
+        )
+        for version in candidate_versions:
+            required_plan = plan_history[version]
+            # Backend can union source-local plans and add configured cloud
+            # replicas. Every route required by this Hedger decision must be
+            # active; additional live replicas do not change its identity.
+            if all(
+                {str(node) for node in required_nodes}.issubset(
+                    active_routes.get(str(service), set())
+                )
+                for service, required_nodes in required_plan.items()
+            ):
+                return version
+        raise ValueError(
+            "Hedger cannot bind the active runtime routes to a served deployment decision"
+        )
+
+    def _assign_live_routes(
+            self,
+            dag,
+            offloading,
+            deployment,
+            all_edge_devices,
+            source_device,
+    ):
+        scheduled_dag = copy.deepcopy(dag)
+        cloud_device = str(self.cloud_device)
+        device_order = []
+        for device in [*all_edge_devices, cloud_device]:
+            device = str(device)
+            if device not in device_order:
+                device_order.append(device)
+        default_offloading = self._normalize_mapping(self.default_offloading)
+        substitutions = []
+
+        for service_name, node_info in scheduled_dag.items():
+            service_name = str(service_name)
+            if service_name == TaskConstant.START.value:
+                target = str(source_device)
+            elif service_name == TaskConstant.END.value:
+                target = cloud_device
+            else:
+                active_nodes = {str(node) for node in deployment.get(service_name, [])}
+                available_nodes = [
+                    device for device in device_order if device in active_nodes
+                ]
+                if not available_nodes:
+                    raise ValueError(
+                        f"Hedger cannot schedule service {service_name!r}: "
+                        "the active RuntimeDirectory has no processor route in this source scope"
+                    )
+
+                proposed = str(offloading.get(service_name) or "").strip()
+                configured = str(default_offloading.get(service_name) or "").strip()
+                if proposed in available_nodes:
+                    target = proposed
+                elif configured in available_nodes:
+                    target = configured
+                    substitutions.append(service_name)
+                elif cloud_device in available_nodes:
+                    target = cloud_device
+                    substitutions.append(service_name)
+                else:
+                    target = available_nodes[0]
+                    substitutions.append(service_name)
+
+            try:
+                node_info["service"]["execute_device"] = target
+            except (KeyError, TypeError) as exc:
+                raise ValueError(
+                    f"Hedger schedule DAG entry {service_name!r} has no service object"
+                ) from exc
+
+        return scheduled_dag, tuple(substitutions)
+
+    @staticmethod
+    def _resource_matches_live_revision(snapshot, device):
+        active_revision = int(snapshot["runtime_directory_revision"])
+        if active_revision < 1:
+            return False
+        resource_revisions = snapshot.get("resource_runtime_revision")
+        if not isinstance(resource_revisions, dict):
+            raise ValueError(
+                "Hedger scheduling snapshot requires resource runtime revisions"
+            )
+        reported_revision = resource_revisions.get(device)
+        if reported_revision is None:
+            return False
+        return int(reported_revision) == active_revision
+
     def get_schedule_plan(self, info):
         source_id = info['source_id']
         source_edge_device = info['source_device']
         all_edge_devices = info['all_edge_devices']
         cloud_device = self.cloud_device
-        all_devices = [*all_edge_devices, cloud_device]
         dag = info['dag']
 
         self.hedger.register_logical_topology(Task.extract_dag_from_dag_deployment(dag))
@@ -117,7 +239,6 @@ class HedgerAgent(BaseAgent, abc.ABC):
             offloading = self._normalize_mapping(self.default_offloading)
         else:
             offloading = self._normalize_mapping(self.hedger.get_offloading_plan())
-        deployment_version = self.hedger.get_active_deployment_version()
         used_default_offloading = should_force_default
         if not offloading:
             offloading = self._normalize_mapping(self.default_offloading)
@@ -135,16 +256,16 @@ class HedgerAgent(BaseAgent, abc.ABC):
 
         policy = {}
         policy.update(configuration)
-        service_info = self.system.runtime_service_nodes()
-
-        for service_name in dag:
-            if service_name in service_info and service_name in offloading \
-                    and offloading[service_name] in all_devices:
-                dag[service_name]['service']['execute_device'] = offloading[service_name]
-            elif service_name == TaskConstant.START.value:
-                dag[service_name]['service']['execute_device'] = source_edge_device
-            else:
-                dag[service_name]['service']['execute_device'] = cloud_device
+        runtime_snapshot = self._get_live_runtime_snapshot()
+        service_info = runtime_snapshot.get("deployment", {})
+        deployment_version = self._get_live_deployment_version(service_info)
+        dag, route_substitutions = self._assign_live_routes(
+            dag,
+            offloading,
+            service_info,
+            all_edge_devices,
+            source_edge_device,
+        )
 
         policy.update({
             'dag': dag,
@@ -169,6 +290,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
             f"deployment_version={deployment_version}, "
             f"cloud={cloud_count}/{len(service_names) if service_names else 0}, "
             f"unique_devices={len(assigned_devices)}, used_default_offloading={used_default_offloading}, "
+            f"runtime_route_substitutions={len(route_substitutions)}, "
             f"sample={sample_assignments}"
         )
         LOGGER.debug(
@@ -189,6 +311,12 @@ class HedgerAgent(BaseAgent, abc.ABC):
         if not isinstance(resource, dict):
             return
 
+        runtime_snapshot = self._get_live_runtime_snapshot()
+        queue_resource_is_current = self._resource_matches_live_revision(
+            runtime_snapshot,
+            device,
+        )
+
         bandwidth = resource.get('available_bandwidth')
         if bandwidth is not None and bandwidth != -1:
             self.hedger.state_buffer.add_bandwidths(bandwidth)
@@ -206,13 +334,16 @@ class HedgerAgent(BaseAgent, abc.ABC):
 
         queue_lengths = queue_waiting_counts(resource)
         observe_queue = getattr(self.hedger, "update_latency_guard_queue_lengths", None)
-        if queue_lengths and callable(observe_queue):
+        if queue_lengths and queue_resource_is_current and callable(observe_queue):
             observe_queue(device, queue_lengths)
-        if queue_lengths:
+        if queue_lengths and queue_resource_is_current:
+            deployment_version = self._get_live_deployment_version(
+                runtime_snapshot.get("deployment", {}),
+            )
             self.hedger.state_buffer.add_queue_lengths(
                 device,
                 queue_lengths,
-                deployment_version=self.hedger.get_active_deployment_version(),
+                deployment_version=deployment_version,
             )
 
         model_flops_updates = resource.get('model_flops') or {}
@@ -228,8 +359,10 @@ class HedgerAgent(BaseAgent, abc.ABC):
             updated_fields.append(f"gpu_usage={self._format_utilization_for_log(gpu_usage)}")
         if memory_usage is not None:
             updated_fields.append(f"mem_usage={self._format_utilization_for_log(memory_usage)}")
-        if queue_lengths:
+        if queue_lengths and queue_resource_is_current:
             updated_fields.append(self._summarize_numeric_mapping_for_log("queue_length", queue_lengths))
+        elif queue_lengths:
+            updated_fields.append("queue_length=ignored_stale_runtime_revision")
         if model_flops_updates:
             updated_fields.append(self._summarize_numeric_mapping_for_log("model_flops", model_flops_updates))
         if model_memory_updates:

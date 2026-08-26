@@ -6,6 +6,7 @@ from .base_redeployment_policy import BaseRedeploymentPolicy
 from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, Context, ConfigLoader, LOGGER
 from core.lib.content import Task
 from core.lib.algorithms.shared.hedger import Hedger
+from core.lib.scheduling.deployment_plan import validate_plan
 
 __all__ = ('HedgerRedeploymentPolicy',)
 
@@ -48,25 +49,33 @@ class HedgerRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
         self.hedger.register_physical_topology(list(node_set), source_device)
         self.hedger.register_state_buffer()
 
+        default_plan = validate_plan(
+            copy.deepcopy(self.default_deployment),
+            info,
+            cloud_node=self.system.cloud_device,
+        )
+
         deploy_plan = self.hedger.get_redeployment_plan()
         if deploy_plan is None:
             LOGGER.warning(
                 f"[HedgerPolicy][Redeployment] source={source_id}, no Hedger redeployment plan available; "
                 f"fall back to default deployment policy."
             )
-            deploy_plan = copy.deepcopy(self.default_deployment) or {}
+            deploy_plan = copy.deepcopy(default_plan)
 
-        all_services = list(dag.keys())
-        for service in all_services:
-            if service in deploy_plan:
-                selected_nodes = deploy_plan[service]
-                if isinstance(selected_nodes, (list, tuple, set)):
-                    candidate_nodes = list(selected_nodes)
-                else:
-                    candidate_nodes = [selected_nodes]
-                deploy_plan[service] = list(dict.fromkeys(node for node in candidate_nodes if node in node_set))
-            else:
-                deploy_plan[service] = list(node_set)
+        deploy_plan = validate_plan(
+            copy.deepcopy(deploy_plan),
+            info,
+            cloud_node=self.system.cloud_device,
+        )
+        deployment_version = int(self.hedger.get_active_deployment_version())
+        plan_history = copy.deepcopy(
+            getattr(self.hedger, "_deployment_plan_history", {}) or {}
+        )
+        plan_history[deployment_version] = copy.deepcopy(deploy_plan)
+        for old_version in sorted(plan_history)[:-16]:
+            plan_history.pop(old_version, None)
+        self.hedger._deployment_plan_history = plan_history
 
         total_replicas = sum(len(nodes) for nodes in deploy_plan.values())
         sample = "; ".join(
