@@ -30,6 +30,7 @@ def decode_payload(response):
 
 def configure_algorithms(monkeypatch, http_video_module, tmp_path):
     compressed_batches = []
+    monkeypatch.setenv("TEMP_PATH", str(tmp_path))
 
     class PassThroughFilter:
         def __call__(self, system, frame):

@@ -66,8 +66,6 @@ class VideoSource:
         # source request atomic while allowing status/file endpoints to remain
         # independent FastAPI requests.
         self._source_lock = threading.Lock()
-        self._temporary_root = os.getenv('TEMP_PATH') or os.getcwd()
-        os.makedirs(self._temporary_root, exist_ok=True)
 
     def get_one_frame(self):
         return self.player.read_frame()
@@ -132,13 +130,12 @@ class VideoSource:
                 )
                 for frame in frames
             ]
-            self.file_name = os.path.join(
-                self._temporary_root,
+            self.file_name = Context.get_temporary_file_path(
                 NameMaintainer.get_task_data_file_name(
                     self.source_id,
                     self.task_id,
                     file_suffix=self.file_suffix,
-                ),
+                )
             )
             self.frame_compress(self, frames, self.file_name)
             return JSONResponse(self.sampled_frame_indices)

@@ -11,9 +11,12 @@ from types import SimpleNamespace
 from fastapi import BackgroundTasks
 import pytest
 
+from core.lib.common import FileNotMountedError
+
 
 @pytest.fixture
-def http_video_module():
+def http_video_module(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEMP_PATH", str(tmp_path))
     module = importlib.import_module("http_video")
     module.sources.clear()
     return module
@@ -35,6 +38,38 @@ def test_http_video_file_endpoint_registers_cleanup_task(monkeypatch, http_video
     assert len(background.tasks) == 1
     assert background.tasks[0].func is http_video_module.FileOps.remove_file
     assert background.tasks[0].args == (str(payload),)
+
+
+@pytest.mark.unit
+def test_http_video_requires_explicit_temporary_storage(
+    monkeypatch,
+    http_video_module,
+    tmp_path,
+):
+    monkeypatch.delenv("TEMP_PATH")
+    monkeypatch.setattr(
+        http_video_module,
+        "VideoDatasetPlayer",
+        lambda root, mode: SimpleNamespace(is_end=False),
+    )
+    source = http_video_module.VideoSource(str(tmp_path), "non-cycle")
+    source.source_id = 314159
+    source.task_id = 2718
+    source.meta_data = {"resolution": "720p"}
+    source.raw_meta_data = {"resolution": "1080p"}
+    source.frame_process = lambda system, frame, source_res, target_res: frame
+    source.frame_compress = lambda system, frames, file_name: Path(file_name).write_text(
+        frames[0],
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(source, "_configure_request", lambda data: None)
+    monkeypatch.setattr(source, "_select_frames", lambda: (["frame"], [1]))
+    cwd_artifact = Path.cwd() / "data_of_source_314159_task_2718.mp4"
+
+    assert not cwd_artifact.exists()
+    with pytest.raises(FileNotMountedError, match="Temporary directory is not mounted"):
+        source.get_source_data("{}")
+    assert not cwd_artifact.exists()
 
 
 @pytest.mark.unit
@@ -196,9 +231,11 @@ def test_http_video_source_serializes_stateful_source_requests(
     second_entered = threading.Event()
     events = []
     responses = {}
+    generated_paths = []
 
     def compress(system, frames, file_name):
         events.append(("compress", system.task_id))
+        generated_paths.append(Path(file_name))
         Path(file_name).write_text(frames[0], encoding="utf-8")
 
     def configure(data):
@@ -263,6 +300,10 @@ def test_http_video_source_serializes_stateful_source_requests(
         ("select", 2),
         ("compress", 2),
     ]
+    assert generated_paths == [
+        tmp_path / "data_of_source_7_task_1.mp4",
+        tmp_path / "data_of_source_7_task_2.mp4",
+    ]
 
 
 @pytest.mark.unit
@@ -270,6 +311,7 @@ def test_http_video_applies_each_task_configuration_after_scheduling(
     monkeypatch, http_video_module, tmp_path
 ):
     events = []
+    generated_paths = []
 
     class Player:
         def __init__(self):
@@ -301,6 +343,7 @@ def test_http_video_applies_each_task_configuration_after_scheduling(
 
         def compress(system, frames, file_name):
             events.append(("encode", int(frames[0].split("-")[1])))
+            generated_paths.append(Path(file_name))
             Path(file_name).write_text(frames[0], encoding="utf-8")
 
         return compress
@@ -336,6 +379,10 @@ def test_http_video_applies_each_task_configuration_after_scheduling(
         ("process", "frame-0", "720p"),
         ("process", "frame-1", "480p"),
         ("process", "frame-2", "480p"),
+    ]
+    assert generated_paths == [
+        tmp_path / "data_of_source_9_task_1.mp4",
+        tmp_path / "data_of_source_9_task_2.mp4",
     ]
     assert source.get_source_status()["ready"] is True
 
