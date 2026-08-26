@@ -20,7 +20,7 @@ log-export:
     retention-records: 100000
     # compact the append-only store after it exceeds retention by this many records
     compact-interval: 10000
-# Backend is the only Dayu process allowed to access the Kubernetes API.
+# Backend is the only dayu process allowed to access the Kubernetes API.
 backend-rbac:
   service-account: dayu-backend
   role: dayu-backend-runtime-manager
@@ -34,26 +34,15 @@ support-crd-meta:
   kind: JointMultiEdgeService
 # RuntimeService orchestration and bounded revision retirement.
 runtime:
+  # Maximum time for one RuntimeService activation batch to reach both Activated and Ready.
   activation-timeout-seconds: 600
+  # End-to-end budget for one install, recovery, or redeployment transaction.
   operation-timeout-seconds: 900
-  # Total budget for one Scheduler control-plane HTTP call (including retries).
+  # Total budget for one Scheduler control-plane HTTP call, including retries.
   scheduler-request-timeout-seconds: 30
-  # Backend owns the only node inventory snapshot; runtime workers never query it.
-  inventory-ttl-seconds: 30
-  # One backend worker samples Scheduler telemetry; browser requests only read
-  # its last-known-good snapshot and never contact Scheduler directly.
-  telemetry-sample-interval-seconds: 2
-  telemetry-request-timeout-seconds: 3
-  # The same single worker batches all processor Pod refs. Kubernetes sampling
-  # is intentionally slower than Scheduler sampling to bound API-server load.
-  metrics-sample-interval-seconds: 10
-  metrics-request-timeout-seconds: 5
-  # Distributor polling is bounded independently from bulk artifact transfer.
-  result-request-timeout-seconds: 5
-  result-batch-size: 20
-  # Existing tasks may finish during this bounded post-publication grace.
-  # The deadline is immutable; stale leases are fenced when it expires.
+  # Maximum immutable grace for tasks still using the previous RuntimeDirectory revision.
   retirement-grace-seconds: 180
+  # TTL for task reservations, leases, join barriers, and runtime idempotency records.
   lease-ttl-seconds: 3600
 # default image meta information for dayu containers, <registry>/<repository>/<image_name>:<tag>
 default-image-meta:

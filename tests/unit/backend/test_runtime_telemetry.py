@@ -1,6 +1,9 @@
 import copy
+import math
 import threading
 from types import SimpleNamespace
+
+import pytest
 
 from runtime_telemetry import RuntimeTelemetryCache
 
@@ -72,6 +75,16 @@ def scheduler_request(resource_values=None, overhead_values=None, calls=None):
         return next(overhead_values)
 
     return request
+
+
+@pytest.mark.parametrize("value", [0, -1, math.nan, math.inf, True, "invalid"])
+def test_runtime_telemetry_rejects_invalid_internal_timing_values(value):
+    with pytest.raises(ValueError, match="finite positive number"):
+        RuntimeTelemetryCache(
+            request=lambda *args, **kwargs: None,
+            runtime_metrics=lambda *args, **kwargs: {},
+            interval_seconds=value,
+        )
 
 
 def test_bind_immediately_exposes_exact_processor_placeholders_without_sampling():

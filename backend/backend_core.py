@@ -54,6 +54,9 @@ class _StopAdmission:
 
 
 class BackendCore:
+    _RESULT_REQUEST_TIMEOUT_SECONDS = 5.0
+    _RESULT_WINDOW_SIZE = 20
+
     def __init__(self):
 
         self.template_helper = TemplateHelper(Context.get_default_file_path())
@@ -96,7 +99,6 @@ class BackendCore:
         self.resource_url = None
         self.log_fetch_url = None
 
-        runtime_config = self.template_helper.load_base_info().get('runtime', {})
         self.runtime_telemetry = RuntimeTelemetryCache(
             request=lambda *args, **kwargs: http_request(*args, **kwargs),
             runtime_metrics=lambda refs, request_timeout_seconds: (
@@ -104,16 +106,6 @@ class BackendCore:
                     refs,
                     request_timeout_seconds=request_timeout_seconds,
                 )
-            ),
-            interval_seconds=runtime_config.get('telemetry-sample-interval-seconds', 2),
-            metrics_interval_seconds=runtime_config.get(
-                'metrics-sample-interval-seconds', 10,
-            ),
-            scheduler_request_timeout_seconds=runtime_config.get(
-                'telemetry-request-timeout-seconds', 3,
-            ),
-            kubernetes_request_timeout_seconds=runtime_config.get(
-                'metrics-request-timeout-seconds', 5,
             ),
         )
 
@@ -128,15 +120,6 @@ class BackendCore:
         # enabled only after install/recovery publishes an active directory
         # and is disabled atomically with query cancellation before uninstall.
         self._query_admission_enabled = False
-        self.result_request_timeout_seconds = max(
-            0.1,
-            float(runtime_config.get('result-request-timeout-seconds', 5)),
-        )
-        self.result_batch_size = max(
-            1,
-            int(runtime_config.get('result-batch-size', 20)),
-        )
-
         self.task_results = {}
 
         self.is_get_result = False
@@ -161,7 +144,10 @@ class BackendCore:
         self._runtime_recovery_wake_event = threading.Event()
         self._runtime_recovery_requested = False
         self._runtime_recovery_thread = None
-        self.runtime_orchestrator = RuntimeOrchestrator(self.template_helper, self.namespace)
+        self.runtime_orchestrator = RuntimeOrchestrator(
+            self.template_helper,
+            self.namespace,
+        )
         redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=20, direct=False)
         self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
         self.system_log_store_path = 'system_log_store.jsonl'
@@ -1052,7 +1038,10 @@ class BackendCore:
             self.source_open = True
             self.source_label = source_label
             source_ids = [source['id'] for source in source_config.get('source_list') or ()]
-            self.task_results = {source_id: Queue(20) for source_id in source_ids}
+            self.task_results = {
+                source_id: Queue(self._RESULT_WINDOW_SIZE)
+                for source_id in source_ids
+            }
             # Runtime endpoints are immutable for this install.  Capture the
             # distributor URL per generation so a cancelled collector cannot
             # refresh or overwrite lifecycle-owned URL bindings after uninstall.
@@ -1129,10 +1118,10 @@ class BackendCore:
                 try:
                     response = http_request(result_url,
                                             method=NetworkAPIMethod.DISTRIBUTOR_RESULT,
-                                            timeout=self.result_request_timeout_seconds,
+                                            timeout=self._RESULT_REQUEST_TIMEOUT_SECONDS,
                                             json={
                                                 'time_ticket': time_ticket,
-                                                'size': self.result_batch_size,
+                                                'size': self._RESULT_WINDOW_SIZE,
                                             })
 
                     if cancel_event.is_set():

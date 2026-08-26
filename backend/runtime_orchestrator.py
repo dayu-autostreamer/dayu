@@ -112,6 +112,18 @@ def _source_id(source_info: Mapping[str, Any]) -> str:
     return str(value)
 
 
+def _positive_seconds(value: Any, field: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be a finite positive number")
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a finite positive number") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{field} must be a finite positive number")
+    return value
+
+
 class RuntimeOrchestrator:
     """Own install, rollout, directory publication and bounded retirement.
 
@@ -123,6 +135,15 @@ class RuntimeOrchestrator:
     INSTALL_LABEL = "dayu.io/install-id"
     MANAGED_LABEL_SELECTOR = "app.kubernetes.io/managed-by=dayu-backend"
     SUPPORTED_JETPACK_MAJORS = frozenset({4, 5, 6})
+    _RUNTIME_DEFAULTS = {
+        "activation-timeout-seconds": 600.0,
+        "operation-timeout-seconds": 900.0,
+        "scheduler-request-timeout-seconds": 30.0,
+        "retirement-grace-seconds": 180.0,
+        "lease-ttl-seconds": 3600.0,
+    }
+    _MIN_INVENTORY_TTL_SECONDS = 1.0
+    _INVENTORY_TTL_SECONDS = 30.0
     _PUBLICATION_PHASES = frozenset({"publishing", "publishing-rollout"})
     _INITIAL_ACTIVATION_PHASES = frozenset({
         "activating-scheduler", "activating-runtime",
@@ -143,6 +164,7 @@ class RuntimeOrchestrator:
         request=http_request_or_raise,
         clock=time.monotonic,
         wall_clock=time.time,
+        inventory_ttl_seconds: float = _INVENTORY_TTL_SECONDS,
     ):
         self.template_helper = template_helper
         self.namespace = str(namespace or "").strip()
@@ -173,29 +195,39 @@ class RuntimeOrchestrator:
         if not isinstance(default_cloud_processor_backup, bool):
             raise ValueError("default-cloud-processor-backup must be a boolean")
         self.default_cloud_processor_backup = default_cloud_processor_backup
-        runtime_config = base_info.get("runtime") or {}
-        self.activation_timeout = float(runtime_config.get("activation-timeout-seconds", 300))
-        self.operation_timeout = float(runtime_config.get("operation-timeout-seconds", 900))
-        self.scheduler_request_timeout = float(
-            runtime_config.get("scheduler-request-timeout-seconds", 30)
+
+        runtime = base_info.get("runtime")
+        if runtime is None:
+            runtime = {}
+        if not isinstance(runtime, Mapping):
+            raise TypeError("base.runtime must be an object")
+        unknown_runtime_fields = sorted(
+            str(name) for name in runtime
+            if name not in self._RUNTIME_DEFAULTS
         )
-        self.retirement_grace = float(
-            runtime_config.get("retirement-grace-seconds", 180)
-        )
-        self.lease_ttl = float(runtime_config.get("lease-ttl-seconds", 3600))
-        self.inventory_ttl = max(1.0, float(runtime_config.get("inventory-ttl-seconds", 30)))
-        timeouts = (
-            self.activation_timeout,
-            self.operation_timeout,
-            self.scheduler_request_timeout,
-            self.retirement_grace,
-            self.lease_ttl,
-        )
-        if any(not math.isfinite(value) or value <= 0 for value in timeouts):
+        if unknown_runtime_fields:
             raise ValueError(
-                "runtime activation, operation, scheduler request, retirement, and lease "
-                "timeouts must be positive"
+                f"unknown base.runtime fields: {unknown_runtime_fields}"
             )
+
+        def runtime_seconds(name: str) -> float:
+            return _positive_seconds(
+                runtime.get(name, self._RUNTIME_DEFAULTS[name]),
+                f"runtime.{name}",
+            )
+
+        self.activation_timeout = runtime_seconds("activation-timeout-seconds")
+        self.operation_timeout = runtime_seconds("operation-timeout-seconds")
+        self.scheduler_request_timeout = runtime_seconds(
+            "scheduler-request-timeout-seconds"
+        )
+        self.retirement_grace = runtime_seconds("retirement-grace-seconds")
+        self.lease_ttl = runtime_seconds("lease-ttl-seconds")
+
+        self.inventory_ttl = max(
+            self._MIN_INVENTORY_TTL_SECONDS,
+            _positive_seconds(inventory_ttl_seconds, "inventory TTL"),
+        )
 
     def _ensure_clients(self) -> None:
         request_timeout = max(1.0, min(30.0, self.operation_timeout))

@@ -107,15 +107,17 @@ Runtime control fields:
 | `runtime.activation-timeout-seconds` | `600` | Maximum wait for exact Sedna `Activated` and dynamic `Ready` conditions. Large multi-node deployments may require several minutes for edge route caches to converge. |
 | `runtime.operation-timeout-seconds` | `900` | End-to-end install/redeployment transaction budget used across activation and publication stages. |
 | `runtime.scheduler-request-timeout-seconds` | `30` | Maximum total time for one Scheduler control-plane call, including retries. Cancellation stops subsequent attempts/backoff; a running synchronous attempt remains bounded by its share of this budget. |
-| `runtime.inventory-ttl-seconds` | `30` | Backend-owned node snapshot TTL; callers cannot force refresh it. |
-| `runtime.telemetry-sample-interval-seconds` | `2` | Scheduler resource/overhead cadence used by the single backend runtime-telemetry worker. A new cycle starts only after the previous cycle settles. |
-| `runtime.telemetry-request-timeout-seconds` | `3` | Per-request timeout budget for the worker's Scheduler resource and overhead calls. Browser requests never inherit this wait. |
-| `runtime.metrics-sample-interval-seconds` | `10` | Kubernetes Pod/metrics cadence within the same single worker, clamped to at least the Scheduler telemetry interval. Each due cycle batches every exact processor Pod reference from the committed directory; it never creates one request per service or browser poll. |
-| `runtime.metrics-request-timeout-seconds` | `5` | Upper bound requested for each telemetry Pod, metrics, or due node-inventory list; the shared Kubernetes client may cap it further to its own control-plane budget. |
-| `runtime.result-request-timeout-seconds` | `5` | Maximum time for one incremental Distributor result poll. A stopped query can therefore leave a cancelled worker blocked for at most this bounded request. |
-| `runtime.result-batch-size` | `20` | Maximum task records returned by one Distributor poll. This matches the bounded in-memory visualization queue instead of requesting the entire accumulated result set. |
 | `runtime.retirement-grace-seconds` | `180` | Maximum retirement grace for tasks on the previous directory revision. Scheduler uses its own clock to establish the deadline atomically with proposal commit and lease clamping; Backend persists the returned value, the deadline is never extended, and Scheduler revokes remaining leases when it expires. |
 | `runtime.lease-ttl-seconds` | `3600` | End-to-end task lease TTL injected into runtime bootstrap; a retired old revision is still capped by its immutable retirement deadline. |
+
+These are the complete accepted `runtime` fields. Backend rejects unknown names and non-finite, zero, negative, or
+boolean values at startup instead of silently applying an implementation fallback.
+
+Node-inventory caching, Scheduler telemetry, Kubernetes metrics sampling, and incremental result polling use bounded
+Backend-owned implementation defaults. They are deliberately not deployment policy and therefore are not configured
+through `base.yaml`. After an immediate sample on runtime binding, each settled Scheduler telemetry cycle waits 2
+seconds and each settled Kubernetes metrics cycle waits 10 seconds. Their request bounds are 3 and 5 seconds
+respectively, and result collection uses one 5-second request bound with a shared 20-record fetch/visualization window.
 
 Only the lease-protected retirement gates another rollout, and only until this fixed grace expires. If Kubernetes
 exact-UID deletion still fails after the deadline, Backend retains those identities in its cleanup backlog and retries

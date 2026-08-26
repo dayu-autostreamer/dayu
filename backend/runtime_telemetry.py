@@ -1,6 +1,7 @@
 """Backend-owned last-known-good runtime telemetry snapshots."""
 
 import copy
+import math
 import threading
 import time
 
@@ -17,27 +18,45 @@ class RuntimeTelemetryCache:
     published after rebind/uninstall.
     """
 
+    _MIN_INTERVAL_SECONDS = 0.1
+    _SCHEDULER_SAMPLE_INTERVAL_SECONDS = 2.0
+    _METRICS_SAMPLE_INTERVAL_SECONDS = 10.0
+    _SCHEDULER_REQUEST_TIMEOUT_SECONDS = 3.0
+    _KUBERNETES_REQUEST_TIMEOUT_SECONDS = 5.0
+
     def __init__(
         self,
         request,
         runtime_metrics,
-        interval_seconds=2.0,
-        metrics_interval_seconds=10.0,
-        scheduler_request_timeout_seconds=3.0,
-        kubernetes_request_timeout_seconds=5.0,
+        interval_seconds=_SCHEDULER_SAMPLE_INTERVAL_SECONDS,
+        metrics_interval_seconds=_METRICS_SAMPLE_INTERVAL_SECONDS,
+        scheduler_request_timeout_seconds=_SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+        kubernetes_request_timeout_seconds=_KUBERNETES_REQUEST_TIMEOUT_SECONDS,
         clock=time.monotonic,
     ):
         self._request = request
         self._runtime_metrics_request = runtime_metrics
-        self._interval_seconds = max(0.1, float(interval_seconds))
+        self._interval_seconds = max(
+            self._MIN_INTERVAL_SECONDS,
+            self._positive_seconds(interval_seconds, "scheduler sample interval"),
+        )
         self._metrics_interval_seconds = max(
-            self._interval_seconds, float(metrics_interval_seconds),
+            self._interval_seconds,
+            self._positive_seconds(metrics_interval_seconds, "metrics sample interval"),
         )
         self._scheduler_request_timeout_seconds = max(
-            0.1, float(scheduler_request_timeout_seconds),
+            self._MIN_INTERVAL_SECONDS,
+            self._positive_seconds(
+                scheduler_request_timeout_seconds,
+                "scheduler telemetry request timeout",
+            ),
         )
         self._kubernetes_request_timeout_seconds = max(
-            0.1, float(kubernetes_request_timeout_seconds),
+            self._MIN_INTERVAL_SECONDS,
+            self._positive_seconds(
+                kubernetes_request_timeout_seconds,
+                "Kubernetes metrics request timeout",
+            ),
         )
         self._clock = clock
         self._lock = threading.Lock()
@@ -60,6 +79,18 @@ class RuntimeTelemetryCache:
         self._resource_sampled_at = None
         self._resource_stale = False
         self._runtime_metrics_sampled_at = None
+
+    @staticmethod
+    def _positive_seconds(value, field):
+        if isinstance(value, bool):
+            raise ValueError(f"{field} must be a finite positive number")
+        try:
+            value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} must be a finite positive number") from exc
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{field} must be a finite positive number")
+        return value
 
     @staticmethod
     def _directory_binding(directory):

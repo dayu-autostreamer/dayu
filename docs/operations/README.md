@@ -95,7 +95,7 @@ attempt must use a fresh UUID that is never deliberately reused.
 | `default-image-meta.*` | Registry/repository/tag for support containers. |
 | `default-file-mount-prefix` | Host-path prefix used by rendered mounts. |
 | `datasource.*` | Optional simulated datasource placement and data root. |
-| `runtime.*` | activation, operation, inventory, telemetry, one bounded retirement grace, and task-lease budgets. |
+| `runtime.*` | Activation, operation, Scheduler request, bounded retirement grace, and task-lease budgets. |
 
 ```bash
 TEMPLATE=template ACTION=start bash dayu.sh
@@ -245,11 +245,12 @@ uses a separate cache lock. Consequently, pending retirement is reconciled in
 the background without making service-list/detail reads wait for old tasks or
 the retirement deadline.
 
-Runtime telemetry follows a stale-while-revalidate path owned by one backend daemon. It samples Scheduler `/resource`
-and `/overhead` every `runtime.telemetry-sample-interval-seconds`; within that same non-overlapping worker, a slower
-`runtime.metrics-sample-interval-seconds` due cycle batches every exact processor Pod reference in the committed
-directory into one Pod list and one optional metrics list. Scheduler and Kubernetes calls have separate explicit
-request budgets. `/system_parameters` and `/service_info/{service}` only deep-copy the last-known-good cache, so a slow
+Runtime telemetry follows a stale-while-revalidate path owned by one backend daemon. After the immediate bind sample,
+its internal settle-then-wait cadence waits two seconds between Scheduler `/resource` and `/overhead` cycles; within
+that same non-overlapping worker, Kubernetes metrics waits ten seconds after each settled due cycle and batches every
+exact processor Pod reference in the committed directory into one Pod list and one optional metrics list. Scheduler
+and Kubernetes calls have separate bounded implementation-level request budgets. `/system_parameters` and
+`/service_info/{service}` only deep-copy the last-known-good cache, so a slow
 Scheduler, Metrics Server, kube-apiserver, or cluster DNS path cannot queue management API requests. Rebind/uninstall
 invalidates the generation before any old in-flight result can publish.
 Pod CPU/memory is summed across all expected containers and normalized against cached Node allocatable resources, with
@@ -274,8 +275,8 @@ visualization configuration; it does not uninstall RuntimeServices.
 
 Query admission is enabled only after an active RuntimeDirectory is committed and is disabled atomically before
 uninstall starts. Opening a query has no source-count-dependent sleep. One generation-scoped collector polls the
-captured Distributor endpoint with `runtime.result-request-timeout-seconds` and requests at most
-`runtime.result-batch-size` records; cancellation invalidates that generation, so a late response cannot populate a
+captured Distributor endpoint with an internal five-second request bound and requests at most the same 20 records
+retained by the visualization queue; cancellation invalidates that generation, so a late response cannot populate a
 new query or restore lifecycle-owned endpoint state.
 
 When `datasource.use-simulation=false`, backend opens the selected datasource automatically after successful install.

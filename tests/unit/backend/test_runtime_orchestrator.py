@@ -4,10 +4,12 @@ import math
 import threading
 import time
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from core.lib.common import YamlOps
 from core.lib.network import HTTPClientError
 from runtime_model import (
     RuntimeCleanupRef,
@@ -31,6 +33,14 @@ from runtime_session_store import StoredRuntimeSession
 
 HASH = "b" * 64
 INSTALL_ID = "11111111-1111-4111-8111-111111111111"
+BASE_TEMPLATE = Path(__file__).parents[3] / "template" / "base.yaml"
+
+
+def orchestrator_from_base_info(base_info):
+    template_helper = SimpleNamespace(
+        load_base_info=lambda: copy.deepcopy(base_info),
+    )
+    return RuntimeOrchestrator(template_helper, "dayu")
 
 
 def source_deploy(*services):
@@ -236,7 +246,6 @@ class FakeTemplateHelper:
             "runtime": {
                 "activation-timeout-seconds": 5,
                 "operation-timeout-seconds": 30,
-                "inventory-ttl-seconds": 1,
                 "retirement-grace-seconds": 10,
                 "lease-ttl-seconds": 30,
             },
@@ -604,6 +613,7 @@ def make_orchestrator(
         request=scheduler,
         clock=clock,
         wall_clock=wall_clock,
+        inventory_ttl_seconds=1,
     )
     return orchestrator, cluster, runtime, sessions, scheduler, events
 
@@ -764,19 +774,68 @@ def test_lazy_snapshot_load_cannot_overwrite_a_transaction_reload():
     assert store.load_calls == 2
 
 
-def test_runtime_config_requires_a_positive_retirement_grace():
-    class InvalidTimeouts(FakeTemplateHelper):
-        def load_base_info(self):
-            value = super().load_base_info()
-            value["runtime"]["retirement-grace-seconds"] = 0
-            return value
+def test_runtime_defaults_match_the_shipped_base_template():
+    base_info = YamlOps.read_yaml(str(BASE_TEMPLATE))
 
-    with pytest.raises(ValueError, match="timeouts must be positive"):
-        RuntimeOrchestrator(InvalidTimeouts(), "dayu")
+    assert base_info["runtime"] == {
+        "activation-timeout-seconds": 600,
+        "operation-timeout-seconds": 900,
+        "scheduler-request-timeout-seconds": 30,
+        "retirement-grace-seconds": 180,
+        "lease-ttl-seconds": 3600,
+    }
+    orchestrator = orchestrator_from_base_info(base_info)
+    assert orchestrator.activation_timeout == 600.0
+    assert orchestrator.operation_timeout == 900.0
+    assert orchestrator.scheduler_request_timeout == 30.0
+    assert orchestrator.retirement_grace == 180.0
+    assert orchestrator.lease_ttl == 3600.0
+
+
+@pytest.mark.parametrize("base_info", [{}, {"runtime": None}, {"runtime": {}}])
+def test_runtime_settings_use_defaults_when_absent(base_info):
+    orchestrator = orchestrator_from_base_info(base_info)
+
+    assert orchestrator.activation_timeout == 600.0
+    assert orchestrator.operation_timeout == 900.0
+    assert orchestrator.scheduler_request_timeout == 30.0
+    assert orchestrator.retirement_grace == 180.0
+    assert orchestrator.lease_ttl == 3600.0
+
+
+@pytest.mark.parametrize("runtime", [[], "invalid", 1, True])
+def test_runtime_settings_require_an_object(runtime):
+    with pytest.raises(TypeError, match="base.runtime must be an object"):
+        orchestrator_from_base_info({"runtime": runtime})
+
+
+def test_runtime_settings_reject_unknown_fields():
+    with pytest.raises(ValueError, match="unknown base.runtime fields"):
+        orchestrator_from_base_info({"runtime": {"obsolete-field": 2}})
+
+
+@pytest.mark.parametrize("field", RuntimeOrchestrator._RUNTIME_DEFAULTS)
+@pytest.mark.parametrize("value", [0, -1, math.nan, math.inf, True, "invalid"])
+def test_runtime_settings_require_finite_positive_values(field, value):
+    with pytest.raises(
+        ValueError,
+        match=rf"runtime\.{field} must be a finite positive number",
+    ):
+        orchestrator_from_base_info({"runtime": {field: value}})
+
+
+@pytest.mark.parametrize("value", [0, -1, math.nan, math.inf, True, "invalid"])
+def test_internal_inventory_ttl_requires_a_finite_positive_value(value):
+    with pytest.raises(ValueError, match="inventory TTL must be a finite positive number"):
+        RuntimeOrchestrator(
+            FakeTemplateHelper(),
+            "dayu",
+            inventory_ttl_seconds=value,
+        )
 
 
 @pytest.mark.parametrize("value", ["true", 1, None, []])
-def test_runtime_config_rejects_non_boolean_default_cloud_processor_backup(value):
+def test_base_config_rejects_non_boolean_default_cloud_processor_backup(value):
     class InvalidCloudBackup(FakeTemplateHelper):
         def load_base_info(self):
             base_info = super().load_base_info()
