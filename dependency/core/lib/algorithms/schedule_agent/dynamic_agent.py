@@ -1,7 +1,13 @@
 import abc
 import random
-from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, TaskConstant, LOGGER
+from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, LOGGER
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling import materialize_offloading_plan, service_names
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    active_targets,
+    live_resources,
+)
 
 from .base_agent import BaseAgent
 
@@ -41,9 +47,9 @@ class DynamicAgent(BaseAgent, abc.ABC):
         self.latest_offloading_policy = {}  # 存储最新的offloading策略，供重部署策略使用
         self.overhead_estimator = OverheadEstimator('Dynamic', 'scheduler/dynamic', agent_id=self.agent_id)
 
-    def get_bandwidth(self, source_device=None):
-        """从resource_table获取带宽值"""
-        resource_table = self.system.get_scheduler_resource()
+    def get_bandwidth(self, source_device=None, resource_table=None):
+        """Read bandwidth from one revision-consistent resource snapshot."""
+        resource_table = resource_table or {}
         if not resource_table:
             return None
         
@@ -63,9 +69,18 @@ class DynamicAgent(BaseAgent, abc.ABC):
                     return bandwidth
         return None
 
-    def get_edge_device_loads(self, all_edge_devices):
-        """获取所有边缘设备的负载信息"""
-        resource_table = self.system.get_scheduler_resource()
+    @staticmethod
+    def _normalize_usage(value, default=0.5):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return float(default)
+        value = float(value)
+        if value > 1.0:
+            value /= 100.0
+        return min(1.0, max(0.0, value))
+
+    def get_edge_device_loads(self, all_edge_devices, resource_table=None):
+        """Get normalized CPU/memory load from one LIVE snapshot."""
+        resource_table = resource_table or {}
         device_loads = {}
         
         for device in all_edge_devices:
@@ -76,31 +91,29 @@ class DynamicAgent(BaseAgent, abc.ABC):
             if not isinstance(resource, dict):
                 continue
             
-            cpu_usage = resource.get('cpu_usage', 0.5)  # 默认值0.5
-            memory_usage = resource.get('memory_usage', 0.5)  # 默认值0.5
-            
-            # 确保是数值类型
-            if not isinstance(cpu_usage, (int, float)):
-                cpu_usage = 0.5
-            if not isinstance(memory_usage, (int, float)):
-                memory_usage = 0.5
-            
-            # 取CPU和内存负载的平均值
+            cpu_usage = self._normalize_usage(resource.get('cpu_usage', 0.5))
+            memory_usage = self._normalize_usage(resource.get('memory_usage', 0.5))
             avg_load = (cpu_usage + memory_usage) / 2.0
             device_loads[device] = avg_load
         
         return device_loads
 
-    def select_device_by_load(self, all_edge_devices):
+    def select_device_by_load(self, all_edge_devices, resource_table=None):
         """根据设备负载概率选择设备（负载越低，被选中的概率越高）"""
-        device_loads = self.get_edge_device_loads(all_edge_devices)
+        device_loads = self.get_edge_device_loads(
+            all_edge_devices,
+            resource_table=resource_table,
+        )
         
         if not device_loads:
             # 如果没有负载信息，随机选择一个边缘设备
             return random.choice(all_edge_devices) if all_edge_devices else self.cloud_device
         
         # 计算反负载（1 - load），负载越低，反负载越高
-        inverse_loads = {device: 1.0 - load for device, load in device_loads.items()}
+        inverse_loads = {
+            device: max(0.0, 1.0 - load)
+            for device, load in device_loads.items()
+        }
         
         # 归一化概率（使用softmax-like归一化）
         total_inverse = sum(inverse_loads.values())
@@ -120,59 +133,75 @@ class DynamicAgent(BaseAgent, abc.ABC):
         return selected_device
 
     def get_schedule_plan(self, info):
-        print("-------------------------------------")
         if self.default_configuration is None:
-            return None
+            raise ValueError('DynamicAgent requires a configuration mapping')
 
         with self.overhead_estimator:
-            configuration = self.default_configuration.copy()
-            policy = {}
-            policy.update(configuration)
-            
             cloud_device = self.cloud_device
             source_edge_device = info['source_device']
-            all_edge_devices = info['all_edge_devices']
+            all_edge_devices = [str(device) for device in info['all_edge_devices']]
             dag = info['dag']
-            
-            # 获取当前带宽
-            bandwidth = self.get_bandwidth(source_device=source_edge_device)
-            LOGGER.info(f'[Dynamic Agent] Current bandwidth: {bandwidth}, threshold: {self.bandwidth_threshold}')
-            
-            # 存储offloading策略
-            offloading_policy = {}
-            
-            # 对每个服务进行判断
-            for service_name in dag:
-                # _end is fixed to the injected runtime cloud device.
-                if service_name == '_end':
-                    dag[service_name]['service']['execute_device'] = cloud_device
-                    offloading_policy[service_name] = cloud_device
-                    continue
+            snapshot, deployment = active_deployment_for_dag(self.system, dag)
+            resources = live_resources(snapshot)
 
-                if service_name == TaskConstant.START.value:
-                    # START节点固定在source设备
-                    dag[service_name]['service']['execute_device'] = source_edge_device
-                    offloading_policy[service_name] = source_edge_device
-                    continue
-                
-                # 如果带宽大于阈值，所有阶段都交给云端执行
+            bandwidth = self.get_bandwidth(
+                source_device=source_edge_device,
+                resource_table=resources,
+            )
+            LOGGER.info(f'[Dynamic Agent] Current bandwidth: {bandwidth}, threshold: {self.bandwidth_threshold}')
+
+            # ``proposed`` retains the algorithm's unconstrained decision for
+            # the redeployment hook. ``served`` is the feasible projection on
+            # the exact LIVE replicas used by this task.
+            proposed = {}
+            served = {}
+            for service_name in service_names(dag):
+                active = active_targets(deployment, service_name)
                 if bandwidth is not None and bandwidth > self.bandwidth_threshold:
-                    execute_device = cloud_device
+                    desired = cloud_device
                 else:
-                    # 根据设备负载动态选择边缘设备
-                    if all_edge_devices:
-                        execute_device = self.select_device_by_load(all_edge_devices)
-                    else:
-                        execute_device = cloud_device
-                
-                dag[service_name]['service']['execute_device'] = execute_device
-                offloading_policy[service_name] = execute_device
-            
-            # 保存最新的offloading策略供重部署策略使用
-            self.latest_offloading_policy = offloading_policy.copy()
-            LOGGER.info(f'[Dynamic Agent] Latest offloading policy: {offloading_policy}')
-            
-            policy.update({'dag': dag})
+                    desired = self.select_device_by_load(
+                        all_edge_devices,
+                        resource_table=resources,
+                    ) if all_edge_devices else cloud_device
+                proposed[service_name] = desired
+
+                if desired in active:
+                    served[service_name] = desired
+                    continue
+                active_edges = active_targets(
+                    deployment,
+                    service_name,
+                    candidates=all_edge_devices,
+                )
+                if active_edges:
+                    served[service_name] = self.select_device_by_load(
+                        active_edges,
+                        resource_table=resources,
+                    )
+                elif cloud_device in active:
+                    served[service_name] = cloud_device
+                else:
+                    served[service_name] = active[0]
+                LOGGER.info(
+                    f'[Dynamic Agent] Proposed target {desired!r} for '
+                    f'{service_name!r} is pending deployment; serving '
+                    f'{served[service_name]!r} from LIVE revision '
+                    f'{snapshot["runtime_directory_revision"]}'
+                )
+
+            self.latest_offloading_policy = proposed.copy()
+            LOGGER.info(
+                f'[Dynamic Agent] Proposed deployment targets: {proposed}; '
+                f'LIVE task targets: {served}'
+            )
+            policy = materialize_offloading_plan(
+                self.default_configuration,
+                dag,
+                served,
+                source_device=source_edge_device,
+                cloud_device=cloud_device,
+            )
         return policy
 
     def get_latest_offloading_policy(self):

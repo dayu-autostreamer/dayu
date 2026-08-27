@@ -1,5 +1,7 @@
 import abc
 
+from fastapi import HTTPException
+
 from core.lib.common import ClassFactory, ClassType, LOGGER, TaskConstant
 from core.lib.content import Task
 from core.lib.algorithms.shared.hedger_ablation import HedgerDeploymentOnly
@@ -43,8 +45,11 @@ class HedgerDeploymentOnlyAgent(HedgerAblationAgentBase, abc.ABC):
         policy.update(configuration)
         runtime_snapshot = self._get_live_runtime_snapshot()
         service_info = runtime_snapshot.get("deployment", {})
-        deployment_version = self._get_live_deployment_version(service_info)
-        dag, route_substitutions = self._assign_live_routes(
+        try:
+            deployment_version = self._get_live_deployment_version(service_info)
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        dag = self._assign_live_routes(
             dag,
             offloading,
             service_info,
@@ -61,7 +66,6 @@ class HedgerDeploymentOnlyAgent(HedgerAblationAgentBase, abc.ABC):
         LOGGER.info(
             f"[HedgerDeploymentOnly][Schedule] source={source_id}, services={len(service_names)}, "
             f"deployment_version={deployment_version}, cloud={cloud_count}/{len(service_names) if service_names else 0}, "
-            f"used_default_offloading={used_default_offloading}, "
-            f"runtime_route_substitutions={len(route_substitutions)}"
+            f"used_default_offloading={used_default_offloading}"
         )
         return policy

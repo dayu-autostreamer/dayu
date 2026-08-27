@@ -1,10 +1,16 @@
 import abc
+import copy
 import time
+from numbers import Integral
 import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, Context, LOGGER
-from core.lib.content import Task
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling.pipeline import materialize_pipeline_policy, pipeline_entries
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 
@@ -31,9 +37,20 @@ class CEVASAgent(BaseAgent, abc.ABC):
         from .cevas.mlp import MLP
         self.agent_id = agent_id
         self.cloud_device = system.cloud_device
-        self.fixed_policy = fixed_policy
-
-        self.pipe_seg = 0
+        if not isinstance(fixed_policy, dict):
+            raise ValueError('CEVAS requires a fixed_policy object')
+        self.fixed_policy = copy.deepcopy(fixed_policy)
+        if 'pipeline' in self.fixed_policy:
+            raise ValueError(
+                'CEVAS uses fixed_policy.partition_index; '
+                'the pipeline field is not accepted'
+            )
+        raw_partition = self.fixed_policy.pop('partition_index', 0)
+        if isinstance(raw_partition, bool) or not isinstance(raw_partition, Integral):
+            raise TypeError('CEVAS partition_index must be an integer')
+        self.pipe_seg = int(raw_partition)
+        if self.pipe_seg < 0:
+            raise ValueError('CEVAS partition_index must be non-negative')
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logic_node_num = 1
@@ -49,18 +66,23 @@ class CEVASAgent(BaseAgent, abc.ABC):
         self.time_slot = time_slot
 
     def get_schedule_plan(self, info):
-        if self.fixed_policy is None:
-            return self.fixed_policy
-
-        policy = self.fixed_policy.copy()
-        edge_device = info['device']
-        cloud_device = self.cloud_device
-        pipe_seg = self.pipe_seg
-        pipeline = Task.extract_pipeline_deployment_from_dag_deployment(info['dag'])
-        pipeline = [{**p, 'execute_device': edge_device} for p in pipeline[:pipe_seg]] + \
-                   [{**p, 'execute_device': cloud_device} for p in pipeline[pipe_seg:]]
-
-        policy.update({'dag': Task.extract_dag_deployment_from_pipeline_deployment(pipeline)})
+        edge_device = info['source_device']
+        policy = materialize_pipeline_policy(
+            self.fixed_policy,
+            info['dag'],
+            self.pipe_seg,
+            edge_device=edge_device,
+            cloud_device=self.cloud_device,
+        )
+        _, deployment = active_deployment_for_dag(self.system, policy['dag'])
+        require_active_plan(
+            {
+                entry['service_name']:
+                    policy['dag'][entry['service_name']]['service']['execute_device']
+                for entry in pipeline_entries(policy['dag'])[:-1]
+            },
+            deployment,
+        )
         return policy
 
     # Optimization target
@@ -104,13 +126,13 @@ class CEVASAgent(BaseAgent, abc.ABC):
             with self.overhead_estimator:
                 # At slot t, compute the best split point for t+1 for a single pipeline
                 # Prepare the input information for t+1
+                self.time_index = len(self.data_time_sequence) - 1
                 schedule_info = self.get_pipeline_cpu_memory(self.time_index, self.time_slot)
                 LOGGER.debug(f'[CEVAS schedule info] schedule info: {schedule_info}')
 
                 # schedule_info order: edge CPU limit / memory limit / per-node input size / cloud cost
                 # The search space is small; enumerate to get the best result
                 # Objective: target = min (a * P * x + b * D * x)
-                target = 0
                 target_idx = -1
                 P = schedule_info[3]
                 D = schedule_info[2]

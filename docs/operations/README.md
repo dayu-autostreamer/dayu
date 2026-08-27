@@ -150,10 +150,10 @@ FastAPI's thread pool, so Redis latency does not block the ASGI event loop or tr
 ## Processor Rollout
 
 `BackendCore.run_runtime_reconcile()` requests the current redeployment plan. Backend renders every desired processor slot
-and compares its stable rollout hash with the active unit. The desired set is the complete validated Scheduler plan,
-optionally unioned with one exact cloud slot per logical service when `default-cloud-processor-backup` is enabled.
-This same composition is used during initial install. Placement, image, template, mount, or effective environment
-changes cause a new RuntimeService revision; an unchanged cloud backup is retained when only an edge target changes.
+and compares its stable rollout hash with the active unit. The desired set is exactly the complete validated Scheduler
+plan, including any cloud replicas selected by its deployment policy. Initial installation uses the same contract.
+Placement, image, template, mount, or effective environment changes cause a new RuntimeService revision; an unchanged
+cloud replica is retained when only an edge target changes.
 
 The transaction is:
 

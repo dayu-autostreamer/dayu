@@ -612,9 +612,6 @@ def test_schedule_config_extractors_load_expected_knobs_and_config_files(monkeyp
                 "seed": 42,
                 "encoder": {
                     "embedding_dim": 64,
-                    "logical_heads": 4,
-                    "physical_role_count": 2,
-                    "physical_role_embedding_dim": 8,
                     "dropout": 0.0,
                 },
                 "timing": {"deployment_interval_s": 10.0, "offloading_interval_s": 1.0},

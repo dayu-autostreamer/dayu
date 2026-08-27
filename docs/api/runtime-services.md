@@ -116,9 +116,9 @@ Initial-deployment and redeployment policies have one canonical result contract:
 its value is a JSON list of target node names. Scheduler unions node lists for the same logical service across sources.
 Node-to-services maps and scalar node values are invalid; Backend does not guess their orientation or repair an
 incomplete plan. Scheduler and policy plugins enforce this shared contract through
-`dependency/core/lib/scheduling/deployment_plan.py`. After validation, Backend may add the exact cloud node to every
-service when `default-cloud-processor-backup` is enabled; this changes the published desired deployment, not the
-Scheduler API response contract.
+`dependency/core/lib/scheduling/deployment_plan.py`. The validated Scheduler result is the complete desired Processor
+deployment; Backend publishes it without adding replicas. Policies that require cloud execution resolve the injected
+cloud identity and include it explicitly in their response.
 
 Source selection has a separate contract in `dependency/core/lib/scheduling/source_selection.py`. `node_set` contains
 processor candidates; `source_candidate_nodes` contains the exact generator permission set resolved and persisted by

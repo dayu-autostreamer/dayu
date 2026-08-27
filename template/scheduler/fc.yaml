@@ -14,7 +14,7 @@ pod-template:
     - name: SCH_SELECTION_POLICY_NAME
       value: fixed
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
-      value: full
+      value: source-edge-cloud
     - name: SCH_REDEPLOYMENT_POLICY_NAME
       value: non
     - name: SCH_AGENT_NAME

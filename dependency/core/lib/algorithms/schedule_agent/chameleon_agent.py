@@ -6,6 +6,11 @@ from core.lib.estimation import AccEstimator, OverheadEstimator
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod, http_request
 from core.lib.content import Task
 from core.lib.runtime import RuntimeEndpoint
+from core.lib.scheduling.pipeline import materialize_pipeline_policy, pipeline_entries
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 import time
@@ -223,28 +228,37 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         return frame_list, new_frame_hash_codes
 
     def execute_analytics(self, frames):
-        if not self.processor_address:
-            route = self.system.resolve_runtime_route(
-                'processor',
-                target_node=self.cloud_device,
-                logical_service=self.current_analytics,
-            )
-            self.processor_address = RuntimeEndpoint.from_value(route).url(
-                NetworkAPIPath.PROCESSOR_PROCESS_RETURN
-            )
+        if not frames:
+            return None
+        # RuntimeService addresses are revision-bound. Resolve on every
+        # profiling call rather than retaining a route across deployments.
+        route = self.system.resolve_runtime_route(
+            'processor',
+            target_node=self.cloud_device,
+            logical_service=self.current_analytics,
+        )
+        self.processor_address = RuntimeEndpoint.from_value(route).url(
+            NetworkAPIPath.PROCESSOR_PROCESS_RETURN
+        )
 
         cur_path = self.compress_video(frames)
 
         tmp_task = Task(source_id=-1, task_id=-1, source_device='', all_edge_devices=[], dag=self.task_dag)
         tmp_task.set_file_path(cur_path)
-        response = http_request(url=self.processor_address,
-                                method=NetworkAPIMethod.PROCESSOR_PROCESS_RETURN,
-                                data={'data': tmp_task.serialize()},
-                                files={'file': (tmp_task.get_file_path(),
-                                                open(tmp_task.get_file_path(), 'rb'),
-                                                'multipart/form-data')}
-                                )
-        FileOps.remove_file(tmp_task.get_file_path())
+        try:
+            with open(tmp_task.get_file_path(), 'rb') as video_file:
+                response = http_request(
+                    url=self.processor_address,
+                    method=NetworkAPIMethod.PROCESSOR_PROCESS_RETURN,
+                    data={'data': tmp_task.serialize()},
+                    files={'file': (
+                        tmp_task.get_file_path(),
+                        video_file,
+                        'multipart/form-data',
+                    )},
+                )
+        finally:
+            FileOps.remove_file(tmp_task.get_file_path())
         if response:
             task = Task.deserialize(response)
             return task.get_first_content()
@@ -285,6 +299,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
         dag = info['dag']
 
         self.task_dag = Task.extract_dag_from_dag_deployment(dag)
+        self.current_analytics = self.task_dag.get_next_nodes(TaskConstant.START.value)[0]
 
         if frame_encoded:
             self.raw_frames.put((EncodeOps.decode_image(frame_encoded), frame_hash_code))
@@ -292,20 +307,45 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
         if not self.best_config_list:
             LOGGER.info('[No best config list] the length of best_config_list is 0!')
-            return None
+            terminal_index = len(pipeline_entries(dag)) - 1
+            policy = materialize_pipeline_policy(
+                self.fixed_policy,
+                dag,
+                terminal_index,
+                edge_device=info['source_device'],
+                cloud_device=self.cloud_device,
+            )
+            _, deployment = active_deployment_for_dag(self.system, policy['dag'])
+            require_active_plan(
+                {
+                    entry['service_name']:
+                        policy['dag'][entry['service_name']]['service']['execute_device']
+                    for entry in pipeline_entries(policy['dag'])[:-1]
+                },
+                deployment,
+            )
+            return policy
 
-        policy = self.fixed_policy.copy()
-        cloud_device = self.cloud_device
-
-        self.current_analytics = self.task_dag.get_next_nodes(TaskConstant.START.value)[0]
-        for service_name in dag:
-            dag[service_name]['service']['execute_device'] = cloud_device
-
-        policy.update({'dag': dag})
+        policy = materialize_pipeline_policy(
+            self.fixed_policy,
+            dag,
+            0,
+            edge_device=info['source_device'],
+            cloud_device=self.cloud_device,
+        )
 
         best_config = self.best_config_list[0]
 
         policy.update(best_config)
+        _, deployment = active_deployment_for_dag(self.system, policy['dag'])
+        require_active_plan(
+            {
+                entry['service_name']:
+                    policy['dag'][entry['service_name']]['service']['execute_device']
+                for entry in pipeline_entries(policy['dag'])[:-1]
+            },
+            deployment,
+        )
         return policy
 
     def run(self):
@@ -322,6 +362,7 @@ class ChameleonAgent(BaseAgent, abc.ABC):
 
             # Profiling requires at least a certain number of frames
             if not self.raw_frames.full():
+                time.sleep(min(0.05, max(0.01, self.segment_size / 20)))
                 continue
 
             segment_num += 1

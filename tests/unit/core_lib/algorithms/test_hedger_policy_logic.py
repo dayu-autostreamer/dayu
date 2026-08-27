@@ -1,3 +1,4 @@
+import inspect
 import math
 from collections import deque
 import threading
@@ -23,6 +24,7 @@ from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerInferenceCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerRecordCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerDeploymentDefaultWarmupCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerDeploymentOfflineRLCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerLatencyGuardCfg
 from core.lib.algorithms.schedule_agent.hedger_agent import HedgerAgent
 from core.lib.algorithms.shared.hedger.hedger_config import (
@@ -187,6 +189,56 @@ def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
     assert not hasattr(dep_cfg, "cloud_sticky")
     assert not hasattr(dep_cfg, "use_monotone_metric")
     assert not hasattr(dep_cfg, "metric_non_decreasing")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("update_encoder", [False, True])
+def test_register_deployment_agent_honors_encoder_update_setting(update_encoder):
+    hedger = Hedger.__new__(Hedger)
+    hedger.deployment_agent = None
+    hedger.shared_topology_encoder = torch.nn.Linear(8, 8)
+    hedger.encoder_cfg = types.SimpleNamespace(embedding_dim=8)
+    hedger.deployment_agent_params = {
+        "actor_lr": 3e-4,
+        "critic_lr": 1e-3,
+        "gamma": 0.99,
+        "lamda": 0.95,
+        "clip_eps": 0.2,
+        "update_encoder": update_encoder,
+    }
+    hedger.physical_topology = None
+    hedger.device = torch.device("cpu")
+    hedger._sync_agent_topology_bindings = lambda: None
+
+    hedger.register_deployment_agent()
+
+    encoder_param_ids = {id(param) for param in hedger.shared_topology_encoder.parameters()}
+    actor_param_ids = {id(param) for param in hedger.deployment_agent._actor_train_params}
+    assert hedger.deployment_agent._update_encoder is update_encoder
+    assert bool(encoder_param_ids & actor_param_ids) is update_encoder
+    assert hedger.deployment_agent_params["update_encoder"] is update_encoder
+
+
+@pytest.mark.unit
+def test_deployment_offline_update_kwargs_forward_every_update_option():
+    hedger = Hedger.__new__(Hedger)
+    hedger.training_cfg = types.SimpleNamespace(
+        deployment_offline_rl=HedgerDeploymentOfflineRLCfg(
+            projection_edge_coverage_coef=0.73,
+            last_edge_removed_coef=0.61,
+        )
+    )
+
+    kwargs = hedger._deployment_offline_update_kwargs()
+    expected = set(inspect.signature(HedgerDeploymentPPO.offline_update).parameters) - {
+        "self",
+        "transitions",
+        "batch_size",
+    }
+
+    assert set(kwargs) == expected
+    assert kwargs["projection_edge_coverage_coef"] == pytest.approx(0.73)
+    assert kwargs["last_edge_removed_coef"] == pytest.approx(0.61)
 
 
 @pytest.mark.unit

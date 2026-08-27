@@ -1,9 +1,19 @@
 import abc
+import copy
 
 import time
 
 from core.lib.common import ClassFactory, ClassType, LOGGER
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling.pipeline import (
+    materialize_pipeline_policy,
+    pipeline_entries,
+    rematerialize_pipeline_policy,
+)
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 
@@ -64,7 +74,34 @@ class HEINFAgent(BaseAgent, abc.ABC):
         self.latest_policy = policy
 
     def get_schedule_plan(self, info):
-        return self.schedule_plan
+        edge_device = info['source_device']
+        terminal_index = len(pipeline_entries(info['dag'])) - 1
+        if self.schedule_plan is None:
+            policy = materialize_pipeline_policy(
+                {},
+                info['dag'],
+                terminal_index,
+                edge_device=edge_device,
+                cloud_device=self.cloud_device,
+            )
+        else:
+            policy = rematerialize_pipeline_policy(
+                copy.deepcopy(self.schedule_plan),
+                info['dag'],
+                edge_device=edge_device,
+                cloud_device=self.cloud_device,
+            )
+        policy.pop('edge_device', None)
+        _, deployment = active_deployment_for_dag(self.system, policy['dag'])
+        require_active_plan(
+            {
+                entry['service_name']:
+                    policy['dag'][entry['service_name']]['service']['execute_device']
+                for entry in pipeline_entries(policy['dag'])[:-1]
+            },
+            deployment,
+        )
+        return policy
 
     def get_schedule_overhead(self):
         return self.overhead_estimator.get_latest_overhead()

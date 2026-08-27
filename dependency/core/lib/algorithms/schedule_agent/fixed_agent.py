@@ -1,6 +1,11 @@
 import abc
-from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, TaskConstant
+from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling import materialize_offloading_plan, service_names
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 
@@ -35,31 +40,36 @@ class FixedAgent(BaseAgent, abc.ABC):
 
     def get_schedule_plan(self, info):
         if self.fixed_configuration is None or self.fixed_offloading is None:
-            return None
+            raise ValueError(
+                'FixedAgent requires both configuration and offloading mappings'
+            )
 
         with self.overhead_estimator:
-            configuration = self.fixed_configuration.copy()
-
-            policy = {}
-            policy.update(configuration)
-            cloud_device = self.cloud_device
-            source_edge_device = info['source_device']
-            all_edge_devices = info['all_edge_devices']
-            all_devices = [*all_edge_devices, cloud_device]
-            service_info = self.system.runtime_service_nodes()
-
             dag = info['dag']
-
-            for service_name in dag:
-                if service_name in service_info and service_name in self.fixed_offloading \
-                        and self.fixed_offloading[service_name] in all_devices:
-                    dag[service_name]['service']['execute_device'] = self.fixed_offloading[service_name]
-                elif service_name == TaskConstant.START.value:
-                    dag[service_name]['service']['execute_device'] = source_edge_device
-                else:
-                    dag[service_name]['service']['execute_device'] = cloud_device
-
-            policy.update({'dag': dag})
+            services = service_names(dag)
+            missing = sorted(
+                service for service in services
+                if not str(self.fixed_offloading.get(service) or '').strip()
+            )
+            unknown = sorted(set(self.fixed_offloading) - set(services))
+            if missing or unknown:
+                raise ValueError(
+                    f'fixed offloading must match the current DAG; '
+                    f'missing={missing}, extra={unknown}'
+                )
+            offloading = {
+                service: str(self.fixed_offloading[service])
+                for service in services
+            }
+            _, deployment = active_deployment_for_dag(self.system, dag)
+            require_active_plan(offloading, deployment)
+            policy = materialize_offloading_plan(
+                self.fixed_configuration,
+                dag,
+                offloading,
+                source_device=info['source_device'],
+                cloud_device=self.cloud_device,
+            )
         return policy
 
     def run(self):

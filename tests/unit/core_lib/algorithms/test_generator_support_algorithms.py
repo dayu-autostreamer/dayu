@@ -469,13 +469,10 @@ def test_frame_process_and_compress_algorithms_transform_frames_and_cleanup(monk
     monkeypatch.setattr(frame_process_adaptive_module.cv2, "contourArea", lambda contour: 1600)
     monkeypatch.setattr(frame_process_adaptive_module.cv2, "boundingRect", lambda contour: (1, 1, 2, 2))
     adaptive = frame_process_adaptive_module.AdaptiveProcess()
-    generated = []
-    monkeypatch.setattr(adaptive, "generate_roi_file", lambda system: generated.append(system.source_id))
     adaptive_system = SimpleNamespace(source_id=3, task_id=5, meta_data={"resolution": "480p", "buffer_size": 1})
-    processed_frame, valid_rois = adaptive(adaptive_system, frame)
+    processed_frame, valid_rois = adaptive(adaptive_system, frame, "720p", "480p")
     assert processed_frame.shape[0:2] == (480, 640)
     assert valid_rois == [(1, 1, 3, 3)]
-    assert generated == [3]
     assert adaptive.generate_roi_message([(1, 2, 5, 6)]).startswith("1 -10 1 2 4 4")
 
     writer_events = []
@@ -504,7 +501,16 @@ def test_frame_process_and_compress_algorithms_transform_frames_and_cleanup(monk
     removed = []
     commands = []
     monkeypatch.setattr(casva_compress_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
-    monkeypatch.setattr(casva_compress_module.os, "system", lambda cmd: commands.append(cmd) or 0)
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        Path(command[-1]).write_bytes(b"encoded")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(casva_compress_module.subprocess, "run", fake_run)
     casva_compress_module.CasvaCompress()(compressor_system, frame_buffer, str(output_path))
-    assert commands and "ffmpeg -i" in commands[0]
-    assert removed == [f"tmp_{output_path}"]
+    command, run_kwargs = commands[0]
+    assert command[:3] == ["ffmpeg", "-y", "-i"]
+    assert command[-1] == str(output_path)
+    assert run_kwargs["check"] is True
+    assert removed == [str(tmp_path / ".clip.mp4.casva.tmp.mp4")]

@@ -51,10 +51,6 @@ default-image-meta:
   tag: v1.4
 # default file mount prefix for dayu containers
 default-file-mount-prefix: "/data/dayu-files"
-# When true, Backend adds one cloud RuntimeService to every logical processor
-# after validating the Scheduler plan. False uses the exact plan unchanged;
-# an exact cloud hostname explicitly returned by Scheduler is always valid.
-default-cloud-processor-backup: false
 # datasource configuration
 datasource:
   # true/false, use a simulation datasource container or use a real datasource

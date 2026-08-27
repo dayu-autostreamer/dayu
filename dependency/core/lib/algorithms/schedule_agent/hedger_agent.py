@@ -2,6 +2,7 @@ import abc
 import copy
 
 import numpy as np
+from fastapi import HTTPException
 
 from core.lib.common import ClassFactory, ClassType, GlobalInstanceManager, ConfigLoader, Context, LOGGER, \
     TaskConstant
@@ -144,7 +145,8 @@ class HedgerAgent(BaseAgent, abc.ABC):
             ):
                 return version
         raise ValueError(
-            "Hedger cannot bind the active runtime routes to a served deployment decision"
+            "Hedger cannot bind the active runtime routes to a served "
+            "deployment decision"
         )
 
     def _assign_live_routes(
@@ -157,13 +159,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
     ):
         scheduled_dag = copy.deepcopy(dag)
         cloud_device = str(self.cloud_device)
-        device_order = []
-        for device in [*all_edge_devices, cloud_device]:
-            device = str(device)
-            if device not in device_order:
-                device_order.append(device)
-        default_offloading = self._normalize_mapping(self.default_offloading)
-        substitutions = []
+        all_devices = [*all_edge_devices, cloud_device]
 
         for service_name, node_info in scheduled_dag.items():
             service_name = str(service_name)
@@ -172,29 +168,13 @@ class HedgerAgent(BaseAgent, abc.ABC):
             elif service_name == TaskConstant.END.value:
                 target = cloud_device
             else:
-                active_nodes = {str(node) for node in deployment.get(service_name, [])}
-                available_nodes = [
-                    device for device in device_order if device in active_nodes
-                ]
-                if not available_nodes:
-                    raise ValueError(
-                        f"Hedger cannot schedule service {service_name!r}: "
-                        "the active RuntimeDirectory has no processor route in this source scope"
-                    )
-
-                proposed = str(offloading.get(service_name) or "").strip()
-                configured = str(default_offloading.get(service_name) or "").strip()
-                if proposed in available_nodes:
-                    target = proposed
-                elif configured in available_nodes:
-                    target = configured
-                    substitutions.append(service_name)
-                elif cloud_device in available_nodes:
-                    target = cloud_device
-                    substitutions.append(service_name)
+                # Preserve Hedger's action. RuntimeDirectory owns exact route
+                # resolution and returns 503 when that target is not active.
+                proposed = offloading.get(service_name)
+                if service_name in deployment and proposed in all_devices:
+                    target = str(proposed)
                 else:
-                    target = available_nodes[0]
-                    substitutions.append(service_name)
+                    target = cloud_device
 
             try:
                 node_info["service"]["execute_device"] = target
@@ -203,7 +183,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
                     f"Hedger schedule DAG entry {service_name!r} has no service object"
                 ) from exc
 
-        return scheduled_dag, tuple(substitutions)
+        return scheduled_dag
 
     @staticmethod
     def _resource_matches_live_revision(snapshot, device):
@@ -258,8 +238,13 @@ class HedgerAgent(BaseAgent, abc.ABC):
         policy.update(configuration)
         runtime_snapshot = self._get_live_runtime_snapshot()
         service_info = runtime_snapshot.get("deployment", {})
-        deployment_version = self._get_live_deployment_version(service_info)
-        dag, route_substitutions = self._assign_live_routes(
+        try:
+            deployment_version = self._get_live_deployment_version(service_info)
+        except ValueError as exc:
+            # No schedule plan can safely represent an unbound deployment
+            # version, so fail before the task context is staged.
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        dag = self._assign_live_routes(
             dag,
             offloading,
             service_info,
@@ -290,7 +275,6 @@ class HedgerAgent(BaseAgent, abc.ABC):
             f"deployment_version={deployment_version}, "
             f"cloud={cloud_count}/{len(service_names) if service_names else 0}, "
             f"unique_devices={len(assigned_devices)}, used_default_offloading={used_default_offloading}, "
-            f"runtime_route_substitutions={len(route_substitutions)}, "
             f"sample={sample_assignments}"
         )
         LOGGER.debug(
@@ -333,17 +317,30 @@ class HedgerAgent(BaseAgent, abc.ABC):
         memory_usage = resource.get('memory_usage')
 
         queue_lengths = queue_waiting_counts(resource)
+        queue_deployment_version = None
+        queue_ignore_reason = None
+        if queue_lengths and not queue_resource_is_current:
+            queue_ignore_reason = "stale_runtime_revision"
+        elif queue_lengths:
+            try:
+                queue_deployment_version = self._get_live_deployment_version(
+                    runtime_snapshot.get("deployment", {}),
+                )
+            except ValueError as exc:
+                queue_resource_is_current = False
+                queue_ignore_reason = "unbound_deployment_version"
+                LOGGER.warning(
+                    f"[HedgerAgent][Resource] device={device}, ignore queue state: {exc}"
+                )
+
         observe_queue = getattr(self.hedger, "update_latency_guard_queue_lengths", None)
         if queue_lengths and queue_resource_is_current and callable(observe_queue):
             observe_queue(device, queue_lengths)
         if queue_lengths and queue_resource_is_current:
-            deployment_version = self._get_live_deployment_version(
-                runtime_snapshot.get("deployment", {}),
-            )
             self.hedger.state_buffer.add_queue_lengths(
                 device,
                 queue_lengths,
-                deployment_version=deployment_version,
+                deployment_version=queue_deployment_version,
             )
 
         model_flops_updates = resource.get('model_flops') or {}
@@ -362,7 +359,7 @@ class HedgerAgent(BaseAgent, abc.ABC):
         if queue_lengths and queue_resource_is_current:
             updated_fields.append(self._summarize_numeric_mapping_for_log("queue_length", queue_lengths))
         elif queue_lengths:
-            updated_fields.append("queue_length=ignored_stale_runtime_revision")
+            updated_fields.append(f"queue_length=ignored_{queue_ignore_reason}")
         if model_flops_updates:
             updated_fields.append(self._summarize_numeric_mapping_for_log("model_flops", model_flops_updates))
         if model_memory_updates:

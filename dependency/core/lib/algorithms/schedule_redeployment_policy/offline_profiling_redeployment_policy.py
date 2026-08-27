@@ -3,7 +3,12 @@ import abc
 from .base_redeployment_policy import BaseRedeploymentPolicy
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, ConfigLoader, Context
-from core.lib.scheduling.deployment_plan import dag_services, validate_plan
+from core.lib.scheduling.deployment_plan import (
+    cloud_replica_plan,
+    dag_services,
+    normalize_include_cloud,
+    validate_plan,
+)
 from core.lib.estimation import OverheadEstimator
 
 __all__ = ('OfflineProfilingRedeploymentPolicy',)
@@ -24,11 +29,12 @@ class OfflineProfilingRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
 
     def __init__(self, system, agent_id, latency_profile=None, device_service_limits=None, 
                  service_replica_count=None, default_service_limit=None, default_replica_count=None,
-                 service_importance_weights=None, **kwargs):
+                 service_importance_weights=None, include_cloud=False, **kwargs):
 
         self.system = system
         self.agent_id = agent_id
         self.cloud_device = str(getattr(system, 'cloud_device', '') or '')
+        self.include_cloud = normalize_include_cloud(include_cloud)
 
         # 离线测得的时延数据
         # 格式: {service_name: {device_name: latency}}
@@ -261,23 +267,32 @@ class OfflineProfilingRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
             # Prefer source-bound edge candidates. A cloud-only topology may
             # still use the injected cloud identity; no hostname is assumed.
             available_devices = [node for node in node_set if node != self.cloud_device]
-            if not available_devices and self.cloud_device:
-                available_devices = [self.cloud_device]
 
             if not available_devices:
                 LOGGER.warning(f'[Offline Profiling Redeployment] (source {source_id}) No edge devices available')
-                deploy_plan = {service_name: [] for service_name in dag_services(info)}
+                deploy_plan = {
+                    service_name: ([self.cloud_device] if self.include_cloud and self.cloud_device else [])
+                    for service_name in dag_services(info)
+                }
             else:
                 # 执行贪心部署策略
                 deploy_plan = self.greedy_deployment(dag, available_devices)
 
-            LOGGER.info(f'[Offline Profiling Redeployment] (source {source_id}) Deploy policy: {deploy_plan}')
+            if self.include_cloud:
+                deploy_plan = cloud_replica_plan(
+                    deploy_plan,
+                    info,
+                    self.cloud_device,
+                    policy_name="offline profiling include_cloud",
+                )
+            else:
+                deploy_plan = validate_plan(
+                    deploy_plan,
+                    info,
+                    cloud_node=self.cloud_device,
+                )
 
-            deploy_plan = validate_plan(
-                deploy_plan,
-                info,
-                cloud_node=self.cloud_device,
-            )
+            LOGGER.info(f'[Offline Profiling Redeployment] (source {source_id}) Deploy policy: {deploy_plan}')
             self.policy = deploy_plan
 
         return deploy_plan

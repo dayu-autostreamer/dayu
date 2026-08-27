@@ -13,9 +13,6 @@ class HedgerNoGraphEncoder(Hedger):
 
         self.shared_topology_encoder = NoGraphTopologyEncoders(
             d_model=self.encoder_cfg.embedding_dim,
-            num_roles=getattr(self.encoder_cfg, "physical_role_count", 2),
-            role_emb_dim=getattr(self.encoder_cfg, "physical_role_embedding_dim", 8),
-            dropout=self.encoder_cfg.dropout,
         ).to(self.device)
 
     def _load_encoder_state(self, state_dict: dict) -> None:

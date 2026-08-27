@@ -15,25 +15,13 @@ pod-template:
           'overrides':{
             'device':'cuda:1',
             'inference':{
-              'run_deployment_worker': True,
-              'run_offloading_worker': False,
-              'deployment_deterministic': True
-            },
-            'latency_guard':{
-              'enabled': True
+              'run_offloading_worker': False
             },
             'checkpoint':{
               'load':{
-                'enabled': True,
-                'from_stage':'joint_finetune',
-                'which':'final',
                 'restore':{
-                  'encoder': True,
-                  'deployment_agent': True,
-                  'offloading_agent': False,
-                  'optimizer': False
-                },
-                'reset_stage_counters': True
+                  'offloading_agent': False
+                }
               }
             }
           }

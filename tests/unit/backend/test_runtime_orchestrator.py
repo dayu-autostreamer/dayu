@@ -231,17 +231,15 @@ class FakeRenderer:
 
 class FakeTemplateHelper:
     def __init__(
-            self, clock=None, default_cloud_processor_backup=False,
+            self, clock=None,
             source_selection_scope="selected_edge_nodes",
     ):
         self.clock = clock
-        self.default_cloud_processor_backup = default_cloud_processor_backup
         self.source_selection_scope = source_selection_scope
 
     def load_base_info(self):
         return {
             "namespace": "dayu",
-            "default-cloud-processor-backup": self.default_cloud_processor_backup,
             "datasource": {"node": "edge-a"},
             "runtime": {
                 "activation-timeout-seconds": 5,
@@ -584,7 +582,7 @@ class FakeScheduler:
 
 def make_orchestrator(
         initial_plan, *, agents_ok=True, initial_put_ack=True, clock=None,
-        default_cloud_processor_backup=False, source_selection_scope="selected_edge_nodes",
+        source_selection_scope="selected_edge_nodes",
         managed_nodes=None,
 ):
     events = []
@@ -603,7 +601,6 @@ def make_orchestrator(
     )
     orchestrator = RuntimeOrchestrator(
         FakeTemplateHelper(
-            default_cloud_processor_backup=default_cloud_processor_backup,
             source_selection_scope=source_selection_scope,
         ),
         "dayu",
@@ -832,18 +829,6 @@ def test_internal_inventory_ttl_requires_a_finite_positive_value(value):
             "dayu",
             inventory_ttl_seconds=value,
         )
-
-
-@pytest.mark.parametrize("value", ["true", 1, None, []])
-def test_base_config_rejects_non_boolean_default_cloud_processor_backup(value):
-    class InvalidCloudBackup(FakeTemplateHelper):
-        def load_base_info(self):
-            base_info = super().load_base_info()
-            base_info["default-cloud-processor-backup"] = value
-            return base_info
-
-    with pytest.raises(ValueError, match="must be a boolean"):
-        RuntimeOrchestrator(InvalidCloudBackup(), "dayu")
 
 
 def install(orchestrator, *services):
@@ -1326,21 +1311,15 @@ def test_all_edge_scope_excludes_optional_nodes_without_managed_agents():
 
 
 @pytest.mark.parametrize(
-    ("enabled", "plan", "expected"),
+    ("plan", "expected"),
     [
-        (False, {"detect": ["edge-a"]}, ["edge-a"]),
-        (False, {"detect": ["cloud-a"]}, ["cloud-a"]),
-        (True, {"detect": ["edge-a"]}, ["cloud-a", "edge-a"]),
-        (True, {"detect": ["cloud-a"]}, ["cloud-a"]),
+        ({"detect": ["edge-a"]}, ["edge-a"]),
+        ({"detect": ["cloud-a"]}, ["cloud-a"]),
+        ({"detect": ["edge-a", "cloud-a"]}, ["cloud-a", "edge-a"]),
     ],
 )
-def test_default_cloud_processor_backup_composes_exact_desired_placement(
-        enabled, plan, expected,
-):
-    orchestrator, cluster, _, _, _, _ = make_orchestrator(
-        plan,
-        default_cloud_processor_backup=enabled,
-    )
+def test_backend_preserves_exact_scheduler_placement(plan, expected):
+    orchestrator, cluster, _, _, _, _ = make_orchestrator(plan)
 
     directory = install(orchestrator, "detect")
 
@@ -1349,27 +1328,25 @@ def test_default_cloud_processor_backup_composes_exact_desired_placement(
     assert cluster.preflight_calls == [("cloud-a", "edge-a", "edge-b")]
 
 
-def test_default_cloud_processor_backup_applies_to_every_logical_service():
+def test_backend_does_not_inject_cloud_into_edge_only_placement():
     orchestrator, _, _, _, _, _ = make_orchestrator(
         {
             "detect": ["edge-a"],
             "classify": ["edge-b"],
         },
-        default_cloud_processor_backup=True,
     )
 
     directory = install(orchestrator, "detect", "classify")
 
     assert directory.deployment == {
-        "classify": ["cloud-a", "edge-b"],
-        "detect": ["cloud-a", "edge-a"],
+        "classify": ["edge-b"],
+        "detect": ["edge-a"],
     }
 
 
-def test_cloud_backup_does_not_repair_a_plan_that_omits_a_logical_service():
+def test_backend_does_not_repair_a_plan_that_omits_a_logical_service():
     orchestrator, _, runtime, sessions, _, _ = make_orchestrator(
         {"detect": ["edge-a"]},
-        default_cloud_processor_backup=True,
     )
 
     with pytest.raises(RuntimeOrchestrationError, match="omitted services.*classify"):
@@ -1810,10 +1787,9 @@ def test_cancelled_retirement_reconcile_does_no_scheduler_io():
     assert sessions.stored.session.retirement is not None
 
 
-def test_redeploy_keeps_default_cloud_backup_while_replacing_only_changed_edge_slot():
+def test_redeploy_keeps_explicit_cloud_replica_while_replacing_only_changed_edge_slot():
     orchestrator, cluster, runtime, sessions, scheduler, _ = make_orchestrator(
-        {"detect": ["edge-a"]},
-        default_cloud_processor_backup=True,
+        {"detect": ["edge-a", "cloud-a"]},
     )
     initial = install(orchestrator, "detect")
     initial_cloud = next(
@@ -1826,7 +1802,7 @@ def test_redeploy_keeps_default_cloud_backup_while_replacing_only_changed_edge_s
     )
     inventory_calls = cluster.inventory_calls
     preflight_calls = list(cluster.preflight_calls)
-    scheduler.redeployment_plan = {"detect": ["edge-b"]}
+    scheduler.redeployment_plan = {"detect": ["edge-b", "cloud-a"]}
 
     assert orchestrator.redeploy({"id": "fixed"}) is True
 
@@ -1851,13 +1827,16 @@ def test_redeploy_keeps_default_cloud_backup_while_replacing_only_changed_edge_s
     assert initial_edge.runtime_id not in runtime.created
 
 
-@pytest.mark.parametrize("default_cloud_processor_backup", [False, True])
-def test_redeploy_with_identical_exact_placement_is_a_noop(
-        default_cloud_processor_backup,
-):
-    orchestrator, cluster, runtime, sessions, scheduler, _ = make_orchestrator(
+@pytest.mark.parametrize(
+    "initial_plan",
+    [
         {"detect": ["edge-a"]},
-        default_cloud_processor_backup=default_cloud_processor_backup,
+        {"detect": ["edge-a", "cloud-a"]},
+    ],
+)
+def test_redeploy_with_identical_exact_placement_is_a_noop(initial_plan):
+    orchestrator, cluster, runtime, sessions, scheduler, _ = make_orchestrator(
+        initial_plan,
     )
     install(orchestrator, "detect")
     created = tuple(runtime.created)

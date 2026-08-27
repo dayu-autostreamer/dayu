@@ -17,8 +17,23 @@ def test_cloud_agent_remains_registered_without_optional_heavy_agents():
 @pytest.mark.unit
 def test_cloud_agent_uses_injected_cloud_node_and_preserves_input_dag():
     configuration = {"resolution": "720p", "fps": 6}
+    scopes = []
+
+    def get_scheduling_snapshot(scope):
+        scopes.append(scope)
+        return {
+            "runtime_directory_revision": 4,
+            "deployment": {
+                "detector": ["cloud-a"],
+                "tracker": ["cloud-a"],
+            },
+        }
+
     agent = CloudAgent(
-        SimpleNamespace(cloud_device="cloud-a"),
+        SimpleNamespace(
+            cloud_device="cloud-a",
+            get_scheduling_snapshot=get_scheduling_snapshot,
+        ),
         agent_id=7,
         configuration=configuration,
     )
@@ -41,6 +56,8 @@ def test_cloud_agent_uses_injected_cloud_node_and_preserves_input_dag():
         },
     }
     assert dag == original
+    assert len(scopes) == 1
+    assert scopes[0].value == "live"
     assert agent.get_schedule_overhead() == 0
 
 
@@ -49,6 +66,15 @@ def test_cloud_agent_rejects_missing_cloud_identity_and_malformed_dag():
     with pytest.raises(ValueError, match="system.cloud_device"):
         CloudAgent(SimpleNamespace(cloud_device=""), agent_id=1)
 
-    agent = CloudAgent(SimpleNamespace(cloud_device="cloud-a"), agent_id=1)
+    agent = CloudAgent(
+        SimpleNamespace(
+            cloud_device="cloud-a",
+            get_scheduling_snapshot=lambda scope: {
+                "runtime_directory_revision": 1,
+                "deployment": {"detector": ["cloud-a"]},
+            },
+        ),
+        agent_id=1,
+    )
     with pytest.raises(ValueError, match="malformed"):
         agent.get_schedule_plan({"dag": {"detector": {}}, "source_device": "edge-a"})

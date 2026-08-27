@@ -16,8 +16,9 @@ no longer ship the Kubernetes Python client or accept legacy discovery/cache con
   recovery, lease-aware drain, and exact-UID runtime retirement (`backend`/`scheduler`).
 - Restrict Kubernetes access to the singleton backend with namespace-local lifecycle RBAC and a per-namespace cluster
   observer binding (`backend`).
-- Unify all deployment policies on the validated `logical service -> node list` contract and add explicit cloud-only
-  deployment/scheduling policies with no fixed cloud hostname (`scheduler`).
+- Unify all deployment policies on the validated `logical service -> node list` contract; add explicit cloud-only,
+  full, and full-edge initial/redeployment policies; and let fixed policies resolve `@cloud` or apply
+  `include_cloud=false|true` without a fixed cloud hostname (`scheduler`).
 - Change the Generator hook lifecycle to filter an ingestion round, reserve its root task identity, schedule when due,
   and only then materialize source data (`generator`/`scheduler`).
 - Add task-aware scheduling contracts with framework-reserved `TaskIdentity`, identity-attributed schedule decisions,
@@ -52,6 +53,9 @@ no longer ship the Kubernetes Python client or accept legacy discovery/cache con
   emit bounded Scheduler 4xx diagnostics without logging complete request payloads.
 - Prevent schedule-plan corruption by isolating after-schedule hook mutations, and fix before-submit hooks
   to operate on the task passed by the Generator instead of an undefined Generator field (`scheduler`).
+- Align built-in scheduling, deployment, redeployment, frame-processing, and compression hooks with full-DAG policy
+  materialization and revision-consistent LIVE RuntimeDirectory state; preserve pipeline partition semantics while
+  rejecting unsupported DAG shapes and inactive execution targets (`generator`/`scheduler`).
 
 ### Minor Update
 
@@ -60,8 +64,6 @@ no longer ship the Kubernetes Python client or accept legacy discovery/cache con
   pedestrian-intent-recognition, risk-graph-generation (`processor`).
 - Change input/output format of processors from value to list (`processor`).
 - Add import/export of dag in DAG Orchestrain frontend page (`frontend`).
-- Set default cloud processor backup as optional: Backend can add one exact cloud RuntimeService per logical service
-  after strict Scheduler-plan validation, consistently for install and redeploy (`backend`).
 - Update dockerfile building to support concise modification of ultra parameters.
 - Unify input/output interface format of processors (`processor`).
 - Add Gantt visualization to display task result (`frontend`/`backend`).
@@ -145,7 +147,7 @@ no longer ship the Kubernetes Python client or accept legacy discovery/cache con
 
 ### Breaking Changes
 
-The basic structure of tasks in dayu is updated from linear pipeline to topological dag (directed acyclic graph) to
+The basic structure of tasks in dayu is updated from pipeline to topological dag (directed acyclic graph) to
 support more complicated application scenarios.
 
 ### Features

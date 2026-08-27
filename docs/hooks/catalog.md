@@ -149,9 +149,10 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias    | Module                                                                                                  | Purpose                                                            | Notes                                                                 |
 |----------|---------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------|-----------------------------------------------------------------------|
-| `fixed`  | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/fixed_initial_deployment_policy.py`  | Apply a fixed deployment map from inline config or a mounted file. | Emits only current-DAG services and rejects missing, empty, or non-candidate placements. |
+| `fixed`  | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/fixed_initial_deployment_policy.py`  | Apply a fixed deployment map from inline config or a mounted file. | Supports `@cloud` and optional `include_cloud`; the latter defaults to false. |
 | `cloud`  | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/cloud_initial_deployment_policy.py` | Explicitly deploy every current-DAG service to `system.cloud_device`. | Used by `cloud-only-policy`; does not depend on an empty-list fallback. |
-| `full`   | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/full_initial_deployment_policy.py`   | Deploy all services to all selected nodes.                         | Simple high-availability baseline.                                    |
+| `full`   | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/full_initial_deployment_policy.py`   | Deploy all services to all selected processor edges and cloud. | Requires the injected cloud identity. |
+| `full-edge` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/full_edge_initial_deployment_policy.py` | Deploy all services to all selected processor edges. | Does not create a cloud Processor replica. |
 | `random` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/random_initial_deployment_policy.py` | Randomly distribute services across selected nodes.                | Supports optional `max_service_num`.                                  |
 | `hedger` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/hedger_initial_deployment_policy.py` | Ask the Hedger subsystem for an initial deployment plan.           | Falls back to default deployment when Hedger does not produce a plan. |
 | `hedger-deployment-only` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/hedger_deployment_only_initial_deployment_policy.py` | Use the Hedger deployment-only ablation for initial placement. | Shares Hedger deployment plumbing while constraining the ablation scope. |
@@ -164,23 +165,25 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias    | Module                                                                                      | Purpose                                                              | Notes                                                       |
 |----------|---------------------------------------------------------------------------------------------|----------------------------------------------------------------------|-------------------------------------------------------------|
-| `fixed`  | `dependency/core/lib/algorithms/schedule_redeployment_policy/fixed_redeployment_policy.py`  | Apply a fixed redeployment map from inline config or a mounted file. | Emits only current-DAG services and rejects missing, empty, or non-candidate placements. |
+| `fixed`  | `dependency/core/lib/algorithms/schedule_redeployment_policy/fixed_redeployment_policy.py`  | Apply a fixed redeployment map from inline config or a mounted file. | Supports the same `@cloud` and `include_cloud` contract as fixed initial deployment. |
 | `cloud`  | `dependency/core/lib/algorithms/schedule_redeployment_policy/cloud_redeployment_policy.py` | Keep every current-DAG service explicitly on `system.cloud_device`. | Used by `cloud-only-policy`; the returned hostname is exact. |
+| `full` | `dependency/core/lib/algorithms/schedule_redeployment_policy/full_redeployment_policy.py` | Redeploy all services to all selected processor edges and cloud. | Recomputes the complete named placement. |
+| `full-edge` | `dependency/core/lib/algorithms/schedule_redeployment_policy/full_edge_redeployment_policy.py` | Redeploy all services to all selected processor edges. | Does not create a cloud Processor replica. |
 | `non`    | `dependency/core/lib/algorithms/schedule_redeployment_policy/non_redeployment_policy.py`    | Keep the active processor deployment from `RuntimeDirectory`.        | No-op redeployment strategy; performs no cluster discovery. |
 | `hedger` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_redeployment_policy.py` | Ask the Hedger subsystem for a redeployment plan.                    | Falls back to default deployment when no plan is available. |
-| `deepva` | `dependency/core/lib/algorithms/schedule_redeployment_policy/deepva_redeployment_policy.py` | Apply DeepVA redeployment behavior. | Used by the DeepVA policy family. |
-| `dynamic` | `dependency/core/lib/algorithms/schedule_redeployment_policy/dynamic_redeployment_policy.py` | Convert the latest exact offloading decision into a current-DAG deployment plan. | Uses one snapshot plus an explicit validated fallback; it does not poll or assume a cloud hostname. |
-| `offline_profiling` | `dependency/core/lib/algorithms/schedule_redeployment_policy/offline_profiling_redeployment_policy.py` | Use offline latency/profile information for redeployment. | Covers every current-DAG service and uses the injected cloud identity when no edge candidate exists. |
-| `online_profiling` | `dependency/core/lib/algorithms/schedule_redeployment_policy/online_profiling_redeployment_policy.py` | Use online profiling feedback for redeployment. | Paired with `online_profiling` agent templates. |
-| `latency_matrix_collector` | `dependency/core/lib/algorithms/schedule_redeployment_policy/latency_matrix_collector_redeployment_policy.py` | Collect or apply latency-matrix-oriented redeployment decisions. | Template exists even though it is not currently in `scheduler_policies.yaml`. |
+| `deepva` | `dependency/core/lib/algorithms/schedule_redeployment_policy/deepva_redeployment_policy.py` | Apply DeepVA redeployment behavior. | Keeps a cloud replica by default without adding cloud to DeepVA's configured action devices. |
+| `dynamic` | `dependency/core/lib/algorithms/schedule_redeployment_policy/dynamic_redeployment_policy.py` | Convert the latest exact offloading decision into a current-DAG deployment plan. | Its baseline template enables `include_cloud`; the hook resolves the injected hostname. |
+| `offline_profiling` | `dependency/core/lib/algorithms/schedule_redeployment_policy/offline_profiling_redeployment_policy.py` | Use offline latency/profile information for redeployment. | Its baseline template enables `include_cloud` for every service. |
+| `online_profiling` | `dependency/core/lib/algorithms/schedule_redeployment_policy/online_profiling_redeployment_policy.py` | Use online profiling feedback for redeployment. | Its baseline template enables `include_cloud` for every service. |
+| `latency_matrix_collector` | `dependency/core/lib/algorithms/schedule_redeployment_policy/latency_matrix_collector_redeployment_policy.py` | Collect or apply latency-matrix-oriented redeployment decisions. | Intentionally profiles only its configured edge-device matrix and does not add cloud. |
 | `hedger-deployment-only` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_deployment_only_redeployment_policy.py` | Hedger deployment-only redeployment variant. | Research/benchmark-oriented variant. |
 | `hedger-flat` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_flat_redeployment_policy.py` | Flat Hedger redeployment variant. | Research/benchmark-oriented variant. |
 | `hedger-no-graph-encoder` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_no_graph_encoder_redeployment_policy.py` | No-graph-encoder Hedger redeployment variant. | Research/benchmark-oriented variant. |
 | `hedger-offloading-only` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_offloading_only_redeployment_policy.py` | Hedger offloading-only redeployment variant. | Research/benchmark-oriented variant. |
 
-The `fixed` initial-deployment policy and the `dynamic`, `offline_profiling`, and `online_profiling` redeployment
-policies accept `include_cloud`. This policy-level option adds the exact cloud node before Scheduler validation and is
-independent of Backend's global `default-cloud-processor-backup`; either mechanism creates an active routable replica.
+The fixed initial-deployment and redeployment policies and the `dynamic`, `offline_profiling`, and `online_profiling`
+redeployment policies accept `include_cloud`. This policy-level option adds the exact cloud node before Scheduler
+validation. Fixed policies also resolve the reserved `@cloud` token for selective service placement.
 
 ### `SCH_AGENT`
 

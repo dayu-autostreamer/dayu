@@ -1,4 +1,5 @@
 import abc
+import copy
 import os.path
 import time
 import numpy as np
@@ -6,6 +7,16 @@ import numpy as np
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
 from core.lib.common import VideoOps
+from core.lib.scheduling.pipeline import (
+    materialize_pipeline_policy,
+    pipeline_entries,
+    pipeline_partition_index,
+    rematerialize_pipeline_policy,
+)
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 
@@ -240,9 +251,11 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         resolution_decision = self.system.resolution_list.index(policy['resolution'])
         fps_decision = self.system.fps_list.index(policy['fps'])
         buffer_size_decision = self.system.buffer_size_list.index(policy['buffer_size'])
-        pipeline_decision = next((i for i, service in enumerate(policy['dag'])
-                                  if service['execute_device'] == self.system.cloud_device),
-                                 len(policy['dag']) - 1)
+        pipeline_decision = pipeline_partition_index(
+            policy['dag'],
+            edge_device=policy['edge_device'],
+            cloud_device=self.system.cloud_device,
+        )
         self.state_buffer.add_decision_buffer([resolution_decision, fps_decision,
                                                buffer_size_decision, pipeline_decision])
 
@@ -256,7 +269,34 @@ class HEISYNAgent(BaseAgent, abc.ABC):
         return self.micro_overhead_estimator.get_latest_overhead() + self.macro_overhead_estimator.get_latest_overhead()
 
     def get_schedule_plan(self, info):
-        return self.schedule_plan
+        edge_device = info['source_device']
+        terminal_index = len(pipeline_entries(info['dag'])) - 1
+        if self.schedule_plan is None:
+            policy = materialize_pipeline_policy(
+                {},
+                info['dag'],
+                terminal_index,
+                edge_device=edge_device,
+                cloud_device=self.cloud_device,
+            )
+        else:
+            policy = rematerialize_pipeline_policy(
+                copy.deepcopy(self.schedule_plan),
+                info['dag'],
+                edge_device=edge_device,
+                cloud_device=self.cloud_device,
+            )
+        policy.pop('edge_device', None)
+        _, deployment = active_deployment_for_dag(self.system, policy['dag'])
+        require_active_plan(
+            {
+                entry['service_name']:
+                    policy['dag'][entry['service_name']]['service']['execute_device']
+                for entry in pipeline_entries(policy['dag'])[:-1]
+            },
+            deployment,
+        )
+        return policy
 
     def run(self):
 

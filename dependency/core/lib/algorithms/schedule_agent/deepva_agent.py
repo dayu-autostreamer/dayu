@@ -9,6 +9,11 @@ import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, ConfigLoader, TaskConstant
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling import materialize_offloading_plan, service_names
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    active_targets,
+)
 
 from .base_agent import BaseAgent
 
@@ -194,9 +199,16 @@ class DeepVAAgent(BaseAgent, abc.ABC):
         self.deployment_lock = threading.Lock()
         self.current_deployment_mask = self._initial_deployment_mask()
         self.current_offloading_targets = self._targets_from_mask(self.current_deployment_mask)
+        # Proposed DRL targets and served LIVE targets are intentionally
+        # separate. A redeployment action is not executable until Backend has
+        # published the corresponding RuntimeDirectory revision.
+        self.served_offloading_targets = self.current_offloading_targets.copy()
         self.prev_deployment_mask = self.current_deployment_mask.copy()
         self.state_buffer.update_deployment(self.current_deployment_mask, self.current_offloading_targets)
         self.latest_offloading_policy = self._offloading_plan_from_targets(self.current_offloading_targets)
+        self.served_offloading_policy = self._offloading_plan_from_targets(
+            self.served_offloading_targets
+        )
         self.global_step = 0
         self.last_projection_count = 0
 
@@ -521,37 +533,69 @@ class DeepVAAgent(BaseAgent, abc.ABC):
 
     def get_schedule_plan(self, info):
         with self.deployment_lock:
-            targets = self.current_offloading_targets.copy()
+            proposed_targets = self.current_offloading_targets.copy()
+            previous_served = self.served_offloading_targets.copy()
 
         dag = info.get("dag", {})
         if not dag:
-            return None
+            raise ValueError("DeepVA schedule request requires a DAG")
+
+        current_services = service_names(dag)
+        if set(current_services) != set(self.service_names):
+            raise ValueError(
+                "DeepVA service_list must exactly match the current DAG; "
+                f"configured={sorted(self.service_names)}, "
+                f"current={sorted(current_services)}"
+            )
+
+        snapshot, deployment = active_deployment_for_dag(self.system, dag)
 
         source_device = info.get("source_device")
         offloading_policy = {}
-        for service_name in dag:
-            if service_name == TaskConstant.START.value:
-                if source_device and "service" in dag[service_name]:
-                    dag[service_name]["service"]["execute_device"] = source_device
-                continue
-            if service_name == TaskConstant.END.value:
-                if "service" in dag[service_name]:
-                    dag[service_name]["service"]["execute_device"] = self.cloud_device
-                continue
+        served_targets = previous_served.copy()
+        for service_name in current_services:
             s_idx = self._service_idx(service_name)
-            if s_idx is None:
-                continue
-            target_idx = int(targets[s_idx])
-            device_name = self.device_list[target_idx]
-            if "service" in dag[service_name]:
-                dag[service_name]["service"]["execute_device"] = device_name
-            offloading_policy[service_name] = device_name
+            proposed_idx = int(proposed_targets[s_idx])
+            proposed_device = self.device_list[proposed_idx]
+            live_candidates = active_targets(
+                deployment,
+                service_name,
+                candidates=self.device_list,
+            )
+            if not live_candidates:
+                raise ValueError(
+                    f"DeepVA service {service_name!r} has no active replica "
+                    "inside device_list"
+                )
 
-        self.latest_offloading_policy = dict(offloading_policy)
-        policy = {"dag": dag}
-        if self.configuration is not None:
-            policy.update(self.configuration.copy())
-        return policy
+            previous_idx = int(previous_served[s_idx])
+            previous_device = self.device_list[previous_idx]
+            if proposed_device in live_candidates:
+                device_name = proposed_device
+            elif previous_device in live_candidates:
+                device_name = previous_device
+            else:
+                device_name = live_candidates[0]
+            served_targets[s_idx] = self.device_list.index(device_name)
+            offloading_policy[service_name] = device_name
+            if device_name != proposed_device:
+                LOGGER.info(
+                    f"[DeepVA] Proposed target {proposed_device!r} for "
+                    f"{service_name!r} is pending; serving {device_name!r} "
+                    f"from LIVE revision {snapshot['runtime_directory_revision']}"
+                )
+
+        with self.deployment_lock:
+            self.served_offloading_targets = served_targets
+            self.served_offloading_policy = dict(offloading_policy)
+
+        return materialize_offloading_plan(
+            self.configuration or {},
+            dag,
+            offloading_policy,
+            source_device=source_device,
+            cloud_device=self.cloud_device,
+        )
 
     def _deployment_plan_from_mask(self, mask):
         plan = {}

@@ -13,10 +13,12 @@ from core.lib.common import (
     TaskConstant,
 )
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling import deployment_from_snapshot
 
 from .base_agent import BaseAgent
 from .fragsplice.latency_model import FragSpliceLatencyModel
 from .fragsplice_agent import _load_mapping, _system_instance_token
+from core.lib.scheduling.live_state import get_live_snapshot
 
 __all__ = ("FragSpliceColdSampleAgent",)
 
@@ -200,7 +202,7 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
 
     def _refresh_deployment(self, deployment=None):
         if deployment is None:
-            deployment = self.system.runtime_service_nodes()
+            deployment = deployment_from_snapshot(get_live_snapshot(self.system))
         current = self._normalize_deployment(deployment)
         if current:
             self._ensure_cold_context(deployment=current)
@@ -283,12 +285,8 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
 
     def get_schedule_plan(self, info):
         with self.overhead_estimator, self._state.lock:
-            snapshot = self.system.get_scheduling_snapshot()
-            deployment = snapshot.get("deployment")
-            if not isinstance(deployment, dict):
-                raise ValueError(
-                    "FragSplice cold snapshot has no fixed deployment"
-                )
+            snapshot = get_live_snapshot(self.system)
+            deployment = deployment_from_snapshot(snapshot)
             self._refresh_deployment(deployment)
             planned = self._planned_pair_counts(snapshot)
             dag = copy.deepcopy(info["dag"])
@@ -387,7 +385,7 @@ class FragSpliceColdSampleAgent(BaseAgent, abc.ABC):
                 "generate": False,
                 "reason": "fragsplice_profile_complete",
             }
-        snapshot = self.system.get_scheduling_snapshot()
+        snapshot = get_live_snapshot(self.system)
         inflight = self._inflight_task_count(snapshot)
         if inflight >= self.max_inflight_tasks:
             return {

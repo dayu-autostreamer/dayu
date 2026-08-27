@@ -4,6 +4,7 @@ from copy import deepcopy
 
 
 _SYNTHETIC_SERVICES = frozenset({"_start", "_end", "start", "end"})
+CLOUD_NODE_TOKEN = "@cloud"
 
 
 def dag_services(info):
@@ -28,13 +29,26 @@ def allowed_nodes(info, cloud_node=""):
     return nodes
 
 
+def normalize_include_cloud(value):
+    if not isinstance(value, bool):
+        raise TypeError("include_cloud must be a boolean")
+    return value
+
+
+def require_cloud_node(cloud_node, policy_name="deployment policy"):
+    cloud_node = str(cloud_node or "").strip()
+    if not cloud_node:
+        raise ValueError(f"{policy_name} requires system.cloud_device")
+    return cloud_node
+
+
 def validate_plan(plan, info, cloud_node=""):
     """Return the sole public shape: ``logical_service -> [node, ...]``.
 
     Extra services, omitted services, scalar node values, empty placements and
     nodes outside this source's immutable candidate set all fail at the policy
-    boundary. This policy contract never infers operational replicas; Backend
-    may compose its configured cloud backup only after validation succeeds.
+    boundary. Cloud placement is part of the policy result and must use the
+    exact cloud identity injected into the Scheduler.
     """
 
     if not isinstance(plan, dict):
@@ -74,22 +88,74 @@ def validate_plan(plan, info, cloud_node=""):
     return normalized
 
 
-def fixed_plan(policy, info, cloud_node=""):
+def cloud_replica_plan(plan, info, cloud_node, policy_name="deployment policy"):
+    """Validate ``plan`` and add the exact cloud node to every service."""
+
+    cloud_node = require_cloud_node(cloud_node, policy_name)
+    normalized = validate_plan(plan, info, cloud_node=cloud_node)
+    with_cloud = {
+        service: [*nodes, cloud_node]
+        for service, nodes in normalized.items()
+    }
+    return validate_plan(with_cloud, info, cloud_node=cloud_node)
+
+
+def fixed_plan(policy, info, cloud_node="", include_cloud=False):
     if not isinstance(policy, dict):
         raise ValueError("fixed deployment policy must be an object")
+    include_cloud = normalize_include_cloud(include_cloud)
+    cloud_node = str(cloud_node or "").strip()
     services = dag_services(info)
-    scoped = {
-        service: deepcopy(policy[service])
-        for service in services
-        if service in policy
-    }
+    scoped = {}
+    for service in services:
+        if service not in policy:
+            continue
+        raw_nodes = deepcopy(policy[service])
+        if isinstance(raw_nodes, list):
+            resolved = []
+            for raw_node in raw_nodes:
+                node = str(raw_node).strip()
+                if node == CLOUD_NODE_TOKEN:
+                    node = require_cloud_node(
+                        cloud_node,
+                        f"fixed deployment {CLOUD_NODE_TOKEN}",
+                    )
+                resolved.append(node)
+            if include_cloud:
+                resolved.append(require_cloud_node(cloud_node, "fixed deployment include_cloud"))
+            raw_nodes = resolved
+        scoped[service] = raw_nodes
     return validate_plan(scoped, info, cloud_node=cloud_node)
 
 
+def full_edge_plan(info, cloud_node=""):
+    cloud_node = str(cloud_node or "").strip()
+    nodes = sorted(
+        node for node in allowed_nodes(info)
+        if node != cloud_node
+    )
+    return validate_plan(
+        {service: list(nodes) for service in dag_services(info)},
+        info,
+        cloud_node=cloud_node,
+    )
+
+
+def full_plan(info, cloud_node):
+    cloud_node = require_cloud_node(cloud_node, "full deployment policy")
+    nodes = sorted(allowed_nodes(info)) + [cloud_node]
+    return validate_plan(
+        {service: list(nodes) for service in dag_services(info)},
+        info,
+        cloud_node=cloud_node,
+    )
+
+
 def cloud_plan(system, info):
-    cloud_node = str(getattr(system, "cloud_device", "") or "").strip()
-    if not cloud_node:
-        raise ValueError("cloud deployment policy requires system.cloud_device")
+    cloud_node = require_cloud_node(
+        getattr(system, "cloud_device", ""),
+        "cloud deployment policy",
+    )
     return validate_plan(
         {service: [cloud_node] for service in dag_services(info)},
         info,

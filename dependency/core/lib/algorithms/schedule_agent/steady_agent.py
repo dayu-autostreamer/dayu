@@ -2,6 +2,11 @@ import abc
 
 from core.lib.common import ClassFactory, ClassType, Context, TaskConstant, LOGGER
 from core.lib.content import Task
+from core.lib.scheduling.pipeline import apply_pipeline_partition, pipeline_entries
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .steady import ContextRecord, AccuracyCalculation, OverallScheduler
 
@@ -149,13 +154,17 @@ class SteadyAgent(BaseAgent, abc.ABC):
         if self.edge_device is None:
             self.edge_device = info['source_device']
 
-        if self.edge_serv_num_list is None or self.service_names is None:
-            pipeline_dict = Task.extract_pipeline_deployment_from_dag_deployment(info['dag'])
-            self.service_names = []
-            for service_info in pipeline_dict:
-                if service_info['service_name'] not in (TaskConstant.START.value, TaskConstant.END.value):
-                    self.service_names.append(service_info['service_name'])
+        current_services = [
+            entry['service_name']
+            for entry in pipeline_entries(info['dag'])[:-1]
+        ]
+        if self.service_names is None:
+            self.service_names = current_services
             self.edge_serv_num_list = [i for i in range(0, len(self.service_names) + 1)]
+        elif current_services != self.service_names:
+            raise ValueError(
+                'Steady does not support changing the pipeline topology at runtime'
+            )
 
         if self.overall_scheduler is None:
             raw_meta_data = info['meta_data']
@@ -219,12 +228,12 @@ class SteadyAgent(BaseAgent, abc.ABC):
                                                                   real_time_delay=real_time_delay,
                                                                   real_time_acc=real_time_acc)
 
-            old_pipeline_dict = Task.extract_pipeline_deployment_from_dag_deployment(info['dag'])
-            new_pipeline_dict = self.trans_edge_serv_num_to_pipeline_dict(edge_serv_num=new_policy['edge_serv_num'],
-                                                                          pipeline_dict=old_pipeline_dict,
-                                                                          edge_device=self.edge_device,
-                                                                          cloud_device=self.cloud_device)
-            new_dag = Task.extract_dag_deployment_from_pipeline_deployment(new_pipeline_dict)
+            new_dag = apply_pipeline_partition(
+                info['dag'],
+                new_policy['edge_serv_num'],
+                edge_device=self.edge_device,
+                cloud_device=self.cloud_device,
+            )
 
             new_schedule_plan = {
                 'fps': new_policy['fps'],
@@ -234,6 +243,18 @@ class SteadyAgent(BaseAgent, abc.ABC):
                 'encoding': 'mp4v'
             }
 
+        if new_schedule_plan and isinstance(new_schedule_plan.get('dag'), dict):
+            _, deployment = active_deployment_for_dag(
+                self.system,
+                new_schedule_plan['dag'],
+            )
+            require_active_plan(
+                {
+                    service: new_schedule_plan['dag'][service]['service']['execute_device']
+                    for service in self.service_names
+                },
+                deployment,
+            )
         return new_schedule_plan
 
     def get_schedule_plan_for_acc_sample(self, info):
@@ -245,13 +266,12 @@ class SteadyAgent(BaseAgent, abc.ABC):
         new_schedule_plan['encoding'] = 'mp4v'
 
         tmp_edge_serv_num = self.edge_serv_num_list[0]
-        old_pipeline_dict = Task.extract_pipeline_deployment_from_dag_deployment(info['dag'])
-        new_pipeline_dict = self.trans_edge_serv_num_to_pipeline_dict(edge_serv_num=tmp_edge_serv_num,
-                                                                      pipeline_dict=old_pipeline_dict,
-                                                                      edge_device=self.edge_device,
-                                                                      cloud_device=self.cloud_device)
-
-        new_dag = Task.extract_dag_deployment_from_pipeline_deployment(new_pipeline_dict)
+        new_dag = apply_pipeline_partition(
+            info['dag'],
+            tmp_edge_serv_num,
+            edge_device=self.edge_device,
+            cloud_device=self.cloud_device,
+        )
         new_schedule_plan['dag'] = new_dag
 
         return new_schedule_plan

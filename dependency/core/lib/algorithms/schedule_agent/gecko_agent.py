@@ -4,6 +4,11 @@ import copy
 from core.lib.common import ClassFactory, ClassType, Context, LOGGER, TaskConstant
 from core.lib.content import Task
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling.pipeline import apply_pipeline_partition, pipeline_entries
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 from .gecko import GeckoPolicySearch
@@ -79,6 +84,14 @@ class GeckoAgent(BaseAgent, abc.ABC):
                 context_info=context_info,
             )
             new_dag = self.build_dag_with_policy(info['dag'], new_policy['edge_serv_num'])
+            _, deployment = active_deployment_for_dag(self.system, new_dag)
+            require_active_plan(
+                {
+                    service: new_dag[service]['service']['execute_device']
+                    for service in self.service_names
+                },
+                deployment,
+            )
             return {
                 'fps': new_policy['fps'],
                 'resolution': new_policy['resolution'],
@@ -94,15 +107,17 @@ class GeckoAgent(BaseAgent, abc.ABC):
         if self.edge_device is None:
             self.edge_device = info['source_device']
 
-        if self.edge_serv_num_list is not None and self.service_names is not None:
-            return
-
-        pipeline_dict = Task.extract_pipeline_deployment_from_dag_deployment(info['dag'])
-        self.service_names = [
-            service_info['service_name']
-            for service_info in pipeline_dict
-            if service_info['service_name'] not in (TaskConstant.START.value, TaskConstant.END.value)
+        current_services = [
+            entry['service_name']
+            for entry in pipeline_entries(info['dag'])[:-1]
         ]
+        if self.service_names is not None:
+            if current_services != self.service_names:
+                raise ValueError(
+                    'Gecko does not support changing the pipeline topology at runtime'
+                )
+            return
+        self.service_names = current_services
         self.edge_serv_num_list = list(range(0, len(self.service_names) + 1))
 
     def ensure_search_engine(self, info):
@@ -209,12 +224,12 @@ class GeckoAgent(BaseAgent, abc.ABC):
         return task_info
 
     def build_dag_with_policy(self, dag, edge_serv_num):
-        pipeline_dict = Task.extract_pipeline_deployment_from_dag_deployment(copy.deepcopy(dag))
-        new_pipeline_dict = self.trans_edge_serv_num_to_pipeline_dict(
-            edge_serv_num=edge_serv_num,
-            pipeline_dict=pipeline_dict,
+        return apply_pipeline_partition(
+            dag,
+            edge_serv_num,
+            edge_device=self.edge_device,
+            cloud_device=self.cloud_device,
         )
-        return Task.extract_dag_deployment_from_pipeline_deployment(new_pipeline_dict)
 
     def trans_edge_serv_num_to_pipeline_dict(self, edge_serv_num, pipeline_dict):
         edge_count = int(edge_serv_num)

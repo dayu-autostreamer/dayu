@@ -189,13 +189,6 @@ class RuntimeOrchestrator:
         self._inventory_cached_at: Optional[float] = None
 
         base_info = self.template_helper.load_base_info()
-        default_cloud_processor_backup = base_info.get(
-            "default-cloud-processor-backup", False,
-        )
-        if not isinstance(default_cloud_processor_backup, bool):
-            raise ValueError("default-cloud-processor-backup must be a boolean")
-        self.default_cloud_processor_backup = default_cloud_processor_backup
-
         runtime = base_info.get("runtime")
         if runtime is None:
             runtime = {}
@@ -826,12 +819,6 @@ class RuntimeOrchestrator:
                 f"deployment plan omitted services {missing}; every service requires an explicit "
                 "policy placement"
             )
-        # Cloud backup is an operational replica composed by Backend after the
-        # Scheduler plan has passed the complete service/node contract. It must
-        # never repair an incomplete or otherwise invalid policy result.
-        if self.default_cloud_processor_backup:
-            for nodes in normalized.values():
-                nodes.add(cloud_node)
         return {service: tuple(sorted(nodes)) for service, nodes in sorted(normalized.items())}
 
     @staticmethod

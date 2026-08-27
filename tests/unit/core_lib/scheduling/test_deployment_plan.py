@@ -3,10 +3,15 @@ from types import SimpleNamespace
 import pytest
 
 from core.lib.scheduling.deployment_plan import (
+    CLOUD_NODE_TOKEN,
     allowed_nodes,
     cloud_plan,
+    cloud_replica_plan,
     dag_services,
     fixed_plan,
+    full_edge_plan,
+    full_plan,
+    normalize_include_cloud,
     validate_plan,
 )
 
@@ -98,7 +103,7 @@ def test_validate_plan_rejects_ambiguous_or_incomplete_contracts(plan, message):
 def test_fixed_plan_scopes_configuration_to_the_current_dag():
     policy = {
         "detector": ["edge-b", "edge-a"],
-        "tracker": ["cloud-a"],
+        "tracker": [CLOUD_NODE_TOKEN],
         "stale": ["outside-node"],
     }
 
@@ -107,9 +112,60 @@ def test_fixed_plan_scopes_configuration_to_the_current_dag():
         "tracker": ["cloud-a"],
     }
     assert policy["detector"] == ["edge-b", "edge-a"]
+    assert policy["tracker"] == [CLOUD_NODE_TOKEN]
+
+    assert fixed_plan(
+        {
+            "detector": ["edge-a"],
+            "tracker": ["edge-b"],
+        },
+        deployment_info(),
+        cloud_node="cloud-a",
+        include_cloud=True,
+    ) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-b"],
+    }
 
     with pytest.raises(ValueError, match="fixed deployment policy must be an object"):
         fixed_plan([], deployment_info())
+    with pytest.raises(ValueError, match="@cloud.*requires system.cloud_device"):
+        fixed_plan(
+            {"detector": [CLOUD_NODE_TOKEN], "tracker": ["edge-b"]},
+            deployment_info(),
+        )
+    with pytest.raises(TypeError, match="include_cloud must be a boolean"):
+        fixed_plan(
+            {"detector": ["edge-a"], "tracker": ["edge-b"]},
+            deployment_info(),
+            include_cloud="false",
+        )
+
+
+@pytest.mark.unit
+def test_cloud_replica_and_full_plans_use_explicit_cloud_identity():
+    assert cloud_replica_plan(
+        {"detector": ["edge-a"], "tracker": ["edge-b"]},
+        deployment_info(),
+        "cloud-a",
+    ) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-b"],
+    }
+    edge_info = deployment_info()
+    edge_info["node_set"].append("cloud-a")
+    assert full_edge_plan(edge_info, "cloud-a") == {
+        "detector": ["edge-a", "edge-b"],
+        "tracker": ["edge-a", "edge-b"],
+    }
+    assert full_plan(deployment_info(), "cloud-a") == {
+        "detector": ["cloud-a", "edge-a", "edge-b"],
+        "tracker": ["cloud-a", "edge-a", "edge-b"],
+    }
+    assert normalize_include_cloud(False) is False
+
+    with pytest.raises(ValueError, match="full deployment policy requires system.cloud_device"):
+        full_plan(deployment_info(), "")
 
 
 @pytest.mark.unit

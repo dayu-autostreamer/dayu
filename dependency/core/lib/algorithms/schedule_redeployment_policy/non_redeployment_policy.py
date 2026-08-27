@@ -1,4 +1,6 @@
 from .base_redeployment_policy import BaseRedeploymentPolicy
+from core.lib.scheduling import deployment_from_snapshot
+from core.lib.scheduling.live_state import get_live_snapshot
 from core.lib.scheduling.deployment_plan import allowed_nodes, dag_services, validate_plan
 from core.lib.common import ClassFactory, ClassType, LOGGER
 
@@ -16,11 +18,8 @@ class NonRedeploymentPolicy(BaseRedeploymentPolicy):
         # Agents may be constructed before the initial Processor deployment is
         # published. Read the active runtime directory at request time instead
         # of caching an empty or obsolete deployment in __init__.
-        service_deployment = self.system.runtime_service_nodes()
-        if service_deployment is None:
-            raise ValueError("current runtime deployment is not initialized")
-        if not isinstance(service_deployment, dict):
-            raise ValueError("current runtime deployment must be an object")
+        snapshot = get_live_snapshot(self.system)
+        service_deployment = deployment_from_snapshot(snapshot)
 
         # The runtime directory stores the deployment union for all sources.
         # Project it onto this source's DAG and immutable candidate set; the

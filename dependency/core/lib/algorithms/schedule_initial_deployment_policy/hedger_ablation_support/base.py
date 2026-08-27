@@ -3,7 +3,7 @@ import copy
 
 from core.lib.common import ConfigLoader, Context, GlobalInstanceManager, LOGGER
 from core.lib.content import Task
-from core.lib.scheduling.deployment_plan import validate_plan
+from core.lib.scheduling.deployment_plan import cloud_replica_plan
 
 from ..base_initial_deployment_policy import BaseInitialDeploymentPolicy
 
@@ -50,10 +50,12 @@ class HedgerAblationInitialDeploymentPolicyBase(BaseInitialDeploymentPolicy, abc
         self.hedger.register_logical_topology(Task.extract_dag_from_dict(dag))
         self.hedger.register_physical_topology(list(node_set), source_device)
         self.hedger.register_state_buffer()
-        default_plan = validate_plan(
+        cloud_device = str(self.system.cloud_device or "").strip()
+        default_plan = cloud_replica_plan(
             copy.deepcopy(self.default_deployment),
             info,
-            cloud_node=self.system.cloud_device,
+            cloud_device,
+            policy_name="Hedger",
         )
         self.hedger.register_initial_deployment(default_plan)
 
@@ -68,10 +70,11 @@ class HedgerAblationInitialDeploymentPolicyBase(BaseInitialDeploymentPolicy, abc
             if not deploy_plan:
                 deploy_plan = copy.deepcopy(default_plan)
 
-        deploy_plan = validate_plan(
+        deploy_plan = cloud_replica_plan(
             copy.deepcopy(deploy_plan),
             info,
-            cloud_node=self.system.cloud_device,
+            cloud_device,
+            policy_name="Hedger",
         )
         deployment_version = int(self.hedger.get_active_deployment_version())
         plan_history = copy.deepcopy(

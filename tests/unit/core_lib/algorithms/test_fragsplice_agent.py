@@ -2150,7 +2150,7 @@ class FakeSystem:
     def runtime_directory_revision(self):
         return self.revision
 
-    def get_scheduling_snapshot(self):
+    def get_scheduling_snapshot(self, scope=None):
         return {
             "captured_at": 1.0,
             "runtime_directory_revision": self.revision,
@@ -3276,9 +3276,10 @@ def test_cold_sampler_bounds_pending_and_active_roots(tmp_path, monkeypatch):
     })
 
     class BusySystem(FakeSystem):
-        def get_scheduling_snapshot(self):
+        def get_scheduling_snapshot(self, scope=None):
             return {
                 "captured_at": 1.0,
+                "runtime_directory_revision": self.revision,
                 "deployment": self.runtime_service_nodes(),
                 "reservations": [
                     {"root_uuid": "pending-root"},
@@ -3290,6 +3291,8 @@ def test_cold_sampler_bounds_pending_and_active_roots(tmp_path, monkeypatch):
                 ],
                 "task_barriers": [],
                 "resources": {},
+                "resource_received_at": {},
+                "resource_runtime_revision": {},
             }
 
     agent = FragSpliceColdSampleAgent(

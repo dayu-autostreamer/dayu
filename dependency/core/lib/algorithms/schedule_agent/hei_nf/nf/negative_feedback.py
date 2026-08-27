@@ -1,4 +1,11 @@
+from copy import deepcopy
+
 from core.lib.common import LOGGER
+from core.lib.scheduling.pipeline import (
+    apply_pipeline_partition,
+    pipeline_entries,
+    pipeline_partition_index,
+)
 
 
 class NegativeFeedback_Single:
@@ -20,14 +27,17 @@ class NegativeFeedback_Single:
 
     def __call__(self, latest_policy: dict, latest_delay: float):
 
-        if latest_policy is None:
-            LOGGER.info(f'[NF Lack Latest Policy] (agent {self.agent_id}) No latest policy, none decision make ..')
+        if latest_policy is None or latest_delay is None:
+            LOGGER.info(
+                f'[NF Lack Feedback] (agent {self.agent_id}) '
+                'Policy or delay feedback is not ready.'
+            )
             return None
 
         resolution = latest_policy['resolution']
         fps = latest_policy['fps']
         buffer_size = latest_policy['buffer_size']
-        pipeline = latest_policy['pipeline']
+        pipeline = pipeline_entries(latest_policy['dag'])
 
         self.pipeline_list = list(range(0, len(pipeline)))
         self.edge_device = latest_policy['edge_device']
@@ -35,8 +45,11 @@ class NegativeFeedback_Single:
         self.resolution_index = self.resolution_list.index(resolution)
         self.fps_index = self.fps_list.index(fps)
         self.buffer_size_index = self.buffer_size_list.index(buffer_size)
-        self.pipeline_index = next((i for i, service in enumerate(pipeline)
-                                    if service['execute_device'] == self.cloud_device), len(pipeline) - 1)
+        self.pipeline_index = pipeline_partition_index(
+            latest_policy['dag'],
+            edge_device=self.edge_device,
+            cloud_device=self.cloud_device,
+        )
 
         constraint_delay = 1 / self.fps_list[self.fps_index] * 1.6
         delay_bias = constraint_delay - latest_delay
@@ -58,17 +71,19 @@ class NegativeFeedback_Single:
 
             setattr(self, f'{knob_name}_index', updated_knob_index)
 
-        schedule_policy = {}
-        schedule_policy.update(latest_policy)
+        schedule_policy = deepcopy(latest_policy)
         schedule_policy['resolution'] = self.resolution_list[self.resolution_index]
         schedule_policy['fps'] = self.fps_list[self.fps_index]
         schedule_policy['buffer_size'] = self.buffer_size_list[self.buffer_size_index]
 
         pipeline_index_decision = self.pipeline_index
-        schedule_policy['pipeline'] = [{**p, 'execute_device': self.edge_device} for p in
-                                       pipeline[:pipeline_index_decision]] + \
-                                      [{**p, 'execute_device': self.cloud_device} for p in
-                                       pipeline[pipeline_index_decision:]]
+        schedule_policy.pop('pipeline', None)
+        schedule_policy['dag'] = apply_pipeline_partition(
+            latest_policy['dag'],
+            pipeline_index_decision,
+            edge_device=self.edge_device,
+            cloud_device=self.cloud_device,
+        )
         return schedule_policy
 
     @staticmethod

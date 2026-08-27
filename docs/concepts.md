@@ -117,9 +117,8 @@ non-empty JSON list of exact candidate node names. `dependency/core/lib/scheduli
 normalization, and validation of this contract for both Scheduler and every policy family. It rejects missing or extra
 services, scalar placements, empty targets, and nodes outside the processor candidate set. Scheduler and policy
 plugins never infer a cloud hostname: a selected policy may add only the injected exact cloud identity, for example
-through `include_cloud` or the `source-edge-cloud` initial policy. After the Scheduler plan is valid, Backend may apply
-the independent `default-cloud-processor-backup` control by adding the exact resolved cloud node to every logical
-service. That operational replica does not relax or rewrite the Scheduler policy contract.
+through `include_cloud`, the fixed-policy `@cloud` token, or a policy whose deployment definition includes cloud.
+Backend validates and publishes that exact result without independently adding Processor replicas.
 
 Offloading is a separate per-task decision. Full-DAG agents map every business service to an active device. An
 explicitly pipeline-only agent may instead use a `partition_index`: index `0` means all business stages execute on

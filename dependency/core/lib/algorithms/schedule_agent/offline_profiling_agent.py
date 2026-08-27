@@ -1,8 +1,13 @@
 import abc
 import random
-from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, TaskConstant, LOGGER
+from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, LOGGER
 from core.lib.estimation import OverheadEstimator
-from core.lib.scheduling import service_waiting_count
+from core.lib.scheduling import materialize_offloading_plan, service_names, service_waiting_count
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    active_targets,
+    live_resources,
+)
 
 from .base_agent import BaseAgent
 
@@ -87,15 +92,15 @@ class OfflineProfilingAgent(BaseAgent, abc.ABC):
         """从 scheduler 的结构化 queue state 中读取服务等待数量。"""
         return service_waiting_count(resource, service_name)
 
-    def _device_queue_length(self, device: str, service_name: str) -> float:
-        resource_table = self.system.get_scheduler_resource()
+    def _device_queue_length(self, device: str, service_name: str, resource_table=None) -> float:
+        resource_table = resource_table or {}
         if not resource_table or device not in resource_table:
             return 0.0
         return self._resource_queue_length(resource_table[device], str(service_name))
 
-    def get_bandwidth(self, source_device=None):
+    def get_bandwidth(self, source_device=None, resource_table=None):
         """从resource_table获取带宽值"""
-        resource_table = self.system.get_scheduler_resource()
+        resource_table = resource_table or {}
         if not resource_table:
             return None
         
@@ -115,14 +120,7 @@ class OfflineProfilingAgent(BaseAgent, abc.ABC):
                     return bandwidth
         return None
 
-    def get_current_deployment(self):
-        """获取当前的服务部署情况"""
-        # 从redeployment_policy获取当前的部署计划
-        if hasattr(self.redeployment_policy, 'policy') and self.redeployment_policy.policy:
-            return self.redeployment_policy.policy
-        return {}
-
-    def select_device_by_latency(self, service_name, deployed_devices):
+    def select_device_by_latency(self, service_name, deployed_devices, resource_table=None):
         """
         根据加权执行代价 (latency * importance_weight) 并结合各边 queue_length 概率选择设备；
         某边 queue_length > 5 时该边得分先减半，再对所有候选边归一化。
@@ -156,7 +154,7 @@ class OfflineProfilingAgent(BaseAgent, abc.ABC):
         
         # 如果没有任何设备有latency数据，随机选择
         if not device_latencies:
-            LOGGER.warning(f'[Offline Profiling Agent] No latency data for any deployed device, random selection')
+            LOGGER.warning('[Offline Profiling Agent] No latency data for any deployed device, random selection')
             return random.choice(deployed_devices)
         
         weight = self._importance_weight(service_name)
@@ -169,7 +167,11 @@ class OfflineProfilingAgent(BaseAgent, abc.ABC):
 
         adjusted_scores = {}
         for device, base in base_scores.items():
-            ql = self._device_queue_length(device, service_name)
+            ql = self._device_queue_length(
+                device,
+                service_name,
+                resource_table=resource_table,
+            )
             factor = (
                 self._OFFLOAD_QUEUE_LEN_HALVE_FACTOR
                 if ql > self._OFFLOAD_QUEUE_LEN_HALVE_GT
@@ -194,67 +196,64 @@ class OfflineProfilingAgent(BaseAgent, abc.ABC):
 
     def get_schedule_plan(self, info):
         if self.default_configuration is None:
-            return None
+            raise ValueError('OfflineProfilingAgent requires a configuration mapping')
 
         with self.overhead_estimator:
-            configuration = self.default_configuration.copy()
-            policy = {}
-            policy.update(configuration)
-            
             cloud_device = self.cloud_device
             source_edge_device = info['source_device']
-            all_edge_devices = info['all_edge_devices']
+            all_edge_devices = [str(device) for device in info['all_edge_devices']]
             dag = info['dag']
-            
-            # 获取当前带宽
-            bandwidth = self.get_bandwidth(source_device=source_edge_device)
-            LOGGER.info(f'[Offline Profiling Agent] Current bandwidth: {bandwidth}, threshold: {self.bandwidth_threshold}')
-            
-            # 获取当前服务部署情况
-            current_deployment = self.get_current_deployment()
-            LOGGER.info(f'[Offline Profiling Agent] Current deployment: {current_deployment}')
-            
-            # 存储offloading策略
-            offloading_policy = {}
-            
-            # 对每个服务进行判断
-            for service_name in dag:
-                # _end is fixed to the injected runtime cloud device.
-                if service_name == '_end':
-                    dag[service_name]['service']['execute_device'] = cloud_device
-                    offloading_policy[service_name] = cloud_device
-                    continue
+            snapshot, current_deployment = active_deployment_for_dag(
+                self.system,
+                dag,
+            )
+            resources = live_resources(snapshot)
 
-                if service_name == TaskConstant.START.value:
-                    # START节点固定在source设备
-                    dag[service_name]['service']['execute_device'] = source_edge_device
-                    offloading_policy[service_name] = source_edge_device
-                    continue
-                
-                # 如果带宽大于阈值，所有阶段都交给云端执行
+            bandwidth = self.get_bandwidth(
+                source_device=source_edge_device,
+                resource_table=resources,
+            )
+            LOGGER.info(f'[Offline Profiling Agent] Current bandwidth: {bandwidth}, threshold: {self.bandwidth_threshold}')
+            LOGGER.info(f'[Offline Profiling Agent] Current deployment: {current_deployment}')
+
+            offloading_policy = {}
+            for service_name in service_names(dag):
+                active = active_targets(current_deployment, service_name)
                 if bandwidth is not None and bandwidth > self.bandwidth_threshold:
+                    if cloud_device not in active:
+                        raise ValueError(
+                            f'OfflineProfilingAgent selected cloud for {service_name!r}, '
+                            'but the LIVE deployment has no cloud replica; enable '
+                            'include_cloud in its deployment hooks'
+                        )
                     execute_device = cloud_device
                 else:
-                    # 根据当前部署情况和离线时延数据进行概率选择
-                    deployed_devices = current_deployment.get(service_name, [])
-                    
-                    if deployed_devices:
-                        execute_device = self.select_device_by_latency(service_name, deployed_devices)
+                    deployed_edges = active_targets(
+                        current_deployment,
+                        service_name,
+                        candidates=all_edge_devices,
+                    )
+                    if deployed_edges:
+                        execute_device = self.select_device_by_latency(
+                            service_name,
+                            deployed_edges,
+                            resource_table=resources,
+                        )
+                    elif cloud_device in active:
+                        execute_device = cloud_device
                     else:
-                        # 如果没有部署信息，则在所有边缘设备中选择
-                        if all_edge_devices:
-                            execute_device = self.select_device_by_latency(service_name, all_edge_devices)
-                        else:
-                            execute_device = cloud_device
-                
-                dag[service_name]['service']['execute_device'] = execute_device
+                        execute_device = active[0]
                 offloading_policy[service_name] = execute_device
-            
-            # 保存最新的offloading策略供重部署策略使用
+
             self.latest_offloading_policy = offloading_policy.copy()
             LOGGER.info(f'[Offline Profiling Agent] Latest offloading policy: {offloading_policy}')
-            
-            policy.update({'dag': dag})
+            policy = materialize_offloading_plan(
+                self.default_configuration,
+                dag,
+                offloading_policy,
+                source_device=source_edge_device,
+                cloud_device=cloud_device,
+            )
         return policy
 
     def get_latest_offloading_policy(self):

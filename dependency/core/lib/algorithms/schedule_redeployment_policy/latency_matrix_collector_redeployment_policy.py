@@ -1,7 +1,9 @@
 import abc
+import copy
 
 from .base_redeployment_policy import BaseRedeploymentPolicy
 from core.lib.common import ClassFactory, ClassType, LOGGER
+from core.lib.scheduling.deployment_plan import allowed_nodes, dag_services, validate_plan
 
 __all__ = ('LatencyMatrixCollectorRedeploymentPolicy',)
 
@@ -230,13 +232,19 @@ class LatencyMatrixCollectorRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
 
     def __call__(self, info) -> dict:
         source_id = info['source']['id']
-        dag = info['dag']
-
-        # Services present in this DAG (excluding _start / _end)
-        dag_services = [
-            svc for svc in dag
-            if svc not in ('_start', '_end')
-        ]
+        current_services = list(dag_services(info))
+        if set(current_services) != set(self.services):
+            raise ValueError(
+                'latency-matrix services must exactly match the current DAG; '
+                f'configured={sorted(self.services)}, '
+                f'current={sorted(current_services)}'
+            )
+        candidates = allowed_nodes(info, getattr(self.system, 'cloud_device', ''))
+        invalid_devices = sorted(set(self.devices) - candidates)
+        if invalid_devices:
+            raise ValueError(
+                f'latency-matrix configured non-candidate devices: {invalid_devices}'
+            )
 
         measured_matrix = self._get_measured_matrix()
 
@@ -252,13 +260,22 @@ class LatencyMatrixCollectorRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
                 f'[Latency Matrix Redeployment] '
                 f'(source {source_id}) Waiting for {len(pending)} pair(s): '
                 f'{pending}  — keeping current plan.')
-            return self.policy
+            return validate_plan(
+                copy.deepcopy(self.policy),
+                info,
+                cloud_node=getattr(self.system, 'cloud_device', ''),
+            )
 
-        deploy_plan = self._compute_deployment(measured_matrix, dag_services)
+        deploy_plan = self._compute_deployment(measured_matrix, current_services)
+        deploy_plan = validate_plan(
+            deploy_plan,
+            info,
+            cloud_node=getattr(self.system, 'cloud_device', ''),
+        )
 
         LOGGER.info(
             f'[Latency Matrix Redeployment] '
             f'(source {source_id}) New policy: {deploy_plan}')
 
-        self.policy = deploy_plan
+        self.policy = copy.deepcopy(deploy_plan)
         return deploy_plan

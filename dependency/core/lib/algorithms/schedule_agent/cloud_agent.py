@@ -1,6 +1,11 @@
 import copy
 
-from core.lib.common import ClassFactory, ClassType, ConfigLoader, Context, TaskConstant
+from core.lib.common import ClassFactory, ClassType, ConfigLoader, Context
+from core.lib.scheduling import materialize_offloading_plan, service_names
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 
@@ -26,18 +31,26 @@ class CloudAgent(BaseAgent):
             )
 
     def get_schedule_plan(self, info):
-        dag = copy.deepcopy(info["dag"])
-        source_device = str(info.get("source_device") or "")
-        for service_name, node in dag.items():
+        dag = info["dag"]
+        for service_name in service_names(dag):
+            node = dag.get(service_name)
             service = node.get("service") if isinstance(node, dict) else None
             if not isinstance(service, dict):
-                raise ValueError(f"schedule DAG service {service_name!r} is malformed")
-            service["execute_device"] = (
-                source_device
-                if service_name == TaskConstant.START.value
-                else self.cloud_device
-            )
-        return {**copy.deepcopy(self.configuration), "dag": dag}
+                raise ValueError(
+                    f"schedule DAG service {service_name!r} is malformed"
+                )
+        _, deployment = active_deployment_for_dag(self.system, dag)
+        plan = require_active_plan(
+            {service: self.cloud_device for service in service_names(dag)},
+            deployment,
+        )
+        return materialize_offloading_plan(
+            self.configuration,
+            dag,
+            plan,
+            info.get("source_device"),
+            self.cloud_device,
+        )
 
     def run(self):
         return None

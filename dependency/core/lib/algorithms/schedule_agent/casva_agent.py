@@ -1,4 +1,5 @@
 import abc
+import copy
 import math
 import os.path
 import time
@@ -6,6 +7,16 @@ import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, VideoOps, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
+from core.lib.scheduling.pipeline import (
+    apply_pipeline_partition,
+    materialize_pipeline_policy,
+    pipeline_entries,
+    rematerialize_pipeline_policy,
+)
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 
@@ -122,11 +133,12 @@ class CASVAAgent(BaseAgent, abc.ABC):
                                    'buffer_size': math.ceil(self.fps_list[fps_index] * self.segment_length)
                                    })
 
-        dag = self.latest_policy['dag']
-        for service_name in dag:
-            dag[service_name]['service']['execute_device'] = self.cloud_device
-
-        self.latest_policy.update({'dag': dag})
+        self.latest_policy['dag'] = apply_pipeline_partition(
+            self.latest_policy['dag'],
+            0,
+            edge_device=self.edge_device,
+            cloud_device=self.cloud_device,
+        )
         self.schedule_plan = self.latest_policy.copy()
 
         LOGGER.info(f'[CASVA Decision] (agent {self.agent_id}) Action: {action}   '
@@ -299,7 +311,36 @@ class CASVAAgent(BaseAgent, abc.ABC):
 
     def get_schedule_plan(self, info):
         self.latest_skip_count = info['skip_count']
-        return self.schedule_plan
+        edge_device = info['source_device']
+        terminal_index = len(pipeline_entries(info['dag'])) - 1
+        if self.schedule_plan is None:
+            # Keep the bootstrap decision on the source edge until the first
+            # DRL action is available.
+            policy = materialize_pipeline_policy(
+                {},
+                info['dag'],
+                terminal_index,
+                edge_device=edge_device,
+                cloud_device=self.cloud_device,
+            )
+        else:
+            policy = rematerialize_pipeline_policy(
+                copy.deepcopy(self.schedule_plan),
+                info['dag'],
+                edge_device=edge_device,
+                cloud_device=self.cloud_device,
+            )
+        policy.pop('edge_device', None)
+        _, deployment = active_deployment_for_dag(self.system, policy['dag'])
+        require_active_plan(
+            {
+                entry['service_name']:
+                    policy['dag'][entry['service_name']]['service']['execute_device']
+                for entry in pipeline_entries(policy['dag'])[:-1]
+            },
+            deployment,
+        )
+        return policy
 
     def get_schedule_overhead(self):
         return self.overhead_estimator.get_latest_overhead()

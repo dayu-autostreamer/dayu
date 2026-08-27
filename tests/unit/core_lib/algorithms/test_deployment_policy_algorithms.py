@@ -10,11 +10,17 @@ base_initial_module = importlib.import_module(
 fixed_initial_module = importlib.import_module(
     "core.lib.algorithms.schedule_initial_deployment_policy.fixed_initial_deployment_policy"
 )
+source_edge_cloud_initial_module = importlib.import_module(
+    "core.lib.algorithms.schedule_initial_deployment_policy.source_edge_cloud_initial_deployment_policy"
+)
 cloud_initial_module = importlib.import_module(
     "core.lib.algorithms.schedule_initial_deployment_policy.cloud_initial_deployment_policy"
 )
 full_initial_module = importlib.import_module(
     "core.lib.algorithms.schedule_initial_deployment_policy.full_initial_deployment_policy"
+)
+full_edge_initial_module = importlib.import_module(
+    "core.lib.algorithms.schedule_initial_deployment_policy.full_edge_initial_deployment_policy"
 )
 random_initial_module = importlib.import_module(
     "core.lib.algorithms.schedule_initial_deployment_policy.random_initial_deployment_policy"
@@ -28,6 +34,12 @@ fixed_redeployment_module = importlib.import_module(
 cloud_redeployment_module = importlib.import_module(
     "core.lib.algorithms.schedule_redeployment_policy.cloud_redeployment_policy"
 )
+full_redeployment_module = importlib.import_module(
+    "core.lib.algorithms.schedule_redeployment_policy.full_redeployment_policy"
+)
+full_edge_redeployment_module = importlib.import_module(
+    "core.lib.algorithms.schedule_redeployment_policy.full_edge_redeployment_policy"
+)
 non_redeployment_module = importlib.import_module(
     "core.lib.algorithms.schedule_redeployment_policy.non_redeployment_policy"
 )
@@ -36,6 +48,9 @@ dynamic_redeployment_module = importlib.import_module(
 )
 offline_redeployment_module = importlib.import_module(
     "core.lib.algorithms.schedule_redeployment_policy.offline_profiling_redeployment_policy"
+)
+deepva_redeployment_module = importlib.import_module(
+    "core.lib.algorithms.schedule_redeployment_policy.deepva_redeployment_policy"
 )
 integrated_predictor_module = importlib.import_module(
     "core.lib.algorithms.schedule_agent.steady.integrated_safe_predictor"
@@ -53,7 +68,7 @@ random_selection_module = importlib.import_module(
 
 def build_deployment_info():
     return {
-        "source": {"id": 7},
+        "source": {"id": 7, "source_device": "edge-a"},
         "dag": {"detector": {}, "tracker": {}},
         "node_set": ["edge-a", "edge-b"],
         "all_edge_nodes": ["edge-a", "edge-b", "edge-c"],
@@ -77,7 +92,7 @@ def test_deployment_policy_bases_and_fixed_policies_cover_loading_and_defaults(m
         fixed_initial_module.ConfigLoader,
         "load",
         staticmethod(lambda path: loaded_paths.append(path) or {
-            "detector": ["edge-a", "cloud-a"],
+            "detector": ["edge-a", "@cloud"],
             "tracker": ["edge-b"],
             "unused-service": ["edge-a"],
         }),
@@ -90,6 +105,17 @@ def test_deployment_policy_bases_and_fixed_policies_cover_loading_and_defaults(m
     assert deploy_plan == {
         "detector": ["cloud-a", "edge-a"],
         "tracker": ["edge-b"],
+    }
+
+    initial_with_cloud = fixed_initial_module.FixedInitialDeploymentPolicy(
+        system,
+        0,
+        policy={"detector": ["edge-a"], "tracker": ["edge-b"]},
+        include_cloud=True,
+    )
+    assert initial_with_cloud(build_deployment_info()) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-b"],
     }
 
     empty_initial_policy = fixed_initial_module.FixedInitialDeploymentPolicy(system, 0)
@@ -107,7 +133,7 @@ def test_deployment_policy_bases_and_fixed_policies_cover_loading_and_defaults(m
         "load",
         staticmethod(lambda path: redeploy_paths.append(path) or {
             "detector": ["edge-a"],
-            "tracker": ["edge-b", "cloud-a"],
+            "tracker": ["edge-b", "@cloud"],
             "unused-service": ["edge-a"],
         }),
     )
@@ -119,6 +145,17 @@ def test_deployment_policy_bases_and_fixed_policies_cover_loading_and_defaults(m
         "tracker": ["cloud-a", "edge-b"],
     }
 
+    redeploy_with_cloud = fixed_redeployment_module.FixedRedeploymentPolicy(
+        system,
+        0,
+        policy={"detector": ["edge-a"], "tracker": ["edge-b"]},
+        include_cloud=True,
+    )
+    assert redeploy_with_cloud(build_deployment_info()) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-b"],
+    }
+
     empty_redeployment_policy = fixed_redeployment_module.FixedRedeploymentPolicy(system, 0)
     with pytest.raises(ValueError, match="omitted current DAG services"):
         empty_redeployment_policy(build_deployment_info())
@@ -127,14 +164,35 @@ def test_deployment_policy_bases_and_fixed_policies_cover_loading_and_defaults(m
         fixed_initial_module.FixedInitialDeploymentPolicy(SimpleNamespace(), 0, policy=object())
     with pytest.raises(TypeError, match="type str or dict"):
         fixed_redeployment_module.FixedRedeploymentPolicy(SimpleNamespace(), 0, policy=object())
+    with pytest.raises(TypeError, match="include_cloud must be a boolean"):
+        fixed_initial_module.FixedInitialDeploymentPolicy(
+            system,
+            0,
+            policy={"detector": ["edge-a"], "tracker": ["edge-b"]},
+            include_cloud="false",
+        )
 
 
 @pytest.mark.unit
 def test_initial_and_redeployment_policies_cover_full_random_and_non_redeployment(monkeypatch):
     info = build_deployment_info()
 
-    full_policy = full_initial_module.FullInitialDeploymentPolicy(SimpleNamespace(), 0)
+    system = SimpleNamespace(cloud_device="cloud-a")
+    full_policy = full_initial_module.FullInitialDeploymentPolicy(system, 0)
     assert full_policy(info) == {
+        "detector": ["cloud-a", "edge-a", "edge-b"],
+        "tracker": ["cloud-a", "edge-a", "edge-b"],
+    }
+    full_edge_policy = full_edge_initial_module.FullEdgeInitialDeploymentPolicy(system, 0)
+    assert full_edge_policy(info) == {
+        "detector": ["edge-a", "edge-b"],
+        "tracker": ["edge-a", "edge-b"],
+    }
+    assert full_redeployment_module.FullRedeploymentPolicy(system, 0)(info) == {
+        "detector": ["cloud-a", "edge-a", "edge-b"],
+        "tracker": ["cloud-a", "edge-a", "edge-b"],
+    }
+    assert full_edge_redeployment_module.FullEdgeRedeploymentPolicy(system, 0)(info) == {
         "detector": ["edge-a", "edge-b"],
         "tracker": ["edge-a", "edge-b"],
     }
@@ -165,7 +223,10 @@ def test_initial_and_redeployment_policies_cover_full_random_and_non_redeploymen
     current_deployment = {"value": {"detector": ["edge-a"]}}
     runtime_system = SimpleNamespace(
         cloud_device="cloud-a",
-        runtime_service_nodes=lambda: current_deployment["value"],
+        get_scheduling_snapshot=lambda scope: {
+            "runtime_directory_revision": 3,
+            "deployment": current_deployment["value"],
+        },
     )
     non_policy = non_redeployment_module.NonRedeploymentPolicy(runtime_system, 0)
     with pytest.raises(ValueError, match="omitted current DAG services"):
@@ -186,12 +247,40 @@ def test_initial_and_redeployment_policies_cover_full_random_and_non_redeploymen
     assert cloud_redeployment_module.CloudRedeploymentPolicy(runtime_system, 0)(info) == {
         "detector": ["cloud-a"], "tracker": ["cloud-a"],
     }
+    assert source_edge_cloud_initial_module.SourceEdgeCloudInitialDeploymentPolicy(
+        runtime_system, 0
+    )(info) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-a"],
+    }
 
     uninitialized_policy = non_redeployment_module.NonRedeploymentPolicy(
-        SimpleNamespace(runtime_service_nodes=lambda: None), 0
+        SimpleNamespace(
+            cloud_device="cloud-a",
+            get_scheduling_snapshot=lambda scope: {
+                "runtime_directory_revision": 1,
+            },
+        ),
+        0,
     )
-    with pytest.raises(ValueError, match="current runtime deployment is not initialized"):
+    with pytest.raises(ValueError, match="no fixed deployment"):
         uninitialized_policy(info)
+
+    revision_zero_policy = non_redeployment_module.NonRedeploymentPolicy(
+        SimpleNamespace(
+            cloud_device="cloud-a",
+            get_scheduling_snapshot=lambda scope: {
+                "runtime_directory_revision": 0,
+                "deployment": {
+                    "detector": ["edge-a"],
+                    "tracker": ["edge-b"],
+                },
+            },
+        ),
+        0,
+    )
+    with pytest.raises(ValueError, match="not ready"):
+        revision_zero_policy(info)
 
 
 @pytest.mark.unit
@@ -283,6 +372,32 @@ def test_dynamic_redeployment_scopes_dag_and_uses_injected_cloud_identity():
 
 
 @pytest.mark.unit
+def test_deepva_redeployment_keeps_cloud_replica_outside_its_edge_action_space():
+    class Agent:
+        @staticmethod
+        def get_current_deployment():
+            return {
+                "detector": ["edge-a"],
+                "tracker": ["edge-b"],
+            }
+
+    system = SimpleNamespace(
+        cloud_device="cloud-a",
+        schedule_table={7: Agent()},
+    )
+    policy = deepva_redeployment_module.DeepVARedeploymentPolicy(
+        system,
+        7,
+        redeployment_interval=0,
+    )
+
+    assert policy(build_deployment_info()) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-b"],
+    }
+
+
+@pytest.mark.unit
 def test_offline_redeployment_covers_current_dag_and_has_no_cloud_hostname_assumption(monkeypatch):
     class FakeOverhead:
         def __init__(self, *args, **kwargs):
@@ -315,8 +430,15 @@ def test_offline_redeployment_covers_current_dag_and_has_no_cloud_hostname_assum
         "tracker": ["edge-a"],
     }
 
+    cloud_policy = offline_redeployment_module.OfflineProfilingRedeploymentPolicy(
+        SimpleNamespace(cloud_device="control-plane-a"),
+        7,
+        latency_profile={"detector": {"edge-a": 1.0}},
+        default_service_limit=4,
+        include_cloud=True,
+    )
     cloud_only = {**info, "node_set": []}
-    assert policy(cloud_only) == {
+    assert cloud_policy(cloud_only) == {
         "detector": ["control-plane-a"],
         "tracker": ["control-plane-a"],
     }

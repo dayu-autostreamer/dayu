@@ -10,7 +10,18 @@ import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, TaskConstant, LOGGER
 from core.lib.estimation import OverheadEstimator
-from core.lib.scheduling import service_waiting_count
+from core.lib.scheduling import (
+    deployment_from_snapshot,
+    materialize_offloading_plan,
+    service_names,
+    service_waiting_count,
+)
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    active_targets,
+    get_live_snapshot,
+    live_resources,
+)
 
 from .base_agent import BaseAgent
 
@@ -179,15 +190,15 @@ class OnlineProfilingAgent(BaseAgent, abc.ABC):
     def _resource_queue_length(resource, service_name: str) -> float:
         return service_waiting_count(resource, service_name)
 
-    def _device_queue_length(self, device: str, service_name: str) -> float:
-        resource_table = self.system.get_scheduler_resource()
+    def _device_queue_length(self, device: str, service_name: str, resource_table=None) -> float:
+        resource_table = resource_table or {}
         if not resource_table or device not in resource_table:
             return 0.0
         return self._resource_queue_length(resource_table[device], str(service_name))
 
-    def get_bandwidth(self, source_device=None):
+    def get_bandwidth(self, source_device=None, resource_table=None):
         """Read the current bandwidth value from the scheduler resource table."""
-        resource_table = self.system.get_scheduler_resource()
+        resource_table = resource_table or {}
         if not resource_table:
             return None
 
@@ -215,14 +226,7 @@ class OnlineProfilingAgent(BaseAgent, abc.ABC):
         redeployment round, fall back to the fixed initial deployment policy
         when that policy is available.
         """
-        if hasattr(self.redeployment_policy, 'policy') and self.redeployment_policy.policy:
-            return self.redeployment_policy.policy
-
-        fixed_policy = getattr(self.initial_deployment_policy, 'fixed_policy', None)
-        if isinstance(fixed_policy, dict) and fixed_policy:
-            return fixed_policy
-
-        return {}
+        return deployment_from_snapshot(get_live_snapshot(self.system))
 
     @staticmethod
     def _normalize_deployed_devices(raw_devices):
@@ -314,7 +318,7 @@ class OnlineProfilingAgent(BaseAgent, abc.ABC):
             LOGGER.info(f'[Online Profiling Agent] Profile update completed. Updated {updated_count} entries.')
             LOGGER.info(f'[Online Profiling Agent] Current latency profile: {self.latency_profile}')
 
-    def select_device_by_latency(self, service_name, deployed_devices):
+    def select_device_by_latency(self, service_name, deployed_devices, resource_table=None):
         """
         Select a device probabilistically using weighted execution cost.
 
@@ -354,7 +358,7 @@ class OnlineProfilingAgent(BaseAgent, abc.ABC):
 
         # Fall back again if none of the deployed devices has latency data.
         if not device_latencies:
-            LOGGER.warning(f'[Online Profiling Agent] No latency data for any deployed device, random selection')
+            LOGGER.warning('[Online Profiling Agent] No latency data for any deployed device, random selection')
             return random.choice(deployed_devices)
 
         weight = self._importance_weight(service_name)
@@ -366,7 +370,11 @@ class OnlineProfilingAgent(BaseAgent, abc.ABC):
 
         adjusted_scores = {}
         for device, base in base_scores.items():
-            ql = self._device_queue_length(device, service_name)
+            ql = self._device_queue_length(
+                device,
+                service_name,
+                resource_table=resource_table,
+            )
             factor = (
                 self._OFFLOAD_QUEUE_LEN_HALVE_FACTOR
                 if ql > self._OFFLOAD_QUEUE_LEN_HALVE_GT
@@ -391,49 +399,42 @@ class OnlineProfilingAgent(BaseAgent, abc.ABC):
 
     def get_schedule_plan(self, info):
         if self.default_configuration is None:
-            return None
+            raise ValueError('OnlineProfilingAgent requires a configuration mapping')
 
         with self.overhead_estimator:
-            configuration = self.default_configuration.copy()
-            policy = {}
-            policy.update(configuration)
-
             cloud_device = self.cloud_device
             source_edge_device = info['source_device']
-            all_edge_devices = info['all_edge_devices']
+            all_edge_devices = [str(device) for device in info['all_edge_devices']]
             dag = info['dag']
+            snapshot, current_deployment = active_deployment_for_dag(
+                self.system,
+                dag,
+            )
+            resources = live_resources(snapshot)
 
-            # Get the current bandwidth.
-            bandwidth = self.get_bandwidth(source_device=source_edge_device)
+            bandwidth = self.get_bandwidth(
+                source_device=source_edge_device,
+                resource_table=resources,
+            )
             LOGGER.info(f'[Online Profiling Agent] Current bandwidth: {bandwidth}, threshold: {self.bandwidth_threshold}')
 
-            # Get the current service deployment snapshot.
-            current_deployment = self.get_current_deployment()
             LOGGER.info(f'[Online Profiling Agent] Current deployment: {current_deployment}')
 
             # Build the offloading policy.
             offloading_policy = {}
 
             # Decide the execution device service by service.
-            for service_name in dag:
-                # Keep the terminal node on the cloud device.
-                if service_name == TaskConstant.END.value:
-                    dag[service_name]['service']['execute_device'] = cloud_device
-                    offloading_policy[service_name] = cloud_device
-                    continue
-
-                if service_name == TaskConstant.START.value:
-                    # Keep the start node on the source device.
-                    dag[service_name]['service']['execute_device'] = source_edge_device
-                    offloading_policy[service_name] = source_edge_device
-                    continue
-
-                # Send all stages to cloud when bandwidth is above the threshold.
+            for service_name in service_names(dag):
+                active = active_targets(current_deployment, service_name)
                 if bandwidth is not None and bandwidth > self.bandwidth_threshold:
+                    if cloud_device not in active:
+                        raise ValueError(
+                            f'OnlineProfilingAgent selected cloud for {service_name!r}, '
+                            'but the LIVE deployment has no cloud replica; enable '
+                            'include_cloud in its deployment hooks'
+                        )
                     execute_device = cloud_device
                 else:
-                    # Select only from devices where the service is both
-                    # deployed and currently executable.
                     deployed_devices = self._get_executable_deployed_devices(
                         service_name=service_name,
                         deployment_view=current_deployment,
@@ -441,22 +442,28 @@ class OnlineProfilingAgent(BaseAgent, abc.ABC):
                     )
 
                     if deployed_devices:
-                        execute_device = self.select_device_by_latency(service_name, deployed_devices)
-                    else:
-                        execute_device = cloud_device
-                        LOGGER.warning(
-                            f'[Online Profiling Agent] Service {service_name} has no deployed executable '
-                            f'edge device, falling back to cloud'
+                        execute_device = self.select_device_by_latency(
+                            service_name,
+                            deployed_devices,
+                            resource_table=resources,
                         )
-
-                dag[service_name]['service']['execute_device'] = execute_device
+                    elif cloud_device in active:
+                        execute_device = cloud_device
+                    else:
+                        execute_device = active[0]
                 offloading_policy[service_name] = execute_device
 
             # Keep the latest offloading policy for later inspection/use.
             self.latest_offloading_policy = offloading_policy.copy()
             LOGGER.info(f'[Online Profiling Agent] Latest offloading policy: {offloading_policy}')
 
-            policy.update({'dag': dag})
+            policy = materialize_offloading_plan(
+                self.default_configuration,
+                dag,
+                offloading_policy,
+                source_device=source_edge_device,
+                cloud_device=cloud_device,
+            )
         return policy
 
     def get_latest_offloading_policy(self):
@@ -521,7 +528,7 @@ class OnlineProfilingAgent(BaseAgent, abc.ABC):
           1. ``latency_profile`` from execution-latency samples
           2. ``service_importance_weights`` from per-object count samples
         """
-        LOGGER.info(f'[Online Profiling Agent] Background profiling update thread started')
+        LOGGER.info('[Online Profiling Agent] Background profiling update thread started')
 
         while True:
             try:

@@ -311,34 +311,35 @@ set while retaining exact control-plane authorization.
 
 ## Processor Deployment Controls
 
-Processor RuntimeServices are generated from the validated scheduler placement plus any Backend-configured cloud
-backup. For each desired slot, backend compares the stable rollout hash with the active unit; a placement, image,
-template, mount, or effective environment change creates a new immutable RuntimeService revision.
+Processor RuntimeServices are generated from the exact validated Scheduler placement. For each desired slot, Backend
+compares the stable rollout hash with the active unit; a placement, image, template, mount, or effective environment
+change creates a new immutable RuntimeService revision.
 
 Every initial-deployment and redeployment policy is normalized through
 `dependency/core/lib/scheduling/deployment_plan.py`. The accepted shape is exactly
 `logical service -> non-empty JSON node list`, covering every current-DAG service and only candidate nodes.
 
-The built-in fixed initial-deployment policy and dynamic/offline/online profiling redeployment policies expose an
-`include_cloud` parameter. When true, Scheduler composes the exact cloud node into the policy result before validating
-it. This is separate from the Backend-wide option below; both produce active routable cloud replicas, so enable both
-only when that additive placement is intended. The `source-edge-cloud` initial policy is the stricter pipeline-family
-alternative: it activates every current-DAG service on both the selected source edge and cloud node and fails if either
+The fixed initial-deployment and redeployment policies accept `include_cloud`, which defaults to `false`. When true,
+the policy adds the resolved cloud node to every current-DAG service. For selective placement, a fixed node list may
+contain the reserved `@cloud` token; the hook resolves it to `system.cloud_device` before validation. The public plan
+and RuntimeDirectory always contain the exact hostname, never the token. For example:
+
+```python
+{
+    "include_cloud": False,
+    "policy": {
+        "detector": ["edge5", "@cloud"],
+        "tracker": ["edge6"]
+    }
+}
+```
+
+Dynamic, offline-profiling, and online-profiling templates enable `include_cloud` for their baseline deployments.
+DeepVA enables cloud replicas while keeping its learned action space limited to its configured device list. Hedger and
+its deployment ablations always keep one cloud replica per service. `source-edge-cloud` places every service on the
+selected source edge and cloud; `full` places every service on all selected processor edges and cloud; `full-edge`
+places every service only on all selected processor edges. Policies that require cloud fail if the injected cloud
 identity is unavailable.
-
-`template/base.yaml` controls whether Backend composes a default cloud replica after that validation:
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `default-cloud-processor-backup` | `false` | `true` adds the exact Backend-resolved cloud node to every logical service placement; `false` uses the validated Scheduler plan unchanged. |
-
-This option applies identically to initial deployment and redeployment. It is an additive replica policy, not a repair
-path: Scheduler must still return every current-DAG service with at least one valid target, and unknown services,
-missing services, empty lists, or invalid nodes still fail before Backend adds the cloud node. If Scheduler already
-selected the exact cloud hostname, set normalization prevents a duplicate RuntimeService. Setting the option to
-`false` does not forbid cloud placement; an exact cloud hostname returned by Scheduler remains legal. The built-in
-`cloud-only-policy` continues to select `system.cloud_device` explicitly. Despite the option's historical “backup”
-name, the cloud RuntimeService is activated and published as a normal routable replica rather than a dormant standby.
 
 Pipeline-only scheduling agents express an edge-to-cloud split with a `partition_index`. Index `0` places every
 business service on cloud; the terminal index places every business service on the source edge. The shared pipeline

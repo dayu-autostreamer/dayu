@@ -2,19 +2,21 @@ import abc
 from .base_initial_deployment_policy import BaseInitialDeploymentPolicy
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, ConfigLoader, Context
-from core.lib.scheduling.deployment_plan import fixed_plan
+from core.lib.scheduling.deployment_plan import fixed_plan, normalize_include_cloud
 
 __all__ = ('FixedInitialDeploymentPolicy',)
 
 
 @ClassFactory.register(ClassType.SCH_INITIAL_DEPLOYMENT_POLICY, alias='fixed')
 class FixedInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
-    def __init__(self, system, agent_id, policy=None, **kwargs):
+    def __init__(self, system, agent_id, policy=None, include_cloud=False, **kwargs):
         """
         Args:
-            policy: {'service1':['node1', 'node2'], 'service2':['node2', 'node3']}
+            policy: {'service1':['node1', '@cloud'], 'service2':['node2']}
+            include_cloud: add the resolved cloud node to every service
         """
         self.cloud_device = str(getattr(system, "cloud_device", "") or "")
+        self.include_cloud = normalize_include_cloud(include_cloud)
         if policy is None:
             self.fixed_policy = {}
         elif isinstance(policy, dict):
@@ -26,7 +28,12 @@ class FixedInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
 
     def __call__(self, info):
         source_id = info['source']['id']
-        deploy_plan = fixed_plan(self.fixed_policy, info, self.cloud_device)
+        deploy_plan = fixed_plan(
+            self.fixed_policy,
+            info,
+            cloud_node=self.cloud_device,
+            include_cloud=self.include_cloud,
+        )
 
         LOGGER.info(f'[Initial Deployment] (source {source_id}) Deploy policy: {deploy_plan}')
 

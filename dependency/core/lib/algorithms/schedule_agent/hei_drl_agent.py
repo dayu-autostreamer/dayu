@@ -1,11 +1,22 @@
 import abc
+import copy
 import os.path
 import time
 import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context, VideoOps, TaskConstant
 from core.lib.estimation import AccEstimator, OverheadEstimator
-from core.lib.content import Task
+from core.lib.scheduling.pipeline import (
+    apply_pipeline_partition,
+    materialize_pipeline_policy,
+    pipeline_entries,
+    pipeline_partition_index,
+    rematerialize_pipeline_policy,
+)
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 
@@ -112,20 +123,35 @@ class HEIDRLAgent(BaseAgent, abc.ABC):
             LOGGER.info(f'[HEI_DRL Lack Latest Policy] (agent {self.agent_id}) No latest policy, none decision make ..')
             return
 
-        resolution_index = int((action[0] + 1) / 2 * len(self.resolution_list))
-        fps_index = int((action[1] + 1) / 2 * len(self.fps_list))
-        buffer_size = int((action[2] + 1) / 2 * len(self.buffer_size_list))
-        pipe_seg = int((action[3] + 1) / 2 * len(self.partition_point))
+        resolution_index = min(
+            max(int((action[0] + 1) / 2 * len(self.resolution_list)), 0),
+            len(self.resolution_list) - 1,
+        )
+        fps_index = min(
+            max(int((action[1] + 1) / 2 * len(self.fps_list)), 0),
+            len(self.fps_list) - 1,
+        )
+        buffer_size = min(
+            max(int((action[2] + 1) / 2 * len(self.buffer_size_list)), 0),
+            len(self.buffer_size_list) - 1,
+        )
+        terminal_index = len(pipeline_entries(self.latest_policy['dag'])) - 1
+        pipe_seg = min(
+            max(int((action[3] + 1) / 2 * (terminal_index + 1)), 0),
+            terminal_index,
+        )
 
         self.latest_policy.update({'resolution': self.resolution_list[resolution_index],
                                    'fps': self.fps_list[fps_index],
                                    'buffer_size': self.buffer_size_list[buffer_size], })
 
-        pipeline = Task.extract_pipeline_deployment_from_dag_deployment(self.latest_policy['dag'])
         if self.edge_device:
-            pipeline = [{**p, 'execute_device': self.edge_device} for p in pipeline[:pipe_seg]] + \
-                       [{**p, 'execute_device': self.cloud_device} for p in pipeline[pipe_seg:]]
-        self.latest_policy.update({'dag': Task.extract_dag_deployment_from_pipeline_deployment(pipeline)})
+            self.latest_policy['dag'] = apply_pipeline_partition(
+                self.latest_policy['dag'],
+                pipe_seg,
+                edge_device=self.edge_device,
+                cloud_device=self.cloud_device,
+            )
         self.schedule_plan = self.latest_policy.copy()
 
         LOGGER.info(f'[HEI_DRL Decision] (agent {self.agent_id}) Action: {action}   '
@@ -267,9 +293,11 @@ class HEIDRLAgent(BaseAgent, abc.ABC):
         resolution_decision = self.system.resolution_list.index(policy['resolution'])
         fps_decision = self.system.fps_list.index(policy['fps'])
         buffer_size_decision = self.system.buffer_size_list.index(policy['buffer_size'])
-        pipeline_decision = next((i for i, service in enumerate(policy['dag'])
-                                  if service['execute_device'] == self.system.cloud_device),
-                                 len(policy['dag']) - 1)
+        pipeline_decision = pipeline_partition_index(
+            policy['dag'],
+            edge_device=policy['edge_device'],
+            cloud_device=self.system.cloud_device,
+        )
         self.state_buffer.add_decision_buffer([resolution_decision, fps_decision,
                                                buffer_size_decision, pipeline_decision])
 
@@ -283,8 +311,34 @@ class HEIDRLAgent(BaseAgent, abc.ABC):
         return self.overhead_estimator.get_latest_overhead()
 
     def get_schedule_plan(self, info):
-        self.edge_device = info['device']
-        return self.schedule_plan
+        self.edge_device = info['source_device']
+        terminal_index = len(pipeline_entries(info['dag'])) - 1
+        if self.schedule_plan is None:
+            policy = materialize_pipeline_policy(
+                {},
+                info['dag'],
+                terminal_index,
+                edge_device=self.edge_device,
+                cloud_device=self.cloud_device,
+            )
+        else:
+            policy = rematerialize_pipeline_policy(
+                copy.deepcopy(self.schedule_plan),
+                info['dag'],
+                edge_device=self.edge_device,
+                cloud_device=self.cloud_device,
+            )
+        policy.pop('edge_device', None)
+        _, deployment = active_deployment_for_dag(self.system, policy['dag'])
+        require_active_plan(
+            {
+                entry['service_name']:
+                    policy['dag'][entry['service_name']]['service']['execute_device']
+                for entry in pipeline_entries(policy['dag'])[:-1]
+            },
+            deployment,
+        )
+        return policy
 
     def run(self):
 

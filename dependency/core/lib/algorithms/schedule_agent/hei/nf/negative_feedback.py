@@ -1,4 +1,7 @@
+from copy import deepcopy
+
 from core.lib.common import LOGGER
+from core.lib.scheduling.pipeline import apply_pipeline_partition, pipeline_entries
 
 
 class NegativeFeedback:
@@ -17,14 +20,19 @@ class NegativeFeedback:
 
     def __call__(self, latest_policy: dict, latest_delay: float, meta_decisions: list):
 
-        if latest_policy is None:
-            LOGGER.info(f'[NF Lack Latest Policy] (agent {self.agent_id}) No latest policy, none decision make ..')
+        if latest_policy is None or latest_delay is None:
+            LOGGER.info(
+                f'[NF Lack Feedback] (agent {self.agent_id}) '
+                'Policy or delay feedback is not ready.'
+            )
             return None
+        if not isinstance(meta_decisions, (list, tuple)) or len(meta_decisions) < 4:
+            raise ValueError('HEI negative feedback requires four meta decisions')
 
         resolution = latest_policy['resolution']
         fps = latest_policy['fps']
         buffer_size = latest_policy['buffer_size']
-        pipeline = latest_policy['dag']
+        pipeline = pipeline_entries(latest_policy['dag'])
 
         self.edge_device = latest_policy['edge_device']
 
@@ -70,17 +78,27 @@ class NegativeFeedback:
 
             setattr(self, f'{knob_name}_index', updated_knob_index)
 
-        schedule_policy = {}
-        schedule_policy.update(latest_policy)
+        schedule_policy = deepcopy(latest_policy)
         schedule_policy['resolution'] = self.resolution_list[self.resolution_index]
         schedule_policy['fps'] = self.fps_list[self.fps_index]
         schedule_policy['buffer_size'] = self.buffer_size_list[self.buffer_size_index]
 
-        pipeline_index_decision = min(meta_decisions[-1] + 1, len(pipeline))
-        schedule_policy['pipeline'] = [{**p, 'execute_device': self.edge_device} for p in
-                                       pipeline[:pipeline_index_decision]] + \
-                                      [{**p, 'execute_device': self.cloud_device} for p in
-                                       pipeline[pipeline_index_decision:]]
+        # The controller exposes three actions {-1, 0, 1}; adding one maps
+        # them to split indices {0, 1, 2}. Clamp to the terminal ``end``
+        # index for shorter pipelines while retaining the original action
+        # meaning for the two-stage pipeline used by HEI.
+        terminal_index = len(pipeline) - 1
+        pipeline_index_decision = max(
+            0,
+            min(meta_decisions[-1] + 1, terminal_index),
+        )
+        schedule_policy.pop('pipeline', None)
+        schedule_policy['dag'] = apply_pipeline_partition(
+            latest_policy['dag'],
+            pipeline_index_decision,
+            edge_device=self.edge_device,
+            cloud_device=self.cloud_device,
+        )
         return schedule_policy
 
     @staticmethod

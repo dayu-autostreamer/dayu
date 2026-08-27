@@ -6,8 +6,10 @@ from .base_redeployment_policy import BaseRedeploymentPolicy
 
 from core.lib.scheduling.deployment_plan import (
     allowed_nodes,
+    cloud_replica_plan,
     dag_services,
     fixed_plan,
+    normalize_include_cloud,
     validate_plan,
 )
 from core.lib.common import ClassFactory, ClassType, ConfigLoader, Context, LOGGER
@@ -31,11 +33,13 @@ class DynamicRedeploymentPolicy(BaseRedeploymentPolicy):
             redeployment_interval_minutes=None,
             device_service_limits=None,
             default_service_limit=None,
+            include_cloud=False,
             **kwargs,
     ):
         self.system = system
         self.agent_id = agent_id
         self.cloud_device = str(getattr(system, "cloud_device", "") or "")
+        self.include_cloud = normalize_include_cloud(include_cloud)
 
         policy = kwargs.get("policy")
         if policy is None:
@@ -103,6 +107,17 @@ class DynamicRedeploymentPolicy(BaseRedeploymentPolicy):
         return all(
             count <= self.get_device_service_limit(device)
             for device, count in self.count_services_per_device(deploy_plan).items()
+            if not (self.include_cloud and device == self.cloud_device)
+        )
+
+    def _append_cloud(self, plan, info):
+        if not self.include_cloud:
+            return validate_plan(plan, info, cloud_node=self.cloud_device)
+        return cloud_replica_plan(
+            plan,
+            info,
+            self.cloud_device,
+            policy_name="dynamic include_cloud",
         )
 
     def _configured_plan(self, info):
@@ -110,7 +125,10 @@ class DynamicRedeploymentPolicy(BaseRedeploymentPolicy):
             raise RuntimeError(
                 "[Dynamic Redeployment] No explicit fallback policy is configured."
             )
-        return fixed_plan(self.policy, info, cloud_node=self.cloud_device)
+        return self._append_cloud(
+            fixed_plan(self.policy, info, cloud_node=self.cloud_device),
+            info,
+        )
 
     def convert_offloading_to_deployment_plan(self, offloading_policy, dag, node_set):
         info = {"dag": dag, "node_set": node_set}
@@ -128,7 +146,7 @@ class DynamicRedeploymentPolicy(BaseRedeploymentPolicy):
                 raise ValueError(
                     f"dynamic offloading omitted a valid target for current DAG service {service!r}"
                 )
-        return validate_plan(plan, info, cloud_node=self.cloud_device)
+        return self._append_cloud(plan, info)
 
     def should_redeploy(self):
         return time.time() - self.last_redeployment_time >= self.redeployment_interval_seconds

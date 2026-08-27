@@ -1,3 +1,5 @@
+import ast
+
 from runtime_model import RuntimeSlot
 from runtime_renderer import FORBIDDEN_RUNTIME_ENV
 from template_helper import TemplateHelper
@@ -27,6 +29,15 @@ def _source_deploy():
     }]
 
 
+def _scheduler_env(helper, base, policy_id):
+    policy = next(item for item in base["scheduler-policies"] if item["id"] == policy_id)
+    scheduler = helper.load_policy_apply_yaml(policy)["scheduler"]
+    return {
+        item["name"]: item.get("value")
+        for item in scheduler["pod-template"].get("env", [])
+    }
+
+
 def _assert_runtime_service(rendered, install_id="install-e2e"):
     manifest = rendered.manifest
     assert manifest["apiVersion"] == "sedna.io/v1alpha1"
@@ -49,7 +60,6 @@ def test_declared_policy_and_processor_catalog_is_fully_loadable(mounted_runtime
     helper = _helper(mounted_runtime)
     base = helper.load_base_info()
 
-    assert base["default-cloud-processor-backup"] is False
     assert base["scheduler-policies"]
     assert base["services"]
     for policy in base["scheduler-policies"]:
@@ -64,6 +74,59 @@ def test_declared_policy_and_processor_catalog_is_fully_loadable(mounted_runtime
     })
     assert len(loaded) == len(base["services"])
     assert all(item["service"]["pod-template"]["image"] for item in loaded.values())
+
+
+def test_scheduler_templates_declare_policy_owned_cloud_placement(mounted_runtime):
+    helper = _helper(mounted_runtime)
+    base = helper.load_base_info()
+    cloud_fixed_policies = {
+        "dynamic-policy",
+        "offline-profiling",
+        "online-profiling",
+        "deepva",
+    }
+
+    for policy in base["scheduler-policies"]:
+        policy_id = policy["id"]
+        env = _scheduler_env(helper, base, policy_id)
+        if env["SCH_INITIAL_DEPLOYMENT_POLICY_NAME"] == "fixed":
+            initial = ast.literal_eval(
+                env["SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS"]
+            )
+            assert initial.get("include_cloud", False) is (
+                policy_id in cloud_fixed_policies
+            )
+        if env["SCH_REDEPLOYMENT_POLICY_NAME"] == "fixed":
+            redeployment = ast.literal_eval(
+                env["SCH_REDEPLOYMENT_POLICY_PARAMETERS"]
+            )
+            assert redeployment.get("include_cloud", False) is False
+
+    for policy_id in cloud_fixed_policies:
+        env = _scheduler_env(helper, base, policy_id)
+        redeployment = ast.literal_eval(env["SCH_REDEPLOYMENT_POLICY_PARAMETERS"])
+        assert redeployment["include_cloud"] is True
+
+    for policy_id in (
+        "steady",
+        "madeye",
+        "adamec",
+        "gecko",
+        "cevas",
+        "chameleon",
+        "fc",
+        "casva",
+        "hei",
+        "hei-macro-only",
+        "hei-micro-only",
+        "hei-synchronous",
+    ):
+        env = _scheduler_env(helper, base, policy_id)
+        assert env["SCH_INITIAL_DEPLOYMENT_POLICY_NAME"] == "source-edge-cloud"
+
+    for policy_id in ("crave", "model-switch"):
+        env = _scheduler_env(helper, base, policy_id)
+        assert env["SCH_INITIAL_DEPLOYMENT_POLICY_NAME"] == "full"
 
 
 def test_end_to_end_compilation_produces_tokenless_runtime_services(mounted_runtime):

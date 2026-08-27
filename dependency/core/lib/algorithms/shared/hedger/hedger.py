@@ -4653,14 +4653,6 @@ class Hedger:
 
         assert self.shared_topology_encoder, 'Shared topology encoder must be registered before deployment agent.'
 
-        if self.deployment_agent_params.get("update_encoder", False):
-            LOGGER.warning(
-                "[Hedger][Train] Deployment-side encoder updates are disabled. "
-                "The shared topology encoder is owned by the offloading side to avoid "
-                "dual-optimizer instability on shared parameters."
-            )
-        self.deployment_agent_params["update_encoder"] = False
-
         self.deployment_agent = HedgerDeploymentPPO(
             encoder=self.shared_topology_encoder,
             d_model=self.encoder_cfg.embedding_dim,
@@ -4669,7 +4661,7 @@ class Hedger:
             gamma=self.deployment_agent_params['gamma'],
             lamda=self.deployment_agent_params['lamda'],
             clip_eps=self.deployment_agent_params['clip_eps'],
-            update_encoder=False,
+            update_encoder=self.deployment_agent_params['update_encoder'],
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
             constraint_cfg=from_partial_dict(DeploymentConstraintCfg, self.deployment_agent_params),
         ).to(self.device)
@@ -10502,6 +10494,8 @@ class Hedger:
             "device_concentration_coef": cfg.device_concentration_coef,
             "device_count_over_budget_coef": cfg.device_count_over_budget_coef,
             "alternative_option_margin_coef": cfg.alternative_option_margin_coef,
+            "projection_edge_coverage_coef": cfg.projection_edge_coverage_coef,
+            "last_edge_removed_coef": cfg.last_edge_removed_coef,
             "soft_target_bc_coef": cfg.soft_target_bc_coef,
             "positive_logit_margin": cfg.positive_logit_margin,
             "negative_logit_margin": cfg.negative_logit_margin,

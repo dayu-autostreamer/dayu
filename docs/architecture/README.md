@@ -67,9 +67,8 @@ Key boundaries:
   FastAPI handlers executed in the framework thread pool, keeping blocking Redis I/O away from the ASGI event loop.
 - Scheduler and its policy plugins share the canonical deployment-plan boundary in
   `dependency/core/lib/scheduling/deployment_plan.py`; `algorithms/` contains implementations, not framework contracts.
-- Backend may compose the optional `default-cloud-processor-backup` replica only after that plan is complete and
-  valid. The policy result remains unchanged, while the published RuntimeDirectory records the operational replica's
-  exact routable identity for subsequent scheduling.
+- Deployment policies own the complete Processor replica topology, including any cloud replica. Backend validates and
+  materializes that exact plan, so Scheduler state and the published RuntimeDirectory describe the same deployment.
 - Backend `/submit_query` opens one datasource label and starts result collection.
 - Processor redeployment creates and activates a new immutable revision, persists exact ownership of replaced objects,
   then uses one Scheduler transaction to commit the route CAS, create the previous revision's immutable deadline, and

@@ -181,10 +181,9 @@ target-bound stop from encountering an ABA identity; a caller that can deliberat
 installation's id is already inside this shared administrative trust domain.
 
 During install, backend creates immutable `sedna.io/v1alpha1` `RuntimeService` objects. Scheduler is activated first,
-then supplies source-selection and initial-deployment plans. Backend validates the deployment plan and, when
-`default-cloud-processor-backup` is enabled, adds the resolved cloud node to every logical processor placement. It
-activates the remaining workers and publishes RuntimeDirectory revision 1 only after all exact identities are Ready
-and Activated.
+then supplies source-selection and initial-deployment plans. Backend validates and materializes the exact deployment
+plan returned by Scheduler without adding replicas. It activates the remaining workers and publishes RuntimeDirectory
+revision 1 only after all exact identities are Ready and Activated.
 
 The `dayu-runtime-session` ConfigMap is the compact transaction record. Its `resourceVersion` is the compare-and-swap
 token for lifecycle changes. Its normalized `source_deploy` preserves both processor `node_set` and the exact
