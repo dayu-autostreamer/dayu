@@ -1,23 +1,16 @@
-name: Dayu Images Build
+name: Dayu Release Images
+run-name: Build and push Dayu images for ${{ github.event.release.tag_name }}
 
-# Automatic publication only follows a successful push-triggered CI run on
-# main. Merging a PR creates that push; pull_request CI runs never publish.
+# Docker images are release artifacts. A stable, published GitHub Release is the
+# only supported entry point; ordinary pushes, pull requests, schedules, and
+# manual dispatches never publish images.
 on:
-  workflow_run:
-    workflows: [ CI ]
-    types: [ completed ]
-    branches: [ main ]
-  workflow_dispatch:
+  release:
+    types:
+      - published
 
 concurrency:
-  group: >-
-    dockerhub-build-${{
-      (github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.conclusion == 'success')) &&
-      'main' || github.run_id
-    }}
+  group: dockerhub-release-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 permissions:
@@ -25,196 +18,203 @@ permissions:
   actions: read
 
 jobs:
-  gate:
-    name: Main push CI and cooldown gate
+  release-gate:
+    name: Stable release and exact-SHA CI gate
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
-      allowed: ${{ steps.check.outputs.allowed }}
-      reason: ${{ steps.check.outputs.reason }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
       target_sha: ${{ steps.check.outputs.target_sha }}
     steps:
       - id: check
-        name: Require successful main push CI and enforce the 60-day window
+        name: Validate the release tag and its main push CI
         uses: actions/github-script@v7
         env:
+          DEFAULT_BRANCH: main
           REQUIRED_WORKFLOW_FILE: ci.yml
-          BUILD_WORKFLOW_FILE: dockerhub-build.yml
-          # Keep this synchronized with the build-and-push job name below.
-          BUILD_JOB_NAME: make all (buildx + push)
-          GATE_WINDOW_DAYS: "60"
+          RELEASE_TAG_PATTERN: '^v[0-9]+\.[0-9]+(\.[0-9]+)?$'
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const release = context.payload.release;
+            const defaultBranch = process.env.DEFAULT_BRANCH;
             const requiredWorkflowFile = process.env.REQUIRED_WORKFLOW_FILE;
-            const buildWorkflowFile = process.env.BUILD_WORKFLOW_FILE;
-            const buildJobName = process.env.BUILD_JOB_NAME;
-            const gateWindowDays = Number(process.env.GATE_WINDOW_DAYS || "60");
-            const gateWindowMs = gateWindowDays * 24 * 60 * 60 * 1000;
+            const releaseTagPattern = new RegExp(process.env.RELEASE_TAG_PATTERN);
 
-            const triggeringRun = context.payload.workflow_run;
-            const targetSha = triggeringRun?.head_sha || context.sha;
-            core.setOutput("target_sha", targetSha);
-
-            const deny = (reason) => {
-              core.setOutput("allowed", "false");
-              core.setOutput("reason", reason);
-              core.info(`Build denied: ${reason}`);
-            };
-
-            if (!targetSha) {
-              deny("unable to resolve the commit that must pass CI");
-              return;
+            function fail(reason) {
+              core.setFailed(reason);
+              return false;
             }
 
-            let ciRun = triggeringRun;
+            if (!release) {
+              return fail('The workflow must be triggered by a published GitHub Release.');
+            }
 
-            if (context.eventName === "workflow_run") {
-              const isAutomaticMainPush =
-                ciRun?.event === "push" && ciRun?.head_branch === "main";
+            const releaseTag = release.tag_name;
 
-              if (
-                !ciRun ||
-                ciRun.name !== "CI" ||
-                !isAutomaticMainPush ||
-                ciRun.status !== "completed" ||
-                ciRun.conclusion !== "success"
-              ) {
-                deny(
-                  `automatic builds require a successful push-triggered CI run on main ` +
-                  `(event=${ciRun?.event || "unknown"}, ` +
-                  `branch=${ciRun?.head_branch || "unknown"}, ` +
-                  `status=${ciRun?.status || "unknown"}, ` +
-                  `conclusion=${ciRun?.conclusion || "unknown"})`
-                );
-                return;
-              }
-            } else {
-              const ciRuns = await github.paginate(
+            if (release.draft) {
+              return fail(`Release ${releaseTag} is still a draft.`);
+            }
+
+            if (release.prerelease) {
+              return fail(
+                `Release ${releaseTag} is marked as a prerelease. Only stable releases may publish Docker images.`
+              );
+            }
+
+            if (!releaseTagPattern.test(releaseTag)) {
+              return fail(
+                `Release tag "${releaseTag}" is invalid. Expected vMAJOR.MINOR or vMAJOR.MINOR.PATCH.`
+              );
+            }
+
+            let tagRef;
+            try {
+              const response = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `tags/${releaseTag}`,
+              });
+              tagRef = response.data;
+            } catch (error) {
+              return fail(`Cannot resolve release tag "${releaseTag}": ${error.message}`);
+            }
+
+            if (tagRef.object.type !== 'tag') {
+              return fail(
+                `Release tag "${releaseTag}" must be an annotated tag; lightweight tags are not accepted.`
+              );
+            }
+
+            let tagObject;
+            try {
+              const response = await github.rest.git.getTag({
+                owner,
+                repo,
+                tag_sha: tagRef.object.sha,
+              });
+              tagObject = response.data;
+            } catch (error) {
+              return fail(`Cannot read annotated tag "${releaseTag}": ${error.message}`);
+            }
+
+            if (tagObject.tag !== releaseTag) {
+              return fail(
+                `Annotated tag name mismatch: expected "${releaseTag}", received "${tagObject.tag}".`
+              );
+            }
+
+            if (tagObject.object.type !== 'commit') {
+              return fail(
+                `Annotated tag "${releaseTag}" must point directly to a commit, not ${tagObject.object.type}.`
+              );
+            }
+
+            const targetSha = tagObject.object.sha;
+
+            if (context.sha !== targetSha) {
+              return fail(
+                `Release event SHA ${context.sha} does not match tag commit ${targetSha}.`
+              );
+            }
+
+            let comparison;
+            try {
+              const response = await github.rest.repos.compareCommitsWithBasehead({
+                owner,
+                repo,
+                basehead: `${targetSha}...${defaultBranch}`,
+              });
+              comparison = response.data;
+            } catch (error) {
+              return fail(
+                `Cannot verify that ${targetSha} belongs to ${defaultBranch}: ${error.message}`
+              );
+            }
+
+            if (!['ahead', 'identical'].includes(comparison.status)) {
+              return fail(
+                `Tag ${releaseTag} points to ${targetSha}, which is not on ${defaultBranch}.`
+              );
+            }
+
+            let workflowRuns;
+            try {
+              workflowRuns = await github.paginate(
                 github.rest.actions.listWorkflowRuns,
                 {
                   owner,
                   repo,
                   workflow_id: requiredWorkflowFile,
-                  branch: "main",
+                  branch: defaultBranch,
                   head_sha: targetSha,
-                  status: "success",
-                  per_page: 100
+                  per_page: 100,
                 }
               );
-
-              ciRun = ciRuns.find(run =>
-                run.head_branch === "main" &&
-                run.status === "completed" &&
-                run.conclusion === "success" &&
-                run.event === "push"
+            } catch (error) {
+              return fail(
+                `Cannot inspect ${requiredWorkflowFile} runs for ${targetSha}: ${error.message}`
               );
-
-              if (!ciRun) {
-                deny(
-                  `no successful push-triggered CI run found for ${targetSha} on main`
-                );
-                return;
-              }
             }
 
-            const now = new Date();
-            const cutoff = new Date(now.getTime() - gateWindowMs);
-            const recentRuns = await github.paginate(
-              github.rest.actions.listWorkflowRuns,
-              {
-                owner,
-                repo,
-                workflow_id: buildWorkflowFile,
-                branch: "main",
-                status: "completed",
-                created: `>=${cutoff.toISOString()}`,
-                per_page: 100
-              }
+            const matchingRuns = workflowRuns
+              .filter((run) =>
+                run.event === 'push' &&
+                run.head_branch === defaultBranch &&
+                run.head_sha === targetSha
+              )
+              .sort((left, right) =>
+                new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+              );
+
+            const successfulRun = matchingRuns.find((run) =>
+              run.status === 'completed' && run.conclusion === 'success'
             );
 
-            recentRuns.sort(
-              (left, right) => new Date(right.created_at) - new Date(left.created_at)
-            );
+            if (!successfulRun) {
+              const observed = matchingRuns.length === 0
+                ? 'no matching push run was found'
+                : matchingRuns
+                    .slice(0, 5)
+                    .map((run) => `#${run.run_number}: ${run.status}/${run.conclusion ?? 'none'}`)
+                    .join(', ');
 
-            const { data: currentRun } = await github.rest.actions.getWorkflowRun({
-              owner,
-              repo,
-              run_id: context.runId
-            });
-
-            let lastSuccessfulBuild = null;
-            const candidateRuns = [
-              currentRun,
-              ...recentRuns.filter(run => run.id !== context.runId)
-            ];
-
-            for (const run of candidateRuns) {
-              const jobs = await github.paginate(
-                github.rest.actions.listJobsForWorkflowRun,
-                {
-                  owner,
-                  repo,
-                  run_id: run.id,
-                  filter: "all",
-                  per_page: 100
-                }
+              return fail(
+                `Release blocked: ${requiredWorkflowFile} has no successful push-to-${defaultBranch} run for exact commit ${targetSha} (${observed}).`
               );
-              const buildJob = jobs.find(job =>
-                job.name === buildJobName &&
-                job.status === "completed" &&
-                job.conclusion === "success"
-              );
-
-              if (buildJob) {
-                lastSuccessfulBuild = { run, buildJob };
-                break;
-              }
             }
 
-            if (!lastSuccessfulBuild) {
-              const reason =
-                `CI run #${ciRun.run_number} succeeded and no successful image build ` +
-                `was found in the last ${gateWindowDays} days`;
-              core.setOutput("allowed", "true");
-              core.setOutput("reason", reason);
-              core.info(`Build allowed: ${reason}`);
-              return;
-            }
+            core.setOutput('release_tag', releaseTag);
+            core.setOutput('target_sha', targetSha);
 
-            const lastDate = new Date(lastSuccessfulBuild.run.created_at);
-            const elapsedMs = now.getTime() - lastDate.getTime();
-            const elapsedDays = Math.floor(elapsedMs / (24 * 60 * 60 * 1000));
-
-            if (elapsedMs < gateWindowMs) {
-              deny(
-                `images were already built successfully within the last ${gateWindowDays} days ` +
-                `at ${lastSuccessfulBuild.run.created_at} (${elapsedDays} days ago)`
-              );
-            } else {
-              const reason =
-                `CI run #${ciRun.run_number} succeeded and the last successful image build ` +
-                `is outside the ${gateWindowDays}-day window`;
-              core.setOutput("allowed", "true");
-              core.setOutput("reason", reason);
-              core.info(`Build allowed: ${reason}`);
-            }
+            await core.summary
+              .addHeading('Release image gate passed')
+              .addTable([
+                [{ data: 'Check', header: true }, { data: 'Value', header: true }],
+                ['Release tag', releaseTag],
+                ['Release commit', targetSha],
+                ['Required CI run', `#${successfulRun.run_number}`],
+                ['CI event / branch', `${successfulRun.event} / ${successfulRun.head_branch}`],
+              ])
+              .addLink('Open the successful CI run', successfulRun.html_url)
+              .write();
 
   build-and-push:
     name: make all (buildx + push)
     runs-on: dayu-runner
-    needs: gate
-    if: needs.gate.outputs.allowed == 'true'
-
+    needs:
+      - release-gate
     env:
       REG: docker.io
       REPO: ${{ vars.DOCKERHUB_REPO || secrets.DOCKERHUB_USERNAME }}
-
+      RELEASE_TAG: ${{ needs.release-gate.outputs.release_tag }}
+      RELEASE_SHA: ${{ needs.release-gate.outputs.target_sha }}
     steps:
-      - name: Checkout
+      - name: Check out the released commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.gate.outputs.target_sha }}
+          ref: ${{ env.RELEASE_SHA }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -222,24 +222,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to DockerHub
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Validate build matrix
+      - name: Validate build configuration
         run: make validate-build
 
-      - name: Build and push (make all)
-        run: make all REG=${{ env.REG }} REPO=${{ env.REPO }}
-
-  skipped:
-    name: skipped (gate denied)
-    runs-on: ubuntu-latest
-    needs: gate
-    if: needs.gate.outputs.allowed != 'true'
-    steps:
-      - name: Notify skipped
-        run: |
-          echo "Skip build: ${{ needs.gate.outputs.reason }}"
+      - name: Build and push release images
+        run: >-
+          make all
+          REG="${REG}"
+          REPO="${REPO}"
+          TAG="${RELEASE_TAG}"

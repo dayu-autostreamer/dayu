@@ -27,6 +27,44 @@ make validate-build
 script: runtime images plus processor images. It does not build `dayubase` or
 `rtsp-server` unless those targets are requested explicitly.
 
+## Hosted Release Image Builds
+
+The hosted Docker build in
+[`../.github/workflows/dockerhub-build.yml`](../.github/workflows/dockerhub-build.yml)
+runs only when a stable GitHub Release is published. Pushes, pull requests,
+schedules, and manual dispatches do not publish images, and there is no
+time-based cooldown between releases.
+
+Before the self-hosted runner logs in to Docker Hub, the workflow enforces all
+of the following release conditions:
+
+- the release is neither a draft nor a prerelease
+- its tag matches `vMAJOR.MINOR` or `vMAJOR.MINOR.PATCH`
+- the version tag is an annotated tag that points directly to a commit on
+  `main`
+- the exact tagged commit has a completed, successful `CI` workflow run caused
+  by a push to `main`
+
+The final check deliberately does not reuse a pull request's temporary merge
+commit. A merge, squash, or rebase can change the commit that reaches `main`, so
+the released commit itself must pass the push-triggered CI workflow. If any
+gate fails, the release workflow fails before Docker login, build, or push. A
+GitHub `release: published` event occurs after the Release has been published,
+so a failed gate reports an invalid release but cannot automatically make that
+Release a draft again.
+
+Use this release sequence:
+
+1. Merge the intended release commit into `main`.
+2. Wait for that exact commit's push-triggered `CI` run to succeed.
+3. Create and push an annotated version tag on that commit.
+4. Publish a stable GitHub Release for the tag.
+
+The workflow passes the Release tag explicitly as `TAG` to `make all`; hosted
+release builds therefore never fall back to the default tag in `Makefile`. The
+published set remains the normal `make all` set and still excludes `dayubase`
+and `rtsp-server`.
+
 The build variables are:
 
 | Variable | Default | Meaning |
