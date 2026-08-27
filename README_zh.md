@@ -16,7 +16,8 @@
 
 | <img src="static/news.svg" width="8%">  NEWS                            |
 |-------------------------------------------------------------------------|
-| (**最新版本**) 2026.07.02. 大禹 v1.3 发布，详细信息请查阅 [CHANGELOG](CHANGELOG.md#v13) |
+| (**最新版本**) 2026.08.28. 大禹 v1.4 发布，详细信息请查阅 [CHANGELOG](CHANGELOG.md#v14) |
+| 2026.07.02. 大禹 v1.3 发布，详细信息请查阅 [CHANGELOG](CHANGELOG.md#v13)            |
 | 2026.01.15. 大禹 v1.2 发布，详细信息请查阅 [CHANGELOG](CHANGELOG.md#v12)            |
 | 2025.05.07. 大禹 v1.1 发布，详细信息请查阅 [CHANGELOG](CHANGELOG.md#v11)            |
 | 2025.02.21. 大禹 v1.0 发布，详细信息请查阅 [CHANGELOG](CHANGELOG.md#v10)            |

@@ -14,12 +14,13 @@ English | [简体中文](./README_zh.md)
 
 ![](static/dayu-logo-horizontal.svg)
 
-| <img src="static/news.svg" width="8%">  NEWS                                                                        |
-|---------------------------------------------------------------------------------------------------------------------|
-| (**Latest Release**) Jul. 2nd, 2026. Dayu v1.3 Release. Please check the [CHANGELOG](CHANGELOG.md#v13) for details. |
-| Jan. 15th, 2026. Dayu v1.2 Release. Please check the [CHANGELOG](CHANGELOG.md#v12) for details.                     |
-| May. 7th, 2025. Dayu v1.1 Release. Please check the [CHANGELOG](CHANGELOG.md#v11) for details.                      |
-| Feb. 21th, 2025. Dayu v1.0 Release. Please check the [CHANGELOG](CHANGELOG.md#v10) for details.                     |
+| <img src="static/news.svg" width="8%">  NEWS                                                                         |
+|----------------------------------------------------------------------------------------------------------------------|
+| (**Latest Release**) Aug. 28th, 2026. Dayu v1.4 Release. Please check the [CHANGELOG](CHANGELOG.md#v14) for details. |
+| Jul. 2nd, 2026. Dayu v1.3 Release. Please check the [CHANGELOG](CHANGELOG.md#v13) for details.                       |
+| Jan. 15th, 2026. Dayu v1.2 Release. Please check the [CHANGELOG](CHANGELOG.md#v12) for details.                      |
+| May. 7th, 2025. Dayu v1.1 Release. Please check the [CHANGELOG](CHANGELOG.md#v11) for details.                       |
+| Feb. 21th, 2025. Dayu v1.0 Release. Please check the [CHANGELOG](CHANGELOG.md#v10) for details.                      |
 
 Dayu is a cloud-edge stream analytics platform for deploying, scheduling, and operating DAG-based AI
 pipelines across heterogeneous nodes. It combines a backend control plane, a Vue frontend, simulated datasources, and a
