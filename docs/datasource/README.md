@@ -107,6 +107,12 @@ That means:
 - samples frames according to the current generator policy
 - returns sampled frame indices aligned with `gt_file.txt`
 
+Each registered source exposes internal `/<source-path>/source`, `/file`, `/shared_file`, and `/status` routes. After
+`/source` publishes the next temp artifact, a colocated Generator may reuse the path returned by `/shared_file` only if
+that file exists locally; otherwise it downloads the artifact through `/file`. `/status` reports the source-process
+`instance_id`, readiness, and exhaustion state so a finite-stream getter resumes only after the source process has
+actually been recreated.
+
 ### `rtsp_video`
 
 - reads the ordered clip sequence from `rtsp_video/manifest.json`

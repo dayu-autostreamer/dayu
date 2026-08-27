@@ -174,13 +174,18 @@ sequenceDiagram
     S->>S: persist expiring task-bound decision reservation
     S-->>G: plan + decision identity + exact routes
     G->>G: materialize source data with the reserved identity
-    G->>S: acquire lease + immutable task commitment
-    S->>S: verify reservation and promote active record
-    G->>W: task carrying decision, routes, and revision
-    W->>D: completed task
-    D->>S: final renew before persistence
-    D->>S: scenario update
-    D->>S: release after durable storage + acknowledgement
+    alt Task materialized
+        G->>S: acquire lease + immutable task commitment
+        S->>S: verify reservation and promote active record
+        G->>W: task carrying decision, routes, and revision
+        W->>D: completed task
+        D->>S: final renew before persistence
+        D->>S: scenario update
+        D->>S: release after durable storage + acknowledgement
+    else No Task materialized
+        G->>S: cancel exact task-bound reservation
+        S-->>G: idempotent cancellation acknowledgement
+    end
 ```
 
 There is no route fallback. Missing, ambiguous, stale, or incomplete route identity is a hard runtime error. This is
@@ -211,10 +216,12 @@ More concretely:
 
 1. Backend opens a datasource through `/submit_query`.
 2. Datasource supervisor starts `http_video` or `rtsp_video` source processes based on backend state.
-3. Generator first applies the getter filter, reserves one root `TaskIdentity`, and requests a schedule for that exact
-   identity before source data is materialized. The returned plan may still change source FPS, resolution, buffer,
-   encoding, or DAG assignment. The getter then creates the Task with the same identity; Generator acquires its lease
-   with an immutable schedule commitment before submission. A zero scheduling interval requests a decision per task;
+3. Generator first applies the getter filter and reserves one root `TaskIdentity`. When scheduling is initial or due,
+   it requests a plan for that exact identity before source data is materialized; the plan may still change source FPS,
+   resolution, buffer, encoding, or DAG assignment. If the getter creates the Task, Generator acquires its lease with
+   an immutable schedule commitment before submission. If the getter returns no Task, including finite-source
+   exhaustion, Generator cancels any exact reservation created for that identity before ownership transfer. A zero
+   scheduling interval requests a decision per task;
    a positive interval may reuse one decision for later tasks while preserving a distinct root identity for each.
    Transient admission or delivery failure applies source backpressure instead of discarding the materialized task.
 4. Generator, Controller, and Processor retain ownership until the next hop returns an exact task UUID ACK. Controller
@@ -223,11 +230,13 @@ More concretely:
    lease identity, publishing is atomic, and no intermediate branch or Pod lifecycle may delete it.
 6. Distributor renews once to fence a late new result and durably persists it. Persistence is the terminal delivery
    ACK; scheduler scenario feedback and lease release then converge independently.
-7. Monitor periodically reports resource state to scheduler. Structured processor `queue_state` telemetry atomically
-   reports ordered waiting identities, whether the single background execution lane is busy, its running task and
-   processing/handoff phase, and observation metadata for every local logical service. Scheduler combines that copied
-   resource view with expiring schedule reservations, active lease records, and exact known fork/join barrier state in
-   the common in-process snapshot available to all schedule agents.
+7. Monitor periodically reports resource state and its RuntimeDirectory revision to scheduler. Structured processor
+   `queue_state` telemetry atomically reports ordered waiting identities, whether the single background execution lane
+   is busy, its running task and processing/handoff phase, and observation metadata for every local logical service.
+   Scheduler exposes explicit
+   in-process snapshot scopes: `LIVE` contains executable deployment and revision-tagged telemetry, from which consumers
+   retain only matching-revision samples. The default `COMMITTED` scope also includes expiring reservations, active
+   lease records, and exact known fork/join barriers for commitment-aware scheduling.
 8. Backend polls distributor and scheduler to produce frontend-facing result and system visualizations.
 
 ## Runtime Ownership By Component
@@ -236,8 +245,8 @@ More concretely:
 | --- | --- | --- |
 | Backend | Kubernetes access, validated plan composition, RuntimeService/session lifecycle, install/query lifecycle, visualization, source state | task routing or low-level inference behavior |
 | Datasource | source playback, manifest interpretation, clip or frame indexing | scheduling decisions |
-| Generator | source segmentation, task creation, pre-schedule and pre-submit hooks | inference execution |
-| Scheduler | policy/resource state, source/deployment plans, an in-process copied snapshot of resources, task admission/lease records and known barriers, persistent-AOF Redis RuntimeDirectory CAS and revision leases | Kubernetes discovery, Pod/RuntimeService recovery, or result persistence |
+| Generator | source segmentation, task creation, pre-schedule and pre-submit hooks, reservation promotion or cancellation | inference execution |
+| Scheduler | policy/resource state, source/deployment plans, scope-aware in-process snapshots, task admission/lease records and known barriers, persistent-AOF Redis RuntimeDirectory CAS and revision leases | Kubernetes discovery, Pod/RuntimeService recovery, or result persistence |
 | Controller | transport timing, acknowledged task forwarding, idempotent queryable task barriers | scheduling, lease management, or artifact deletion by an intermediate branch |
 | Processor | AI inference, scenario extraction, queue discipline, atomic waiting/running state, retaining computed results until ACK | deployment, lease management, or visualization |
 | Distributor | final task-lease validation/release, durable result storage, incremental result queries, export files | operator workflows |

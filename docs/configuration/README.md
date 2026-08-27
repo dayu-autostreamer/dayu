@@ -167,9 +167,11 @@ Current catalog families include:
 | Video/configuration research baselines | `steady`, `madeye`, `adamec`, `gecko`, `casva`, `cevas`, `chameleon`, `crave`, `model-switch`, `deepva`, `offline-profiling`, `online-profiling` |
 | Hierarchical embodied intelligence | `hei`, `hei-macro-only`, `hei-micro-only`, `hei-synchronous` |
 | Hedger and ablations | `hedger`, `hedger-offloading-benchmark`, `hedger-deployment-benchmark`, `hedger-no-graph-encoder`, `hedger-flat`, `hedger-deployment-only`, `hedger-offloading-only` |
+| Commitment-aware and queue-aware research | `fragsplice-cold-sample`, `fragsplice`, `fragsplice-no-distribution-profiler`, `fragsplice-no-future-state-estimator`, `fragsplice-no-plan-optimizer`, `ibdash`, `distream`, `dtodrl-train`, `dtodrl` |
 
-Entries use a `dependency:` map for generator/controller/distributor/monitor templates. Keep this shape canonical when
-adding or reviewing policy definitions.
+The canonical entry shape uses a `dependency:` map for generator/controller/distributor/monitor templates. The loader
+also accepts the legacy top-level component keys still present in a few catalog entries; use `dependency:` for new or
+normalized definitions.
 
 ### `template/services.yaml`
 
@@ -269,6 +271,10 @@ Scheduler templates mainly choose policy-specific hooks and parameters:
   value: "{'window_size': 8, 'mode': 'inference'}"
 ```
 
+Complete scheduler templates also set `SCH_SELECTION_POLICY_NAME`, `SCH_INITIAL_DEPLOYMENT_POLICY_NAME`, and
+`SCH_REDEPLOYMENT_POLICY_NAME`. These hooks control source placement and replica placement independently from the
+per-task `SCH_AGENT` offloading decision.
+
 ### Processor template pattern
 
 Processor templates describe how one AI service runs:
@@ -313,6 +319,13 @@ Every initial-deployment and redeployment policy is normalized through
 `dependency/core/lib/scheduling/deployment_plan.py`. The accepted shape is exactly
 `logical service -> non-empty JSON node list`, covering every current-DAG service and only candidate nodes.
 
+The built-in fixed initial-deployment policy and dynamic/offline/online profiling redeployment policies expose an
+`include_cloud` parameter. When true, Scheduler composes the exact cloud node into the policy result before validating
+it. This is separate from the Backend-wide option below; both produce active routable cloud replicas, so enable both
+only when that additive placement is intended. The `source-edge-cloud` initial policy is the stricter pipeline-family
+alternative: it activates every current-DAG service on both the selected source edge and cloud node and fails if either
+identity is unavailable.
+
 `template/base.yaml` controls whether Backend composes a default cloud replica after that validation:
 
 | Field | Default | Meaning |
@@ -326,6 +339,11 @@ selected the exact cloud hostname, set normalization prevents a duplicate Runtim
 `false` does not forbid cloud placement; an exact cloud hostname returned by Scheduler remains legal. The built-in
 `cloud-only-policy` continues to select `system.cloud_device` explicitly. Despite the option's historical “backup”
 name, the cloud RuntimeService is activated and published as a normal routable replica rather than a dormant standby.
+
+Pipeline-only scheduling agents express an edge-to-cloud split with a `partition_index`. Index `0` places every
+business service on cloud; the terminal index places every business service on the source edge. The shared pipeline
+helper requires explicit `_start` and `_end` nodes and rejects branched, joined, disconnected, cyclic, link-inconsistent,
+or non-monotonic DAGs. Full-DAG agents use an explicit service-to-device plan instead of this parameter.
 
 ## Runtime Pod Security Boundary
 
@@ -351,7 +369,7 @@ Common families:
 | --- | --- |
 | Generator lifecycle | `GEN_BSO_NAME`, `GEN_ASO_NAME`, `GEN_BSTO_NAME` |
 | Generator data path | `GEN_FILTER_NAME`, `GEN_PROCESS_NAME`, `GEN_COMPRESS_NAME`, `GEN_GETTER_NAME`, `GEN_GETTER_FILTER_NAME` |
-| Scheduler | `SCH_CONFIG_EXTRACTION_NAME`, `SCH_AGENT_NAME`, `SCH_SELECTION_POLICY_NAME` |
+| Scheduler | `SCH_CONFIG_EXTRACTION_NAME`, `SCH_AGENT_NAME`, `SCH_SELECTION_POLICY_NAME`, `SCH_INITIAL_DEPLOYMENT_POLICY_NAME`, `SCH_REDEPLOYMENT_POLICY_NAME` |
 | Processor | `PROCESSOR_NAME`, `STRUCTURED_PROCESSOR_PARAMETERS`, `PRO_QUEUE_NAME`, `SCENARIOS_EXTRACTORS` |
 | Monitor | `MONITORS` |
 

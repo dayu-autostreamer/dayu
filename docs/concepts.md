@@ -27,6 +27,11 @@ layout information is in `layout`.
 Important rule: current frontend and backend validation use service ids as node ids. In normal repository examples,
 the node key, node `id`, and `service_id` are the same string.
 
+The control-plane and runtime DAG shapes are related but not identical. A backend workflow uses `_start` as a list of
+entry service ids. When a Task is constructed, Dayu materializes synthetic `_start` and `_end` service nodes and
+serializes links as `prev_nodes` and `next_nodes`; scheduler full-DAG and pipeline helpers operate on that internal
+shape.
+
 ## Service Catalog Entry
 
 `template/services.yaml` is the service catalog. A service entry connects a user-facing service id to a processor
@@ -111,9 +116,15 @@ Initial-deployment and redeployment hooks return one canonical shape: each curre
 non-empty JSON list of exact candidate node names. `dependency/core/lib/scheduling/deployment_plan.py` owns extraction,
 normalization, and validation of this contract for both Scheduler and every policy family. It rejects missing or extra
 services, scalar placements, empty targets, and nodes outside the processor candidate set. Scheduler and policy
-plugins never infer cloud placement. After the plan is valid, Backend may apply the independent
-`default-cloud-processor-backup` control by adding the exact resolved cloud node to every logical service. That
-operational replica does not relax or rewrite the Scheduler policy contract.
+plugins never infer a cloud hostname: a selected policy may add only the injected exact cloud identity, for example
+through `include_cloud` or the `source-edge-cloud` initial policy. After the Scheduler plan is valid, Backend may apply
+the independent `default-cloud-processor-backup` control by adding the exact resolved cloud node to every logical
+service. That operational replica does not relax or rewrite the Scheduler policy contract.
+
+Offloading is a separate per-task decision. Full-DAG agents map every business service to an active device. An
+explicitly pipeline-only agent may instead use a `partition_index`: index `0` means all business stages execute on
+cloud, and the terminal index means all execute on the source edge. That shorthand is invalid for branched, joined,
+cyclic, disconnected, or otherwise non-linear DAGs.
 
 ## Hook Alias
 
@@ -212,26 +223,33 @@ manifest file or cache to refresh.
 ## Runtime Bootstrap And Task Lease
 
 `DAYU_RUNTIME_BOOTSTRAP` contains immutable install context and support endpoints needed to start a worker. It does not
-contain a mutable route cache. After an ingestion round is permitted, Generator reserves a root `TaskIdentity`, sends
-it to Scheduler as `task_context`, applies the returned plan, and only then materializes source data into a Task with
-that same identity. It also copies the committed directory revision, exact routes, schedule decision id, and plan
-digest into the Task; forks preserve all root-level scheduling fields.
+contain a mutable route cache. After an ingestion round is permitted, Generator reserves a root `TaskIdentity`. When
+scheduling is due it sends that identity to Scheduler as `task_context`, applies the returned plan, and only then
+materializes source data into a Task with the same identity. It also copies the committed directory revision, exact
+routes, schedule decision id, and plan digest into the Task; forks preserve all root-level scheduling fields.
 
 For a task-aware schedule, Scheduler first stores a short-lived `pending` record containing the exact returned decision
-and plan. The task is then protected by a lease keyed by `(directory_revision, root_uuid)`. Generator acquires it once
-before first submission and attaches a commitment containing the immutable identity, DAG mapping, metadata, and
-decision attribution. Admission verifies the reserved decision fields and atomically promotes the record to `active`.
+and plan. If source data materializes, the task is protected by a lease keyed by `(directory_revision, root_uuid)`.
+Generator acquires it once before first submission and attaches a commitment containing the immutable identity, DAG
+mapping, metadata, and decision attribution. Admission verifies the reserved decision fields and atomically promotes
+the record to `active`. If the getter produces no Task, including finite-source exhaustion, Generator instead cancels
+that exact reservation before ownership can transfer.
 Retrying the same task-aware scheduling request replays its pending decision instead of advancing the agent twice.
 Scheduler keeps active records synchronized with lease renewal, expiry, release, and retirement. It makes copied
-pending/active records available to every schedule agent together with resource telemetry and exact snapshots of
-known Redis task barriers. A transient admission failure retains the already
-materialized task and applies source backpressure; only
-an explicit retired-revision fence rejects it and requests a fresh schedule. Controller and Processor do not access
-the lease API. Distributor renews once immediately before durable result persistence and then performs Scheduler
-scenario feedback and release as post-persistence completion work. The normal TTL covers end-to-end processing.
+pending/active records available to schedule agents together with resource telemetry and exact snapshots of known
+Redis task barriers. A transient admission failure retains the already materialized task and applies source
+backpressure; only an explicit retired-revision fence rejects it and requests a fresh schedule. Controller and
+Processor do not access the lease API. Distributor renews once immediately before durable result persistence and then
+performs Scheduler scenario feedback and release as post-persistence completion work. The normal TTL covers end-to-end processing.
 Redeployment gives the previous revision a bounded immutable deadline that clamps every old lease and remains the hard
 upper bound; expiry revokes any remainder and releases the rollout gate. Uninstall does not wait for lease count or
 expiry: it requests an immediate fence and proceeds with exact-UID administrative teardown.
+
+Scheduling extensions choose one in-process snapshot scope. `COMMITTED` is the default and includes current deployment
+and telemetry plus pending reservations, active commitments, and task barriers for future-state decisions. `LIVE`
+contains the same deployment and telemetry fields with empty in-flight contexts for immediate executable-state
+decisions. The snapshot records `resource_runtime_revision` per device; consumers discard a sample unless that revision
+matches the snapshot's `runtime_directory_revision`.
 
 `simple` queue means queued Task metadata is never intentionally evicted, but end-to-end ownership also requires its
 media artifact and every network handoff. Dayu therefore uses the existing lease identity for one immutable node-local

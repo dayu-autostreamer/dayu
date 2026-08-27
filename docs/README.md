@@ -12,6 +12,10 @@ Dayu has two documentation surfaces with different jobs:
 | [Project documentation site](https://dayu-autostreamer.github.io/docs/) | Public onboarding and tutorial flow | Why Dayu, architecture narrative, installation preparation, first run, UI walkthroughs, case studies, community pages. |
 | This repository `docs/` directory | Implementation reference close to code | API contracts, template/config details, hook aliases, datasource contracts, lifecycle behavior, testing and maintainer guidance. |
 
+The documentation site currently presents the latest published `v1.3` release. This repository tree follows the
+unreleased `v1.4` development state and its current code contracts; see the
+[`v1.4` changelog](../CHANGELOG.md#v14-in-development) for the evolving release boundary.
+
 When a topic is mostly about teaching a first-time user how to use Dayu, keep the full walkthrough on the website and
 link back to repository references only for exact contracts. When a topic changes with code, templates, or tests, keep
 the authoritative details here.

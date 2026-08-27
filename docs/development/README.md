@@ -17,7 +17,7 @@ This guide is for contributors who need to change code in the repository and wan
 | `dependency/core/processor/` | Processor service shells and inference orchestration | processor behavior, queueing, scenario extraction |
 | `dependency/core/scheduler/` | Scheduler shell and per-source agent orchestration | runtime scheduling behavior |
 | `dependency/core/lib/` | Shared runtime library: hooks, content/task routes, scheduling contracts, pure runtime context/resolver/lease client, network helpers, estimators | reusable runtime helpers and most extensibility points; never Kubernetes discovery |
-| `dependency/core/lib/scheduling/` | Stable contracts shared by Backend, Scheduler and scheduling plugins | independent source/processor permissions, deployment-plan shape, normalization, and validation |
+| `dependency/core/lib/scheduling/` | Stable contracts shared by Backend, Scheduler and scheduling plugins | source/processor permissions, full-DAG and pipeline materialization, deployment validation, queue views, snapshot scopes, and revision-consistent LIVE state |
 | `dependency/core/applications/` | Concrete AI application implementations | detector, classifier, tracker, service-specific logic |
 | `template/` | Deployment composition and default runtime env | scheduler families, processor templates, default visualizers |
 | `build/` and `docker-bake.hcl` | Dockerfiles plus the declarative image build matrix | image packaging, platform/tag matrix, JetPack build variants |
@@ -68,8 +68,9 @@ Usually touch:
 - `dependency/core/scheduler/runtime_directory.py` and Scheduler APIs for directory CAS/publication
 - `dependency/core/scheduler/task_lease.py` for task ownership, immutable retirement deadlines, and forced fencing
 - `dependency/core/lib/runtime/` and `content/task.py` for bootstrap, exact route, and task identity contracts
+- `dependency/core/lib/scheduling/snapshot.py`, `live_state.py`, and `queue_state.py` for extension-visible runtime state
 - generator/distributor consumers for acquire-once/final-renew/persist/scenario-ack/release ordering; controller and
-  processor must remain outside the lease protocol
+  processor must remain outside the lease protocol; a Generator that materializes no Task cancels its exact reservation
 - `backend/runtime_orchestrator.py` for proposal/atomic-retirement commit/recovery plus exact-UID-delete ordering
 - [`../api/runtime-services.md`](../api/runtime-services.md), [`../operations/README.md`](../operations/README.md), and
   backend/runtime service unit tests
@@ -98,6 +99,12 @@ Usually touch:
 Deployment policies and schedule agents are plugins, but their public deployment-plan contract is not an algorithm
 implementation. Keep that contract in `dependency/core/lib/scheduling/deployment_plan.py`; Scheduler and every policy
 family must import the same validator instead of defining local normalization or fallback rules.
+
+Use `materialize_offloading_plan` for complete DAG decisions. Use `scheduling.pipeline` only when an algorithm is
+explicitly limited to a linear edge-to-cloud pipeline, and preserve its strict rejection of unsupported graph shapes.
+An agent reading runtime state must request `SchedulingSnapshotScope.LIVE` or `COMMITTED` deliberately; LIVE-state
+helpers filter telemetry by RuntimeDirectory revision and reject inactive targets. When adding an alias, update the
+catalog and the installable policy list in the same change where applicable.
 
 ### Add or change a processor service
 

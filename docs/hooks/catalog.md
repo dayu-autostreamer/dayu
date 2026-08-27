@@ -7,6 +7,7 @@ that appear in templates, environment variables, and visualization configs.
 
 | Hook type                       | Base signature                                                      |
 |---------------------------------|---------------------------------------------------------------------|
+| `GENERATOR`                     | `run()`                                                             |
 | `GEN_BSO`                       | `__call__(system)`                                                  |
 | `GEN_ASO`                       | `__call__(system, scheduler_response)`                              |
 | `GEN_BSTO`                      | `__call__(system, new_task)`                                        |
@@ -19,9 +20,12 @@ that appear in templates, environment variables, and visualization configs.
 | `SCH_SCENARIO_RETRIEVAL`        | `__call__(task)`                                                    |
 | `SCH_POLICY_RETRIEVAL`          | `__call__(task)`                                                    |
 | `SCH_STARTUP_POLICY`            | `__call__(info)`                                                    |
+| `SCH_AGENT`                     | `get_schedule_plan(info)` plus state updates and deployment helpers |
 | `SCH_SELECTION_POLICY`          | `__call__(info)`                                                    |
 | `SCH_INITIAL_DEPLOYMENT_POLICY` | `__call__(info)`                                                    |
 | `SCH_REDEPLOYMENT_POLICY`       | `__call__(info)`                                                    |
+| `PROCESSOR`                     | `__call__(task)`                                                    |
+| `PRO_QUEUE`                     | `put(task)`, `get()`, `size()`, `empty()`, and snapshot/drain helpers |
 | `PRO_SCENARIO`                  | `__call__(result, task)`                                            |
 | `MON_PRAM`                      | `__call__()` returning a thread that updates `system.resource_info` |
 | `RESULT_VISUALIZER`             | `__call__(task, resource=None)`                                     |
@@ -33,7 +37,7 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias   | Module                                         | Purpose                                                                                                            |
 |---------|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
-| `video` | `dependency/core/generator/video_generator.py` | Main generator loop for video sources. Filters first, reserves a root identity, schedules when due, then materializes a Task with that identity. |
+| `video` | `dependency/core/generator/video_generator.py` | Main generator loop for video sources. Filters first, reserves a root identity, schedules when due, then materializes a Task with that identity or cancels its task-bound reservation. |
 
 ### `GEN_BSO`
 
@@ -64,7 +68,7 @@ that appear in templates, environment variables, and visualization configs.
 
 | Alias        | Module                                                            | Purpose                                                           | Notes                                                                                                                             |
 |--------------|-------------------------------------------------------------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `http_video` | `dependency/core/lib/algorithms/data_getter/http_video_getter.py` | Pull buffered clips from the simulated HTTP datasource service.   | Uses `/source` then `/file` and materializes the framework-reserved `task_identity`. |
+| `http_video` | `dependency/core/lib/algorithms/data_getter/http_video_getter.py` | Pull buffered clips from the simulated HTTP datasource service.   | Uses `/source`, prefers a validated `/shared_file`, falls back to `/file`, and checks `/status` before resuming an exhausted source. |
 | `rtsp_video` | `dependency/core/lib/algorithms/data_getter/rtsp_video_getter.py` | Read frames directly from an RTSP stream and build tasks locally. | Handles reconnects and materializes the framework-reserved `task_identity`. |
 | `v4l2_video` | `dependency/core/lib/algorithms/data_getter/v4l2_video_getter.py` | Read frames from a local V4L2 camera device and build tasks.      | Inherits the RTSP getter's identity contract; used by real-camera datasource configs. |
 
@@ -154,6 +158,7 @@ that appear in templates, environment variables, and visualization configs.
 | `hedger-flat` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/hedger_flat_initial_deployment_policy.py` | Use the flat Hedger ablation for initial placement. | Research/benchmark-oriented variant. |
 | `hedger-no-graph-encoder` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/hedger_no_graph_encoder_initial_deployment_policy.py` | Use the no-graph-encoder Hedger ablation for initial placement. | Neutralizes learned graph embeddings while preserving the Hedger interface. |
 | `hedger-offloading-only` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/hedger_offloading_only_initial_deployment_policy.py` | Use the Hedger offloading-only ablation for initial placement. | Research/benchmark-oriented variant. |
+| `source-edge-cloud` | `dependency/core/lib/algorithms/schedule_initial_deployment_policy/source_edge_cloud_initial_deployment_policy.py` | Deploy every current-DAG service to both the selected source edge and cloud node. | Used by edge/cloud pipeline-split families; fails when either exact device identity is unavailable. |
 
 ### `SCH_REDEPLOYMENT_POLICY`
 
@@ -172,6 +177,10 @@ that appear in templates, environment variables, and visualization configs.
 | `hedger-flat` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_flat_redeployment_policy.py` | Flat Hedger redeployment variant. | Research/benchmark-oriented variant. |
 | `hedger-no-graph-encoder` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_no_graph_encoder_redeployment_policy.py` | No-graph-encoder Hedger redeployment variant. | Research/benchmark-oriented variant. |
 | `hedger-offloading-only` | `dependency/core/lib/algorithms/schedule_redeployment_policy/hedger_offloading_only_redeployment_policy.py` | Hedger offloading-only redeployment variant. | Research/benchmark-oriented variant. |
+
+The `fixed` initial-deployment policy and the `dynamic`, `offline_profiling`, and `online_profiling` redeployment
+policies accept `include_cloud`. This policy-level option adds the exact cloud node before Scheduler validation and is
+independent of Backend's global `default-cloud-processor-backup`; either mechanism creates an active routable replica.
 
 ### `SCH_AGENT`
 
@@ -201,6 +210,14 @@ that appear in templates, environment variables, and visualization configs.
 | `hedger-flat` | `dependency/core/lib/algorithms/schedule_agent/hedger_flat_agent.py` | Flat Hedger ablation with a collapsed agent structure. | Research/benchmark-oriented variant. |
 | `hedger-no-graph-encoder` | `dependency/core/lib/algorithms/schedule_agent/hedger_no_graph_encoder_agent.py` | Hedger ablation that disables learned graph encoder restoration. | Research/benchmark-oriented variant. |
 | `hedger-offloading-only` | `dependency/core/lib/algorithms/schedule_agent/hedger_offloading_only_agent.py` | Hedger ablation focused on offloading behavior. | Research/benchmark-oriented variant. |
+| `fragsplice_cold_sample` | `dependency/core/lib/algorithms/schedule_agent/fragsplice_cold_sample_agent.py` | Balance cold-start samples across service/replica pairs in the active fixed deployment and persist the resulting latency profile. | Preparation policy for the main FragSplice and profile-based baselines. |
+| `fragsplice` | `dependency/core/lib/algorithms/schedule_agent/fragsplice_agent.py` | Search commitment-aware full-DAG offloading plans from the fixed deployment, latency distribution, queues, reservations, commitments, and barriers. | Uses the `COMMITTED` snapshot and can run rolling planning in an isolated worker process. |
+| `fragsplice_no_distribution_profiler` | `dependency/core/lib/algorithms/schedule_agent/fragsplice_no_distribution_profiler_agent.py` | FragSplice ablation whose downstream estimator and optimizer receive randomized latency/workload inputs. | Disables the learned distribution profiler while preserving the scheduling lifecycle. |
+| `fragsplice_no_future_state_estimator` | `dependency/core/lib/algorithms/schedule_agent/fragsplice_no_future_state_estimator_agent.py` | FragSplice ablation that schedules from current queue state without projecting reservations or commitments. | Isolates the future-state estimator contribution. |
+| `fragsplice_no_plan_optimizer` | `dependency/core/lib/algorithms/schedule_agent/fragsplice_no_plan_optimizer_agent.py` | FragSplice ablation that replaces full plan search with stage-wise earliest-finish assignment. | Keeps profiling and future-state inputs while disabling the plan optimizer. |
+| `ibdash` | `dependency/core/lib/algorithms/schedule_agent/ibdash_agent.py` | Profile-based full-DAG earliest-finish baseline over active replicas and current queue state. | Uses a revision-consistent `LIVE` snapshot. |
+| `distream` | `dependency/core/lib/algorithms/schedule_agent/distream_agent.py` | Reactive baseline that assigns each DAG service to the active replica with the smallest projected workload at task admission. | Uses a revision-consistent `LIVE` snapshot and commits one full-DAG mapping. |
+| `dtodrl` | `dependency/core/lib/algorithms/schedule_agent/dtodrl_agent.py` | GAT/PPO dependent-task offloading baseline with training and inference modes over the active fixed deployment. | The `dtodrl-train` and `dtodrl` policy templates select the same alias with different mode/checkpoint parameters. |
 
 ## Processor Hooks
 

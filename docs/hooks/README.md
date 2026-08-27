@@ -77,7 +77,8 @@ flowchart TD
     REG --> MON["Monitor hooks"]
     REG --> VIZ["Visualization hooks"]
 
-    GEN --> GENFLOW["GetterFilter -> reserve identity -> BSO -> Scheduler -> ASO -> Getter -> BSTO"]
+    GEN --> GENFLOW["GetterFilter -> reserve identity -> BSO -> Scheduler -> ASO -> Getter"]
+    GENFLOW --> GENEND["Task -> BSTO; no Task -> cancel reservation"]
     SCH --> SCHFLOW["ConfigExtraction -> Agent -> Selection / Deployment / Redeployment"]
     PROC --> PROCFLOW["Processor -> Scenario extractors -> Queue"]
     MON --> MONFLOW["Resource monitors -> Scheduler /resource"]
@@ -106,7 +107,8 @@ The call order is a framework contract. After a round passes `GEN_GETTER_FILTER`
 and applies `GEN_ASO` before invoking `GEN_GETTER(system, task_identity)`. Scheduling remains before source
 materialization because existing policies can change buffer size, frame rate, resolution, encoding, and the full DAG
 device mapping. The getter must pass the same identity to `Generator.generate_task`; it must not allocate a second id.
-Built-in getters still accept `task_identity=None` for direct local/test use.
+If it produces no Task, including the explicit `DataGetterStatus.EXHAUSTED` outcome, Generator cancels the matching
+task-bound scheduling reservation. Built-in getters still accept `task_identity=None` for direct local/test use.
 
 `REQUEST_SCHEDULING_INTERVAL <= 0` means schedule every accepted generation round. A positive interval preserves the
 existing decision-reuse behavior. Every Task still receives a distinct root identity even when it shares the same
@@ -122,10 +124,32 @@ schedule decision with nearby tasks.
 | `SCH_SCENARIO_RETRIEVAL` | Convert a processed task into scheduler state |
 | `SCH_POLICY_RETRIEVAL` | Recover the currently applied policy from a task |
 | `SCH_STARTUP_POLICY` | Provide a fallback plan before an agent can decide |
-| `SCH_AGENT` | Maintain policy-specific scheduling state per source; `BaseAgent.system.get_scheduling_snapshot()` returns copied resources with observation times, pending task-bound decisions, active lease records, and known task barriers |
+| `SCH_AGENT` | Maintain policy-specific scheduling state per source and request an explicit `LIVE` or `COMMITTED` scheduling snapshot when runtime state is needed |
 | `SCH_SELECTION_POLICY` | Select the execution node for a source |
 | `SCH_INITIAL_DEPLOYMENT_POLICY` | Compute deployment for first install |
 | `SCH_REDEPLOYMENT_POLICY` | Compute deployment updates after install |
+
+#### Scheduling snapshots
+
+`BaseAgent.system.get_scheduling_snapshot(scope)` returns a mutation-safe, revision-consistent plugin view. The default
+`SchedulingSnapshotScope.COMMITTED` includes current deployment and telemetry together with pending reservations,
+active commitments, and task barriers; use it for future-state or commitment-aware decisions. Explicit
+`SchedulingSnapshotScope.LIVE` carries the same deployment and telemetry fields but no in-flight contexts, and is the
+right contract for immediate decisions over executable replicas.
+
+Built-in LIVE-state agents use `core.lib.scheduling.live_state` helpers such as `get_live_snapshot`,
+`active_deployment_for_dag`, `active_targets`, `live_resources`, and `require_active_plan`. These helpers reject a
+missing RuntimeDirectory, incomplete current-DAG placement, inactive offloading target, or telemetry sample reported
+for a different directory revision instead of guessing a fallback.
+
+#### Full-DAG and pipeline plans
+
+Scheduling agents should materialize complete offloading decisions with
+`core.lib.scheduling.materialize_offloading_plan`. Algorithms whose model is specifically a linear edge-to-cloud
+pipeline may use `core.lib.scheduling.pipeline`: partition index `0` places every business stage on cloud, while the
+terminal index places every business stage on the source edge. Pipeline helpers require explicit `_start` and `_end`
+nodes and reject branches, joins, cycles, disconnected nodes, inconsistent links, and non-monotonic placements.
+General DAG algorithms must not reduce the graph to a pipeline split.
 
 ### Processor and monitor
 
@@ -168,6 +192,10 @@ Before finishing, compare registered aliases against the catalog. A quick local 
 - Keep hook signatures compatible with the caller, not just with the base class name.
 - If a hook is experimental or tied to a research prototype, mark it clearly in docs and templates.
 - If a hook changes the scheduler request or response shape, update both the producing and consuming docs.
+- Declare whether scheduler state is `LIVE` or `COMMITTED`; do not silently combine current placement with stale or
+  different-revision telemetry.
+- Preserve the full DAG unless the algorithm is explicitly pipeline-only, and use the shared materialization helpers so
+  unsupported graph shapes or inactive targets fail closed.
 
 ## Known Special Cases
 

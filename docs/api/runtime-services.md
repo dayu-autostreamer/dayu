@@ -11,7 +11,7 @@ This document describes the internal APIs used by Dayu runtime components. These
 | Scheduler/resource updates | Scheduler endpoints often receive JSON encoded into a form field named `data`. |
 | Runtime bootstrap | `DAYU_RUNTIME_BOOTSTRAP` supplies immutable install context and static infrastructure endpoints; it is never a Kubernetes discovery cache. |
 | Exact task routing | `Task` serializes `runtime_directory_revision`, `runtime_routes`, and `root_uuid`. Controller/processor routes must be complete exact identities. |
-| Task ownership and retirement | A task-aware schedule creates one expiring reservation keyed by `root_uuid`; Generator lease admission atomically promotes it to the active execution record keyed by `(runtime_directory_revision, root_uuid)`. Distributor performs final renew/persist followed by scenario/release completion. Backend may place one immutable deadline on an old revision. |
+| Task ownership and retirement | A task-aware schedule creates one expiring reservation keyed by `root_uuid`. Generator either materializes the Task and atomically promotes the reservation at lease admission, or cancels it when the data getter produces no Task. Active execution is keyed by `(runtime_directory_revision, root_uuid)`. Distributor performs final renew/persist followed by scenario/release completion. Backend may place one immutable deadline on an old revision. |
 | Task delivery ACK | A task write succeeds only with `{accepted: true, task_uuid: "<exact task uuid>"}`. `200 null`, a mismatched UUID, timeout, or connection failure never transfers ownership. |
 | Task artifact | All branches of one lease identity share one immutable, atomically published node-local artifact. Different roots/revisions cannot reuse the same temp path. |
 
@@ -94,10 +94,10 @@ supervisor also removes its worker-heartbeat timeout from this path.
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `GET` | `/schedule` | Generate a schedule plan plus exact routes for one source. | Form field `data` with JSON object and optional `task_context` | `{plan,deployment,deployment_version,runtime_directory_revision,runtime_directory_hash,runtime_routes,schedule_decision}` |
+| `GET` | `/schedule` | Generate a schedule plan plus exact routes for one source. | Form field `data` with the current source, DAG, deployment/directory cache state, and optional `task_context` | Always returns `{plan,deployment_version,runtime_directory_revision,runtime_directory_hash,runtime_directory_unchanged,runtime_routes_cache_key,runtime_routes_cached,schedule_decision}`; `deployment` and `runtime_routes` are included only when the caller's caches are not current |
 | `GET` | `/overhead` | Get average scheduler overhead across agents. | None | Number of seconds |
 | `POST` | `/scenario` | Update scheduler state with a processed task scenario. | Form field `data` with serialized task | `{accepted: boolean}` |
-| `POST` | `/resource` | Update scheduler resource table for one device. | Form field `data` with JSON `{"device","resource"}` | `null` |
+| `POST` | `/resource` | Update scheduler resource table for one device. | Form field `data` with `{device,resource,runtime_directory_revision?}` | `null` |
 | `GET` | `/resource` | Get the full scheduler resource table. | None | Object keyed by device |
 | `GET` | `/resource_lock` | Acquire resource ownership for a monitor probe such as bandwidth. | Form field `data` with JSON `{"resource","device"}` | `{holder}` |
 | `GET` | `/source_nodes_selection` | Generate a source-to-edge-node selection plan within Backend-authorized candidates. | Form field `data` with JSON array containing `node_set`, `source_candidate_nodes`, and `source_selection_scope` | `{plan}` |
@@ -126,6 +126,13 @@ Backend. `selected_edge_nodes` selects from the former and `all_edge_nodes` sele
 queries Kubernetes or `RuntimeContext` to expand either set, and Backend independently rejects a returned source that
 is not in the persisted source permission list.
 
+The `/schedule` response is cache-aware. A matching `(runtime_directory_revision, runtime_directory_hash)` suppresses
+the unchanged `deployment`; when `runtime_route_cache_keys` also contains the returned
+`runtime_routes_cache_key`, the matching `runtime_routes` payload is omitted. Generator retains only host-returned
+cache state and fails closed if it cannot reconstruct the effective directory and exact routes. Resource telemetry
+records its reported directory revision; a scheduling extension may treat a sample as current LIVE state only when
+that revision matches the snapshot revision.
+
 ### RuntimeDirectory control API
 
 These endpoints are internal control-plane contracts. Backend is the only publisher; runtime readers consume
@@ -152,7 +159,7 @@ absent directory/proposal state succeeds with `previous_revision: 0`. One Redis 
 proposal index and deletes the active snapshot, every indexed pending proposal, and the index atomically. Task-lease
 keys are intentionally separate and retain their lease-derived expiry.
 
-### Task lease API
+### Task lease and reservation API
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
@@ -161,6 +168,7 @@ keys are intentionally separate and retain their lease-derived expiry.
 | `PUT` | `/runtime-directory/task-leases` | Renew an existing unexpired lease. | Form `data` with `{revision,root_uuid,ttl_seconds}` | `{revision,root_uuid,expires_at,valid_for_seconds}` |
 | `DELETE` | `/runtime-directory/task-leases` | Release an existing lease. | Form `data` with `{revision,root_uuid}` | `{revision,root_uuid,expires_at,released}` |
 | `PATCH` | `/runtime-directory/task-leases` | Establish or reconcile one revision's immutable retirement deadline. The effective deadline may only stay the same or move earlier. | Form `data` with `{revision,deadline}` | `{revision,count,deadline,retired,revoked_count}` |
+| `DELETE` | `/runtime-directory/task-reservations` | Cancel a task-bound scheduling decision when no Task was materialized. | Form `data` with `{revision,root_uuid,decision_id?}` | `{revision,root_uuid,cancelled,already_cancelled?,decision_id}` |
 
 An acquire or renewal rejected by retirement returns
 `{revision,root_uuid,retired:true,deadline}` instead of an expiry; runtime clients treat it as a hard stop. Releasing a
@@ -180,15 +188,24 @@ the active record directly at lease admission. Repeating a task-aware schedule r
 decision without invoking the agent again; an old-revision pending record is replaced only after the active directory
 has moved to a new revision.
 
-`Scheduler.get_scheduling_snapshot()` returns a copied resource-table view plus `resource_received_at`, current
-`reservations`, active `commitments`, and exact active `task_barriers`. These records are Redis-backed in production and
-survive Scheduler replacement while their leases remain valid. This is an in-process plugin API for every `SCH_AGENT`,
-not a new HTTP endpoint or a second route-authority store.
+`Scheduler.get_scheduling_snapshot(scope)` is an in-process `SCH_AGENT` contract, not an HTTP endpoint or a second
+route-authority store. It returns a mutation-safe snapshot at one of two explicit scopes:
 
-The normal per-task sequence is deliberately small: a task-aware schedule reserves once, Generator acquires once
-before first submission, Controller and Processor never access the lease API, and Distributor renews once immediately
-before durable persistence, sends the scenario update, and releases only after an explicit acknowledgement. The
-configured TTL covers both the short pending reservation and normal end-to-end processing.
+| Scope | Runtime state included | Intended use |
+| --- | --- | --- |
+| `COMMITTED` (default) | Current deployment and telemetry, including `resource_received_at` and `resource_runtime_revision`, plus current `reservations`, active `commitments`, and exact active `task_barriers` | Commitment-aware and future-state scheduling |
+| `LIVE` | The same deployment and telemetry fields, with empty reservations, commitments, and barriers | Immediate decisions over executable placement and current telemetry |
+
+Extensions should request the smallest scope they need through `SchedulingSnapshotScope`. Before consuming a resource
+sample as LIVE state, they must verify that its `resource_runtime_revision` equals the snapshot's
+`runtime_directory_revision`. Commitment records and barriers are Redis-backed in production and survive Scheduler
+replacement while their leases remain valid.
+
+The normal per-task sequence is deliberately small: a task-aware schedule reserves once; Generator either acquires
+once before first submission or cancels the exact reservation when no Task materializes. Controller and Processor
+never access the lease API. Distributor renews once immediately before durable persistence, sends the scenario update,
+and releases only after an explicit acknowledgement. The configured TTL covers both the short pending reservation and
+normal end-to-end processing.
 When a redeployment retires that task's old revision, the immutable retirement deadline clamps the lease and is the
 hard upper bound regardless of the original TTL.
 
@@ -210,7 +227,8 @@ but name separation is not used as permission to overlap old and new install gen
 Expired lease entries are pruned on access. In-memory storage is reserved for explicit test/local-harness injection;
 it is never an automatic production fallback.
 
-`/schedule` expects data close to:
+`/schedule` expects data close to the internal serialized Task-DAG shape, including synthetic `_start` and `_end`
+nodes:
 
 ```json
 {
@@ -220,16 +238,33 @@ it is never an automatic production fallback.
   "source_device": "edgex1",
   "all_edge_devices": ["edgex1", "edgex2"],
   "deployment_version": 3,
+  "runtime_directory_revision": 7,
+  "runtime_directory_hash": "sha256-directory-hash",
+  "runtime_route_cache_keys": ["sha256-route-cache-key"],
   "dag": {
-    "start": {"service": {"execute_device": "edgex1"}},
-    "car-detection": {"service": {"execute_device": "cloudx1"}}
+    "_start": {
+      "service": {"service_name": "_start", "execute_device": "edgex1"},
+      "prev_nodes": [],
+      "next_nodes": ["car-detection"]
+    },
+    "car-detection": {
+      "service": {"service_name": "car-detection", "execute_device": "cloudx1"},
+      "prev_nodes": ["_start"],
+      "next_nodes": ["_end"]
+    },
+    "_end": {
+      "service": {"service_name": "_end", "execute_device": "cloudx1"},
+      "prev_nodes": ["car-detection"],
+      "next_nodes": []
+    }
   },
   "task_context": {
     "source_id": 0,
     "task_id": 42,
     "task_uuid": "root-task-uuid",
     "root_uuid": "root-task-uuid"
-  }
+  },
+  "schedule_request_attempt": 1
 }
 ```
 
@@ -286,12 +321,14 @@ For datasource directory layout, manifest schema, and frame-indexing behavior, s
 
 ### Dynamic per-source routes
 
-After a source is registered under `path=<source-path>`, two routes become available:
+After a source is registered under `path=<source-path>`, four routes become available:
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `GET` | `/<source-path>/source` | Generate the next buffered clip for that source. | Form field `data` with JSON request | JSON array of frame hash or frame index values |
 | `GET` | `/<source-path>/file` | Download the clip generated by the previous `/source` call. | None | File response |
+| `GET` | `/<source-path>/shared_file` | Return the node-local temp artifact path for a colocated Generator. | None | `{"file_name":"<shared temp path>"}` |
+| `GET` | `/<source-path>/status` | Report source-process identity and finite-stream state. | None | `{instance_id,exhausted,ready}` |
 
 The `/source` request JSON includes the generator-selected hook names:
 
@@ -307,7 +344,10 @@ The `/source` request JSON includes the generator-selected hook names:
 }
 ```
 
-The service resolves those hook names dynamically, applies frame filtering, frame processing, and compression, then returns the generated file through `/<source-path>/file`.
+The service resolves those hook names dynamically, applies frame filtering, frame processing, and compression, then
+publishes one temp artifact. A colocated Generator accepts the `/shared_file` path only when the file exists locally;
+otherwise it downloads the same artifact through `/file`. `/status` lets the getter distinguish a recreated source
+process from one that remains exhausted.
 
 ## V4L2 Video Getter
 
@@ -323,7 +363,7 @@ These runtime components are important for understanding the system but do not e
 
 | Component | Behavior | Main code path |
 | --- | --- | --- |
-| Generator | Filters an ingestion round, reserves a TaskIdentity, schedules before materializing source data, then creates the Task with that identity and acquires its revision lease plus commitment. A transient lease outage retains and retries the materialized task; a retired revision requests a fresh schedule while the source loop remains alive. | `dependency/core/generator/generator_server.py` |
+| Generator | Filters an ingestion round, reserves a TaskIdentity, and schedules before materializing source data. It then either creates the Task and acquires its revision lease plus commitment, or cancels the exact scheduling reservation when the getter returns no Task. A transient lease outage retains and retries a materialized task; a retired revision requests a fresh schedule while the source loop remains alive. | `dependency/core/generator/generator_server.py` |
 | Monitor | Periodically samples `MON_PRAM` hooks and posts resource data to scheduler. | `dependency/core/monitor/monitor.py` |
 | Datasource supervisor | Polls backend `/datasource_state` and starts or stops local source processes. | `datasource/datasource_server.py` |
 | RTSP stream source | Reads `rtsp_video/manifest.json` through `VideoDataset` and streams clips to the configured RTSP address. | `datasource/rtsp_video.py` |

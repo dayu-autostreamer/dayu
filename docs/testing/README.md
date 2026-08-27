@@ -108,6 +108,9 @@ For `dependency/core/lib/` outside `algorithms/`, the current state is now much 
 | `runtime/model.py`, `runtime/context.py`, `runtime/resolver.py`, `runtime/lease.py`, `runtime/task_barrier.py` | Strong direct coverage | Bootstrap parsing, immutable endpoint identities, exact task routes, scheduler-backed lease identities, queryable task barriers, ambiguity rejection, and fail-closed behavior are unit-tested without a Kubernetes client |
 | `scheduling/deployment_plan.py` | Strong direct coverage | Canonical service-to-node-list normalization, complete DAG coverage, candidate scoping, explicit cloud identity, and invalid-plan rejection are tested independently from policy implementations |
 | `scheduling/source_selection.py` | Strong direct coverage | Strict scope parsing, independent Backend-authorized source candidates, selected/all-edge semantics, and rejection of legacy discovery inputs are tested directly and through Backend install transactions |
+| `scheduling/dag.py`, `scheduling/offloading_plan.py`, `scheduling/pipeline.py` | Strong direct coverage | Topological full-DAG validation, complete plan materialization, partition-index semantics, and rejection of non-pipeline graphs are covered in `tests/unit/core_lib/scheduling/` |
+| `scheduling/snapshot.py`, `scheduling/live_state.py`, `scheduling/queue_state.py` | Strong direct coverage | Explicit LIVE/COMMITTED scopes, active-deployment validation, revision-filtered telemetry, queue freshness, and fail-closed targets are tested directly |
+| `scheduling/decision.py` | Covered through scheduler contract tests | Stable decision identity and plan digest behavior are verified with the task-reservation and `/schedule` lifecycle |
 | `content/service.py`, `content/dag.py`, `content/task.py` | Strong direct coverage | DAG extraction, service timing, and task lifecycle are exercised directly |
 | `network/client.py`, `network/api.py`, `network/utils.py` | Good direct coverage | HTTP behavior includes management-call status/detail preservation while the existing lenient caller contract remains stable; API constants and pure address utilities are covered, and topology and ports are no longer discovered in runtime workers |
 | `solver/*` | Good direct coverage | Longest path, LCA, and intermediate node logic have dedicated tests |
@@ -124,17 +127,17 @@ For service-layer code, the most useful unit tests are not â€œdoes FastAPI workâ
 - task-lease tests should prove one Generator acquire per task, no Controller/Processor lease calls, Distributor final
   renew/persist/scenario-ack/release ordering, transient acquire failure isolation, retired-schedule refresh, atomic
   directory commit plus old-lease clamping, inactive-revision renewal rejection without a marker, immutable retirement
-  deadlines/forced revocation, task-bound reservation promotion, restart-persistent active records, and fail-closed
-  behavior without contacting Kubernetes.
+  deadlines/forced revocation, task-bound reservation promotion or cancellation when no Task materializes,
+  restart-persistent active records, and fail-closed behavior without contacting Kubernetes.
 - structured application unit tests should prove each application service can be instantiated independently, returns only
   service-specific `outputs`, and does not encode DAG membership or shared DAG schemas.
 - `monitor` unit tests should prove how monitor workers are instantiated, scheduled, joined, and posted to the scheduler API.
 - `distributor` unit tests should prove persistence ordering, incremental reads, export behavior, and scheduler forwarding without needing a full pipeline run.
 - `generator_server` unit tests should prove context parameters are collected and passed into the selected generator hook correctly.
 - `scheduler` unit tests should prove direct single-process Uvicorn startup, thread-pool-safe synchronous Redis handlers,
-  startup-policy fallback, backup offloading, scenario/resource propagation, task reservation/admission snapshots,
-  exact known-barrier reads, resource-lock passthrough, unchanged structured 4xx responses, and bounded rejection
-  logging without depending on policy-specific agents.
+  startup-policy fallback, backup offloading, scenario/resource propagation, separation of LIVE and COMMITTED
+  reservation/admission snapshots, telemetry revision filtering, exact known-barrier reads, resource-lock passthrough,
+  unchanged structured 4xx responses, and bounded rejection logging without depending on policy-specific agents.
 - package `__init__` tests should prove optional imports degrade gracefully when third-party dependencies are absent, while real core import errors still surface immediately.
 - `*_server` unit tests should prove atomic ordered queue/running snapshots, background handling, serialization, timing
   hooks, retry requeue order, and outbound request contracts.

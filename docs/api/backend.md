@@ -8,28 +8,33 @@ Implementation entrypoint: `backend/backend_server.py`
 
 ### DAG workflow
 
-`GET /dag_workflow` and `POST /dag_workflow` operate on DAG definitions with the following structure:
+`POST /dag_workflow` accepts a named DAG whose node keys, `id`, and `service_id` use the logical service id. The
+reserved `_start` list identifies every entry service; `prev` and `succ` describe the complete directed graph.
 
 ```json
 {
-  "dag_id": 1,
   "dag_name": "car-pipeline",
   "dag": {
-    "node_1": {
-      "id": "node_1",
+    "_start": ["car-detection"],
+    "car-detection": {
+      "id": "car-detection",
       "prev": [],
-      "succ": ["node_2"],
+      "succ": ["license-plate-recognition"],
       "service_id": "car-detection"
     },
-    "node_2": {
-      "id": "node_2",
-      "prev": ["node_1"],
+    "license-plate-recognition": {
+      "id": "license-plate-recognition",
+      "prev": ["car-detection"],
       "succ": [],
       "service_id": "license-plate-recognition"
     }
   }
 }
 ```
+
+Backend assigns a new `dag_id` when the workflow is added; `GET /dag_workflow` includes that id in each returned
+object. The POST endpoint does not replace an existing workflow by id or name. This control-plane shape is converted
+to the runtime Task DAG with synthetic `_start` and `_end` nodes before scheduling.
 
 ### Datasource configuration
 
@@ -79,7 +84,7 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `GET` | `/dag_workflow` | List all DAG workflows currently stored in backend memory. | None | Array of DAG workflow objects |
-| `POST` | `/dag_workflow` | Add or update a DAG workflow. | JSON body with `dag_name` and `dag` | `{state, msg}` |
+| `POST` | `/dag_workflow` | Add a DAG workflow. | JSON body with `dag_name` and `dag` | `{state, msg}` |
 | `DELETE` | `/dag_workflow` | Delete a DAG workflow by id. | JSON body with `dag_id` | `{state, msg}` |
 | `GET` | `/datasource` | List uploaded datasource configurations. | None | Array of datasource config objects |
 | `POST` | `/datasource` | Upload one or more datasource YAML config files. | `multipart/form-data` with `file` or files | `{state, msg, results}` |
