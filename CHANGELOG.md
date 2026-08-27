@@ -26,6 +26,8 @@ no longer ship the Kubernetes Python client or accept legacy discovery/cache con
   snapshot of resources, reservations, active tasks, and known task barriers (`generator`/`controller`/`scheduler`).
 - Replace queue length with an atomic structured queue-state contract covering ordered waiting identities, running
   identity, and processing/handoff phase (`processor`/`monitor`/`scheduler`).
+- Reorganize multi-file hook implementations into algorithm-owned packages with explicit `hook.py` entry points and
+  names matching their sibling single-file Hook entries. 
 
 ### Bug Fix
 

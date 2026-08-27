@@ -151,19 +151,16 @@ def test_frame_compress_package_loader_exports_only_public_symbols(monkeypatch):
     fake_simple.__all__ = ["SimpleCompress"]
     fake_simple.SimpleCompress = object()
 
-    fake_hidden = ModuleType(f"{package_name}.hidden")
+    fake_hidden = ModuleType(f"{package_name}.support")
     fake_hidden.internal = object()
 
-    monkeypatch.setattr(
-        importlib.import_module("pkgutil"),
-        "iter_modules",
-        lambda path: [(None, "simple_compress", False), (None, "hidden", False)],
-    )
+    imported = []
 
     def fake_import_module(name, package=None):
-        if name == ".simple_compress":
+        imported.append(name)
+        if name == f"{package_name}.simple_compress":
             return fake_simple
-        if name == ".hidden":
+        if name.startswith(f"{package_name}."):
             return fake_hidden
         raise AssertionError(f"unexpected import: {name}")
 
@@ -180,6 +177,12 @@ def test_frame_compress_package_loader_exports_only_public_symbols(monkeypatch):
 
     assert package_module.__all__ == ["SimpleCompress"]
     assert package_module.SimpleCompress is fake_simple.SimpleCompress
+    assert imported == [
+        f"{package_name}.adaptive_compress",
+        f"{package_name}.base_compress",
+        f"{package_name}.casva_compress",
+        f"{package_name}.simple_compress",
+    ]
 
 
 @pytest.mark.unit

@@ -14,38 +14,38 @@ pytest.importorskip(
     exc_type=ModuleNotFoundError,
 )
 
-from core.lib.algorithms.schedule_agent.hedger_agent import HedgerAgent
-from core.lib.algorithms.schedule_agent.hedger_deployment_only_agent import (
+from core.lib.algorithms.schedule_agent.hedger_agent.agent import HedgerAgent
+from core.lib.algorithms.schedule_agent.hedger_agent.deployment_only import (
     HedgerDeploymentOnlyAgent,
 )
-from core.lib.algorithms.schedule_initial_deployment_policy.hedger_flat_initial_deployment_policy import (
+from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy.flat import (
     HedgerFlatInitialDeploymentPolicy,
 )
-from core.lib.algorithms.schedule_initial_deployment_policy.hedger_deployment_only_initial_deployment_policy import (
+from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy.deployment_only import (
     HedgerDeploymentOnlyInitialDeploymentPolicy,
 )
-from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy import (
+from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy.policy import (
     HedgerInitialDeploymentPolicy,
 )
-from core.lib.algorithms.schedule_initial_deployment_policy.hedger_no_graph_encoder_initial_deployment_policy import (
+from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy.no_graph_encoder import (
     HedgerNoGraphEncoderInitialDeploymentPolicy,
 )
-from core.lib.algorithms.schedule_initial_deployment_policy.hedger_offloading_only_initial_deployment_policy import (
+from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy.offloading_only import (
     HedgerOffloadingOnlyInitialDeploymentPolicy,
 )
-from core.lib.algorithms.schedule_redeployment_policy.hedger_deployment_only_redeployment_policy import (
+from core.lib.algorithms.schedule_redeployment_policy.hedger_redeployment_policy.deployment_only import (
     HedgerDeploymentOnlyRedeploymentPolicy,
 )
-from core.lib.algorithms.schedule_redeployment_policy.hedger_flat_redeployment_policy import (
+from core.lib.algorithms.schedule_redeployment_policy.hedger_redeployment_policy.flat import (
     HedgerFlatRedeploymentPolicy,
 )
-from core.lib.algorithms.schedule_redeployment_policy.hedger_no_graph_encoder_redeployment_policy import (
+from core.lib.algorithms.schedule_redeployment_policy.hedger_redeployment_policy.no_graph_encoder import (
     HedgerNoGraphEncoderRedeploymentPolicy,
 )
-from core.lib.algorithms.schedule_redeployment_policy.hedger_redeployment_policy import (
+from core.lib.algorithms.schedule_redeployment_policy.hedger_redeployment_policy.policy import (
     HedgerRedeploymentPolicy,
 )
-from core.lib.algorithms.schedule_redeployment_policy.hedger_offloading_only_redeployment_policy import (
+from core.lib.algorithms.schedule_redeployment_policy.hedger_redeployment_policy.offloading_only import (
     HedgerOffloadingOnlyRedeploymentPolicy,
 )
 from core.lib.scheduling import SchedulingSnapshotScope

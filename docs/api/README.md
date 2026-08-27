@@ -78,6 +78,7 @@ no runtime API performs Kubernetes discovery. Scheduler extensions consume the s
 
 ## Related Documents
 
+- [`../hooks/README.md`](../hooks/README.md): registry extension API, algorithm-package discovery, and the built-in hook catalog.
 - [`../datasource/README.md`](../datasource/README.md): datasource dataset layout, manifest schema, and frame-indexing behavior shared by `http_video` and `rtsp_video`.
 - [`../operations/README.md`](../operations/README.md): install/query/uninstall lifecycle behavior around backend APIs.
 

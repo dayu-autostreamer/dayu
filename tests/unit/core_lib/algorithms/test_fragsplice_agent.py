@@ -11,30 +11,32 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-import core.lib.algorithms.schedule_agent.fragsplice_agent as fragsplice_agent_module
+import core.lib.algorithms.schedule_agent.fragsplice_agent.agent as fragsplice_agent_module
 from core.lib.common import ClassFactory, ClassType, Context
-from core.lib.algorithms.schedule_agent.fragsplice import (
+from core.lib.algorithms.schedule_agent.fragsplice_agent.latency_model import (
     FragSpliceLatencyModel,
+    FragSpliceRandomLatencyModel,
+)
+from core.lib.algorithms.schedule_agent.fragsplice_agent.optimizer import (
     FragSpliceOptimizer,
     FragSpliceRandomInputOptimizer,
-    FragSpliceRandomLatencyModel,
     FragSpliceStagewiseEFTOptimizer,
 )
-from core.lib.algorithms.schedule_agent.fragsplice.execution_state import (
+from core.lib.algorithms.schedule_agent.fragsplice_agent.execution_state import (
     FragSpliceExecutionState,
     FragSpliceRandomExecutionState,
 )
-from core.lib.algorithms.schedule_agent.fragsplice_agent import FragSpliceAgent
-from core.lib.algorithms.schedule_agent.fragsplice_cold_sample_agent import (
+from core.lib.algorithms.schedule_agent.fragsplice_agent.agent import FragSpliceAgent
+from core.lib.algorithms.schedule_agent.fragsplice_agent.cold_sample import (
     FragSpliceColdSampleAgent,
 )
-from core.lib.algorithms.schedule_agent.fragsplice_no_distribution_profiler_agent import (
+from core.lib.algorithms.schedule_agent.fragsplice_agent.no_distribution_profiler import (
     FragSpliceNoDistributionProfilerAgent,
 )
-from core.lib.algorithms.schedule_agent.fragsplice_no_plan_optimizer_agent import (
+from core.lib.algorithms.schedule_agent.fragsplice_agent.no_plan_optimizer import (
     FragSpliceNoPlanOptimizerAgent,
 )
-from core.lib.algorithms.schedule_agent.fragsplice_no_future_state_estimator_agent import (
+from core.lib.algorithms.schedule_agent.fragsplice_agent.no_future_state_estimator import (
     FragSpliceNoFutureStateEstimatorAgent,
 )
 
@@ -2010,7 +2012,7 @@ def test_whole_decision_budget_bounds_large_commitment_fallback():
 
 @pytest.mark.unit
 def test_scenario_scoring_stops_at_budget_boundary(monkeypatch):
-    import core.lib.algorithms.schedule_agent.fragsplice.optimizer as optimizer_module
+    import core.lib.algorithms.schedule_agent.fragsplice_agent.optimizer as optimizer_module
 
     original_state = optimizer_module.FragSpliceExecutionState
 

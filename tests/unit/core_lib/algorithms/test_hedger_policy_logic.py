@@ -26,7 +26,7 @@ from core.lib.algorithms.shared.hedger.hedger import HedgerRecordCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerDeploymentDefaultWarmupCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerDeploymentOfflineRLCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerLatencyGuardCfg
-from core.lib.algorithms.schedule_agent.hedger_agent import HedgerAgent
+from core.lib.algorithms.schedule_agent.hedger_agent.agent import HedgerAgent
 from core.lib.algorithms.shared.hedger.hedger_config import (
     DeploymentConstraintCfg,
     LogicalTopology,
@@ -41,7 +41,7 @@ from core.lib.algorithms.shared.hedger.ppo_agent import (
 )
 from core.lib.algorithms.shared.hedger.state_buffer import BufferWaitCfg, StateBuffer
 from core.lib.algorithms.shared.hedger.utils import compute_returns_advantages
-from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy import (
+from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy.policy import (
     HedgerInitialDeploymentPolicy,
 )
 from core.lib.content.task import Task

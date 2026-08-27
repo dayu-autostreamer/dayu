@@ -22,8 +22,12 @@ config_fc_module = importlib.import_module("core.lib.algorithms.schedule_config_
 config_chameleon_module = importlib.import_module("core.lib.algorithms.schedule_config_extraction.chameleon_config_extraction")
 config_casva_module = importlib.import_module("core.lib.algorithms.schedule_config_extraction.casva_config_extraction")
 config_hedger_module = importlib.import_module("core.lib.algorithms.schedule_config_extraction.hedger_config_extraction")
-config_hei_module = importlib.import_module("core.lib.algorithms.schedule_config_extraction.hei_config_extraction")
-config_hei_drl_module = importlib.import_module("core.lib.algorithms.schedule_config_extraction.hei_drl_config_extraction")
+config_hei_module = importlib.import_module(
+    "core.lib.algorithms.schedule_config_extraction.hei_config_extraction.standard"
+)
+config_hei_drl_module = importlib.import_module(
+    "core.lib.algorithms.schedule_config_extraction.hei_config_extraction.drl"
+)
 base_policy_retrieval_module = importlib.import_module(
     "core.lib.algorithms.schedule_policy_retrieval.base_policy_extraction"
 )

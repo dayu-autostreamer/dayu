@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from core.lib.algorithms.schedule_agent.distream_agent import DistreamAgent
-from core.lib.algorithms.schedule_agent.dtodrl_agent import DTODRLAgent
+from core.lib.algorithms.schedule_agent.dtodrl_agent.hook import DTODRLAgent
 from core.lib.algorithms.schedule_agent.ibdash_agent import IBDASHAgent
 from core.lib.common import ClassFactory, ClassType, Context
 from core.lib.scheduling import SchedulingSnapshotScope
@@ -204,7 +204,11 @@ def test_baseline_hooks_are_registered():
 @pytest.mark.unit
 def test_baseline_agents_do_not_depend_on_fragsplice_implementation():
     root = Path(__file__).resolve().parents[4]
-    for filename in ("ibdash_agent.py", "distream_agent.py", "dtodrl_agent.py"):
+    for relative_path in (
+        "ibdash_agent.py",
+        "distream_agent.py",
+        "dtodrl_agent/hook.py",
+    ):
         source = (
             root
             / "dependency"
@@ -212,7 +216,7 @@ def test_baseline_agents_do_not_depend_on_fragsplice_implementation():
             / "lib"
             / "algorithms"
             / "schedule_agent"
-            / filename
+            / relative_path
         ).read_text(encoding="utf-8")
         assert "fragsplice" not in source.lower()
 
@@ -406,7 +410,7 @@ def test_dtodrl_train_then_inference_uses_same_full_plan_action_space(
         exc_type=ModuleNotFoundError,
     )
     policy_module = importlib.import_module(
-        "core.lib.algorithms.schedule_agent.dtodrl.policy"
+        "core.lib.algorithms.schedule_agent.dtodrl_agent.policy"
     )
     # Thread-pool sizing is process-global and orthogonal to this checkpoint
     # compatibility test.  Some supported PyTorch builds abort, rather than
@@ -487,7 +491,7 @@ def test_dtodrl_loads_legacy_weights_across_equivalent_video_configuration(
         exc_type=ModuleNotFoundError,
     )
     policy_module = importlib.import_module(
-        "core.lib.algorithms.schedule_agent.dtodrl.policy"
+        "core.lib.algorithms.schedule_agent.dtodrl_agent.policy"
     )
     monkeypatch.setattr(policy_module.torch, "set_num_threads", lambda count: None)
     monkeypatch.setattr(

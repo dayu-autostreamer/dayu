@@ -53,7 +53,7 @@ deepva_redeployment_module = importlib.import_module(
     "core.lib.algorithms.schedule_redeployment_policy.deepva_redeployment_policy"
 )
 integrated_predictor_module = importlib.import_module(
-    "core.lib.algorithms.schedule_agent.steady.integrated_safe_predictor"
+    "core.lib.algorithms.schedule_agent.steady_agent.integrated_safe_predictor"
 )
 selection_base_module = importlib.import_module(
     "core.lib.algorithms.schedule_selection_policy.base_selection_policy"
