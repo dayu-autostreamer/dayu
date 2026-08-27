@@ -1,3 +1,4 @@
+import inspect
 import math
 from collections import deque
 import threading
@@ -5,9 +6,15 @@ import types
 
 import pytest
 
-torch = pytest.importorskip("torch")
+pytestmark = pytest.mark.ml
+torch = pytest.importorskip(
+    "torch",
+    reason="Hedger policy tests require the real PyTorch runtime",
+    exc_type=ModuleNotFoundError,
+)
 
 from core.lib.common import TaskConstant
+from core.lib.runtime import RuntimeContext
 from core.lib.algorithms.shared.hedger.hedger import Hedger
 from core.lib.algorithms.shared.hedger.hedger import HedgerCheckpointLoadCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingStageCfg
@@ -17,8 +24,9 @@ from core.lib.algorithms.shared.hedger.hedger import HedgerTrainingCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerInferenceCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerRecordCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerDeploymentDefaultWarmupCfg
+from core.lib.algorithms.shared.hedger.hedger import HedgerDeploymentOfflineRLCfg
 from core.lib.algorithms.shared.hedger.hedger import HedgerLatencyGuardCfg
-from core.lib.algorithms.schedule_agent.hedger_agent import HedgerAgent
+from core.lib.algorithms.schedule_agent.hedger_agent.agent import HedgerAgent
 from core.lib.algorithms.shared.hedger.hedger_config import (
     DeploymentConstraintCfg,
     LogicalTopology,
@@ -33,7 +41,7 @@ from core.lib.algorithms.shared.hedger.ppo_agent import (
 )
 from core.lib.algorithms.shared.hedger.state_buffer import BufferWaitCfg, StateBuffer
 from core.lib.algorithms.shared.hedger.utils import compute_returns_advantages
-from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy import (
+from core.lib.algorithms.schedule_initial_deployment_policy.hedger_initial_deployment_policy.policy import (
     HedgerInitialDeploymentPolicy,
 )
 from core.lib.content.task import Task
@@ -126,8 +134,13 @@ def build_checkpoint_cfg(root_dir: str, *, load=None, save=None) -> HedgerCheckp
 @pytest.fixture(autouse=True)
 def hedger_test_runtime(monkeypatch):
     monkeypatch.setattr(
-        "core.lib.algorithms.shared.hedger.hedger_config.NodeInfo.get_cloud_node",
-        staticmethod(lambda: "cloud.kubeedge"),
+        RuntimeContext,
+        "get_default",
+        staticmethod(lambda: RuntimeContext({
+            "local_node": "cloud.kubeedge",
+            "cloud_node": "cloud.kubeedge",
+            "nodes": {"cloud.kubeedge": {"role": "cloud"}},
+        })),
     )
     monkeypatch.setattr(
         "core.lib.algorithms.shared.hedger.hedger.Context.get_file_path",
@@ -176,6 +189,56 @@ def test_from_partial_dict_ignores_removed_hedger_constraint_keys():
     assert not hasattr(dep_cfg, "cloud_sticky")
     assert not hasattr(dep_cfg, "use_monotone_metric")
     assert not hasattr(dep_cfg, "metric_non_decreasing")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("update_encoder", [False, True])
+def test_register_deployment_agent_honors_encoder_update_setting(update_encoder):
+    hedger = Hedger.__new__(Hedger)
+    hedger.deployment_agent = None
+    hedger.shared_topology_encoder = torch.nn.Linear(8, 8)
+    hedger.encoder_cfg = types.SimpleNamespace(embedding_dim=8)
+    hedger.deployment_agent_params = {
+        "actor_lr": 3e-4,
+        "critic_lr": 1e-3,
+        "gamma": 0.99,
+        "lamda": 0.95,
+        "clip_eps": 0.2,
+        "update_encoder": update_encoder,
+    }
+    hedger.physical_topology = None
+    hedger.device = torch.device("cpu")
+    hedger._sync_agent_topology_bindings = lambda: None
+
+    hedger.register_deployment_agent()
+
+    encoder_param_ids = {id(param) for param in hedger.shared_topology_encoder.parameters()}
+    actor_param_ids = {id(param) for param in hedger.deployment_agent._actor_train_params}
+    assert hedger.deployment_agent._update_encoder is update_encoder
+    assert bool(encoder_param_ids & actor_param_ids) is update_encoder
+    assert hedger.deployment_agent_params["update_encoder"] is update_encoder
+
+
+@pytest.mark.unit
+def test_deployment_offline_update_kwargs_forward_every_update_option():
+    hedger = Hedger.__new__(Hedger)
+    hedger.training_cfg = types.SimpleNamespace(
+        deployment_offline_rl=HedgerDeploymentOfflineRLCfg(
+            projection_edge_coverage_coef=0.73,
+            last_edge_removed_coef=0.61,
+        )
+    )
+
+    kwargs = hedger._deployment_offline_update_kwargs()
+    expected = set(inspect.signature(HedgerDeploymentPPO.offline_update).parameters) - {
+        "self",
+        "transitions",
+        "batch_size",
+    }
+
+    assert set(kwargs) == expected
+    assert kwargs["projection_edge_coverage_coef"] == pytest.approx(0.73)
+    assert kwargs["last_edge_removed_coef"] == pytest.approx(0.61)
 
 
 @pytest.mark.unit
@@ -903,7 +966,7 @@ def test_build_training_stage_cfg_accepts_only_explicit_stage_names():
     hedger = Hedger.__new__(Hedger)
 
     warmup = hedger._build_training_stage_cfg("offloading_warmup")
-    adaptation = hedger._build_training_stage_cfg("deployment_online")
+    stage_cfg = hedger._build_training_stage_cfg("deployment_online")
     finetune = hedger._build_training_stage_cfg("joint_finetune")
 
     assert warmup == HedgerTrainingStageCfg(
@@ -916,7 +979,7 @@ def test_build_training_stage_cfg_accepts_only_explicit_stage_names():
     )
     with pytest.raises(ValueError):
         hedger._build_training_stage_cfg("stage1")
-    assert adaptation == HedgerTrainingStageCfg(
+    assert stage_cfg == HedgerTrainingStageCfg(
         name="deployment_online",
         run_deployment_worker=True,
         update_deployment_policy=True,
@@ -1449,7 +1512,7 @@ def test_hedger_agent_extract_task_complexity_ignores_non_obj_num_fields():
 
 
 @pytest.mark.unit
-def test_hedger_agent_get_schedule_plan_tolerates_missing_default_mappings(monkeypatch):
+def test_hedger_agent_get_schedule_plan_uses_live_routes_without_default_mappings():
     dag = {
         "svc-a": {"service": {"service_name": "svc-a"}, "next_nodes": ["svc-b"]},
         "svc-b": {"service": {"service_name": "svc-b"}, "next_nodes": []},
@@ -1467,10 +1530,12 @@ def test_hedger_agent_get_schedule_plan_tolerates_missing_default_mappings(monke
     agent.default_configuration = None
     agent.default_offloading = None
     agent.hedger = hedger
-
-    monkeypatch.setattr(
-        "core.lib.algorithms.schedule_agent.hedger_agent.KubeConfig.get_service_nodes_dict",
-        lambda: {"svc-a": {}, "svc-b": {}},
+    agent.system = types.SimpleNamespace(
+        get_scheduling_snapshot=lambda scope: {
+            "runtime_directory_revision": 1,
+            "deployment": {"svc-a": ["cloud-x"], "svc-b": ["cloud-x"]},
+            "resource_runtime_revision": {},
+        }
     )
 
     policy = agent.get_schedule_plan(
@@ -1488,7 +1553,7 @@ def test_hedger_agent_get_schedule_plan_tolerates_missing_default_mappings(monke
 
 
 @pytest.mark.unit
-def test_hedger_agent_get_schedule_plan_forces_default_offloading_during_latency_guard(monkeypatch):
+def test_hedger_agent_get_schedule_plan_forces_default_offloading_during_latency_guard():
     dag = {
         "svc-a": {"service": {"service_name": "svc-a"}, "next_nodes": ["svc-b"]},
         "svc-b": {"service": {"service_name": "svc-b"}, "next_nodes": []},
@@ -1507,10 +1572,12 @@ def test_hedger_agent_get_schedule_plan_forces_default_offloading_during_latency
     agent.default_configuration = None
     agent.default_offloading = {"svc-a": "edge-a", "svc-b": "edge-a"}
     agent.hedger = hedger
-
-    monkeypatch.setattr(
-        "core.lib.algorithms.schedule_agent.hedger_agent.KubeConfig.get_service_nodes_dict",
-        lambda: {"svc-a": {}, "svc-b": {}},
+    agent.system = types.SimpleNamespace(
+        get_scheduling_snapshot=lambda scope: {
+            "runtime_directory_revision": 1,
+            "deployment": {"svc-a": ["edge-a"], "svc-b": ["edge-a"]},
+            "resource_runtime_revision": {},
+        }
     )
 
     policy = agent.get_schedule_plan(
@@ -1557,6 +1624,13 @@ def test_hedger_agent_update_resource_tolerates_partial_resource_updates():
     )
     agent = HedgerAgent.__new__(HedgerAgent)
     agent.hedger = types.SimpleNamespace(state_buffer=buffer)
+    agent.system = types.SimpleNamespace(
+        get_scheduling_snapshot=lambda scope: {
+            "runtime_directory_revision": 0,
+            "deployment": {},
+            "resource_runtime_revision": {},
+        }
+    )
 
     agent.update_resource(
         "edge-a",
@@ -1860,9 +1934,13 @@ def test_state_buffer_bandwidth_model_is_device_agnostic():
 
 
 @pytest.mark.unit
-def test_initial_deployment_policy_accepts_single_node_strings():
+def test_initial_deployment_policy_rejects_single_node_strings():
     policy = HedgerInitialDeploymentPolicy.__new__(HedgerInitialDeploymentPolicy)
-    policy.default_deployment = {"svc-a": "edge-a"}
+    policy.system = types.SimpleNamespace(cloud_device="cloud.kubeedge")
+    policy.default_deployment = {
+        "svc-a": "edge-a",
+        "svc-b": ["edge-b"],
+    }
     policy.hedger = types.SimpleNamespace(
         register_logical_topology=lambda dag: None,
         register_physical_topology=lambda edge_nodes, source_device: None,
@@ -1871,19 +1949,17 @@ def test_initial_deployment_policy_accepts_single_node_strings():
         get_initial_deployment_plan=lambda: {"svc-a": "edge-a"},
     )
 
-    deploy_plan = policy(
-        {
-            "source": {"id": 1, "source_device": "edge-a"},
-            "dag": {
-                "svc-a": {"service": {"service_name": "svc-a"}, "next_nodes": []},
-                "svc-b": {"service": {"service_name": "svc-b"}, "next_nodes": []},
-            },
-            "node_set": ["edge-a", "edge-b"],
-        }
-    )
-
-    assert deploy_plan["svc-a"] == ["edge-a"]
-    assert deploy_plan["svc-b"] == ["edge-a", "edge-b"]
+    with pytest.raises(ValueError, match="JSON node list"):
+        policy(
+            {
+                "source": {"id": 1, "source_device": "edge-a"},
+                "dag": {
+                    "svc-a": {"service": {"service_name": "svc-a"}, "next_nodes": []},
+                    "svc-b": {"service": {"service_name": "svc-b"}, "next_nodes": []},
+                },
+                "node_set": ["edge-a", "edge-b"],
+            }
+        )
 
 
 @pytest.mark.unit

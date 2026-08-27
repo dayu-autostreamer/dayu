@@ -1,14 +1,17 @@
 import asyncio
+import concurrent.futures
 import gzip
 import importlib
 import json
 import sqlite3
+import threading
 from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks
 
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext, RuntimeLeaseUnavailable
 
 
 distributor_module = importlib.import_module("core.distributor.distributor")
@@ -32,6 +35,7 @@ def build_task(source_id=1, task_id=1, file_path="payload.bin"):
         metadata={"buffer_size": 1},
         raw_metadata={"buffer_size": 1},
         file_path=file_path,
+        runtime_directory_revision=1,
     )
 
 
@@ -81,36 +85,91 @@ def distributor_instance(monkeypatch, tmp_path):
     ))
     monkeypatch.setattr(distributor_module, "datetime", FakeDateTime)
     monkeypatch.setattr(distributor_module.Context, "get_parameter", staticmethod(fake_get_parameter))
-    monkeypatch.setattr(distributor_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(distributor_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.8"))
-    monkeypatch.setattr(distributor_module.PortInfo, "get_component_port", staticmethod(lambda component: 9001))
+    runtime_context = RuntimeContext({
+        "cloud_node": "cloud-node",
+        "endpoints": {
+            "scheduler": {
+                "component": "scheduler",
+                "target_node": "cloud-node",
+                "fqdn": "scheduler-cloud.dayu.svc.cluster.local",
+                "port": 9001,
+            }
+        },
+    })
+    monkeypatch.setattr(
+        distributor_module.RuntimeContext,
+        "get_default",
+        staticmethod(lambda: runtime_context),
+    )
     monkeypatch.setattr(distributor_module.Distributor, "record_total_end_ts", staticmethod(lambda task: None))
 
     requests = []
-    monkeypatch.setattr(
-        distributor_module,
-        "http_request",
-        lambda url, method=None, **kwargs: requests.append((url, method, kwargs)),
-    )
+    def fake_http_request(url, method=None, **kwargs):
+        requests.append((url, method, kwargs))
+        if url.endswith("/runtime-directory/task-leases"):
+            payload = json.loads(kwargs["data"]["data"])
+            if method == "PUT":
+                return {
+                    "revision": payload["revision"],
+                    "root_uuid": payload["root_uuid"],
+                    "expires_at": 1000.0,
+                    "valid_for_seconds": payload["ttl_seconds"],
+                }
+            return {
+                "revision": payload["revision"],
+                "root_uuid": payload["root_uuid"],
+                "released": True,
+            }
+        return {"accepted": True}
+
+    monkeypatch.setattr(distributor_module, "http_request", fake_http_request)
 
     distributor = distributor_module.Distributor()
     return SimpleNamespace(instance=distributor, db_path=db_path, requests=requests)
 
 
 @pytest.mark.unit
+def test_distributor_database_initialization_is_safe_across_workers(tmp_path):
+    db_path = tmp_path / "concurrent-records.db"
+    worker_count = 8
+    gate = threading.Barrier(worker_count)
+
+    def initialize():
+        distributor = object.__new__(distributor_module.Distributor)
+        distributor.record_path = str(db_path)
+        gate.wait(timeout=5)
+        distributor._init_db()
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=worker_count
+    ) as executor:
+        futures = [executor.submit(initialize) for _ in range(worker_count)]
+        for future in futures:
+            future.result(timeout=30)
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "records" in tables
+
+
+@pytest.mark.unit
 def test_distributor_persists_queries_prunes_and_handles_duplicate_task(distributor_instance, monkeypatch):
     distributor = distributor_instance.instance
-    warnings = []
-    monkeypatch.setattr(distributor_module.LOGGER, "warning", lambda message: warnings.append(message))
 
     task1 = build_task(task_id=1)
     task2 = build_task(task_id=2)
     task3 = build_task(task_id=3)
 
-    distributor.save_task_record(task1)
-    distributor.save_task_record(task2)
-    distributor.save_task_record(task3)
-    distributor.save_task_record(task3)
+    assert distributor.save_task_record(task1) is True
+    assert distributor.save_task_record(task2) is True
+    assert distributor.save_task_record(task3) is True
+    assert distributor.save_task_record(task3) is False
 
     all_results = distributor.query_all_result()
     loaded = [Task.deserialize(payload) for payload in all_results["result"]]
@@ -121,7 +180,19 @@ def test_distributor_persists_queries_prunes_and_handles_duplicate_task(distribu
     assert distributor.query_result(time_ticket=25, size=0)["size"] == 1
     assert distributor.query_results_by_time(15, 35)["size"] == 2
     assert distributor.query_results_by_time(15, 35, source_id=1)["size"] == 2
-    assert any("already exists" in message for message in warnings)
+
+
+@pytest.mark.unit
+def test_distributor_duplicate_delivery_is_acknowledged_without_repeating_side_effects(distributor_instance):
+    distributor = distributor_instance.instance
+    task = build_task(task_id=5)
+
+    assert distributor.distribute_data(task) is True
+    request_count = len(distributor_instance.requests)
+    assert distributor.distribute_data(Task.deserialize(task.serialize())) is True
+
+    assert len(distributor_instance.requests) == request_count
+    assert distributor.query_all_result()["size"] == 1
 
 
 @pytest.mark.unit
@@ -160,17 +231,36 @@ def test_distributor_records_transmit_time_and_forwards_scenario(distributor_ins
     )
 
     distributor.record_transmit_ts(task)
-    distributor.distribute_data(task)
+    assert distributor.distribute_data(task) is True
 
     assert durations == [(True, "transmit")]
     assert task.get_service("detector").get_transmit_time() == 0.25
-    assert distributor_instance.requests == [
-        (
-            "http://10.0.0.8:9001/scenario",
-            "POST",
-            {"data": {"data": task.serialize()}},
-        )
-    ]
+    renew_url, renew_method, renew_kwargs = distributor_instance.requests[0]
+    assert renew_url.endswith("/runtime-directory/task-leases")
+    assert renew_method == "PUT"
+    assert json.loads(renew_kwargs["data"]["data"]) == {
+        "revision": 1,
+        "root_uuid": task.get_root_uuid(),
+        "ttl_seconds": distributor.runtime_lease_client.ttl_seconds,
+    }
+    assert distributor_instance.requests[1] == (
+        "http://scheduler-cloud.dayu.svc.cluster.local.:9001/scenario",
+        "POST",
+        {
+            "timeout": distributor._SCHEDULER_REQUEST_TIMEOUT_SECONDS,
+            "data": {"data": task.serialize()},
+        },
+    )
+    release_url, release_method, release_kwargs = distributor_instance.requests[2]
+    assert release_url == (
+        "http://scheduler-cloud.dayu.svc.cluster.local.:9001"
+        "/runtime-directory/task-leases"
+    )
+    assert release_method == "DELETE"
+    assert json.loads(release_kwargs["data"]["data"]) == {
+        "revision": 1,
+        "root_uuid": task.get_root_uuid(),
+    }
 
 
 @pytest.mark.unit
@@ -198,7 +288,7 @@ def test_distributor_handles_empty_queries_scheduler_failures_and_export_cleanup
     assert distributor.query_all_result() == {"result": [], "size": 0}
 
     task = build_task(task_id=11)
-    distributor.distribute_data(task)
+    assert distributor.distribute_data(task) is True
 
     assert any("Send scenario to scheduler failed" in message for message in warnings)
     assert exceptions == ["scheduler unavailable"]
@@ -221,6 +311,68 @@ def test_distributor_handles_empty_queries_scheduler_failures_and_export_cleanup
         distributor.create_result_log_export_file()
 
     assert removed_paths == [str(export_path), str(snapshot_path)]
+
+
+@pytest.mark.unit
+def test_distributor_keeps_lease_until_ttl_when_release_is_not_confirmed(
+    distributor_instance, monkeypatch
+):
+    distributor = distributor_instance.instance
+    warnings = []
+
+    class FailedLeaseClient:
+        def renew(self, task):
+            return None
+
+        def release(self, task):
+            raise RuntimeLeaseUnavailable("scheduler unavailable")
+
+    distributor.runtime_lease_client = FailedLeaseClient()
+    monkeypatch.setattr(
+        distributor_module.LOGGER,
+        "warning",
+        lambda message: warnings.append(message),
+    )
+
+    task = build_task(task_id=12)
+    assert distributor.distribute_data(task) is True
+
+    assert distributor.query_all_result()["size"] == 1
+    assert any("retain until TTL" in message for message in warnings)
+
+
+@pytest.mark.unit
+def test_distributor_drops_result_when_retired_lease_cannot_be_renewed(
+    distributor_instance, monkeypatch
+):
+    distributor = distributor_instance.instance
+    warnings = []
+
+    class RetiredLeaseClient:
+        def renew(self, task):
+            raise RuntimeLeaseUnavailable("revision retired")
+
+        def release(self, task):
+            raise AssertionError("a rejected result must not release a lease")
+
+    distributor.runtime_lease_client = RetiredLeaseClient()
+    monkeypatch.setattr(
+        distributor_module.LOGGER,
+        "warning",
+        lambda message: warnings.append(message),
+    )
+    monkeypatch.setattr(
+        distributor,
+        "send_scenario_to_scheduler",
+        lambda task: (_ for _ in ()).throw(
+            AssertionError("a rejected result must not reach Scheduler")
+        ),
+    )
+
+    assert distributor.distribute_data(build_task(task_id=13)) is False
+
+    assert distributor.query_all_result()["size"] == 0
+    assert any("Drop unowned result before persistence" in message for message in warnings)
 
 
 @pytest.mark.unit
@@ -266,6 +418,7 @@ def test_distributor_server_covers_background_queries_download_and_export(monkey
 
         def distribute_data(self, task):
             calls.append(("distribute", task.get_task_id()))
+            return True
 
         def query_result(self, time_ticket, size):
             return {"time_ticket": time_ticket, "size": size, "result": ["ok"]}
@@ -295,9 +448,15 @@ def test_distributor_server_covers_background_queries_download_and_export(monkey
 
     server = distributor_server_module.DistributorServer()
     task = build_task(task_id=8, file_path="dist.bin")
-    server.distribute_data_background(task.serialize(), b"payload")
+    assert server.accept_result(task.serialize(), b"payload") == {
+        "accepted": True,
+        "task_uuid": task.get_task_uuid(),
+    }
     hidden_task = build_task(task_id=9, file_path="hidden.bin")
-    server.distribute_data_background(hidden_task.serialize(), b"")
+    assert server.accept_result(hidden_task.serialize(), b"") == {
+        "accepted": True,
+        "task_uuid": hidden_task.get_task_uuid(),
+    }
 
     assert saved == [("dist.bin", b"payload")]
     assert calls[:4] == [("record", 8), ("distribute", 8), ("record", 9), ("distribute", 9)]

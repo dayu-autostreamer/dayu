@@ -1,52 +1,259 @@
 import importlib
-from types import SimpleNamespace
+import threading
 
 import pytest
 
 
 client_module = importlib.import_module("core.lib.network.client")
-node_module = importlib.import_module("core.lib.network.node")
 utils_module = importlib.import_module("core.lib.network.utils")
 
-NodeInfo = node_module.NodeInfo
 http_request = client_module.http_request
+connection_host = utils_module.connection_host
 find_all_ips = utils_module.find_all_ips
 merge_address = utils_module.merge_address
 
 
-@pytest.fixture(autouse=True)
-def reset_node_cache():
-    NodeInfo._NodeInfo__node_info_hostname = None
-    NodeInfo._NodeInfo__node_info_ip = None
-    NodeInfo._NodeInfo__node_info_role = None
-    yield
-    NodeInfo._NodeInfo__node_info_hostname = None
-    NodeInfo._NodeInfo__node_info_ip = None
-    NodeInfo._NodeInfo__node_info_role = None
+class FakeResponse:
+    def __init__(self, status_code, payload=None, content=b"", text="", reason=None):
+        self.status_code = status_code
+        self._payload = payload
+        self.content = content
+        self.text = text
+        self.reason = reason
+        self.url = "http://scheduler"
+
+    def json(self):
+        return self._payload
 
 
 @pytest.mark.unit
 def test_http_request_handles_http_error_request_error_and_generic_error(monkeypatch):
     monkeypatch.setattr(
-        client_module.requests,
-        "request",
+        client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(client_module.requests.exceptions.HTTPError("bad-request")),
     )
     assert http_request("http://scheduler") is None
 
     monkeypatch.setattr(
-        client_module.requests,
-        "request",
+        client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(client_module.requests.exceptions.RequestException("broken")),
     )
     assert http_request("http://scheduler") is None
 
     monkeypatch.setattr(
-        client_module.requests,
-        "request",
+        client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("unexpected")),
     )
     assert http_request("http://scheduler") is None
+
+
+@pytest.mark.unit
+def test_http_request_cooperative_cancellation_skips_attempts_and_retry_backoff(monkeypatch):
+    request_calls = []
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: request_calls.append(kwargs) or FakeResponse(503),
+    )
+
+    cancelled = threading.Event()
+    cancelled.set()
+    assert http_request("http://scheduler", retry=3, cancel_event=cancelled) is None
+    assert request_calls == []
+
+    class CancelDuringBackoff:
+        def __init__(self):
+            self.cancelled = False
+            self.waits = []
+
+        def is_set(self):
+            return self.cancelled
+
+        def wait(self, timeout):
+            self.waits.append(timeout)
+            self.cancelled = True
+            return True
+
+    token = CancelDuringBackoff()
+    assert http_request(
+        "http://scheduler",
+        retry=3,
+        retry_interval=0.25,
+        cancel_event=token,
+    ) is None
+    assert len(request_calls) == 1
+    assert token.waits == [0.25]
+
+
+@pytest.mark.unit
+def test_http_request_without_cancellation_token_keeps_existing_contract(monkeypatch):
+    request_calls = []
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: request_calls.append(kwargs) or FakeResponse(
+            200, {"ok": True},
+        ),
+    )
+
+    assert http_request("http://scheduler") == {"ok": True}
+    assert len(request_calls) == 1
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_preserves_fastapi_error_detail(monkeypatch):
+    request_calls = []
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: request_calls.append(kwargs) or FakeResponse(
+            422,
+            {
+                "detail": (
+                    "deployment policy for service 'vehicle-trajectory-prediction' "
+                    "selected non-candidate nodes: ['edgexn32']"
+                )
+            },
+        ),
+    )
+
+    with pytest.raises(client_module.HTTPClientError) as exc_info:
+        client_module.http_request_or_raise(
+            "http://scheduler/initial_deployment",
+            method="post",
+            retry=3,
+        )
+
+    error = exc_info.value
+    assert error.method == "POST"
+    assert error.url == "http://scheduler/initial_deployment"
+    assert error.status_code == 422
+    assert error.detail == (
+        "deployment policy for service 'vehicle-trajectory-prediction' "
+        "selected non-candidate nodes: ['edgexn32']"
+    )
+    assert "HTTP 422" in str(error)
+    assert len(request_calls) == 1
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_sanitizes_structured_validation_detail(monkeypatch):
+    validation_error = {
+        "type": "missing",
+        "loc": ["body", "node_set"],
+        "msg": "Field required",
+        "input": "x" * 4096,
+    }
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: FakeResponse(422, {"detail": [validation_error]}),
+    )
+
+    with pytest.raises(client_module.HTTPClientError) as exc_info:
+        client_module.http_request_or_raise("http://scheduler/initial_deployment")
+
+    detail = exc_info.value.detail
+    assert '"loc":["body","node_set"]' in detail
+    assert '"msg":"Field required"' in detail
+    assert '"type":"missing"' in detail
+    assert '"input"' not in detail
+    assert "x" * 32 not in detail
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_bounds_unstructured_error_detail(monkeypatch):
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: FakeResponse(422, {"detail": "x" * 4096}),
+    )
+
+    with pytest.raises(client_module.HTTPClientError) as exc_info:
+        client_module.http_request_or_raise("http://scheduler/initial_deployment")
+
+    assert len(exc_info.value.detail) == client_module._MAX_ERROR_DETAIL_LENGTH
+    assert exc_info.value.detail.endswith("...")
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_retains_last_transient_failure(monkeypatch):
+    responses = iter([
+        FakeResponse(503, {"detail": "scheduler is starting"}),
+        FakeResponse(503, {"detail": "scheduler policy is unavailable"}),
+    ])
+    request_calls = []
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: request_calls.append(kwargs) or next(responses),
+    )
+
+    with pytest.raises(client_module.HTTPClientError) as exc_info:
+        client_module.http_request_or_raise("http://scheduler", retry=2)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "scheduler policy is unavailable"
+    assert len(request_calls) == 2
+
+
+@pytest.mark.unit
+def test_http_request_or_raise_keeps_cooperative_cancellation_semantics(monkeypatch):
+    request_calls = []
+    monkeypatch.setattr(
+        client_module,
+        "_request",
+        lambda **kwargs: request_calls.append(kwargs) or FakeResponse(200, {"ok": True}),
+    )
+    cancelled = threading.Event()
+    cancelled.set()
+
+    assert client_module.http_request_or_raise(
+        "http://scheduler",
+        retry=3,
+        cancel_event=cancelled,
+    ) is None
+    assert request_calls == []
+
+
+@pytest.mark.unit
+def test_http_request_reuses_one_session_per_process_thread(monkeypatch):
+    created_sessions = []
+    closed_sessions = []
+
+    class FakeSession:
+        def close(self):
+            closed_sessions.append(self)
+
+    def create_session():
+        session = FakeSession()
+        created_sessions.append(session)
+        return session
+
+    monkeypatch.setattr(client_module.requests, "Session", create_session)
+    monkeypatch.setattr(client_module, "_HTTP_SESSION_LOCAL", threading.local())
+
+    first = client_module._get_http_session()
+    second = client_module._get_http_session()
+    other_thread_sessions = []
+    thread = threading.Thread(
+        target=lambda: other_thread_sessions.append(client_module._get_http_session())
+    )
+    thread.start()
+    thread.join()
+
+    assert first is second
+    assert other_thread_sessions[0] is not first
+    assert created_sessions == [first, other_thread_sessions[0]]
+
+    monkeypatch.setattr(client_module.os, "getpid", lambda: 999999)
+    after_fork = client_module._get_http_session()
+
+    assert after_fork is not first
+    assert closed_sessions == [first]
 
 
 @pytest.mark.unit
@@ -58,142 +265,14 @@ def test_network_utils_merge_address_and_find_all_ips_cover_optional_path_and_mu
 
 
 @pytest.mark.unit
-def test_node_info_reports_lookup_errors_and_missing_cluster_state(monkeypatch):
-    NodeInfo._NodeInfo__node_info_hostname = {"edge-a": "10.0.0.2"}
-    NodeInfo._NodeInfo__node_info_ip = {"10.0.0.2": "edge-a"}
-    NodeInfo._NodeInfo__node_info_role = {"edge-a": "edge"}
-
-    with pytest.raises(AssertionError, match='Hostname "cloud-a" not exists'):
-        NodeInfo.hostname2ip("cloud-a")
-
-    with pytest.raises(AssertionError, match='Ip "10.0.0.9" not exists'):
-        NodeInfo.ip2hostname("10.0.0.9")
-
-    with pytest.raises(AssertionError, match='contains none or more than one legal ip'):
-        NodeInfo.url2hostname("http://no-ip-here")
-
-    with pytest.raises(AssertionError, match='Hostname "cloud-a" not exists'):
-        NodeInfo.get_node_role("cloud-a")
-
-    with pytest.raises(Exception, match="No cloud node identified"):
-        NodeInfo.get_cloud_node()
-
-    monkeypatch.setattr(node_module.Context, "get_parameter", staticmethod(lambda key: None))
-    with pytest.raises(AssertionError, match='Node Config is not found'):
-        NodeInfo.get_local_device()
-
-
-@pytest.mark.unit
-def test_node_info_extracts_cluster_metadata_and_validates_non_empty_nodes(monkeypatch):
-    nodes = [
-        SimpleNamespace(
-            metadata=SimpleNamespace(
-                name="cloud-a",
-                labels={"node-role.kubernetes.io/control-plane": ""},
-            ),
-            status=SimpleNamespace(
-                addresses=[SimpleNamespace(type="InternalIP", address="10.0.0.1")]
-            ),
-        ),
-        SimpleNamespace(
-            metadata=SimpleNamespace(
-                name="edge-a",
-                labels={"node-role.kubernetes.io/edge": ""},
-            ),
-            status=SimpleNamespace(
-                addresses=[SimpleNamespace(type="InternalIP", address="10.0.0.2")]
-            ),
-        ),
-    ]
-
-    monkeypatch.setattr(node_module.config, "load_incluster_config", lambda: None)
-    monkeypatch.setattr(
-        node_module.client,
-        "CoreV1Api",
-        lambda: SimpleNamespace(list_node=lambda: SimpleNamespace(items=nodes)),
-    )
-
-    hostname_map, reverse_map, role_map = NodeInfo._NodeInfo__extract_node_info()
-
-    assert hostname_map == {"cloud-a": "10.0.0.1", "edge-a": "10.0.0.2"}
-    assert reverse_map == {"10.0.0.1": "cloud-a", "10.0.0.2": "edge-a"}
-    assert role_map == {"cloud-a": "cloud", "edge-a": "edge"}
-
-    monkeypatch.setattr(
-        node_module.client,
-        "CoreV1Api",
-        lambda: SimpleNamespace(list_node=lambda: SimpleNamespace(items=[])),
-    )
-    with pytest.raises(AssertionError, match="Invalid node config"):
-        NodeInfo._NodeInfo__extract_node_info()
-
-
-@pytest.mark.unit
-def test_node_info_still_recognizes_legacy_master_label(monkeypatch):
-    nodes = [
-        SimpleNamespace(
-            metadata=SimpleNamespace(
-                name="cloud-a",
-                labels={"node-role.kubernetes.io/master": ""},
-            ),
-            status=SimpleNamespace(
-                addresses=[SimpleNamespace(type="InternalIP", address="10.0.0.1")]
-            ),
-        ),
-    ]
-
-    monkeypatch.setattr(node_module.config, "load_incluster_config", lambda: None)
-    monkeypatch.setattr(
-        node_module.client,
-        "CoreV1Api",
-        lambda: SimpleNamespace(list_node=lambda: SimpleNamespace(items=nodes)),
-    )
-
-    _, _, role_map = NodeInfo._NodeInfo__extract_node_info()
-
-    assert role_map == {"cloud-a": "cloud"}
-
-
-@pytest.mark.unit
-def test_node_info_refreshes_missing_cached_maps_and_skips_non_internal_addresses(monkeypatch):
-    extracted = []
-
-    def fake_extract():
-        extracted.append("called")
-        return (
-            {"edge-a": "10.0.0.2"},
-            {"10.0.0.2": "edge-a"},
-            {"edge-a": "edge"},
-        )
-
-    NodeInfo._NodeInfo__node_info_hostname = {"stale": "10.0.0.9"}
-    NodeInfo._NodeInfo__node_info_ip = None
-    NodeInfo._NodeInfo__node_info_role = None
-    monkeypatch.setattr(NodeInfo, "_NodeInfo__extract_node_info", staticmethod(fake_extract))
-
-    assert NodeInfo.get_node_info_reverse() == {"10.0.0.2": "edge-a"}
-    assert NodeInfo.get_node_info_role() == {"edge-a": "edge"}
-    assert extracted == ["called"]
-
-    nodes = [
-        SimpleNamespace(
-            metadata=SimpleNamespace(name="edge-a", labels={"node-role.kubernetes.io/edge": ""}),
-            status=SimpleNamespace(
-                addresses=[
-                    SimpleNamespace(type="ExternalIP", address="1.1.1.1"),
-                    SimpleNamespace(type="InternalIP", address="10.0.0.2"),
-                ]
-            ),
-        )
-    ]
-    monkeypatch.setattr(node_module.config, "load_incluster_config", lambda: None)
-    monkeypatch.setattr(
-        node_module.client,
-        "CoreV1Api",
-        lambda: SimpleNamespace(list_node=lambda: SimpleNamespace(items=nodes)),
-    )
-
-    hostname_map, reverse_map, role_map = NodeInfo._NodeInfo__extract_node_info()
-    assert hostname_map == {"edge-a": "10.0.0.2"}
-    assert reverse_map == {"10.0.0.2": "edge-a"}
-    assert role_map == {"edge-a": "edge"}
+@pytest.mark.parametrize(("value", "expected"), (
+    ("scheduler.dayu.svc.cluster.local", "scheduler.dayu.svc.cluster.local."),
+    ("Scheduler.Dayu.SVC.CLUSTER.LOCAL", "Scheduler.Dayu.SVC.CLUSTER.LOCAL."),
+    ("scheduler.dayu.svc.cluster.local.", "scheduler.dayu.svc.cluster.local."),
+    ("10.0.0.1", "10.0.0.1"),
+    ("localhost", "localhost"),
+    ("api.example.com", "api.example.com"),
+    ("", ""),
+))
+def test_connection_host_only_absolutizes_kubernetes_service_fqdns(value, expected):
+    assert connection_host(value) == expected

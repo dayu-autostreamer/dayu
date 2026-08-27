@@ -10,8 +10,17 @@ base_initial_module = importlib.import_module(
 fixed_initial_module = importlib.import_module(
     "core.lib.algorithms.schedule_initial_deployment_policy.fixed_initial_deployment_policy"
 )
+source_edge_cloud_initial_module = importlib.import_module(
+    "core.lib.algorithms.schedule_initial_deployment_policy.source_edge_cloud_initial_deployment_policy"
+)
+cloud_initial_module = importlib.import_module(
+    "core.lib.algorithms.schedule_initial_deployment_policy.cloud_initial_deployment_policy"
+)
 full_initial_module = importlib.import_module(
     "core.lib.algorithms.schedule_initial_deployment_policy.full_initial_deployment_policy"
+)
+full_edge_initial_module = importlib.import_module(
+    "core.lib.algorithms.schedule_initial_deployment_policy.full_edge_initial_deployment_policy"
 )
 random_initial_module = importlib.import_module(
     "core.lib.algorithms.schedule_initial_deployment_policy.random_initial_deployment_policy"
@@ -22,8 +31,29 @@ base_redeployment_module = importlib.import_module(
 fixed_redeployment_module = importlib.import_module(
     "core.lib.algorithms.schedule_redeployment_policy.fixed_redeployment_policy"
 )
+cloud_redeployment_module = importlib.import_module(
+    "core.lib.algorithms.schedule_redeployment_policy.cloud_redeployment_policy"
+)
+full_redeployment_module = importlib.import_module(
+    "core.lib.algorithms.schedule_redeployment_policy.full_redeployment_policy"
+)
+full_edge_redeployment_module = importlib.import_module(
+    "core.lib.algorithms.schedule_redeployment_policy.full_edge_redeployment_policy"
+)
 non_redeployment_module = importlib.import_module(
     "core.lib.algorithms.schedule_redeployment_policy.non_redeployment_policy"
+)
+dynamic_redeployment_module = importlib.import_module(
+    "core.lib.algorithms.schedule_redeployment_policy.dynamic_redeployment_policy"
+)
+offline_redeployment_module = importlib.import_module(
+    "core.lib.algorithms.schedule_redeployment_policy.offline_profiling_redeployment_policy"
+)
+deepva_redeployment_module = importlib.import_module(
+    "core.lib.algorithms.schedule_redeployment_policy.deepva_redeployment_policy"
+)
+integrated_predictor_module = importlib.import_module(
+    "core.lib.algorithms.schedule_agent.steady_agent.integrated_safe_predictor"
 )
 selection_base_module = importlib.import_module(
     "core.lib.algorithms.schedule_selection_policy.base_selection_policy"
@@ -38,7 +68,7 @@ random_selection_module = importlib.import_module(
 
 def build_deployment_info():
     return {
-        "source": {"id": 7},
+        "source": {"id": 7, "source_device": "edge-a"},
         "dag": {"detector": {}, "tracker": {}},
         "node_set": ["edge-a", "edge-b"],
         "all_edge_nodes": ["edge-a", "edge-b", "edge-c"],
@@ -61,14 +91,36 @@ def test_deployment_policy_bases_and_fixed_policies_cover_loading_and_defaults(m
     monkeypatch.setattr(
         fixed_initial_module.ConfigLoader,
         "load",
-        staticmethod(lambda path: loaded_paths.append(path) or {"detector": ["edge-a", "cloud-a"]}),
+        staticmethod(lambda path: loaded_paths.append(path) or {
+            "detector": ["edge-a", "@cloud"],
+            "tracker": ["edge-b"],
+            "unused-service": ["edge-a"],
+        }),
     )
 
-    initial_policy = fixed_initial_module.FixedInitialDeploymentPolicy(SimpleNamespace(), 0, policy="policy.yaml")
+    system = SimpleNamespace(cloud_device="cloud-a")
+    initial_policy = fixed_initial_module.FixedInitialDeploymentPolicy(system, 0, policy="policy.yaml")
     deploy_plan = initial_policy(build_deployment_info())
     assert loaded_paths == ["/runtime/policy.yaml"]
-    assert sorted(deploy_plan["detector"]) == ["edge-a"]
-    assert sorted(deploy_plan["tracker"]) == ["edge-a", "edge-b"]
+    assert deploy_plan == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["edge-b"],
+    }
+
+    initial_with_cloud = fixed_initial_module.FixedInitialDeploymentPolicy(
+        system,
+        0,
+        policy={"detector": ["edge-a"], "tracker": ["edge-b"]},
+        include_cloud=True,
+    )
+    assert initial_with_cloud(build_deployment_info()) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-b"],
+    }
+
+    empty_initial_policy = fixed_initial_module.FixedInitialDeploymentPolicy(system, 0)
+    with pytest.raises(ValueError, match="omitted current DAG services"):
+        empty_initial_policy(build_deployment_info())
 
     redeploy_paths = []
     monkeypatch.setattr(
@@ -79,28 +131,70 @@ def test_deployment_policy_bases_and_fixed_policies_cover_loading_and_defaults(m
     monkeypatch.setattr(
         fixed_redeployment_module.ConfigLoader,
         "load",
-        staticmethod(lambda path: redeploy_paths.append(path) or {"tracker": ["edge-b", "cloud-a"]}),
+        staticmethod(lambda path: redeploy_paths.append(path) or {
+            "detector": ["edge-a"],
+            "tracker": ["edge-b", "@cloud"],
+            "unused-service": ["edge-a"],
+        }),
     )
-    redeploy_policy = fixed_redeployment_module.FixedRedeploymentPolicy(SimpleNamespace(), 0, policy="redeploy.yaml")
+    redeploy_policy = fixed_redeployment_module.FixedRedeploymentPolicy(system, 0, policy="redeploy.yaml")
     redeploy_plan = redeploy_policy(build_deployment_info())
     assert redeploy_paths == ["/runtime/redeploy.yaml"]
-    assert sorted(redeploy_plan["detector"]) == ["edge-a", "edge-b"]
-    assert sorted(redeploy_plan["tracker"]) == ["edge-b"]
+    assert redeploy_plan == {
+        "detector": ["edge-a"],
+        "tracker": ["cloud-a", "edge-b"],
+    }
+
+    redeploy_with_cloud = fixed_redeployment_module.FixedRedeploymentPolicy(
+        system,
+        0,
+        policy={"detector": ["edge-a"], "tracker": ["edge-b"]},
+        include_cloud=True,
+    )
+    assert redeploy_with_cloud(build_deployment_info()) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-b"],
+    }
+
+    empty_redeployment_policy = fixed_redeployment_module.FixedRedeploymentPolicy(system, 0)
+    with pytest.raises(ValueError, match="omitted current DAG services"):
+        empty_redeployment_policy(build_deployment_info())
 
     with pytest.raises(TypeError, match="type str or dict"):
         fixed_initial_module.FixedInitialDeploymentPolicy(SimpleNamespace(), 0, policy=object())
     with pytest.raises(TypeError, match="type str or dict"):
         fixed_redeployment_module.FixedRedeploymentPolicy(SimpleNamespace(), 0, policy=object())
+    with pytest.raises(TypeError, match="include_cloud must be a boolean"):
+        fixed_initial_module.FixedInitialDeploymentPolicy(
+            system,
+            0,
+            policy={"detector": ["edge-a"], "tracker": ["edge-b"]},
+            include_cloud="false",
+        )
 
 
 @pytest.mark.unit
 def test_initial_and_redeployment_policies_cover_full_random_and_non_redeployment(monkeypatch):
     info = build_deployment_info()
 
-    full_policy = full_initial_module.FullInitialDeploymentPolicy(SimpleNamespace(), 0)
+    system = SimpleNamespace(cloud_device="cloud-a")
+    full_policy = full_initial_module.FullInitialDeploymentPolicy(system, 0)
     assert full_policy(info) == {
-        "edge-a": ["detector", "tracker"],
-        "edge-b": ["detector", "tracker"],
+        "detector": ["cloud-a", "edge-a", "edge-b"],
+        "tracker": ["cloud-a", "edge-a", "edge-b"],
+    }
+    full_edge_policy = full_edge_initial_module.FullEdgeInitialDeploymentPolicy(system, 0)
+    assert full_edge_policy(info) == {
+        "detector": ["edge-a", "edge-b"],
+        "tracker": ["edge-a", "edge-b"],
+    }
+    assert full_redeployment_module.FullRedeploymentPolicy(system, 0)(info) == {
+        "detector": ["cloud-a", "edge-a", "edge-b"],
+        "tracker": ["cloud-a", "edge-a", "edge-b"],
+    }
+    assert full_edge_redeployment_module.FullEdgeRedeploymentPolicy(system, 0)(info) == {
+        "detector": ["edge-a", "edge-b"],
+        "tracker": ["edge-a", "edge-b"],
     }
 
     random_policy = random_initial_module.RandomInitialDeploymentPolicy(SimpleNamespace(), 0, max_service_num=-1)
@@ -108,8 +202,10 @@ def test_initial_and_redeployment_policies_cover_full_random_and_non_redeploymen
     monkeypatch.setattr(random_initial_module.random, "randint", lambda start, end: 1)
     monkeypatch.setattr(random_initial_module.random, "sample", lambda seq, count: sorted(seq)[:count])
     random_plan = random_policy(info)
-    assert random_plan["edge-a"] == ["detector", "tracker"]
-    assert random_plan["edge-b"] == ["detector"]
+    assert random_plan == {
+        "detector": ["edge-a", "edge-b"],
+        "tracker": ["edge-a"],
+    }
 
     warnings = []
     monkeypatch.setattr(random_initial_module.LOGGER, "warning", lambda message: warnings.append(message))
@@ -121,70 +217,246 @@ def test_initial_and_redeployment_policies_cover_full_random_and_non_redeploymen
             "node_set": ["edge-a"],
         }
     )
-    assert bounded_plan == {"edge-a": ["detector", "tracker"]}
+    assert bounded_plan == {"detector": ["edge-a"], "tracker": ["edge-a"]}
     assert any("cannot be deployed" in message for message in warnings)
 
-    monkeypatch.setattr(
-        non_redeployment_module.KubeConfig,
-        "get_service_nodes_dict",
-        staticmethod(lambda: {"detector": ["edge-a"]}),
+    current_deployment = {"value": {"detector": ["edge-a"]}}
+    runtime_system = SimpleNamespace(
+        cloud_device="cloud-a",
+        get_scheduling_snapshot=lambda scope: {
+            "runtime_directory_revision": 3,
+            "deployment": current_deployment["value"],
+        },
     )
-    non_policy = non_redeployment_module.NonRedeploymentPolicy(SimpleNamespace(), 0)
-    assert non_policy(info) == {"detector": ["edge-a"]}
+    non_policy = non_redeployment_module.NonRedeploymentPolicy(runtime_system, 0)
+    with pytest.raises(ValueError, match="omitted current DAG services"):
+        non_policy(info)
 
-    monkeypatch.setattr(
-        non_redeployment_module.KubeConfig,
-        "get_service_nodes_dict",
-        staticmethod(lambda: None),
+    # Non-redeployment must read the active directory at call time. Agents are
+    # commonly constructed before the initial Processor deployment exists.
+    current_deployment["value"] = {
+        "detector": ["edge-a", "edge-c"],
+        "tracker": ["cloud-a"],
+        "unused-service": ["edge-a"],
+    }
+    assert non_policy(info) == {"detector": ["edge-a"], "tracker": ["cloud-a"]}
+
+    assert cloud_initial_module.CloudInitialDeploymentPolicy(runtime_system, 0)(info) == {
+        "detector": ["cloud-a"], "tracker": ["cloud-a"],
+    }
+    assert cloud_redeployment_module.CloudRedeploymentPolicy(runtime_system, 0)(info) == {
+        "detector": ["cloud-a"], "tracker": ["cloud-a"],
+    }
+    assert source_edge_cloud_initial_module.SourceEdgeCloudInitialDeploymentPolicy(
+        runtime_system, 0
+    )(info) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-a"],
+    }
+
+    uninitialized_policy = non_redeployment_module.NonRedeploymentPolicy(
+        SimpleNamespace(
+            cloud_device="cloud-a",
+            get_scheduling_snapshot=lambda scope: {
+                "runtime_directory_revision": 1,
+            },
+        ),
+        0,
     )
-    with pytest.raises(RuntimeError, match="returned None"):
-        non_redeployment_module.NonRedeploymentPolicy(SimpleNamespace(), 0)
+    with pytest.raises(ValueError, match="no fixed deployment"):
+        uninitialized_policy(info)
+
+    revision_zero_policy = non_redeployment_module.NonRedeploymentPolicy(
+        SimpleNamespace(
+            cloud_device="cloud-a",
+            get_scheduling_snapshot=lambda scope: {
+                "runtime_directory_revision": 0,
+                "deployment": {
+                    "detector": ["edge-a"],
+                    "tracker": ["edge-b"],
+                },
+            },
+        ),
+        0,
+    )
+    with pytest.raises(ValueError, match="not ready"):
+        revision_zero_policy(info)
 
 
 @pytest.mark.unit
 def test_selection_policies_cover_invalid_configuration_and_empty_candidates(monkeypatch):
     warnings = []
-    monkeypatch.setattr(fixed_selection_module.LOGGER, "warning", lambda message: warnings.append(message))
     monkeypatch.setattr(random_selection_module.LOGGER, "warning", lambda message: warnings.append(message))
 
-    invalid_position = fixed_selection_module.FixedSelectionPolicy(
-        SimpleNamespace(), 1, fixed_value=-1, fixed_type="position"
-    )
-    invalid_hostname = fixed_selection_module.FixedSelectionPolicy(
-        SimpleNamespace(), 1, fixed_value=123, fixed_type="hostname"
-    )
-    invalid_type = fixed_selection_module.FixedSelectionPolicy(
-        SimpleNamespace(), 1, fixed_value="edge-a", fixed_type="region"
-    )
-
-    assert invalid_position.fixed_value == 0
-    assert invalid_hostname.fixed_value == ""
-    assert invalid_type.fixed_type == "position"
+    with pytest.raises(ValueError, match="non-negative integer"):
+        fixed_selection_module.FixedSelectionPolicy(
+            SimpleNamespace(), 1, fixed_value=-1, fixed_type="position"
+        )
+    with pytest.raises(ValueError, match="non-empty string"):
+        fixed_selection_module.FixedSelectionPolicy(
+            SimpleNamespace(), 1, fixed_value=123, fixed_type="hostname"
+        )
+    with pytest.raises(ValueError, match="position.*hostname"):
+        fixed_selection_module.FixedSelectionPolicy(
+            SimpleNamespace(), 1, fixed_value="edge-a", fixed_type="region"
+        )
 
     info = build_deployment_info()
-    fallback_position = fixed_selection_module.FixedSelectionPolicy(
+    invalid_position = fixed_selection_module.FixedSelectionPolicy(
         SimpleNamespace(), 1, fixed_value=9, fixed_type="position"
     )
-    fallback_hostname = fixed_selection_module.FixedSelectionPolicy(
+    invalid_hostname = fixed_selection_module.FixedSelectionPolicy(
         SimpleNamespace(), 1, fixed_value="missing", fixed_type="hostname"
     )
 
-    assert fallback_position(info) == "edge-a"
-    assert fallback_hostname(info) == "edge-a"
-    assert fixed_selection_module.FixedSelectionPolicy(SimpleNamespace(), 1)({"source": {"id": 1}, "node_set": []}) is None
+    with pytest.raises(ValueError, match="outside the permitted"):
+        invalid_position(info)
+    with pytest.raises(ValueError, match="not a permitted candidate"):
+        invalid_hostname(info)
+    with pytest.raises(ValueError, match="no permitted source candidate"):
+        fixed_selection_module.FixedSelectionPolicy(SimpleNamespace(), 1)({
+            "source": {"id": 1}, "node_set": [],
+        })
 
     selector = selection_base_module.BaseSelectionPolicy(scope="selected_edge_nodes")
     assert selector.get_candidate_node_set(info) == ["edge-a", "edge-b"]
     selector.scope = "all_edge_nodes"
-    monkeypatch.setattr(selection_base_module.NodeInfo, "get_all_edge_nodes", staticmethod(lambda: ["edge-b", "edge-c"]))
-    assert selector.get_candidate_node_set({"node_set": ["edge-a"], "all_edge_nodes": None}) == ["edge-b", "edge-c"]
+    assert selector.get_candidate_node_set({
+        "node_set": ["edge-a"],
+        "source_candidate_nodes": ["edge-b", "edge-c"],
+    }) == ["edge-b", "edge-c"]
 
-    fallback_selector = selection_base_module.BaseSelectionPolicy(scope="source_bound")
-    assert fallback_selector.scope == "selected_edge_nodes"
-    assert fallback_selector.get_candidate_node_set(info) == ["edge-a", "edge-b"]
+    with pytest.raises(ValueError, match="source selection scope"):
+        selection_base_module.BaseSelectionPolicy(scope="source_bound")
 
     random_selector = random_selection_module.RandomSelectionPolicy(SimpleNamespace(), 1, scope="selected_edge_nodes")
     monkeypatch.setattr(random_selection_module.random, "choice", lambda seq: seq[-1])
     assert random_selector(info) == "edge-b"
     assert random_selector({"source": {"id": 2}, "node_set": []}) is None
-    assert any("illegal" in message or "not supported" in message or "empty" in message for message in warnings)
+    assert any("empty" in message for message in warnings)
+
+
+@pytest.mark.unit
+def test_dynamic_redeployment_scopes_dag_and_uses_injected_cloud_identity():
+    class Agent:
+        @staticmethod
+        def get_latest_offloading_policy():
+            return {
+                "detector": "control-plane-a",
+                "tracker": "edge-a",
+                "stale-service": "outside-node",
+            }
+
+    system = SimpleNamespace(
+        cloud_device="control-plane-a",
+        schedule_table={7: Agent()},
+    )
+    policy = dynamic_redeployment_module.DynamicRedeploymentPolicy(
+        system,
+        7,
+        redeployment_interval_minutes=0,
+        default_service_limit=4,
+        policy={
+            "detector": ["edge-a"],
+            "tracker": ["edge-b"],
+            "stale-service": ["outside-node"],
+        },
+    )
+
+    assert policy(build_deployment_info()) == {
+        "detector": ["control-plane-a"],
+        "tracker": ["edge-a"],
+    }
+    policy.update_latest_offloading_policy({"detector": "control-plane-a"})
+    assert policy.latest_offloading_policy == {"detector": "control-plane-a"}
+
+
+@pytest.mark.unit
+def test_deepva_redeployment_keeps_cloud_replica_outside_its_edge_action_space():
+    class Agent:
+        @staticmethod
+        def get_current_deployment():
+            return {
+                "detector": ["edge-a"],
+                "tracker": ["edge-b"],
+            }
+
+    system = SimpleNamespace(
+        cloud_device="cloud-a",
+        schedule_table={7: Agent()},
+    )
+    policy = deepva_redeployment_module.DeepVARedeploymentPolicy(
+        system,
+        7,
+        redeployment_interval=0,
+    )
+
+    assert policy(build_deployment_info()) == {
+        "detector": ["cloud-a", "edge-a"],
+        "tracker": ["cloud-a", "edge-b"],
+    }
+
+
+@pytest.mark.unit
+def test_offline_redeployment_covers_current_dag_and_has_no_cloud_hostname_assumption(monkeypatch):
+    class FakeOverhead:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        @staticmethod
+        def get_latest_overhead():
+            return 0.0
+
+    monkeypatch.setattr(offline_redeployment_module, "OverheadEstimator", FakeOverhead)
+    policy = offline_redeployment_module.OfflineProfilingRedeploymentPolicy(
+        SimpleNamespace(cloud_device="control-plane-a"),
+        7,
+        latency_profile={"detector": {"edge-a": 1.0}},
+        default_service_limit=4,
+    )
+    info = {
+        "source": {"id": 7},
+        "dag": {"detector": {}, "tracker": {}},
+        "node_set": ["edge-a"],
+    }
+    assert policy(info) == {
+        "detector": ["edge-a"],
+        "tracker": ["edge-a"],
+    }
+
+    cloud_policy = offline_redeployment_module.OfflineProfilingRedeploymentPolicy(
+        SimpleNamespace(cloud_device="control-plane-a"),
+        7,
+        latency_profile={"detector": {"edge-a": 1.0}},
+        default_service_limit=4,
+        include_cloud=True,
+    )
+    cloud_only = {**info, "node_set": []}
+    assert cloud_policy(cloud_only) == {
+        "detector": ["control-plane-a"],
+        "tracker": ["control-plane-a"],
+    }
+
+
+@pytest.mark.unit
+def test_execution_profiles_resolve_roles_without_fixed_cluster_hostname():
+    resolver = integrated_predictor_module.CorrectedPredictor._execution_profile_value
+    role_profile = {
+        "execute_role=edge#resolution=540p": 1.0,
+        "execute_role=cloud#resolution=540p": 2.0,
+    }
+    assert resolver(role_profile, "540p", "edge") == 1.0
+    assert resolver(role_profile, "540p", "cloud") == 2.0
+
+    labelled_profile = {
+        "execute_device=edge7#resolution=720p": 3.0,
+        "execute_device=cloud-a#resolution=720p": 4.0,
+    }
+    assert resolver(labelled_profile, "720p", "edge") == 3.0
+    assert resolver(labelled_profile, "720p", "cloud") == 4.0

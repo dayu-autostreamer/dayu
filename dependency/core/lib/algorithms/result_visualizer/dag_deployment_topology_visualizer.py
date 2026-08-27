@@ -1,6 +1,7 @@
 import abc
-from core.lib.common import ClassFactory, ClassType, KubeConfig
+from core.lib.common import ClassFactory, ClassType
 from core.lib.content import Task
+from core.lib.runtime import RuntimeResolver
 
 from .topology_visualizer import TopologyVisualizer
 
@@ -18,6 +19,7 @@ class DAGDeploymentTopologyVisualizer(TopologyVisualizer, abc.ABC):
             service = node_info["service"]
             service.pop("execute_device")
             service_name = service["service_name"]
-            service["data"] = '\n'.join(KubeConfig.get_nodes_for_service(service_name))
+            routes = RuntimeResolver.list_routes(task, component='processor', logical_service=service_name)
+            service["data"] = '\n'.join(sorted({route.target_node for route in routes}))
 
         return {self.variables[0]: result}

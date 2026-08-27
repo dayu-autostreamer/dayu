@@ -1,0 +1,3 @@
+from .vehicle_attribute_recognition_efficientnet import VehicleAttributeRecognition as VehicleAttributeRecognitionWithoutTensorRT
+
+__all__ = ['VehicleAttributeRecognitionWithoutTensorRT']

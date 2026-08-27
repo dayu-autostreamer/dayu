@@ -15,7 +15,7 @@
 					</div>
 				</div>
 				<div class="right">
-					<img src="https://i.hd-r.cn/1a0d90a6c1e8b0184c7299dda713effd.png" />
+					<img :src="dayuLogo" alt="Dayu" />
 				</div>
 			</div>
 		</div>
@@ -24,6 +24,7 @@
 
 <script setup lang="ts" name="notFound">
 import { useRouter } from 'vue-router';
+import dayuLogo from '/@/assets/logo.svg';
 
 // 定义变量内容
 const router = useRouter();
@@ -84,6 +85,7 @@ const onGoHome = () => {
 			img {
 				width: 100%;
 				height: 100%;
+				object-fit: contain;
 			}
 		}
 	}

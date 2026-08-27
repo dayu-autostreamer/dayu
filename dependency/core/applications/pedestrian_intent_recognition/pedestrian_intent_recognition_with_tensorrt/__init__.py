@@ -1,0 +1,4 @@
+from .pedestrian_intent_recognition_tensorrt8 import PedestrianIntentRecognitionTensorRT8
+from .pedestrian_intent_recognition_tensorrt10 import PedestrianIntentRecognitionTensorRT10
+
+__all__ = ['PedestrianIntentRecognitionTensorRT8', 'PedestrianIntentRecognitionTensorRT10']

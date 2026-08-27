@@ -34,6 +34,7 @@ pod-template:
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
       value: >
         {
+          'include_cloud': True,
           'policy':{
             "vehicle-detection": ["edge5"],
             "pedestrian-detection": ["edge5", "edgexn11"],
@@ -47,7 +48,8 @@ pod-template:
     - name: SCH_REDEPLOYMENT_POLICY_PARAMETERS
       value: >
         {
-          'redeployment_interval':60
+          'redeployment_interval':60,
+          'include_cloud': True
         }
     - name: SCH_AGENT_NAME
       value: deepva

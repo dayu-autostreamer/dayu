@@ -1,21 +1,181 @@
 import copy
 import json
-import threading
-import time
+import math
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Body, BackgroundTasks, HTTPException, Request
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse, FileResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
-from fastapi.middleware.cors import CORSMiddleware
-from core.lib.common import LOGGER, Counter, Queue, FileOps
-from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
+from core.lib.common import LOGGER, Counter, FileOps
+from core.lib.network import NetworkAPIMethod, NetworkAPIPath
 
 from backend_core import BackendCore
-from kube_helper import KubeHelper
+
+
+_RESOURCE_FIELDS = {
+    "cpu": ("usage_millicores", "reference_millicores"),
+    "memory": ("usage_bytes", "reference_bytes"),
+}
+_UNINSTALL_STALL_WARNING_SECONDS = 180
+_CLEANUP_BLOCKER_DETAIL_LIMIT = 25
+
+
+def _seconds_since(timestamp):
+    try:
+        value = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return 0
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - value).total_seconds()))
+
+
+def _cleanup_diagnostics(session, phase):
+    if session is None:
+        return None
+    progress = getattr(session, 'uninstall', None)
+    if progress is None:
+        if phase not in {'uninstalling', 'finalizing-uninstall'}:
+            return None
+        return {
+            'status': 'progressing',
+            'started_at': '',
+            'last_progress_at': '',
+            'seconds_without_progress': 0,
+            'warning_after_seconds': _UNINSTALL_STALL_WARNING_SECONDS,
+            'remaining_count': 0,
+            'remaining_by_kind': {},
+            'affected_nodes': [],
+            'blocking_objects': [],
+            'truncated_count': 0,
+        }
+
+    remaining = tuple(progress.remaining)
+    remaining_by_kind = {}
+    for resource in remaining:
+        remaining_by_kind[resource.kind] = (
+            remaining_by_kind.get(resource.kind, 0) + 1
+        )
+    seconds_without_progress = _seconds_since(progress.last_progress_at)
+    return {
+        'status': (
+            'delayed'
+            if seconds_without_progress >= _UNINSTALL_STALL_WARNING_SECONDS
+            else 'progressing'
+        ),
+        'started_at': progress.started_at,
+        'last_progress_at': progress.last_progress_at,
+        'seconds_without_progress': seconds_without_progress,
+        'warning_after_seconds': _UNINSTALL_STALL_WARNING_SECONDS,
+        'remaining_count': len(remaining),
+        'remaining_by_kind': {
+            kind: remaining_by_kind[kind]
+            for kind in sorted(remaining_by_kind)
+        },
+        'affected_nodes': sorted({
+            resource.node for resource in remaining if resource.node
+        }),
+        'blocking_objects': [
+            resource.to_dict()
+            for resource in remaining[:_CLEANUP_BLOCKER_DETAIL_LIMIT]
+        ],
+        'truncated_count': max(
+            0, len(remaining) - _CLEANUP_BLOCKER_DETAIL_LIMIT,
+        ),
+    }
+
+
+def _json_object(data):
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, bytes):
+        data = str(data, encoding='utf-8')
+    if isinstance(data, str):
+        value = json.loads(data) if data else {}
+        if isinstance(value, dict):
+            return value
+    if data is None:
+        return {}
+    raise ValueError('request body must be a JSON object')
+
+
+def _optional_non_negative_number(value):
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _resource_detail(summary, resource, has_sample):
+    usage_key, reference_key = _RESOURCE_FIELDS[resource]
+    summary = summary if isinstance(summary, dict) else {}
+    status = str(summary.get("status") or "")
+    if status not in {"available", "stale", "collecting", "unavailable"}:
+        status = "unavailable" if has_sample else "collecting"
+    usage = _optional_non_negative_number(summary.get(usage_key))
+    reference = _optional_non_negative_number(summary.get(reference_key))
+    if reference is not None and reference <= 0:
+        reference = None
+    if status in {"available", "stale"} and usage is None:
+        status = "unavailable"
+    utilization = (
+        usage * 100 / reference
+        if status in {"available", "stale"}
+        and usage is not None
+        and reference is not None
+        else None
+    )
+    basis = str(summary.get("basis") or "")
+    if basis not in {"node_allocatable", "node_capacity"}:
+        basis = ""
+    return {
+        "status": status,
+        usage_key: usage,
+        reference_key: reference,
+        "utilization_percent": utilization,
+        "basis": basis,
+    }
+
+
+def _shared_bandwidth(resource_data, has_sample, stale=False):
+    """Project the singleton edge-to-cloud iperf probe as a shared view."""
+
+    candidates = []
+    if isinstance(resource_data, dict):
+        for node, resources in sorted(resource_data.items(), key=lambda item: str(item[0])):
+            if not isinstance(resources, dict):
+                continue
+            value = _optional_non_negative_number(resources.get("available_bandwidth"))
+            # AvailableBandwidthMonitor uses both -1 (not the lock holder) and
+            # 0 (iperf failure) as non-measurements.
+            if value is not None and value > 0:
+                candidates.append((str(node), value))
+    if len(candidates) == 1:
+        node, value = candidates[0]
+        return {
+            "status": "stale" if stale else "available",
+            "mbps": value,
+            "probe_node": node,
+        }
+    if len(candidates) > 1:
+        # Multiple positive probes violate the Scheduler lock invariant. Do
+        # not pick a dict-order-dependent value and mislabel it as canonical.
+        return {
+            "status": "ambiguous",
+            "mbps": None,
+            "probe_node": "",
+        }
+    return {
+        "status": "unavailable" if has_sample else "collecting",
+        "mbps": None,
+        "probe_node": "",
+    }
 
 
 class BackendServer:
@@ -160,10 +320,10 @@ class BackendServer:
                      ),
         ], log_level='trace', timeout=6000)
 
-        self.app.add_middleware(
-            CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-            allow_methods=["*"], allow_headers=["*"],
-        )
+        if hasattr(self.server, 'start'):
+            self.app.add_event_handler('startup', self.server.start)
+        if hasattr(self.server, 'close'):
+            self.app.add_event_handler('shutdown', self.server.close)
 
     async def get_all_schedule_policies(self):
         """
@@ -188,14 +348,16 @@ class BackendServer:
         :return:
         ["face_detection", "..."]
         """
-        service_list = [service['id'] for service in self.server.services]
-        current_service_list = []
-
-        if self.server.check_pods_running_state():
-            for service_id in service_list:
-                if KubeHelper.check_pod_name(service_id, namespace=self.server.namespace):
-                    current_service_list.append(service_id)
-        return current_service_list
+        directory = await run_in_threadpool(
+            self.server.runtime_orchestrator.active_directory,
+        )
+        if directory is None:
+            return []
+        return sorted({
+            unit.slot.logical_service
+            for unit in directory.routes
+            if unit.slot.component == 'processor' and unit.slot.logical_service
+        })
 
     async def get_dag_workflows(self):
         """
@@ -264,8 +426,13 @@ class BackendServer:
         services = self.server.services
         for service in services:
             service_view = copy.deepcopy(service)
+            service_input, input_error = self.server.service_io_labels(service_view, 'input')
+            service_output, output_error = self.server.service_io_labels(service_view, 'output')
+            if input_error or output_error:
+                raise ValueError(input_error or output_error)
             service_view['description'] = (
-                service_view['description'] + ' (in:' + service_view['input'] + ', out:' + service_view['output'] + ')'
+                f"{service_view['description']} "
+                f"(in:{', '.join(service_input)}, out:{', '.join(service_output)})"
             )
             service_dict[service_view['id']] = (
                 service_view if service_view['id'] not in service_dict else service_dict[service_view['id']]
@@ -320,7 +487,7 @@ class BackendServer:
         {'state':success/fail, 'msg':'...'}
         """
 
-        data = json.loads(str(data, encoding='utf-8'))
+        data = _json_object(data)
         dag_id = int(data['dag_id'])
         for index, dag in enumerate(self.server.dags):
             if dag['dag_id'] == dag_id:
@@ -349,21 +516,42 @@ class BackendServer:
         try:
             if service == 'null':
                 return []
-            info = KubeHelper.get_service_info(service_name=service, namespace=self.server.namespace)
-
-            self.server.get_resource_url()
-            if not self.server.resource_url:
+            # This is an in-memory, generation-bound deep copy. Browser polls
+            # never list Pods, Nodes, RuntimeServices, or metrics resources.
+            telemetry = self.server.get_runtime_telemetry(
+                logical_service=service,
+            )
+            if not telemetry.get('install_id') or not telemetry.get('directory_revision'):
                 return []
-            resource_data = http_request(self.server.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE)
-            if resource_data:
-                bandwidth = '-'
-                for hostname in resource_data:
-                    single_resource_info = resource_data[hostname]
-                    if 'available_bandwidth' in single_resource_info and single_resource_info[
-                        'available_bandwidth'] != -1:
-                        bandwidth = f"{single_resource_info['available_bandwidth']:.2f}Mbps"
-                for single_info in info:
-                    single_info['bandwidth'] = bandwidth
+            metrics = telemetry.get('runtime_metrics') or {}
+            resource_data = telemetry.get('resource') or {}
+            shared_bandwidth = _shared_bandwidth(
+                resource_data,
+                has_sample=telemetry.get('resource_sampled_at') is not None,
+                stale=bool(telemetry.get('resource_stale')),
+            )
+            has_metrics_sample = telemetry.get('runtime_metrics_sampled_at') is not None
+            info = []
+            for metric in metrics.values():
+                hostname = metric.get('node', '')
+                resource_usage = metric.get('resource_usage') or {}
+                info.append({
+                    'ip': (metric.get('node_info') or {}).get('address', ''),
+                    'hostname': hostname,
+                    'cpu': _resource_detail(
+                        resource_usage.get('cpu'),
+                        'cpu',
+                        has_metrics_sample,
+                    ),
+                    'memory': _resource_detail(
+                        resource_usage.get('memory'),
+                        'memory',
+                        has_metrics_sample,
+                    ),
+                    'bandwidth': copy.deepcopy(shared_bandwidth),
+                    'age': metric.get('created_at', ''),
+                })
+            info.sort(key=lambda item: item['hostname'])
         except Exception as e:
             LOGGER.exception(e)
             return []
@@ -514,14 +702,37 @@ class BackendServer:
         {'msg': 'Invalid service name!'}
         """
 
-        data = json.loads(str(data, encoding='utf-8'))
-
-        source_label = data['source_config_label']
-        policy_id = data['policy_id']
-        source_map_list = data['source']
-
-        dag_list = [x['dag_selected'] for x in source_map_list]
-        node_set_list = [x['node_selected'] for x in source_map_list]
+        try:
+            data = _json_object(data)
+            raw_install_id = data.get('install_id')
+            if raw_install_id is not None and not isinstance(raw_install_id, str):
+                raise TypeError('install_id must be a string')
+            install_id = str(raw_install_id or '').strip()
+            source_label = data['source_config_label']
+            policy_id = data['policy_id']
+            if not isinstance(source_label, str) or not isinstance(policy_id, str):
+                raise TypeError('source_config_label and policy_id must be strings')
+            source_map_list = data['source']
+            if not isinstance(source_map_list, list):
+                raise TypeError('source must be a list')
+            if any(not isinstance(item, dict) for item in source_map_list):
+                raise TypeError('every source mapping must be an object')
+            task_offer_limit = data.get('task_offer_limit', 0)
+            if (
+                isinstance(task_offer_limit, bool)
+                or not isinstance(task_offer_limit, int)
+                or task_offer_limit < 0
+            ):
+                raise TypeError('task_offer_limit must be a non-negative integer')
+            dag_list = [item['dag_selected'] for item in source_map_list]
+            node_set_list = [item['node_selected'] for item in source_map_list]
+            if any(not isinstance(nodes, list) for nodes in node_set_list):
+                raise TypeError('node_selected must be a list')
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return {
+                'state': 'fail',
+                'msg': 'Install services failed: invalid request body',
+            }
 
         source_deploy = []
 
@@ -533,25 +744,31 @@ class BackendServer:
         if source_config is None:
             return {'state': 'fail', 'msg': 'Install services failed: datasource configuration not exists'}
 
-        if len(source_config) != len(dag_list) != len(node_set_list):
+        source_list = source_config.get('source_list') or []
+        if not (len(source_list) == len(dag_list) == len(node_set_list)):
             return {'state': 'fail', 'msg': 'Install services failed: datasource mapping failed'}
 
-        for source, dag_id, node_set in zip(source_config['source_list'], dag_list, node_set_list):
+        for source, dag_id, node_set in zip(copy.deepcopy(source_list), dag_list, node_set_list):
 
             dag = self.server.find_dag_by_id(dag_id)
             if dag is None:
                 return {'state': 'fail', 'msg': 'Install services failed: dag not exists'}
 
-            for node in node_set:
-                if not self.server.check_node_exist(node):
-                    return {'state': 'fail', 'msg': f'Install services failed: edge node "{node}" not exists'}
-
             source.update({'source_type': source_config['source_type'], 'source_mode': source_config['source_mode']})
+
+            if task_offer_limit:
+                source['task_offer_limit'] = task_offer_limit
 
             source_deploy.append({'source': source, 'dag': dag, 'node_set': node_set})
 
         try:
-            result, msg = self.server.parse_and_apply_templates(policy, source_deploy)
+            result, msg = await run_in_threadpool(
+                self.server.parse_and_apply_templates,
+                policy,
+                source_deploy,
+                source_label,
+                install_id,
+            )
         except Exception as e:
             LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
             LOGGER.exception(e)
@@ -559,25 +776,60 @@ class BackendServer:
             msg = 'unexpected system error, please refer to logs in backend'
 
         if result:
+            response = {
+                'state': 'success',
+                'msg': 'Install services successfully',
+            }
             if not self.server.inner_datasource:
-                await self.submit_query({'source_label': source_label})
-
-            return {'state': 'success', 'msg': 'Install services successfully'}
+                try:
+                    query_result = await self.submit_query(
+                        {'source_label': source_label},
+                    )
+                    if query_result.get('state') != 'success':
+                        response['warning'] = (
+                            'Runtime installed, but datasource query did not start: '
+                            f"{query_result.get('msg') or 'unknown error'}"
+                        )
+                except Exception as exc:
+                    LOGGER.warning(
+                        f'Runtime installed, but datasource query did not start: {exc}'
+                    )
+                    LOGGER.exception(exc)
+                    response['warning'] = (
+                        'Runtime installed, but datasource query did not start; '
+                        'start it explicitly after checking backend logs'
+                    )
+            return response
         else:
             return {'state': 'fail', 'msg': f'Install services failed: {msg}'}
 
-    async def uninstall_service(self):
+    async def uninstall_service(self, data=Body(default=None)):
         """
         {'state':"success/fail",'msg':'...'}
 
         :return:
         """
 
-        if not self.server.inner_datasource:
-            await self.stop_query()
+        try:
+            payload = _json_object(data)
+            raw_install_id = payload.get('install_id')
+            if raw_install_id is not None and not isinstance(raw_install_id, str):
+                raise TypeError('install_id must be a string')
+            expected_install_id = str(raw_install_id or '').strip()
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {
+                'state': 'fail',
+                'msg': 'Uninstall services failed: invalid request body',
+            }
 
         try:
-            result, msg = self.server.parse_and_delete_templates()
+            # BackendCore owns query admission and cancellation as part of the
+            # same lifecycle operation.  Keeping it below the threadpool
+            # boundary prevents a stop/reopen race before uninstall begins.
+            result, msg = await run_in_threadpool(
+                self.server.parse_and_delete_templates,
+                expected_install_id,
+            )
 
         except Exception as e:
             LOGGER.warning(f'Uninstall services failed: {str(e)}')
@@ -585,12 +837,79 @@ class BackendServer:
             result = False
             msg = 'unexpected system error, please refer to logs in backend'
 
-        self.server.clear_yaml_docs()
-
         if result:
-            return {'state': 'success', 'msg': 'Uninstall services successfully'}
+            return {'state': 'success', 'msg': msg}
         else:
             return {'state': 'fail', 'msg': f'Uninstall services failed: {msg}'}
+
+    def _install_state_response(
+            self, session, pending=None, local_ready=False, local_error=''):
+        pending = pending if isinstance(pending, dict) else {}
+        has_pending = bool(pending)
+        pending_kind = str(pending.get('kind') or 'install')
+        pending_install_id = str(pending.get('install_id') or '')
+        pending_phase = str(pending.get('phase') or 'preparing-install')
+        pending_operation_id = str(pending.get('operation_id') or '')
+        install_pending = bool(
+            pending_install_id and pending_kind == 'install'
+        )
+        if session is None:
+            return {
+                'namespace': self.server.namespace,
+                'state': 'uninstall',
+                'phase': pending_phase if has_pending else 'uninstalled',
+                'ready': False,
+                'install_id': pending_install_id,
+                'install_pending': install_pending,
+                'operation_id': pending_operation_id,
+                'updated_at': '',
+                'active_directory_revision': 0,
+                'active_runtime_count': 0,
+                'pending_runtime_count': 0,
+                'cleanup_runtime_count': 0,
+                'cleanup': None,
+                'retirement_revision': 0,
+                'retirement_deadline': None,
+                'last_error': '',
+            }
+
+        retirement = session.retirement
+        same_pending_target = pending_install_id == session.install_id
+        same_pending_install = same_pending_target and pending_kind == 'install'
+        phase = session.phase
+        operation_id = session.operation_id
+        if same_pending_target and pending_kind == 'stop':
+            phase = pending_phase
+            operation_id = pending_operation_id
+        elif same_pending_install and pending_phase == 'cancelling-install':
+            phase = pending_phase
+            operation_id = pending_operation_id
+        elif session.phase == 'active' and local_error:
+            # Keep ownership as ``install`` so exact uninstall remains
+            # available, while allowing clients waiting for installation to
+            # converge on a terminal failure instead of polling forever.
+            phase = 'failed'
+        return {
+            'namespace': self.server.namespace,
+            # ``state`` remains the ownership guard used to reject a second
+            # installation. ``ready``/``phase`` express whether read APIs may
+            # consume the atomically published RuntimeDirectory.
+            'state': 'install',
+            'phase': phase,
+            'ready': phase == 'active' and bool(local_ready) and not same_pending_install,
+            'install_id': session.install_id,
+            'install_pending': same_pending_install,
+            'operation_id': operation_id,
+            'updated_at': session.updated_at,
+            'active_directory_revision': session.active_directory_revision,
+            'active_runtime_count': len(session.active),
+            'pending_runtime_count': len(session.pending),
+            'cleanup_runtime_count': len(session.cleanup),
+            'cleanup': _cleanup_diagnostics(session, phase),
+            'retirement_revision': retirement.revision if retirement else 0,
+            'retirement_deadline': retirement.deadline if retirement else None,
+            'last_error': local_error or session.last_error,
+        }
 
     async def get_install_state(self):
         """
@@ -598,7 +917,15 @@ class BackendServer:
         {'state':'install/uninstall'}
         """
 
-        return {'state': 'install' if self.server.check_install_state() else 'uninstall'}
+        # The first process-local snapshot load may read the Kubernetes
+        # ConfigMap.  Keep even that one-off synchronous call off the event
+        # loop; subsequent reads are the in-memory snapshot fast path.
+        session, pending, local_ready, local_error = await run_in_threadpool(
+            self.server.management_lifecycle_snapshot,
+        )
+        return self._install_state_response(
+            session, pending, local_ready, local_error,
+        )
 
     async def submit_query(self, data=Body(...)):
         """
@@ -611,6 +938,9 @@ class BackendServer:
         {'msg': 'Invalid service name'}
         """
 
+        return await run_in_threadpool(self._submit_query, data)
+
+    def _submit_query(self, data):
         if isinstance(data, dict):
             parsed_data = data
         elif isinstance(data, bytes):
@@ -622,21 +952,8 @@ class BackendServer:
         data = parsed_data
 
         source_label = data['source_label']
-        if not self.server.find_datasource_configuration_by_label(source_label):
-            return {'state': 'fail', 'msg': 'Datasource configuration not exists'}
-
-        self.server.source_open = True
-        self.server.source_label = source_label
-        source_ids = self.server.get_source_ids()
-        for source_id in source_ids:
-            self.server.task_results[source_id] = Queue(20)
-
-        time.sleep((len(source_ids) - 1) * 4)
-
-        self.server.is_get_result = True
-        threading.Thread(target=self.server.run_get_result).start()
-
-        return {'state': 'success', 'msg': 'Datasource open successfully'}
+        result, message = self.server.open_query(source_label)
+        return {'state': 'success' if result else 'fail', 'msg': message}
 
     async def stop_query(self):
         """
@@ -645,14 +962,11 @@ class BackendServer:
         {'state':"success/fail",'msg':'...'}
         """
 
-        self.server.source_open = False
-        self.server.source_label = ''
-        self.server.is_get_result = False
-        self.server.task_results.clear()
-        self.server.customized_source_result_visualization_configs.clear()
-        time.sleep(1)
+        return await run_in_threadpool(self._stop_query)
 
-        return {'state': 'success', 'msg': 'Datasource close successfully'}
+    def _stop_query(self):
+        result, message = self.server.close_query()
+        return {'state': 'success' if result else 'fail', 'msg': message}
 
     async def get_query_state(self):
         """
@@ -660,13 +974,14 @@ class BackendServer:
         :return:
         {'state':'open/close','source_label':''}
         """
+        snapshot = await run_in_threadpool(self.server.query_snapshot)
         if self.server.inner_datasource:
-            state = 'open' if self.server.source_open else 'close'
+            state = 'open' if snapshot['open'] else 'close'
         else:
             state = 'disabled'
 
         return {'state': state,
-                'source_label': self.server.source_label
+                'source_label': snapshot['source_label']
                 }
 
     async def get_source_list(self):
@@ -680,17 +995,20 @@ class BackendServer:
         ]
         :return:
         """
-        if not self.server.source_open:
+        snapshot = await run_in_threadpool(self.server.query_snapshot)
+        if not snapshot['open']:
             return []
 
-        source_config = self.server.find_datasource_configuration_by_label(self.server.source_label)
+        source_config = self.server.find_datasource_configuration_by_label(
+            snapshot['source_label'],
+        )
         if not source_config:
             return []
 
         return [{'id': source['id'], 'label': source['name']} for source in source_config['source_list']]
 
     async def get_edge_nodes(self):
-        return self.server.get_edge_nodes()
+        return await run_in_threadpool(self.server.get_edge_nodes)
 
     async def get_task_result(self):
         """
@@ -705,18 +1023,36 @@ class BackendServer:
         }
         :return:
         """
-        if not self.server.source_open:
+        session = await run_in_threadpool(
+            self.server.runtime_orchestrator.current_session,
+        )
+        if session is None or session.phase != 'active':
             return {}
-        ans = {}
-        source_config = self.server.find_datasource_configuration_by_label(self.server.source_label)
-        for source in source_config['source_list']:
-            source_id = source['id']
-            ans[source_id] = self.server.fetch_visualization_data(source_id)
+        return await run_in_threadpool(self._get_task_result)
 
-        return ans
+    def _get_task_result(self):
+        snapshot = self.server.query_snapshot(include_queues=True)
+        if not snapshot['open']:
+            return {}
+        generation = snapshot['generation']
+        queues = snapshot['queues']
+        ans = {}
+        for source_id, task_queue in queues.items():
+            if task_queue is not None:
+                ans[source_id] = self.server.fetch_visualization_data(
+                    source_id,
+                    task_queue=task_queue,
+                )
+
+        # Visualization may download and transform result artifacts.  If stop
+        # or reopen won the race during that work, never publish the previous
+        # generation's response to the new query.
+        return ans if self.server.is_query_generation_active(generation) else {}
 
     async def get_system_parameters(self):
-        return self.server.get_system_parameters()
+        # Rendering and append-only log maintenance are synchronous work; keep
+        # them off the event loop just like the Kubernetes telemetry join.
+        return await run_in_threadpool(self.server.get_system_parameters)
 
     async def get_result_visualization_config(self, source_id):
         """
@@ -751,10 +1087,11 @@ class BackendServer:
         return self.server.get_system_visualization_config()
 
     async def get_datasource_state(self):
-        state = 'open' if self.server.source_open else 'close'
+        snapshot = await run_in_threadpool(self.server.query_snapshot)
+        state = 'open' if snapshot['open'] else 'close'
         if state == 'close':
             return {'state': state}
-        source_label = self.server.source_label
+        source_label = snapshot['source_label']
         config = self.server.find_datasource_configuration_by_label(source_label)
         if config is None:
             LOGGER.warning(f'Config of "{source_label}" does not exist.')
@@ -762,7 +1099,7 @@ class BackendServer:
         return {'state': state, **config}
 
     async def reset_datasource(self):
-        self.server.source_open = False
+        await run_in_threadpool(self.server.close_query)
 
     async def download_log(self):
         """
@@ -774,7 +1111,9 @@ class BackendServer:
             formatted_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
             file_name = f'RESULT_LOG_DAYU_NAMESPACE_{self.server.namespace}_TIME_{formatted_time}'
 
-        upstream_response = self.server.open_result_log_export_stream()
+        upstream_response = await run_in_threadpool(
+            self.server.open_result_log_export_stream,
+        )
         if upstream_response is None:
             raise HTTPException(status_code=503, detail='Result log export is temporarily unavailable')
 

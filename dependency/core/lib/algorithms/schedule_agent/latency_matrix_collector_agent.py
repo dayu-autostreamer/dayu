@@ -7,6 +7,11 @@ import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, Context, ConfigLoader, TaskConstant, LOGGER
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling import materialize_offloading_plan, service_names
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    active_targets,
+)
 
 from .base_agent import BaseAgent
 
@@ -213,20 +218,21 @@ class LatencyMatrixCollectorAgent(BaseAgent, abc.ABC):
 
     def get_schedule_plan(self, info):
         if self.default_configuration is None:
-            return None
+            raise ValueError(
+                'LatencyMatrixCollectorAgent requires a configuration mapping'
+            )
 
         with self.overhead_estimator:
-            policy = dict(self.default_configuration)
-
-            cloud_device = self.cloud_device
             source_edge_device = info['source_device']
             dag = info['dag']
-
-            # Snapshot of current deployment from redeployment policy
-            current_deployment: dict = {}
-            if (hasattr(self.redeployment_policy, 'policy') and
-                    self.redeployment_policy.policy):
-                current_deployment = self.redeployment_policy.policy
+            current_services = service_names(dag)
+            if set(current_services) != set(self.services):
+                raise ValueError(
+                    'latency-matrix services must exactly match the current DAG; '
+                    f'configured={sorted(self.services)}, '
+                    f'current={sorted(current_services)}'
+                )
+            _, current_deployment = active_deployment_for_dag(self.system, dag)
 
             with self._lock:
                 measured_snapshot = {
@@ -234,16 +240,18 @@ class LatencyMatrixCollectorAgent(BaseAgent, abc.ABC):
                     for svc, devs in self._measured_matrix.items()
                 }
 
-            for service_name in dag:
-                if service_name == TaskConstant.END.value:
-                    dag[service_name]['service']['execute_device'] = cloud_device
-                    continue
-
-                if service_name == TaskConstant.START.value:
-                    dag[service_name]['service']['execute_device'] = source_edge_device
-                    continue
-
-                deployed_devices = current_deployment.get(service_name, [])
+            offloading = {}
+            for service_name in current_services:
+                deployed_devices = active_targets(
+                    current_deployment,
+                    service_name,
+                    candidates=self.devices,
+                )
+                if not deployed_devices:
+                    raise ValueError(
+                        f'latency-matrix service {service_name!r} has no active '
+                        'replica on a configured profiling device'
+                    )
 
                 # Prefer devices that haven't been measured yet for this service
                 already_measured = measured_snapshot.get(service_name, set())
@@ -252,14 +260,17 @@ class LatencyMatrixCollectorAgent(BaseAgent, abc.ABC):
 
                 if unmeasured_deployed:
                     execute_device = random.choice(unmeasured_deployed)
-                elif deployed_devices:
-                    execute_device = random.choice(deployed_devices)
                 else:
-                    execute_device = cloud_device
+                    execute_device = random.choice(deployed_devices)
+                offloading[service_name] = execute_device
 
-                dag[service_name]['service']['execute_device'] = execute_device
-
-            policy['dag'] = dag
+            policy = materialize_offloading_plan(
+                self.default_configuration,
+                dag,
+                offloading,
+                source_device=source_edge_device,
+                cloud_device=self.cloud_device,
+            )
         return policy
 
     def update_task(self, task):

@@ -9,3 +9,4 @@
 # tensorrt
 # pycuda
 # ptflops
+redis>=4.5,<6

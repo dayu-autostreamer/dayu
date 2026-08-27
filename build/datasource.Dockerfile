@@ -1,5 +1,6 @@
 ARG REG=docker.io
-FROM ${REG}/dayuhub/rtsp-server
+ARG BASE_REPO=dayuhub
+FROM ${REG}/${BASE_REPO}/rtsp-server:latest
 
 LABEL authors="skyrim"
 

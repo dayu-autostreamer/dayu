@@ -7,18 +7,25 @@ import pytest
 
 
 class DummyTask:
-    def __init__(self, file_path):
+    def __init__(self, file_path, root_uuid="root-task", revision=1):
         self.file_path = file_path
+        self.root_uuid = root_uuid
+        self.revision = revision
 
     def get_file_path(self):
         return self.file_path
+
+    def get_root_uuid(self):
+        return self.root_uuid
+
+    def get_runtime_directory_revision(self):
+        return self.revision
 
 
 @pytest.mark.unit
 def test_file_ops_manage_task_files_and_archives(monkeypatch, tmp_path):
     file_ops_module = importlib.import_module("core.lib.common.file_ops")
     task = DummyTask("payload.bin")
-    temp_file = tmp_path / "temp" / "dayu" / "payload.bin"
     final_file = tmp_path / "payload.bin"
 
     monkeypatch.setenv("NAMESPACE", "dayu")
@@ -27,6 +34,7 @@ def test_file_ops_manage_task_files_and_archives(monkeypatch, tmp_path):
         "get_temporary_file_path",
         staticmethod(lambda file_name: str(tmp_path / "temp" / file_name)),
     )
+    temp_file = Path(file_ops_module.FileOps.get_task_file_in_temp(task))
     temp_file.parent.mkdir(parents=True, exist_ok=True)
 
     file_ops_module.FileOps.save_task_file_in_temp(task, b"temp-data")
@@ -55,6 +63,56 @@ def test_file_ops_manage_task_files_and_archives(monkeypatch, tmp_path):
 
     file_ops_module.FileOps.clear_directory(str(extract_dir))
     assert extract_dir.exists() and list(extract_dir.iterdir()) == []
+
+
+@pytest.mark.unit
+def test_task_artifact_path_uses_existing_lease_identity(monkeypatch, tmp_path):
+    file_ops_module = importlib.import_module("core.lib.common.file_ops")
+    monkeypatch.setenv("NAMESPACE", "dayu")
+    monkeypatch.setattr(
+        file_ops_module.Context,
+        "get_temporary_file_path",
+        staticmethod(lambda file_name: str(tmp_path / file_name)),
+    )
+
+    original = DummyTask("source/task-7.mp4", root_uuid="root-a", revision=4)
+    sibling = DummyTask("another-name.mp4", root_uuid="root-a", revision=4)
+    other_root = DummyTask("source/task-7.mp4", root_uuid="root-b", revision=4)
+    other_revision = DummyTask("source/task-7.mp4", root_uuid="root-a", revision=5)
+
+    assert file_ops_module.FileOps.get_task_file_in_temp(original) == \
+        file_ops_module.FileOps.get_task_file_in_temp(sibling)
+    assert file_ops_module.FileOps.get_task_file_in_temp(original) != \
+        file_ops_module.FileOps.get_task_file_in_temp(other_root)
+    assert file_ops_module.FileOps.get_task_file_in_temp(original) != \
+        file_ops_module.FileOps.get_task_file_in_temp(other_revision)
+    assert Path(file_ops_module.FileOps.get_task_file_in_temp(original)).suffix == ".mp4"
+
+
+@pytest.mark.unit
+def test_task_artifact_publish_is_atomic_and_preserves_previous_file_on_failure(monkeypatch, tmp_path):
+    file_ops_module = importlib.import_module("core.lib.common.file_ops")
+    task = DummyTask("payload.bin")
+    monkeypatch.setenv("NAMESPACE", "dayu")
+    monkeypatch.setattr(
+        file_ops_module.Context,
+        "get_temporary_file_path",
+        staticmethod(lambda file_name: str(tmp_path / file_name)),
+    )
+    artifact = Path(file_ops_module.FileOps.get_task_file_in_temp(task))
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"complete-old-payload")
+    monkeypatch.setattr(
+        file_ops_module.os,
+        "replace",
+        lambda source, destination: (_ for _ in ()).throw(OSError("publish failed")),
+    )
+
+    with pytest.raises(OSError, match="publish failed"):
+        file_ops_module.FileOps.save_task_file_in_temp(task, b"partial-new-payload")
+
+    assert artifact.read_bytes() == b"complete-old-payload"
+    assert list(artifact.parent.glob(".dayu-artifact-*")) == []
 
 
 @pytest.mark.unit

@@ -14,9 +14,21 @@ def load_policy_search(module_name, relative_path, class_name):
     return getattr(module, class_name)
 
 
-AdaMECPolicySearch = load_policy_search("adamec_policy_search", "adamec/policy_search.py", "AdaMECPolicySearch")
-GeckoPolicySearch = load_policy_search("gecko_policy_search", "gecko/policy_search.py", "GeckoPolicySearch")
-MadEyePolicySearch = load_policy_search("madeye_policy_search", "madeye/policy_search.py", "MadEyePolicySearch")
+AdaMECPolicySearch = load_policy_search(
+    "adamec_policy_search",
+    "adamec_agent/policy_search.py",
+    "AdaMECPolicySearch",
+)
+GeckoPolicySearch = load_policy_search(
+    "gecko_policy_search",
+    "gecko_agent/policy_search.py",
+    "GeckoPolicySearch",
+)
+MadEyePolicySearch = load_policy_search(
+    "madeye_policy_search",
+    "madeye_agent/policy_search.py",
+    "MadEyePolicySearch",
+)
 
 
 class FakePredictor:

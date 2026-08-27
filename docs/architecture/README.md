@@ -12,6 +12,11 @@ Dayu is a cloud-edge stream analytics platform for DAG-based AI pipelines. Its c
 - executing multi-stage AI services across heterogeneous nodes
 - collecting result and system telemetry for visualization and export
 
+The core of the project is the separation between a stable runtime skeleton and dynamically selected policy/application
+behavior. Backend, generator, scheduler, controller, processor, distributor, and monitor keep the execution loop stable;
+templates, catalogs, and hooks decide which datasource, service DAG, processor implementations, scheduling policy, and
+visualizers are active for one install.
+
 In practice, Dayu combines three ideas:
 
 - a control plane for installation, datasource selection, runtime status, and visualization
@@ -24,10 +29,61 @@ Mature distributed systems are easier to reason about when you separate control-
 
 | Plane | Main components | Primary responsibility |
 | --- | --- | --- |
-| Control plane | `frontend`, `backend`, `backend/template_helper.py`, `template/` | User workflows, deployment composition, policy and datasource selection, runtime status, visualization, log export |
+| Control plane | `frontend`, `backend`, `backend/runtime_orchestrator.py`, `backend/runtime_service_client.py`, `template/` | User workflows, pure deployment composition, the only Python Kubernetes access, runtime publication, visualization, log export |
 | Source plane | `datasource/datasource_server.py`, `datasource/http_video.py`, `datasource/rtsp_video.py`, `datasource/video_dataset.py` | Source simulation, manifest-driven playback, and source-process lifecycle |
-| Runtime collaboration plane | `generator`, `scheduler`, `controller`, `processor`, `distributor`, `monitor` | Task creation, scheduling, transport, inference, result persistence, and resource reporting |
+| Runtime collaboration plane | `generator`, `scheduler`, `controller`, `processor`, `distributor`, `monitor`, `dependency/core/lib/scheduling/` | Task creation, scheduling contracts, transport, inference, result persistence, and resource reporting |
 | Extension plane | `dependency/core/lib/algorithms/`, `dependency/core/applications/`, `template/processor/*.yaml` | Scheduling policies, runtime hooks, application services, visualization plugins |
+
+## Lifecycle At A Glance
+
+Dayu has a two-layer deployment lifecycle and one explicit publication boundary:
+
+```mermaid
+flowchart LR
+    START["dayu.sh ACTION=start"] --> SUPPORT["Support layer\nbackend/frontend/datasource/redis"]
+    SUPPORT --> INSTALL["Backend /install\npolicy + datasource + DAG + nodes"]
+    INSTALL --> SCHEDULER["Create and activate scheduler RuntimeService"]
+    SCHEDULER --> DECIDE["Source selection + initial deployment"]
+    DECIDE --> RUNTIME["Create and activate remaining RuntimeServices"]
+    RUNTIME --> DIRECTORY["Publish RuntimeDirectory revision 1"]
+    DIRECTORY --> QUERY["Backend /submit_query"]
+    QUERY --> RESULTS["Result + system visualization"]
+    DIRECTORY --> REDEPLOY["Activate -> propose -> CAS commit -> return\nbounded retirement -> cleanup backlog"]
+    DIRECTORY --> STOP["Accept uninstall -> delete generators -> fence/clear\ndelete Scheduler (admission fence) -> delete workers"]
+    STOP --> CLEAN["dayu.sh ACTION=stop support-layer cleanup"]
+```
+
+Key boundaries:
+
+- `dayu.sh` starts the platform support layer. It does not choose an application DAG or scheduler policy.
+- Backend `/install` preflights one node snapshot plus Sedna LC and EdgeMesh agent readiness, then installs the
+  scheduler first because install-time selection and deployment decisions are scheduler APIs.
+- A worker is publishable only after Sedna reports the expected revision/spec plus exact RuntimeService, Service, and
+  Pod identities with both `Activated=True` and `Ready=True`.
+- Scheduler owns the canonical, versioned `RuntimeDirectory`, persisted with proposal/CAS state in Redis so a
+  Scheduler Pod restart preserves the active route authority. Runtime workers resolve controller and processor
+  endpoints from the exact routes copied into each task; they never perform Kubernetes discovery.
+- Scheduler runs as one direct Uvicorn process. Its Redis-backed RuntimeDirectory and lease endpoints are synchronous
+  FastAPI handlers executed in the framework thread pool, keeping blocking Redis I/O away from the ASGI event loop.
+- Scheduler and its policy plugins share the canonical deployment-plan boundary in
+  `dependency/core/lib/scheduling/deployment_plan.py`; `algorithms/` contains implementations, not framework contracts.
+- Deployment policies own the complete Processor replica topology, including any cloud replica. Backend validates and
+  materializes that exact plan, so Scheduler state and the published RuntimeDirectory describe the same deployment.
+- Backend `/submit_query` opens one datasource label and starts result collection.
+- Processor redeployment creates and activates a new immutable revision, persists exact ownership of replaced objects,
+  then uses one Scheduler transaction to commit the route CAS, create the previous revision's immutable deadline, and
+  clamp its leases. Backend persists the returned status, finalizes the active session, and returns immediately. The
+  unified reconcile worker observes lease status and later submits exact-UID `Background` deletion. A second rollout is
+  deferred only during that bounded lease-protection window. Failed deletion moves to a persisted cleanup lane that is
+  advanced independently, cannot be starved by continuous retirement, and does not block later rollouts.
+- Backend `/stop_service` accepts uninstall asynchronously and exposes progress through `/install_state`. Its worker
+  stops generators first, immediately fences every possibly published revision, and attempts the install-scoped
+  directory/proposal clear while Scheduler is live. It then deletes Scheduler as the definitive admission fence before
+  deleting the remaining workers by exact UID. The Session remains the namespace admission lock until a complete
+  Kubernetes snapshot proves every old RuntimeService and dependent workload/network object is gone; prolonged lack of
+  progress is reported without terminating cleanup. It never waits for task leases to expire or release. `dayu.sh ACTION=stop`
+  attempts that backend path first, then always completes the administrative system teardown; backend
+  failure or unavailability never changes the public stop command.
 
 ## The Five-Layer Model In The Repository
 
@@ -36,7 +92,7 @@ The repository README describes Dayu as a five-layer system. The table below map
 | Layer | Meaning in Dayu | Main code or config paths |
 | --- | --- | --- |
 | Basic system layer | Cluster substrate and runtime base provided by Kubernetes/KubeEdge | external infrastructure |
-| Intermediate interface layer | Dayu's deployment bridge to Sedna and EdgeMesh | `backend/`, `hack/`, external Dayu Sedna/EdgeMesh repos |
+| Intermediate interface layer | Immutable Sedna RuntimeServices and exact EdgeMesh activation | `backend/runtime_*.py`, external Dayu Sedna/EdgeMesh repos |
 | System support layer | Human-facing UI, backend orchestration, datasource simulation | `frontend/`, `backend/`, `datasource/` |
 | Collaboration scheduling layer | Runtime workers coordinating stream execution | `dependency/core/{generator,scheduler,controller,distributor,monitor,processor}` and `components/` |
 | Application service layer | Concrete AI services plugged into the runtime | `dependency/core/applications/`, `template/processor/`, `template/services.yaml` |
@@ -53,10 +109,14 @@ flowchart LR
     BE --> SVC["template/services.yaml"]
     POL --> TPL["Component templates"]
     SVC --> PROC["Processor templates"]
-    TPL --> HELPER["TemplateHelper"]
+    TPL --> HELPER["TemplateHelper\npure catalog compiler"]
     PROC --> HELPER
-    HELPER --> KUBE["Kube helper / manifest generation"]
-    KUBE --> CLUSTER["Runtime deployment"]
+    HELPER --> RENDER["RuntimeServiceRenderer\npure manifest rendering"]
+    RENDER --> ORCH["RuntimeOrchestrator"]
+    ORCH --> KUBE["Shared backend Kubernetes client"]
+    KUBE --> SEDNA["Sedna RuntimeService controller"]
+    SEDNA --> MESH["EdgeMesh exact-route activation"]
+    MESH --> DIR["Scheduler RuntimeDirectory"]
 ```
 
 Key points:
@@ -65,6 +125,70 @@ Key points:
 - scheduler policies are catalog entries that point at one scheduler template plus its dependent component templates
 - processor services are catalog entries that point at processor templates
 - datasource choice, DAG choice, and selected nodes are injected at install time
+- processor `node_set` and generator `source_candidate_nodes` are separate immutable permissions; `all_edge_nodes`
+  is resolved by Backend from the single Node/Sedna/EdgeMesh snapshot and may place a source outside the processor set
+- `TemplateHelper` and `RuntimeServiceRenderer` are pure: they do not load cluster configuration or call Kubernetes
+- `ClusterClient` loads in-cluster configuration once and owns the sole reusable `ApiClient`; `RuntimeServiceClient`
+  and `RuntimeSessionStore` require its injected API handles and cannot create independent clients; runtime
+  containers do not install or import the Kubernetes Python package
+- the compact transaction record is stored in the `dayu-runtime-session` ConfigMap with Kubernetes
+  `resourceVersion` compare-and-swap; no local manifest file is a lifecycle source of truth
+- ownership has two explicit label planes: Backend selects the RuntimeService CRs it created with
+  `app.kubernetes.io/managed-by=dayu-backend`, while materialized Pods are selected with Sedna's guaranteed
+  `dayu.io/mesh-managed=true` and then matched against the exact Pod UID stored in the session
+- RuntimeDirectory keeps Sedna's stable DNS identity without a terminal dot. HTTP, Redis, and iperf clients turn
+  `*.svc.cluster.local` into an absolute DNS name only at the connection boundary, avoiding Pod `ndots` search-path
+  expansion without changing directory hashes or recovery identity
+- one Backend telemetry worker binds exact processor Pod name/UID identities from the immutable RuntimeDirectory,
+  samples Scheduler and Kubernetes on independent bounded cadences, and publishes generation-guarded last-known-good
+  snapshots; it normalizes summed Pod CPU/memory against cached Node resources and projects the one edge-to-cloud
+  bandwidth probe as an explicitly shared value, while management endpoints never turn browser polling into Kubernetes
+  or Scheduler calls
+- Scheduler stores the active RuntimeDirectory, proposals, and task leases in support Redis. `dayu.sh` mounts Redis
+  `/data` on the cloud host and enables AOF with `appendfsync=always`, so Scheduler and Redis Pod replacement do not
+  erase committed routing state when that host path remains available
+- uninstall immediately fences the relevant task-lease revisions, then calls `DELETE /runtime-directory` with the
+  exact install id before Scheduler deletion. Redis uses the install-scoped proposal index to atomically delete the
+  active snapshot, every pending proposal, and the index itself. A mismatched install id fails closed; repeating an
+  already-cleared request is safe. If that metadata path fails, exact-UID Scheduler deletion is the final admission
+  fence and therefore precedes deletion of the remaining workers
+
+## Runtime Routing And Task Ownership
+
+Runtime Pods receive `DAYU_RUNTIME_BOOTSTRAP` with immutable install metadata, the scheduler/Redis support endpoints,
+compact node metadata, and a task-lease TTL. Bootstrap is not a topology cache. The scheduler's committed directory is
+the route authority. In production the directory is Redis-backed rather than process memory:
+
+```mermaid
+sequenceDiagram
+    participant BE as Backend
+    participant S as Scheduler
+    participant G as Generator
+    participant W as Controller/Processor
+    participant D as Distributor
+    BE->>S: PUT revision 1 or propose next revision
+    S-->>BE: CAS commit + canonical hash + atomic retirement status
+    G->>G: getter filter + reserve TaskIdentity
+    G->>S: schedule request carrying task_context
+    S->>S: persist expiring task-bound decision reservation
+    S-->>G: plan + decision identity + exact routes
+    G->>G: materialize source data with the reserved identity
+    alt Task materialized
+        G->>S: acquire lease + immutable task commitment
+        S->>S: verify reservation and promote active record
+        G->>W: task carrying decision, routes, and revision
+        W->>D: completed task
+        D->>S: final renew before persistence
+        D->>S: scenario update
+        D->>S: release after durable storage + acknowledgement
+    else No Task materialized
+        G->>S: cancel exact task-bound reservation
+        S-->>G: idempotent cancellation acknowledgement
+    end
+```
+
+There is no route fallback. Missing, ambiguous, stale, or incomplete route identity is a hard runtime error. This is
+what removes edge-side Pod/Node/Service list calls and the refresh races that came with per-process caches.
 
 ## Runtime Data Flow
 
@@ -75,8 +199,8 @@ flowchart LR
     DS["Datasource supervisor"] --> SRC["HTTP / RTSP source"]
     SRC --> GEN["Generator"]
     GEN --> SCH["Scheduler"]
-    GEN --> CTRL["Controller"]
-    CTRL --> PROC["Processor"]
+    GEN --> CTRL["Exact controller route from task"]
+    CTRL --> PROC["Exact processor route from task"]
     PROC --> CTRL
     CTRL --> DIST["Distributor"]
     DIST --> SCH
@@ -91,24 +215,59 @@ More concretely:
 
 1. Backend opens a datasource through `/submit_query`.
 2. Datasource supervisor starts `http_video` or `rtsp_video` source processes based on backend state.
-3. Generator reads source data, asks scheduler for the next plan, and submits tasks to controller.
-4. Controller forwards tasks into processors and later receives processed returns.
-5. Distributor persists completed tasks and forwards scenario updates back to scheduler.
-6. Monitor periodically reports resource state to scheduler.
-7. Backend polls distributor and scheduler to produce frontend-facing result and system visualizations.
+3. Generator first applies the getter filter and reserves one root `TaskIdentity`. When scheduling is initial or due,
+   it requests a plan for that exact identity before source data is materialized; the plan may still change source FPS,
+   resolution, buffer, encoding, or DAG assignment. If the getter creates the Task, Generator acquires its lease with
+   an immutable schedule commitment before submission. If the getter returns no Task, including finite-source
+   exhaustion, Generator cancels any exact reservation created for that identity before ownership transfer. A zero
+   scheduling interval requests a decision per task;
+   a positive interval may reuse one decision for later tasks while preserving a distinct root identity for each.
+   Transient admission or delivery failure applies source backpressure instead of discarding the materialized task.
+4. Generator, Controller, and Processor retain ownership until the next hop returns an exact task UUID ACK. Controller
+   and Processor use only the Task routes and do not call the lease API.
+5. Every fork of one root task references the same immutable node-local artifact. Its path derives from the existing
+   lease identity, publishing is atomic, and no intermediate branch or Pod lifecycle may delete it.
+6. Distributor renews once to fence a late new result and durably persists it. Persistence is the terminal delivery
+   ACK; scheduler scenario feedback and lease release then converge independently.
+7. Monitor periodically reports resource state and its RuntimeDirectory revision to scheduler. Structured processor
+   `queue_state` telemetry atomically reports ordered waiting identities, whether the single background execution lane
+   is busy, its running task and processing/handoff phase, and observation metadata for every local logical service.
+   Scheduler exposes explicit
+   in-process snapshot scopes: `LIVE` contains executable deployment and revision-tagged telemetry, from which consumers
+   retain only matching-revision samples. The default `COMMITTED` scope also includes expiring reservations, active
+   lease records, and exact known fork/join barriers for commitment-aware scheduling.
+8. Backend polls distributor and scheduler to produce frontend-facing result and system visualizations.
 
 ## Runtime Ownership By Component
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
-| Backend | install/query lifecycle, visualization config, log export, source state | low-level inference behavior |
+| Backend | Kubernetes access, validated plan composition, RuntimeService/session lifecycle, install/query lifecycle, visualization, source state | task routing or low-level inference behavior |
 | Datasource | source playback, manifest interpretation, clip or frame indexing | scheduling decisions |
-| Generator | source segmentation, task creation, pre-schedule and pre-submit hooks | inference execution |
-| Scheduler | policy state, resource state, source selection, deployment planning | task persistence |
-| Controller | transport timing, task forwarding, return-path orchestration | scheduling or storage |
-| Processor | AI inference, scenario extraction, queue discipline | deployment or visualization |
-| Distributor | durable result storage, incremental result queries, export files | operator workflows |
-| Monitor | resource sampling | task-level scheduling decisions |
+| Generator | source segmentation, task creation, pre-schedule and pre-submit hooks, reservation promotion or cancellation | inference execution |
+| Scheduler | policy/resource state, source/deployment plans, scope-aware in-process snapshots, task admission/lease records and known barriers, persistent-AOF Redis RuntimeDirectory CAS and revision leases | Kubernetes discovery, Pod/RuntimeService recovery, or result persistence |
+| Controller | transport timing, acknowledged task forwarding, idempotent queryable task barriers | scheduling, lease management, or artifact deletion by an intermediate branch |
+| Processor | AI inference, scenario extraction, queue discipline, atomic waiting/running state, retaining computed results until ACK | deployment, lease management, or visualization |
+| Distributor | final task-lease validation/release, durable result storage, incremental result queries, export files | operator workflows |
+| Monitor | resource sampling through committed local routes | Kubernetes discovery or task-level scheduling decisions |
+
+## Runtime Content Contract
+
+Processor services exchange a single content envelope:
+
+```json
+{
+  "service": "service-name",
+  "outputs": {},
+  "profile": {
+    "frame_count": 0
+  }
+}
+```
+
+This contract is intentionally narrow. Applications return service-specific `outputs`, and processor shells add the
+envelope and compact profile. The scheduler and visualizers should consume this shape instead of relying on
+service-local ad hoc fields.
 
 ## Extension Seams
 
@@ -123,7 +282,10 @@ The repository is intentionally structured around a few long-lived extension sea
 
 ## Where To Go Next
 
+- [`../repository-quickstart.md`](../repository-quickstart.md): repository-local orientation and validation path
+- [`../concepts.md`](../concepts.md): vocabulary shared by code, templates, APIs, and tests
 - [`../configuration/README.md`](../configuration/README.md): how the YAML and env configuration model works
 - [`../api/README.md`](../api/README.md): route-level API references
 - [`../hooks/README.md`](../hooks/README.md): hook lifecycle and registration model
+- [`../operations/README.md`](../operations/README.md): start/stop, install, query, redeploy, and cleanup behavior
 - [`../development/README.md`](../development/README.md): contributor-oriented repository map and workflows

@@ -1,0 +1,4 @@
+from .vehicle_trajectory_prediction_tensorrt8 import VehicleTrajectoryPredictionTensorRT8
+from .vehicle_trajectory_prediction_tensorrt10 import VehicleTrajectoryPredictionTensorRT10
+
+__all__ = ['VehicleTrajectoryPredictionTensorRT8', 'VehicleTrajectoryPredictionTensorRT10']

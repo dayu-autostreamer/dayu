@@ -160,7 +160,7 @@ class DAG:
         return self.nodes[TaskConstant.END.value]
 
     def check_is_pipeline(self):
-        """Check if DAG forms a linear pipeline."""
+        """Check whether the DAG forms a pipeline."""
         start = self.get_start_node()
         end = self.get_end_node()
 
@@ -232,7 +232,7 @@ class DAG:
         for service_name in self.nodes:
             if service_name not in visited:
                 if dfs(service_name):
-                    raise ValueError(f"Cycle detected in DAG")
+                    raise ValueError("Cycle detected in DAG")
 
     def _check_connectivity(self):
         """check if dag has multiple disconnected components"""

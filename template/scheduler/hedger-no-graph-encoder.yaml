@@ -14,25 +14,12 @@ pod-template:
           'profile':'inference',
           'overrides':{
             'device':'cuda:1',
-            'inference':{
-              'run_deployment_worker': True,
-              'run_offloading_worker': True,
-              'deployment_deterministic': True,
-              'offloading_deterministic': True
-            },
             'checkpoint':{
               'root_dir':'hedger_no_graph_encoder_model',
               'load':{
-                'enabled': True,
-                'from_stage':'joint_finetune',
-                'which':'final',
                 'restore':{
-                  'encoder': False,
-                  'deployment_agent': True,
-                  'offloading_agent': True,
-                  'optimizer': False
-                },
-                'reset_stage_counters': True
+                  'encoder': False
+                }
               }
             }
           }

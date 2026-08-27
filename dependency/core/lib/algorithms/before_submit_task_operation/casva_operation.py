@@ -117,7 +117,7 @@ class CASVABSTOperation(BaseBSTOperation, abc.ABC):
         return raw_size * (resolution[0] / raw_resolution[0]) * (fps / raw_fps)
 
     def __call__(self, system, new_task:Task):
-        task = system.current_task
+        task = new_task
 
         tmp_data = task.get_tmp_data()
         meta_data = task.get_metadata()

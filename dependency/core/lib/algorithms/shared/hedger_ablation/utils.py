@@ -2,6 +2,8 @@ from typing import Dict
 
 import torch
 
+__all__ = ("latest_seq_value",)
+
 
 def latest_seq_value(feats: Dict[str, torch.Tensor], key: str, idx: int, default: float = 0.0) -> float:
     value = feats.get(key)
@@ -13,6 +15,3 @@ def latest_seq_value(feats: Dict[str, torch.Tensor], key: str, idx: int, default
         return float(value[idx].item())
     except Exception:
         return float(default)
-
-
-__all__ = ("latest_seq_value",)

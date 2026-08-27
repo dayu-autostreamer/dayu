@@ -1,0 +1,3 @@
+from .vehicle_trajectory_prediction_gru import VehicleTrajectoryPrediction as VehicleTrajectoryPredictionWithoutTensorRT
+
+__all__ = ['VehicleTrajectoryPredictionWithoutTensorRT']

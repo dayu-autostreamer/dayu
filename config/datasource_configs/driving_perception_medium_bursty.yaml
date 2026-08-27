@@ -1,0 +1,12 @@
+source_name: "Driving Perception Cameras (Medium/Bursty)"
+source_type: "video"
+source_mode: "http_video"
+source_list:
+  - name: "driving_perception_medium_bursty_camera"
+    url: ""
+    dir: "driving_perception_medium_bursty/"
+    metadata:
+      resolution: "1080p"
+      fps: 30
+      encoding: "h264"
+      buffer_size: 4

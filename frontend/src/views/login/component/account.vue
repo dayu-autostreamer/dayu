@@ -22,7 +22,7 @@
 		</el-form-item>
 	</el-form>
 </template>
-∂
+
 <script setup lang="ts" name="loginAccount">
 import { reactive, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -69,7 +69,7 @@ const onSignIn = async () => {
 		const isNoPower = await initFrontEndControlRoutes();
 		signInSuccess(isNoPower);
 	} else {
-		// 模拟后端控制路由，isRequestRoutes 为 true，则开启后端控制路由
+		// Backend-controlled route mode, backed by Dayu route data.
 		// 添加完动态路由，再进行 router 跳转，否则可能报错 No match found for location with path "/"
 		const isNoPower = await initBackEndControlRoutes();
 		// 执行完 initBackEndControlRoutes，再执行 signInSuccess
@@ -83,7 +83,7 @@ const signInSuccess = (isNoPower: boolean | undefined) => {
 		Session.clear();
 	} else {
 		// 初始化登录成功时间问候语
-		let currentTimeInfo = currentTime.value;
+		const currentTimeInfo = currentTime.value;
 		// 登录成功，跳到转首页
 		// 如果是复制粘贴的路径，非首页/登录页，那么登录成功后重定向到对应的路径中
 		if (route.query?.redirect) {

@@ -16,7 +16,7 @@ class CEVASBSTOperation(BaseBSTOperation, abc.ABC):
         pass
 
     def __call__(self, system, new_task):
-        task = system.current_task
+        task = new_task
         tmp_data = task.get_tmp_data()
 
         compressed_file = new_task.get_file_path()

@@ -1,0 +1,28 @@
+position: both
+pod-template:
+  image: vehicle-trajectory-prediction
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "structured_processor"
+    - name: STRUCTURED_PROCESSOR_PARAMETERS
+      value: >
+        {
+          'trt_weights':'vehicle_trajectory_prediction.engine',
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'vehicle_trajectory_prediction.pt',
+          'device':0
+        }
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        ['structured_profile']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/vehicle-trajectory-prediction/"

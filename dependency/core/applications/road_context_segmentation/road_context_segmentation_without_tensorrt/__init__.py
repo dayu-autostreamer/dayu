@@ -1,0 +1,3 @@
+from .road_context_segmentation_opencv import RoadContextSegmentation as RoadContextSegmentationWithoutTensorRT
+
+__all__ = ['RoadContextSegmentationWithoutTensorRT']

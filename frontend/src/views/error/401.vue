@@ -15,7 +15,7 @@
 					</div>
 				</div>
 				<div class="right">
-					<img src="https://i.hd-r.cn/2cf0d2e192660eec23eb9d0655753e7d.png" />
+					<img :src="dayuLogo" alt="Dayu" />
 				</div>
 			</div>
 		</div>
@@ -24,12 +24,10 @@
 
 <script setup lang="ts" name="noPower">
 import { Session } from '/@/utils/storage';
+import dayuLogo from '/@/assets/logo.svg';
 
 const onSetAuth = () => {
-	// https://gitee.com/lyt-top/vue-next-admin/issues/I5C3JS
-	// 清除缓存/token等
 	Session.clear();
-	// 使用 reload 时，不需要调用 resetRoute() 重置路由
 	window.location.reload();
 };
 </script>
@@ -84,6 +82,7 @@ const onSetAuth = () => {
 			img {
 				width: 100%;
 				height: 100%;
+				object-fit: contain;
 			}
 		}
 	}

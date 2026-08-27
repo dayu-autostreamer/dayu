@@ -4,8 +4,9 @@ from core.lib.common import LOGGER, NameMaintainer
 
 
 class Timer:
-    def __init__(self, label=""):
+    def __init__(self, label="", log_enabled=True):
         self.label = label
+        self.log_enabled = bool(log_enabled)
         self.elapsed_time = 0
 
     def __enter__(self):
@@ -15,10 +16,11 @@ class Timer:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.end_time = time.time()
         self.elapsed_time = self.end_time - self.start_time
-        if self.label:
-            LOGGER.info(f"[{self.label}] Execution time: {self.elapsed_time:.4f}s")
-        else:
-            LOGGER.info(f"Execution time: {self.elapsed_time:.4f}s")
+        if self.log_enabled:
+            if self.label:
+                LOGGER.info(f"[{self.label}] Execution time: {self.elapsed_time:.4f}s")
+            else:
+                LOGGER.info(f"Execution time: {self.elapsed_time:.4f}s")
 
     def get_elapsed_time(self):
         return self.elapsed_time

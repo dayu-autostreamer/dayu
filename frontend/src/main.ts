@@ -9,6 +9,7 @@ import other from '/@/utils/other';
 import '/@/theme/index.scss';
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
+import { useInstallStateStore } from '/@/stores/installState';
 import { useSystemParametersStore } from '/@/stores/systemParameters';
 
 const app = createApp(App);
@@ -16,11 +17,11 @@ const app = createApp(App);
 directive(app);
 other.elSvg(app);
 
-app.use(pinia).use(router).use(ElementPlus).use(i18n).mount('#app');
+app.use(pinia).use(router).use(ElementPlus).use(i18n);
 
-try {
-	const sysParams = useSystemParametersStore();
-	sysParams.init();
-} catch {
-	// Keep startup resilient in tests and non-browser environments.
-}
+const installState = useInstallStateStore();
+installState.init();
+const sysParams = useSystemParametersStore();
+sysParams.init();
+
+app.mount('#app');

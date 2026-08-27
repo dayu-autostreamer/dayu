@@ -1,7 +1,6 @@
 import importlib
 import importlib.util
 import pickle
-import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -9,6 +8,15 @@ from uuid import uuid4
 
 import numpy as np
 import pytest
+
+
+class PickledAdaptiveAgent:
+    def __init__(self, epsilon=5):
+        self.epsilon = epsilon
+
+    @staticmethod
+    def choose_action(_state):
+        return 0
 
 
 def build_fake_torch_modules():
@@ -143,19 +151,16 @@ def test_frame_compress_package_loader_exports_only_public_symbols(monkeypatch):
     fake_simple.__all__ = ["SimpleCompress"]
     fake_simple.SimpleCompress = object()
 
-    fake_hidden = ModuleType(f"{package_name}.hidden")
+    fake_hidden = ModuleType(f"{package_name}.support")
     fake_hidden.internal = object()
 
-    monkeypatch.setattr(
-        importlib.import_module("pkgutil"),
-        "iter_modules",
-        lambda path: [(None, "simple_compress", False), (None, "hidden", False)],
-    )
+    imported = []
 
     def fake_import_module(name, package=None):
-        if name == ".simple_compress":
+        imported.append(name)
+        if name == f"{package_name}.simple_compress":
             return fake_simple
-        if name == ".hidden":
+        if name.startswith(f"{package_name}."):
             return fake_hidden
         raise AssertionError(f"unexpected import: {name}")
 
@@ -172,6 +177,12 @@ def test_frame_compress_package_loader_exports_only_public_symbols(monkeypatch):
 
     assert package_module.__all__ == ["SimpleCompress"]
     assert package_module.SimpleCompress is fake_simple.SimpleCompress
+    assert imported == [
+        f"{package_name}.adaptive_compress",
+        f"{package_name}.base_compress",
+        f"{package_name}.casva_compress",
+        f"{package_name}.simple_compress",
+    ]
 
 
 @pytest.mark.unit
@@ -179,7 +190,7 @@ def test_adaptive_compress_initializes_model_and_exposes_helper_paths(monkeypatc
     adaptive_module = load_frame_compress_module("adaptive_compress", monkeypatch, with_fake_torch=True)
 
     model_file = tmp_path / "model.pkl"
-    model_file.write_bytes(pickle.dumps(SimpleNamespace(epsilon=5)))
+    model_file.write_bytes(pickle.dumps(PickledAdaptiveAgent(epsilon=5)))
 
     loaded_agent = adaptive_module.AdaptiveCompress.load_model(str(model_file))
     assert loaded_agent.epsilon == 5
@@ -188,15 +199,17 @@ def test_adaptive_compress_initializes_model_and_exposes_helper_paths(monkeypatc
     monkeypatch.setattr(
         adaptive_module.AdaptiveCompress,
         "load_model",
-        staticmethod(lambda _filename="agent_model.pkl": SimpleNamespace(epsilon=7)),
+        staticmethod(
+            lambda _filename="agent_model.pkl": SimpleNamespace(
+                epsilon=7,
+                choose_action=lambda _state: 0,
+            )
+        ),
     )
 
     compressor = adaptive_module.AdaptiveCompress()
     assert compressor.agent_file == str(model_file)
     assert compressor.agent.epsilon == 0
-    assert adaptive_module.AdaptiveCompress.generate_yuv_temp_path(2, 9) == "video_source_2_task_9_tmp.yuv"
-    assert adaptive_module.AdaptiveCompress.generate_file_path(2, 9) == "video_source_2_task_9.h264"
-    assert adaptive_module.AdaptiveCompress.generate_roi_path(2, 9) == "roi_2_task_9.txt"
 
     state = adaptive_module.State(1, 2, 3, 4, 5, 6)
     assert np.array_equal(state.to_array(), np.array([1, 2, 3, 4, 5, 6]))
@@ -205,7 +218,7 @@ def test_adaptive_compress_initializes_model_and_exposes_helper_paths(monkeypatc
         20: {"file_size": 50, "accuracy": 0.6},
         30: {"file_size": 20, "accuracy": 0.8},
     }
-    assert adaptive_module.AdaptiveCompress.estimate_performace_with_qp(
+    assert adaptive_module.AdaptiveCompress.estimate_performance_with_qp(
         performance_gt, 30, -10, -5, 0.5, 0.5
     ) > 0
 
@@ -265,8 +278,8 @@ def test_adaptive_compress_analysis_qp_selection_and_call_cleanup(monkeypatch, t
     assert any("bad state" in message for message in errors)
 
     runtime_compressor = adaptive_module.AdaptiveCompress.__new__(adaptive_module.AdaptiveCompress)
-    runtime_compressor.performace_gt = performance_gt
-    runtime_compressor.agent = SimpleNamespace()
+    runtime_compressor.performance_gt = performance_gt
+    runtime_compressor.agent = SimpleNamespace(choose_action=lambda _state: 0)
     runtime_compressor.past_qp = 45
 
     init_calls = []
@@ -282,25 +295,42 @@ def test_adaptive_compress_analysis_qp_selection_and_call_cleanup(monkeypatch, t
     monkeypatch.setattr(adaptive_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
     monkeypatch.setattr(adaptive_module.LOGGER, "debug", lambda message: None)
 
-    class DummyProcess:
-        def wait(self):
-            commands.append("wait")
-
+    encoder_path = tmp_path / "video_encode"
     monkeypatch.setattr(
-        subprocess,
-        "Popen",
-        lambda command, shell=True: commands.append(command) or DummyProcess(),
+        adaptive_module.Context,
+        "get_file_path",
+        staticmethod(lambda name: str(encoder_path) if name == "video_encode" else name),
     )
 
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        Path(command[5]).write_bytes(b"encoded")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(adaptive_module.subprocess, "run", fake_run)
+
     frame_buffer = [(np.zeros((4, 6, 3), dtype=np.uint8), [(0, 0, 2, 2)])]
-    output_path = runtime_compressor(SimpleNamespace(), frame_buffer, source_id=2, task_id=9)
-    assert output_path == "video_source_2_task_9.h264"
-    assert init_calls == [("video_source_2_task_9_tmp.yuv", 1)]
-    assert any("--econstqp -qpi 37 37 37" in command for command in commands if isinstance(command, str))
-    assert removed == ["roi_2_task_9.txt", "video_source_2_task_9_tmp.yuv"]
+    requested_output = tmp_path / "encoded.h264"
+    output_path = runtime_compressor(SimpleNamespace(), frame_buffer, str(requested_output))
+    yuv_path = str(tmp_path / "encoded.adaptive.yuv")
+    roi_path = str(tmp_path / "encoded.adaptive.roi.txt")
+    assert output_path == str(requested_output)
+    assert init_calls == [(yuv_path, 1)]
+    command, run_kwargs = commands[0]
+    assert command[:6] == [
+        str(encoder_path),
+        yuv_path,
+        "6",
+        "4",
+        "H264",
+        str(requested_output),
+    ]
+    assert command[6:12] == ["--econstqp", "-qpi", "37", "37", "37", "--roi"]
+    assert run_kwargs["check"] is True
+    assert removed == [roi_path, yuv_path]
 
     with pytest.raises(AssertionError, match="frame buffer is empty"):
-        runtime_compressor(SimpleNamespace(), [], source_id=1, task_id=1)
+        runtime_compressor(SimpleNamespace(), [], str(tmp_path / "empty.h264"))
 
 
 @pytest.mark.unit

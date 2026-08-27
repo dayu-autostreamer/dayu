@@ -114,7 +114,7 @@
 </template>
 
 <script>
-import { reactive, watch } from 'vue';
+import { markRaw, reactive, watch } from 'vue';
 import mitt from 'mitt';
 import { ElMessage } from 'element-plus';
 import { registerVisualizationModules } from '../shared/visualizationRegistry';
@@ -134,7 +134,12 @@ export default {
 			variableStates: {},
 			visualizationComponents: {},
 			vizControls: {},
-			pollingInterval: null,
+			pollingTimer: null,
+			pollingActive: false,
+			pollingGeneration: 0,
+			resultController: null,
+			componentUnmounted: false,
+			forceUpdateHandler: null,
 			isSourceLoading: false,
 			isUploading: false,
 		};
@@ -164,6 +169,18 @@ export default {
 	},
 
 	async created() {
+		this.forceUpdateHandler = () => {
+			this.$nextTick(() => {
+				if (!this.selectedDataSource || this.componentUnmounted) return;
+				this.currentVisualizationConfig.forEach((viz) => {
+					this.variableStates[this.selectedDataSource][viz.id] = {
+						...this.variableStates[this.selectedDataSource][viz.id],
+					};
+				});
+			});
+		};
+		emitter.on('force-update-charts', this.forceUpdateHandler);
+
 		this.dataSourceList.forEach((source) => {
 			this.bufferedTaskCache[source.id] = reactive([]);
 		});
@@ -175,20 +192,11 @@ export default {
 		);
 
 		await this.autoRegisterComponents();
+		if (this.componentUnmounted) return;
 		this.componentsLoaded = true;
 		await this.fetchDataSourceList();
+		if (this.componentUnmounted) return;
 		this.setupDataPolling();
-
-		emitter.on('force-update-charts', () => {
-			this.$nextTick(() => {
-				if (!this.selectedDataSource) return;
-				this.currentVisualizationConfig.forEach((viz) => {
-					this.variableStates[this.selectedDataSource][viz.id] = {
-						...this.variableStates[this.selectedDataSource][viz.id],
-					};
-				});
-			});
-		});
 	},
 	watch: {
 		selectedDataSource(newVal) {
@@ -360,10 +368,12 @@ export default {
 				console.error('Failed to fetch visualization config:', error);
 			}
 		},
-		async getLatestResultData() {
+		async getLatestResultData(signal) {
 			try {
-				const response = await fetch('/api/task_result');
+				const response = await fetch('/api/task_result', { signal });
+				if (!response.ok) throw new Error(`Task result request failed: ${response.status}`);
 				const data = await response.json();
+				if (signal?.aborted) return;
 				const newCache = { ...this.bufferedTaskCache };
 				const configUpdates = {};
 
@@ -372,7 +382,7 @@ export default {
 					if (!Array.isArray(tasks)) return;
 
 					const validTasks = tasks
-						.filter((task) => task?.task_id && Array.isArray(task.data))
+						.filter((task) => task?.task_id !== null && task?.task_id !== undefined && Array.isArray(task.data))
 						.map((task) => ({
 							task_id: task.task_id,
 							data: task.data.map((item) => ({
@@ -428,14 +438,34 @@ export default {
 					emitter.emit('force-update-charts');
 				});
 			} catch (error) {
-				console.error('Data fetch failed:', error);
+				if (error?.name !== 'AbortError') console.error('Data fetch failed:', error);
 			}
 		},
 		setupDataPolling() {
-			this.getLatestResultData();
-			this.pollingInterval = setInterval(() => {
-				this.getLatestResultData();
-			}, 2000);
+			if (this.pollingActive || this.componentUnmounted) return;
+			this.pollingActive = true;
+			const generation = ++this.pollingGeneration;
+			const poll = async () => {
+				if (!this.pollingActive || generation !== this.pollingGeneration) return;
+				this.pollingTimer = null;
+				const controller = markRaw(new AbortController());
+				this.resultController = controller;
+				await this.getLatestResultData(controller.signal);
+				if (this.resultController === controller) this.resultController = null;
+				if (!this.pollingActive || generation !== this.pollingGeneration) return;
+				this.pollingTimer = window.setTimeout(poll, 2000);
+			};
+			void poll();
+		},
+		stopDataPolling() {
+			this.pollingActive = false;
+			this.pollingGeneration += 1;
+			if (this.pollingTimer) {
+				clearTimeout(this.pollingTimer);
+				this.pollingTimer = null;
+			}
+			this.resultController?.abort();
+			this.resultController = null;
 		},
 		exportTaskLog() {
 			const link = document.createElement('a');
@@ -455,11 +485,12 @@ export default {
 		},
 	},
 	beforeUnmount() {
-		if (this.pollingInterval) {
-			clearInterval(this.pollingInterval);
-			this.pollingInterval = null;
+		this.componentUnmounted = true;
+		this.stopDataPolling();
+		if (this.forceUpdateHandler) {
+			emitter.off('force-update-charts', this.forceUpdateHandler);
+			this.forceUpdateHandler = null;
 		}
-		emitter.off('force-update-charts');
 	},
 };
 </script>

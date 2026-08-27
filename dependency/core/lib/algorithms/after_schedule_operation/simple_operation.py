@@ -5,7 +5,6 @@ from .base_operation import BaseASOperation
 
 from core.lib.common import ClassFactory, ClassType
 from core.lib.content import Task
-from core.lib.network import NodeInfo
 
 __all__ = ('SimpleASOperation',)
 
@@ -17,21 +16,28 @@ class SimpleASOperation(BaseASOperation, abc.ABC):
 
     def __call__(self, system, scheduler_response):
         if scheduler_response is None:
-            # Remain the meta_data as before scheduling or raw_meta_data
-            # Set execute device of all services as cloud device
-            Task.set_execute_device(system.task_dag, system.cloud_device)
-            system.deployment_version = 0
-        else:
-            scheduler_policy = scheduler_response['plan']
-            system.service_deployment = scheduler_response.get('deployment', {})
-            deployment_version = scheduler_response.get('deployment_version', 0)
-            system.deployment_version = 0 if deployment_version is None else deployment_version
+            return
 
-            dag_deployment = scheduler_policy['dag']
+        scheduler_policy = copy.deepcopy(scheduler_response.get('plan') or {})
+        if not isinstance(scheduler_policy, dict):
+            raise TypeError('scheduler response plan must be an object')
+
+        deployment = scheduler_response.get('deployment')
+        if isinstance(deployment, dict):
+            system.service_deployment = copy.deepcopy(deployment)
+        if 'deployment_version' in scheduler_response:
+            deployment_version = scheduler_response.get('deployment_version')
+            if deployment_version is not None:
+                system.deployment_version = deployment_version
+
+        dag_deployment = scheduler_policy.pop('dag', None)
+        if dag_deployment is not None:
+            if not isinstance(dag_deployment, dict):
+                raise TypeError('scheduler plan dag must be an object')
             dag = Task.extract_dag_from_dag_deployment(dag_deployment)
-            # Set execute device of start and end node
-            dag.get_start_node().service.set_execute_device(system.local_device)
-            dag.get_end_node().service.set_execute_device(NodeInfo.get_cloud_node())
             system.task_dag = copy.deepcopy(dag)
-            del scheduler_policy['dag']
-            system.meta_data.update(scheduler_policy)
+
+        # Every non-control plan field is a configuration decision. Missing
+        # fields retain the current value, so algorithms may schedule any
+        # subset without the host imposing video-specific defaults.
+        system.meta_data.update(scheduler_policy)

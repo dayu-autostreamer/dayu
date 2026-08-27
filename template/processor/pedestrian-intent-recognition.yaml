@@ -1,0 +1,28 @@
+position: both
+pod-template:
+  image: pedestrian-intent-recognition
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "structured_processor"
+    - name: STRUCTURED_PROCESSOR_PARAMETERS
+      value: >
+        {
+          'trt_weights':'pedestrian_intent_recognition.engine',
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'pedestrian_intent_recognition.pt',
+          'device':0
+        }
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        ['structured_profile']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/pedestrian-intent-recognition/"

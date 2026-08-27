@@ -36,7 +36,10 @@ class ROILabelFrameVisualizer(ImageVisualizer, abc.ABC):
 
         try:
             image = self.get_first_frame_from_video(file_path)
-            image = self.draw_bboxes_and_labels(image, roi_content[0][0], label_content[0][0])
+            bboxes = self.extract_bboxes(roi_content)
+            labels = self.extract_texts(label_content)
+            labels = (labels + [''] * len(bboxes))[:len(bboxes)]
+            image = self.draw_bboxes_and_labels(image, bboxes, labels)
 
             base64_data = EncodeOps.encode_image(image)
         except Exception as e:

@@ -24,6 +24,7 @@ _optional_import("detector_processor", "DetectorProcessor")
 _optional_import("detector_tracker_processor", "DetectorTrackerProcessor")
 _optional_import("classifier_processor", "ClassifierProcessor")
 _optional_import("roi_classifier_processor", "RoiClassifierProcessor")
+_optional_import("structured_processor", "StructuredProcessor")
 
 from .processor_server import ProcessorServer
 

@@ -3,9 +3,10 @@ import importlib
 import pytest
 
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext, TaskBarrierStore
 
 
-def build_join_task(past_flow_index, current_flow_index="join", root_uuid="root-task-0"):
+def build_join_task(past_flow_index, current_flow_index="join", root_uuid="root-task-0", value=None):
     dag = Task.extract_dag_from_dag_deployment(
         {
             "detector-a": {
@@ -22,7 +23,7 @@ def build_join_task(past_flow_index, current_flow_index="join", root_uuid="root-
             },
         }
     )
-    return Task(
+    task = Task(
         source_id=0,
         task_id=0,
         source_device="edge-node",
@@ -34,189 +35,194 @@ def build_join_task(past_flow_index, current_flow_index="join", root_uuid="root-
         raw_metadata={"buffer_size": 1},
         file_path="payload.bin",
         root_uuid=root_uuid,
+        runtime_directory_revision=1,
     )
-
-
-class FakeLock:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-
-class FakePipeline:
-    def __init__(self, redis_client):
-        self.redis_client = redis_client
-        self.storage_key = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def hset(self, storage_key, task_uuid, payload):
-        self.storage_key = storage_key
-        self.redis_client.storage.setdefault(storage_key, {})[task_uuid] = payload
-
-    def expire(self, storage_key, timeout):
-        self.redis_client.expiry[storage_key] = timeout
-
-    def hlen(self, storage_key):
-        self.storage_key = storage_key
-
-    def execute(self):
-        count = len(self.redis_client.storage.get(self.storage_key, {}))
-        return 1, 1, count
+    task.set_tmp_data({"value": value})
+    return task
 
 
 class FakeRedis:
-    def __init__(self, eval_result=None):
-        self.eval_result = eval_result
+    def __init__(self):
         self.storage = {}
         self.expiry = {}
-        self.eval_calls = []
-        self.lock_calls = []
+        self.deleted = []
+        self.fail_eval = None
+        self.fail_delete = None
 
-    def pipeline(self):
-        return FakePipeline(self)
+    def eval(self, script, num_keys, storage_key, branch, payload, timeout, required_count):
+        if self.fail_eval:
+            raise self.fail_eval
+        values = self.storage.setdefault(storage_key, {})
+        values[branch] = payload
+        self.expiry[storage_key] = timeout
+        if len(values) < required_count:
+            return []
+        result = []
+        for field, value in values.items():
+            result.extend([field, value])
+        return result
 
-    def lock(self, key, timeout):
-        self.lock_calls.append((key, timeout))
-        return FakeLock()
+    def delete(self, storage_key):
+        if self.fail_delete:
+            raise self.fail_delete
+        self.deleted.append(storage_key)
+        self.storage.pop(storage_key, None)
 
-    def eval(self, script, num_keys, storage_key, required_count):
-        self.eval_calls.append((storage_key, required_count))
-        return self.eval_result
+    def hkeys(self, storage_key):
+        return list(self.storage.get(storage_key, {}))
 
-
-def build_eval_result(*tasks):
-    payload = []
-    for index, task in enumerate(tasks):
-        payload.extend([f"task-{index}", task.serialize()])
-    return payload
+    def ttl(self, storage_key):
+        return self.expiry.get(storage_key, -2)
 
 
-def build_coordinator(redis_client):
-    task_coordinator_module = importlib.import_module("core.controller.task_coordinator")
-    coordinator = object.__new__(task_coordinator_module.TaskCoordinator)
-    coordinator.redis = redis_client
-    coordinator.storage_timeout = 3600
-    coordinator.lock_prefix = "dayu:dag:lock"
-    coordinator.joint_service_key_prefix = "dayu:dag:joint_service"
-    return coordinator
+def build_coordinator(redis_client, storage_timeout=3600):
+    module = importlib.import_module("core.controller.task_coordinator")
+    runtime_context = RuntimeContext({"lease_ttl_seconds": storage_timeout})
+    return module.TaskCoordinator(
+        runtime_context=runtime_context,
+        barrier_store=TaskBarrierStore(redis_client, ttl_seconds=storage_timeout),
+    )
 
 
 @pytest.mark.unit
-def test_store_task_data_persists_serialized_task_and_returns_count():
-    task = build_join_task("detector-a")
+def test_arrive_is_idempotent_by_predecessor_and_returns_ready_tasks():
     redis_client = FakeRedis()
     coordinator = build_coordinator(redis_client)
+    first = build_join_task("detector-a", value="old")
+    repeated = build_join_task("detector-a", value="new")
+    second = build_join_task("detector-b", value="right")
 
-    count = coordinator.store_task_data(task, "join")
+    assert coordinator.arrive(first, "join", required_count=2) is None
+    assert coordinator.arrive(repeated, "join", required_count=2) is None
+    ready = coordinator.arrive(second, "join", required_count=2)
 
-    storage_key = f"dayu:dag:joint_service:{task.get_root_uuid()}:join"
-    assert count == 1
-    assert storage_key in redis_client.storage
-    assert task.get_task_uuid() in redis_client.storage[storage_key]
+    storage_key = f"dayu:dag:joint_service:{first.get_root_uuid()}:join"
+    assert set(redis_client.storage[storage_key]) == {"detector-a", "detector-b"}
     assert redis_client.expiry[storage_key] == 3600
+    assert {task.get_past_flow_index() for task in ready} == {"detector-a", "detector-b"}
+    assert next(task for task in ready if task.get_past_flow_index() == "detector-a").get_tmp_data() == {
+        "value": "new"
+    }
 
 
 @pytest.mark.unit
-def test_retrieve_task_data_returns_tasks_for_distinct_parallel_branches():
-    left_task = build_join_task("detector-a")
-    right_task = build_join_task("detector-b")
-    redis_client = FakeRedis(build_eval_result(left_task, right_task))
+def test_ready_barrier_is_retained_until_downstream_completion():
+    redis_client = FakeRedis()
     coordinator = build_coordinator(redis_client)
+    left = build_join_task("detector-a")
+    right = build_join_task("detector-b")
 
-    tasks = coordinator.retrieve_task_data(left_task.get_root_uuid(), "join", required_count=2)
+    assert coordinator.arrive(left, "join", 2) is None
+    assert coordinator.arrive(right, "join", 2)
+    storage_key = f"dayu:dag:joint_service:{left.get_root_uuid()}:join"
+    assert storage_key in redis_client.storage
 
-    assert [task.get_past_flow_index() for task in tasks] == ["detector-a", "detector-b"]
-    assert redis_client.lock_calls == [(f"dayu:dag:lock:{left_task.get_root_uuid()}:join", 10)]
-    assert redis_client.eval_calls == [(f"dayu:dag:joint_service:{left_task.get_root_uuid()}:join", 2)]
+    coordinator.complete(left.get_root_uuid(), "join")
+
+    assert storage_key not in redis_client.storage
+    assert redis_client.deleted == [storage_key]
 
 
 @pytest.mark.unit
-def test_retrieve_task_data_rejects_duplicate_parallel_branch_inputs():
-    first_task = build_join_task("detector-a")
-    duplicate_task = build_join_task("detector-a")
-    redis_client = FakeRedis(build_eval_result(first_task, duplicate_task))
+def test_barrier_store_reports_only_exact_requested_active_barriers():
+    redis_client = FakeRedis()
+    store = TaskBarrierStore(redis_client, ttl_seconds=3600)
     coordinator = build_coordinator(redis_client)
+    left = build_join_task("detector-a")
+    right = build_join_task("detector-b")
 
-    tasks = coordinator.retrieve_task_data(first_task.get_root_uuid(), "join", required_count=2)
+    assert coordinator.arrive(left, "join", 2) is None
+    waiting = store.snapshot([{
+        "root_uuid": left.get_root_uuid(),
+        "barrier": "join",
+        "expected_branches": ["detector-a", "detector-b"],
+    }])
+    assert waiting == [{
+        "root_uuid": left.get_root_uuid(),
+        "barrier": "join",
+        "arrived_branches": ["detector-a"],
+        "expected_branches": ["detector-a", "detector-b"],
+        "required_count": 2,
+        "ready": False,
+        "expires_in_seconds": 3600,
+    }]
 
-    assert tasks is None
+    assert coordinator.arrive(right, "join", 2)
+    assert store.snapshot([{
+        "root_uuid": left.get_root_uuid(),
+        "barrier": "join",
+        "expected_branches": ["detector-a", "detector-b"],
+    }])[0]["ready"] is True
+    assert store.snapshot([{
+        "root_uuid": "unknown-root",
+        "barrier": "join",
+        "expected_branches": ["detector-a", "detector-b"],
+    }]) == []
 
 
 @pytest.mark.unit
-def test_retrieve_task_data_rejects_conflicting_joint_service_names():
-    first_task = build_join_task("detector-a", current_flow_index="join")
-    conflicting_task = build_join_task("detector-b", current_flow_index="other-join")
-    redis_client = FakeRedis(build_eval_result(first_task, conflicting_task))
+def test_arrive_rejects_corrupt_or_conflicting_barriers():
+    module = importlib.import_module("core.controller.task_coordinator")
+    redis_client = FakeRedis()
     coordinator = build_coordinator(redis_client)
+    left = build_join_task("detector-a", current_flow_index="join")
+    conflicting = build_join_task("detector-b", current_flow_index="other-join")
 
-    tasks = coordinator.retrieve_task_data(first_task.get_root_uuid(), "join", required_count=2)
+    redis_client.eval = lambda *args: [
+        "detector-a",
+        left.serialize(),
+        "detector-b",
+        conflicting.serialize(),
+    ]
 
-    assert tasks is None
+    with pytest.raises(module.TaskCoordinationError, match="conflicting services"):
+        coordinator.arrive(left, "join", 2)
 
 
 @pytest.mark.unit
-def test_task_coordinator_initializes_redis_clients_from_runtime_configuration(monkeypatch):
-    task_coordinator_module = importlib.import_module("core.controller.task_coordinator")
+def test_coordinator_uses_runtime_lease_ttl_and_normalizes_redis_pool(monkeypatch):
+    module = importlib.import_module("core.controller.task_coordinator")
     pool_calls = []
-
     monkeypatch.setattr(
-        task_coordinator_module.Context,
+        module.Context,
         "get_parameter",
-        staticmethod(
-            lambda name, default=None, direct=False: {
-                "MAX_REDIS_CONNECTIONS": "12",
-                "REDIS_STORAGE_TIMEOUT": "900",
-            }.get(name, default)
-        ),
+        staticmethod(lambda name, default=None, direct=False: "12" if name == "MAX_REDIS_CONNECTIONS" else default),
     )
-    monkeypatch.setattr(task_coordinator_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloudx1"))
-    monkeypatch.setattr(task_coordinator_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.9"))
-    monkeypatch.setattr(task_coordinator_module.PortInfo, "get_component_port", staticmethod(lambda component: 6379))
     monkeypatch.setattr(
-        task_coordinator_module.redis,
+        module.redis,
         "ConnectionPool",
         lambda **kwargs: pool_calls.append(kwargs) or {"pool": kwargs},
     )
-    monkeypatch.setattr(task_coordinator_module.redis, "Redis", lambda connection_pool: {"redis": connection_pool})
+    monkeypatch.setattr(module.redis, "Redis", lambda connection_pool: {"redis": connection_pool})
+    runtime_context = RuntimeContext({
+        "cloud_node": "cloudx1",
+        "lease_ttl_seconds": 900.2,
+        "endpoints": {"redis": {"fqdn": "redis.dayu.svc.cluster.local", "port": 6379}},
+    })
 
-    coordinator = task_coordinator_module.TaskCoordinator()
+    coordinator = module.TaskCoordinator(runtime_context=runtime_context)
 
-    assert coordinator.max_connections == "12"
-    assert coordinator.storage_timeout == "900"
-    assert pool_calls == [{"host": "10.0.0.9", "port": 6379, "max_connections": "12"}]
-    assert coordinator.redis == {"redis": {"pool": pool_calls[0]}}
-
-
-@pytest.mark.unit
-def test_store_task_data_returns_none_when_redis_pipeline_raises():
-    task = build_join_task("detector-a")
-
-    class BrokenRedis:
-        def pipeline(self):
-            raise RuntimeError("boom")
-
-    coordinator = build_coordinator(BrokenRedis())
-
-    assert coordinator.store_task_data(task, "join") is None
+    assert coordinator.max_connections == 12
+    assert coordinator.storage_timeout == 901
+    assert pool_calls == [{
+        "host": "redis.dayu.svc.cluster.local.",
+        "port": 6379,
+        "max_connections": 12,
+    }]
 
 
 @pytest.mark.unit
-def test_retrieve_task_data_returns_none_when_conditions_are_not_met_or_redis_fails():
+def test_redis_failures_propagate_instead_of_becoming_false_waits():
+    module = importlib.import_module("core.controller.task_coordinator")
+    redis_client = FakeRedis()
+    coordinator = build_coordinator(redis_client)
     task = build_join_task("detector-a")
-    coordinator = build_coordinator(FakeRedis(eval_result=None))
+    redis_client.fail_eval = RuntimeError("redis unavailable")
 
-    assert coordinator.retrieve_task_data(task.get_root_uuid(), "join", required_count=2) is None
+    with pytest.raises(module.TaskCoordinationError, match="failed to retain"):
+        coordinator.arrive(task, "join", 2)
 
-    class BrokenRedis(FakeRedis):
-        def eval(self, script, num_keys, storage_key, required_count):
-            raise RuntimeError("boom")
-
-    broken = build_coordinator(BrokenRedis())
-    assert broken.retrieve_task_data(task.get_root_uuid(), "join", required_count=2) is None
+    redis_client.fail_eval = None
+    redis_client.fail_delete = RuntimeError("redis unavailable")
+    with pytest.raises(module.TaskCoordinationError, match="failed to complete"):
+        coordinator.complete(task.get_root_uuid(), "join")

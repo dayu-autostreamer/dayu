@@ -5,7 +5,7 @@ import uuid
 from .service import Service
 from .dag import DAG
 
-from core.lib.solver import LCASolver, IntermediateNodeSolver, PathSolver
+from core.lib.solver import PathSolver
 from core.lib.common import NameMaintainer, TaskConstant
 
 
@@ -27,14 +27,22 @@ class Task:
                  task_uuid: str = '',
                  parent_uuid: str = '',
                  root_uuid: str = '',
-                 deployment_version: int = 0):
+                 deployment_version: int = 0,
+                 runtime_directory_revision: int = 0,
+                 runtime_routes=None,
+                 schedule_decision_id: str = '',
+                 schedule_plan_digest: str = ''):
 
-        # unique uuid for each duplicated task
+        # delivery identity for one logical root-task DAG stage
         self.__task_uuid = task_uuid or str(uuid.uuid4())
         # parent uuid for duplicated task (currently unused)
         self.__parent_uuid = parent_uuid
         # unique uuid for each task
         self.__root_uuid = root_uuid or self.__task_uuid
+        # The decision may be shared by several tasks when a policy is reused
+        # for a positive REQUEST_SCHEDULING_INTERVAL.
+        self.__schedule_decision_id = str(schedule_decision_id or '')
+        self.__schedule_plan_digest = str(schedule_plan_digest or '')
 
         # sequential id for each source
         self.__source_id = source_id
@@ -58,6 +66,14 @@ class Task:
         # Deployment policy version used when this task was generated.
         # Version 0 means the scheduler does not distinguish deployment versions.
         self.__deployment_version = 0 if deployment_version is None else deployment_version
+        # Exact runtime addresses are a control-plane snapshot, independent of
+        # the scheduling algorithm's deployment_version.  Keeping both fields
+        # prevents route identity from being accidentally coupled to an
+        # extension's policy feedback/version semantics.
+        self.__runtime_directory_revision = (
+            0 if runtime_directory_revision is None else int(runtime_directory_revision)
+        )
+        self.__runtime_routes = copy.deepcopy(runtime_routes) if runtime_routes else {}
 
         # current service name in dag (work as pointer)
         self.__cur_flow_index = flow_index
@@ -193,6 +209,18 @@ class Task:
     def set_deployment_version(self, deployment_version):
         self.__deployment_version = 0 if deployment_version is None else deployment_version
 
+    def get_runtime_directory_revision(self):
+        return self.__runtime_directory_revision
+
+    def set_runtime_directory_revision(self, revision):
+        self.__runtime_directory_revision = 0 if revision is None else int(revision)
+
+    def get_runtime_routes(self):
+        return self.__runtime_routes
+
+    def set_runtime_routes(self, runtime_routes):
+        self.__runtime_routes = copy.deepcopy(runtime_routes) if runtime_routes else {}
+
     def get_flow_index(self):
         return self.__cur_flow_index
 
@@ -275,6 +303,56 @@ class Task:
     def set_root_uuid(self, root_uuid: str):
         self.__root_uuid = root_uuid
 
+    def get_schedule_decision_id(self):
+        return self.__schedule_decision_id
+
+    def set_schedule_decision_id(self, decision_id):
+        self.__schedule_decision_id = str(decision_id or '')
+
+    def get_schedule_plan_digest(self):
+        return self.__schedule_plan_digest
+
+    def set_schedule_plan_digest(self, plan_digest):
+        self.__schedule_plan_digest = str(plan_digest or '')
+
+    def get_slo_start_time(self):
+        """Return the exact generator-to-distributor SLO start, if recorded."""
+
+        tag_prefix = NameMaintainer.get_time_ticket_tag_prefix(self)
+        try:
+            value = float(self.__tmp_data.get(f'{tag_prefix}:total_start_time'))
+        except (TypeError, ValueError):
+            return 0.0
+        return value if value > 0.0 else 0.0
+
+    def get_slo_end_time(self):
+        """Return the exact generator-to-distributor SLO end, if recorded."""
+
+        tag_prefix = NameMaintainer.get_time_ticket_tag_prefix(self)
+        try:
+            value = float(self.__tmp_data.get(f'{tag_prefix}:total_end_time'))
+        except (TypeError, ValueError):
+            return 0.0
+        return value if value > 0.0 else 0.0
+
+    def get_schedule_commitment(self):
+        """Return the immutable scheduling facts needed while this root runs."""
+
+        return {
+            'source_id': self.get_source_id(),
+            'source_device': self.get_source_device(),
+            'task_id': self.get_task_id(),
+            'task_uuid': self.get_task_uuid(),
+            'root_uuid': self.get_root_uuid(),
+            'slo_started_at': self.get_slo_start_time(),
+            'decision_id': self.get_schedule_decision_id(),
+            'plan_digest': self.get_schedule_plan_digest(),
+            'deployment_version': self.get_deployment_version(),
+            'runtime_directory_revision': self.get_runtime_directory_revision(),
+            'dag': self.get_dag_deployment_info(),
+            'metadata': copy.deepcopy(self.get_metadata()),
+        }
+
     def get_current_content(self):
         return self.__dag_flow.get_node(self.__cur_flow_index).service.get_content_data()
 
@@ -333,13 +411,14 @@ class Task:
     def get_real_end_to_end_time(self):
         """get real end to end time of task: from generator to distributor by estimation"""
         tag_prefix = NameMaintainer.get_time_ticket_tag_prefix(self)
-        if f'{tag_prefix}:total_start_time' not in self.__tmp_data:
+        start_time = self.get_slo_start_time()
+        if start_time <= 0.0:
             raise ValueError(f'Timestamp of task starting lacks: "{tag_prefix}:total_start_time"')
-        if f'{tag_prefix}:total_end_time' not in self.__tmp_data:
+        end_time = self.get_slo_end_time()
+        if end_time <= 0.0:
             raise ValueError(f'Timestamp of task ending lacks: "{tag_prefix}:total_end_time"')
 
-        return (self.__tmp_data[f'{tag_prefix}:total_end_time'] -
-                self.__tmp_data[f'{tag_prefix}:total_start_time'])
+        return end_time - start_time
 
     def calculate_total_time(self):
         assert self.__dag_flow, 'Task DAG is empty!'
@@ -434,22 +513,35 @@ class Task:
         if new_flow_index and new_flow_index != self.__cur_flow_index:
             new_task.set_past_flow_index(self.__cur_flow_index)
             new_task.set_flow_index(new_flow_index)
-        new_task.set_task_uuid(str(uuid.uuid4()))
+        # A DAG node executes at most once for one root task. Deriving its
+        # delivery identity from (root, stage) makes retries and concurrent
+        # join completion converge on the same downstream work item.
+        target_flow_index = new_flow_index or self.__cur_flow_index
+        new_task.set_task_uuid(str(uuid.uuid5(
+            uuid.NAMESPACE_OID,
+            f"{self.__root_uuid}:{target_flow_index}",
+        )))
         new_task.set_parent_uuid(self.__task_uuid)
         return new_task
 
     def merge_task(self, other_task: 'Task'):
-        lca_service_name = LCASolver(self.__dag_flow).find_lca(self.get_past_flow_index(),
-                                                               other_task.get_past_flow_index())
-
         merged_dag = self.get_dag()
         other_dag = other_task.get_dag()
 
-        # Complete missing part of merged_task with other_task
-        # missing part contains intermediate nodes between "LCA" and "current node of other_task" (including latter)
-        nodes_for_merge = IntermediateNodeSolver(merged_dag).get_intermediate_nodes(lca_service_name,
-                                                                                    other_task.get_past_flow_index())
-        nodes_for_merge.add(other_task.get_past_flow_index())
+        # A task waiting at a join contains the completed state of its direct
+        # predecessor and every ancestor required to release that predecessor.
+        # Copy that full completed closure.  Restricting the copy to the path
+        # between the two current predecessors loses state already merged by a
+        # nested join (for example, pose-estimation state inside the intent
+        # branch when the final risk-graph join is assembled).
+        nodes_for_merge = set()
+        pending = [other_task.get_past_flow_index()]
+        while pending:
+            node = pending.pop()
+            if node in nodes_for_merge:
+                continue
+            nodes_for_merge.add(node)
+            pending.extend(other_dag.get_prev_nodes(node))
 
         for node in nodes_for_merge:
             merged_dag.set_node_service(node, other_dag.get_node(node).service)
@@ -481,6 +573,8 @@ class Task:
             'dag': self.get_dag().to_dict() if self.get_dag() else None,
             'deployment': self.get_deployment(),
             'deployment_version': self.get_deployment_version(),
+            'runtime_directory_revision': self.get_runtime_directory_revision(),
+            'runtime_routes': self.get_runtime_routes(),
             'cur_flow_index': self.get_flow_index(),
             'past_flow_index': self.get_past_flow_index(),
             'meta_data': self.get_metadata(),
@@ -491,6 +585,8 @@ class Task:
             'task_uuid': self.get_task_uuid(),
             'parent_uuid': self.get_parent_uuid(),
             'root_uuid': self.get_root_uuid(),
+            'schedule_decision_id': self.get_schedule_decision_id(),
+            'schedule_plan_digest': self.get_schedule_plan_digest(),
         }
 
     @classmethod
@@ -503,6 +599,10 @@ class Task:
         task.set_dag(DAG.from_dict(dag_dict['dag'])) if 'dag' in dag_dict and dag_dict['dag'] else None
         task.set_deployment(dag_dict['deployment']) if 'deployment' in dag_dict else None
         task.set_deployment_version(dag_dict['deployment_version']) if 'deployment_version' in dag_dict else None
+        task.set_runtime_directory_revision(
+            dag_dict.get('runtime_directory_revision', 0)
+        )
+        task.set_runtime_routes(dag_dict.get('runtime_routes', {}))
         task.set_flow_index(dag_dict['cur_flow_index']) if 'cur_flow_index' in dag_dict else None
         task.set_past_flow_index(dag_dict['past_flow_index']) if 'past_flow_index' in dag_dict else None
         task.set_metadata(dag_dict['meta_data']) if 'meta_data' in dag_dict else None
@@ -513,6 +613,8 @@ class Task:
         task.set_task_uuid(dag_dict['task_uuid']) if 'task_uuid' in dag_dict else None
         task.set_parent_uuid(dag_dict['parent_uuid']) if 'parent_uuid' in dag_dict else None
         task.set_root_uuid(dag_dict['root_uuid']) if 'root_uuid' in dag_dict else None
+        task.set_schedule_decision_id(dag_dict.get('schedule_decision_id', ''))
+        task.set_schedule_plan_digest(dag_dict.get('schedule_plan_digest', ''))
 
         return task
 

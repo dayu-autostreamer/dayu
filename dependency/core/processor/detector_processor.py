@@ -28,6 +28,9 @@ class DetectorProcessor(Processor):
             self.frame_size = (cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             image_list.append(frame)
             success, frame = cap.read()
+        release = getattr(cap, 'release', None)
+        if callable(release):
+            release()
 
         if len(image_list) == 0:
             LOGGER.warning(f'[Image list length is 0] Source: {task.get_source_id()} '
@@ -35,9 +38,18 @@ class DetectorProcessor(Processor):
                             f'file_path: {FileOps.get_task_file_in_temp(task)}')
             return None
 
-        result = self.infer(image_list)
+        result = convert_ndarray_to_list(self.infer(image_list))
+        bbox_records, _ = self.detection_to_bbox_records(result)
+        profile = self.make_profile(
+            frame_count=len(image_list),
+        )
+        result = self.make_content(
+            task.get_flow_index(),
+            {'bbox': bbox_records},
+            profile,
+        )
         self.save_scenario(result, task)
-        task.set_current_content(convert_ndarray_to_list(result))
+        task.set_current_content(result)
 
         return task
 

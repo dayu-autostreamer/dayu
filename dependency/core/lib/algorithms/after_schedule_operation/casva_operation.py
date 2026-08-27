@@ -5,7 +5,6 @@ from .base_operation import BaseASOperation
 
 from core.lib.common import ClassFactory, ClassType
 from core.lib.content import Task
-from core.lib.network import NodeInfo
 
 __all__ = ('CASVAASOperation',)
 
@@ -23,18 +22,21 @@ class CASVAASOperation(BaseASOperation, abc.ABC):
             system.task_dag = Task.set_execute_device(system.task_dag, system.local_device)
             system.deployment_version = 0
         else:
-            scheduler_policy = scheduler_response['plan']
-            system.service_deployment = scheduler_response.get('deployment', {})
+            scheduler_policy = copy.deepcopy(scheduler_response['plan'])
+            deployment = scheduler_response.get('deployment')
+            if isinstance(deployment, dict):
+                system.service_deployment = copy.deepcopy(deployment)
             deployment_version = scheduler_response.get('deployment_version', 0)
-            system.deployment_version = 0 if deployment_version is None else deployment_version
+            if deployment_version is not None:
+                system.deployment_version = deployment_version
 
             dag_deployment = scheduler_policy['dag']
             dag = Task.extract_dag_from_dag_deployment(dag_deployment)
             # Set execute device of start and end node
             dag.get_start_node().service.set_execute_device(system.local_device)
-            dag.get_end_node().service.set_execute_device(NodeInfo.get_cloud_node())
+            dag.get_end_node().service.set_execute_device(system.cloud_device)
             system.task_dag = copy.deepcopy(dag)
-            del scheduler_policy['dag']
+            scheduler_policy.pop('dag')
             system.meta_data.update(scheduler_policy)
 
             if 'qp' not in system.meta_data:

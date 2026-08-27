@@ -105,6 +105,12 @@ BaseExtraction = importlib.import_module(
 BaseQueue = importlib.import_module("core.lib.algorithms.task_queue.base_queue").BaseQueue
 
 
+def content_profile(frame_count=1):
+    return {
+        "frame_count": frame_count,
+    }
+
+
 def service_entry(name, *, execute_device="", next_nodes=None, prev_nodes=None):
     return {
         "service": {
@@ -134,9 +140,39 @@ def build_task():
         file_path="payload.mp4",
         hash_data=["hash-0"],
     )
-    task.get_service("detector").set_content_data([([[1, 1, 4, 4]], [0.9])])
+    task.get_service("detector").set_content_data(
+        {
+            "service": "detector",
+            "outputs": {
+                "bbox": [
+                    {
+                        "frame_index": 0,
+                        "items": [
+                            {"bbox": [1, 1, 4, 4], "score": 0.9, "label": "car", "object_id": 1}
+                        ],
+                    }
+                ]
+            },
+            "profile": content_profile(),
+        }
+    )
     task.get_service("detector").set_scenario_data({"obj_num": [2, 4]})
-    task.get_service("classifier").set_content_data([(["car"], [0.9])])
+    task.get_service("classifier").set_content_data(
+        {
+            "service": "classifier",
+            "outputs": {
+                "text": [
+                    {
+                        "frame_index": 0,
+                        "items": [
+                            {"text": "car", "source_object_id": 1, "bbox": [1, 1, 4, 4], "score": 0.9}
+                        ],
+                    }
+                ]
+            },
+            "profile": content_profile(),
+        }
+    )
     task.get_service("detector").set_execute_time(0.4)
     task.get_service("classifier").set_execute_time(0.7)
     task.set_tmp_data({"file_size": 1.0, "file_dynamics": 0.2})
@@ -178,9 +214,11 @@ def test_before_schedule_operations_export_source_metadata_and_reset_filter():
     system = SimpleNamespace(
         source_id=7,
         raw_meta_data={"fps": 20, "buffer_size": 2},
+        meta_data={"fps": 15, "buffer_size": 3},
         local_device="edge-a",
         all_edge_devices=["edge-a", "edge-b"],
         task_dag=task.get_dag(),
+        deployment_version=4,
         getter_filter=getter_filter,
         temp_encoded_frame="frame-b64",
         temp_hash_code="hash-1",
@@ -190,16 +228,14 @@ def test_before_schedule_operations_export_source_metadata_and_reset_filter():
     casva_payload = before_schedule_module.CASVABSOperation()(system)
     chameleon_payload = before_schedule_module.ChameleonBSOperation()(system)
 
-    assert simple_payload["source_id"] == 7
-    assert simple_payload["meta_data"] == {"fps": 20, "buffer_size": 2}
-    assert simple_payload["source_device"] == "edge-a"
-    assert simple_payload["all_edge_devices"] == ["edge-a", "edge-b"]
-    assert set(simple_payload["dag"]) == {TaskConstant.START.value, "detector", "classifier", TaskConstant.END.value}
+    assert simple_payload == {}
 
-    assert casva_payload["skip_count"] == 3
+    assert casva_payload == {"skip_count": 3}
     assert getter_filter.skip_count == 0
-    assert chameleon_payload["frame"] == "frame-b64"
-    assert chameleon_payload["hash_code"] == "hash-1"
+    assert chameleon_payload == {
+        "frame": "frame-b64",
+        "hash_code": "hash-1",
+    }
 
 
 @pytest.mark.unit
@@ -212,16 +248,19 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
         cloud_device="cloud-a",
         meta_data={"fps": 10, "buffer_size": 2},
         service_deployment={},
+        deployment_version=4,
     )
-    monkeypatch.setattr(after_schedule_simple_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
-    monkeypatch.setattr(after_schedule_casva_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-a"))
 
+    original_dag = Task.extract_dag_deployment_from_dag(system.task_dag)
     after_schedule_module.SimpleASOperation()(system, None)
-    assert all(
-        node.service.get_execute_device() == "cloud-a"
-        for name, node in system.task_dag.nodes.items()
-        if name not in (TaskConstant.START.value, TaskConstant.END.value)
+    assert Task.extract_dag_deployment_from_dag(system.task_dag) == original_dag
+    assert system.deployment_version == 4
+
+    after_schedule_module.SimpleASOperation()(
+        system,
+        {"plan": {}, "deployment_version": None},
     )
+    assert system.deployment_version == 4
 
     dag_deployment = Task.extract_dag_deployment_from_dag(build_task().get_dag())
     dag_deployment["detector"]["service"]["execute_device"] = "edge-b"
@@ -234,11 +273,13 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
     assert system.meta_data["fps"] == 5
     assert system.service_deployment == {"detector": ["edge-b"]}
     assert system.task_dag.get_node("detector").service.get_execute_device() == "edge-b"
-    assert system.task_dag.get_end_node().service.get_execute_device() == "cloud-a"
+    assert system.task_dag.get_end_node().service.get_execute_device() == ""
+    assert system.deployment_version == 4
 
     casva_system = SimpleNamespace(
         task_dag=build_task().get_dag(),
         local_device="edge-a",
+        cloud_device="cloud-a",
         meta_data={"fps": 10},
         service_deployment={},
     )
@@ -248,20 +289,17 @@ def test_after_schedule_operations_keep_local_execution_or_apply_scheduler_plan(
 
 @pytest.mark.unit
 def test_before_submit_task_operations_track_file_metadata_and_last_frame_state(monkeypatch, tmp_path):
-    task = build_task()
-    current_task = build_task()
     compressed_file = tmp_path / "buffer.mp4"
     compressed_file.write_bytes(b"payload" * 4)
-    new_task = SimpleNamespace(
-        get_file_path=lambda: str(compressed_file),
-        get_hash_data=lambda: ["hash-new"],
-    )
-    system = SimpleNamespace(current_task=current_task)
+    new_task = build_task()
+    new_task.set_file_path(str(compressed_file))
+    new_task.set_hash_data(["hash-new"])
+    system = SimpleNamespace()
 
     before_submit_module.SimpleBSTOperation()(system, new_task)
 
     before_submit_module.CEVASBSTOperation()(system, new_task)
-    assert current_task.get_tmp_data()["file_size"] == pytest.approx(compressed_file.stat().st_size / 1024)
+    assert new_task.get_tmp_data()["file_size"] == pytest.approx(compressed_file.stat().st_size / 1024)
 
     steady_task = build_task()
     steady_task.set_file_path(str(compressed_file))
@@ -290,17 +328,17 @@ def test_before_submit_task_operations_track_file_metadata_and_last_frame_state(
     before_submit_module.ChameleonBSTOperation()(chameleon_system, new_task)
     assert chameleon_system.temp_encoded_frame == ""
 
-    casva_system = SimpleNamespace(current_task=task)
+    casva_system = SimpleNamespace()
     casva_operation = before_submit_module.CASVABSTOperation()
     casva_operation(casva_system, new_task)
-    assert task.get_tmp_data()["file_size"] > 0
-    assert task.get_tmp_data()["file_dynamics"] == 0
+    assert new_task.get_tmp_data()["file_size"] > 0
+    assert new_task.get_tmp_data()["file_dynamics"] == 0
 
     casva_system.past_metadata = {"resolution": "480p", "fps": 5}
     casva_system.past_file_size = 0.5
-    task.set_metadata({"resolution": "720p", "fps": 10, "buffer_size": 2, "encoding": "mp4v"})
+    new_task.set_metadata({"resolution": "720p", "fps": 10, "buffer_size": 2, "encoding": "mp4v"})
     casva_operation(casva_system, new_task)
-    assert "file_dynamics" in task.get_tmp_data()
+    assert "file_dynamics" in new_task.get_tmp_data()
     assert casva_operation.get_fps_adjust_mode(20, 20) == ("same", 0, 0)
     assert casva_operation.get_fps_adjust_mode(20, 15) == ("skip", 4, 0)
     assert casva_operation.get_fps_adjust_mode(20, 4) == ("remain", 0, 5)
@@ -345,7 +383,22 @@ def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contra
     )) is False
 
     task = build_task()
-    results = [([[0, 0, 10, 10], [10, 10, 20, 20]], [0.9, 0.8]), ([], [])]
+    results = {
+        "service": "detector",
+        "outputs": {
+            "bbox": [
+                {
+                    "frame_index": 0,
+                    "items": [
+                        {"bbox": [0, 0, 10, 10], "score": 0.9, "label": "object", "object_id": 1},
+                        {"bbox": [10, 10, 20, 20], "score": 0.8, "label": "object", "object_id": 2},
+                    ],
+                },
+                {"frame_index": 1, "items": []},
+            ]
+        },
+        "profile": content_profile(frame_count=2),
+    }
     assert scenario_extraction_module.ObjectNumberExtraction()(results, task) == [2, 0]
     obj_size = scenario_extraction_module.ObjectSizeExtraction()(results, task)
     assert obj_size[0] > 0
@@ -416,13 +469,10 @@ def test_frame_process_and_compress_algorithms_transform_frames_and_cleanup(monk
     monkeypatch.setattr(frame_process_adaptive_module.cv2, "contourArea", lambda contour: 1600)
     monkeypatch.setattr(frame_process_adaptive_module.cv2, "boundingRect", lambda contour: (1, 1, 2, 2))
     adaptive = frame_process_adaptive_module.AdaptiveProcess()
-    generated = []
-    monkeypatch.setattr(adaptive, "generate_roi_file", lambda system: generated.append(system.source_id))
     adaptive_system = SimpleNamespace(source_id=3, task_id=5, meta_data={"resolution": "480p", "buffer_size": 1})
-    processed_frame, valid_rois = adaptive(adaptive_system, frame)
+    processed_frame, valid_rois = adaptive(adaptive_system, frame, "720p", "480p")
     assert processed_frame.shape[0:2] == (480, 640)
     assert valid_rois == [(1, 1, 3, 3)]
-    assert generated == [3]
     assert adaptive.generate_roi_message([(1, 2, 5, 6)]).startswith("1 -10 1 2 4 4")
 
     writer_events = []
@@ -451,7 +501,16 @@ def test_frame_process_and_compress_algorithms_transform_frames_and_cleanup(monk
     removed = []
     commands = []
     monkeypatch.setattr(casva_compress_module.FileOps, "remove_file", lambda file_path: removed.append(file_path))
-    monkeypatch.setattr(casva_compress_module.os, "system", lambda cmd: commands.append(cmd) or 0)
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        Path(command[-1]).write_bytes(b"encoded")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(casva_compress_module.subprocess, "run", fake_run)
     casva_compress_module.CasvaCompress()(compressor_system, frame_buffer, str(output_path))
-    assert commands and "ffmpeg -i" in commands[0]
-    assert removed == [f"tmp_{output_path}"]
+    command, run_kwargs = commands[0]
+    assert command[:3] == ["ffmpeg", "-y", "-i"]
+    assert command[-1] == str(output_path)
+    assert run_kwargs["check"] is True
+    assert removed == [str(tmp_path / ".clip.mp4.casva.tmp.mp4")]

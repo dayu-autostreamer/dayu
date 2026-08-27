@@ -1,7 +1,9 @@
 import importlib
+import json
 from pathlib import Path
 
 import pytest
+from core.lib.runtime import RuntimeContext
 
 
 def build_source_list():
@@ -16,10 +18,13 @@ def configure_runtime(monkeypatch, module, tmp_path):
     monkeypatch.setenv("REQUEST_INTERVAL", "1")
     monkeypatch.setenv("START_INTERVAL", "0")
     monkeypatch.setenv("GUNICORN_PORT", "19010")
+    monkeypatch.setenv("DAYU_RUNTIME_BOOTSTRAP", json.dumps({
+        "local_node": "edge-node",
+        "cloud_node": "cloud-node",
+        "endpoints": {"backend": {"fqdn": "backend.dayu.svc", "port": 9000}},
+    }))
+    RuntimeContext.reset_default()
     monkeypatch.chdir(Path(module.__file__).resolve().parent)
-    monkeypatch.setattr(module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
-    monkeypatch.setattr(module.PortInfo, "get_component_port", staticmethod(lambda component: 9000))
     monkeypatch.setattr(module.Context, "get_file_path", staticmethod(lambda modal: str(tmp_path / modal)))
 
 
@@ -125,12 +130,49 @@ def test_open_datasource_returns_immediately_when_source_is_already_open(monkeyp
 
     datasource = datasource_server_module.DataSource()
     datasource.source_open = True
+    datasource.source_label = "demo-source"
     datasource.process_list = ["process-1"]
 
     datasource.open_datasource("video", "demo-source", "http_video", build_source_list())
 
     assert started_commands == []
     assert datasource.process_list == ["process-1"]
+
+
+@pytest.mark.unit
+def test_open_datasource_restarts_when_source_label_changes(monkeypatch, tmp_path):
+    datasource_server_module = importlib.import_module("datasource_server")
+    configure_runtime(monkeypatch, datasource_server_module, tmp_path)
+
+    for source in build_source_list():
+        (tmp_path / "video" / source["dir"] / "http_video").mkdir(parents=True, exist_ok=True)
+
+    stopped_processes = []
+    started_commands = []
+    monkeypatch.setattr(
+        datasource_server_module.ScriptHelper,
+        "stop_script",
+        staticmethod(lambda process: stopped_processes.append(process)),
+    )
+    monkeypatch.setattr(
+        datasource_server_module.ScriptHelper,
+        "start_script",
+        staticmethod(lambda command: started_commands.append(command) or f"new-process-{len(started_commands)}"),
+    )
+    monkeypatch.setattr(datasource_server_module.time, "sleep", lambda _seconds: None)
+
+    datasource = datasource_server_module.DataSource()
+    datasource.source_open = True
+    datasource.source_label = "old-source"
+    datasource.process_list = ["old-process"]
+
+    datasource.open_datasource("video", "new-source", "http_video", build_source_list())
+
+    assert stopped_processes == ["old-process"]
+    assert datasource.source_open is True
+    assert datasource.source_label == "new-source"
+    assert datasource.process_list == ["new-process-1", "new-process-2"]
+    assert len(started_commands) == 2
 
 
 @pytest.mark.unit

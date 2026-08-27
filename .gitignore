@@ -733,6 +733,7 @@ model
 *.mp4
 *.pt
 *.ttf
+output/
 
 
 # End of https://www.toptal.com/developers/gitignore/api/pycharm,python,vs,macos,windows,linux,vue,vuejs

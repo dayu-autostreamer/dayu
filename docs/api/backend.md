@@ -8,28 +8,33 @@ Implementation entrypoint: `backend/backend_server.py`
 
 ### DAG workflow
 
-`GET /dag_workflow` and `POST /dag_workflow` operate on DAG definitions with the following structure:
+`POST /dag_workflow` accepts a named DAG whose node keys, `id`, and `service_id` use the logical service id. The
+reserved `_start` list identifies every entry service; `prev` and `succ` describe the complete directed graph.
 
 ```json
 {
-  "dag_id": 1,
   "dag_name": "car-pipeline",
   "dag": {
-    "node_1": {
-      "id": "node_1",
+    "_start": ["car-detection"],
+    "car-detection": {
+      "id": "car-detection",
       "prev": [],
-      "succ": ["node_2"],
+      "succ": ["license-plate-recognition"],
       "service_id": "car-detection"
     },
-    "node_2": {
-      "id": "node_2",
-      "prev": ["node_1"],
+    "license-plate-recognition": {
+      "id": "license-plate-recognition",
+      "prev": ["car-detection"],
       "succ": [],
       "service_id": "license-plate-recognition"
     }
   }
 }
 ```
+
+Backend assigns a new `dag_id` when the workflow is added; `GET /dag_workflow` includes that id in each returned
+object. The POST endpoint does not replace an existing workflow by id or name. This control-plane shape is converted
+to the runtime Task DAG with synthetic `_start` and `_end` nodes before scheduling.
 
 ### Datasource configuration
 
@@ -69,40 +74,84 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `GET` | `/policy` | List available scheduler policies from `template/scheduler_policies.yaml`. | None | Array of `{policy_id, policy_name}` |
-| `GET` | `/installed_service` | List currently installed service ids based on running pods. | None | Array of service ids |
+| `GET` | `/installed_service` | List logical processor service ids from the committed RuntimeDirectory. | None | Array of service ids |
 | `GET` | `/service` | List services declared in `template/services.yaml`. | None | Array of service metadata |
-| `GET` | `/service_info/{service}` | Get runtime information for a deployed service. | Path parameter `service` | Service-specific runtime info from Kubernetes |
-| `GET` | `/edge_node` | List known edge nodes. | None | Array of edge node descriptors |
+| `GET` | `/service_info/{service}` | Read normalized Pod resources and the shared WAN probe from the cached batch snapshot for one logical service. | Path parameter `service` | Array of service-detail records described below. |
+| `GET` | `/edge_node` | List Ready edge nodes from backend's owned inventory snapshot. | None | Array of `{name}` |
 
 ### DAG and datasource management
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
 | `GET` | `/dag_workflow` | List all DAG workflows currently stored in backend memory. | None | Array of DAG workflow objects |
-| `POST` | `/dag_workflow` | Add or update a DAG workflow. | JSON body with `dag_name` and `dag` | `{state, msg}` |
+| `POST` | `/dag_workflow` | Add a DAG workflow. | JSON body with `dag_name` and `dag` | `{state, msg}` |
 | `DELETE` | `/dag_workflow` | Delete a DAG workflow by id. | JSON body with `dag_id` | `{state, msg}` |
 | `GET` | `/datasource` | List uploaded datasource configurations. | None | Array of datasource config objects |
-| `POST` | `/datasource` | Upload a datasource YAML config file. | `multipart/form-data` with `file` | `{state, msg}` |
+| `POST` | `/datasource` | Upload one or more datasource YAML config files. | `multipart/form-data` with `file` or files | `{state, msg, results}` |
 | `DELETE` | `/datasource` | Delete a datasource config by label. | JSON body with `source_label` | `{state, msg}` |
 
 ### Deployment and query lifecycle
 
 | Method | Path | Purpose | Request | Response |
 | --- | --- | --- | --- | --- |
-| `POST` | `/install` | Resolve policy + datasource mapping and deploy the runtime stack. | JSON body described below | `{state, msg}` |
-| `POST` | `/stop_service` | Uninstall deployed runtime components. | None | `{state, msg}` |
-| `GET` | `/install_state` | Check whether the stack is installed. | None | `{state: "install"|"uninstall"}` |
+| `POST` | `/install` | Resolve policy + datasource mapping and deploy the runtime stack. | JSON body described below, including a client-generated canonical UUID `install_id` | `{state, msg, warning?}`; success acknowledges this request, while `/install_state` remains the lifecycle source of truth |
+| `POST` | `/stop_service` | Accept an asynchronous uninstall: close query admission, persist or expose cancellation intent, and start background teardown. | JSON `{install_id}` binds the command to the observed target; an omitted id is a trusted system-teardown fallback | `{state, msg}`; success means accepted or already absent, not completed |
+| `GET` | `/install_state` | Check install admission, session ownership, lifecycle phase, and uninstall cleanup diagnostics; failed/recovering sessions remain `install` until safely uninstalled. | None | `{namespace, state, phase, ready, install_id, install_pending, operation_id, updated_at, active_directory_revision, active_runtime_count, pending_runtime_count, cleanup_runtime_count, cleanup, retirement_revision, retirement_deadline, last_error}` |
 | `POST` | `/submit_query` | Open datasource playback for a datasource label and begin result collection. | JSON body with `source_label` | `{state, msg}` |
 | `POST` | `/stop_query` | Stop datasource playback and clear in-memory task results. | None | `{state, msg}` |
-| `GET` | `/query_state` | Get query state for the current datasource. | None | `{state, source_label}` |
+| `GET` | `/query_state` | Get query state for the current datasource. | None | `{state: "open"|"close"|"disabled", source_label}` |
 | `GET` | `/source_list` | List active source ids and labels for the currently opened datasource. | None | Array of `{id, label}` |
 | `GET` | `/datasource_state` | Return the datasource supervisor view of the current datasource state. | None | `{state: "open"|"close", ...config}` |
-| `POST` | `/reset_datasource` | Force datasource state to closed in backend memory. | None | `null` |
+| `POST` | `/reset_datasource` | Cancel the active result-collector generation and clear datasource state. | None | `null` |
+
+`state="install"` means a managed session still owns resources; it is not a readiness signal. Clients may query
+`/installed_service`, `/service_info/{service}`, and `/system_parameters` only when `ready=true`. During activation,
+local admission finalization, publication recovery, or uninstall, the frontend retains the ownership state to prevent
+a second install while suspending telemetry polling and clearing active-service details. A pending old-revision retirement keeps the newly
+published session active and does not block those reads.
+
+`namespace` is the Backend namespace served by this endpoint. Frontends may use it only to scope non-authoritative
+browser preferences such as a reusable installation form draft. It does not identify a user or browser and must not
+replace `install_id`, `state`, `phase`, or `ready` in lifecycle, admission, or authorization decisions.
+
+`ready` is true exactly when `phase="active"`, install admission has finalized, and this Backend process has locally
+projected the exact `(install_id, active_directory_revision)` into its URL, query-admission, reconciliation, and
+telemetry state. The frontend creates a fresh canonical UUID for every install attempt and must never reuse it; the
+UUID is used as `install_id` from request admission through RuntimeSession, ConfigMap, RuntimeDirectory, and
+RuntimeService ownership. Before that session is persisted, `install_pending=true` and `phase="preparing-install"`
+expose the same id, so a lost response, page reload, or second browser cannot start a second namespace-wide installation.
+When stop is accepted against an in-memory admission, the same id remains visible with
+`phase="cancelling-install"`, `install_pending=true`, `ready=false`, and a new cancellation `operation_id` until the
+target either enters durable uninstall or disappears. When an active Session is selected for stop, the single-flight
+stop admission is exposed first as `phase="preparing-uninstall"`, with the same id, `install_pending=false`,
+`ready=false`, and a new stop `operation_id`; this closes the admission gap before the durable Session transition is
+committed. Observing that new operation is enough for a client to stop retransmitting the same POST, but only
+`uninstalling`/`finalizing-uninstall` or target disappearance proves durable progress/completion. If preparation fails,
+the phase returns to the owned Session state with `last_error`, allowing an explicit retry. With no session or pending
+request, the endpoint returns
+`state="uninstall"`, `phase="uninstalled"`, empty ids, zero
+counts/revision, and an empty error. This endpoint remains responsive throughout activation, publication recovery,
+background retirement reconciliation, or exact-UID deletion.
+
+Send the observed `install_id` to `POST /stop_service`, then poll `/install_state`. The uninstall is complete when that target
+`install_id` disappears; normally the endpoint then reports `state="uninstall", phase="uninstalled"`, while a
+concurrent client may already have created a different Session. Until completion, `operation_id` identifies the
+accepted operation, `phase` is `cancelling-install`, `preparing-uninstall`, `uninstalling`, or
+`finalizing-uninstall`, and `last_error` reports the latest background failure while the reconcile worker keeps the
+exact ownership record for retry. `preparing-uninstall` still owns the same target and is neither durable acceptance nor
+a completion signal; its new `operation_id` is the delivery acknowledgement that prevents duplicate in-flight POSTs.
+During durable cleanup, `cleanup.status` is `progressing` or `delayed` and includes the start/last-progress timestamps,
+seconds without progress, remaining counts by Kubernetes kind, affected Pod nodes, and a bounded list of remaining objects with
+deletion timestamps and finalizers. Object details are deterministically limited to 25 entries; `remaining_count`,
+`remaining_by_kind`, and `truncated_count` preserve the complete aggregate. `delayed` is a persistent warning after 180
+seconds without the remaining identity set shrinking; it never changes the lifecycle phase, ends reconciliation, or
+releases install admission.
 
 `POST /install` expects a deployment request shaped like:
 
 ```json
 {
+  "install_id": "b8108ad0-6fb7-47bc-82a8-1f16a9b8f83a",
   "source_config_label": "Road & Street Cameras (Two Camera HTTP)",
   "policy_id": "casva",
   "source": [
@@ -115,6 +164,91 @@ Result visualization configs are YAML arrays uploaded through `POST /result_visu
   ]
 }
 ```
+
+`POST /install` does not duplicate `/install_state`. After submitting, clients use only `/install_state` for lifecycle
+observation and bind their local spinner/result to the submitted UUID. A response can arrive after another client has
+already cancelled or superseded that generation, so `state="success"` is not a separate readiness fact. When
+`datasource.use-simulation=false`, runtime installation remains successful even if the subsequent implicit query open
+fails; the response then includes a non-empty `warning`, and the operator may retry query startup independently. If
+`/install_state` reaches `ready=true` first, the frontend gives the POST a short bounded tail window to retain that
+warning; it never lets a missing response override the authoritative ready state.
+
+`install_id` is not a secret or authorization token. All clients admitted to one namespace Backend share the same
+lifecycle permissions. The target precondition exists only to make delayed Cancel/Uninstall requests harmless. The
+body-less global stop is reserved for trusted system teardown such as `dayu.sh` when state inspection is unavailable;
+it must not be exposed as a substitute for HTTP authentication. The no-reuse UUID requirement prevents a delayed
+target-bound stop from encountering an ABA identity; a caller that can deliberately choose or replay another
+installation's id is already inside this shared administrative trust domain.
+
+During install, backend creates immutable `sedna.io/v1alpha1` `RuntimeService` objects. Scheduler is activated first,
+then supplies source-selection and initial-deployment plans. Backend validates and materializes the exact deployment
+plan returned by Scheduler without adding replicas. It activates the remaining workers and publishes RuntimeDirectory
+revision 1 only after all exact identities are Ready and Activated.
+
+The `dayu-runtime-session` ConfigMap is the compact transaction record. Its `resourceVersion` is the compare-and-swap
+token for lifecycle changes. Its normalized `source_deploy` preserves both processor `node_set` and the exact
+`source_candidate_nodes`/`source_selection_scope` authorization used for the install. Runtime routing is authoritative
+in Scheduler's committed RuntimeDirectory; no local YAML file participates in install, redeploy, or uninstall.
+
+### Runtime telemetry cost
+
+When an active RuntimeDirectory is committed, Backend binds all processor Pod names/UIDs and their logical-service
+context into one generation-scoped telemetry worker. Every due Kubernetes cycle performs one
+server-side-label-filtered namespaced Pod list and, when available, one equally filtered metrics API list for the whole
+directory, joins by exact UID, and reuses the independently cached node inventory. The default Kubernetes cadence is
+10 seconds rather than the browser or Scheduler cadence.
+
+`GET /service_info/{service}` only filters and deep-copies that in-memory snapshot. It performs no lifecycle lookup,
+Scheduler request, or Kubernetes call. Rebind/uninstall clears processor metrics immediately, and an in-flight sample
+from an older install or directory revision cannot publish into the new generation. Immediately after bind, exact
+processor routes appear as placeholders with their committed target node and unknown resource/readiness fields; the
+first successful batch sample atomically replaces them. A failed sample retains the placeholder or prior
+last-known-good batch. Runtime Pods neither serve this request nor call Kubernetes.
+
+CPU and memory are sums across every expected container reported for the exact active Pod. The denominator prefers the
+target Node's `status.allocatable` and falls back to `status.capacity` only when allocatable is absent or invalid;
+`basis` always exposes which denominator was used. CPU is returned in millicores and memory in bytes so clients do not
+need to parse Kubernetes Quantity strings. Missing, partial, malformed, or temporarily failed metrics are never
+converted to zero. They are exposed as `collecting`, `unavailable`, or a retained `stale` value.
+
+```json
+[
+  {
+    "ip": "10.0.0.8",
+    "hostname": "edge-a",
+    "cpu": {
+      "status": "available",
+      "usage_millicores": 25.0,
+      "reference_millicores": 4000.0,
+      "utilization_percent": 0.625,
+      "basis": "node_allocatable"
+    },
+    "memory": {
+      "status": "available",
+      "usage_bytes": 67108864,
+      "reference_bytes": 8589934592,
+      "utilization_percent": 0.78125,
+      "basis": "node_allocatable"
+    },
+    "bandwidth": {
+      "status": "available",
+      "mbps": 12.34,
+      "probe_node": "edge-probe"
+    },
+    "age": "2026-07-12T00:00:00Z"
+  }
+]
+```
+
+`bandwidth` is deliberately a shared system measurement, not a per-processor-node link estimate. One edge Monitor owns
+the Scheduler's `available_bandwidth` lock and runs the edge-to-cloud iperf client; the cloud server and non-holder
+nodes publish `-1`, while probe failure publishes `0`. Backend projects the only finite positive sample to every
+service row and identifies its `probe_node`. No valid sample gives `collecting` or `unavailable`; a retained sample
+after a Scheduler resource-read failure is `stale`; multiple positive candidates fail closed as `ambiguous`.
+
+The list selector is Sedna's controller-guaranteed `dayu.io/mesh-managed=true`; exact Pod name/UID matching remains the
+authorization boundary. The application-supplied `app.kubernetes.io/managed-by` label owns RuntimeService CRs but is
+not trusted as the materialized-Pod identity contract.
 
 ### Runtime data, visualization, and logs
 
@@ -154,7 +288,11 @@ The response is grouped by source id. Each source contains recent task outputs, 
 
 ### `/system_parameters`
 
-The backend fetches scheduler resource data once, renders the configured system visualizers, stores a snapshot in `system_log_store.jsonl`, and returns the latest snapshot in a single-element array.
+One backend-owned worker fetches Scheduler resource/overhead and due Kubernetes runtime metrics independently of
+browser traffic. It permits only one sampling cycle at a time, applies separate bounded timeout/cadence settings, and
+retains each last-known-good field across transient failures. This endpoint performs no Scheduler or Kubernetes I/O: it
+renders the cached values, stores the rendered snapshot in `system_log_store.jsonl`, and returns it in a single-element
+array. Before the first successful sample, visualizers use their existing empty/default values.
 
 ```json
 [
@@ -173,9 +311,33 @@ The backend fetches scheduler resource data once, renders the configured system 
 ]
 ```
 
-## Compatibility Notes
+## Behavioral Notes
 
-- `POST /install` assumes the requested scheduler policy, datasource configuration, DAG workflow, and edge nodes all already exist and are mutually compatible.
+- `POST /install` treats each source `node_selected`/`node_set` as processor candidates. A policy with
+  `scope=all_edge_nodes` receives a separate Backend-authorized source set and may select a generator node outside the processor set;
+  `scope=selected_edge_nodes` uses the processor set for both roles.
+- `POST /install` fails closed if any required processor/cloud target lacks a Ready Sedna LC/EdgeMesh agent, if a fixed
+  source is outside the resolved source permission set, if activation identity is
+  incomplete, or if RuntimeDirectory readback differs from the published revision/hash.
+- `POST /stop_service` is idempotent admission for a background operation and never keeps the HTTP request open for task
+  leases or resource deletion. Backend subsequently deletes generators first, sends
+  `deadline=now` retirement fences for every possibly published revision, and attempts the install-id-guarded
+  RuntimeDirectory/proposal clear. Fence or clear failure is logged and does not veto administrative teardown. Backend
+  then persists `finalizing-uninstall`, submits UID-guarded `Foreground` deletion for Scheduler as the definitive
+  admission fence, and submits the remaining workers. The background reconciler removes `dayu-runtime-session` only
+  after a complete namespace snapshot proves that the old install's RuntimeServices, Deployments, ReplicaSets, Pods,
+  Services, Endpoints, and EndpointSlices are all absent. A remaining object is normal pending work; an API rejection,
+  observation failure, or timeout preserves the session and error for retry. Retrying
+  `finalizing-uninstall` does not require a live Scheduler API.
+  If install is still activating or planning, stop first cancels its lifecycle token and then enters serialized
+  cleanup. Pre-publication cleanup uses the persisted install identity and exact UID discovery without calling an
+  unready Scheduler; cancellation is not persisted as a generic install failure. Concurrent stop requests keep new
+  install admission closed until every stop request has finished.
+- `POST /datasource` returns `state: "partial"` when only some uploaded files are accepted. The `results` array carries per-file status details.
 - `POST /submit_query` only works after install-time deployment has completed and a datasource config exists for the requested label.
+- `POST /submit_query` is idempotent for the already-open datasource label. Opening a different datasource while one is active fails until `/stop_query` closes the current one.
+- Query startup is immediate; result collection uses the configured bounded request timeout and batch size rather than an unbounded Distributor response.
+- `POST /stop_query` is idempotent and succeeds when the datasource is already closed.
+- `GET /query_state` returns `disabled` when `template/base.yaml` sets `datasource.use-simulation=false`.
 - `GET /source_list`, `GET /task_result`, and `GET /datasource_state` are runtime-state dependent. They return empty collections or closed state when no datasource is active.
 - Visualization config upload uses YAML validation in backend memory. The file is accepted only if each visualization entry contains a valid `name`, `type`, `variables`, and `size`, plus valid hook metadata when present.

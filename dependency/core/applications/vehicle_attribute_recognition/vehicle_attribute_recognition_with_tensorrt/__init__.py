@@ -1,0 +1,4 @@
+from .vehicle_attribute_recognition_tensorrt8 import VehicleAttributeRecognitionTensorRT8
+from .vehicle_attribute_recognition_tensorrt10 import VehicleAttributeRecognitionTensorRT10
+
+__all__ = ['VehicleAttributeRecognitionTensorRT8', 'VehicleAttributeRecognitionTensorRT10']

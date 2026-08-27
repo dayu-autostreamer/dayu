@@ -18,8 +18,47 @@ Examples:
 | --- | --- | --- |
 | `ClassFactory` | Registers implementations under a `ClassType` plus alias. | `dependency/core/lib/common/class_factory.py` |
 | `Context.get_algorithm()` | Resolves hook name and parameters, then instantiates the registered class. | `dependency/core/lib/common/context.py` |
-| `dependency/core/lib/algorithms/__init__.py` | Auto-imports algorithm packages so registrations happen at import time. | `dependency/core/lib/algorithms/__init__.py` |
+| `dependency/core/lib/algorithms/__init__.py` | Imports each hook-family package so discovery starts during core initialization. | `dependency/core/lib/algorithms/__init__.py` |
+| Hook loader | Imports public single-file hooks and explicit package entry points. | `dependency/core/lib/algorithms/loader.py` |
 | Templates and env vars | Choose which hook alias to use at runtime. | `template/` |
+
+## Discovery and Package Layout
+
+Every hook-family package under `dependency/core/lib/algorithms/` invokes the common hook loader. Discovery examines
+only the direct children of that hook family and applies these rules:
+
+- A direct `.py` file is imported unless its filename starts with `_`. Importing a file does not require it to register
+  a class; base contracts and other public support modules are valid direct files.
+- A direct directory is imported only through `<directory>/hook.py`. Discovery does not impose a package-name suffix
+  or constrain its internal file names.
+- `hook.py` explicitly imports the implementations that belong to its algorithm package and may expose one or several
+  registered aliases through `__all__`.
+- Discovery does not recursively import package internals. Files beginning with `_` can still be imported explicitly
+  by a public module or `hook.py`.
+- Algorithm-package `__init__.py` files stay lightweight so probing an entry point does not initialize models or load
+  optional dependencies before the hook module needs them.
+
+Built-in algorithm packages follow the same entry-name convention as sibling single-file hooks. For example, a
+multi-file Schedule Agent uses `<algorithm>_agent/`, matching files such as `fixed_agent.py`; a multi-file initial
+deployment policy uses `<algorithm>_initial_deployment_policy/`. This is a repository convention, not a loader
+requirement. Internal directories such as `drl/`, `nf/`, and `utils/` describe implementation details and do not use
+the Hook-entry suffix.
+
+A single-file algorithm remains flat. An algorithm that owns helpers, model code, or related variants uses one package:
+
+```text
+schedule_agent/
+├── fixed_agent.py
+└── example_agent/
+    ├── __init__.py
+    ├── hook.py
+    ├── agent.py
+    ├── ablation.py
+    └── model/
+```
+
+Here `fixed_agent.py` is imported directly. `example_agent/hook.py` is the only automatically imported file inside
+that package; it owns registration of the main implementation and its variants.
 
 ## How Resolution Works
 
@@ -77,7 +116,8 @@ flowchart TD
     REG --> MON["Monitor hooks"]
     REG --> VIZ["Visualization hooks"]
 
-    GEN --> GENFLOW["BSO -> Scheduler -> ASO -> GetterFilter -> Getter -> BSTO"]
+    GEN --> GENFLOW["GetterFilter -> reserve identity -> BSO -> Scheduler -> ASO -> Getter"]
+    GENFLOW --> GENEND["Task -> BSTO; no Task -> cancel reservation"]
     SCH --> SCHFLOW["ConfigExtraction -> Agent -> Selection / Deployment / Redeployment"]
     PROC --> PROCFLOW["Processor -> Scenario extractors -> Queue"]
     MON --> MONFLOW["Resource monitors -> Scheduler /resource"]
@@ -101,6 +141,18 @@ flowchart TD
 | `GEN_COMPRESS` | Persist a frame buffer to a file |
 | `GEN_GETTER_FILTER` | Decide whether the generator should skip this round entirely |
 
+The call order is a framework contract. After a round passes `GEN_GETTER_FILTER`, `VideoGenerator` reserves one
+`TaskIdentity`. When a schedule is initial or due, Generator appends that identity as `task_context`, calls Scheduler,
+and applies `GEN_ASO` before invoking `GEN_GETTER(system, task_identity)`. Scheduling remains before source
+materialization because existing policies can change buffer size, frame rate, resolution, encoding, and the full DAG
+device mapping. The getter must pass the same identity to `Generator.generate_task`; it must not allocate a second id.
+If it produces no Task, including the explicit `DataGetterStatus.EXHAUSTED` outcome, Generator cancels the matching
+task-bound scheduling reservation. Built-in getters still accept `task_identity=None` for direct local/test use.
+
+`REQUEST_SCHEDULING_INTERVAL <= 0` means schedule every accepted generation round. A positive interval preserves the
+existing decision-reuse behavior. Every Task still receives a distinct root identity even when it shares the same
+schedule decision with nearby tasks.
+
 ### Scheduler
 
 `Scheduler` resolves startup hooks once and then instantiates one `SCH_AGENT` per source:
@@ -111,10 +163,32 @@ flowchart TD
 | `SCH_SCENARIO_RETRIEVAL` | Convert a processed task into scheduler state |
 | `SCH_POLICY_RETRIEVAL` | Recover the currently applied policy from a task |
 | `SCH_STARTUP_POLICY` | Provide a fallback plan before an agent can decide |
-| `SCH_AGENT` | Maintain policy-specific scheduling state per source |
+| `SCH_AGENT` | Maintain policy-specific scheduling state per source and request an explicit `LIVE` or `COMMITTED` scheduling snapshot when runtime state is needed |
 | `SCH_SELECTION_POLICY` | Select the execution node for a source |
 | `SCH_INITIAL_DEPLOYMENT_POLICY` | Compute deployment for first install |
 | `SCH_REDEPLOYMENT_POLICY` | Compute deployment updates after install |
+
+#### Scheduling snapshots
+
+`BaseAgent.system.get_scheduling_snapshot(scope)` returns a mutation-safe, revision-consistent plugin view. The default
+`SchedulingSnapshotScope.COMMITTED` includes current deployment and telemetry together with pending reservations,
+active commitments, and task barriers; use it for future-state or commitment-aware decisions. Explicit
+`SchedulingSnapshotScope.LIVE` carries the same deployment and telemetry fields but no in-flight contexts, and is the
+right contract for immediate decisions over executable replicas.
+
+Built-in LIVE-state agents use `core.lib.scheduling.live_state` helpers such as `get_live_snapshot`,
+`active_deployment_for_dag`, `active_targets`, `live_resources`, and `require_active_plan`. These helpers reject a
+missing RuntimeDirectory, incomplete current-DAG placement, inactive offloading target, or telemetry sample reported
+for a different directory revision instead of guessing a fallback.
+
+#### Full-DAG and pipeline plans
+
+Scheduling agents should materialize complete offloading decisions with
+`core.lib.scheduling.materialize_offloading_plan`. Algorithms whose model is specifically a linear edge-to-cloud
+pipeline may use `core.lib.scheduling.pipeline`: partition index `0` places every business stage on cloud, while the
+terminal index places every business stage on the source edge. Pipeline helpers require explicit `_start` and `_end`
+nodes and reject branches, joins, cycles, disconnected nodes, inconsistent links, and non-monotonic placements.
+General DAG algorithms must not reduce the graph to a pipeline split.
 
 ### Processor and monitor
 
@@ -137,11 +211,18 @@ flowchart TD
 ### Add a new hook implementation
 
 1. Choose the correct base interface under `dependency/core/lib/algorithms/**/base_*.py` or the processor module.
-2. Implement the class with the expected call signature.
-3. Register it with `@ClassFactory.register(ClassType.<TYPE>, alias="<name>")`.
-4. Make sure the containing package is imported through the algorithm auto-loader or processor module import path.
-5. Expose it through a template, env variable, or visualization YAML.
-6. Update [`catalog.md`](./catalog.md) so the alias is documented.
+2. Implement a self-contained algorithm as a public direct `.py` file. For a multi-file algorithm or a family of
+   variants, create one package named like the equivalent single-file entry and add a `hook.py` registration entry
+   point.
+3. Register each implementation with `@ClassFactory.register(ClassType.<TYPE>, alias="<name>")` and expose its class
+   from the module or package `hook.py` through `__all__`.
+4. Keep package internals explicitly imported from `hook.py`; do not depend on recursive discovery or eager imports in
+   the package `__init__.py`.
+5. Expose the alias through a template, env variable, or visualization YAML.
+6. Update [`catalog.md`](./catalog.md) so the alias and implementation module are documented.
+
+Before finishing, compare registered aliases against the catalog. A quick local check is to grep for
+`@ClassFactory.register` under `dependency/core/` and confirm every alias appears in [`catalog.md`](./catalog.md).
 
 ### Document constructor parameters
 
@@ -154,12 +235,18 @@ flowchart TD
 - Keep hook signatures compatible with the caller, not just with the base class name.
 - If a hook is experimental or tied to a research prototype, mark it clearly in docs and templates.
 - If a hook changes the scheduler request or response shape, update both the producing and consuming docs.
+- Declare whether scheduler state is `LIVE` or `COMMITTED`; do not silently combine current placement with stale or
+  different-revision telemetry.
+- Preserve the full DAG unless the algorithm is explicitly pipeline-only, and use the shared materialization helpers so
+  unsupported graph shapes or inactive targets fail closed.
 
 ## Known Special Cases
 
 - `dependency/core/lib/algorithms/__init__.py` skips optional algorithm packages when a dependency is missing. A hook can exist in the repository but still be unavailable at runtime if its optional dependency is not installed.
 - Some hooks are research-oriented and rely on offline assets or model files under mounted volumes.
 - `obj_velocity` is registered as a scenario extractor alias but its implementation is currently a placeholder.
+- A scheduler hook can exist without being exposed as an installable policy in `template/scheduler_policies.yaml`. Treat
+  the policy catalog as the install-time source of truth.
 
 ## Next Step
 

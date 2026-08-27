@@ -1,0 +1,3 @@
+from .traffic_signal_recognition_yolo import TrafficSignalRecognition as TrafficSignalRecognitionWithoutTensorRT
+
+__all__ = ['TrafficSignalRecognitionWithoutTensorRT']

@@ -12,15 +12,27 @@ from core.lib.common import FileOps, Context
 
 
 class OverheadEstimator:
-    def __init__(self, method_name, save_dir, agent_id=0):
+    def __init__(
+        self,
+        method_name,
+        save_dir,
+        agent_id=0,
+        write_file=True,
+        log_each=True,
+    ):
 
         self.method_name = method_name
-        self.timer = Timer(f'Runtime Overhead of {method_name}')
+        self.timer = Timer(
+            f'Runtime Overhead of {method_name}',
+            log_enabled=log_each,
+        )
         self.overhead_file = Context.get_file_path(os.path.join(save_dir, f'{method_name}_Overhead.txt'))
         self.latest_overhead = 0
         self.agent_id = agent_id
+        self.write_file_enabled = bool(write_file)
         # ensure directory and header exist; do NOT truncate existing logs implicitly
-        self._ensure_file_initialized()
+        if self.write_file_enabled:
+            self._ensure_file_initialized()
 
     @contextmanager
     def _lock_file(self, file_obj):
@@ -56,7 +68,8 @@ class OverheadEstimator:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.timer.__exit__(exc_type, exc_val, exc_tb)
         self.latest_overhead = self.timer.get_elapsed_time()
-        self.write_overhead(self.latest_overhead)
+        if self.write_file_enabled:
+            self.write_overhead(self.latest_overhead)
 
     def get_latest_overhead(self):
         return self.latest_overhead

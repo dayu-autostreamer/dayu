@@ -12,12 +12,17 @@ class ObjectNumberExtraction(BaseExtraction, abc.ABC):
         super().__init__()
 
     def __call__(self, result, task):
-        obj_num = []
+        if not isinstance(result, dict):
+            return []
+        outputs = result.get('outputs')
+        if not isinstance(outputs, dict):
+            return []
 
-        for frame_result in result:
-            bboxes = frame_result[0]
-            boxes_num = len(bboxes)
-
-            obj_num.append(boxes_num)
-
-        return obj_num
+        frame_counts = {}
+        for records in outputs.values():
+            for record in records or []:
+                if not isinstance(record, dict):
+                    continue
+                frame_index = record.get('frame_index')
+                frame_counts[frame_index] = frame_counts.get(frame_index, 0) + len(record.get('items') or [])
+        return [frame_counts[index] for index in sorted(frame_counts, key=lambda value: -1 if value is None else value)]

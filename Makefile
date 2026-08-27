@@ -3,7 +3,9 @@ SHELL=/bin/bash
 REGISTRY := $(or $(REG),docker.io)
 REPOSITORY := $(or $(REPO),dayuhub)
 IMAGE_REPO ?= $(REGISTRY)/$(REPOSITORY)
-IMAGE_TAG ?= $(or $(TAG),v1.3)
+IMAGE_TAG ?= $(or $(TAG),v1.4)
+BASE_REPOSITORY := $(or $(BASE_REPO),dayuhub)
+BASE_IMAGE_TAG ?= $(or $(BASE_TAG),latest)
 PYTHON ?= python3
 NPM ?= npm
 FRONTEND_DIR ?= frontend
@@ -25,6 +27,7 @@ PYTHON_COVERAGE_PATHS := \
 
 NOCACHE ?= $(or $(NO_CACHE),0)
 BUILD_NO_CACHE_FLAG := $(if $(filter 1 true TRUE yes YES,$(NOCACHE)),--no-cache,)
+BUILD_TARGET_ARG := $(if $(strip $(WHAT)),--files $(WHAT),)
 
 .EXPORT_ALL_VARIABLES:
 
@@ -34,15 +37,19 @@ define HELP_INFO
 # Build:
 #   make build WHAT=component
 #   make all
+#   make validate-build
 #
 # Components:
 #   backend, frontend, datasource, generator, distributor, controller, monitor, scheduler, car-detection, etc.
+#   Bake groups are also accepted: runtime, processors, default, all-images.
 #
 # Quality:
+#   make validate-build
 #   make install-python-dev
 #   make lint-python
 #   make python-syntax
 #   make test-python
+#   make test-python-ml
 #   make test-unit-integration
 #   make test-component
 #   make test-e2e
@@ -53,18 +60,20 @@ define HELP_INFO
 #   make frontend-lint
 #   make frontend-format
 #   make frontend-format-check
+#   make frontend-test
 #   make frontend-build
 #   make frontend-check
 #   make check
 #
 # Examples:
 #   make build WHAT=monitor,generator
+#   make build WHAT=processors
 #   make test-unit-integration
 #   make frontend-lint
 #   make frontend-format
 endef
 
-.PHONY: help build all install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-build frontend-check check
+.PHONY: help build all validate-build install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python test-python-ml coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-test frontend-build frontend-check check
 
 help:
 	@echo "$${HELP_INFO}"
@@ -75,14 +84,21 @@ build:
 	@echo "Current registry is: $(REGISTRY)"
 	@echo "Current repository is: $(REPOSITORY)"
 	@echo "Current image tag is: $(IMAGE_TAG)"
-	bash hack/make-rules/cross-build.sh --files $(WHAT) --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY) $(BUILD_NO_CACHE_FLAG)
+	@echo "Current base repository is: $(BASE_REPOSITORY)"
+	@echo "Current base tag is: $(BASE_IMAGE_TAG)"
+	bash hack/make-rules/cross-build.sh $(BUILD_TARGET_ARG) --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY) --base-repo $(BASE_REPOSITORY) --base-tag $(BASE_IMAGE_TAG) $(BUILD_NO_CACHE_FLAG)
 
 # Build all images
 all:
 	@echo "Current registry is: $(REGISTRY)"
 	@echo "Current repository is: $(REPOSITORY)"
 	@echo "Current image tag is: $(IMAGE_TAG)"
-	bash hack/make-rules/cross-build.sh --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY) $(BUILD_NO_CACHE_FLAG)
+	@echo "Current base repository is: $(BASE_REPOSITORY)"
+	@echo "Current base tag is: $(BASE_IMAGE_TAG)"
+	bash hack/make-rules/cross-build.sh --tag $(IMAGE_TAG) --repo $(REPOSITORY) --registry $(REGISTRY) --base-repo $(BASE_REPOSITORY) --base-tag $(BASE_IMAGE_TAG) $(BUILD_NO_CACHE_FLAG)
+
+validate-build:
+	$(PYTHON) tools/validate_build_matrix.py
 
 install-python-dev:
 	$(PYTHON) -m pip install --upgrade pip
@@ -92,11 +108,16 @@ lint-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m ruff check \
 		backend/backend_core.py \
 		backend/backend_server.py \
+		backend/cluster_client.py \
+		backend/runtime_orchestrator.py \
+		backend/runtime_telemetry.py \
 		backend/template_helper.py \
+		dependency/core/lib/network/utils.py \
 		datasource \
 		tests \
 		dependency/core/controller \
-		tools/log_analysis.py
+		tools/log_analysis.py \
+		tools/validate_build_matrix.py
 
 python-syntax:
 	PYTHONPYCACHEPREFIX="$(PYTHONPYCACHEPREFIX)" PYTHONPATH="$(PYTHONPATH_VALUE)" \
@@ -119,6 +140,13 @@ test-e2e:
 
 test-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest $(PYTEST_ARGS)
+
+test-python-ml:
+	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
+		tests \
+		-m ml \
+		--require-ml-dependencies \
+		$(PYTEST_ARGS)
 
 coverage-python:
 	PYTHONPATH="$(PYTHONPATH_VALUE)" $(PYTHON) -m pytest \
@@ -156,6 +184,9 @@ frontend-format-check:
 frontend-build:
 	cd $(FRONTEND_DIR) && $(NPM) run build
 
-frontend-check: frontend-format-check frontend-build
+frontend-test:
+	cd $(FRONTEND_DIR) && $(NPM) run test
 
-check: ci-python frontend-check
+frontend-check: frontend-format-check frontend-test frontend-build
+
+check: validate-build ci-python frontend-check

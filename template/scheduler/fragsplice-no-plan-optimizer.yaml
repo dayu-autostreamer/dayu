@@ -1,0 +1,73 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_SELECTION_POLICY_PARAMETERS
+      value: >
+        {
+          'scope': 'all_edge_nodes',
+          'fixed_value': 'edgexn33',
+          'fixed_type': 'hostname'
+        }
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_PARAMETERS
+      value: >
+        {
+          'policy': {
+            'traffic-detection': ['edgexn23', 'edgexn27', 'edgexn33'],
+            'road-context-segmentation': ['edgexn24', 'edgexn28', 'edgexn33'],
+            'traffic-signal-recognition': ['edgexn31', 'edgexn32', 'edgexn34'],
+            'vehicle-tracking': ['edgexn23', 'edgexn24', 'edgexn27', 'edgexn34'],
+            'vehicle-attribute-recognition': ['edgexn26', 'edgexn28', 'edgexn31', 'edgexn32', 'edgexn34'],
+            'vehicle-trajectory-prediction': ['edgexn27', 'edgexn32'],
+            'pedestrian-pose-estimation': ['edgexn24', 'edgexn28'],
+            'pedestrian-intent-recognition': ['edgexn28', 'edgexn32'],
+            'risk-graph-generation': ['edgexn23']
+          }
+        }
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: non
+    - name: SCH_AGENT_NAME
+      value: fragsplice_no_plan_optimizer
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'configuration': {
+            'resolution': '720p',
+            'fps': 10,
+            'encoding': 'mp4v',
+            'buffer_size': 3
+          },
+          'latency_profile': 'fragsplice-profile.json',
+          'latency_slo_s': 2.5,
+          'scenario_count': 8,
+          'max_scenarios': 64,
+          'search_time_limit_s': 0.15,
+          'queue_state_max_age_s': 1.5,
+          'residual_half_life_tasks': 8.0,
+          'rolling_planner_enabled': True,
+          'rolling_plan_max_age_s': 0.75,
+          'rolling_plan_max_lag_tasks': 4,
+          'rolling_reservation_wait_s': 0.2,
+          'rolling_use_process': True,
+          'random_seed': 2026
+        }
+
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/fragsplice/'

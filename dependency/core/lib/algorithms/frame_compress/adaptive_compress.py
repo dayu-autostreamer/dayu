@@ -9,11 +9,16 @@ Bingyun Yang, Jingyi Ning, Wenhui Zhou, Chuyu Wang, Lei Xie, Zhenjie Lin, Liming
 
 import abc
 import os
+import pickle
+import random
+import subprocess
+from collections import deque
+
+import cv2
+import numpy as np
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Context
 from .base_compress import BaseCompress
-import cv2
-import pickle
 
 __all__ = ('AdaptiveCompress',)
 
@@ -28,7 +33,7 @@ class AdaptiveCompress(BaseCompress, abc.ABC):
         self.agent_file = Context.get_file_path('model.pkl')
         self.agent = self.load_model(self.agent_file)
         self.agent.epsilon = 0
-        self.performace_gt = [
+        raw_performance_gt = [
             (20, 0.37, 739.63671875, 0.76),
             (21, 0.37, 658.810546875, 0.76),
             (22, 0.37, 577.5419921875, 0.76),
@@ -62,52 +67,115 @@ class AdaptiveCompress(BaseCompress, abc.ABC):
             (50, 0.37, 17.6650390625, 0.42),
             (51, 0.37, 16.8994140625, 0.39)
         ]
+        self.performance_gt = {
+            qp: {
+                'latency': latency,
+                'file_size': file_size,
+                'accuracy': accuracy,
+            }
+            for qp, latency, file_size, accuracy in raw_performance_gt
+        }
 
-    def __call__(self, system, frame_buffer, source_id, task_id):
-        import subprocess
-
+    def __call__(self, system, frame_buffer, file_name):
         assert frame_buffer, 'frame buffer is empty!'
 
-        frames = [data[0] for data in frame_buffer]
-        rois = [data[1] for data in frame_buffer]
+        if not isinstance(file_name, (str, os.PathLike)) or not os.fspath(file_name):
+            raise ValueError('AdaptiveCompress requires the host-provided output path')
+        frames = []
+        rois = []
+        for index, data in enumerate(frame_buffer):
+            if not isinstance(data, (list, tuple)) or len(data) != 2:
+                raise TypeError(
+                    f'adaptive frame {index} must be a (frame, rois) pair'
+                )
+            frames.append(data[0])
+            rois.append(data[1])
 
         height, width, _ = frames[0].shape
-        yuv_path = self.generate_yuv_temp_path(source_id, task_id)
-        self.init_yuv_temp_path(yuv_path, frames)
-
-        h264_path = self.generate_file_path(source_id, task_id)
-
         complexity_all, complexity_roi = self.analyze_packet_content(frames, rois)
-
         cqp = self.adjust_qp(
-                    self.performace_gt, complexity_all, complexity_roi, 
-                    self.agent,
-                    self.past_qp
+            self.performance_gt,
+            complexity_all,
+            complexity_roi,
+            self.agent,
+            self.past_qp,
+        )
+
+        output_path = os.fspath(file_name)
+        base_path, _ = os.path.splitext(output_path)
+        yuv_path = f'{base_path}.adaptive.yuv'
+        roi_path = f'{base_path}.adaptive.roi.txt'
+        encoder_path = Context.get_file_path('video_encode')
+        try:
+            self.init_yuv_temp_path(yuv_path, frames)
+            self.write_roi_file(roi_path, rois)
+            command = [
+                encoder_path,
+                yuv_path,
+                str(width),
+                str(height),
+                'H264',
+                output_path,
+                '--econstqp',
+                '-qpi',
+                str(cqp),
+                str(cqp),
+                str(cqp),
+                '--roi',
+                '-roi',
+                roi_path,
+                '--input-metadata',
+                '--blocking-mode',
+                '0',
+            ]
+            subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if not os.path.isfile(output_path):
+                raise RuntimeError(
+                    f'adaptive encoder completed without creating {output_path!r}'
                 )
-        roi_path = self.generate_roi_path(source_id, task_id)
-        command = (
-                    f'./video_encode {yuv_path} {width} {height} H264 {h264_path} '
-                    f'--econstqp -qpi {cqp} {cqp} {cqp} '
-                    f'--roi -roi {roi_path} '
-                    f'--input-metadata --blocking-mode 0'
-                )
-        process = subprocess.Popen(command, shell=True)
-        process.wait()
-
-        LOGGER.debug(f'[Generator Compress] compress the buffer frame, bkg QP: {cqp}')
-
-        FileOps.remove_file(roi_path)
-        FileOps.remove_file(yuv_path)
-
-
-        return h264_path
+            LOGGER.debug(
+                f'[Generator Compress] adaptive output={output_path}, bkg QP={cqp}'
+            )
+            return output_path
+        finally:
+            FileOps.remove_file(roi_path)
+            FileOps.remove_file(yuv_path)
 
     @staticmethod
     def load_model(filename='agent_model.pkl'):
         with open(filename, 'rb') as f:
             agent = pickle.load(f)
+        if not callable(getattr(agent, 'choose_action', None)):
+            raise TypeError('adaptive model must expose choose_action(state)')
         LOGGER.info(f"Model loaded from {filename}")
         return agent
+
+    @staticmethod
+    def generate_roi_message(rois):
+        regions = list(rois or [])[:8]
+        fields = [str(len(regions))]
+        for x1, y1, x2, y2 in regions:
+            fields.extend([
+                '-10',
+                str(int(x1)),
+                str(int(y1)),
+                str(int(x2 - x1)),
+                str(int(y2 - y1)),
+            ])
+        return ' '.join(fields) + ' '
+
+    @classmethod
+    def write_roi_file(cls, path, frame_rois):
+        with open(path, 'w', encoding='utf-8') as roi_file:
+            roi_file.write('\n'.join(
+                cls.generate_roi_message(rois)
+                for rois in frame_rois
+            ))
 
     @staticmethod
     def calculate_edge_density(frame, roi=None):
@@ -182,10 +250,6 @@ class AdaptiveCompress(BaseCompress, abc.ABC):
         return total_complexity, roi_complexity
 
     @staticmethod
-    def generate_yuv_temp_path(source_id, task_id):
-        return f'video_source_{source_id}_task_{task_id}_tmp.yuv'
-    
-    @staticmethod
     def init_yuv_temp_path(file_path, frame_buffer):
         import mmap
         import cv2
@@ -203,33 +267,25 @@ class AdaptiveCompress(BaseCompress, abc.ABC):
                 for i, frame in enumerate(frame_buffer):
                     yuv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2YUV_I420)
                     mm.seek(i * yuv_size)
-                    mm.write(yuv_frame)
+                    mm.write(np.ascontiguousarray(yuv_frame).tobytes())
             finally:
                 mm.close()
         return
-    @staticmethod
-    def generate_file_path(source_id, task_id):
-        return f'video_source_{source_id}_task_{task_id}.h264'
-    
-    @staticmethod
-    def generate_roi_path(source_id, task_id):
-        return f'roi_{source_id}_task_{task_id}.txt'
-
     @staticmethod
     def get_bandwidth():
         return 1000
     
     @staticmethod
-    def estimate_performace_with_qp(performace_gt, cqp, delta_qp1, delta_qp_2, percent1, percent2):
+    def estimate_performance_with_qp(performance_gt, cqp, delta_qp1, delta_qp_2, percent1, percent2):
         """预测生成的文件大小"""
         beta = [-1.75827058,  0.775,      54.54545455]
-        file_size_ori = performace_gt[cqp]['file_size']
-        file_size_enhance = performace_gt[cqp + delta_qp1]['file_size']
+        file_size_ori = performance_gt[cqp]['file_size']
+        file_size_enhance = performance_gt[cqp + delta_qp1]['file_size']
         file_size = (beta[0] * file_size_ori + beta[1] * file_size_enhance + beta[2] * percent1) * 2
-        return file_size
+        return max(0.0, file_size)
 
-    def adjust_qp(self, performace_gt,total_complexity, roi_complexity, agent, past_qp, latency=0.8):
-        chosen_qp = 45
+    def adjust_qp(self, performance_gt, total_complexity, roi_complexity, agent, past_qp, latency=0.8):
+        chosen_qp = int(past_qp)
 
         try:
             # bandwidth = get_bandwidth_from_packet()  # 从内存中获取带宽
@@ -243,29 +299,53 @@ class AdaptiveCompress(BaseCompress, abc.ABC):
                 latency=self.past_latency,            # 当前总时延（秒）
                 acc=self.past_acc                # 当前精度
             )
-            action = agent.choose_action(new_state.to_array())
+            action = int(agent.choose_action(new_state.to_array()))
             action_space = list(range(30,52))
+            if action < 0 or action >= len(action_space):
+                raise ValueError(f'adaptive action {action} is outside the QP action space')
             chosen_qp = action_space[action]
-            percentage = roi_complexity / total_complexity
-            file_size = self.estimate_performace_with_qp(performace_gt, chosen_qp, -10, -5, percentage, percentage)
+            percentage = roi_complexity / total_complexity if total_complexity > 0 else 0.0
+            file_size = self.estimate_performance_with_qp(
+                performance_gt,
+                chosen_qp,
+                -10,
+                -5,
+                percentage,
+                percentage,
+            )
+            if bandwidth <= 0:
+                raise ValueError('adaptive bandwidth must be positive')
             transmission_time = file_size * 8 / bandwidth / 1000
 
             # simulate
             self.past_latency = 0.37 + transmission_time + 0.35
 
-            self.past_acc = performace_gt[chosen_qp]['accuracy']
+            self.past_acc = performance_gt[chosen_qp]['accuracy']
             self.past_qp = chosen_qp
 
-        except ValueError as e:
+        except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError) as e:
             LOGGER.error(f"选择状态失败: {e}")
         return chosen_qp
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import numpy as np
-from collections import deque
-import random
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+except ModuleNotFoundError:
+    torch = None
+
+    class _MissingTorchNamespace:
+        class Module:
+            pass
+
+        def __getattr__(self, _name):
+            raise ModuleNotFoundError(
+                'Adaptive DQN helpers require the optional torch dependency'
+            )
+
+    nn = _MissingTorchNamespace()
+    optim = _MissingTorchNamespace()
 
 class DQN(nn.Module):
     def __init__(self, state_dim, action_dim):

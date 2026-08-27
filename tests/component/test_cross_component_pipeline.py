@@ -2,6 +2,8 @@ import copy
 import importlib
 import json
 import threading
+import time
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -11,9 +13,37 @@ from fastapi.testclient import TestClient
 
 from core.lib.common import Context, Queue, FileOps
 from core.lib.content import Task
+from core.lib.runtime import RuntimeContext
 
 
 GeneratorBase = importlib.import_module("core.generator.generator").Generator
+
+
+def build_pipeline_runtime_context():
+    return RuntimeContext({
+        "install_id": "install-component",
+        "runtime_directory_revision": 1,
+        "local_node": "edge-node",
+        "cloud_node": "cloud-node",
+        "nodes": {
+            "edge-node": {"role": "edge", "address": "edge-node"},
+            "cloud-node": {"role": "cloud", "address": "cloud-node"},
+        },
+        "endpoints": {
+            "scheduler": {
+                "component": "scheduler", "target_node": "cloud-node",
+                "fqdn": "scheduler-cloud.dayu.svc.cluster.local", "port": 9001,
+            },
+            "distributor": {
+                "component": "distributor", "target_node": "cloud-node",
+                "fqdn": "distributor-cloud.dayu.svc.cluster.local", "port": 9003,
+            },
+            "redis": {
+                "component": "redis", "target_node": "cloud-node",
+                "fqdn": "redis-cloud.dayu.svc.cluster.local", "port": 6379,
+            },
+        },
+    })
 
 
 def build_single_service_task():
@@ -48,6 +78,27 @@ class FakeScheduler:
         self.resource_table = {}
         self.scenario_tasks = []
         self.resource_updates = []
+        self.leases = set()
+        self.lease_operations = []
+        self.reservations = []
+
+    @staticmethod
+    def schedule_transaction():
+        return nullcontext()
+
+    def stage_task_context(self, revision, root_uuid, context, ttl_seconds=None):
+        for existing in self.reservations:
+            if existing[0:2] == (revision, root_uuid):
+                assert existing[2] == context
+                return existing[2]
+        self.reservations.append((revision, root_uuid, copy.deepcopy(context)))
+        return context
+
+    def get_task_reservation(self, revision, root_uuid, task_context=None):
+        for existing_revision, existing_root, context in self.reservations:
+            if (existing_revision, existing_root) == (revision, root_uuid):
+                return copy.deepcopy(context)
+        return None
 
     def register_schedule_table(self, source_id):
         return None
@@ -69,6 +120,7 @@ class FakeScheduler:
 
     def update_scheduler_scenario(self, task):
         self.scenario_tasks.append(task)
+        return True
 
     def register_resource_table(self, device):
         self.resource_table.setdefault(device, {})
@@ -87,18 +139,111 @@ class FakeScheduler:
         return data["node_set"][0]
 
     def get_initial_deployment_plan(self, source_id, data):
-        return {"edge-node": ["face-detection"]}
+        return {"face-detection": ["edge-node"]}
 
     def get_redeployment_plan(self, source_id, data):
-        return {"edge-node": ["face-detection"]}
+        return {"face-detection": ["edge-node"]}
 
     def should_generate(self, source_id, data):
         return {"generate": True, "reason": "fake_scheduler"}
 
+    @staticmethod
+    def runtime_service_nodes():
+        return {"face-detection": ["edge-node"]}
+
+    @staticmethod
+    def runtime_directory_revision():
+        return 1
+
+    def runtime_directory_snapshot(self):
+        return {
+            "revision": self.runtime_directory_revision(),
+            "hash": "component-runtime-directory",
+            "routes": self.compact_runtime_routes({}, "edge-node"),
+        }
+
+    @staticmethod
+    def compact_runtime_routes(plan, source_device=""):
+        common = {
+            "target_node": "edge-node",
+            "deployment_revision": 1,
+            "install_id": "install-component",
+        }
+        return [
+            {
+                **common,
+                "component": "controller",
+                "runtime_id": "controller-edge-node-r1",
+                "fqdn": "controller-edge-node-r1.dayu.svc.cluster.local",
+                "port": 9002,
+                "runtime_service_uid": "controller-runtime-uid",
+                "service_uid": "controller-service-uid",
+                "endpoint_pod_uid": "controller-pod-uid",
+            },
+            {
+                **common,
+                "component": "processor",
+                "logical_service": "face-detection",
+                "runtime_id": "processor-face-detection-edge-node-r1",
+                "fqdn": "processor-face-detection-edge-node-r1.dayu.svc.cluster.local",
+                "port": 9004,
+                "runtime_service_uid": "processor-runtime-uid",
+                "service_uid": "processor-service-uid",
+                "endpoint_pod_uid": "processor-pod-uid",
+            },
+        ]
+
+    def schedule_runtime_state(self, plan, source_device=""):
+        return {
+            "revision": self.runtime_directory_revision(),
+            "hash": "component-runtime-directory",
+            "deployment": self.runtime_service_nodes(),
+            "routes": self.compact_runtime_routes(plan, source_device),
+        }
+
+    def acquire_task_lease(self, revision, root_uuid, ttl_seconds=60.0, commitment=None):
+        self.lease_operations.append(("acquire", int(revision), str(root_uuid)))
+        self.leases.add((int(revision), str(root_uuid)))
+        return {
+            "revision": int(revision), "root_uuid": str(root_uuid), "expires_at": 9999999999.0,
+            "valid_for_seconds": float(ttl_seconds),
+        }
+
+    def renew_task_lease(self, revision, root_uuid, ttl_seconds=60.0):
+        self.lease_operations.append(("renew", int(revision), str(root_uuid)))
+        assert (int(revision), str(root_uuid)) in self.leases
+        return {
+            "revision": int(revision), "root_uuid": str(root_uuid), "expires_at": 9999999999.0,
+            "valid_for_seconds": float(ttl_seconds),
+        }
+
+    def release_task_lease(self, revision, root_uuid):
+        self.lease_operations.append(("release", int(revision), str(root_uuid)))
+        self.leases.discard((int(revision), str(root_uuid)))
+        return {"revision": int(revision), "root_uuid": str(root_uuid), "released": True}
+
+    def count_task_leases(self, revision):
+        return sum(1 for item_revision, _ in self.leases if item_revision == int(revision))
+
 
 class FakeProcessor:
     def __call__(self, task):
-        task.set_current_content({"service": task.get_flow_index(), "detections": 1})
+        task.set_current_content(
+            {
+                "service": task.get_flow_index(),
+                "outputs": {
+                    "bbox": [
+                        {
+                            "frame_index": 0,
+                            "items": [{"bbox": [0, 0, 1, 1], "score": 1.0, "label": "object", "object_id": 1}],
+                        }
+                    ]
+                },
+                "profile": {
+                    "frame_count": 1,
+                },
+            }
+        )
         task.add_scenario({"obj_num": 1})
         return task
 
@@ -113,8 +258,17 @@ class StreamAwareProcessor:
         task.set_current_content(
             {
                 "service": task.get_flow_index(),
-                "payload": payload,
-                "frames": task.get_hash_data(),
+                "outputs": {
+                    "text": [
+                        {
+                            "frame_index": None,
+                            "items": [{"text": payload, "frames": task.get_hash_data()}],
+                        }
+                    ]
+                },
+                "profile": {
+                    "frame_count": len(task.get_hash_data()),
+                },
             }
         )
         task.add_scenario({"obj_num": len(task.get_hash_data()), "payload": payload})
@@ -160,6 +314,10 @@ class FakeStreamDataSource:
         async def get_source_file():
             return Response(content=self.pending_payload, media_type="application/octet-stream")
 
+        @self.app.get("/stream-0/shared_file")
+        async def get_shared_source_file():
+            return {"file_name": ""}
+
 
 class ComponentRouter:
     def __init__(self, scheduler_server, controller_server, processor_server, distributor_server, source_app=None):
@@ -184,7 +342,15 @@ class ComponentRouter:
         if self.source_client:
             self.client_by_port["9010"] = self.source_client
 
+        # TestClient is used without a context manager in this in-process
+        # integration harness, so FastAPI's lifespan hook does not start the
+        # Controller's asynchronous forwarding inbox.  Mirror production
+        # startup explicitly and wait for the resulting eventual delivery in
+        # tests below.
+        self.controller_server._start_inbox_workers()
+
     def close(self):
+        self.controller_server._stop_inbox_workers(timeout=2.0)
         self.scheduler_client.close()
         self.controller_client.close()
         self.processor_client.close()
@@ -194,6 +360,9 @@ class ComponentRouter:
 
     def request(self, url, method=None, no_decode=False, binary=True, **kwargs):
         method = method or "GET"
+        # RuntimeLeaseClient exposes transport retry semantics that are not a
+        # TestClient request argument; the in-process router is deterministic.
+        kwargs.pop("retry", None)
         parsed = urlparse(url)
         port = str(parsed.port)
         client = self.client_by_port[port]
@@ -212,18 +381,125 @@ class ComponentRouter:
             return response
         return response.json() if binary else response.content.decode("utf-8")
 
+    def wait_for_result_size(self, expected, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        response = None
+        while time.monotonic() < deadline:
+            response = self.distributor_client.get("/all_result")
+            if response.status_code == 200 and response.json()["size"] == expected:
+                return response
+            time.sleep(0.01)
+        return response
+
+    def wait_for_lease_operation_count(self, expected, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            operations = self.scheduler_server.scheduler.lease_operations
+            if len(operations) >= expected:
+                return operations
+            time.sleep(0.01)
+        return self.scheduler_server.scheduler.lease_operations
+
+
+@pytest.mark.component
+def test_parallel_branches_keep_one_artifact_and_retry_ready_join(mounted_runtime):
+    controller_module = importlib.import_module("core.controller.controller")
+    processor_server_module = importlib.import_module("core.processor.processor_server")
+    dag = Task.extract_dag_from_dag_deployment({
+        "fast": {
+            "service": {"service_name": "fast", "execute_device": "edge-node"},
+            "next_nodes": ["join"],
+        },
+        "slow": {
+            "service": {"service_name": "slow", "execute_device": "edge-node"},
+            "next_nodes": ["join"],
+        },
+        "join": {
+            "service": {"service_name": "join", "execute_device": "edge-node"},
+            "next_nodes": [],
+        },
+    })
+    root = Task(
+        source_id=0,
+        task_id=9,
+        source_device="edge-node",
+        all_edge_devices=["edge-node"],
+        dag=dag,
+        metadata={"buffer_size": 1},
+        raw_metadata={"buffer_size": 1},
+        file_path="shared.mp4",
+        runtime_directory_revision=1,
+    )
+    FileOps.save_task_file_in_temp(root, b"immutable-video")
+    fast, slow = root.step_to_next_stage()
+    assert FileOps.get_task_file_in_temp(fast) == FileOps.get_task_file_in_temp(slow)
+
+    class ReadingProcessor:
+        def __call__(self, task):
+            payload = Path(FileOps.get_task_file_in_temp(task)).read_bytes()
+            task.set_current_content({
+                "service": task.get_flow_index(),
+                "outputs": {"text": [{"frame_index": None, "items": [{"text": payload.decode()}]}]},
+                "profile": {"frame_count": 1},
+            })
+            return task
+
+    processor = object.__new__(processor_server_module.ProcessorServer)
+    processor.processor = ReadingProcessor()
+    fast = processor.process_task_service(fast)
+    assert Path(FileOps.get_task_file_in_temp(root)).read_bytes() == b"immutable-video"
+
+    class Barrier:
+        def __init__(self):
+            self.tasks = {}
+            self.completed = 0
+
+        def arrive(self, task, joint_service_name, required_count):
+            self.tasks[task.get_past_flow_index()] = Task.deserialize(task.serialize())
+            return list(self.tasks.values()) if len(self.tasks) == required_count else None
+
+        def complete(self, root_uuid, joint_service_name):
+            self.completed += 1
+            self.tasks.clear()
+
+    controller = object.__new__(controller_module.Controller)
+    controller.task_coordinator = Barrier()
+    downstream_attempts = []
+    downstream_results = []
+
+    def submit_merged(task):
+        downstream_attempts.append(task)
+        if len(downstream_attempts) == 1:
+            return False
+        downstream_results.append(task)
+        return True
+
+    controller.submit_task = submit_merged
+    assert controller.process_return(fast) is True
+
+    slow = processor.process_task_service(slow)
+    assert slow.get_current_content()["outputs"]["text"][0]["items"][0]["text"] == "immutable-video"
+    assert controller.process_return(slow) is False
+    assert len(controller.task_coordinator.tasks) == 2
+    assert Path(FileOps.get_task_file_in_temp(root)).read_bytes() == b"immutable-video"
+
+    assert controller.process_return(Task.deserialize(slow.serialize())) is True
+    assert controller.task_coordinator.completed == 1
+    assert len(downstream_results) == 1
+    assert downstream_results[0].get_service("fast").get_content_data() is not None
+    assert downstream_results[0].get_service("slow").get_content_data() is not None
+
 
 @pytest.mark.component
 def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_runtime, monkeypatch, tmp_path):
     generator_module = importlib.import_module("core.generator.generator")
     controller_module = importlib.import_module("core.controller.controller")
     controller_server_module = importlib.import_module("core.controller.controller_server")
-    task_coordinator_module = importlib.import_module("core.controller.task_coordinator")
-    network_module = importlib.import_module("core.lib.network")
     processor_server_module = importlib.import_module("core.processor.processor_server")
     distributor_module = importlib.import_module("core.distributor.distributor")
     distributor_server_module = importlib.import_module("core.distributor.distributor_server")
     scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
+    delivery_module = importlib.import_module("core.lib.network.delivery")
 
     monkeypatch.chdir(tmp_path)
     Path("payload.bin").write_bytes(b"frame-bytes")
@@ -235,40 +511,9 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
     monkeypatch.setenv("DISPLAY", "True")
     monkeypatch.setenv("MONITORS", "[]")
 
-    for module in (
-        generator_module,
-        controller_module,
-        task_coordinator_module,
-        processor_server_module,
-        distributor_module,
-    ):
-        monkeypatch.setattr(module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
-        monkeypatch.setattr(module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-        monkeypatch.setattr(module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
-
-    monkeypatch.setattr(controller_module.KubeConfig, "get_service_nodes_dict", staticmethod(lambda: {}))
-    monkeypatch.setattr(scheduler_server_module.KubeConfig, "get_service_nodes_dict", staticmethod(lambda: {}))
+    runtime_context = build_pipeline_runtime_context()
     monkeypatch.setattr(
-        network_module.PortInfo,
-        "force_refresh",
-        staticmethod(lambda: None),
-    )
-    monkeypatch.setattr(
-        network_module.PortInfo,
-        "get_component_port",
-        staticmethod(
-            lambda component: {
-                "controller": 9002,
-                "distributor": 9003,
-                "scheduler": 9001,
-                "redis": 6379,
-            }[component]
-        ),
-    )
-    monkeypatch.setattr(
-        network_module.PortInfo,
-        "get_service_ports_dict",
-        staticmethod(lambda device: {"face-detection": 9004}),
+        RuntimeContext, "get_default", staticmethod(lambda: runtime_context)
     )
 
     monkeypatch.setattr(processor_server_module.ProcessorServer, "loop_process", lambda self: None)
@@ -313,8 +558,10 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
     distributor_server = distributor_server_module.DistributorServer()
 
     router = ComponentRouter(scheduler_server, controller_server, processor_server, distributor_server)
-    for module in (generator_module, controller_module, processor_server_module, distributor_module):
+    for module in (generator_module, controller_module, distributor_module):
         monkeypatch.setattr(module, "http_request", router.request)
+    monkeypatch.setattr(delivery_module, "http_request", router.request)
+    distributor_server.distributor.runtime_lease_client.requester = router.request
 
     try:
         generator = DummyGenerator(
@@ -334,18 +581,36 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
         generator.record_total_start_ts(task)
         generator.submit_task_to_controller(task)
 
-        query_response = router.distributor_client.get("/all_result")
+        query_response = router.wait_for_result_size(1)
         assert query_response.status_code == 200
         assert query_response.json()["size"] == 1
 
         stored_task = Task.deserialize(query_response.json()["result"][0])
         assert stored_task.get_current_service_info()[0] == "_end"
-        assert stored_task.get_last_content() == {"service": "face-detection", "detections": 1}
+        assert stored_task.get_last_content() == {
+            "service": "face-detection",
+            "outputs": {
+                "bbox": [
+                    {
+                        "frame_index": 0,
+                        "items": [{"bbox": [0, 0, 1, 1], "score": 1.0, "label": "object", "object_id": 1}],
+                    }
+                ]
+            },
+            "profile": {
+                "frame_count": 1,
+            },
+        }
 
         assert scheduler_server.scheduler.schedule_calls, "Generator should request a schedule plan"
         assert len(scheduler_server.scheduler.scenario_tasks) == 1
         scenario_task = scheduler_server.scheduler.scenario_tasks[0]
         assert scenario_task.get_scenario_data("face-detection") == {"obj_num": 1}
+        assert scheduler_server.scheduler.lease_operations == [
+            ("acquire", 1, stored_task.get_root_uuid()),
+            ("renew", 1, stored_task.get_root_uuid()),
+            ("release", 1, stored_task.get_root_uuid()),
+        ]
     finally:
         router.close()
 
@@ -356,13 +621,12 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
     video_generator_module = importlib.import_module("core.generator.video_generator")
     controller_module = importlib.import_module("core.controller.controller")
     controller_server_module = importlib.import_module("core.controller.controller_server")
-    task_coordinator_module = importlib.import_module("core.controller.task_coordinator")
-    network_module = importlib.import_module("core.lib.network")
     http_video_getter_module = importlib.import_module("core.lib.algorithms.data_getter.http_video_getter")
     processor_server_module = importlib.import_module("core.processor.processor_server")
     distributor_module = importlib.import_module("core.distributor.distributor")
     distributor_server_module = importlib.import_module("core.distributor.distributor_server")
     scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
+    delivery_module = importlib.import_module("core.lib.network.delivery")
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NODE_NAME", "edge-node")
@@ -374,36 +638,9 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
     monkeypatch.setenv("GEN_PROCESS_NAME", "simple")
     monkeypatch.setenv("GEN_COMPRESS_NAME", "simple")
 
-    for module in (
-        generator_module,
-        controller_module,
-        task_coordinator_module,
-        processor_server_module,
-        distributor_module,
-    ):
-        monkeypatch.setattr(module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
-        monkeypatch.setattr(module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-        monkeypatch.setattr(module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
-
-    monkeypatch.setattr(controller_module.KubeConfig, "get_service_nodes_dict", staticmethod(lambda: {}))
-    monkeypatch.setattr(scheduler_server_module.KubeConfig, "get_service_nodes_dict", staticmethod(lambda: {}))
-    monkeypatch.setattr(network_module.PortInfo, "force_refresh", staticmethod(lambda: None))
+    runtime_context = build_pipeline_runtime_context()
     monkeypatch.setattr(
-        network_module.PortInfo,
-        "get_component_port",
-        staticmethod(
-            lambda component: {
-                "controller": 9002,
-                "distributor": 9003,
-                "scheduler": 9001,
-                "redis": 6379,
-            }[component]
-        ),
-    )
-    monkeypatch.setattr(
-        network_module.PortInfo,
-        "get_service_ports_dict",
-        staticmethod(lambda device: {"face-detection": 9004}),
+        RuntimeContext, "get_default", staticmethod(lambda: runtime_context)
     )
 
     monkeypatch.setattr(processor_server_module.ProcessorServer, "loop_process", lambda self: None)
@@ -468,10 +705,11 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
         generator_module,
         http_video_getter_module,
         controller_module,
-        processor_server_module,
         distributor_module,
     ):
         monkeypatch.setattr(module, "http_request", router.request)
+    monkeypatch.setattr(delivery_module, "http_request", router.request)
+    distributor_server.distributor.runtime_lease_client.requester = router.request
 
     class BoundedVideoGenerator(video_generator_module.VideoGenerator):
         def run_stream(self, rounds):
@@ -501,18 +739,22 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
         )
         generator.run_stream(rounds=3)
 
-        query_response = router.distributor_client.get("/all_result")
+        query_response = router.wait_for_result_size(3)
         assert query_response.status_code == 200
         assert query_response.json()["size"] == 3
 
         stored_tasks = [Task.deserialize(task_json) for task_json in query_response.json()["result"]]
         assert [task.get_task_id() for task in stored_tasks] == [0, 1, 2]
-        assert [task.get_last_content()["payload"] for task in stored_tasks] == [
+        assert [task.get_last_content()["outputs"]["text"][0]["items"][0]["text"] for task in stored_tasks] == [
             "stream-batch-0",
             "stream-batch-1",
             "stream-batch-2",
         ]
-        assert [task.get_last_content()["frames"] for task in stored_tasks] == [[0], [1], [2]]
+        assert [task.get_last_content()["outputs"]["text"][0]["items"][0]["frames"] for task in stored_tasks] == [
+            [0],
+            [1],
+            [2],
+        ]
 
         assert len(source_server.source_requests) == 3
         assert all(request["gen_filter_name"] == "simple" for request in source_server.source_requests)
@@ -525,6 +767,17 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
             "obj_num": 1,
             "payload": "stream-batch-2",
         }
+        router.wait_for_lease_operation_count(3 * len(stored_tasks))
+        operations_by_root = {
+            task.get_root_uuid(): [] for task in stored_tasks
+        }
+        for operation, revision, root_uuid in scheduler_server.scheduler.lease_operations:
+            assert revision == 1
+            operations_by_root[root_uuid].append(operation)
+        assert operations_by_root == {
+            task.get_root_uuid(): ["acquire", "renew", "release"]
+            for task in stored_tasks
+        }
     finally:
         router.close()
 
@@ -535,16 +788,29 @@ def test_monitor_reports_resource_state_to_scheduler(mounted_runtime, monkeypatc
     scheduler_server_module = importlib.import_module("core.scheduler.scheduler_server")
 
     monkeypatch.setenv("NODE_NAME", "edge-node")
-    monkeypatch.setenv("INTERVAL", "0")
+    monkeypatch.setenv("INTERVAL", "1")
     monkeypatch.setenv("MONITORS", "['cpu_usage', 'memory_usage']")
 
-    monkeypatch.setattr(monitor_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
-    monkeypatch.setattr(monitor_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(monitor_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
+    runtime_context = RuntimeContext({
+        "local_node": "edge-node",
+        "cloud_node": "cloud-node",
+        "nodes": {
+            "edge-node": {"role": "edge"},
+            "cloud-node": {"role": "cloud"},
+        },
+        "endpoints": {
+            "scheduler": {
+                "component": "scheduler",
+                "target_node": "cloud-node",
+                "fqdn": "scheduler-cloud.dayu.svc.cluster.local",
+                "port": 9001,
+            }
+        },
+    })
     monkeypatch.setattr(
-        monitor_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: {"scheduler": 9001}[component]),
+        monitor_module.RuntimeContext,
+        "get_default",
+        staticmethod(lambda: runtime_context),
     )
     monkeypatch.setattr(scheduler_server_module, "Scheduler", FakeScheduler)
 
@@ -576,5 +842,8 @@ def test_monitor_reports_resource_state_to_scheduler(mounted_runtime, monkeypatc
         assert scheduler_server.scheduler.resource_table == {
             "edge-node": {"cpu_usage": 0.51, "memory_usage": 0.73}
         }
+        assert scheduler_server.scheduler.resource_updates[0][
+            "runtime_directory_revision"
+        ] == 1
     finally:
         scheduler_client.close()

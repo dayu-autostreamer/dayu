@@ -1,3 +1,4 @@
+import importlib
 import os
 import shutil
 import sys
@@ -14,9 +15,44 @@ for path in (str(BACKEND_DIR), str(DEPENDENCY_DIR), str(DATASOURCE_DIR), str(REP
     if path not in sys.path:
         sys.path.insert(0, path)
 
-os.environ.setdefault("DELETE_TEMP_FILES", "False")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 os.environ.setdefault("NAMESPACE", "dayu")
+
+
+REQUIRED_ML_MODULES = ("torch", "torch_geometric")
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--require-ml-dependencies",
+        action="store_true",
+        default=False,
+        help=(
+            "Fail before collection unless the real PyTorch and "
+            "PyTorch Geometric runtimes are importable."
+        ),
+    )
+
+
+def pytest_sessionstart(session):
+    if not session.config.getoption("--require-ml-dependencies"):
+        return
+
+    import_errors = []
+    for module_name in REQUIRED_ML_MODULES:
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:  # pragma: no cover - runner environment gate
+            import_errors.append(
+                f"{module_name}: {type(exc).__name__}: {exc}"
+            )
+
+    if import_errors:
+        details = "; ".join(import_errors)
+        raise pytest.UsageError(
+            "Required ML test dependencies are unavailable or broken: "
+            f"{details}"
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +78,6 @@ def mounted_runtime(monkeypatch, tmp_path):
     monkeypatch.setenv("DEFAULT_MOUNT_PATH", str(volume0))
     monkeypatch.setenv("TEMP_PATH", str(temp_dir))
     monkeypatch.setenv("NAMESPACE", "dayu")
-    monkeypatch.setenv("DELETE_TEMP_FILES", "False")
     monkeypatch.setenv("LOG_LEVEL", "INFO")
 
     return volume0

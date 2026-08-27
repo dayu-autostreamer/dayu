@@ -30,13 +30,13 @@
 						<div class="layout-lock-screen-login-box-img">
 							<img src="@/assets/images/avatar.jpg" />
 						</div>
-						<div class="layout-lock-screen-login-box-name">Administrator</div>
+						<div class="layout-lock-screen-login-box-name">Dayu Operator</div>
 						<div class="layout-lock-screen-login-box-value">
 							<el-input
 								placeholder="请输入密码"
 								ref="layoutLockScreenInputRef"
 								v-model="state.lockScreenPassword"
-								@keyup.enter.native.stop="onLockScreenSubmit()"
+								@keyup.enter.stop="onLockScreenSubmit()"
 							>
 								<template #append>
 									<el-button @click="onLockScreenSubmit">
@@ -66,8 +66,9 @@ import { Local } from '/@/utils/storage';
 import { storeToRefs } from 'pinia';
 import { useThemeConfig } from '/@/stores/themeConfig';
 
-// 定义变量内容
-const layoutLockScreenDateRef = ref<HtmlType>();
+type LockScreenElement = HTMLElement | null;
+
+const layoutLockScreenDateRef = ref<LockScreenElement>();
 const layoutLockScreenInputRef = ref();
 const storesThemeConfig = useThemeConfig();
 const { themeConfig } = storeToRefs(storesThemeConfig);
@@ -77,7 +78,7 @@ const state = reactive({
 	moveDifference: 0,
 	isShowLoockLogin: false,
 	isFlags: false,
-	querySelectorEl: '' as HtmlType,
+	querySelectorEl: null as LockScreenElement,
 	time: {
 		hm: '',
 		s: '',
@@ -213,8 +214,8 @@ onUnmounted(() => {
 }
 .layout-lock-screen-img {
 	@extend .layout-lock-screen-fixed;
-	background-image: url('https://i.hd-r.cn/e4a19d84364f185266666765ac21a5db.jpg');
-	background-size: 100% 100%;
+	background: linear-gradient(135deg, rgba(15, 76, 203, 0.92), rgba(14, 35, 72, 0.94)),
+		url('../../assets/login-bg.svg') center bottom / cover no-repeat;
 	z-index: 9999991;
 }
 .layout-lock-screen {
