@@ -155,7 +155,8 @@ For backend code, mature open source projects also usually keep orchestration te
   generator-first/immediate-fence/Scheduler-admission-fence/worker-delete uninstall ordering
 - Scheduler management failures retaining endpoint, status, and structured detail in the existing RuntimeSession and
   `/install_state` contracts instead of collapsing into a generic plan error
-- strict deployment-plan validation plus optional cloud-backup composition across initial install and redeploy
+- strict deployment-plan validation and exact Scheduler-plan materialization across initial install and redeploy,
+  including policy-owned cloud placements
 - backend-owned node/agent preflight and batched exact-Pod-UID telemetry joins, including all-container Kubernetes
   Quantity aggregation, allocatable/capacity denominator labeling, and fail-closed partial metrics
 - polling loops such as result fetching and runtime reconcile control
