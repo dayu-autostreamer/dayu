@@ -119,12 +119,14 @@ make test-component
 make test-e2e
 make coverage-python
 make frontend-install
+make frontend-test
 make frontend-check
 make check
 ```
 
 `make validate-build` 用于检查 Docker Bake 镜像矩阵、Dockerfile 和部署模板中的镜像引用是否一致。
 `make check` 适合作为日常开发的聚合校验入口；`make coverage-python` 对齐 Codecov 使用的 Python 覆盖率流程；
+`make frontend-check` 会依次执行格式检查、前端生命周期状态机测试和生产构建；
 `make frontend-lint` 仍保留用于逐步清理前端模板历史遗留的 lint 债务。
 
 ## 仓库结构
