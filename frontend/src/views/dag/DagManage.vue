@@ -30,7 +30,13 @@
 							>
 							<el-button round :disabled="!drawing" @click="clearInput">Reset</el-button>
 						</div>
-						<input ref="dagFileInput" class="hidden-file-input" type="file" accept=".dag" @change="handleDagFileChange" />
+						<input
+							ref="dagFileInput"
+							class="hidden-file-input"
+							type="file"
+							accept=".dag"
+							@change="handleDagFileChange"
+						/>
 					</div>
 
 					<div v-if="!drawing" class="canvas-placeholder">
@@ -525,7 +531,13 @@ export default {
 
 			const layoutNodes = document.layout?.nodes || {};
 			const importedNodes = nodeIds.map((nodeId, index) =>
-				this.createFlowNodeFromDagNode(nodeId, document.dag[nodeId], servicesById.get(nodeId), layoutNodes[nodeId], index)
+				this.createFlowNodeFromDagNode(
+					nodeId,
+					document.dag[nodeId],
+					servicesById.get(nodeId),
+					layoutNodes[nodeId],
+					index
+				)
 			);
 			const importedMap = {};
 			importedNodes.forEach((node) => {
