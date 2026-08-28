@@ -1,8 +1,13 @@
 import ast
 
+import pytest
+
 from runtime_model import RuntimeSlot
 from runtime_renderer import FORBIDDEN_RUNTIME_ENV
 from template_helper import TemplateHelper
+
+
+pytestmark = pytest.mark.e2e
 
 
 def _helper(mounted_runtime):

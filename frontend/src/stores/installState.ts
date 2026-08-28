@@ -94,7 +94,7 @@ function normalizeCleanup(value: unknown): CleanupDiagnostics | null {
 						finalizers: stringArray(item.finalizers),
 					},
 				];
-			})
+		  })
 		: [];
 	const truncatedCount = nonNegativeInteger(raw.truncated_count);
 	return {
