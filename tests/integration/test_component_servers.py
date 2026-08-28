@@ -1,6 +1,7 @@
 import importlib
 import gzip
 import json
+import threading
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -876,6 +877,8 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
     returned_tasks = []
     transmit_records = []
     execute_records = []
+    task_forwarded = threading.Event()
+    result_forwarded = threading.Event()
 
     class FakeController:
         def __init__(self):
@@ -894,10 +897,12 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
 
         def submit_task(self, task):
             submitted_tasks.append(task)
+            task_forwarded.set()
             return True
 
         def process_return(self, task):
             returned_tasks.append(task)
+            result_forwarded.set()
             return True
 
     monkeypatch.setattr(controller_server_module, "Controller", FakeController)
@@ -920,7 +925,8 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
             "accepted": True,
             "task_uuid": task.get_task_uuid(),
         }
-        assert submitted_tasks and submitted_tasks[0].get_task_id() == task.get_task_id()
+        assert task_forwarded.wait(timeout=1.0)
+        assert [item.get_task_id() for item in submitted_tasks] == [task.get_task_id()]
         assert transmit_records == [(task.get_task_id(), True, "controller-input.bin")]
 
         temp_file_path = FileOps.get_task_file_in_temp(task)
@@ -933,5 +939,6 @@ def test_controller_server_accepts_health_submit_and_return_contracts(mounted_ru
             "accepted": True,
             "task_uuid": task.get_task_uuid(),
         }
-        assert returned_tasks and returned_tasks[0].get_task_id() == task.get_task_id()
+        assert result_forwarded.wait(timeout=1.0)
+        assert [item.get_task_id() for item in returned_tasks] == [task.get_task_id()]
         assert execute_records == [(task.get_task_id(), True)]
