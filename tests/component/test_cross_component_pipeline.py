@@ -602,11 +602,12 @@ def test_generator_controller_processor_distributor_scheduler_pipeline(mounted_r
             },
         }
 
+        lease_operations = router.wait_for_lease_operation_count(3)
         assert scheduler_server.scheduler.schedule_calls, "Generator should request a schedule plan"
         assert len(scheduler_server.scheduler.scenario_tasks) == 1
         scenario_task = scheduler_server.scheduler.scenario_tasks[0]
         assert scenario_task.get_scenario_data("face-detection") == {"obj_num": 1}
-        assert scheduler_server.scheduler.lease_operations == [
+        assert lease_operations == [
             ("acquire", 1, stored_task.get_root_uuid()),
             ("renew", 1, stored_task.get_root_uuid()),
             ("release", 1, stored_task.get_root_uuid()),
