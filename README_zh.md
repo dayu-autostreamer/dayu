@@ -26,6 +26,9 @@
 generator / scheduler / controller / processor / distributor / monitor 这组运行时协同组件组合在一起，并通过 hook
 机制支持不同调度策略和运行时行为的切换。
 
+大禹由**南京大学团队**发起，欢迎高校、企业及独立开发者参与贡献。项目职责依据个人贡献与能力确定，遵循
+[开放治理规则](GOVERNANCE.md)。
+
 ## 为什么选择 Dayu
 
 - 支持面向多数据流的 DAG 式 AI 服务流水线
@@ -158,9 +161,9 @@ python tools/log_analysis.py --log path/to/exported-log.json.gz --slo-seconds 2.
 
 ## 联系我们
 
-如果有任何问题，请随时通过以下方式联系我们：
+使用咨询、问题反馈、安全漏洞私密报告及行为准则投诉的入口见 [SUPPORT.md](SUPPORT.md)。
+一般项目交流或研究合作可联系：
 
-- [谢磊 lxie@nju.edu.cn](mailto:lxie@nju.edu.cn)
 - [周文晖 whzhou@smail.nju.edu.cn](mailto:whzhou@smail.nju.edu.cn)
 
 ## 引用

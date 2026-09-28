@@ -1,0 +1,5 @@
+# Generated from /OWNERS by make sync-codeowners. Do not edit manually.
+# GitHub reads this file from the PR base branch; approvers need write access.
+# Native Reviews and branch rules enforce approval; this file grants no access.
+# Significant changes still need two independent technical reviews (GOVERNANCE.md).
+* @zwh2119 @ShyEdge

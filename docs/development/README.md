@@ -2,6 +2,10 @@
 
 This guide is for contributors who need to change code in the repository and want to quickly find the right implementation area, test layer, and related docs.
 
+Start with [CONTRIBUTING.md](../../CONTRIBUTING.md) for the patch workflow and validation, and
+[GOVERNANCE.md](../../GOVERNANCE.md#technical-decisions-and-pull-requests) for review requirements.
+The [community administration guide](community-administration.md) covers role, permission, and review-routing setup.
+
 ## Repository Map
 
 | Path | Purpose | Typical changes |
@@ -176,6 +180,11 @@ make frontend-check
 For test-layer guidance, see [`../testing/README.md`](../testing/README.md).
 
 ## Documentation Maintenance Rules
+
+For governance, member responsibilities, GitHub Teams, and review automation, use the
+[community administration guide](community-administration.md). Run `make validate-community` after changing
+community files; install the small `.github/requirements/community.txt` dependency set if needed. It does not modify
+GitHub permissions. The [OWNERS guide](owners.md) covers review routing, generated CODEOWNERS, and GitHub Actions.
 
 Repository quality improves fastest when docs stay close to code. For Dayu, treat docs updates as part of the feature:
 

@@ -14,7 +14,7 @@ Dayu has two documentation surfaces with different jobs:
 
 The documentation site currently presents the latest published `v1.3` release. This repository tree follows the
 unreleased `v1.4` development state and its current code contracts; see the
-[`v1.4` changelog](../CHANGELOG.md#v14-in-development) for the evolving release boundary.
+[`v1.4` changelog](../CHANGELOG.md#v14) for the evolving release boundary.
 
 When a topic is mostly about teaching a first-time user how to use Dayu, keep the full walkthrough on the website and
 link back to repository references only for exact contracts. When a topic changes with code, templates, or tests, keep
@@ -29,6 +29,8 @@ the authoritative details here.
 | Need the vocabulary | [`concepts.md`](./concepts.md) | Defines DAGs, services, processor templates, task content, policies, hooks, datasources, and queries. |
 | Operating a running Dayu system | [`operations/`](./operations/README.md) | Managed-runtime prerequisites, RBAC, install/publication, bounded rollout retirement, safe stop, and useful checks. |
 | Changing code | [`development/`](./development/README.md) | Repository map, common change workflows, and docs/tests to update with code changes. |
+| Reviewing or administering the project | [Governance](../GOVERNANCE.md) and [community administration](./development/community-administration.md) | Review responsibilities, membership, permissions, and branch-rule setup. |
+| Maintaining review routing | [OWNERS and GitHub Actions](./development/owners.md) | Root ownership, generated CODEOWNERS, native approvals, and activation checks. |
 | Adding coverage | [`testing/`](./testing/README.md) | Test pyramid and where new tests should live. |
 
 ## Reference Map

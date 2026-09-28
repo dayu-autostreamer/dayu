@@ -1,0 +1,39 @@
+name: OWNERS review routing
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, ready_for_review, synchronize, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: owners-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  request-review:
+    name: Request owner review
+    if: github.repository == 'dayu-autostreamer/dayu' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # This write-capable workflow must NEVER check out the PR head or merge ref.
+      # Both the script and its dependency file come from the trusted base SHA.
+      - name: Checkout trusted base tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dayu-autostreamer/dayu
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            tools
+            .github/requirements
+      - name: Install trusted community tooling dependency
+        run: python3 -m pip install --disable-pip-version-check -r .github/requirements/community.txt
+      - name: Request an independent reviewer if needed
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/request_owner_review.py
