@@ -1,8 +1,8 @@
 # Dayu Governance
 
-Dayu was founded by a team at Nanjing University. We welcome contributors from academia, industry, and the wider
-open source community. Responsibility is earned through individual contributions and judgment; affiliation does not
-confer a seat, a vote, or repository access.
+Dayu was founded by [Dislab](https://dislab.nju.edu.cn/) at [Nanjing University](https://www.nju.edu.cn/).
+We welcome contributors from academia, industry, and the wider open source community. Responsibility is earned through
+individual contributions and judgment; affiliation does not confer a seat, a vote, or repository access.
 
 Contributors participate in development and review, Maintainers lead day-to-day technical work, and the Technical
 Steering Committee (TSC) stewards project direction and resolves escalated disputes. TSC membership and technical

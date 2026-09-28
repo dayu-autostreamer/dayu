@@ -26,8 +26,8 @@
 generator / scheduler / controller / processor / distributor / monitor 这组运行时协同组件组合在一起，并通过 hook
 机制支持不同调度策略和运行时行为的切换。
 
-大禹由**南京大学团队**发起，欢迎高校、企业及独立开发者参与贡献。项目职责依据个人贡献与能力确定，遵循
-[开放治理规则](GOVERNANCE.md)。
+大禹由**[南京大学（Nanjing University）](https://www.nju.edu.cn/)的[分布式实验室（Dislab）](https://dislab.nju.edu.cn/)**创立，
+欢迎高校、企业及独立开发者参与贡献。项目职责依据个人贡献与能力确定，遵循[开放治理规则](GOVERNANCE.md)。
 
 ## 为什么选择 Dayu
 
