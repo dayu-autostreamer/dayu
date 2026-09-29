@@ -191,8 +191,8 @@
 					install_state.cleanupDelayed
 						? 'Cleanup is delayed; Dayu is still retrying'
 						: install_state.uninstallCancelsInstall || install_state.isInstalling || install_state.isCancellingInstall
-						? 'Cancel installation and clean up created resources'
-						: 'Uninstall services'
+							? 'Cancel installation and clean up created resources'
+							: 'Uninstall services'
 				"
 				@click="uninstallServices"
 			>
@@ -202,8 +202,8 @@
 							? 'Cancelling Install'
 							: 'Uninstalling'
 						: install_state.uninstallCancelsInstall || install_state.isInstalling || install_state.isCancellingInstall
-						? 'Cancel Install'
-						: 'Uninstall'
+							? 'Cancel Install'
+							: 'Uninstall'
 				}}
 			</el-button>
 		</div>
@@ -679,7 +679,10 @@ export default {
 	border: 1px solid #dbe4ee;
 	background: #f8fafc;
 	cursor: pointer;
-	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+	transition:
+		border-color 0.2s ease,
+		box-shadow 0.2s ease,
+		transform 0.2s ease;
 }
 
 .service-chip:hover {

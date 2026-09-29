@@ -577,7 +577,10 @@ export default {
 	border-radius: 18px;
 	border: 1px solid #dbe4ee;
 	background: #f8fafc;
-	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+	transition:
+		border-color 0.2s ease,
+		box-shadow 0.2s ease,
+		transform 0.2s ease;
 }
 
 .source-card.is-ready {
@@ -640,8 +643,8 @@ export default {
 	place-items: center;
 	text-align: center;
 	padding: 28px;
-	background: linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 38%),
-		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 38%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 }
 
 .empty-state__icon {

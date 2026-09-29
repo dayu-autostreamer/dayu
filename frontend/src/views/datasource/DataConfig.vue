@@ -31,8 +31,8 @@
 								pendingFiles.length === 1
 									? pendingFiles[0].name
 									: pendingFiles.length
-									? `${pendingFiles.length} files selected`
-									: 'Select config files'
+										? `${pendingFiles.length} files selected`
+										: 'Select config files'
 							}}
 						</div>
 						<div class="upload-inline-trigger__subtitle">
@@ -495,7 +495,8 @@ export default {
 	padding: 20px;
 	display: grid;
 	gap: 24px;
-	background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
+	background:
+		radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
 		radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.08), transparent 24%);
 }
 
@@ -543,9 +544,12 @@ export default {
 	padding: 16px 18px;
 	border: 1.5px dashed #bfdbfe;
 	border-radius: 22px;
-	background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), transparent 34%),
-		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.08), transparent 34%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	transition:
+		border-color 0.2s ease,
+		box-shadow 0.2s ease,
+		transform 0.2s ease;
 }
 
 .upload-inline-card:hover,
@@ -686,7 +690,10 @@ export default {
 	background: linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 34%), #ffffff;
 	box-shadow: 0 16px 34px rgba(15, 23, 42, 0.05);
 	cursor: pointer;
-	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+	transition:
+		border-color 0.2s ease,
+		box-shadow 0.2s ease,
+		transform 0.2s ease;
 	width: 100%;
 	max-width: 352px;
 	min-width: 0;
@@ -704,7 +711,9 @@ export default {
 
 .source-card.is-selected {
 	border-color: #3b82f6;
-	box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.16), 0 18px 40px rgba(37, 99, 235, 0.1);
+	box-shadow:
+		0 0 0 2px rgba(59, 130, 246, 0.16),
+		0 18px 40px rgba(37, 99, 235, 0.1);
 }
 
 .source-card.is-active {
@@ -831,8 +840,8 @@ export default {
 	text-align: center;
 	border: 1.5px dashed #cbd5e1;
 	border-radius: 22px;
-	background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%),
-		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 	padding: 32px;
 }
 
