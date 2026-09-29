@@ -28,7 +28,7 @@ jobs:
     steps:
       - id: check
         name: Validate the release tag and its main push CI
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           DEFAULT_BRANCH: main
           REQUIRED_WORKFLOW_FILE: ci.yml
